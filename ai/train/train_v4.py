@@ -60,6 +60,7 @@ from core.state import GameStatus
 HIDDEN_DIM = 512
 NUM_LAYERS = 5
 LEARNING_RATE = 3e-4
+LR_MIN      = 3e-5       # floor for cosine LR decay (league phase)
 
 NUM_ACTORS = 12           # M4 Pro: 10 P + 4 E cores
 STEPS_PER_ACTOR = 256
@@ -68,20 +69,23 @@ BATCH_SIZE = NUM_ACTORS * STEPS_PER_ACTOR   # 3 072
 PPO_EPOCHS = 4
 MINI_BATCH = 512
 CLIP_EPS = 0.2
-ENTROPY_COEF = 0.01
+# ENTROPY_COEF is now adaptive — see get_entropy_coef()
 VALUE_COEF = 0.5
 GAE_GAMMA = 0.99
 GAE_LAMBDA = 0.95
 MAX_TURNS = 60
 
-# Curriculum thresholds (update count)
-PHASE_RANDOM_END = 100
-PHASE_HEURISTIC_END = 500
-PHASE_SELF_END = 3000
+# Opponent temperature during self-play / league (prevents deterministic exploit)
+OPP_TEMPERATURE = 0.8
 
-LEAGUE_POOL_SIZE = 20
-CHECKPOINT_EVERY = 50
-LEAGUE_PROB = 0.5
+# Curriculum thresholds (update count)
+PHASE_RANDOM_END    = 150   # ~460 K steps — stabilise vs random
+PHASE_HEURISTIC_END = 800   # ~650 K steps — consistently beat heuristic
+PHASE_SELF_END      = 5000  # ~13 M steps  — main self-play phase
+
+LEAGUE_POOL_SIZE = 30
+CHECKPOINT_EVERY = 25       # finer granularity → richer league pool
+LEAGUE_PROB = 0.4           # league phase: 60 % self + 40 % historical
 
 BASE_DIR = Path(__file__).parent
 CHECKPOINT_DIR = BASE_DIR / "checkpoints_v4"
@@ -305,7 +309,12 @@ def worker_fn(
                         opp_logits, _ = opp_net(opp_obs_mx)
                         opp_logits_np = np.array(opp_logits[0])
                         opp_logits_np[opp_mask == 0] = -1e9
-                        opp_action = int(np.argmax(opp_logits_np))
+                        # Temperature sampling keeps opponent non-deterministic →
+                        # harder to overfit to one fixed strategy during self-play
+                        opp_logits_np -= opp_logits_np.max()
+                        opp_probs = np.exp(opp_logits_np / OPP_TEMPERATURE)
+                        opp_probs /= opp_probs.sum() + 1e-8
+                        opp_action = int(np.random.choice(TOTAL_ACTIONS, p=opp_probs))
 
                     next_obs, _, terminated, truncated, _ = env.step(opp_action)
                     obs = next_obs
@@ -359,6 +368,33 @@ def get_phase(update: int) -> tuple[str, str]:
     if update < PHASE_SELF_END:
         return "Self-Play", "network"
     return "League", "league"
+
+
+def get_entropy_coef(update: int) -> float:
+    """
+    Adaptive entropy coefficient.
+    High early (explore the game), low late (exploit learned strategy).
+    """
+    if update < PHASE_RANDOM_END:
+        return 0.05
+    if update < PHASE_HEURISTIC_END:
+        return 0.03
+    if update < PHASE_SELF_END:
+        return 0.01
+    return 0.005
+
+
+def get_lr(update: int) -> float:
+    """
+    Cosine decay from LEARNING_RATE to LR_MIN, starting at PHASE_SELF_END.
+    Flat before that (model still catching up to curriculum changes).
+    """
+    import math
+    if update < PHASE_SELF_END:
+        return LEARNING_RATE
+    progress = min((update - PHASE_SELF_END) / 10_000, 1.0)
+    cosine   = 0.5 * (1.0 + math.cos(math.pi * progress))
+    return LR_MIN + (LEARNING_RATE - LR_MIN) * cosine
 
 
 def train(resume: str | None = None):
@@ -425,16 +461,14 @@ def train(resume: str | None = None):
 
     broadcast(0)
 
-    # PPO loss — defined once, JIT-compiled by MLX lazily
-    def ppo_loss(model, obs, acts, lp_old, returns, adv, mask):
+    # PPO loss — entropy_coef passed as scalar so it can vary per update
+    def ppo_loss(model, obs, acts, lp_old, returns, adv, mask, ent_coef):
         logits, vals = model(obs)
-        # Mask illegal actions
         logits = logits + (mask - 1.0) * 1e9
 
         log_probs_all = nn.log_softmax(logits, axis=-1)
 
         # Gather log-prob of taken actions via broadcast one-hot
-        # acts: (B,)  →  oh: (B, TOTAL_ACTIONS)
         oh = (mx.arange(TOTAL_ACTIONS) == acts[:, None]).astype(mx.float32)
         log_pi = mx.sum(log_probs_all * oh, axis=-1)
 
@@ -448,7 +482,7 @@ def train(resume: str | None = None):
         probs = nn.softmax(logits, axis=-1)
         entropy = -mx.mean(mx.sum(probs * log_probs_all, axis=-1))
 
-        return policy_loss + value_loss - ENTROPY_COEF * entropy
+        return policy_loss + value_loss - ent_coef * entropy
 
     loss_and_grad = nn.value_and_grad(master, ppo_loss)
 
@@ -466,6 +500,8 @@ def train(resume: str | None = None):
         "games": 0,
         "wins": 0,
         "loss": 0.0,
+        "lr":   LEARNING_RATE,
+        "ent":  0.05,
         "phase": "Random",
         "by_opp": {k: [0, 0] for k in ("random", "heuristic", "network", "league")},
     }
@@ -512,6 +548,11 @@ def train(resume: str | None = None):
                 phase_name, _ = get_phase(stats["updates"])
                 stats["phase"] = phase_name
 
+                # Adaptive LR and entropy coef
+                current_lr  = get_lr(stats["updates"])
+                current_ent = get_entropy_coef(stats["updates"])
+                optimizer.learning_rate = current_lr
+
                 all_obs  = np.concatenate([t["states"]    for t in buffer])
                 all_acts = np.concatenate([t["actions"]   for t in buffer])
                 all_lp   = np.concatenate([t["log_probs"] for t in buffer])
@@ -528,6 +569,7 @@ def train(resume: str | None = None):
                 all_ret = np.concatenate(all_ret_list)
                 all_adv = (all_adv - all_adv.mean()) / (all_adv.std() + 1e-8)
 
+                ent_coef_mx = mx.array(current_ent)
                 total_loss = 0.0
                 n_mini = 0
                 indices = np.arange(len(all_obs))
@@ -544,6 +586,7 @@ def train(resume: str | None = None):
                             mx.array(all_ret[idx]),
                             mx.array(all_adv[idx]),
                             mx.array(all_mask[idx]),
+                            ent_coef_mx,
                         )
                         optimizer.update(master, grads)
                         mx.eval(master.parameters(), optimizer.state)
@@ -551,6 +594,8 @@ def train(resume: str | None = None):
                         n_mini += 1
 
                 stats["loss"] = total_loss / max(1, n_mini)
+                stats["lr"]   = current_lr
+                stats["ent"]  = current_ent
 
                 # Checkpoint + league
                 if stats["updates"] % CHECKPOINT_EVERY == 0:
@@ -572,7 +617,8 @@ def train(resume: str | None = None):
                 layout["header"].update(Panel(
                     f"[bold cyan]TITAN V4  |  Phase: {stats['phase']}  |  "
                     f"Updates: {stats['updates']}  |  Games: {stats['games']}  |  "
-                    f"WR: {wr:.1%}  |  Loss: {stats['loss']:.4f}[/]"
+                    f"WR: {wr:.1%}  |  Loss: {stats['loss']:.4f}  |  "
+                    f"LR: {stats['lr']:.1e}  |  Ent: {stats['ent']:.3f}[/]"
                 ))
 
                 m = Table(expand=True)
