@@ -1,0 +1,178 @@
+"""
+Структуры данных игрового состояния для детерминированных симуляций.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Dict, List
+from uuid import UUID, uuid4
+
+
+# Фиксированный список всех механик для ML observation (33 механики)
+MECHANICS_LIST = [
+    "taunt",
+    "shield",
+    "permanent_shield",
+    "freeze",
+    "aoe_freeze",
+    "battlecry_freeze",
+    "instant_kill",
+    "bypass_taunt",
+    "consume_ally",
+    "reflect",           # reflect_X -> общий флаг
+    "armor",             # armor_X -> общий флаг
+    "regen",             # regen_X -> общий флаг
+    "aura_atk",          # aura_atk_X -> общий флаг
+    "cleave",
+    "delete_target",
+    "cast_random_spell",
+    "choose_shield_damage",
+    "start_mana",
+    "mana_drain",
+    "mana_gain",
+    "battlecry_damage",  # battlecry_damage_X -> общий флаг
+    "battlecry_heal",    # battlecry_heal_X -> общий флаг
+    "battlecry_draw",
+    "battlecry_buff",
+    "damage",            # для зелий damage_X
+    "heal",              # для зелий heal_X
+    "damage_all",        # AOE урон
+    "heal_all",          # AOE лечение
+    "buff_all",
+    "summon",
+    "deathrattle",
+    "charge",
+    "lifesteal",
+]
+
+
+class CardType(Enum):
+    HERO = "hero"
+    WARRIOR = "warrior"
+    POTION = "potion"
+
+
+class GameStatus(Enum):
+    ONGOING = "ongoing"
+    P1_WIN = "p1_win"
+    P2_WIN = "p2_win"
+
+
+class ReplacementStatus(Enum):
+    """Статус замены игрока ботом."""
+    ACTIVE = "active"          # Игрок активен
+    AFK = "afk"                # Игрок пропал (2+ таймаута)
+    SURRENDERED = "surrendered"  # Игрок сдался
+
+
+@dataclass
+class CardInstance:
+    instance_id: UUID = field(default_factory=uuid4)
+    card_id: int = 0
+    name: str = ""
+    card_type: CardType = CardType.WARRIOR
+    rarity: str = "common"
+    mana_cost: int = 0
+    attack: int = 0
+    hp: int = 0
+    max_hp: int = 0
+    mechanics: List[str] = field(default_factory=list)
+    is_ready: bool = False
+    is_frozen: bool = False
+    description: str = ""
+    level: int = 1  # Уровень карты (1-10)
+    
+    @property
+    def is_asleep(self) -> bool:
+        """Существо спит (не готово к атаке) если is_ready=False."""
+        return not self.is_ready
+
+
+@dataclass
+class PlayerState:
+    user_id: int
+    is_bot: bool = False
+    replacement_status: "ReplacementStatus" = None  # Статус замены (ACTIVE/AFK/SURRENDERED)
+    hero: CardInstance = field(default_factory=CardInstance)
+    mana: int = 0
+    max_mana: int = 0
+    hand: List[CardInstance] = field(default_factory=list)
+    board: List[CardInstance] = field(default_factory=list)
+    deck: List[CardInstance] = field(default_factory=list)
+    graveyard: List[CardInstance] = field(default_factory=list)  # Сброс (кладбище)
+    trophies: int = 0
+    surrender_processed: bool = False  # Флаг немедленного списания трофеев при сдаче
+    
+    def __post_init__(self):
+        """Инициализация дефолтного статуса."""
+        if self.replacement_status is None:
+            from core.state import ReplacementStatus
+            self.replacement_status = ReplacementStatus.ACTIVE
+
+
+@dataclass
+class GameState:
+    p1: PlayerState
+    p2: PlayerState
+    current_turn_owner_id: int
+    turn_number: int = 1
+    history: List[Dict] = field(default_factory=list)
+    action_history: List[tuple[str, str]] = field(default_factory=list)  # (type, text) - последние 100 действий
+    status: GameStatus = GameStatus.ONGOING
+
+    def _card_features(self, prefix: str, card: CardInstance) -> Dict[str, int]:
+        """Извлечь фичи карты включая вектор механик."""
+        features = {
+            f"{prefix}_attack": card.attack,
+            f"{prefix}_hp": card.hp,
+            f"{prefix}_max_hp": card.max_hp,
+            f"{prefix}_mana_cost": card.mana_cost,
+            f"{prefix}_is_ready": int(card.is_ready),
+        }
+        
+        # Добавляем бинарный вектор механик
+        for mechanic in MECHANICS_LIST:
+            has_mechanic = 0
+            for card_mechanic in card.mechanics:
+                # Проверяем точное совпадение или префикс (для parametric механик)
+                if card_mechanic == mechanic or card_mechanic.startswith(mechanic + "_"):
+                    has_mechanic = 1
+                    break
+            features[f"{prefix}_mech_{mechanic}"] = has_mechanic
+        
+        return features
+
+    def _player_features(self, player: PlayerState, label: str) -> Dict[str, int]:
+        data: Dict[str, int] = {
+            f"{label}_mana": player.mana,
+            f"{label}_max_mana": player.max_mana,
+            f"{label}_trophies": player.trophies,
+            f"{label}_hand_size": len(player.hand),
+            f"{label}_deck_size": len(player.deck),
+        }
+
+        data.update(self._card_features(f"{label}_hero", player.hero))
+
+        for idx, unit in enumerate(player.board):
+            data.update(self._card_features(f"{label}_board_{idx}", unit))
+
+        return data
+
+    def get_observation(self) -> Dict[str, int]:
+        """
+        Плоское числовое представление состояния для RL.
+        Герой и существа на столе идут в фиксированном порядке по игрокам.
+        """
+        obs: Dict[str, int] = {
+            "turn_number": self.turn_number,
+            "current_turn_owner_id": self.current_turn_owner_id,
+            "status": {
+                GameStatus.ONGOING: 0,
+                GameStatus.P1_WIN: 1,
+                GameStatus.P2_WIN: 2,
+            }[self.status],
+        }
+        obs.update(self._player_features(self.p1, "p1"))
+        obs.update(self._player_features(self.p2, "p2"))
+        return obs
