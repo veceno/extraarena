@@ -1,1835 +1,809 @@
 <!DOCTYPE html>
 <html lang="ru">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>ChibiArena</title>
-    <link rel="stylesheet" href="./styles.css?v=1.4" />
-    <script src="https://telegram.org/js/telegram-web-app.js"></script>
-    <audio id="background-music" loop>
-      <source src="/DesignAssets/Sounds/main_theme.mp3" type="audio/mpeg">
-    </audio>
-    <audio id="button-sound" preload="auto">
-      <source src="/DesignAssets/Sounds/button_click.mp3" type="audio/mpeg">
-    </audio>
-    <audio id="battle-mode-sound" preload="auto">
-      <source src="/DesignAssets/Sounds/battle_mode_choose_menu_open.wav" type="audio/wav">
-    </audio>
-    <audio id="resource-purchase-sound" preload="auto">
-      <source src="/DesignAssets/Sounds/resource_purchase.wav" type="audio/wav">
-    </audio>
-    <audio id="case-tap-sound" preload="auto">
-      <source src="/DesignAssets/Sounds/case_tap.wav" type="audio/wav">
-    </audio>
-    <audio id="case-opened-sound" preload="auto">
-      <source src="/DesignAssets/Sounds/CaseOpened.wav" type="audio/wav">
-    </audio>
-    <audio id="case-rewards-sound" preload="auto">
-      <source src="/DesignAssets/Sounds/CaseRewards.wav" type="audio/wav">
-    </audio>
-    <script defer src="./main.js?v=1.4"></script>
-  </head>
-  <body>
-    <!-- Полноэкранный оверлей поиска соперника; включается сразу при старте матчмейкинга -->
-    <div
-      id="searchOverlay"
-      class="search-overlay"
-      style="
-        display: none;
-        position: fixed;
-        inset: 0;
-        z-index: 20000;
-        background: rgba(0, 0, 0, 0.65);
-        backdrop-filter: blur(4px);
-        color: #fff;
-        align-items: center;
-        justify-content: center;
-        text-align: center;
-        padding: 24px;
-      "
-    >
-      <div
-        class="search-overlay-box"
-        style="
-          background: rgba(15, 23, 42, 0.8);
-          border: 1px solid rgba(255, 255, 255, 0.2);
-          border-radius: 16px;
-          padding: 22px 24px;
-          max-width: 360px;
-          width: 100%;
-          box-shadow: 0 10px 50px rgba(0, 0, 0, 0.35);
-        "
-      >
-        <div
-          class="search-overlay-title"
-          style="font-size: 20px; font-weight: 800; margin-bottom: 8px; letter-spacing: 0.3px;"
-        >
-          Идет поиск противника...
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>ExtraArena</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" crossorigin="anonymous"></script>
+<link href="https://fonts.googleapis.com/css2?family=Exo+2:wght@400;600;700;900&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+
+<audio id="bg-music" loop><source src="/DesignAssets/Sounds/main_theme.mp3" type="audio/mpeg"></audio>
+<audio id="btn-sound" preload="auto"><source src="/DesignAssets/Sounds/button_click.mp3" type="audio/mpeg"></audio>
+<audio id="battle-sound" preload="auto"><source src="/DesignAssets/Sounds/battle_start.wav" type="audio/wav"></audio>
+
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  width: 100%; height: 100%;
+  background: #07040f;
+  font-family: 'Inter', sans-serif;
+  overflow: hidden;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
+  user-select: none;
+}
+
+#root {
+  width: 100%;
+  height: 100dvh;
+  height: 100vh; /* fallback */
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* safe-area для iPhone */
+.safe-pad-bottom { padding-bottom: env(safe-area-inset-bottom, 0px); }
+
+::-webkit-scrollbar { width: 3px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 2px; }
+
+@keyframes fadeUp    { from{opacity:0;transform:translateY(10px)} to{opacity:1;transform:translateY(0)} }
+@keyframes slideUp   { from{transform:translateY(100%)} to{transform:translateY(0)} }
+@keyframes fadeIn    { from{opacity:0} to{opacity:1} }
+@keyframes glowPulse { 0%,100%{opacity:0.45;transform:translateX(-50%) scaleX(1)} 50%{opacity:0.7;transform:translateX(-50%) scaleX(1.1)} }
+@keyframes shine     { 0%{left:-60%} 100%{left:140%} }
+@keyframes blink     { 0%,100%{opacity:1} 50%{opacity:0} }
+@keyframes rotateSlow{ from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
+@keyframes pulse2    { 0%,100%{opacity:0.5;transform:scale(1)} 50%{opacity:1;transform:scale(1.15)} }
+@keyframes popIn     { from{opacity:0;transform:scale(0.93) translateY(10px)} to{opacity:1;transform:scale(1) translateY(0)} }
+@keyframes spin      { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
+</style>
+</head>
+<body>
+
+<!-- Matchmaking overlay -->
+<div id="searchOverlay" style="display:none;position:fixed;inset:0;z-index:20000;background:rgba(0,0,0,0.72);backdrop-filter:blur(10px);align-items:center;justify-content:center;text-align:center;padding:24px;">
+  <div style="background:rgba(19,13,38,0.97);border:1px solid rgba(93,63,160,0.4);border-radius:22px;padding:28px 24px;max-width:300px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,0.5);">
+    <div style="width:52px;height:52px;border:2px solid rgba(124,92,191,0.3);border-top-color:#9c7de0;border-radius:50%;margin:0 auto 18px;animation:spin 0.85s linear infinite;"></div>
+    <div style="font-size:18px;font-weight:800;color:#f0ecff;font-family:'Exo 2',sans-serif;margin-bottom:6px;">Поиск соперника...</div>
+    <div data-role="search-overlay-text" style="font-size:13px;color:#c4b8e8;line-height:1.5;margin-bottom:16px;">Подбираем соперника, подождите</div>
+    <button id="cancelSearchBtn" style="background:none;border:1px solid #4a3d6a;border-radius:10px;color:#7a6fa0;font-size:13px;padding:7px 20px;cursor:pointer;font-family:'Inter',sans-serif;">Отмена</button>
+  </div>
+</div>
+
+<div id="root"></div>
+
+<script>
+// Matchmaking (outside React to keep DOM IDs for compatibility)
+let matchmakingTimer = null;
+
+window.cancelSearch = function() {
+  clearTimeout(matchmakingTimer);
+  document.getElementById('searchOverlay').style.display = 'none';
+};
+
+document.addEventListener('DOMContentLoaded', () => {
+  const cancelBtn = document.getElementById('cancelSearchBtn');
+  if (cancelBtn) cancelBtn.onclick = window.cancelSearch;
+});
+
+window.startBattle = async function(profile) {
+  const tg = window.Telegram?.WebApp;
+  const overlay = document.getElementById('searchOverlay');
+  if (overlay) overlay.style.display = 'flex';
+
+  try {
+    document.getElementById('battle-sound')?.play().catch(()=>{});
+
+    const urlId = new URLSearchParams(location.search).get('user_id');
+    const userId = tg?.initDataUnsafe?.user?.id || (urlId ? parseInt(urlId) : null);
+    const initData = tg?.initData || '';
+
+    const res = await fetch('/api/match/find', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_id: userId, trophies: profile?.trophies || 0, init_data: initData }),
+    });
+
+    if (!res.ok) throw new Error('match find failed');
+    const data = await res.json();
+
+    if (data.match_id) {
+      const resolvedId = userId || urlId;
+      window.location.href = `${location.origin}/arena?id=${encodeURIComponent(data.match_id)}&user_id=${encodeURIComponent(resolvedId)}`;
+    } else {
+      // polling fallback
+      matchmakingTimer = setTimeout(() => window.startBattle(profile), 3000);
+    }
+  } catch(e) {
+    console.error('Battle search error:', e);
+    if (overlay) overlay.style.display = 'none';
+  }
+};
+
+window.loadProfile = async function() {
+  try {
+    const tg = window.Telegram?.WebApp;
+    const urlId = new URLSearchParams(location.search).get('user_id');
+    let url = '/api/profile';
+    const headers = {};
+    if (tg?.initData) {
+      headers['X-Telegram-Init-Data'] = tg.initData;
+    } else if (urlId) {
+      url += `?user_id=${urlId}`;
+    }
+    const res = await fetch(url, { headers });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch(e) {
+    console.warn('Profile load error:', e);
+    return null;
+  }
+};
+</script>
+
+<script type="text/babel">
+// ═══════════════════════════════════════════
+// DESIGN TOKENS
+// ═══════════════════════════════════════════
+const T = {
+  bg:       '#0f0a1a',
+  bgCard:   '#1a1030',
+  bgDeep:   '#130d26',
+  purple1:  '#2d1f52',
+  purple2:  '#3d2a70',
+  purple3:  '#5b3fa0',
+  purpleHL: '#7c5cbf',
+  purpleLt: '#9c7de0',
+  orange:   '#f5921e',
+  orangeD:  '#d97510',
+  orangeLt: '#ffb347',
+  white:    '#f0ecff',
+  grey1:    '#c4b8e8',
+  grey2:    '#7a6fa0',
+  grey3:    '#4a3d6a',
+  ai:       '#2dd4bf',
+  aiD:      '#14b8a6',
+  aiBg:     'rgba(45,212,191,0.06)',
+  aiBorder: 'rgba(45,212,191,0.18)',
+  aiDeep:   '#0a1e1c',
+  mid:      '#e040c0',
+  midGold:  '#ffd060',
+  midBg:    'rgba(224,64,192,0.06)',
+  midBorder:'rgba(224,64,192,0.18)',
+};
+
+// ═══════════════════════════════════════════
+// ICONS
+// ═══════════════════════════════════════════
+const IconCoin   = ({size=14}) => <svg width={size} height={size} viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="6" fill={T.orange}/><text x="7" y="10.5" textAnchor="middle" fontSize="7" fill="white" fontWeight="700" fontFamily="Exo 2">$</text></svg>;
+const IconGem    = ({size=14}) => <svg width={size} height={size} viewBox="0 0 14 14" fill="none"><polygon points="7,2 12,5 12,9 7,12 2,9 2,5" fill="#a78bfa"/><polygon points="7,4 10,6 7,10 4,6" fill="#c4b5fd"/></svg>;
+const IconTrophy = ({size=18}) => <svg width={size} height={size} viewBox="0 0 18 18" fill="none"><path d="M9 11c-2.8 0-4.5-2.2-4.5-4.5V3h9v3.5C13.5 8.8 11.8 11 9 11z" fill={T.orange}/><path d="M4.5 3H2.5v2c0 1.2.6 2.3 2 2.5M13.5 3h2v2c0 1.2-.6 2.3-2 2.5" stroke={T.orange} strokeWidth="1.2" fill="none"/><path d="M7 11v2.5M11 11v2.5M6 13.5h6" stroke={T.orange} strokeWidth="1.3" strokeLinecap="round"/><rect x="6" y="15" width="6" height="1.5" rx="0.75" fill={T.orange}/></svg>;
+
+const NavShop  = ({a}) => <svg width="22" height="22" viewBox="0 0 22 22" fill="none"><circle cx="11" cy="11" r="9" fill={a?T.orange:'none'} stroke={a?T.orange:T.grey2} strokeWidth="1.5"/><text x="11" y="15" textAnchor="middle" fontSize="9" fill={a?'white':T.grey2} fontWeight="700" fontFamily="Exo 2">$</text></svg>;
+const NavColl  = ({a}) => <svg width="22" height="22" viewBox="0 0 22 22" fill="none"><rect x="3" y="5" width="7" height="9" rx="1.5" fill={a?T.orange:'none'} stroke={a?T.orange:T.grey2} strokeWidth="1.5"/><rect x="12" y="5" width="7" height="9" rx="1.5" fill={a?T.orangeLt:'none'} stroke={a?T.orangeLt:T.grey2} strokeWidth="1.5"/><circle cx="6.5" cy="17" r="1.5" fill={a?T.orange:T.grey2}/><circle cx="15.5" cy="17" r="1.5" fill={a?T.orange:T.grey2}/></svg>;
+const NavArena = ({a}) => <svg width="22" height="22" viewBox="0 0 22 22" fill="none"><path d="M11 3L18 6.5L18 13C18 17 14.5 20 11 21C7.5 20 4 17 4 13L4 6.5Z" fill={a?T.orange:T.purple2} stroke={a?T.orangeLt:T.purpleHL} strokeWidth="1.5"/><path d="M8 11L10 13L14 9" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>;
+const NavQuests= ({a}) => <svg width="22" height="22" viewBox="0 0 22 22" fill="none"><path d="M11 3L19 7L19 15L11 19L3 15L3 7Z" fill={a?T.purple3:'none'} stroke={a?T.purpleLt:T.grey2} strokeWidth="1.5"/><path d="M11 8L11 12" stroke={a?T.purpleLt:T.grey2} strokeWidth="2" strokeLinecap="round"/><circle cx="11" cy="14.5" r="1" fill={a?T.purpleLt:T.grey2}/></svg>;
+const NavComm  = ({a}) => <svg width="22" height="22" viewBox="0 0 22 22" fill="none"><circle cx="8" cy="9" r="3" fill={a?T.orange:'none'} stroke={a?T.orange:T.grey2} strokeWidth="1.5"/><circle cx="15" cy="9" r="2.5" fill={a?T.orangeLt:'none'} stroke={a?T.orangeLt:T.grey2} strokeWidth="1.5"/><path d="M2 18c0-3 2.7-5 6-5s6 2 6 5" stroke={a?T.orange:T.grey2} strokeWidth="1.5" fill="none"/><path d="M15 13c2 0 5 1.5 5 5" stroke={a?T.orangeLt:T.grey2} strokeWidth="1.5" fill="none"/></svg>;
+
+const NAV_ITEMS = [
+  {label:'Магазин',    C:NavShop,  badge:true },
+  {label:'Коллекция',  C:NavColl,  badge:false},
+  {label:'Арена',      C:NavArena, badge:false},
+  {label:'Скводы',     C:NavQuests,badge:false},
+  {label:'Сообщество', C:NavComm,  badge:false},
+];
+
+// ═══════════════════════════════════════════
+// BOTTOM NAV
+// ═══════════════════════════════════════════
+const BottomNav = ({active, onChange}) => (
+  <div className="safe-pad-bottom" style={{background:'rgba(10,7,20,0.98)',borderTop:`1px solid ${T.purple1}`,display:'flex',alignItems:'center',padding:'0 6px',flexShrink:0,backdropFilter:'blur(14px)'}}>
+    {NAV_ITEMS.map(({label,C,badge},i)=>{
+      const isArena=i===2, isActive=active===i;
+      return (
+        <button key={i} onClick={()=>onChange(i)} style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:'4px',background:'none',border:'none',cursor:'pointer',padding:'8px 4px 6px',minHeight:'60px',justifyContent:'center'}}>
+          {isArena ? (
+            <div style={{width:'46px',height:'46px',background:isActive?T.orange:T.purple2,borderRadius:'14px',marginTop:'-18px',display:'flex',alignItems:'center',justifyContent:'center',border:`2px solid ${isActive?T.orangeLt+'55':T.purple3}`,boxShadow:isActive?`0 5px 18px ${T.orange}66`:'none',transition:'all 0.18s',flexShrink:0}}>
+              <C a={isActive}/>
+            </div>
+          ) : (
+            <div style={{position:'relative',display:'inline-flex',flexShrink:0}}>
+              <C a={isActive}/>
+              {badge && <div style={{position:'absolute',top:'-2px',right:'-2px',width:'8px',height:'8px',borderRadius:'50%',background:T.orange,border:`1.5px solid ${T.bg}`,boxShadow:`0 0 6px ${T.orange}88`}}/>}
+            </div>
+          )}
+          <span style={{fontSize:'10px',fontFamily:"'Inter',sans-serif",color:isActive?(isArena?T.orange:T.purpleLt):(badge?T.orangeLt+'99':T.grey2),fontWeight:(isActive||badge)?'600':'400',marginTop:isArena?'4px':'0',transition:'color 0.15s'}}>{label}</span>
+        </button>
+      );
+    })}
+  </div>
+);
+
+// ═══════════════════════════════════════════
+// TOP BAR
+// ═══════════════════════════════════════════
+const TopBar = ({title, onBack, onMenu, showBack=false, extra=null, profile}) => {
+  const coins = profile?.coins ?? '—';
+  const gems  = profile?.gems  ?? profile?.crystals ?? '—';
+
+  return (
+    <div style={{height:'52px',background:'rgba(15,10,26,0.98)',display:'flex',alignItems:'center',justifyContent:'space-between',padding:'0 14px',flexShrink:0,borderBottom:`1px solid ${T.purple1}`}}>
+      <div style={{display:'flex',alignItems:'center',gap:'9px',minWidth:0}}>
+        {showBack ? (
+          <button onClick={onBack} style={{width:'32px',height:'32px',borderRadius:'10px',background:T.bgCard,border:`1px solid ${T.purple1}`,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',flexShrink:0}}>
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 3L5 7L9 11" stroke={T.grey2} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg>
+          </button>
+        ) : (
+          <div style={{display:'flex',alignItems:'center',gap:'8px'}}>
+            <div style={{width:'34px',height:'34px',borderRadius:'50%',background:`linear-gradient(135deg,${T.purple2},${T.purple3})`,border:`2px solid ${T.purpleHL}`,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
+              <span style={{fontSize:'14px',fontWeight:'900',color:'white',fontFamily:"'Exo 2',sans-serif"}}>V</span>
+            </div>
+            <span style={{fontSize:'15px',fontWeight:'700',color:T.white,fontFamily:"'Exo 2',sans-serif",overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{title}</span>
+          </div>
+        )}
+        {showBack && <span style={{fontSize:'15px',fontWeight:'700',color:T.white,fontFamily:"'Exo 2',sans-serif"}}>{title}</span>}
+      </div>
+      <div style={{display:'flex',gap:'6px',alignItems:'center',flexShrink:0}}>
+        {extra}
+        <div style={{display:'flex',gap:'4px',background:T.purple1,borderRadius:'20px',padding:'5px 9px',alignItems:'center'}}>
+          <IconCoin size={13}/><span style={{color:T.orange,fontWeight:'700',fontSize:'12px',fontFamily:"'Exo 2',sans-serif"}}>{typeof coins==='number'?coins.toLocaleString():coins}</span>
         </div>
-        <div
-          data-role="search-overlay-text"
-          style="font-size: 16px; opacity: 0.9; line-height: 1.4;"
-        >
-          Подбираем соперника, это займет пару секунд
-        </div>
+        {gems!=='—' && (
+          <div style={{display:'flex',gap:'4px',background:T.purple1,borderRadius:'20px',padding:'5px 9px',alignItems:'center'}}>
+            <IconGem size={13}/><span style={{color:'#c4b5fd',fontWeight:'700',fontSize:'12px',fontFamily:"'Exo 2',sans-serif"}}>{gems}</span>
+          </div>
+        )}
+        {onMenu && (
+          <button onClick={onMenu} style={{width:'34px',height:'34px',borderRadius:'10px',background:T.bgCard,border:`1px solid ${T.purple1}`,display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:'3px',padding:'9px',cursor:'pointer',alignItems:'center',justifyItems:'center',flexShrink:0}}>
+            {Array(9).fill(0).map((_,i)=><div key={i} style={{width:'4px',height:'4px',borderRadius:'1px',background:T.grey1}}/>)}
+          </button>
+        )}
       </div>
     </div>
+  );
+};
 
-    <!-- Экран загрузки -->
-    <div id="loading-screen" class="loading-screen">
-      <!-- Фоновое изображение -->
-      <div class="loading-bg-image"></div>
-      
-      <!-- Логотип V в левом верхнем углу -->
-      <img src="/DesignAssets/LoadingScreen/Copyright_V_logo.png" alt="V" class="loading-v-logo" />
-      
-      <!-- Логотип Extra Arena в центре сверху -->
-      <img src="/DesignAssets/LoadingScreen/Logotype.png" alt="Extra Arena" class="loading-logotype" />
-      
-      <!-- Нижняя панель с информацией о загрузке -->
-      <div class="loading-bottom-panel">
-        <!-- Текст загрузки слева -->
-        <div class="loading-status-text" id="loading-text">Загружаем кейсы...</div>
-        
-        <!-- Процент справа -->
-        <div class="loading-percentage" id="loading-percentage">0%</div>
+// ═══════════════════════════════════════════
+// ARENA ART (адаптивный размер)
+// ═══════════════════════════════════════════
+const ArenaArt = ({level=1, size=180}) => {
+  const themes=[
+    {color1:'#2a1a50',color2:'#4a2d80',accent:'#7c5cbf',label:'Новичок'},
+    {color1:'#1a2a50',color2:'#2d4a80',accent:'#4f6fb8',label:'Лига 2'},
+    {color1:'#1a3520',color2:'#2d6040',accent:'#4fa868',label:'Лига 3'},
+  ];
+  const th=themes[Math.min(level-1,themes.length-1)];
+  const uid=`al${level}_${size}`;
+  return (
+    <svg width={size} height={size} viewBox="0 0 200 200" fill="none" style={{filter:`drop-shadow(0 0 24px ${th.accent}88)`,flexShrink:0}}>
+      <defs>
+        <radialGradient id={`${uid}g`} cx="50%" cy="50%" r="50%"><stop offset="0%" stopColor={th.accent} stopOpacity="0.35"/><stop offset="100%" stopColor={th.color1} stopOpacity="0"/></radialGradient>
+        <linearGradient id={`${uid}b`} x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={th.accent}/><stop offset="100%" stopColor={th.color2}/></linearGradient>
+        <linearGradient id={`${uid}s`} x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stopColor="rgba(255,255,255,0.22)"/><stop offset="60%" stopColor="rgba(255,255,255,0)"/></linearGradient>
+      </defs>
+      <circle cx="100" cy="100" r="96" fill={`url(#${uid}g)`}/>
+      <ellipse cx="100" cy="162" rx="72" ry="13" fill={th.color2} opacity="0.45"/>
+      <path d="M100 34L156 58L156 112C156 142 130 162 100 170C70 162 44 142 44 112L44 58Z" fill={`url(#${uid}b)`} stroke={th.accent} strokeWidth="2"/>
+      <path d="M100 34L156 58L156 112C156 142 130 162 100 170C70 162 44 142 44 112L44 58Z" fill={`url(#${uid}s)`}/>
+      <path d="M100 46L142 66L142 108C142 133 122 150 100 157C78 150 58 133 58 108L58 66Z" fill="none" stroke={th.accent} strokeWidth="1" opacity="0.35"/>
+      <circle cx="100" cy="108" r="27" fill={th.color1} stroke={th.accent} strokeWidth="1.5"/>
+      <text x="100" y="116" textAnchor="middle" fontSize="24" fontWeight="900" fontFamily="Exo 2,sans-serif" fill="white" opacity="0.92">{level}</text>
+      {[0,72,144,216,288].map((deg,i)=>{
+        const r2=deg*Math.PI/180;
+        return <circle key={i} cx={100+60*Math.cos(r2-Math.PI/2)} cy={108+60*Math.sin(r2-Math.PI/2)} r="2.5" fill={th.accent} opacity="0.65"/>;
+      })}
+      <rect x="30" y="179" width="140" height="15" rx="3" fill="rgba(0,0,0,0.45)"/>
+      <text x="100" y="190" textAnchor="middle" fontSize="9" fill={th.accent} fontFamily="Inter,sans-serif" letterSpacing="0.5">арт арены · {th.label}</text>
+    </svg>
+  );
+};
+
+// ═══════════════════════════════════════════
+// TOGGLE
+// ═══════════════════════════════════════════
+const Toggle = ({value, onChange}) => (
+  <div onClick={()=>onChange(!value)} style={{width:'44px',height:'25px',borderRadius:'13px',background:value?T.purpleLt:T.purple1,border:`1px solid ${value?T.purpleHL:T.grey3}`,position:'relative',cursor:'pointer',transition:'all 0.2s',flexShrink:0}}>
+    <div style={{position:'absolute',top:'3px',left:value?'21px':'3px',width:'17px',height:'17px',borderRadius:'50%',background:value?'white':T.grey2,boxShadow:value?`0 2px 6px ${T.purpleHL}88`:'none',transition:'left 0.2s, background 0.2s'}}/>
+  </div>
+);
+
+// ═══════════════════════════════════════════
+// SETTINGS SCREEN
+// ═══════════════════════════════════════════
+const SettingsScreen = ({onClose}) => {
+  const [notifs, setNotifs] = React.useState({cases:true,daily:true,invites:true,friends:true,events:true,news:false});
+  const [music,  setMusic]  = React.useState(true);
+  const [sfx,    setSfx]    = React.useState(true);
+  const [blockFr,setBlockFr]= React.useState(false);
+  const [nick,   setNick]   = React.useState('');
+
+  const Section = ({icon,title,children}) => (
+    <div style={{marginBottom:'4px'}}>
+      <div style={{display:'flex',alignItems:'center',gap:'8px',margin:'14px 0 8px'}}>
+        <span style={{fontSize:'17px'}}>{icon}</span>
+        <span style={{fontSize:'15px',fontWeight:'700',color:T.white,fontFamily:"'Exo 2',sans-serif"}}>{title}</span>
       </div>
-      
-      <!-- Прогресс-бар -->
-      <div class="loading-progress-bar-wrapper">
-        <div class="loading-progress-bar-bg"></div>
-        <div class="loading-progress-bar-fill" id="loading-progress-bar">
-          <div class="loading-progress-bar-indicator"></div>
+      <div style={{display:'flex',flexDirection:'column',gap:'6px'}}>{children}</div>
+    </div>
+  );
+
+  const Row = ({label,value,onChange,tag=null}) => (
+    <div style={{background:T.bgCard,borderRadius:'12px',padding:'12px 14px',display:'flex',alignItems:'center',justifyContent:'space-between',border:`1px solid ${T.purple1}`}}>
+      <div style={{display:'flex',alignItems:'center',gap:'8px'}}>
+        <span style={{fontSize:'13px',color:T.grey1}}>{label}</span>
+        {tag && <span style={{fontSize:'10px',color:T.orange,fontWeight:'600',background:'rgba(245,146,30,0.12)',borderRadius:'5px',padding:'1px 6px'}}>{tag}</span>}
+      </div>
+      <Toggle value={value} onChange={onChange}/>
+    </div>
+  );
+
+  return (
+    <div style={{position:'absolute',inset:0,background:'rgba(8,5,16,0.88)',backdropFilter:'blur(12px)',zIndex:30,display:'flex',flexDirection:'column',animation:'fadeIn 0.2s'}}>
+      <div style={{height:'52px',background:'rgba(15,10,26,0.98)',display:'flex',alignItems:'center',justifyContent:'space-between',padding:'0 16px',flexShrink:0,borderBottom:`1px solid ${T.purple1}`}}>
+        <div style={{display:'flex',alignItems:'center',gap:'9px'}}>
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="3" fill={T.purpleLt}/><path d="M10 1v2.5M10 16.5V19M1 10h2.5M16.5 10H19M3.2 3.2l1.8 1.8M15 15l1.8 1.8M16.8 3.2L15 5M5 15l-1.8 1.8" stroke={T.purpleLt} strokeWidth="1.5" strokeLinecap="round"/></svg>
+          <span style={{fontSize:'16px',fontWeight:'800',color:T.white,fontFamily:"'Exo 2',sans-serif"}}>Настройки</span>
         </div>
+        <button onClick={onClose} style={{width:'32px',height:'32px',borderRadius:'50%',background:T.bgCard,border:`1px solid ${T.purple1}`,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer'}}>
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 2L10 10M10 2L2 10" stroke={T.grey1} strokeWidth="1.8" strokeLinecap="round"/></svg>
+        </button>
       </div>
-      
-      <!-- Сообщение о долгой загрузке -->
-      <div class="loading-message" id="loading-message" style="display: none;">
-        Похоже, для наших серверов настали трудные времена. Придется немного подождать...
+      <div style={{flex:1,overflowY:'auto',padding:'0 16px 20px'}}>
+        <Section icon="🔔" title="Уведомления">
+          <Row label="Уведомления о кейсах" value={notifs.cases}   onChange={v=>setNotifs(n=>({...n,cases:v}))}/>
+          <Row label="Ежедневные награды"   value={notifs.daily}   onChange={v=>setNotifs(n=>({...n,daily:v}))}/>
+          <Row label="Приглашения в игру"   value={notifs.invites} onChange={v=>setNotifs(n=>({...n,invites:v}))}/>
+          <Row label="Запросы в друзья"     value={notifs.friends} onChange={v=>setNotifs(n=>({...n,friends:v}))}/>
+          <Row label="События"              value={notifs.events}  onChange={v=>setNotifs(n=>({...n,events:v}))}/>
+          <Row label="Новости"              value={notifs.news}    onChange={v=>setNotifs(n=>({...n,news:v}))}/>
+        </Section>
+        <Section icon="📺" title="Реклама">
+          <div style={{background:`linear-gradient(135deg,rgba(245,146,30,0.1),rgba(245,146,30,0.06))`,border:`1.5px solid rgba(245,146,30,0.35)`,borderRadius:'14px',padding:'14px'}}>
+            <div style={{fontSize:'13px',fontWeight:'700',color:T.orange,fontFamily:"'Exo 2',sans-serif",marginBottom:'10px'}}>⚡ ExtraPass — без рекламы и больше!</div>
+            {['✦ Отключение рекламы — играй без прерываний','✦ +1 бой за КД — больше возможностей','✦ 5-й слот для кейсов — больше наград','✦ Эксклюзивные награды и бонусы'].map((t,i)=>(
+              <div key={i} style={{fontSize:'12px',color:T.grey1,marginBottom:'5px',lineHeight:1.4}}>{t}</div>
+            ))}
+            <button style={{marginTop:'10px',width:'100%',height:'42px',background:`linear-gradient(135deg,${T.orange},${T.orangeD})`,border:'none',borderRadius:'11px',color:'white',fontSize:'14px',fontWeight:'900',fontFamily:"'Exo 2',sans-serif",cursor:'pointer',boxShadow:`0 4px 16px ${T.orange}44`}}>Взять ExtraPass</button>
+          </div>
+        </Section>
+        <Section icon="🔊" title="Звук">
+          <Row label="Музыка"           value={music} onChange={setMusic}/>
+          <Row label="Звуковые эффекты" value={sfx}   onChange={setSfx}/>
+        </Section>
+        <Section icon="👥" title="Социальные">
+          <Row label="Блокировать запросы в друзья" value={blockFr} onChange={setBlockFr}/>
+          <div style={{background:T.bgCard,borderRadius:'12px',padding:'12px 14px',border:`1px solid ${T.purple1}`}}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'8px'}}>
+              <span style={{fontSize:'13px',color:T.grey1}}>Никнейм</span>
+              <span style={{fontSize:'11px',color:T.orange,fontWeight:'600'}}>Бесплатно</span>
+            </div>
+            <div style={{display:'flex',gap:'8px'}}>
+              <input value={nick} onChange={e=>setNick(e.target.value)} placeholder="Введите никнейм..."
+                style={{flex:1,background:T.bgDeep,border:`1px solid ${T.purple2}`,borderRadius:'9px',padding:'8px 11px',color:T.white,fontSize:'12px',fontFamily:"'Inter',sans-serif",outline:'none'}}/>
+              <button style={{width:'38px',height:'38px',borderRadius:'9px',background:T.purple2,border:`1px solid ${T.purple3}`,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer'}}>
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 14l3-1 8-8-2-2-8 8-1 3z" fill={T.purpleLt}/><path d="M10 3l2 2" stroke={T.purpleLt} strokeWidth="1.2"/></svg>
+              </button>
+            </div>
+          </div>
+        </Section>
+        <button style={{width:'100%',height:'46px',background:T.bgCard,border:`1px solid ${T.purple2}`,borderRadius:'14px',color:T.grey1,fontSize:'14px',fontWeight:'600',fontFamily:"'Exo 2',sans-serif",cursor:'pointer',marginTop:'6px'}}>По умолчанию</button>
       </div>
     </div>
+  );
+};
 
-    <div id="app" style="display: none;">
-      <!-- Верхняя панель с информацией о пользователе -->
-      <header class="top-bar" id="top-bar">
-        <div class="player-info">
-          <div class="player-avatar" id="player-avatar">
-            <img id="avatar-img" src="" alt="" style="display: none;" />
-            <div class="extrapass-badge" id="extrapass-badge" style="display: none;">⚡</div>
-            <span class="rocket-icon" id="rocket-icon" style="display: none;">🚀</span>
-          </div>
-          <div class="player-details">
-            <div class="player-name-wrapper">
-              <div class="player-name" id="player-name">—</div>
-            </div>
-            <div class="player-title" id="player-title">—</div>
-          </div>
-        </div>
-        <div class="resources-wrapper">
-          <div class="resources-bar">
-            <div class="resource-item" data-resource="gems">
-              <span class="resource-icon">💎</span>
-              <span id="resource-gems">0</span>
-            </div>
-            <div class="resource-item" data-resource="coins">
-              <span class="resource-icon">💰</span>
-              <span id="resource-coins">0</span>
-            </div>
-          </div>
-          <button class="menu-button" id="menu-button">
-            ☰
-            <span class="menu-notification-badge" id="menu-notification-badge" style="display: none;"></span>
+// ═══════════════════════════════════════════
+// MENU SHEET
+// ═══════════════════════════════════════════
+const MenuSheet = ({onClose, onSettings}) => {
+  const items = [
+    {icon:'⚙️',label:'Настройки', wide:false, action:onSettings},
+    {icon:'✉️',label:'Почта',     wide:false, action:onClose},
+    {icon:'👥',label:'Друзья',    wide:false, action:onClose},
+    {icon:'💬',label:'Поддержка', wide:true,  action:onClose},
+    {icon:'ℹ️',label:'Информация',wide:true,  action:onClose},
+  ];
+  return (
+    <div style={{position:'absolute',inset:0,background:'rgba(5,3,14,0.72)',backdropFilter:'blur(8px)',zIndex:20,display:'flex',flexDirection:'column',justifyContent:'flex-end'}} onClick={onClose}>
+      <div onClick={e=>e.stopPropagation()} className="safe-pad-bottom" style={{background:`linear-gradient(180deg,#1a1238 0%,#130d26 100%)`,borderRadius:'24px 24px 0 0',padding:'16px 18px 24px',animation:'slideUp 0.28s cubic-bezier(0.32,0.72,0,1)',border:`1px solid ${T.purple1}`,borderBottom:'none',boxShadow:'0 -16px 50px rgba(0,0,0,0.5)'}}>
+        <div style={{width:'36px',height:'4px',borderRadius:'2px',background:T.purple2,margin:'0 auto 16px'}}/>
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'16px'}}>
+          <span style={{fontSize:'22px',fontWeight:'900',color:T.white,fontFamily:"'Exo 2',sans-serif"}}>Меню</span>
+          <button onClick={onClose} style={{width:'34px',height:'34px',borderRadius:'50%',background:T.bgCard,border:`1px solid ${T.purple1}`,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer'}}>
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 2L10 10M10 2L2 10" stroke={T.grey1} strokeWidth="1.8" strokeLinecap="round"/></svg>
           </button>
         </div>
-      </header>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px'}}>
+          {items.filter(it=>!it.wide).map((item,i)=>(
+            <button key={i} onClick={item.action} style={{background:T.bgCard,border:`1px solid ${T.purple1}`,borderRadius:'16px',padding:'16px 14px',display:'flex',alignItems:'center',gap:'10px',cursor:'pointer',transition:'all 0.15s'}}>
+              <span style={{fontSize:'20px'}}>{item.icon}</span>
+              <span style={{fontSize:'14px',fontWeight:'600',color:T.white,fontFamily:"'Exo 2',sans-serif"}}>{item.label}</span>
+            </button>
+          ))}
+          {items.filter(it=>it.wide).map((item,i)=>(
+            <button key={i} onClick={item.action} style={{background:T.bgCard,border:`1px solid ${T.purple1}`,borderRadius:'16px',padding:'14px',display:'flex',alignItems:'center',gap:'10px',cursor:'pointer',transition:'all 0.15s'}}>
+              <span style={{fontSize:'18px'}}>{item.icon}</span>
+              <span style={{fontSize:'13px',fontWeight:'600',color:T.white,fontFamily:"'Exo 2',sans-serif"}}>{item.label}</span>
+            </button>
+          ))}
+        </div>
+        <div style={{textAlign:'center',marginTop:'14px',fontSize:'10px',color:T.grey3}}>ExtraArena v0.9.1-beta</div>
+      </div>
+    </div>
+  );
+};
 
-      <!-- Меню (скрыто по умолчанию) -->
-      <div class="menu-overlay" id="menu-overlay" style="display: none;">
-        <div class="menu-panel">
-          <div class="menu-header">
-            <h3>Меню</h3>
-            <button class="menu-close" id="menu-close">✕</button>
+// ═══════════════════════════════════════════
+// ARENA SCREEN
+// ═══════════════════════════════════════════
+const ArenaScreen = ({onMenu, onAI, profile}) => {
+  const [hasCases,    setHasCases]    = React.useState((profile?.keys || profile?.cases_count || 0) > 0);
+  const [battleHover, setBattleHover] = React.useState(false);
+  const [shineAnim,   setShineAnim]   = React.useState(false);
+
+  React.useEffect(()=>{
+    setHasCases((profile?.keys || profile?.cases_count || 0) > 0);
+  },[profile]);
+
+  React.useEffect(()=>{
+    if(battleHover){setShineAnim(false);const t=setTimeout(()=>setShineAnim(true),20);return()=>clearTimeout(t);}
+  },[battleHover]);
+
+  const trophies = profile?.trophies || 0;
+  const nextLeague = trophies < 300 ? 300 : trophies < 700 ? 700 : trophies < 1000 ? 1000 : trophies + 1000;
+  const leagueName = trophies < 300 ? 'Novice' : trophies < 700 ? 'Student' : trophies < 2500 ? 'Advanced' : 'Pro';
+  const progress = Math.min((trophies % (nextLeague - (nextLeague - 300))) / 300 * 100, 100);
+
+  const artSize = Math.min(Math.round(window.innerWidth * 0.48), 190);
+
+  return (
+    <div style={{flex:1,overflowY:'auto',overflowX:'hidden',display:'flex',flexDirection:'column',minHeight:0}}>
+      {/* Season Pass */}
+      <div style={{margin:'12px 16px 0',background:'linear-gradient(135deg,#2d1460,#4a2090)',borderRadius:'16px',padding:'11px 14px',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+        <div>
+          <div style={{fontSize:'10px',color:T.grey1,letterSpacing:'0.6px',textTransform:'uppercase',marginBottom:'2px'}}>Сезон 1</div>
+          <div style={{fontSize:'16px',fontWeight:'800',color:T.white,fontFamily:"'Exo 2',sans-serif"}}>ExtraPass</div>
+        </div>
+        <div style={{display:'flex',alignItems:'center',gap:'10px'}}>
+          <div style={{textAlign:'right'}}>
+            <div style={{fontSize:'11px',color:T.grey1,marginBottom:'5px'}}>53 / 250 ★</div>
+            <div style={{width:'100px',height:'5px',background:T.purple1,borderRadius:'3px',overflow:'hidden'}}>
+              <div style={{width:'21%',height:'100%',background:`linear-gradient(90deg,${T.orange},${T.orangeLt})`,borderRadius:'3px'}}/>
+            </div>
           </div>
-          <div class="menu-content">
-            <button class="menu-item" data-menu="settings">
-              <span class="menu-item-icon">⚙️</span>
-              <span>Настройки</span>
+          <button style={{background:T.orange,border:'none',borderRadius:'10px',padding:'7px 12px',color:'white',fontSize:'12px',fontWeight:'800',fontFamily:"'Exo 2',sans-serif",cursor:'pointer',boxShadow:`0 3px 10px ${T.orange}55`,flexShrink:0}}>Взять</button>
+        </div>
+      </div>
+
+      {/* Arena hero */}
+      <div style={{position:'relative',margin:'12px 0 0',display:'flex',flexDirection:'column',alignItems:'center'}}>
+        <div style={{display:'flex',gap:'8px',marginBottom:'12px',width:'100%',padding:'0 16px'}}>
+          {[{id:'history',label:'История боёв'},{id:'ai',label:'ИИ аналитика ✦',accent:true}].map(({id,label,accent})=>(
+            <button key={id} onClick={()=>{if(id==='ai')onAI();}} style={{flex:1,background:T.bgCard,border:`1px solid ${T.purple1}`,borderRadius:'20px',padding:'7px 14px',color:T.grey1,fontSize:'12px',cursor:'pointer',fontFamily:"'Inter',sans-serif",transition:'all 0.15s'}}>
+              {label}
             </button>
-            <button class="menu-item" data-menu="mail">
-              <span class="menu-item-icon">📬</span>
-              <span>Почта</span>
-              <span class="menu-item-notification-badge" id="mail-menu-notification-badge" style="display: none;"></span>
-            </button>
-            <button class="menu-item" data-menu="friends">
-              <span class="menu-item-icon">👥</span>
-              <span>Друзья</span>
-            </button>
-            <div class="menu-item-row">
-              <button class="menu-item menu-item-half" data-menu="support">
-                <span class="menu-item-icon">💬</span>
-                <span>Поддержка</span>
+          ))}
+        </div>
+
+        <div style={{position:'relative'}}>
+          <ArenaArt level={1} size={artSize}/>
+          <div style={{position:'absolute',bottom:'-8px',left:'50%',width:'120px',height:'16px',background:T.purple3,borderRadius:'50%',filter:'blur(14px)',opacity:0.5,animation:'glowPulse 3s ease-in-out infinite'}}/>
+        </div>
+
+        <div style={{marginTop:'16px',padding:'10px 14px',background:T.bgCard,borderRadius:'13px',width:'calc(100% - 32px)',border:`1px solid ${T.purple1}`}}>
+          <div style={{display:'flex',justifyContent:'space-between',marginBottom:'6px'}}>
+            <span style={{fontSize:'11px',color:T.grey2}}>До следующей лиги</span>
+            <span style={{fontSize:'11px',color:T.orange,fontWeight:'600'}}>ещё {nextLeague - trophies} трофеев</span>
+          </div>
+          <div style={{height:'5px',background:T.purple1,borderRadius:'3px',overflow:'hidden'}}>
+            <div style={{width:`${progress}%`,height:'100%',background:`linear-gradient(90deg,${T.orange},${T.orangeLt})`,borderRadius:'3px',boxShadow:`0 0 8px ${T.orange}55`}}/>
+          </div>
+        </div>
+      </div>
+
+      {/* Stats */}
+      <div style={{display:'flex',gap:'10px',padding:'12px 16px 0'}}>
+        <div style={{flex:1,background:T.bgCard,borderRadius:'14px',padding:'12px 14px',border:`1px solid ${T.purple1}`}}>
+          <div style={{fontSize:'10px',color:T.grey2,textTransform:'uppercase',letterSpacing:'0.5px',marginBottom:'4px'}}>Лига</div>
+          <div style={{fontSize:'20px',fontWeight:'900',color:T.white,fontFamily:"'Exo 2',sans-serif",lineHeight:1}}>{leagueName}</div>
+          <div style={{fontSize:'11px',color:T.purpleLt,marginTop:'3px'}}>Лига 1</div>
+        </div>
+        <div style={{flex:1,background:`linear-gradient(135deg,${T.orangeD}22,${T.orange}33)`,borderRadius:'14px',padding:'12px 14px',border:`1px solid ${T.orange}55`}}>
+          <div style={{fontSize:'10px',color:T.grey2,textTransform:'uppercase',letterSpacing:'0.5px',marginBottom:'4px'}}>Трофеи</div>
+          <div style={{display:'flex',alignItems:'center',gap:'7px'}}>
+            <span style={{fontSize:'26px',fontWeight:'900',color:T.orange,fontFamily:"'Exo 2',sans-serif",lineHeight:1}}>{trophies}</span>
+            <IconTrophy size={20}/>
+          </div>
+        </div>
+      </div>
+
+      {/* Battle button */}
+      <div style={{padding:'12px 16px 0',display:'flex',gap:'10px'}}>
+        <button
+          id="play-battle-btn"
+          onMouseEnter={()=>setBattleHover(true)}
+          onMouseLeave={()=>setBattleHover(false)}
+          onTouchStart={()=>setBattleHover(true)}
+          onTouchEnd={()=>setBattleHover(false)}
+          onClick={()=>window.startBattle(profile)}
+          style={{flex:1,height:'60px',background:battleHover?`linear-gradient(135deg,${T.orangeLt},${T.orange})`:`linear-gradient(135deg,${T.orange},${T.orangeD})`,border:'none',borderRadius:'16px',color:'white',fontSize:'22px',fontWeight:'900',fontFamily:"'Exo 2',sans-serif",letterSpacing:'2px',cursor:'pointer',position:'relative',overflow:'hidden',boxShadow:battleHover?`0 10px 36px ${T.orange}88`:`0 5px 22px ${T.orange}44`,transform:battleHover?'translateY(-1px)':'none',transition:'all 0.15s'}}>
+          В БОЙ
+          {shineAnim && <div style={{position:'absolute',top:0,width:'35%',height:'100%',background:'linear-gradient(90deg,transparent,rgba(255,255,255,0.18),transparent)',transform:'skewX(-18deg)',pointerEvents:'none',animation:'shine 0.5s ease forwards'}}/>}
+        </button>
+        <button style={{width:'60px',height:'60px',background:T.bgCard,border:`1px solid ${T.purple2}`,borderRadius:'16px',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke={T.purpleLt} strokeWidth="1.4"/><circle cx="12" cy="12" r="4" fill={T.purpleHL}/><path d="M12 3v3M12 18v3M3 12h3M18 12h3" stroke={T.purpleLt} strokeWidth="1.4" strokeLinecap="round"/></svg>
+        </button>
+      </div>
+
+      {/* Banner: кейсы */}
+      <div style={{margin:'12px 16px 16px',borderRadius:'16px',background:hasCases?`linear-gradient(135deg,${T.purple1},#1f1040)`:`linear-gradient(135deg,#1a0a3a,#2d1060)`,border:`1px solid ${hasCases?T.purple2:T.purple1}`,padding:'13px 15px',display:'flex',alignItems:'center',gap:'13px'}}>
+        {hasCases ? (
+          <>
+            <div style={{width:'60px',height:'52px',borderRadius:'10px',background:'rgba(255,255,255,0.05)',border:`1px dashed ${T.grey3}`,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',flexShrink:0,gap:'3px'}}>
+              <span style={{fontSize:'22px'}}>📦</span>
+              <span style={{fontSize:'8px',color:T.grey2}}>кейс</span>
+            </div>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontSize:'14px',fontWeight:'700',color:T.white,fontFamily:"'Exo 2',sans-serif",marginBottom:'3px'}}>У тебя {profile?.keys || 0} кейса!</div>
+              <div style={{fontSize:'11px',color:T.grey1,marginBottom:'8px'}}>Открой — вдруг выпадет редкость</div>
+              <button style={{background:T.orange,border:'none',borderRadius:'8px',padding:'6px 14px',color:'white',fontSize:'12px',fontWeight:'700',fontFamily:"'Exo 2',sans-serif",cursor:'pointer'}}>Открыть</button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div style={{width:'60px',height:'52px',borderRadius:'10px',background:'rgba(255,255,255,0.05)',border:`1px dashed ${T.grey3}`,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',flexShrink:0,gap:'3px'}}>
+              <span style={{fontSize:'22px'}}>🛒</span>
+              <span style={{fontSize:'8px',color:T.grey2}}>магаз</span>
+            </div>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontSize:'14px',fontWeight:'700',color:T.white,fontFamily:"'Exo 2',sans-serif",marginBottom:'3px'}}>Кейсы закончились</div>
+              <div style={{fontSize:'11px',color:T.grey1,marginBottom:'8px'}}>Пополни запас в магазине</div>
+              <button style={{background:T.purple3,border:`1px solid ${T.purpleHL}`,borderRadius:'8px',padding:'6px 14px',color:'white',fontSize:'12px',fontWeight:'700',fontFamily:"'Exo 2',sans-serif",cursor:'pointer'}}>Магазин</button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+};
+
+// ═══════════════════════════════════════════
+// AI SCREEN (сокращённая — только разделы)
+// ═══════════════════════════════════════════
+const TypingDots = ({color=T.ai}) => (
+  <div style={{display:'flex',gap:'4px',alignItems:'center',padding:'3px 0'}}>
+    {[0,1,2].map(i=><div key={i} style={{width:'6px',height:'6px',borderRadius:'50%',background:color,animation:`blink 1.2s ease-in-out ${i*0.2}s infinite`}}/>)}
+  </div>
+);
+
+const MODELS = [
+  {id:'yuni',     name:'Юни',      tag:null,          color:T.ai,     border:T.aiBorder,  bg:T.aiBg},
+  {id:'yuni_plus',name:'Юни Plus', tag:'ExtraPass',   color:T.purpleLt,border:'rgba(156,125,224,0.22)',bg:'rgba(156,125,224,0.07)'},
+  {id:'midoria',  name:'Мидория',  tag:'Free',        color:T.mid,    border:T.midBorder, bg:T.midBg},
+];
+
+const YuniFace=({s=30,c=T.ai})=><svg width={s} height={s} viewBox="0 0 36 36" fill="none"><circle cx="18" cy="18" r="17" fill={`${c}14`} stroke={c} strokeWidth="1.2"/><circle cx="15" cy="16" r="1.8" fill={c}/><circle cx="21" cy="16" r="1.8" fill={c}/><circle cx="15.6" cy="15.4" r="0.6" fill="white"/><circle cx="21.6" cy="15.4" r="0.6" fill="white"/><path d="M15 19.5 Q18 22 21 19.5" stroke={c} strokeWidth="1.1" strokeLinecap="round" fill="none"/><path d="M10 14 Q11.5 8 18 8 Q24.5 8 26 14" stroke={c} strokeWidth="1.2" fill="none" strokeLinecap="round"/></svg>;
+const MidFace=({s=30})=><svg width={s} height={s} viewBox="0 0 36 36" fill="none"><circle cx="18" cy="18" r="17" fill="rgba(224,64,192,0.1)" stroke="#e040c0" strokeWidth="1.2"/><path d="M13.5 15.5L16.5 14.5L15 16.5Z" fill="#e040c0"/><path d="M22.5 15.5L19.5 14.5L21 16.5Z" fill="#e040c0"/><circle cx="14.5" cy="15.5" r="0.7" fill="#ffd060"/><circle cx="21.5" cy="15.5" r="0.7" fill="#ffd060"/><path d="M15.5 19.5 Q17.5 21.5 21 19" stroke="#e040c0" strokeWidth="1.1" strokeLinecap="round" fill="none"/><path d="M10 15 Q10.5 7 18 7 Q25.5 7 26 15" fill="rgba(224,64,192,0.2)" stroke="#e040c0" strokeWidth="1"/></svg>;
+
+const YUNI_R={'Как работает цикл карт?':'Цикл карт — скорость возврата к нужной карте. Чем дешевле колода, тем быстрее цикл. Попробуй среднюю ману 3.0 🔄','Что такое контр-колода?':'Дека, которая закрывает слабости стиля соперника. Если враг агрессивен — берёшь защиту с высоким уроном 😊','Как попасть в топ лиги?':'Стабильность, а не везение. Играй знакомую колоду и всегда анализируй проигрыши 📈','Объясни механику трофеев':'Победа = плюс, поражение = минус. Тебе сейчас нужно 100 до Лиги 2! 🏆'};
+const MID_R={'Как работает цикл карт?':'...Дешевле колода — быстрее цикл. Ты разве не мог додуматься сам? Средняя мана 3.0.','Что такое контр-колода?':'Контр — против слабостей врага. Сложно предугадать что поставит противник. Вот где начинается игра.','Как попасть в топ лиги?':'Стабильность. Не меняй колоду. ...Хотя судя по статистике — тебе ещё далеко.','Объясни механику трофеев':'Победа — плюс. Поражение — минус. Остальное — последствия твоих решений.'};
+
+const AIScreen = ({onBack}) => {
+  const [aiTab,   setAiTab]   = React.useState(0);
+  const [model,   setModel]   = React.useState('yuni');
+  const [msgs,    setMsgs]    = React.useState([{r:'ai',t:'Привет! Я Юни — твой помощник в ExtraArena 😊'}]);
+  const [typing,  setTyping]  = React.useState(false);
+  const [input,   setInput]   = React.useState('');
+  const isMid = model==='midoria';
+  const mColor = isMid?T.mid:model==='yuni_plus'?T.purpleLt:T.ai;
+  const bottomRef = React.useRef(null);
+
+  React.useEffect(()=>{
+    const greet = isMid?'...Ты всё-таки пришёл. Спрашивай — отвечу.':'Привет! Я Юни — твой помощник в ExtraArena 😊';
+    setMsgs([{r:'ai',t:greet}]);setTyping(false);setInput('');
+  },[isMid]);
+
+  React.useEffect(()=>{ if(bottomRef.current) bottomRef.current.scrollIntoView({behavior:'smooth',block:'nearest'}); },[msgs,typing]);
+
+  const sendChat=(text)=>{
+    if(!text.trim())return;
+    setMsgs(m=>[...m,{r:'user',t:text}]);setInput('');setTyping(true);
+    setTimeout(()=>{
+      const r=(isMid?MID_R:YUNI_R)[text]||(isMid?'...Задай нормальный вопрос.':'Попробуй спросить про механики или колоды 😊');
+      setTyping(false);setMsgs(m=>[...m,{r:'ai',t:r}]);
+    },1400);
+  };
+
+  const BATTLES=[
+    {id:'#4821',opp:'ShadowBlade99',res:'win', tr:+18,dur:'4:32',date:'сегодня'},
+    {id:'#4820',opp:'NightWolf',    res:'loss',tr:-12,dur:'3:18',date:'сегодня'},
+    {id:'#4819',opp:'CrystalMage', res:'win', tr:+20,dur:'6:10',date:'вчера'},
+    {id:'#4818',opp:'IronFist',    res:'loss',tr:-14,dur:'2:55',date:'вчера'},
+  ];
+
+  return (
+    <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden',animation:'fadeIn 0.2s',minHeight:0}}>
+      {/* Model selector */}
+      <div style={{padding:'8px 16px',flexShrink:0,borderBottom:`1px solid ${T.purple1}`,background:'rgba(15,10,26,0.5)'}}>
+        <div style={{fontSize:'10px',color:T.grey3,textTransform:'uppercase',letterSpacing:'0.5px',marginBottom:'6px'}}>Модель</div>
+        <div style={{display:'flex',gap:'6px'}}>
+          {MODELS.map(m=>{
+            const active=model===m.id;
+            return (
+              <button key={m.id} onClick={()=>setModel(m.id)} style={{flex:1,background:active?m.bg:'rgba(255,255,255,0.03)',border:`1px solid ${active?m.border:T.purple1}`,borderRadius:'11px',padding:'9px 4px',cursor:'pointer',textAlign:'center',transition:'all 0.15s',position:'relative',overflow:'hidden'}}>
+                {active&&<div style={{position:'absolute',top:0,left:0,right:0,height:'2px',background:`linear-gradient(90deg,transparent,${m.color},transparent)`}}/>}
+                <div style={{fontSize:'12px',fontWeight:'700',color:active?m.color:T.grey2,fontFamily:"'Exo 2',sans-serif",lineHeight:1,marginBottom:'2px'}}>{m.name}</div>
+                {m.tag&&<div style={{fontSize:'9px',color:active?m.color:T.grey3,background:active?`${m.color}18`:'transparent',borderRadius:'4px',padding:'1px 5px',display:'inline-block',fontWeight:'600'}}>{m.tag}</div>}
               </button>
-              <button class="menu-item menu-item-half" data-menu="info">
-                <span class="menu-item-icon">ℹ️</span>
-                <span>Информация</span>
-              </button>
-            </div>
-          </div>
+            );
+          })}
         </div>
       </div>
 
-      <!-- Модальное окно аналитики (при клике на аватарку) -->
-      <div class="modal-overlay" id="analytics-modal" style="display: none;">
-        <div class="modal-content">
-          <div class="modal-header">
-            <h2>📊 Аналитика</h2>
-            <button class="modal-close" data-modal="analytics">✕</button>
-          </div>
-          <div class="modal-body" id="analytics-content">
-            <!-- Контент аналитики будет добавлен через JS -->
-          </div>
-        </div>
+      {/* Tabs */}
+      <div style={{display:'flex',padding:'0 16px',flexShrink:0,background:'rgba(15,10,26,0.3)',borderBottom:`1px solid ${T.purple1}`}}>
+        {['Бои','Стиль игры','Наставник'].map((tab,i)=>{
+          const active=aiTab===i;
+          return <button key={i} onClick={()=>setAiTab(i)} style={{flex:1,padding:'9px 4px',background:'none',border:'none',cursor:'pointer',borderBottom:`2px solid ${active?mColor:'transparent'}`,color:active?mColor:T.grey2,fontSize:'12px',fontWeight:active?'600':'400',fontFamily:"'Exo 2',sans-serif",transition:'all 0.15s'}}>{tab}</button>;
+        })}
       </div>
 
-      <!-- Модальное окно настроек -->
-      <div class="modal-overlay" id="settings-modal" style="display: none;">
-        <div class="modal-content">
-          <div class="modal-header">
-            <h2>⚙️ Настройки</h2>
-            <button class="modal-close" data-modal="settings">✕</button>
-          </div>
-          <div class="modal-body" id="settings-content">
-            <!-- Контент настроек будет добавлен через JS -->
-          </div>
-          <div class="modal-footer">
-            <button class="btn-secondary" id="reset-settings-btn">По умолчанию</button>
-          </div>
-        </div>
-      </div>
-
-      <!-- Модальное окно поддержки -->
-      <div class="modal-overlay" id="support-modal" style="display: none;">
-        <div class="modal-content">
-          <div class="modal-header">
-            <h2>💬 Поддержка</h2>
-            <button class="modal-close" data-modal="support">✕</button>
-          </div>
-          <div class="modal-body">
-            <p>Если у вас возникли вопросы, обратитесь в нашу поддержку:</p>
-            <a href="https://t.me/lqsup" target="_blank" class="support-link">Перейти в поддержку</a>
-          </div>
-        </div>
-      </div>
-
-      <!-- Модальное окно информации -->
-      <div class="modal-overlay" id="info-modal" style="display: none;">
-        <div class="modal-content">
-          <div class="modal-header">
-            <h2>ℹ️ Информация</h2>
-            <button class="modal-close" data-modal="info">✕</button>
-          </div>
-          <div class="modal-body">
-            <div class="info-item">
-              <span class="info-label">ID:</span>
-              <span class="info-value" id="info-user-id">—</span>
-              <button class="copy-btn" data-copy="user-id">📋</button>
+      {/* Tab: Бои */}
+      {aiTab===0 && (
+        <div style={{flex:1,overflowY:'auto',padding:'8px 16px',display:'flex',flexDirection:'column',gap:'5px',minHeight:0}}>
+          {BATTLES.map(b=>(
+            <div key={b.id} style={{background:T.bgCard,border:`1px solid ${T.purple1}`,borderRadius:'12px',padding:'10px 12px',display:'flex',alignItems:'center',gap:'9px'}}>
+              <div style={{width:'8px',height:'8px',borderRadius:'50%',background:b.res==='win'?'#4ade80':'#f87171',flexShrink:0}}/>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{display:'flex',gap:'5px',alignItems:'center',marginBottom:'2px'}}>
+                  <span style={{fontSize:'12px',fontWeight:'600',color:T.white,fontFamily:"'Exo 2',sans-serif",overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{b.opp}</span>
+                  <span style={{fontSize:'10px',color:T.grey3,flexShrink:0}}>{b.id}</span>
+                </div>
+                <div style={{display:'flex',gap:'7px'}}>
+                  <span style={{fontSize:'11px',color:b.tr>0?T.orange:'#f87171',fontWeight:'600'}}>{b.tr>0?'+':''}{b.tr} 🏆</span>
+                  <span style={{fontSize:'10px',color:T.grey3}}>{b.dur}</span>
+                  <span style={{fontSize:'10px',color:T.grey3}}>{b.date}</span>
+                </div>
+              </div>
+              <button style={{background:`linear-gradient(135deg,${mColor}bb,${mColor})`,border:'none',borderRadius:'7px',padding:'5px 10px',color:'#001a17',fontSize:'11px',fontWeight:'700',cursor:'pointer',fontFamily:"'Exo 2',sans-serif",flexShrink:0}}>Анализ</button>
             </div>
-            <div class="info-item">
-              <span class="info-label">Версия:</span>
-              <span class="info-value">1.0.0</span>
-              <button class="copy-btn" data-copy="version">📋</button>
+          ))}
+        </div>
+      )}
+
+      {/* Tab: Стиль */}
+      {aiTab===1 && (
+        <div style={{flex:1,overflowY:'auto',padding:'10px 16px',display:'flex',flexDirection:'column',gap:'10px',minHeight:0}}>
+          <div style={{background:T.aiDeep,border:`1px solid ${T.aiBorder}`,borderRadius:'14px',padding:'13px',display:'flex',alignItems:'center',gap:'12px'}}>
+            <div style={{width:'46px',height:'46px',borderRadius:'12px',background:T.aiBg,border:`1px solid ${T.aiBorder}`,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
+              <svg width="22" height="22" viewBox="0 0 22 22" fill="none"><path d="M11 3L19 7V13C19 17.5 15.5 21 11 22C6.5 21 3 17.5 3 13V7Z" fill={T.aiBg} stroke={mColor} strokeWidth="1.5"/><path d="M7.5 11.5L10 14L14.5 9" stroke={mColor} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
             </div>
-            <div class="info-links">
-              <a href="https://telegra.ph/Pravila-chestnoj-igry-Fair-Play-ExtraArena-12-01" target="_blank" class="info-link">📜 Правила игры</a>
-              <a href="https://telegra.ph/Polzovatelskoe-soglashenie-ExtraArena-12-01" target="_blank" class="info-link">📄 Пользовательское соглашение</a>
-              <a href="https://telegra.ph/Politika-konfidencialnosti-ExtraArena-12-01" target="_blank" class="info-link">🔒 Политика конфиденциальности</a>
+            <div>
+              <div style={{fontSize:'10px',color:mColor,letterSpacing:'0.5px',textTransform:'uppercase',marginBottom:'3px'}}>Стиль игры</div>
+              <div style={{fontSize:'19px',fontWeight:'900',color:T.white,fontFamily:"'Exo 2',sans-serif",lineHeight:1}}>Агрессивный</div>
+              <div style={{fontSize:'11px',color:T.grey1,marginTop:'3px'}}>топ-12% · 47 боёв</div>
             </div>
           </div>
+          {[{l:'Агрессия',v:72,c:mColor},{l:'Защита',v:45,c:T.purpleLt},{l:'Цикл карт',v:88,c:T.orange},{l:'Контроль',v:55,c:'#60a5fa'},{l:'Адаптация',v:61,c:'#4ade80'}].map(s=>(
+            <div key={s.l}>
+              <div style={{display:'flex',justifyContent:'space-between',marginBottom:'4px'}}>
+                <span style={{fontSize:'12px',color:T.grey1}}>{s.l}</span>
+                <span style={{fontSize:'12px',color:s.c,fontWeight:'600'}}>{s.v}</span>
+              </div>
+              <div style={{height:'5px',background:T.purple1,borderRadius:'3px',overflow:'hidden'}}>
+                <div style={{width:`${s.v}%`,height:'100%',background:`linear-gradient(90deg,${s.c}88,${s.c})`,borderRadius:'3px'}}/>
+              </div>
+            </div>
+          ))}
         </div>
-      </div>
+      )}
 
-      <!-- Модальное окно почты -->
-      <div class="modal-overlay" id="mail-modal" style="display: none;">
-        <div class="modal-content modal-large">
-          <div class="modal-header">
-            <h2>📬 Почта</h2>
-            <button class="modal-close" data-modal="mail">✕</button>
+      {/* Tab: Наставник */}
+      {aiTab===2 && (
+        <div style={{display:'flex',flexDirection:'column',flex:1,overflow:'hidden',minHeight:0}}>
+          <div style={{flex:1,overflowY:'auto',padding:'8px 16px',display:'flex',flexDirection:'column',gap:'7px',minHeight:0}}>
+            {msgs.map((m2,i)=>(
+              <div key={i} style={{display:'flex',gap:'7px',alignItems:'flex-end',flexDirection:m2.r==='user'?'row-reverse':'row',animation:'fadeUp 0.2s'}}>
+                {m2.r==='ai' && (isMid?<MidFace s={26}/>:<YuniFace s={26} c={mColor}/>)}
+                <div style={{maxWidth:'76%',padding:'8px 11px',borderRadius:m2.r==='user'?'13px 13px 3px 13px':'13px 13px 13px 3px',background:m2.r==='user'?T.purple2:(isMid?T.midBg:T.aiBg),border:`1px solid ${m2.r==='user'?T.purple3:(isMid?T.midBorder:T.aiBorder)}`,fontSize:'12px',color:T.grey1,lineHeight:1.55}}>{m2.t}</div>
+              </div>
+            ))}
+            {typing && (
+              <div style={{display:'flex',gap:'7px',alignItems:'flex-end'}}>
+                {isMid?<MidFace s={26}/>:<YuniFace s={26} c={mColor}/>}
+                <div style={{padding:'8px 13px',borderRadius:'13px 13px 13px 3px',background:isMid?T.midBg:T.aiBg,border:`1px solid ${isMid?T.midBorder:T.aiBorder}`}}><TypingDots color={mColor}/></div>
+              </div>
+            )}
+            <div ref={bottomRef}/>
           </div>
-          <div class="modal-body">
-            <div class="mail-filters">
-              <button class="mail-filter-btn active">Все</button>
-              <button class="mail-filter-btn">Награды</button>
-              <button class="mail-filter-btn">Новости</button>
-              <button class="mail-filter-btn">События</button>
-            </div>
-            <div class="mail-list">
-              <!-- Письма будут загружены через API -->
-            </div>
-            <div class="mail-empty-state" style="display: none;">
-              <div class="empty-icon">📭</div>
-              <div class="empty-text">Нет новых сообщений</div>
-            </div>
+          <div style={{padding:'5px 16px',flexShrink:0,overflowX:'auto',display:'flex',gap:'5px',scrollbarWidth:'none',WebkitOverflowScrolling:'touch'}}>
+            {['Как работает цикл карт?','Что такое контр-колода?','Как попасть в топ лиги?','Объясни механику трофеев'].map((q,i)=>(
+              <button key={i} onClick={()=>sendChat(q)} style={{background:isMid?T.midBg:T.aiBg,border:`1px solid ${isMid?T.midBorder:T.aiBorder}`,borderRadius:'17px',padding:'5px 10px',color:mColor,fontSize:'10px',cursor:'pointer',whiteSpace:'nowrap',fontFamily:"'Inter',sans-serif",flexShrink:0}}>{q}</button>
+            ))}
           </div>
-        </div>
-      </div>
-
-      <!-- Модальное окно друзей -->
-      <div class="modal-overlay" id="friends-modal" style="display: none;">
-        <div class="modal-content modal-large">
-          <div class="modal-header">
-            <h2>👥 Друзья</h2>
-            <button class="modal-close" data-modal="friends">✕</button>
-          </div>
-          <div class="modal-body">
-            <div class="friends-tabs">
-              <button class="friends-tab active" data-tab="friends">Друзья (3)</button>
-              <button class="friends-tab" data-tab="requests">Запросы (2)</button>
-              <button class="friends-tab" data-tab="search">Поиск</button>
-            </div>
-            
-            <div class="friends-tab-content" id="friends-tab-content">
-              <div class="friends-search">
-                <input type="text" class="friends-search-input" placeholder="🔍 Поиск друзей..." />
-              </div>
-              <div class="friends-list-container">
-                <div class="friend-card">
-                  <div class="friend-avatar">A</div>
-                  <div class="friend-info">
-                    <div class="friend-name">AlexPlayer</div>
-                    <div class="friend-stats">🏆 1250 | ⚡ Активен</div>
-                  </div>
-                  <div class="friend-actions">
-                    <button class="friend-action-btn" title="Написать">💬</button>
-                    <button class="friend-action-btn" title="Сыграть">⚔️</button>
-                  </div>
-                </div>
-                <div class="friend-card">
-                  <div class="friend-avatar">M</div>
-                  <div class="friend-info">
-                    <div class="friend-name">MasterGamer</div>
-                    <div class="friend-stats">🏆 890 | ⚡ Был 5 мин назад</div>
-                  </div>
-                  <div class="friend-actions">
-                    <button class="friend-action-btn" title="Написать">💬</button>
-                    <button class="friend-action-btn" title="Сыграть">⚔️</button>
-                  </div>
-                </div>
-                <div class="friend-card">
-                  <div class="friend-avatar">S</div>
-                  <div class="friend-info">
-                    <div class="friend-name">SuperChibi</div>
-                    <div class="friend-stats">🏆 2100 | ⚡ Был 2 часа назад</div>
-                  </div>
-                  <div class="friend-actions">
-                    <button class="friend-action-btn" title="Написать">💬</button>
-                    <button class="friend-action-btn" title="Сыграть">⚔️</button>
-                  </div>
-                </div>
-              </div>
-            </div>
-            
-            <div class="friends-tab-content" id="requests-tab-content" style="display: none;">
-              <div class="friend-request-list">
-                <div class="friend-request-item">
-                  <div class="friend-avatar">N</div>
-                  <div class="friend-info">
-                    <div class="friend-name">NewPlayer123</div>
-                    <div class="friend-stats">🏆 450</div>
-                  </div>
-                  <div class="friend-request-actions">
-                    <button class="friend-request-btn accept">✓</button>
-                    <button class="friend-request-btn decline">✕</button>
-                  </div>
-                </div>
-                <div class="friend-request-item">
-                  <div class="friend-avatar">T</div>
-                  <div class="friend-info">
-                    <div class="friend-name">TestUser</div>
-                    <div class="friend-stats">🏆 320</div>
-                  </div>
-                  <div class="friend-request-actions">
-                    <button class="friend-request-btn accept">✓</button>
-                    <button class="friend-request-btn decline">✕</button>
-                  </div>
-                </div>
-              </div>
-            </div>
-            
-            <div class="friends-tab-content" id="search-tab-content" style="display: none;">
-              <div class="friends-search-full">
-                <input type="text" class="friends-search-input" placeholder="🔍 Введите ID или ник игрока..." />
-                <button class="btn-primary" style="margin-top: 12px; width: 100%;">Найти</button>
-              </div>
-              <div class="search-results" style="margin-top: 20px;">
-                <div class="search-result-item">
-                  <div class="friend-avatar">P</div>
-                  <div class="friend-info">
-                    <div class="friend-name">ProGamer</div>
-                    <div class="friend-stats">🏆 3500 | ID: 123456789</div>
-                  </div>
-                  <button class="friend-add-btn">+ Добавить</button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Основной контент -->
-      <main class="content-area">
-        <!-- Раздел: Арена (главный) -->
-        <section id="arena-section" class="section active">
-          <div class="arena-container">
-            <!-- Блок баттлпасса -->
-            <div class="battlepass-card">
-              <div class="battlepass-header">
-                <div class="battlepass-title-row">
-                  <span class="battlepass-title">⚡ Боевой пропуск</span>
-                  <span class="battlepass-stars">
-                    <span class="stars-icon">⭐</span>
-                    <span id="battlepass-stars-current">0</span>
-                    <span class="stars-separator">/</span>
-                    <span id="battlepass-stars-next">100</span>
-                  </span>
-                </div>
-                <div class="battlepass-season">Сезон <span id="battlepass-season">0</span></div>
-              </div>
-              <div class="battlepass-progress">
-                <div class="progress-bar">
-                  <div class="progress-fill" id="battlepass-progress" style="width: 0%"></div>
-                </div>
-              </div>
-            </div>
-
-            <!-- Блок арены -->
-            <div class="arena-main-card">
-              <button class="info-btn arena-info-btn" data-info="arena" title="Информация об арене">i</button>
-              <div class="arena-shield">
-                <div class="shield-icon">🛡️</div>
-              </div>
-              <div class="arena-name" id="arena-name">Арена новичков</div>
-              <div class="arena-stats-row">
-                <div class="arena-trophies">
-                  <span class="trophy-icon">🏆</span>
-                  <span id="arena-trophies-value">0</span>
-                  <span class="trophies-separator">/</span>
-                  <span id="arena-trophies-next">200</span>
-                </div>
-                <div class="arena-energy-compact" id="arena-energy-compact">
-                  <span class="energy-icon">⚡</span>
-                  <span class="energy-text">
-                    <span id="energy-current-display">5</span><span class="energy-separator">/</span><span id="energy-max-display">5</span>
-                  </span>
-                  <button class="energy-extrapass-hint" id="energy-extrapass-hint" style="display: none;" title="Получите +1 энергию с ExtraPass">+1</button>
-                </div>
-              </div>
-              <div class="arena-actions-main">
-                <button class="battle-btn btn-primary btn-large" id="start-battle">В БОЙ</button>
-                <div class="arena-actions-secondary">
-                  <button class="target-btn" id="training-battle" title="Тренировка и дружеские бои">
-                    <span class="target-icon">🎯</span>
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            <!-- Блок кейсов -->
-            <div class="cases-widget" id="cases-widget">
-              <div class="cases-widget-content">
-                <div class="cases-icon">📦</div>
-                <div class="cases-info">
-                  <div class="cases-title">Кейсы</div>
-                  <div class="cases-count" id="cases-count">0</div>
-                </div>
-                <button class="cases-action-btn" id="cases-open-btn" style="display: none;">
-                  Открыть
-                </button>
-                <button class="cases-shop-btn" id="cases-shop-btn">
-                  Купить
-                </button>
-              </div>
-            </div>
-
-        </section>
-
-        <!-- Раздел: Магазин -->
-        <section id="shop-section" class="section">
-          <div class="section-container">
-            <!-- Красивый заголовок магазина -->
-            <div class="shop-header">
-              <h2 class="shop-title-main">
-                <span class="shop-title-glow">✨</span>
-                <span class="shop-title-text">МАГАЗИН</span>
-                <span class="shop-title-glow">✨</span>
-              </h2>
-              <p class="shop-subtitle">Откройте для себя эксклюзивные предложения и усильте свою игру!</p>
-            </div>
-            
-            <div class="shop-content">
-              <!-- Игровые наборы -->
-              <div class="shop-category-block">
-                <h3 class="shop-block-title">🎁 Игровые наборы</h3>
-                <div class="shop-items-grid shop-items-compact" id="shop-sets-grid">
-                  <!-- Наборы будут загружаться динамически -->
-                  <div class="shop-empty-state">
-                    <img src="/DesignAssets/Cases/Case.png" alt="Кейс" class="empty-icon" />
-                    <div class="empty-text">Наборы появятся здесь скоро</div>
-                  </div>
-                </div>
-              </div>
-
-              <!-- Подписки -->
-              <div class="shop-category-block">
-                <h3 class="shop-block-title">⭐ Подписки</h3>
-                <div class="shop-items-grid shop-items-subscriptions">
-                  <!-- ExtraPass -->
-                  <div class="shop-item-card shop-subscription-card" data-item-type="extrapass" data-item-price="299">
-                    <div class="subscription-badge">EXTRA PASS</div>
-                    <div class="item-image subscription-image">
-                      <div class="item-icon">⭐</div>
-                  </div>
-                    <div class="item-info">
-                      <div class="item-name">ExtraPass</div>
-                      <div class="item-description">Премиум подписка на 30 дней с эксклюзивными привилегиями</div>
-                      <div class="item-stats">
-                        <span class="stat-item">✨ Эксклюзивные награды</span>
-                        <span class="stat-item">🎁 Ежедневные бонусы</span>
-                        <span class="stat-item">⚡ Приоритетная поддержка</span>
-                      </div>
-                    </div>
-                    <button class="item-buy-btn item-price-btn">
-                      <span class="price-value">299</span>
-                      <span class="price-icon">₽</span>
-                    </button>
-                  </div>
-
-                  <!-- ExtraPass Ultra -->
-                  <div class="shop-item-card shop-subscription-card shop-subscription-ultra" data-item-type="extrapass_ultra" data-item-price="599">
-                    <div class="subscription-badge subscription-badge-ultra">EXTRA PASS ULTRA</div>
-                    <div class="item-image subscription-image subscription-image-ultra">
-                      <div class="item-icon">💫</div>
-                    </div>
-                    <div class="item-info">
-                      <div class="item-name">ExtraPass Ultra</div>
-                      <div class="item-description">Максимальная подписка на 30 дней со всеми привилегиями</div>
-                      <div class="item-stats">
-                        <span class="stat-item">💎 Удвоенные награды</span>
-                        <span class="stat-item">🎁 Эксклюзивные предметы</span>
-                        <span class="stat-item">👑 VIP статус</span>
-                      </div>
-                    </div>
-                    <button class="item-buy-btn item-price-btn">
-                      <span class="price-value">599</span>
-                      <span class="price-icon">₽</span>
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              <!-- Кейсы за гемы -->
-              <div class="shop-category-block">
-                <h3 class="shop-block-title">📦 Кейсы</h3>
-                <div class="shop-items-container shop-cases-container">
-                  <div class="shop-items-grid shop-items-cases" id="shop-cases-grid">
-                  <!-- Кейсы: 40 гемов → 1 кейс -->
-                  <div class="shop-item-card shop-case-card" data-item-type="keys_1" data-item-price="40" data-currency="gems">
-                    <div class="item-image case-image">
-                      <img src="/DesignAssets/Cases/Case.png" alt="Кейс" class="item-icon" />
-                    </div>
-                    <div class="item-info">
-                      <div class="item-name">1 Кейс</div>
-                      <div class="item-description">Базовый набор кейсов</div>
-                    </div>
-                    <button class="item-buy-btn item-price-btn">
-                      <span class="price-value">40</span>
-                      <span class="price-icon">💎</span>
-                    </button>
-                  </div>
-
-                  <!-- Кейсы: 120 гемов → 3 кейса -->
-                  <div class="shop-item-card shop-case-card" data-item-type="keys_3" data-item-price="120" data-currency="gems">
-                    <div class="item-image case-image">
-                      <img src="/DesignAssets/Cases/Case.png" alt="Кейс" class="item-icon" />
-                    </div>
-                    <div class="item-info">
-                      <div class="item-name">3 Кейса</div>
-                      <div class="item-description">Популярный набор</div>
-                    </div>
-                    <button class="item-buy-btn item-price-btn">
-                      <span class="price-value">120</span>
-                      <span class="price-icon">💎</span>
-                    </button>
-                  </div>
-
-                  <!-- Кейсы: 380 гемов → 10 кейсов -->
-                  <div class="shop-item-card shop-case-card" data-item-type="keys_10" data-item-price="380" data-currency="gems">
-                    <div class="item-image case-image">
-                      <img src="/DesignAssets/Cases/Case.png" alt="Кейс" class="item-icon" />
-                    </div>
-                    <div class="item-info">
-                      <div class="item-name">10 Кейсов</div>
-                      <div class="item-description">Большой набор</div>
-                    </div>
-                    <button class="item-buy-btn item-price-btn">
-                      <span class="price-value">380</span>
-                      <span class="price-icon">💎</span>
-                    </button>
-                  </div>
-
-                  <!-- Кейсы: 900 гемов → 25 кейсов -->
-                  <div class="shop-item-card shop-case-card" data-item-type="keys_25" data-item-price="900" data-currency="gems">
-                    <div class="item-image case-image">
-                      <img src="/DesignAssets/Cases/Case.png" alt="Кейс" class="item-icon" />
-                    </div>
-                    <div class="item-info">
-                      <div class="item-name">25 Кейсов</div>
-                      <div class="item-description">Огромный набор</div>
-                    </div>
-                    <button class="item-buy-btn item-price-btn">
-                      <span class="price-value">900</span>
-                      <span class="price-icon">💎</span>
-                    </button>
-                  </div>
-
-                  <!-- Кейсы: 1 700 гемов → 50 кейсов -->
-                  <div class="shop-item-card shop-case-card" data-item-type="keys_50" data-item-price="1700" data-currency="gems">
-                    <div class="item-image case-image">
-                      <img src="/DesignAssets/Cases/Case.png" alt="Кейс" class="item-icon" />
-                    </div>
-                    <div class="item-info">
-                      <div class="item-name">50 Кейсов</div>
-                      <div class="item-description">Максимальный набор</div>
-                    </div>
-                    <button class="item-buy-btn item-price-btn">
-                      <span class="price-value">1 700</span>
-                      <span class="price-icon">💎</span>
-                    </button>
-                  </div>
-
-                  <!-- Кейсы: 3 000 гемов → 100 кейсов -->
-                  <div class="shop-item-card shop-case-card" data-item-type="keys_100" data-item-price="3000" data-currency="gems">
-                    <div class="item-image case-image">
-                      <img src="/DesignAssets/Cases/Case.png" alt="Кейс" class="item-icon" />
-                    </div>
-                    <div class="item-info">
-                      <div class="item-name">100 Кейсов</div>
-                      <div class="item-description">Легендарный набор</div>
-                    </div>
-                    <button class="item-buy-btn item-price-btn">
-                      <span class="price-value">3 000</span>
-                      <span class="price-icon">💎</span>
-                    </button>
-                  </div>
-                  </div>
-                </div>
-              </div>
-
-              <!-- Гемы за рубли -->
-              <div class="shop-category-block">
-                <h3 class="shop-block-title">💎 Гемы</h3>
-                <div class="shop-items-container shop-gems-container">
-                  <div class="shop-items-grid shop-items-gems" id="shop-gems-grid">
-                  <!-- Гемы: 79 ₽ → 120 гемов -->
-                  <div class="shop-item-card shop-gem-card" data-item-type="gems_120" data-item-price="79">
-                    <div class="item-image gem-image">
-                      <div class="item-icon">💎</div>
-                    </div>
-                    <div class="item-info">
-                      <div class="item-name">120 Гемов</div>
-                      <div class="item-description">Базовый набор гемов</div>
-                    </div>
-                    <button class="item-buy-btn item-price-btn">
-                      <span class="price-value">79</span>
-                      <span class="price-icon">₽</span>
-                    </button>
-                  </div>
-
-                  <!-- Гемы: 249 ₽ → 420 гемов -->
-                  <div class="shop-item-card shop-gem-card" data-item-type="gems_420" data-item-price="249">
-                    <div class="item-image gem-image">
-                      <div class="item-icon">💎</div>
-                    </div>
-                    <div class="item-info">
-                      <div class="item-name">420 Гемов</div>
-                      <div class="item-description">Популярный набор</div>
-                    </div>
-                    <button class="item-buy-btn item-price-btn">
-                      <span class="price-value">249</span>
-                      <span class="price-icon">₽</span>
-                    </button>
-                  </div>
-
-                  <!-- Гемы: 449 ₽ → 800 гемов -->
-                  <div class="shop-item-card shop-gem-card" data-item-type="gems_800" data-item-price="449">
-                    <div class="item-image gem-image">
-                      <div class="item-icon">💎</div>
-                    </div>
-                    <div class="item-info">
-                      <div class="item-name">800 Гемов</div>
-                      <div class="item-description">Большой набор</div>
-                    </div>
-                    <button class="item-buy-btn item-price-btn">
-                      <span class="price-value">449</span>
-                      <span class="price-icon">₽</span>
-                    </button>
-                  </div>
-
-                  <!-- Гемы: 899 ₽ → 1700 гемов -->
-                  <div class="shop-item-card shop-gem-card" data-item-type="gems_1700" data-item-price="899">
-                    <div class="item-image gem-image">
-                      <div class="item-icon">💎</div>
-                    </div>
-                    <div class="item-info">
-                      <div class="item-name">1700 Гемов</div>
-                      <div class="item-description">Огромный набор</div>
-                    </div>
-                    <button class="item-buy-btn item-price-btn">
-                      <span class="price-value">899</span>
-                      <span class="price-icon">₽</span>
-                    </button>
-                  </div>
-
-                  <!-- Гемы: 1 790 ₽ → 3600 гемов -->
-                  <div class="shop-item-card shop-gem-card" data-item-type="gems_3600" data-item-price="1790">
-                    <div class="item-image gem-image">
-                      <div class="item-icon">💎</div>
-                    </div>
-                    <div class="item-info">
-                      <div class="item-name">3600 Гемов</div>
-                      <div class="item-description">Максимальный набор</div>
-                    </div>
-                    <button class="item-buy-btn item-price-btn">
-                      <span class="price-value">1 790</span>
-                      <span class="price-icon">₽</span>
-                    </button>
-                  </div>
-
-                  <!-- Гемы: 3 490 ₽ → 7600 гемов -->
-                  <div class="shop-item-card shop-gem-card" data-item-type="gems_7600" data-item-price="3490">
-                    <div class="item-image gem-image">
-                      <div class="item-icon">💎</div>
-                    </div>
-                    <div class="item-info">
-                      <div class="item-name">7600 Гемов</div>
-                      <div class="item-description">Легендарный набор</div>
-                    </div>
-                    <button class="item-buy-btn item-price-btn">
-                      <span class="price-value">3 490</span>
-                      <span class="price-icon">₽</span>
-                    </button>
-                  </div>
-                  </div>
-                </div>
-              </div>
-
-              <!-- Монеты за гемы -->
-              <div class="shop-category-block">
-                <h3 class="shop-block-title">💰 Монеты</h3>
-                <div class="shop-items-container shop-coins-container">
-                  <div class="shop-items-grid shop-items-coins" id="shop-coins-grid">
-                  <!-- Монеты: 20 гемов → 300 монет -->
-                  <div class="shop-item-card shop-coin-card" data-item-type="coins_300" data-item-price="20" data-currency="gems">
-                    <div class="item-image coin-image">
-                      <div class="item-icon">💰</div>
-                    </div>
-                    <div class="item-info">
-                      <div class="item-name">300 Монет</div>
-                      <div class="item-description">Базовый набор монет</div>
-                    </div>
-                    <button class="item-buy-btn item-price-btn">
-                      <span class="price-value">20</span>
-                      <span class="price-icon">💎</span>
-                    </button>
-                  </div>
-
-                  <!-- Монеты: 80 гемов → 1 400 монет -->
-                  <div class="shop-item-card shop-coin-card" data-item-type="coins_1400" data-item-price="80" data-currency="gems">
-                    <div class="item-image coin-image">
-                      <div class="item-icon">💰</div>
-                    </div>
-                    <div class="item-info">
-                      <div class="item-name">1 400 Монет</div>
-                      <div class="item-description">Популярный набор</div>
-                    </div>
-                    <button class="item-buy-btn item-price-btn">
-                      <span class="price-value">80</span>
-                      <span class="price-icon">💎</span>
-                    </button>
-                  </div>
-
-                  <!-- Монеты: 250 гемов → 5 000 монет -->
-                  <div class="shop-item-card shop-coin-card" data-item-type="coins_5000" data-item-price="250" data-currency="gems">
-                    <div class="item-image coin-image">
-                      <div class="item-icon">💰</div>
-                    </div>
-                    <div class="item-info">
-                      <div class="item-name">5 000 Монет</div>
-                      <div class="item-description">Большой набор</div>
-                    </div>
-                    <button class="item-buy-btn item-price-btn">
-                      <span class="price-value">250</span>
-                      <span class="price-icon">💎</span>
-                    </button>
-                  </div>
-
-                  <!-- Монеты: 800 гемов → 20 000 монет -->
-                  <div class="shop-item-card shop-coin-card" data-item-type="coins_20000" data-item-price="800" data-currency="gems">
-                    <div class="item-image coin-image">
-                      <div class="item-icon">💰</div>
-                    </div>
-                    <div class="item-info">
-                      <div class="item-name">20 000 Монет</div>
-                      <div class="item-description">Максимальный набор</div>
-                    </div>
-                    <button class="item-buy-btn item-price-btn">
-                      <span class="price-value">800</span>
-                      <span class="price-icon">💎</span>
-                    </button>
-                  </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <!-- Раздел: Коллекция -->
-        <section id="collection-section" class="section">
-          <div class="section-container">
-            <div class="collection-content">
-              <!-- Вкладки: Карты / Предметы -->
-              <div class="collection-tabs">
-                <button class="collection-tab active" data-tab="cards">🃏 Карты</button>
-                <button class="collection-tab" data-tab="items">🎒 Предметы</button>
-                <button class="collection-tab" data-tab="cases">📦 Кейсы</button>
-              </div>
-              
-              <!-- Вкладка Карты -->
-              <div class="collection-tab-content active" id="cards-tab-content">
-                <!-- Мои колоды -->
-                <div class="deck-presets-section">
-                  <div class="deck-presets-header">
-                    <h3 class="deck-presets-title">📋 Мои колоды</h3>
-                    <button class="preset-create-btn" id="create-preset-btn" title="Создать новую колоду">➕</button>
-                  </div>
-                  <div class="deck-presets-list" id="deck-presets-list">
-                    <!-- Пресеты будут добавлены через JS -->
-                  </div>
-                </div>
-                
-                <!-- Колода (9 слотов, полный 3x3 ряд для бэкенда) -->
-                <div class="deck-section">
-                  <div class="deck-header">
-                    <div>
-                      <h3 class="deck-title">⚔️ Моя колода</h3>
-                      <div class="deck-power" id="deck-power">Мощь: 0</div>
-                    </div>
-                    <button class="deck-save-btn">💾 Сохранить</button>
-                  </div>
-                  <div class="deck-grid" id="deck-grid">
-                    <div class="deck-slot" data-slot="1">
-                      <div class="slot-empty">+</div>
-                    </div>
-                    <div class="deck-slot" data-slot="2">
-                      <div class="slot-empty">+</div>
-                    </div>
-                    <div class="deck-slot" data-slot="3">
-                      <div class="slot-empty">+</div>
-                    </div>
-                    <div class="deck-slot" data-slot="4">
-                      <div class="slot-empty">+</div>
-                    </div>
-                    <div class="deck-slot" data-slot="5">
-                      <div class="slot-empty">+</div>
-                    </div>
-                    <div class="deck-slot" data-slot="6">
-                      <div class="slot-empty">+</div>
-                    </div>
-                    <div class="deck-slot" data-slot="7">
-                      <div class="slot-empty">+</div>
-                    </div>
-                    <div class="deck-slot" data-slot="8">
-                      <div class="slot-empty">+</div>
-                    </div>
-                    <div class="deck-slot" data-slot="9">
-                      <div class="slot-empty">+</div>
-                    </div>
-                  </div>
-                </div>
-                
-                <!-- Фильтры и список карт -->
-                <div class="cards-section">
-                  <div class="cards-filters">
-                    <div class="filters-header">
-                      <div class="filters-main">
-                        <div class="custom-sort-select-wrapper">
-                          <button class="custom-sort-select" id="cards-sort-select-btn">
-                            <span class="sort-select-text">⚔️ По мощи</span>
-                            <span class="sort-select-arrow">▼</span>
-                          </button>
-                          <div class="custom-sort-dropdown" id="cards-sort-dropdown" style="display: none;">
-                            <div class="sort-option" data-value="power">⚔️ По мощи</div>
-                            <div class="sort-option" data-value="level">📊 По уровню</div>
-                            <div class="sort-option" data-value="upgrade">⬆️ Близость к апгрейду</div>
-                            <div class="sort-option" data-value="date">📅 По дате получения</div>
-                            <div class="sort-option" data-value="name">🔤 По имени</div>
-                          </div>
-                        </div>
-                        <button class="sort-direction-btn" id="sort-direction-btn" title="Направление сортировки">🔽</button>
-                        <button class="filter-toggle-btn" id="rarity-filter-toggle">🔽 Редкости</button>
-                      </div>
-                    </div>
-                    <div class="rarity-filters-collapsible" id="rarity-filters-collapsible" style="display: none;">
-                      <div class="rarity-filters">
-                        <button class="rarity-filter active" data-rarity="all">Все</button>
-                        <button class="rarity-filter" data-rarity="start">Стартовые</button>
-                        <button class="rarity-filter" data-rarity="common">Обычные</button>
-                        <button class="rarity-filter" data-rarity="rare">Редкие</button>
-                        <button class="rarity-filter" data-rarity="superrare">Сверхредкие</button>
-                        <button class="rarity-filter" data-rarity="epic">Эпические</button>
-                        <button class="rarity-filter" data-rarity="legendary">Легендарные</button>
-                        <button class="rarity-filter" data-rarity="mythic">Мифические</button>
-                        <button class="rarity-filter" data-rarity="divine">Божественные</button>
-                        <button class="rarity-filter" data-rarity="limited">Лимитированные</button>
-                      </div>
-                    </div>
-                    <div class="admin-cards-actions" id="admin-cards-actions" style="display: none; margin-top: 12px; gap: 8px;">
-                      <button class="btn-primary btn-small" id="admin-create-card-btn">➕ Добавить карту</button>
-                      <button class="btn-primary btn-small" id="admin-get-all-cards-btn">📥 Получить все карты</button>
-                      <button class="btn-secondary btn-small" id="admin-delete-all-cards-btn">🗑️ Удалить все карты</button>
-                    </div>
-                  <div class="card-stat-legend" style="display: flex; gap: 8px; align-items: center; margin: 10px 0; font-size: 13px; color: var(--chibi-text-muted);">
-                    <span class="card-stat mana">🪄 Мана</span>
-                    <span class="card-stat attack">⚔️ Атака</span>
-                    <span class="card-stat hp">❤️ Здоровье</span>
-                    <span class="card-stat particles">🧪 Частицы</span>
-                    <span class="card-stat coins">💰 Монеты</span>
-                  </div>
-                  </div>
-                  
-                  <div class="cards-grid" id="cards-grid">
-                    <!-- Карты будут добавлены через JS -->
-                    <div class="card-placeholder">
-                      <div class="card-icon">🃏</div>
-                      <div class="card-name">Карта #1</div>
-                      <div class="card-rarity common">Обычная</div>
-                    </div>
-                    <div class="card-placeholder">
-                      <div class="card-icon">🃏</div>
-                      <div class="card-name">Карта #2</div>
-                      <div class="card-rarity rare">Редкая</div>
-                    </div>
-                    <div class="card-placeholder">
-                      <div class="card-icon">🃏</div>
-                      <div class="card-name">Карта #3</div>
-                      <div class="card-rarity epic">Эпическая</div>
-                    </div>
-                    <div class="card-placeholder">
-                      <div class="card-icon">🃏</div>
-                      <div class="card-name">Карта #4</div>
-                      <div class="card-rarity legendary">Легендарная</div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-              
-              <!-- Вкладка Кейсы -->
-              <div class="collection-tab-content" id="cases-tab-content">
-                <div class="cases-section">
-                  <h3 class="cases-title">📦 Мои кейсы</h3>
-                  <div class="cases-grid" id="cases-grid">
-                    <!-- Кейсы будут добавлены через JS -->
-                  </div>
-                  <div class="cases-empty-state" id="cases-empty-state" style="display: none;">
-                    <img src="/DesignAssets/Cases/Case.png" alt="Кейс" class="empty-icon" />
-                    <div class="empty-text">У вас пока нет кейсов</div>
-                  </div>
-                </div>
-              </div>
-              
-              <!-- Вкладка Предметы -->
-              <div class="collection-tab-content" id="items-tab-content">
-                <div class="items-section">
-                  <div class="items-filters">
-                    <div class="filter-group">
-                      <label>Редкость:</label>
-                      <div class="rarity-filters">
-                        <button class="rarity-filter active" data-rarity="all">Все</button>
-                        <button class="rarity-filter" data-rarity="common">Обычные</button>
-                        <button class="rarity-filter" data-rarity="rare">Редкие</button>
-                        <button class="rarity-filter" data-rarity="superrare">Сверхредкие</button>
-                        <button class="rarity-filter" data-rarity="epic">Эпические</button>
-                        <button class="rarity-filter" data-rarity="legendary">Легендарные</button>
-                        <button class="rarity-filter" data-rarity="mythic">Мифические</button>
-                        <button class="rarity-filter" data-rarity="divine">Божественные</button>
-                        <button class="rarity-filter" data-rarity="limited">Лимитированные</button>
-                      </div>
-                    </div>
-                  </div>
-                  
-                  <div class="items-grid" id="items-grid">
-                    <!-- Предметы будут добавлены через JS -->
-                    <div class="item-placeholder">
-                      <div class="item-icon">🎒</div>
-                      <div class="item-name">Предмет #1</div>
-                      <div class="item-rarity common">Обычный</div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <!-- Раздел: Сквады -->
-        <section id="squads-section" class="section">
-          <div class="section-container">
-            <h2 class="section-title">👥 Сквады</h2>
-            <div class="squads-content">
-              <div class="placeholder-card">
-                <div class="placeholder-icon">👥</div>
-                <h3 class="placeholder-title">Сквады</h3>
-                <p class="placeholder-text">Сквады скоро будут доступны. Объединяйтесь с друзьями, создавайте команды и участвуйте в командных сражениях за награды!</p>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <!-- Раздел: Коммьюнити -->
-        <section id="community-section" class="section">
-          <div class="section-container">
-            <h2 class="section-title">🌐 Коммьюнити</h2>
-            <div class="community-content">
-              <!-- Вкладки коммьюнити -->
-              <div class="community-tabs">
-                <button class="community-tab active" data-tab="posts">
-                  <span class="tab-icon">📝</span>
-                  <span class="tab-label">Посты</span>
-                </button>
-                <button class="community-tab" data-tab="chat">
-                  <span class="tab-icon">💬</span>
-                  <span class="tab-label">Чат</span>
-                </button>
-                <button class="community-tab" data-tab="guides">
-                  <span class="tab-icon">📚</span>
-                  <span class="tab-label">Гайды</span>
-                </button>
-              </div>
-
-              <!-- Вкладка Посты -->
-              <div class="community-tab-content active" id="posts-tab">
-                <!-- Кнопка создания поста (только для админа) -->
-                <div class="admin-post-create-btn-container" id="admin-post-create-btn-container" style="display: none;">
-                  <button class="btn-primary" id="create-post-btn">➕ Создать пост</button>
-                </div>
-                <div class="community-posts-list" id="community-posts-list">
-                  <!-- Посты будут добавлены через JS -->
-                </div>
-                <div class="community-empty-state" id="posts-empty-state" style="display: none;">
-                  <div class="empty-icon">📝</div>
-                  <div class="empty-text">Пока нет постов</div>
-                </div>
-              </div>
-
-              <!-- Вкладка Чат -->
-              <div class="community-tab-content" id="chat-tab">
-                <div class="global-chat-header">
-                  <div class="global-chat-icon">🌐</div>
-                  <div class="global-chat-title">Глобальный всеигровой чат</div>
-                  <div class="chat-header-actions">
-                    <button class="chat-fullscreen-btn" id="chat-fullscreen-btn" title="Открыть на весь экран">⛶</button>
-                    <button class="chat-fullscreen-close-btn" id="chat-fullscreen-close-btn" title="Выйти из полноэкранного режима" style="display: none;">✕</button>
-                  </div>
-                </div>
-                <div class="global-chat-container">
-                  <div class="chat-messages" id="chat-messages">
-                    <!-- Сообщения будут добавлены через JS -->
-                  </div>
-                  <div class="chat-input-container">
-                    <input type="text" class="chat-input" id="chat-input" placeholder="Написать сообщение..." maxlength="500" />
-                    <button class="chat-send-btn" id="chat-send-btn">Отправить</button>
-                  </div>
-                </div>
-              </div>
-
-              <!-- Вкладка Гайды -->
-              <div class="community-tab-content" id="guides-tab">
-                <div class="guides-list" id="guides-list">
-                  <div class="guide-card">
-                    <div class="guide-icon">📖</div>
-                    <div class="guide-content">
-                      <h3 class="guide-title">Начало игры</h3>
-                      <p class="guide-description">Узнайте основы игры, как собирать колоду и участвовать в боях</p>
-                    </div>
-                  </div>
-                  <div class="guide-card">
-                    <div class="guide-icon">⚔️</div>
-                    <div class="guide-content">
-                      <h3 class="guide-title">Стратегии боя</h3>
-                      <p class="guide-description">Изучите различные тактики и стратегии для победы в сражениях</p>
-                    </div>
-                  </div>
-                  <div class="guide-card">
-                    <div class="guide-icon">🃏</div>
-                    <div class="guide-content">
-                      <h3 class="guide-title">Сборка колоды</h3>
-                      <p class="guide-description">Советы по созданию эффективных колод для разных режимов игры</p>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-            </div>
-          </div>
-        </section>
-      </main>
-
-      <!-- Нижняя панель навигации -->
-      <nav class="bottom-nav">
-        <button class="nav-item" data-section="shop">
-          <span class="nav-icon">🛒</span>
-          <span class="nav-label">Магазин</span>
-        </button>
-        <button class="nav-item" data-section="collection">
-          <span class="nav-icon">📚</span>
-          <span class="nav-label">Коллекция</span>
-        </button>
-        <button class="nav-item active" data-section="arena">
-          <span class="nav-icon">⚔️</span>
-          <span class="nav-label">Арена</span>
-        </button>
-        <button class="nav-item" data-section="squads">
-          <span class="nav-icon">👥</span>
-          <span class="nav-label">Сквады</span>
-        </button>
-        <button class="nav-item" data-section="community">
-          <span class="nav-icon">🌐</span>
-          <span class="nav-label">Коммьюнити</span>
-        </button>
-      </nav>
-    </div>
-
-    <!-- Модальное окно выбора режима боя -->
-    <div class="modal-overlay" id="battle-mode-modal" style="display: none;">
-      <div class="modal-content modal-large">
-        <div class="modal-header">
-          <h2>⚔️ Выбор режима боя</h2>
-          <button class="modal-close" data-modal="battle-mode">✕</button>
-        </div>
-        <div class="modal-body">
-          <div class="battle-modes">
-            <label class="battle-mode-item" data-mode="classic" data-match-type="ranked">
-              <input type="radio" name="battle-mode" value="classic" class="mode-radio">
-              <div class="mode-checkmark"></div>
-              <div class="mode-content">
-                <div class="mode-icon">⚔️</div>
-                <div class="mode-info">
-                  <div class="mode-name">Классика</div>
-                  <div class="mode-time">Время игры: 1-3 минуты</div>
-                  <div class="mode-desc">Классический режим - отличный выбор для быстрой игры, где стоит полагаться на свой выбор карт и умение составлять колоды</div>
-                </div>
-              </div>
-            </label>
-            <label class="battle-mode-item" data-mode="siege" data-match-type="ranked">
-              <input type="radio" name="battle-mode" value="siege" class="mode-radio">
-              <div class="mode-checkmark"></div>
-              <div class="mode-content">
-                <div class="mode-icon">🏰</div>
-                <div class="mode-info">
-                  <div class="mode-name">Осада</div>
-                  <div class="mode-time">Время игры: 3-5 минут</div>
-                  <div class="mode-desc">Осада - режим для любителей стратегического планирования. Здесь победа - не только карты, но и тактика! И награды больше</div>
-                </div>
-              </div>
-            </label>
-            <label class="battle-mode-item" data-mode="fortune" data-match-type="ranked">
-              <input type="radio" name="battle-mode" value="fortune" class="mode-radio">
-              <div class="mode-checkmark"></div>
-              <div class="mode-content">
-                <div class="mode-icon">🎲</div>
-                <div class="mode-info">
-                  <div class="mode-name">Фортуна</div>
-                  <div class="mode-time">Время игры: 1-3 минуты</div>
-                  <div class="mode-desc">Фортуна - гейммод для способных поймать удачу за хвост. Колода формируется случайно из ваших карт. Много веселья и приятной интриги</div>
-                </div>
-              </div>
-            </label>
-            <label class="battle-mode-item" data-mode="dungeon" data-match-type="ranked">
-              <input type="radio" name="battle-mode" value="dungeon" class="mode-radio">
-              <div class="mode-checkmark"></div>
-              <div class="mode-content">
-                <div class="mode-icon">🕳️</div>
-                <div class="mode-info">
-                  <div class="mode-name">Подземелье</div>
-                  <div class="mode-time">Время игры: от 1 минуты</div>
-                  <div class="mode-desc">Подземелье - сотни вражеских карт, потерянных при вайпе. Прореди их ряды и получи награды!</div>
-                </div>
-              </div>
-            </label>
-            <label class="battle-mode-item" data-mode="classic" data-match-type="training">
-              <input type="radio" name="battle-mode" value="training" class="mode-radio">
-              <div class="mode-checkmark"></div>
-              <div class="mode-content">
-                <div class="mode-icon">🤖</div>
-                <div class="mode-info">
-                  <div class="mode-name">Тренировка с ИИ</div>
-                  <div class="mode-time">Время игры: 1-3 минуты</div>
-                  <div class="mode-desc">Тренируйтесь против искусственного интеллекта без затрат энергии и наград. Идеально для проверки новых колод!</div>
-                </div>
-              </div>
-            </label>
-          </div>
-          
-          <div class="difficulty-selection" id="difficulty-selection" style="display: none; margin-top: 20px; padding: 12px; background: rgba(255, 255, 255, 0.05); border-radius: 12px;">
-            <div class="selection-title" style="margin-bottom: 12px; font-weight: 700; font-size: 15px;">Уровень сложности</div>
-            <div class="difficulty-options" style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px;">
-              <label class="difficulty-item" data-difficulty="easy" style="cursor: pointer;">
-                <input type="radio" name="battle-difficulty" value="easy" class="difficulty-radio">
-                <div class="difficulty-card" style="padding: 10px; border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; text-align: center;">
-                  Легкий
-                </div>
-              </label>
-              <label class="difficulty-item" data-difficulty="normal" style="cursor: pointer;">
-                <input type="radio" name="battle-difficulty" value="normal" class="difficulty-radio">
-                <div class="difficulty-card" style="padding: 10px; border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; text-align: center;">
-                  Нормальный
-                </div>
-              </label>
-              <label class="difficulty-item" data-difficulty="hard" style="cursor: pointer;">
-                <input type="radio" name="battle-difficulty" value="hard" class="difficulty-radio">
-                <div class="difficulty-card" style="padding: 10px; border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; text-align: center;">
-                  Сложный
-                </div>
-              </label>
-              <label class="difficulty-item" data-difficulty="extreme" style="cursor: pointer;">
-                <input type="radio" name="battle-difficulty" value="extreme" class="difficulty-radio">
-                <div class="difficulty-card" style="padding: 10px; border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; text-align: center;">
-                  Экстрим
-                </div>
-              </label>
-            </div>
-          </div>
-
-          <div class="deck-selection" id="deck-selection" style="display: none;">
-            <div class="selection-title">Выбор колоды</div>
-            <div class="decks-list" id="decks-list">
-              <!-- Колоды будут загружены через JS -->
-            </div>
-          </div>
-          <div class="battle-play-footer" id="battle-play-footer" style="display: none;">
-            <button class="btn-primary btn-play-battle" id="play-battle-btn" disabled>ИГРАТЬ</button>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Модальное окно тренировки/друзей -->
-    <div class="modal-overlay" id="training-modal" style="display: none;">
-      <div class="modal-content modal-large">
-        <div class="modal-header">
-          <h2>🎯 Тренировка и дружеские бои</h2>
-          <button class="modal-close" data-modal="training">✕</button>
-        </div>
-        <div class="modal-body">
-          <div class="training-notice">
-            <p>⚠️ За бои через тренировку игрок не получит награды, но и энергия не потратится</p>
-          </div>
-          <div class="training-options" id="training-options">
-            <div class="training-option" id="training-friends">
-              <div class="option-icon">👥</div>
-              <div class="option-name">Игра с друзьями</div>
-              <div class="option-desc">Выберите друга для дружеского боя</div>
-            </div>
-            <div class="training-option" id="training-bot">
-              <div class="option-icon">🤖</div>
-              <div class="option-name">Бот-тренер</div>
-              <div class="option-desc">Тренируйтесь против ИИ</div>
-            </div>
-          </div>
-          
-          <!-- Выбор режима для друзей -->
-          <div class="friends-mode-selection" id="friends-mode-selection" style="display: none;">
-            <div class="selection-title">Выбор режима</div>
-            <div class="training-modes-list">
-              <label class="training-mode-item" data-mode="classic">
-                <input type="radio" name="training-mode" value="classic" class="training-mode-radio">
-                <div class="training-mode-checkmark"></div>
-                <div class="training-mode-content">
-                  <div class="training-mode-icon">⚔️</div>
-                  <div class="training-mode-info">
-                    <div class="training-mode-name">Классика</div>
-                    <div class="training-mode-time">Время игры: 1-3 минуты</div>
-                  </div>
-                </div>
-              </label>
-              <label class="training-mode-item" data-mode="siege">
-                <input type="radio" name="training-mode" value="siege" class="training-mode-radio">
-                <div class="training-mode-checkmark"></div>
-                <div class="training-mode-content">
-                  <div class="training-mode-icon">🏰</div>
-                  <div class="training-mode-info">
-                    <div class="training-mode-name">Осада</div>
-                    <div class="training-mode-time">Время игры: 3-5 минут</div>
-                  </div>
-                </div>
-              </label>
-              <label class="training-mode-item" data-mode="fortune">
-                <input type="radio" name="training-mode" value="fortune" class="training-mode-radio">
-                <div class="training-mode-checkmark"></div>
-                <div class="training-mode-content">
-                  <div class="training-mode-icon">🎲</div>
-                  <div class="training-mode-info">
-                    <div class="training-mode-name">Фортуна</div>
-                    <div class="training-mode-time">Время игры: 1-3 минуты</div>
-                  </div>
-                </div>
-              </label>
-            </div>
-            <div class="friends-selection" id="friends-selection" style="display: none;">
-              <div class="selection-title">Выбор друга</div>
-              <div class="friends-list">
-                <div class="friend-item">Друг #1</div>
-                <div class="friend-item">Друг #2</div>
-                <div class="friend-item">Друг #3</div>
-              </div>
-            </div>
-          </div>
-          
-          <!-- Выбор уровня сложности для бота -->
-          <div class="bot-difficulty" id="bot-difficulty" style="display: none;">
-            <div class="selection-title">Выбор уровня сложности</div>
-            <label class="difficulty-item" data-difficulty="easy">
-              <input type="radio" name="difficulty" value="easy" class="difficulty-radio">
-              <div class="difficulty-checkmark"></div>
-              <div class="difficulty-content">
-                <div class="difficulty-name">Легкий</div>
-                <div class="difficulty-desc">Бот играет без каких-либо бонусов. Машина не всегда умнее, и без бонусов может и проиграть, но для тренировки сойдет</div>
-              </div>
-            </label>
-            <label class="difficulty-item" data-difficulty="normal">
-              <input type="radio" name="difficulty" value="normal" class="difficulty-radio">
-              <div class="difficulty-checkmark"></div>
-              <div class="difficulty-content">
-                <div class="difficulty-name">Нормальный</div>
-                <div class="difficulty-desc">Бот получает ряд преимуществ. Самое то для тех, кто уже успел набраться опыта в сражениях</div>
-              </div>
-            </label>
-            <label class="difficulty-item" data-difficulty="hard">
-              <input type="radio" name="difficulty" value="hard" class="difficulty-radio">
-              <div class="difficulty-checkmark"></div>
-              <div class="difficulty-content">
-                <div class="difficulty-name">Сложный</div>
-                <div class="difficulty-desc">Бонусов боту больше, а игрок получает не то, чтобы слишком, но все же неприятные дебаффы</div>
-              </div>
-            </label>
-            <label class="difficulty-item" data-difficulty="extreme">
-              <input type="radio" name="difficulty" value="extreme" class="difficulty-radio">
-              <div class="difficulty-checkmark"></div>
-              <div class="difficulty-content">
-                <div class="difficulty-name">Экстрим</div>
-                <div class="difficulty-desc">Мы дали боту все, что только можно, а у игрока все задали. Эта игра точно вам запомнится</div>
-              </div>
-            </label>
-          </div>
-          
-          <!-- Кнопка "Играть" для тренировки -->
-          <div class="training-play-footer" id="training-play-footer" style="display: none;">
-            <button class="btn-primary btn-play-training" id="play-training-btn" disabled>ИГРАТЬ</button>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Модальное окно энергии -->
-    <div class="modal-overlay" id="energy-modal" style="display: none;">
-      <div class="modal-content">
-        <div class="modal-header">
-          <h2>⚡ Энергия</h2>
-          <button class="modal-close" data-modal="energy">✕</button>
-        </div>
-        <div class="modal-body">
-          <div class="energy-info">
-            <div class="energy-current">
-              <span class="energy-label">Текущая энергия:</span>
-              <span class="energy-value" id="energy-current">5</span>
-              <span class="energy-max" id="energy-max">/ 5</span>
-            </div>
-            <div class="energy-cd">
-              <span class="cd-label">Восстановление:</span>
-              <span class="cd-value" id="energy-cd">1 час</span>
-            </div>
-            <div class="energy-reset">
-              <button class="btn-secondary" id="energy-reset-btn">Сбросить КД (5 💎 за энергию)</button>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Модальное окно информации о ресурсах -->
-    <div class="modal-overlay" id="resource-info-modal" style="display: none;">
-      <div class="modal-content">
-        <div class="modal-header">
-          <h2 id="resource-info-title">💎 Gems</h2>
-          <button class="modal-close" onclick="document.getElementById('resource-info-modal').style.display='none'">✕</button>
-        </div>
-        <div class="modal-body">
-          <div id="resource-info-content">
-            <p>Информация о ресурсе...</p>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Модальное окно информации об арене/энергии -->
-    <div class="modal-overlay" id="info-tooltip-modal" style="display: none;">
-      <div class="modal-content modal-small">
-        <div class="modal-header">
-          <h2 id="info-tooltip-title">Информация</h2>
-          <button class="modal-close" onclick="document.getElementById('info-tooltip-modal').style.display='none'">✕</button>
-        </div>
-        <div class="modal-body">
-          <div id="info-tooltip-content">
-            <p>Информация...</p>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Кастомное уведомление -->
-    <div class="game-notification" id="game-notification" style="display: none;">
-      <div class="notification-content">
-        <div class="notification-icon" id="notification-icon">ℹ️</div>
-        <div class="notification-text" id="notification-text"></div>
-      </div>
-    </div>
-
-    <!-- Кастомное модальное окно для alert -->
-    <div class="modal-overlay game-alert-modal" id="game-alert-modal" style="display: none;">
-      <div class="game-alert-content">
-        <div class="game-alert-header">
-          <div class="game-alert-icon" id="game-alert-icon">ℹ️</div>
-          <button class="game-alert-close" id="game-alert-close">✕</button>
-        </div>
-        <div class="game-alert-body">
-          <div class="game-alert-message" id="game-alert-message"></div>
-        </div>
-        <div class="game-alert-footer">
-          <button class="game-alert-btn" id="game-alert-ok">OK</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- Кастомное модальное окно для confirm -->
-    <div class="modal-overlay game-confirm-modal" id="game-confirm-modal" style="display: none;">
-      <div class="game-confirm-content">
-        <div class="game-confirm-header">
-          <div class="game-confirm-icon" id="game-confirm-icon">⚠️</div>
-          <button class="game-confirm-close" id="game-confirm-close">✕</button>
-        </div>
-        <div class="game-confirm-body">
-          <div class="game-confirm-message" id="game-confirm-message"></div>
-        </div>
-        <div class="game-confirm-footer">
-          <button class="game-confirm-btn game-confirm-btn-cancel" id="game-confirm-cancel">Отмена</button>
-          <button class="game-confirm-btn game-confirm-btn-confirm" id="game-confirm-ok">Подтвердить</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- Модальное окно выбора метода оплаты -->
-    <div class="modal-overlay payment-method-modal-overlay" id="payment-method-modal" style="display: none;">
-      <div class="payment-method-modal-content">
-        <div class="payment-method-modal-header">
-          <h2 class="payment-method-modal-title">Выберите способ оплаты</h2>
-          <button class="payment-method-modal-close" id="payment-method-modal-close">✕</button>
-        </div>
-        <div class="payment-method-modal-body">
-          <!-- Опция 1: Telegram Stars -->
-          <div class="payment-method-option payment-method-stars" data-method="stars">
-            <div class="payment-method-icon-wrapper">
-              <div class="payment-method-icon stars-icon">⭐</div>
-            </div>
-            <div class="payment-method-info">
-              <div class="payment-method-name">Оплатить Stars</div>
-              <div class="payment-method-price" id="payment-method-stars-price">
-                <span class="payment-price-value">—</span>
-                <span class="payment-price-label"> Stars</span>
-              </div>
-            </div>
-            <div class="payment-method-checkmark">✓</div>
-          </div>
-
-          <!-- Опция 2: Банковская карта (Юкасса) -->
-          <div class="payment-method-option payment-method-card" data-method="yookassa">
-            <div class="payment-method-badges">
-              <span class="payment-method-badge badge-profitable">Выгодно</span>
-              <span class="payment-method-badge badge-recommended">Рекомендуем</span>
-            </div>
-            <div class="payment-method-icon-wrapper">
-              <div class="payment-method-icon card-icon">💳</div>
-            </div>
-            <div class="payment-method-info">
-              <div class="payment-method-name">Банковская карта</div>
-              <div class="payment-method-price" id="payment-method-card-price">
-                <span class="payment-price-value">—</span>
-                <span class="payment-price-label"> ₽</span>
-              </div>
-            </div>
-            <div class="payment-method-checkmark">✓</div>
-          </div>
-        </div>
-        <div class="payment-method-modal-footer">
-          <button class="payment-method-cancel-btn" id="payment-method-cancel-btn">Отмена</button>
-          <div class="payment-method-footer-links">
-            <a href="https://telegra.ph/Politika-vozvrata-sredstv-Refund-Policy-12-01" target="_blank" class="payment-method-refund-link">Политика возвратов</a>
-            <a href="https://telegra.ph/Politika-vozvrata-sredstv-Refund-Policy-12-01" target="_blank" class="payment-method-refund-link">Условия возврата</a>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Модальное окно инструкций по оплате через Telegram Stars -->
-    <div class="modal-overlay stars-payment-instruction-modal" id="stars-payment-instruction-modal" style="display: none;">
-      <div class="stars-payment-instruction-content">
-        <div class="stars-payment-instruction-header">
-          <div class="stars-payment-instruction-icon">⭐</div>
-          <h2 class="stars-payment-instruction-title">Оплата через Telegram Stars</h2>
-          <button class="stars-payment-instruction-close" id="stars-payment-instruction-close">✕</button>
-        </div>
-        <div class="stars-payment-instruction-body">
-          <div class="stars-payment-instruction-main">
-            <p class="stars-payment-instruction-text">
-              Инвойс для оплаты отправлен в чат с ботом. Пожалуйста, проверьте сообщения в Telegram.
-            </p>
-            <div class="stars-payment-instruction-steps">
-              <div class="instruction-step">
-                <div class="step-number">1</div>
-                <div class="step-text">Откройте чат с ботом в Telegram</div>
-              </div>
-              <div class="instruction-step">
-                <div class="step-number">2</div>
-                <div class="step-text">Найдите сообщение с инвойсом и нажмите "Оплатить"</div>
-              </div>
-              <div class="instruction-step">
-                <div class="step-number">3</div>
-                <div class="step-text">Подтвердите оплату Telegram Stars</div>
-              </div>
-              <div class="instruction-step">
-                <div class="step-number">4</div>
-                <div class="step-text">Дождитесь обработки платежа</div>
-              </div>
-            </div>
-          </div>
-          <div class="stars-payment-instruction-important">
-            <div class="important-icon">⚠️</div>
-            <div class="important-content">
-              <div class="important-title">Важно!</div>
-              <div class="important-text">
-                Если после оплаты вы не получили товар, <strong>закройте и снова откройте приложение</strong>.
-                Награды будут начислены автоматически после перезапуска.
-              </div>
-            </div>
-          </div>
-        </div>
-        <div class="stars-payment-instruction-footer">
-          <button class="btn-primary stars-payment-instruction-btn" id="stars-payment-instruction-ok-btn">Понятно</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- Страница ожидания платежа -->
-    <div class="modal-overlay" id="payment-waiting-modal" style="display: none;">
-      <div class="modal-content" style="max-width: 400px; text-align: center;">
-        <div class="modal-header">
-          <h2>💳 Ожидание оплаты</h2>
-        </div>
-        <div class="modal-body">
-          <div style="padding: 30px 20px;">
-            <div style="font-size: 64px; margin-bottom: 20px; animation: pulse 2s infinite;">⏳</div>
-            <h3 style="margin-bottom: 15px;">Ожидание подтверждения платежа</h3>
-            <p style="color: #666; margin-bottom: 20px;" id="payment-waiting-text">
-              Пожалуйста, завершите оплату на странице YooKassa.<br>
-              После успешной оплаты вы автоматически вернетесь сюда.
-            </p>
-            <div class="payment-status" id="payment-status" style="display: none;">
-              <div class="payment-status-icon" id="payment-status-icon"></div>
-              <div class="payment-status-text" id="payment-status-text"></div>
-            </div>
-            <div style="margin-top: 20px;">
-              <button class="btn-secondary" id="payment-waiting-close" style="display: none;">Закрыть</button>
-              <button class="btn-secondary" id="payment-waiting-cancel" style="display: block; margin-top: 12px;">Отмена</button>
-              <div style="margin-top: 16px; text-align: center;">
-                <a href="https://telegra.ph/Politika-vozvrata-sredstv-Refund-Policy-12-01" target="_blank" style="color: var(--chibi-text-muted); font-size: 12px; text-decoration: underline;">Политика возвратов</a>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Всплывающее окно успешной покупки -->
-    <div class="modal-overlay purchase-success-modal" id="purchase-success-modal" style="display: none;">
-      <div class="modal-content purchase-success-content">
-        <div class="purchase-success-header">
-          <div class="purchase-success-icon">🎉</div>
-          <h2 class="purchase-success-title">Покупка успешна!</h2>
-        </div>
-        <div class="purchase-success-body">
-          <div class="purchase-success-message" id="purchase-success-message">
-            Ваш платеж успешно обработан
-          </div>
-          <div class="purchase-rewards-container" id="purchase-rewards-container">
-            <!-- Награды будут добавлены динамически -->
-          </div>
-        </div>
-        <div class="purchase-success-footer">
-          <button class="btn-primary purchase-success-btn" id="purchase-success-ok-btn">Отлично!</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- Модальное окно промокодов -->
-    <div class="modal-overlay" id="promocode-modal" style="display: none;">
-      <div class="modal-content">
-        <div class="modal-header">
-          <h2>🎟️ Промокод</h2>
-          <button class="modal-close" data-modal="promocode">✕</button>
-        </div>
-        <div class="modal-body">
-          <div class="promocode-input-wrapper">
-            <input type="text" class="promocode-input" id="promocode-input" placeholder="Введите промокод" maxlength="50" />
-            <button class="btn-primary" id="promocode-submit-btn">Активировать</button>
-          </div>
-          <div class="promocode-result" id="promocode-result" style="display: none;"></div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Модальное окно создания поста (только для админа) -->
-    <div class="modal-overlay" id="create-post-modal" style="display: none;">
-      <div class="modal-content modal-large">
-        <div class="modal-header">
-          <h2>📝 Создать пост</h2>
-          <button class="modal-close" data-modal="create-post">✕</button>
-        </div>
-        <div class="modal-body">
-          <div class="post-form">
-            <div class="form-group">
-              <label for="post-title-input">Заголовок</label>
-              <input type="text" class="form-input" id="post-title-input" placeholder="Введите заголовок поста" maxlength="200" />
-            </div>
-            <div class="form-group">
-              <label for="post-content-input">Содержание</label>
-              <textarea class="form-textarea" id="post-content-input" placeholder="Введите текст поста" rows="8" maxlength="5000"></textarea>
-              <div class="form-char-count">
-                <span id="post-content-char-count">0</span> / 5000
-              </div>
-            </div>
-            <div class="form-group">
-              <label for="post-photo-input">Изображение (file_id из Telegram)</label>
-              <input type="text" class="form-input" id="post-photo-input" placeholder="Опционально: file_id изображения" />
-              <small class="form-hint">Отправьте изображение боту и скопируйте file_id</small>
-            </div>
-            <div class="form-actions">
-              <button class="btn-secondary" data-modal="create-post">Отмена</button>
-              <button class="btn-primary" id="post-submit-btn">Опубликовать</button>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Модальное окно кубика -->
-    <div class="modal-overlay dice-modal-overlay" id="dice-modal" style="display: none;">
-      <div class="dice-modal-content">
-        <div class="dice-modal-header">
-          <h2 class="dice-modal-title">🎲 Счастливый кубик</h2>
-          <button class="dice-modal-close" id="dice-modal-close">✕</button>
-        </div>
-        <div class="dice-modal-body">
-          <div class="dice-modal-dice">
-            <button class="dice-modal-btn" id="dice-modal-btn" disabled>
-              <div class="dice-modal-icon" id="dice-modal-icon">🎲</div>
-              <div class="dice-modal-result" id="dice-modal-result" style="display: none;"></div>
+          <div style={{padding:'5px 16px 10px',display:'flex',gap:'7px',flexShrink:0}}>
+            <input value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>e.key==='Enter'&&sendChat(input)}
+              placeholder={isMid?'Спрашивай...':'Задай вопрос Юни...'}
+              style={{flex:1,background:T.bgCard,border:`1px solid ${isMid?T.midBorder:T.aiBorder}`,borderRadius:'11px',padding:'9px 12px',color:T.white,fontSize:'12px',fontFamily:"'Inter',sans-serif",outline:'none'}}/>
+            <button onClick={()=>sendChat(input)} style={{width:'38px',height:'38px',borderRadius:'11px',background:`linear-gradient(135deg,${mColor}bb,${mColor})`,border:'none',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 7L12 7M8 3L12 7L8 11" stroke="white" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg>
             </button>
           </div>
-          <div class="dice-modal-rewards">
-            <div class="dice-reward-item">
-              <span class="reward-value">6</span>
-              <span class="reward-text">= 5 💎</span>
-            </div>
-            <div class="dice-reward-item">
-              <span class="reward-value">5</span>
-              <span class="reward-text">= 50 💰</span>
-            </div>
-            <div class="dice-reward-item">
-              <span class="reward-value">4</span>
-              <span class="reward-text">= 40 💰</span>
-            </div>
-            <div class="dice-reward-item">
-              <span class="reward-value">3</span>
-              <span class="reward-text">= 30 💰</span>
-            </div>
-            <div class="dice-reward-item">
-              <span class="reward-value">2</span>
-              <span class="reward-text">= 20 💰</span>
-            </div>
-            <div class="dice-reward-item">
-              <span class="reward-value">1</span>
-              <span class="reward-text">= 10 💰</span>
-            </div>
-          </div>
         </div>
-      </div>
+      )}
     </div>
-    
-    <!-- Модальное окно предложения включить уведомления -->
-    <div class="modal-overlay dice-notification-prompt-overlay" id="dice-notification-prompt" style="display: none;">
-      <div class="dice-notification-prompt-content">
-        <div class="dice-notification-prompt-icon">🔔</div>
-        <h3 class="dice-notification-prompt-title">Включить уведомления?</h3>
-        <p class="dice-notification-prompt-text">Получай уведомления, когда кубик снова будет готов к броску!</p>
-        <div class="dice-notification-prompt-buttons">
-          <button class="dice-notification-prompt-btn dice-notification-prompt-btn-yes" id="dice-notification-prompt-yes">Включить</button>
-          <button class="dice-notification-prompt-btn dice-notification-prompt-btn-no" id="dice-notification-prompt-no">Не сейчас</button>
-        </div>
-      </div>
-    </div>
-    
-    <!-- Модальное окно приветствия -->
-    <div class="modal-overlay welcome-modal-overlay" id="welcome-modal" style="display: none;">
-      <div class="welcome-modal-content">
-        <!-- Этап 1: Выдача карты -->
-        <div class="welcome-step" id="welcome-step-card" style="display: none;">
-          <div class="welcome-card-animation">
-            <div class="welcome-card-container" id="welcome-card-container">
-              <div class="welcome-card-image" id="welcome-card-image"></div>
-              <div class="welcome-card-name" id="welcome-card-name"></div>
-              <div class="welcome-card-rarity start" id="welcome-card-rarity">Стартовая</div>
-            </div>
-          </div>
-          <h2 class="welcome-title welcome-title-glow">Добро пожаловать в ChibiArena!</h2>
-          <p class="welcome-text welcome-text-sparkle">Твоя первая карта уже ждет тебя!</p>
-          <button class="welcome-btn" id="welcome-card-next">Продолжить</button>
-        </div>
-        
-        <!-- Этап 2: Инструктаж по основным разделам -->
-        <div class="welcome-step" id="welcome-step-tutorial" style="display: none;">
-          <h2 class="welcome-title">Основные разделы</h2>
-          <div class="welcome-tutorial-content">
-            <div class="tutorial-item">
-              <div class="tutorial-icon">🏟️</div>
-              <div class="tutorial-text">
-                <strong>Арена</strong> - открывай кейсы, бросай кубик, получай награды
-              </div>
-            </div>
-            <div class="tutorial-item">
-              <div class="tutorial-icon">🃏</div>
-              <div class="tutorial-text">
-                <strong>Коллекция</strong> - собирай карты, создавай колоды, улучшай карты
-              </div>
-            </div>
-            <div class="tutorial-item">
-              <div class="tutorial-icon">💎</div>
-              <div class="tutorial-text">
-                <strong>Магазин</strong> - покупай гемы, кейсы и эксклюзивные предметы
-              </div>
-            </div>
-            <div class="tutorial-item">
-              <div class="tutorial-icon">👥</div>
-              <div class="tutorial-text">
-                <strong>Сквады</strong> - объединяйся с друзьями в команды
-              </div>
-            </div>
-            <div class="tutorial-item">
-              <div class="tutorial-icon">🌐</div>
-              <div class="tutorial-text">
-                <strong>Коммьюнити</strong> - общайся, делись постами, находи друзей
-              </div>
-            </div>
-          </div>
-          <button class="welcome-btn" id="welcome-tutorial-next">Понятно!</button>
-        </div>
-        
-        <!-- Этап 3: Приветственный подарок -->
-        <div class="welcome-step" id="welcome-step-gift" style="display: none;">
-          <h2 class="welcome-title">Приветственный подарок!</h2>
-          <div class="welcome-gift-animation">
-            <div class="gift-item" id="gift-gems">
-              <div class="gift-icon">💎</div>
-              <div class="gift-amount" id="gift-gems-amount">+50</div>
-            </div>
-            <div class="gift-item" id="gift-coins">
-              <div class="gift-icon">💰</div>
-              <div class="gift-amount" id="gift-coins-amount">+200</div>
-            </div>
-          </div>
-          <p class="welcome-text">Эти ресурсы помогут тебе начать путь к победе!</p>
-          <button class="welcome-btn" id="welcome-gift-next">Начать игру!</button>
-        </div>
-      </div>
-    </div>
+  );
+};
 
-    <!-- Модальное окно открытия кейса -->
-    <div class="modal-overlay" id="case-opening-modal" style="display: none;">
-      <div class="modal-content modal-large case-opening-content">
-        <div class="case-opening-header">
-          <h2 id="case-opening-title">Открытие кейса</h2>
-          <button class="modal-close" id="case-opening-close">✕</button>
-        </div>
-        <div class="case-opening-body">
-          <!-- Этап 1: Выбор кейса - уже выбран, показываем кейс -->
-          <div class="case-opening-stage" id="case-opening-stage-select">
-            <div class="case-display-container">
-              <div class="case-display" id="case-display">
-                <!-- Кейс будет отрисован здесь -->
-              </div>
-              <div class="case-tier-badge" id="case-tier-badge">T1</div>
-              <div class="case-stage-info" id="case-stage-info"></div>
-              <button class="case-open-btn" id="case-open-start-btn">Нажми, чтобы открыть</button>
-              <button class="case-skip-btn" id="case-skip-btn">Пропустить</button>
-            </div>
-          </div>
-          
-          <!-- Этап 2: 4 тапа -->
-          <div class="case-opening-stage" id="case-opening-stage-taps" style="display: none;">
-            <div class="case-display-container">
-              <div class="case-display case-display-tapping" id="case-display-tapping">
-                <!-- Кейс с анимацией -->
-              </div>
-              <div class="case-tier-badge" id="case-tier-badge-tapping">T1</div>
-              <div class="case-tap-counter">
-                <span id="case-tap-current">0</span> / 4
-              </div>
-              <div class="case-tap-hint" id="case-tap-hint">Нажимай на кейс, чтобы усилить его</div>
-              <div class="case-tap-indicators" id="case-tap-indicators">
-                <div class="tap-indicator"></div>
-                <div class="tap-indicator"></div>
-                <div class="tap-indicator"></div>
-                <div class="tap-indicator"></div>
-              </div>
-              <div class="case-upgrade-notification" id="case-upgrade-notification" style="display: none;">
-                ✨ Качество повышено! ✨
-              </div>
-              <button class="case-skip-btn" id="case-skip-btn-taps">Пропустить</button>
-            </div>
-          </div>
-          
-          <!-- Этап 3: Показ наград -->
-          <div class="case-opening-stage" id="case-opening-stage-rewards" style="display: none;">
-            <div class="case-rewards-container">
-              <h3 class="case-rewards-title">🎉 Ваши награды:</h3>
-              <div class="case-rewards-list" id="case-rewards-list">
-                <!-- Награды будут добавлены через JS -->
-              </div>
-              <div class="case-rewards-note" id="case-rewards-note"></div>
-              <button class="case-close-btn" id="case-rewards-close-btn">Закрыть</button>
-            </div>
-          </div>
-        </div>
-      </div>
+// ═══════════════════════════════════════════
+// PLACEHOLDER
+// ═══════════════════════════════════════════
+const PlaceholderScreen = ({label}) => (
+  <div style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:'12px',padding:'32px'}}>
+    <div style={{width:'64px',height:'64px',borderRadius:'20px',background:T.bgCard,border:`1px solid ${T.purple1}`,display:'flex',alignItems:'center',justifyContent:'center'}}>
+      <svg width="28" height="28" viewBox="0 0 28 28" fill="none"><rect x="4" y="4" width="20" height="20" rx="4" stroke={T.grey3} strokeWidth="1.5" strokeDasharray="4 3"/></svg>
     </div>
+    <span style={{fontSize:'16px',fontWeight:'700',color:T.grey2,fontFamily:"'Exo 2',sans-serif"}}>{label}</span>
+    <span style={{fontSize:'12px',color:T.grey3,textAlign:'center'}}>Раздел в разработке</span>
+  </div>
+);
 
-  </body>
+// ═══════════════════════════════════════════
+// ROOT APP
+// ═══════════════════════════════════════════
+const App = () => {
+  const [navTab,       setNavTab]       = React.useState(2);
+  const [showMenu,     setShowMenu]     = React.useState(false);
+  const [showSettings, setShowSettings] = React.useState(false);
+  const [showAI,       setShowAI]       = React.useState(false);
+  const [profile,      setProfile]      = React.useState(null);
+
+  React.useEffect(()=>{
+    const tg = window.Telegram?.WebApp;
+    if (tg) {
+      tg.ready();
+      tg.expand();
+      try { tg.setHeaderColor?.('#0f0a1a'); } catch(e){}
+      try { tg.setBackgroundColor?.('#0f0a1a'); } catch(e){}
+    }
+    window.loadProfile().then(data => { if(data) setProfile(data); });
+  },[]);
+
+  const displayName = profile?.custom_nickname || profile?.first_name || profile?.username || 'ExtraArena';
+  const openSettings = () => { setShowMenu(false); setTimeout(()=>setShowSettings(true),120); };
+
+  return (
+    <div style={{width:'100%',height:'100%',background:T.bg,display:'flex',flexDirection:'column',position:'relative',overflow:'hidden'}}>
+      <TopBar
+        title={showAI ? 'ИИ Аналитика' : displayName}
+        showBack={showAI}
+        onBack={()=>setShowAI(false)}
+        onMenu={!showAI ? ()=>setShowMenu(true) : null}
+        profile={profile}
+        extra={showAI ? (
+          <div style={{width:'28px',height:'28px',borderRadius:'8px',background:T.aiBg,border:`1px solid ${T.aiBorder}`,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="2.5" fill={T.ai}/><path d="M7 1v2M7 11v2M1 7h2M11 7h2" stroke={T.ai} strokeWidth="1.2" strokeLinecap="round"/></svg>
+          </div>
+        ) : null}
+      />
+
+      {/* Main content */}
+      <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden',minHeight:0}}>
+        {showAI ? (
+          <AIScreen onBack={()=>setShowAI(false)}/>
+        ) : navTab===2 ? (
+          <ArenaScreen onMenu={()=>setShowMenu(true)} onAI={()=>setShowAI(true)} profile={profile}/>
+        ) : (
+          <PlaceholderScreen label={['Магазин','Коллекция','','Скводы','Сообщество'][navTab]}/>
+        )}
+      </div>
+
+      {!showAI && <BottomNav active={navTab} onChange={setNavTab}/>}
+
+      {showMenu     && <MenuSheet    onClose={()=>setShowMenu(false)} onSettings={openSettings}/>}
+      {showSettings && <SettingsScreen onClose={()=>setShowSettings(false)}/>}
+    </div>
+  );
+};
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
 </html>
