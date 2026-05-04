@@ -114,10 +114,21 @@ window.toggleMusic = function(enabled) {
 };
 // ────────────────────────────────────────────────────────
 
+// ── Звук кнопок ─────────────────────────────────────────
+window.playClick = function() {
+  const snd = document.getElementById('btn-sound');
+  if (!snd || !window._musicEnabled) return;
+  try { snd.currentTime = 0; snd.volume = 0.55; snd.play().catch(()=>{}); } catch(e){}
+};
+// Глобальный обработчик — звук на каждую кнопку
+document.addEventListener('pointerdown', e => {
+  if (e.target.closest('button, [role="button"]')) window.playClick();
+}, {passive: true});
+// ────────────────────────────────────────────────────────
+
 document.addEventListener('DOMContentLoaded', () => {
   const cancelBtn = document.getElementById('cancelSearchBtn');
   if (cancelBtn) cancelBtn.onclick = window.cancelSearch;
-  // Пробуем запустить музыку сразу (может сработать на Android)
   window.startBgMusic();
 });
 
@@ -420,14 +431,15 @@ const SettingsScreen = ({onClose, profile}) => {
   const [music,  setMusic]  = React.useState(s.sound_music ?? true);
   const [sfx,    setSfx]    = React.useState(s.sound_sfx   ?? true);
   const [blockFr,setBlockFr]= React.useState(s.social_block_friend_requests ?? false);
-  const [nick,   setNick]   = React.useState(profile?.custom_nickname || '');
-  const [nickStatus, setNickStatus] = React.useState(null); // null | 'saving' | 'ok' | 'err'
+  const nickRef  = React.useRef(null);
+  const [nickStatus, setNickStatus] = React.useState(null); // null|'saving'|'ok'|'err'
   const nickChanged = profile?.nickname_changed || false;
 
   const saveNick = async () => {
-    if (!nick.trim() || nickStatus === 'saving') return;
+    const val = nickRef.current?.value?.trim() || '';
+    if (!val || nickStatus === 'saving') return;
     setNickStatus('saving');
-    const res = await window.saveNickname(nick.trim());
+    const res = await window.saveNickname(val);
     if (res?.success) {
       setNickStatus('ok');
       setTimeout(() => setNickStatus(null), 2000);
@@ -498,7 +510,8 @@ const SettingsScreen = ({onClose, profile}) => {
               <span style={{fontSize:'11px',color:nickChanged?T.grey2:T.orange,fontWeight:'600'}}>{nickChanged?'500 💎':'Бесплатно'}</span>
             </div>
             <div style={{display:'flex',gap:'8px'}}>
-              <input value={nick} onChange={e=>setNick(e.target.value)}
+              <input ref={nickRef}
+                defaultValue={profile?.custom_nickname || ''}
                 onKeyDown={e=>e.key==='Enter'&&saveNick()}
                 placeholder="Введите никнейм..."
                 maxLength={20}
@@ -597,10 +610,10 @@ const BattlePickSheet = ({onClose, profile}) => {
 // ═══════════════════════════════════════════
 // MENU SHEET
 // ═══════════════════════════════════════════
-const MenuSheet = ({onClose, onSettings}) => {
+const MenuSheet = ({onClose, onSettings, onMail}) => {
   const items = [
     {icon:'⚙️',label:'Настройки', wide:false, action:onSettings},
-    {icon:'✉️',label:'Почта',     wide:false, action:onClose},
+    {icon:'✉️',label:'Почта',     wide:false, action:onMail||onClose},
     {icon:'👥',label:'Друзья',    wide:false, action:onClose},
     {icon:'💬',label:'Поддержка', wide:true,  action:onClose},
     {icon:'ℹ️',label:'Информация',wide:true,  action:onClose},
@@ -638,7 +651,7 @@ const MenuSheet = ({onClose, onSettings}) => {
 // ═══════════════════════════════════════════
 // ARENA SCREEN
 // ═══════════════════════════════════════════
-const ArenaScreen = ({onMenu, onAI, onBattlePick, profile}) => {
+const ArenaScreen = ({onMenu, onAI, onBattlePick, onStartBattle, profile}) => {
   const [hasCases,    setHasCases]    = React.useState((profile?.keys || profile?.cases_count || 0) > 0);
   const [battleHover, setBattleHover] = React.useState(false);
   const [shineAnim,   setShineAnim]   = React.useState(false);
@@ -727,7 +740,7 @@ const ArenaScreen = ({onMenu, onAI, onBattlePick, profile}) => {
           onMouseLeave={()=>setBattleHover(false)}
           onTouchStart={()=>setBattleHover(true)}
           onTouchEnd={()=>setBattleHover(false)}
-          onClick={()=>window.startBattle(profile)}
+          onClick={()=>(onStartBattle||window.startBattle)(profile)}
           style={{flex:1,height:'60px',background:battleHover?`linear-gradient(135deg,${T.orangeLt},${T.orange})`:`linear-gradient(135deg,${T.orange},${T.orangeD})`,border:'none',borderRadius:'16px',color:'white',fontSize:'22px',fontWeight:'900',fontFamily:"'Exo 2',sans-serif",letterSpacing:'2px',cursor:'pointer',position:'relative',overflow:'hidden',boxShadow:battleHover?`0 10px 36px ${T.orange}88`:`0 5px 22px ${T.orange}44`,transform:battleHover?'translateY(-1px)':'none',transition:'all 0.15s'}}>
           В БОЙ
           {shineAnim && <div style={{position:'absolute',top:0,width:'35%',height:'100%',background:'linear-gradient(90deg,transparent,rgba(255,255,255,0.18),transparent)',transform:'skewX(-18deg)',pointerEvents:'none',animation:'shine 0.5s ease forwards'}}/>}
@@ -951,6 +964,265 @@ const PlaceholderScreen = ({label}) => (
 );
 
 // ═══════════════════════════════════════════
+// GAME MODE SHEET
+// ═══════════════════════════════════════════
+const GAME_MODES = [
+  {
+    id: 'classic',
+    icon: '⚔️',
+    label: 'Классика',
+    time: '3 минуты',
+    desc: 'Полноценная битва без спешки. Цена каждого хода — победа или поражение. Тактика решает всё.',
+    color: T.orange,
+    bg: `rgba(245,146,30,0.08)`,
+    border: `rgba(245,146,30,0.3)`,
+  },
+  {
+    id: 'blitz',
+    icon: '⚡',
+    label: 'Блиц',
+    time: '1 минута',
+    desc: 'Нет времени на раздумья — только инстинкты и скорость. Кто не успел, тот проиграл.',
+    color: '#a78bfa',
+    bg: `rgba(167,139,250,0.08)`,
+    border: `rgba(167,139,250,0.3)`,
+  },
+];
+
+const GameModeSheet = ({onClose, onConfirm}) => {
+  const [mode, setMode] = React.useState('classic');
+  const chosen = GAME_MODES.find(m => m.id === mode);
+  return (
+    <div style={{position:'absolute',inset:0,background:'rgba(5,3,14,0.78)',backdropFilter:'blur(10px)',zIndex:20,display:'flex',flexDirection:'column',justifyContent:'flex-end'}} onClick={onClose}>
+      <div onClick={e=>e.stopPropagation()} className="safe-pad-bottom"
+        style={{background:'linear-gradient(180deg,#1a1238 0%,#130d26 100%)',borderRadius:'24px 24px 0 0',padding:'16px 18px 24px',border:`1px solid ${T.purple1}`,borderBottom:'none',boxShadow:'0 -20px 60px rgba(0,0,0,0.6)',animation:'slideUp 0.28s cubic-bezier(0.32,0.72,0,1)'}}>
+        <div style={{width:'36px',height:'4px',borderRadius:'2px',background:T.purple2,margin:'0 auto 16px'}}/>
+        <div style={{fontSize:'18px',fontWeight:'900',color:T.white,fontFamily:"'Exo 2',sans-serif",marginBottom:'14px'}}>Выбери режим</div>
+
+        <div style={{display:'flex',flexDirection:'column',gap:'10px',marginBottom:'18px'}}>
+          {GAME_MODES.map(m => (
+            <button key={m.id} onClick={()=>setMode(m.id)}
+              style={{display:'flex',gap:'14px',padding:'14px 16px',background:mode===m.id?m.bg:T.bgCard,border:`1.5px solid ${mode===m.id?m.color:T.purple1}`,borderRadius:'16px',cursor:'pointer',textAlign:'left',transition:'all 0.15s',position:'relative',overflow:'hidden'}}>
+              {mode===m.id && <div style={{position:'absolute',top:0,left:0,right:0,height:'2px',background:`linear-gradient(90deg,transparent,${m.color},transparent)`}}/>}
+              <div style={{width:'44px',height:'44px',borderRadius:'12px',background:mode===m.id?`${m.color}20`:T.purple1,border:`1px solid ${mode===m.id?m.color:T.purple2}`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'22px',flexShrink:0}}>
+                {m.icon}
+              </div>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{display:'flex',alignItems:'center',gap:'8px',marginBottom:'3px'}}>
+                  <span style={{fontSize:'15px',fontWeight:'800',color:mode===m.id?m.color:T.white,fontFamily:"'Exo 2',sans-serif"}}>{m.label}</span>
+                  <span style={{fontSize:'10px',color:mode===m.id?m.color:T.grey3,background:mode===m.id?`${m.color}18`:T.purple1,borderRadius:'6px',padding:'1px 7px',fontWeight:'600',fontFamily:"'Exo 2',sans-serif"}}>{m.time}</span>
+                </div>
+                <div style={{fontSize:'12px',color:T.grey1,lineHeight:1.45}}>{m.desc}</div>
+              </div>
+              {mode===m.id && (
+                <div style={{width:'20px',height:'20px',borderRadius:'50%',border:`2px solid ${m.color}`,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,alignSelf:'center'}}>
+                  <div style={{width:'10px',height:'10px',borderRadius:'50%',background:m.color}}/>
+                </div>
+              )}
+            </button>
+          ))}
+        </div>
+
+        <button onClick={()=>onConfirm(mode)}
+          style={{width:'100%',height:'54px',background:`linear-gradient(135deg,${chosen.color},${chosen.color}cc)`,border:'none',borderRadius:'16px',color:'white',fontSize:'18px',fontWeight:'900',fontFamily:"'Exo 2',sans-serif",cursor:'pointer',boxShadow:`0 6px 24px ${chosen.color}44`,letterSpacing:'1px',transition:'all 0.15s'}}>
+          {chosen.icon} В БОЙ — {chosen.label}
+        </button>
+      </div>
+    </div>
+  );
+};
+
+// ═══════════════════════════════════════════
+// MAIL SCREEN
+// ═══════════════════════════════════════════
+const MAIL_CATEGORY_ICONS = {rewards:'🎁', system:'⚙️', event:'🎉', battle:'⚔️', squad:'👥'};
+const MAIL_CATEGORY_LABELS = {rewards:'Награды', system:'Система', event:'Событие', battle:'Бой', squad:'Отряд'};
+
+const AttachmentBadge = ({attachments}) => {
+  if (!attachments) return null;
+  const items = [];
+  if (attachments.gems)   items.push({icon:<IconGem size={12}/>,   val:attachments.gems,   color:'#c4b5fd'});
+  if (attachments.coins)  items.push({icon:<IconCoin size={12}/>,  val:attachments.coins,  color:T.orange});
+  if (attachments.keys)   items.push({icon:<span style={{fontSize:'12px'}}>🗝️</span>, val:attachments.keys,   color:T.orangeLt});
+  if (attachments.stars)  items.push({icon:<span style={{fontSize:'12px'}}>⭐</span>, val:attachments.stars,  color:'#fbbf24'});
+  if (!items.length) return null;
+  return (
+    <div style={{display:'flex',gap:'6px',flexWrap:'wrap',marginTop:'8px'}}>
+      {items.map((it,i)=>(
+        <div key={i} style={{display:'flex',alignItems:'center',gap:'4px',background:`${it.color}15`,border:`1px solid ${it.color}40`,borderRadius:'8px',padding:'3px 8px'}}>
+          {it.icon}
+          <span style={{fontSize:'12px',color:it.color,fontWeight:'700',fontFamily:"'Exo 2',sans-serif"}}>+{it.val}</span>
+        </div>
+      ))}
+    </div>
+  );
+};
+
+const MailScreen = ({onClose, userId}) => {
+  const [mails,     setMails]     = React.useState([]);
+  const [loading,   setLoading]   = React.useState(true);
+  const [selected,  setSelected]  = React.useState(null);
+  const [filterCat, setFilterCat] = React.useState(null);
+
+  const loadMail = React.useCallback(async () => {
+    setLoading(true);
+    try {
+      let url = '/api/mail';
+      const p = new URLSearchParams();
+      if (userId) p.set('user_id', userId);
+      if (filterCat) p.set('category', filterCat);
+      p.set('limit', '50');
+      url += '?' + p.toString();
+      const res = await fetch(url);
+      if (!res.ok) throw new Error('failed');
+      const data = await res.json();
+      setMails(data.mail || []);
+    } catch(e) { setMails([]); }
+    setLoading(false);
+  }, [userId, filterCat]);
+
+  React.useEffect(() => { loadMail(); }, [loadMail]);
+
+  const markRead = async (mail) => {
+    if (mail.is_read) return;
+    try {
+      let url = '/api/mail/read';
+      if (userId) url += '?user_id=' + userId;
+      await fetch(url, {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({mail_id: mail.id || mail.mail_id}),
+      });
+      setMails(prev => prev.map(m => m.id === mail.id ? {...m, is_read:true} : m));
+    } catch(e){}
+  };
+
+  const openMail = (mail) => {
+    setSelected(mail);
+    markRead(mail);
+  };
+
+  const unreadCount = mails.filter(m=>!m.is_read).length;
+  const categories = [...new Set(mails.map(m=>m.category))].filter(Boolean);
+
+  const fmtDate = (iso) => {
+    if (!iso) return '';
+    try {
+      const d = new Date(iso);
+      const now = new Date();
+      const diff = (now - d) / 1000;
+      if (diff < 60) return 'только что';
+      if (diff < 3600) return Math.floor(diff/60) + ' мин назад';
+      if (diff < 86400) return Math.floor(diff/3600) + ' ч назад';
+      return d.toLocaleDateString('ru-RU', {day:'numeric', month:'short'});
+    } catch(e) { return ''; }
+  };
+
+  // Детальный вид письма
+  if (selected) {
+    const catIcon = MAIL_CATEGORY_ICONS[selected.category] || '📬';
+    return (
+      <div style={{position:'absolute',inset:0,background:T.bg,zIndex:31,display:'flex',flexDirection:'column',animation:'fadeIn 0.2s'}}>
+        <div style={{height:'52px',background:'rgba(15,10,26,0.98)',display:'flex',alignItems:'center',gap:'10px',padding:'0 16px',flexShrink:0,borderBottom:`1px solid ${T.purple1}`}}>
+          <button onClick={()=>setSelected(null)} style={{width:'32px',height:'32px',borderRadius:'10px',background:T.bgCard,border:`1px solid ${T.purple1}`,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',flexShrink:0}}>
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 3L5 7L9 11" stroke={T.grey2} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg>
+          </button>
+          <span style={{fontSize:'15px',fontWeight:'700',color:T.white,fontFamily:"'Exo 2',sans-serif",overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{selected.subject}</span>
+        </div>
+        <div style={{flex:1,overflowY:'auto',padding:'16px'}}>
+          <div style={{background:T.bgCard,borderRadius:'16px',padding:'16px',border:`1px solid ${T.purple1}`,marginBottom:'12px'}}>
+            <div style={{display:'flex',alignItems:'center',gap:'10px',marginBottom:'10px'}}>
+              <div style={{width:'38px',height:'38px',borderRadius:'10px',background:T.purple1,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'20px',flexShrink:0}}>
+                {selected.icon || catIcon}
+              </div>
+              <div>
+                <div style={{fontSize:'13px',fontWeight:'600',color:T.white,fontFamily:"'Exo 2',sans-serif"}}>{selected.sender || 'Система'}</div>
+                <div style={{fontSize:'11px',color:T.grey3,marginTop:'1px'}}>{fmtDate(selected.created_at)}</div>
+              </div>
+              {selected.category && (
+                <div style={{marginLeft:'auto',fontSize:'10px',color:T.grey2,background:T.purple1,borderRadius:'6px',padding:'2px 8px',fontWeight:'600',fontFamily:"'Exo 2',sans-serif"}}>
+                  {MAIL_CATEGORY_LABELS[selected.category] || selected.category}
+                </div>
+              )}
+            </div>
+            <div style={{height:'1px',background:T.purple1,margin:'10px 0'}}/>
+            <div style={{fontSize:'13px',color:T.grey1,lineHeight:1.65,whiteSpace:'pre-wrap'}}>{selected.content || selected.text || '—'}</div>
+            {selected.attachments && Object.keys(selected.attachments).length > 0 && (
+              <div style={{marginTop:'14px',padding:'12px',background:`${T.orange}08`,border:`1px solid ${T.orange}30`,borderRadius:'12px'}}>
+                <div style={{fontSize:'11px',color:T.orange,fontWeight:'700',textTransform:'uppercase',letterSpacing:'0.5px',marginBottom:'6px'}}>Вложения</div>
+                <AttachmentBadge attachments={selected.attachments}/>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{position:'absolute',inset:0,background:T.bg,zIndex:31,display:'flex',flexDirection:'column',animation:'fadeIn 0.2s'}}>
+      {/* Header */}
+      <div style={{height:'52px',background:'rgba(15,10,26,0.98)',display:'flex',alignItems:'center',justifyContent:'space-between',padding:'0 16px',flexShrink:0,borderBottom:`1px solid ${T.purple1}`}}>
+        <div style={{display:'flex',alignItems:'center',gap:'8px'}}>
+          <button onClick={onClose} style={{width:'32px',height:'32px',borderRadius:'10px',background:T.bgCard,border:`1px solid ${T.purple1}`,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',flexShrink:0}}>
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 3L5 7L9 11" stroke={T.grey2} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg>
+          </button>
+          <span style={{fontSize:'16px',fontWeight:'800',color:T.white,fontFamily:"'Exo 2',sans-serif"}}>Почта</span>
+          {unreadCount > 0 && (
+            <div style={{background:T.orange,borderRadius:'10px',padding:'1px 7px',fontSize:'11px',fontWeight:'700',color:'white',fontFamily:"'Exo 2',sans-serif"}}>{unreadCount}</div>
+          )}
+        </div>
+        <button onClick={loadMail} style={{width:'32px',height:'32px',borderRadius:'10px',background:T.bgCard,border:`1px solid ${T.purple1}`,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer'}}>
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" style={{animation:loading?'spin 0.8s linear infinite':undefined}}><path d="M12 7A5 5 0 1 1 7 2" stroke={T.grey1} strokeWidth="1.5" strokeLinecap="round"/><path d="M7 2l2-2M7 2l2 2" stroke={T.grey1} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+        </button>
+      </div>
+
+      {/* Category filter */}
+      {categories.length > 1 && (
+        <div style={{padding:'8px 16px',display:'flex',gap:'6px',overflowX:'auto',scrollbarWidth:'none',flexShrink:0,borderBottom:`1px solid ${T.purple1}`}}>
+          <button onClick={()=>setFilterCat(null)} style={{padding:'5px 12px',borderRadius:'16px',background:filterCat===null?T.orange:T.bgCard,border:`1px solid ${filterCat===null?T.orange:T.purple1}`,color:filterCat===null?'white':T.grey2,fontSize:'11px',fontWeight:'600',cursor:'pointer',whiteSpace:'nowrap',fontFamily:"'Exo 2',sans-serif"}}>Все</button>
+          {categories.map(cat=>(
+            <button key={cat} onClick={()=>setFilterCat(cat===filterCat?null:cat)} style={{padding:'5px 12px',borderRadius:'16px',background:filterCat===cat?T.orange:T.bgCard,border:`1px solid ${filterCat===cat?T.orange:T.purple1}`,color:filterCat===cat?'white':T.grey2,fontSize:'11px',fontWeight:'600',cursor:'pointer',whiteSpace:'nowrap',fontFamily:"'Exo 2',sans-serif"}}>
+              {MAIL_CATEGORY_ICONS[cat]||'📬'} {MAIL_CATEGORY_LABELS[cat]||cat}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* List */}
+      <div style={{flex:1,overflowY:'auto',padding:'8px 16px',display:'flex',flexDirection:'column',gap:'6px'}}>
+        {loading ? (
+          <div style={{display:'flex',alignItems:'center',justifyContent:'center',flex:1,gap:'10px'}}>
+            <div style={{width:'22px',height:'22px',border:`2px solid ${T.purple2}`,borderTopColor:T.purpleLt,borderRadius:'50%',animation:'spin 0.8s linear infinite'}}/>
+            <span style={{color:T.grey2,fontSize:'13px'}}>Загружаем письма...</span>
+          </div>
+        ) : mails.length === 0 ? (
+          <div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',flex:1,gap:'10px',padding:'40px 0'}}>
+            <div style={{fontSize:'40px',opacity:0.4}}>📭</div>
+            <span style={{fontSize:'15px',fontWeight:'700',color:T.grey2,fontFamily:"'Exo 2',sans-serif"}}>Писем нет</span>
+            <span style={{fontSize:'12px',color:T.grey3,textAlign:'center'}}>Здесь будут награды и сообщения от системы</span>
+          </div>
+        ) : mails.map(mail => (
+          <button key={mail.id} onClick={()=>openMail(mail)}
+            style={{display:'flex',gap:'11px',padding:'12px 14px',background:mail.is_read?T.bgCard:`linear-gradient(135deg,${T.purple1},${T.bgCard})`,border:`1px solid ${mail.is_read?T.purple1:T.purpleHL}`,borderRadius:'14px',cursor:'pointer',textAlign:'left',transition:'all 0.15s',position:'relative',overflow:'hidden'}}>
+            {!mail.is_read && <div style={{position:'absolute',top:0,left:0,bottom:0,width:'3px',background:T.purpleLt,borderRadius:'3px 0 0 3px'}}/>}
+            <div style={{width:'40px',height:'40px',borderRadius:'10px',background:mail.is_read?T.purple1:`linear-gradient(135deg,${T.purple2},${T.purple3})`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'20px',flexShrink:0}}>{mail.icon||MAIL_CATEGORY_ICONS[mail.category]||'📬'}</div>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:'2px'}}>
+                <span style={{fontSize:'13px',fontWeight:mail.is_read?'500':'700',color:T.white,fontFamily:"'Exo 2',sans-serif",overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',flex:1}}>{mail.subject}</span>
+                <span style={{fontSize:'10px',color:T.grey3,flexShrink:0,marginLeft:'6px'}}>{fmtDate(mail.created_at)}</span>
+              </div>
+              <div style={{fontSize:'11px',color:T.grey2,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{mail.sender || 'Система'}</div>
+              {mail.attachments && <AttachmentBadge attachments={mail.attachments}/>}
+            </div>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+// ═══════════════════════════════════════════
 // ROOT APP
 // ═══════════════════════════════════════════
 const App = () => {
@@ -959,6 +1231,8 @@ const App = () => {
   const [showSettings,   setShowSettings]   = React.useState(false);
   const [showAI,         setShowAI]         = React.useState(false);
   const [showBattlePick, setShowBattlePick] = React.useState(false);
+  const [showGameMode,   setShowGameMode]   = React.useState(false);
+  const [showMail,       setShowMail]       = React.useState(false);
   const [profile,        setProfile]        = React.useState(null);
 
   React.useEffect(()=>{
@@ -1005,7 +1279,7 @@ const App = () => {
         {showAI ? (
           <AIScreen onBack={()=>setShowAI(false)}/>
         ) : navTab===2 ? (
-          <ArenaScreen onMenu={()=>setShowMenu(true)} onAI={()=>setShowAI(true)} onBattlePick={()=>setShowBattlePick(true)} profile={profile}/>
+          <ArenaScreen onMenu={()=>setShowMenu(true)} onAI={()=>setShowAI(true)} onBattlePick={()=>setShowBattlePick(true)} onStartBattle={()=>setShowGameMode(true)} profile={profile}/>
         ) : (
           <PlaceholderScreen label={['Магазин','Коллекция','','Скводы','Сообщество'][navTab]}/>
         )}
@@ -1013,9 +1287,11 @@ const App = () => {
 
       {!showAI && <BottomNav active={navTab} onChange={setNavTab}/>}
 
-      {showMenu       && <MenuSheet       onClose={()=>setShowMenu(false)} onSettings={openSettings}/>}
+      {showMenu       && <MenuSheet       onClose={()=>setShowMenu(false)} onSettings={openSettings} onMail={()=>{setShowMenu(false);setTimeout(()=>setShowMail(true),120);}}/>}
       {showSettings   && <SettingsScreen  onClose={()=>setShowSettings(false)} profile={profile}/>}
       {showBattlePick && <BattlePickSheet onClose={()=>setShowBattlePick(false)} profile={profile}/>}
+      {showGameMode   && <GameModeSheet   onClose={()=>setShowGameMode(false)} onConfirm={(_mode)=>{setShowGameMode(false);window.startBattle(profile);}}/>}
+      {showMail       && <MailScreen      onClose={()=>setShowMail(false)} userId={profile?.user_id}/>}
     </div>
   );
 };
