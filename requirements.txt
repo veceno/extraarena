@@ -1,0 +1,9 @@
+# Install via: pip install -r requirements.txt
+
+python-dotenv
+onnxruntime
+aiogram
+aiohttp
+python-socketio
+asyncpg
+numpy

@@ -1,3 +1,28 @@
+# Python
 __pycache__/
 *.py[cod]
+*.pyo
+.venv/
+venv/
+
+# Environment / secrets
+.env
+.env.local
+
+# OS
 .DS_Store
+
+# AI model checkpoints
+ai/train/checkpoints/
+
+# Runtime data
+infrastructure/data/
+
+# Editors
+.cursor/
+.cursorignore
+.aider*
+
+# Rust
+target/
+Cargo.lock

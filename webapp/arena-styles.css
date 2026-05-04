@@ -1,0 +1,3145 @@
+/* ========================================
+   ARENA - МОНОЛИТНЫЙ ИНТЕРФЕЙС
+   ======================================== */
+
+.card-emoji-fallback {
+    z-index: 1;
+    color: rgba(255,255,255,0.8);
+}
+
+/* Futura PT Font (если доступен через @font-face) */
+@font-face {
+  font-family: 'Futura PT';
+  src: url('../DesignAssets/Font/FuturaPT-Bold.ttf') format('truetype');
+  font-weight: 700;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: 'Futura PT';
+  src: url('../DesignAssets/Font/FuturaPT-ExtraBold.ttf') format('truetype');
+  font-weight: 900;
+  font-style: normal;
+}
+
+/* Глобальные настройки */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+/* Предотвращение горизонтальной прокрутки */
+html {
+  overflow-x: hidden;
+  width: 100%;
+  height: 100%;
+}
+
+/* Улучшение производительности анимаций на мобильных */
+.hand-card,
+.board-unit-card,
+.board-slot,
+.end-turn-button-ref,
+.surrender-button {
+  will-change: transform;
+  -webkit-transform: translateZ(0);
+  transform: translateZ(0);
+}
+
+body.arena-page {
+  font-family: 'Futura PT', 'Arial Black', sans-serif;
+  font-weight: 900;
+  background: #3E0B53;
+  color: #FFFFFF;
+  overflow: hidden; /* КРИТИЧНО: Предотвращаем прокрутку */
+  width: 100vw;
+  height: 100dvh; /* Dynamic Viewport Height */
+  max-height: 100dvh; /* КРИТИЧНО: Максимум = viewport */
+  position: fixed;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  /* Улучшенная производительность */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  
+  /* Безопасные зоны для notch/челки */
+  padding-top: env(safe-area-inset-top);
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+/* ========================================
+   ОСНОВНОЙ КОНТЕЙНЕР АРЕНЫ
+   ======================================== */
+#arena-battlefield-container {
+  width: 100%;
+  height: 100%;
+  max-width: 1200px; /* Ограничение для широких экранов */
+  margin: 0 auto; /* Центрирование на широких экранах */
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  background: #3E0B53;
+  position: relative;
+  overflow: hidden;
+  
+  /* КРИТИЧНО: Минимальная высота для видимости всех элементов */
+  min-height: 0;
+}
+
+/* ========================================
+   ZONE TOP: OPPONENT
+   ======================================== */
+.arena-zone-top {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 16px 8px 8px;
+  gap: 12px;
+  flex-shrink: 1; /* Разрешаем сжатие для адаптации */
+  min-height: 200px; /* Минимальная высота для видимости */
+  overflow: visible; /* Для анимаций карт */
+}
+
+/* ========================================
+   OPPONENT PANEL (Horizontal Layout)
+   Стиль идентичен нижней панели игрока
+   ======================================== */
+.opponent-panel-root {
+  display: flex;
+  justify-content: space-between;
+  align-items: stretch;
+  width: 100%;
+  max-width: 768px; /* Ограничение для широких экранов */
+  height: 130px;
+  gap: 12px;
+  
+  /* ЦЕНТРИРОВАНИЕ И ОТСТУПЫ */
+  margin: 0 auto;
+  padding: 0 12px;
+  
+  /* НИКАКИХ ОБВОДОК И ТЕНЕЙ */
+  border: none;
+  box-shadow: none;
+}
+
+/* ===== LEFT ISLAND: Opponent Info (2/3 width) ===== */
+.opponent-info-island {
+  flex: 2;
+  display: flex;
+  gap: 0;
+  height: 100%;
+  
+  /* СКРУГЛЕНИЕ - независимый остров */
+  border-radius: 7px;
+  overflow: hidden;
+  
+  border: none;
+  box-shadow: none;
+}
+
+/* Opponent Avatar Section (33% width) */
+.opponent-avatar-section {
+  width: 33%;
+  background: #9820CC;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  box-shadow: none;
+}
+
+.opponent-avatar-section .avatar-letter {
+  font-family: 'Futura PT', 'Arial Black', sans-serif;
+  font-weight: 900;
+  font-size: clamp(26px, 4vw, 38px);
+  color: #FFFFFF;
+  text-transform: uppercase;
+  text-shadow: none;
+  line-height: 1;
+}
+
+/* Opponent Stats Section (66% width) */
+.opponent-stats-section {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+/* Opponent HP Block (2/3 height) */
+.opponent-hp-block {
+  flex: 2;
+  background: #ED230D;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: clamp(6px, 1vw, 10px);
+  border: none;
+  box-shadow: none;
+  padding: 8px 8px;
+  min-height: 0; /* Позволяет flex сжиматься */
+  position: relative; /* Для позиционирования индикатора исцеления */
+  transition: all 0.3s ease;
+}
+
+.opponent-hp-block .hp-value-large {
+  font-family: 'Futura PT', 'Arial Black', sans-serif;
+  font-weight: 900;
+  font-size: clamp(36px, 6vw, 56px);
+  color: #FFFFFF;
+  text-shadow: none;
+  line-height: 1;
+}
+
+.opponent-hp-block .hp-max-text {
+  font-family: 'Futura PT', 'Arial Black', sans-serif;
+  font-weight: 900;
+  font-size: clamp(18px, 3vw, 28px);
+  color: rgba(255, 255, 255, 0.8);
+  text-shadow: none;
+  line-height: 1;
+}
+
+.opponent-hp-block .hp-heart-icon-white {
+  width: clamp(32px, 5vw, 50px);
+  height: clamp(32px, 5vw, 50px);
+  flex-shrink: 0;
+  /* Белый цвет иконки */
+  filter: brightness(0) invert(1);
+}
+
+/* Opponent Name Block (1/3 height) */
+.opponent-name-block {
+  flex: 1;
+  background: #73189A;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 12px;
+  border: none;
+  box-shadow: none;
+  min-height: 0; /* Позволяет flex сжиматься */
+}
+
+.opponent-name-text {
+  font-family: 'Futura PT', 'Arial Black', sans-serif;
+  font-weight: 700;
+  font-size: clamp(10px, 1.8vw, 14px);
+  color: #FFFFFF;
+  text-transform: uppercase;
+  text-shadow: none;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: center;
+  max-width: 100%;
+}
+
+/* ===== RIGHT ISLAND: Cards Widget (1/3 width) ===== */
+.opponent-cards-widget {
+  flex: 1;
+  display: flex;
+  gap: 0;
+  height: 100%;
+  
+  /* СКРУГЛЕНИЕ - независимый остров */
+  border-radius: 7px;
+  overflow: hidden;
+  
+  border: none;
+  box-shadow: none;
+}
+
+/* Cards Icon Section (Left part) */
+.cards-widget-icon {
+  flex: 1;
+  background: #73189A;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  box-shadow: none;
+}
+
+.cards-icon-white {
+  width: clamp(36px, 5vw, 48px);
+  height: clamp(36px, 5vw, 48px);
+  /* Белый цвет иконки */
+  filter: brightness(0) invert(1);
+}
+
+/* Cards Counter Section (Right part) */
+.cards-widget-counter {
+  width: clamp(60px, 8vw, 80px);
+  background: #9820CC;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  box-shadow: none;
+}
+
+.cards-count-text {
+  font-family: 'Futura PT', 'Arial Black', sans-serif;
+  font-weight: 900;
+  font-size: clamp(28px, 5vw, 40px);
+  color: #FFFFFF;
+  text-shadow: none;
+  line-height: 1;
+}
+
+/* ========================================
+   OPPONENT BOARD (Slots)
+   ======================================== */
+.arena-opponent-board {
+  display: flex;
+  gap: 8px;
+  padding: 8px 12px 12px;
+  justify-content: center;
+  max-width: 768px; /* Ограничение для широких экранов */
+  margin: 0 auto;
+  width: 100%;
+  flex-wrap: nowrap; /* Не переносим слоты на новую строку */
+}
+
+/* ========================================
+   ZONE CENTER: BATTLEFIELD
+   ======================================== */
+.arena-zone-center {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  position: relative;
+  padding: 0 8px 12px;
+  min-height: 0; /* Позволяет сжиматься */
+  max-height: 50%; /* КРИТИЧНО: Не позволяем центральной зоне съесть все место */
+  overflow: hidden; /* Предотвращает выход за границы */
+}
+
+/* Player Board (Slots) */
+.arena-player-board {
+  display: flex;
+  gap: 8px;
+  padding: 12px 12px 8px;
+  justify-content: center;
+  max-width: 768px; /* Ограничение для широких экранов */
+  margin: 0 auto;
+  width: 100%;
+  flex-wrap: nowrap; /* Не переносим слоты на новую строку */
+}
+
+/* Слоты для карт */
+.board-slot {
+  width: 95px;
+  min-width: 70px; /* Минимальная ширина для очень узких экранов */
+  height: 130px;
+  aspect-ratio: 95 / 130; /* Пропорциональное масштабирование */
+  background: rgba(0, 0, 0, 0.3);
+  border: none;
+  border-radius: 7px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: none;
+  transition: all 0.2s;
+  position: relative;
+  flex-shrink: 1; /* Позволяем сжиматься на маленьких экранах */
+}
+
+.board-slot:hover {
+  border-color: #FFD700;
+  box-shadow: 0 0 20px rgba(255, 215, 0, 0.6);
+}
+
+/* Карта на поле */
+.board-unit-card {
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(135deg, #4A148C, #6A1B9A);
+  border-radius: 7px;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  overflow: visible;
+  cursor: pointer;
+}
+
+/* Квадратное изображение карты */
+.unit-card-art {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 7px;
+  flex-shrink: 0;
+  z-index: 1;
+}
+
+/* Статы внизу карты, не перекрывая изображение */
+/* Статы карт на доске */
+.unit-card-stats {
+  position: absolute;
+  bottom: 14px;
+  left: 4px;
+  right: 4px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 4px;
+  z-index: 30;
+}
+
+.unit-stat {
+  width: auto;
+  height: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: 'Futura PT', 'Arial Black', sans-serif;
+  font-size: 11.5px;
+  font-weight: 900;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+  line-height: 1;
+}
+
+.unit-stat.attack {
+  color: #FF6B6B;
+}
+
+.unit-stat.health {
+  color: #51CF66;
+}
+
+/* Кнопка сдачи (белый флаг) */
+.surrender-button {
+  position: fixed;
+  top: calc(12px + env(safe-area-inset-top)); /* Учитываем безопасную зону */
+  right: calc(12px + env(safe-area-inset-right)); /* Учитываем безопасную зону */
+  width: 40px;
+  height: 40px;
+  background: rgba(0, 0, 0, 0.3);
+  border: none;
+  border-radius: 7px;
+  font-size: 20px;
+  cursor: pointer;
+  opacity: 0.5;
+  transition: all 0.2s;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.surrender-button:hover {
+  opacity: 1;
+  background: rgba(0, 0, 0, 0.5);
+  transform: scale(1.05);
+}
+
+.surrender-button:active {
+  transform: scale(0.95);
+}
+
+/* Индикатор хода */
+.turn-indicator-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin: 8px auto;
+  max-width: 768px;
+  width: 100%;
+  padding: 0 12px;
+  flex-shrink: 0; /* Не сжимаем индикатор хода */
+}
+
+.turn-indicator-plaque {
+  background: rgba(0, 0, 0, 0.5);
+  border: none;
+  border-radius: 7px;
+  padding: 10px 24px;
+  box-shadow: none;
+  transition: background-color 0.3s ease;
+}
+
+.turn-text {
+  font-family: 'Futura PT', 'Arial Black', sans-serif;
+  font-size: 28px;
+  font-weight: 900;
+  color: #FFFFFF;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  text-shadow: none;
+  line-height: 1;
+  transition: color 0.3s ease;
+}
+
+/* Состояния хода */
+.turn-indicator-plaque.player-turn {
+  background: rgba(74, 222, 128, 0.2);
+}
+
+.turn-indicator-plaque.player-turn .turn-text {
+  color: #4ADE80; /* Ярко-зеленый */
+}
+
+.turn-indicator-plaque.opponent-turn {
+  background: rgba(251, 113, 133, 0.2);
+}
+
+.turn-indicator-plaque.opponent-turn .turn-text {
+  color: #FB7185; /* Ярко-красный */
+}
+
+.turn-timer-display {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(0, 0, 0, 0.5);
+  border: none;
+  border-radius: 7px;
+  padding: 8px 16px;
+  box-shadow: none;
+}
+
+.timer-icon {
+  font-size: 24px;
+}
+
+.timer-value {
+  font-family: 'Futura PT', 'Arial Black', sans-serif;
+  font-size: 24px;
+  font-weight: 900;
+  color: #FFD700;
+  text-shadow: none;
+  line-height: 1;
+}
+
+/* ========================================
+   ZONE BOTTOM: PLAYER
+   ======================================== */
+.arena-zone-bottom {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 0px 8px 20px; /* Гибкий отступ */
+  gap: 8px;
+  position: relative;
+  flex-shrink: 1; /* Разрешаем сжатие для адаптации */
+  min-height: 300px; /* Минимальная высота для панели + рука */
+  overflow: visible; /* Для анимаций карт */
+}
+
+/* ========================================
+   PLAYER PANEL ROOT (Grid 66% / 33%)
+   РЕФЕРЕНС: Два визуально разделенных "острова"
+   ======================================== */
+
+.player-panel-root {
+  /* RELATIVE POSITION ДЛЯ ГИБКОЙ АДАПТИВНОСТИ */
+  position: relative;
+  
+  /* DIMENSIONS */
+  width: 100%;
+  max-width: 768px; /* Ограничение для широких экранов */
+  height: auto; /* Высота по содержимому */
+  
+  /* GRID LAYOUT: 2/3 и 1/3 */
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  align-items: flex-end; /* Выравнивание по нижнему краю */
+  gap: 12px;
+  
+  /* ЦЕНТРИРОВАНИЕ ЕСЛИ МЕНЬШЕ MAX-WIDTH */
+  margin: 0 auto;
+  
+  /* PADDING ДЛЯ БЕЗОПАСНЫХ ЗОН */
+  padding: 0 12px;
+  
+  /* Z-INDEX */
+  z-index: 1000;
+  
+  /* НИКАКИХ РАМОК И ТЕНЕЙ */
+  border: none;
+  box-shadow: none;
+}
+
+/* ===== LEFT STACK (66%): Разделенные блоки ===== */
+.player-data-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  
+  /* НИКАКИХ ОБВОДОК И ТЕНЕЙ */
+  border: none;
+  box-shadow: none;
+}
+
+/* ===== INFO BLOCK: Аватар (33%) + Статы (66%) (Самостоятельный остров) ===== */
+.player-info-block {
+  display: flex;
+  height: 110px;
+  gap: 0;
+  
+  /* СКРУГЛЕНИЕ ПО ВСЕМ УГЛАМ - независимый остров */
+  border-radius: 7px;
+  overflow: hidden; /* Нужен для обрезки по скруглению */
+  
+  border: none;
+  box-shadow: none;
+}
+
+/* ПРЕМИАЛЬНЫЙ ВИЗУАЛ ДЛЯ EXTRAPASS */
+.player-info-block.extra-pass-active,
+.opponent-info-island.extra-pass-active,
+.extra-pass-active {
+  background: linear-gradient(135deg, #73189A 0%, #9820CC 50%, #FF9400 100%) !important;
+  border: 1px solid #FF9400 !important;
+  box-shadow: 0 0 15px rgba(255, 148, 0, 0.3) !important;
+}
+
+.player-info-block.extra-pass-active .player-avatar-section {
+  background: linear-gradient(135deg, #73189A 0%, #9820CC 100%);
+}
+
+.player-info-block.extra-pass-active .player-hp-block {
+  background: linear-gradient(135deg, #ED230D 0%, #ff6b6b 100%);
+}
+
+.player-info-block.extra-pass-active .player-name-block {
+  background: linear-gradient(135deg, #73189A 0%, #9820CC 100%);
+}
+
+/* Аватар Section (33% width) */
+.player-avatar-section {
+  width: 33%;
+  background: #9820CC;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  box-shadow: none;
+}
+
+.avatar-letter {
+  font-family: 'Futura PT', 'Arial Black', sans-serif;
+  font-weight: 900;
+  font-size: clamp(26px, 4vw, 38px);
+  color: #FFFFFF;
+  text-transform: uppercase;
+  text-shadow: none;
+  line-height: 1;
+}
+
+/* Stats Section (66% width) - вертикальный flex */
+.player-stats-section {
+  width: 66%;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+/* HP Block (2/3 height) */
+.player-hp-block {
+  flex: 2;
+  background: #ED230D;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: clamp(6px, 1vw, 10px);
+  border: none;
+  box-shadow: none;
+  padding: 8px 8px;
+  min-height: 0; /* Позволяет flex сжиматься */
+  position: relative; /* Для позиционирования индикатора исцеления */
+  transition: all 0.3s ease;
+}
+
+.hp-value-large {
+  font-family: 'Futura PT', 'Arial Black', sans-serif;
+  font-weight: 900;
+  font-size: clamp(34px, 6vw, 58px);
+  color: #FFFFFF;
+  text-shadow: none;
+  line-height: 1;
+}
+
+.hp-max-text {
+  font-family: 'Futura PT', 'Arial Black', sans-serif;
+  font-weight: 900;
+  font-size: clamp(17px, 3vw, 29px);
+  color: rgba(255, 255, 255, 0.8);
+  text-shadow: none;
+  line-height: 1;
+}
+
+.hp-heart-icon-white {
+  width: clamp(30px, 5vw, 50px);
+  height: clamp(30px, 5vw, 50px);
+  flex-shrink: 0;
+  /* Белый цвет иконки */
+  filter: brightness(0) invert(1);
+}
+
+/* Name Block (1/3 height) */
+.player-name-block {
+  flex: 1;
+  background: #73189A;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 12px;
+  border: none;
+  box-shadow: none;
+  min-height: 0; /* Позволяет flex сжиматься */
+}
+
+.player-name-text {
+  font-family: 'Futura PT', 'Arial Black', sans-serif;
+  font-weight: 700;
+  font-size: clamp(11px, 2vw, 15px);
+  color: #FFFFFF;
+  text-transform: uppercase;
+  text-shadow: none;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: center;
+  max-width: 100%;
+}
+
+/* ===== MANA BLOCK: Counter + Progress Bar (Самостоятельный остров) ===== */
+.player-mana-block {
+  height: 50px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 12px;
+  background: #2D0A40;
+  
+  /* СКРУГЛЕНИЕ ПО ВСЕМ УГЛАМ - независимый остров */
+  border-radius: 7px;
+  
+  border: none;
+  box-shadow: none;
+}
+
+/* Mana Counter (текст слева) */
+.mana-counter {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.mana-counter-text {
+  font-family: 'Futura PT', 'Arial Black', sans-serif;
+  font-weight: 900;
+  font-size: clamp(22px, 3.8vw, 30px);
+  color: #FFFFFF;
+  text-shadow: none;
+  line-height: 1.1;
+}
+
+.mana-counter-max {
+  font-family: 'Futura PT', 'Arial Black', sans-serif;
+  font-weight: 900;
+  font-size: clamp(14px, 2.3vw, 18px);
+  color: rgba(255, 255, 255, 0.6);
+  text-shadow: none;
+  line-height: 1.1;
+}
+
+/* Mana Progress Bar (juicy pill-shaped) */
+.mana-progressbar {
+  flex: 1;
+  height: 26px;
+  background: rgba(0, 0, 0, 0.4);
+  background-image: linear-gradient(90deg, 
+    rgba(255, 255, 255, 0.05) 1px, 
+    transparent 1px);
+  background-size: 10% 100%;
+  border-radius: 7px;
+  position: relative;
+  overflow: hidden;
+  border: none;
+  box-shadow: none;
+}
+
+.mana-progressbar-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 100%;
+  background: linear-gradient(90deg, #FF9400 0%, #FF6B00 100%);
+  border-radius: 7px;
+  width: 50%; /* JS изменит это значение */
+  transition: width 0.4s cubic-bezier(0.4, 0.0, 0.2, 1);
+  border: none;
+  box-shadow: none;
+}
+
+/* ===== RIGHT COLUMN (33%): Кнопка "Следующий ход" (Скругленный "остров") ===== */
+.end-turn-button-ref {
+  width: 100%;
+  height: 100%;
+  background: #FF9400;
+  border: none;
+  box-shadow: none;
+  /* СКРУГЛЕНИЕ ПО ВСЕМ УГЛАМ - это отдельный "остров" */
+  border-radius: 7px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 0.2s ease;
+  outline: none;
+  padding: 0;
+}
+
+.end-turn-button-ref:hover {
+  opacity: 0.9;
+}
+
+.end-turn-button-ref:active {
+  opacity: 0.95;
+}
+
+.end-turn-button-ref:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  filter: grayscale(1);
+}
+
+/* Иконка кнопки (использует mask-image для закраски в #222222) */
+.end-turn-icon-ref {
+  width: clamp(64px, 10vw, 120px);
+  height: clamp(64px, 10vw, 120px);
+  background-color: #222222;
+  -webkit-mask-image: url('../DesignAssets/Arena/NextPlay.png');
+  mask-image: url('../DesignAssets/Arena/NextPlay.png');
+  -webkit-mask-size: contain;
+  mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  mask-position: center;
+}
+
+/* ========================================
+   РУКА ИГРОКА
+   ======================================== */
+.arena-player-hand {
+  display: flex;
+  gap: 8px; /* Уменьшен базовый gap */
+  padding: 0px 4px 8px;
+  justify-content: center;
+  min-height: 180px;
+  max-height: 220px;
+  align-items: center;
+  max-width: 768px; /* Синхронизировано с остальными панелями */
+  width: 100%;
+  margin: 0 auto;
+  flex-wrap: nowrap;
+  overflow: visible; /* Карты не должны обрезаться при анимациях */
+  flex-shrink: 1;
+}
+
+/* Карта в руке (ТОЛЬКО АРТ + МАНА + СТАТЫ) */
+.hand-card {
+  width: 140px; /* Немного увеличено, так как теперь 4 карты */
+  height: 192px; /* Сохраняем пропорции */
+  aspect-ratio: 140 / 192;
+  background: linear-gradient(135deg, #4A148C, #6A1B9A);
+  border: none;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.6);
+  position: relative;
+  cursor: grab;
+  transition: all 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+  overflow: visible;
+  animation: cardAppear 0.3s ease-out backwards;
+  margin: 0 4px;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 1; /* Разрешаем сжатие для адаптивности */
+  min-width: 0;
+}
+
+/* Центрирование при 4 картах */
+.arena-player-hand:has(.hand-card:nth-child(4):last-child) {
+  gap: 12px; /* Адекватный зазор для 4 карт */
+}
+
+.hand-card:first-child {
+  margin-left: 2px;
+}
+
+@keyframes cardAppear {
+  from {
+    opacity: 0;
+    transform: translateY(20px) scale(0.9);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.hand-card:nth-child(1) { animation-delay: 0s; }
+.hand-card:nth-child(2) { animation-delay: 0.05s; }
+.hand-card:nth-child(3) { animation-delay: 0.1s; }
+.hand-card:nth-child(4) { animation-delay: 0.15s; }
+.hand-card:nth-child(5) { animation-delay: 0.2s; }
+.hand-card:nth-child(6) { animation-delay: 0.25s; }
+.hand-card:nth-child(7) { animation-delay: 0.3s; }
+.hand-card:nth-child(8) { animation-delay: 0.35s; }
+
+.hand-card:hover {
+  transform: translateY(-12px);
+  border-color: #FFD700;
+  box-shadow: 0 8px 24px rgba(255, 215, 0, 0.6);
+}
+
+.hand-card.selected {
+  border-color: #FFD700;
+  box-shadow: 0 0 30px rgba(255, 215, 0, 0.9);
+  transform: translateY(-12px);
+}
+
+/* Квадратное изображение карты в руке */
+.hand-card-art {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 7px;
+  flex-shrink: 0;
+  z-index: 1;
+}
+
+/* Мана (в левом верхнем углу) */
+.mana-circle {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  width: 26px;
+  height: 26px;
+  background: none;
+  border: none;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: 'Futura PT', 'Arial Black', sans-serif;
+  font-size: 22px;
+  font-weight: 900;
+  color: #FF9400;
+  text-shadow: 2px 2px 0 #000, -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000;
+  z-index: 30;
+  line-height: 1;
+}
+
+/* Статы (нижняя часть карты) */
+/* Имя карты (в руке) */
+.card-name-label {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: rgba(0, 0, 0, 0.5); /* Более прозрачный фон */
+  color: #FFFFFF;
+  font-family: 'Futura PT', 'Arial Black', sans-serif;
+  font-weight: 700;
+  font-size: 8px; /* Еще меньше */
+  text-align: center;
+  padding: 2px 2px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  z-index: 100;
+  pointer-events: none;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+/* Имя карты на поле (меньше размер) */
+.board-card-name {
+  font-size: 8px;
+  padding: 1px 2px;
+}
+
+/* Статы внизу карты */
+.hand-card-stats {
+  position: absolute;
+  bottom: 16px;
+  left: 4px;
+  right: 4px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 4px;
+  z-index: 30;
+}
+
+.card-stat {
+  width: auto;
+  height: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: 'Futura PT', 'Arial Black', sans-serif;
+  font-size: 11.5px;
+  font-weight: 900;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+  line-height: 1;
+}
+
+.card-stat.attack {
+  color: #FF6B6B;
+}
+
+.card-stat.health {
+  color: #51CF66;
+}
+
+/* ========================================
+   ВИЗУАЛЬНЫЕ ЭФФЕКТЫ ДЛЯ СОСТОЯНИЙ КАРТ
+   ======================================== */
+
+/* Вспышка при уроне */
+.damage-flash {
+  animation: damage-flash-anim 0.3s ease-out;
+}
+
+@keyframes damage-flash-anim {
+  0% { filter: brightness(1) sepia(0) saturate(1) hue-rotate(0deg); }
+  50% { filter: brightness(0.5) sepia(1) saturate(5) hue-rotate(-50deg); }
+  100% { filter: brightness(1) sepia(0) saturate(1) hue-rotate(0deg); }
+}
+
+/* Частицы урона */
+.damage-particle {
+  position: fixed;
+  width: 6px;
+  height: 6px;
+  background: #FF4D00;
+  border-radius: 50%;
+  pointer-events: none;
+  z-index: 10000;
+  box-shadow: 0 0 8px #FF0000;
+}
+
+/* Сильная тряска при получении урона */
+@keyframes shake-heavy {
+  0% { transform: translate(0, 0); }
+  10% { transform: translate(-5px, -2px) rotate(-1deg); }
+  20% { transform: translate(5px, 2px) rotate(1deg); }
+  30% { transform: translate(-5px, 2px) rotate(-1deg); }
+  40% { transform: translate(5px, -2px) rotate(1deg); }
+  50% { transform: translate(-5px, -1px) rotate(-1deg); }
+  60% { transform: translate(5px, 1px) rotate(1deg); }
+  70% { transform: translate(-2px, 2px) rotate(-1deg); }
+  80% { transform: translate(2px, -2px) rotate(1deg); }
+  90% { transform: translate(-1px, 1px) rotate(0deg); }
+  100% { transform: translate(0, 0); }
+}
+
+.shake-heavy {
+  animation: shake-heavy 0.3s ease-in-out;
+}
+
+/* Карты с недостаточной маной для розыгрыша - минималистичный стиль */
+.hand-card.insufficient-mana {
+  opacity: 0.5;
+  cursor: not-allowed !important;
+}
+
+.hand-card.insufficient-mana:hover {
+  transform: none !important;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.6) !important;
+}
+
+/* ========================================
+   LEGAL ACTIONS: Визуализация доступности
+   ======================================== */
+
+/* Недоступные карты (не в legal_actions) */
+.hand-card.card-disabled {
+  opacity: 0.4;
+  filter: grayscale(0.7);
+  cursor: not-allowed !important;
+  pointer-events: none;
+}
+
+.hand-card.card-disabled:hover {
+  transform: none !important;
+}
+
+/* Юниты, которые МОГУТ атаковать */
+.board-unit-card.can-attack {
+  cursor: pointer;
+  box-shadow: 0 0 10px 2px rgba(76, 217, 100, 0.5);
+  animation: canAttackPulse 1.5s ease-in-out infinite;
+}
+
+@keyframes canAttackPulse {
+  0%, 100% { box-shadow: 0 0 10px 2px rgba(76, 217, 100, 0.4); }
+  50% { box-shadow: 0 0 15px 4px rgba(76, 217, 100, 0.7); }
+}
+
+/* Валидные цели атаки */
+.board-unit-card.attack-target {
+  cursor: crosshair !important;
+  box-shadow: 0 0 12px 3px rgba(255, 59, 48, 0.7) !important;
+  animation: attackTargetGlow 0.8s ease-in-out infinite;
+}
+
+.opponent-panel-root.attack-target-hero {
+  cursor: crosshair !important;
+}
+
+.opponent-panel-root.attack-target-hero .opponent-hp-block {
+  box-shadow: 0 0 15px 5px rgba(255, 59, 48, 0.7);
+  animation: attackTargetGlow 0.8s ease-in-out infinite;
+}
+
+@keyframes attackTargetGlow {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
+/* Союзные цели (для лечения) */
+.board-unit-card.targetable-friendly {
+  cursor: pointer !important;
+  box-shadow: 0 0 15px 5px rgba(74, 222, 128, 0.8) !important;
+  animation: healTargetGlow 0.8s ease-in-out infinite;
+}
+
+.player-panel-root.targetable-friendly {
+  cursor: pointer !important;
+  z-index: 1001 !important;
+}
+
+.player-panel-root.targetable-friendly .player-hp-block {
+  box-shadow: 0 0 20px 8px rgba(74, 222, 128, 0.8) !important;
+  animation: healTargetGlow 0.8s ease-in-out infinite;
+}
+
+@keyframes healTargetGlow {
+  0%, 100% { box-shadow: 0 0 15px 5px rgba(74, 222, 128, 0.6); }
+  50% { box-shadow: 0 0 25px 10px rgba(74, 222, 128, 0.9); }
+}
+
+/* Спящие юниты (не могут атаковать) - минималистичный стиль */
+.board-unit-card.unit-sleeping {
+  cursor: not-allowed !important;
+}
+
+.board-unit-card.unit-sleeping:hover {
+  transform: none !important;
+}
+
+/* ========================================
+   ИГРОВЫЕ МЕХАНИКИ (TAUNT, SHIELD, CHARGE)
+   ======================================== */
+
+/* DEATHRATTLE (Предсмертный хрип) */
+.card-deathrattle {
+  border: 2px solid #A855F7 !important; /* Фиолетовая рамка */
+  box-shadow: 0 0 10px rgba(168, 85, 247, 0.5) !important;
+}
+
+.deathrattle-icon {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  color: #A855F7;
+  filter: drop-shadow(0 0 5px rgba(168, 85, 247, 1));
+  z-index: 30;
+  pointer-events: none;
+  font-size: 20px;
+}
+
+/* ========================================
+   ВИЗУАЛЬНЫЕ СТАТУСЫ (Shield, Frozen, Sleep, Target)
+   ======================================== */
+
+/* Фильтры на арт карты (ТОЛЬКО НА СТОЛЕ) */
+.board-unit-card.status-shield .unit-card-art {
+  filter: grayscale(1) brightness(0.8);
+}
+
+.board-unit-card.status-frozen .unit-card-art,
+.board-unit-card.card-frozen .unit-card-art {
+  filter: hue-rotate(180deg) brightness(1.2) saturate(0.5) !important;
+}
+
+.board-unit-card.unit-sleeping .unit-card-art {
+  filter: grayscale(0.5) contrast(0.8);
+}
+
+/* Контейнеры иконок статусов */
+.status-icon-container {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 45%;
+  height: auto;
+  z-index: 10;
+  pointer-events: none;
+  display: none;
+  align-items: center;
+  justify-content: center;
+}
+
+.status-icon {
+  width: 100%;
+  height: auto;
+  object-fit: contain;
+  filter: invert(1); /* Инвертируем черные иконки в белые */
+}
+
+.status-icon-taunt {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  width: 20px;
+  height: 20px;
+  z-index: 40;
+  filter: invert(1);
+  display: none;
+  pointer-events: none;
+}
+
+/* Отображение иконок при наличии классов (ТОЛЬКО НА СТОЛЕ) */
+.board-unit-card.status-shield .status-icon-shield,
+.board-unit-card.status-frozen .status-icon-frozen,
+.board-unit-card.card-frozen .status-icon-frozen,
+.board-unit-card.unit-sleeping .status-icon-asleep,
+.board-unit-card.status-taunt .status-icon-taunt {
+  display: flex;
+}
+
+.unit-sleeping .status-icon-asleep .status-icon {
+  opacity: 0.6;
+}
+
+.status-frozen .status-icon-frozen .status-icon,
+.card-frozen .status-icon-frozen .status-icon {
+  filter: invert(1) drop-shadow(0 0 5px rgba(0, 191, 255, 0.8));
+}
+
+.freeze-counter {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: #00bfff;
+  color: #ffffff;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 900;
+  border: 1.5px solid #ffffff;
+  box-shadow: 0 0 8px rgba(0, 191, 255, 0.8);
+  z-index: 2; /* Поверх иконки снежинки */
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+}
+
+.targetable-enemy .status-icon-target,
+.opponent-panel-root.targetable-enemy .status-icon-target,
+.opponent-hp-block.targetable-enemy .status-icon-target {
+  display: flex !important;
+}
+
+.targetable-friendly .status-icon-target,
+.player-panel-root.targetable-friendly .status-icon-target,
+.player-hp-block.targetable-friendly .status-icon-target {
+  display: none !important;
+}
+
+/* Иконка лечения */
+.targetable-friendly .status-icon-heal,
+.player-panel-root.targetable-friendly .status-icon-heal,
+.player-hp-block.targetable-friendly .status-icon-heal {
+  display: flex !important;
+}
+
+.status-icon-heal .status-icon {
+  filter: invert(1) drop-shadow(0 0 5px #4ADE80) !important;
+}
+
+/* Анимация пульсации для мишени и хила */
+@keyframes targetPulse {
+  0% { transform: translate(-50%, -50%) scale(1); }
+  50% { transform: translate(-50%, -50%) scale(1.2); }
+  100% { transform: translate(-50%, -50%) scale(1); }
+}
+
+.status-icon-target, .status-icon-heal {
+  animation: targetPulse 1.0s ease-in-out infinite;
+}
+
+/* Подсветка мишени */
+.targetable-enemy .status-icon-target .status-icon {
+  filter: invert(1) drop-shadow(0 0 10px rgba(255, 0, 0, 0.9));
+}
+
+.targetable-friendly .status-icon-target .status-icon {
+  filter: invert(1) drop-shadow(0 0 10px rgba(0, 255, 0, 0.9));
+}
+
+/* SHIELD (Божественный щит) */
+.status-shield {
+  /* Базовые стили рамки можно оставить или убрать, основное теперь фильтр + иконка */
+}
+
+/* FREEZE (Заморозка) */
+.card-frozen, .status-frozen {
+  /* Стили перенесены в систему статусов */
+}
+
+/* SLEEP (Сон) */
+.card-sleep {
+  /* Стили перенесены в систему статусов (фильтр + иконка) */
+}
+
+/* HP Preview (Предпросмотр урона) */
+.hp-preview-text {
+  color: #FF4444 !important; /* Ярко-красный для прогноза */
+  font-size: 0.9em;
+  margin-left: 4px;
+  font-weight: 900;
+  text-shadow: 0 0 5px rgba(0,0,0,0.5);
+  animation: hpPulse 0.6s ease-in-out infinite;
+}
+
+/* Heal Preview (Предпросмотр лечения) */
+.heal-preview-text {
+  color: #4ADE80 !important; /* Ярко-зеленый для прогноза */
+  font-size: 0.9em;
+  margin-left: 4px;
+  font-weight: 900;
+  text-shadow: 0 0 5px rgba(0,0,0,0.5);
+  animation: hpPulse 0.6s ease-in-out infinite;
+}
+
+@keyframes hpPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+@keyframes shimmer {
+  0% {
+    transform: translateX(-50%) translateY(-50%);
+  }
+  100% {
+    transform: translateX(25%) translateY(25%);
+  }
+}
+
+/* CHARGE (Натиск) - иконка молнии */
+.mechanic-icon {
+  position: absolute;
+  font-size: 22px;
+  text-shadow: 0 2px 6px rgba(0, 0, 0, 0.8);
+  z-index: 12;
+  pointer-events: none;
+}
+
+.charge-icon {
+  top: 4px;
+  right: 4px;
+  color: #FCD34D;
+  filter: drop-shadow(0 0 8px rgba(252, 211, 77, 1));
+  animation: chargeFlash 1.5s ease-in-out infinite;
+}
+
+/* Для юнитов на столе - позиция может отличаться */
+.board-charge {
+  top: 6px;
+  right: 6px;
+  font-size: 24px;
+}
+
+@keyframes chargeFlash {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.7;
+    transform: scale(1.15);
+  }
+}
+
+/* Дополнительный эффект для карт с charge в руке */
+.hand-card.card-charge {
+  border-color: rgba(252, 211, 77, 0.6);
+  box-shadow: 0 4px 12px rgba(252, 211, 77, 0.4);
+}
+
+.hand-card.card-charge:hover {
+  box-shadow: 0 8px 24px rgba(252, 211, 77, 0.6);
+}
+
+/* ========================================
+   ЗЕЛЬЯ (POTION)
+   ======================================== */
+
+.potion-card-shape {
+    border-radius: 40% 5% 40% 5% !important;
+    background: linear-gradient(135deg, #7000ff 0%, #00ff88 100%) !important;
+    border: 2px solid #a855f7 !important;
+    overflow: hidden !important;
+}
+
+/* Исправление отображения маны для зелий */
+.potion-card-shape .mana-circle {
+    top: -2px !important;
+    left: -2px !important;
+    transform: none !important;
+    width: 30px !important;
+    height: 30px !important;
+    font-size: 24px !important;
+    background: none !important;
+    border: none !important;
+    box-shadow: none !important;
+}
+
+/* Враппер для арта (ромб) */
+.card-art-wrapper {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 1;
+    overflow: hidden;
+    border-radius: 7px;
+}
+
+.potion-card-shape .card-art-wrapper {
+    border-radius: 40% 5% 40% 5% !important;
+}
+
+/* Визуальное отличие для зелий */
+.hand-card.card-potion {
+  border-color: rgba(147, 51, 234, 0.6);
+  box-shadow: 0 4px 12px rgba(147, 51, 234, 0.5);
+  background: linear-gradient(135deg, rgba(147, 51, 234, 0.1) 0%, rgba(126, 34, 206, 0.1) 100%);
+}
+
+.hand-card.card-potion:hover {
+  box-shadow: 0 8px 24px rgba(147, 51, 234, 0.7);
+  transform: translateY(-8px) scale(1.05);
+}
+
+/* Иконка зелья */
+.potion-icon {
+  top: 4px;
+  left: 4px;
+  color: #A855F7;
+  filter: drop-shadow(0 0 8px rgba(168, 85, 247, 1));
+  animation: potionGlow 2s ease-in-out infinite;
+}
+
+/* Кнопка информации на карте */
+.card-info-button {
+  position: absolute;
+  bottom: 16px; /* Синхронизировано со статами */
+  left: 50%;
+  transform: translateX(-50%);
+  width: auto;
+  height: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: 'Futura PT', sans-serif;
+  font-weight: 900;
+  font-size: 12px;
+  color: #FFFFFF;
+  cursor: pointer;
+  z-index: 101;
+  transition: all 0.2s;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.8);
+}
+
+.card-info-button:hover {
+  transform: translateX(-50%) scale(1.1);
+}
+
+/* Тултип описания карты (превращен в модальное окно для адаптивности) */
+.card-description-tooltip {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%) !important;
+  z-index: 100000;
+  background: rgba(20, 10, 35, 0.98);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  color: #FFFFFF;
+  padding: 20px 24px;
+  border-radius: 12px;
+  border: 2px solid rgba(255, 148, 0, 0.5); /* Оранжевая рамка в стиле игры */
+  font-family: 'Futura PT', sans-serif;
+  font-weight: 700;
+  font-size: 16px;
+  width: 280px;
+  max-width: 85vw;
+  pointer-events: auto;
+  box-shadow: 0 0 50px rgba(0,0,0,0.9), 0 0 20px rgba(255, 148, 0, 0.2);
+  display: none;
+  animation: tooltipFadeIn 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+  text-align: center;
+}
+
+@keyframes tooltipFadeIn {
+  from { opacity: 0; transform: translate(-50%, -40%) scale(0.9); }
+  to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+}
+
+@keyframes potionGlow {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.8;
+    transform: scale(1.1);
+  }
+}
+
+/* Валидные цели (враги) */
+.targetable-enemy {
+  cursor: crosshair !important;
+}
+
+/* Валидные цели (союзники) */
+.targetable-friendly {
+  cursor: pointer !important;
+}
+
+@keyframes debugTargetPulse {
+  0%, 100% {
+    outline-color: #ff00ff;
+    box-shadow: 0 0 30px #ff00ff;
+  }
+  50% {
+    outline-color: #00ffff;
+    box-shadow: 0 0 50px #00ffff;
+  }
+}
+
+.board-unit-card.potion-target::before {
+  content: '🎯';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 32px;
+  opacity: 0.7;
+  pointer-events: none;
+  z-index: 20;
+  animation: targetIconPulse 1.5s ease-in-out infinite;
+}
+
+@keyframes targetIconPulse {
+  0%, 100% {
+    opacity: 0.5;
+    transform: translate(-50%, -50%) scale(1);
+  }
+  50% {
+    opacity: 0.9;
+    transform: translate(-50%, -50%) scale(1.2);
+  }
+}
+
+.board-unit-card.potion-target:hover {
+  transform: scale(1.15) !important;
+  box-shadow: 
+    0 0 50px rgba(220, 38, 38, 1) !important,
+    inset 0 0 25px rgba(220, 38, 38, 0.5) !important;
+  border-color: #EF4444 !important;
+  z-index: 101;
+}
+
+.opponent-panel-root.targetable-enemy,
+.opponent-panel-root.potion-target-hero {
+  box-shadow: 0 0 15px rgba(255, 0, 0, 0.7) !important;
+  cursor: crosshair !important;
+  z-index: 9999 !important;
+  position: relative !important;
+  pointer-events: all !important;
+  outline-offset: 4px !important;
+  transform: scale(1) !important;
+}
+
+.opponent-panel-root.potion-target-hero::after {
+  content: '🎯';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 64px;
+  opacity: 0.6;
+  pointer-events: none;
+  z-index: 1;
+  animation: targetIconPulse 1.5s ease-in-out infinite;
+}
+
+.opponent-panel-root.potion-target-hero:hover {
+  box-shadow: 0 0 60px rgba(220, 38, 38, 1) !important;
+  transform: translateY(-5px) scale(1.02);
+  transition: all 0.2s ease;
+}
+
+.opponent-panel-root.potion-target-hero .opponent-info-island {
+  border: 4px solid #DC2626;
+  transition: all 0.2s ease;
+  box-shadow: inset 0 0 20px rgba(220, 38, 38, 0.3);
+}
+
+.opponent-panel-root.potion-target-hero:hover .opponent-info-island {
+  border-color: #EF4444;
+  box-shadow: inset 0 0 30px rgba(220, 38, 38, 0.5);
+}
+
+@keyframes potionTargetPulse {
+  0%, 100% {
+    box-shadow: 0 0 25px rgba(220, 38, 38, 0.8);
+  }
+  50% {
+    box-shadow: 0 0 45px rgba(220, 38, 38, 1);
+  }
+}
+
+/* Анимация вспышки урона от зелья */
+@keyframes potionFlash {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.5);
+  }
+  30% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1.2);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(1.5);
+  }
+}
+
+/* ========================================
+   КНОПКА КОНЦА ХОДА
+   ======================================== */
+/* Old .arena-end-turn-btn styles removed - using .end-turn-button-huge now */
+
+/* ========================================
+   DRAG & DROP СОСТОЯНИЯ
+   ======================================== */
+.hand-card.dragging {
+  opacity: 0.5;
+  cursor: grabbing;
+}
+
+.board-slot.droppable {
+  border-color: #00FF00;
+  background: rgba(0, 255, 0, 0.2);
+  box-shadow: 0 0 20px rgba(0, 255, 0, 0.6);
+}
+
+.board-slot.attacker-selected {
+  border-color: #FFD700;
+  background: rgba(255, 215, 0, 0.2);
+  box-shadow: 0 0 30px rgba(255, 215, 0, 0.8);
+  animation: attackerPulse 1s ease-in-out infinite;
+}
+
+@keyframes attackerPulse {
+  0%, 100% {
+    box-shadow: 0 0 30px rgba(255, 215, 0, 0.8);
+  }
+  50% {
+    box-shadow: 0 0 50px rgba(255, 215, 0, 1);
+  }
+}
+
+.board-unit-card:hover {
+  cursor: pointer;
+  transform: scale(1.05);
+  transition: transform 0.2s;
+}
+
+/* ========================================
+   RESPONSIVE (PLAYER PANEL)
+   ======================================== */
+
+/* Tablet и средние устройства (≤768px) */
+@media (max-width: 768px) {
+  /* Player Panel */
+  .player-panel-root {
+    gap: 10px;
+    padding: 0 10px;
+  }
+  
+  .player-data-stack {
+    gap: 6px;
+  }
+  
+  .player-info-block {
+    height: 90px;
+  }
+  
+  .player-mana-block {
+    height: 42px;
+    gap: 10px;
+    padding: 0 10px;
+  }
+  
+  .mana-progressbar {
+    height: 20px;
+  }
+  
+  /* Opponent Panel */
+  .opponent-panel-root {
+    height: 100px;
+    gap: 10px;
+    padding: 0 10px;
+  }
+  
+  .cards-widget-counter {
+    width: 60px;
+  }
+  
+  /* Board Slots */
+  .board-slot {
+    width: 85px;
+    min-width: 65px;
+    height: 115px;
+  }
+  
+  .hand-card {
+    width: 110px;
+    height: 152px;
+    margin: 0 2px;
+  }
+  
+  .arena-player-hand:has(.hand-card:nth-child(4):last-child) {
+    gap: 10px;
+  }
+  
+  .hand-card:first-child {
+    margin-left: 2px;
+  }
+  
+  .mana-circle {
+    font-size: 26px;
+    top: 3px;
+    left: 3px;
+  }
+  
+  .card-stat {
+    width: 30px;
+    height: 30px;
+    font-size: 12.75px;
+  }
+  
+  .unit-stat {
+    width: 28px;
+    height: 28px;
+    font-size: 12.75px;
+  }
+}
+
+/* Mobile (≤480px) */
+@media (max-width: 480px) {
+  /* Player Panel */
+  .player-panel-root {
+    gap: 8px;
+    padding: 0 8px;
+  }
+  
+  .player-data-stack {
+    gap: 5px;
+  }
+  
+  .player-info-block {
+    height: 70px;
+  }
+  
+  .player-mana-block {
+    height: 35px;
+    gap: 8px;
+    padding: 0 8px;
+  }
+  
+  .mana-progressbar {
+    height: 16px;
+  }
+  
+  /* Opponent Panel */
+  .opponent-panel-root {
+    height: 85px;
+    gap: 8px;
+    padding: 0 8px;
+  }
+  
+  .cards-widget-counter {
+    width: 50px;
+  }
+  
+  /* Board Slots */
+  .board-slot {
+    width: 70px;
+    min-width: 60px;
+    height: 100px;
+  }
+  
+  .hand-card {
+    width: 82px; /* Уменьшено для гарантированного вмещения 4 карт на iPhone SE */
+    height: 112px;
+    margin: 0 1px;
+  }
+  
+  .arena-player-hand:has(.hand-card:nth-child(4):last-child) {
+    gap: 6px;
+  }
+  
+  .hand-card:first-child {
+    margin-left: 1px;
+  }
+  
+  .mana-circle {
+    font-size: 24px;
+    top: 3px;
+    left: 3px;
+  }
+  
+  .card-stat {
+    width: 26px;
+    height: 26px;
+    font-size: 11px;
+  }
+  
+  .unit-stat {
+    width: 26px;
+    height: 26px;
+    font-size: 12px;
+  }
+  
+  /* Turn Indicator */
+  .turn-text {
+    font-size: 20px;
+    letter-spacing: 1px;
+  }
+  
+  .turn-indicator-plaque {
+    padding: 6px 16px;
+  }
+  
+  .turn-timer-display {
+    padding: 6px 10px;
+  }
+  
+  .timer-value {
+    font-size: 18px;
+  }
+  
+  /* Zone adjustments */
+  .arena-zone-top {
+    padding: 12px 6px 6px;
+    gap: 10px;
+  }
+  
+  .arena-zone-bottom {
+    padding: 0px 6px 16px;
+    gap: 6px;
+  }
+  
+  .arena-zone-center {
+    padding: 0 6px 10px;
+    gap: 10px;
+  }
+}
+
+/* ========================================
+   АДАПТИВНОСТЬ ДЛЯ МАЛЕНЬКИХ УСТРОЙСТВ
+   ======================================== */
+
+/* Очень маленькие устройства (≤360px) */
+@media (max-width: 360px) {
+  .opponent-panel-root,
+  .player-panel-root {
+    max-width: 100%;
+  }
+  
+  .board-slot {
+    width: 62px;
+    min-width: 55px;
+    height: 90px;
+  }
+  
+  .hand-card {
+    width: 72px;
+    height: 98px;
+    margin: 0 1px;
+  }
+  
+  .arena-player-hand:has(.hand-card:nth-child(4):last-child) {
+    gap: 4px;
+  }
+  
+  .arena-opponent-board,
+  .arena-player-board {
+    gap: 6px;
+    padding: 8px 6px;
+  }
+  
+  .player-info-block,
+  .opponent-info-island {
+    height: 65px;
+  }
+  
+  .turn-indicator-container {
+    gap: 8px;
+    padding: 0 8px;
+  }
+  
+  .turn-text {
+    font-size: 18px;
+  }
+}
+
+/* Широкие экраны и планшеты (≥1024px) */
+@media (min-width: 1024px) {
+  #arena-battlefield-container {
+    max-width: 1000px;
+  }
+  
+  .opponent-panel-root,
+  .player-panel-root,
+  .arena-opponent-board,
+  .arena-player-board,
+  .arena-player-hand,
+  .turn-indicator-container {
+    max-width: 900px;
+  }
+  
+  .board-slot {
+    width: 110px;
+    height: 150px;
+  }
+  
+  .hand-card {
+    width: 140px;
+    height: 192px;
+  }
+  
+  .arena-player-hand:has(.hand-card:nth-child(4):last-child) {
+    gap: 16px;
+  }
+}
+
+/* Очень высокие экраны - ограничиваем растягивание */
+@media (min-height: 1200px) {
+  .arena-zone-top {
+    max-height: 30vh;
+  }
+  
+  .arena-zone-bottom {
+    max-height: 40vh;
+  }
+  
+  .arena-zone-center {
+    max-height: 30vh;
+  }
+}
+
+/* Ландшафтная ориентация для мобильных */
+@media (max-height: 600px) and (orientation: landscape) {
+  .player-info-block {
+    height: 60px;
+  }
+  
+  .opponent-panel-root {
+    height: 75px;
+  }
+  
+  .player-mana-block {
+    height: 30px;
+  }
+  
+  .board-slot {
+    width: 70px;
+    height: 95px;
+  }
+  
+  .hand-card {
+    width: 85px;
+    height: 115px;
+  }
+  
+  .arena-zone-top,
+  .arena-zone-bottom {
+    padding-top: 8px;
+    padding-bottom: 8px;
+  }
+  
+  .turn-indicator-container {
+    margin: 4px auto;
+  }
+}
+
+/* Короткие экраны в целом (высота < 700px) */
+@media (max-height: 700px) {
+  .arena-zone-top {
+    padding: 10px 8px 6px;
+    gap: 8px;
+    min-height: 170px;
+  }
+  
+  .arena-zone-bottom {
+    padding: 0px 8px 12px;
+    gap: 6px;
+    min-height: 250px;
+  }
+  
+  .arena-zone-center {
+    gap: 8px;
+  }
+  
+  .opponent-panel-root {
+    height: 95px;
+  }
+  
+  .player-info-block {
+    height: 80px;
+  }
+  
+  .player-mana-block {
+    height: 36px;
+  }
+  
+  .board-slot {
+    width: 78px;
+    height: 108px;
+  }
+  
+  .hand-card {
+    width: 92px;
+    height: 126px;
+  }
+  
+  .arena-player-hand {
+    min-height: 135px;
+  }
+  
+  .turn-indicator-container {
+    margin: 6px auto;
+    gap: 10px;
+  }
+  
+  .turn-indicator-plaque {
+    padding: 8px 18px;
+  }
+}
+
+/* Очень короткие экраны (высота < 650px) - экстремальная компактность */
+@media (max-height: 650px) and (min-width: 600px) {
+  .arena-zone-top {
+    padding: 8px 8px 4px;
+    gap: 6px;
+    min-height: 150px;
+  }
+  
+  .arena-zone-bottom {
+    padding: 0px 8px 8px;
+    gap: 4px;
+    min-height: 220px;
+  }
+  
+  .opponent-panel-root {
+    height: 80px;
+  }
+  
+  .player-info-block {
+    height: 70px;
+  }
+  
+  .player-mana-block {
+    height: 30px;
+  }
+  
+  .board-slot {
+    width: 70px;
+    height: 95px;
+  }
+  
+  .hand-card {
+    width: 82px;
+    height: 112px;
+  }
+  
+  .arena-player-hand {
+    min-height: 120px;
+  }
+  
+  .card-stat,
+  .unit-stat {
+    width: 26px;
+    height: 26px;
+    font-size: 11px;
+  }
+  
+  .mana-circle {
+    font-size: 24px;
+  }
+  
+  .turn-text {
+    font-size: 20px;
+  }
+}
+
+/* Поддержка устройств с fold/hinge (например, Galaxy Z Fold) */
+@media (min-width: 768px) and (max-width: 1024px) {
+  #arena-battlefield-container {
+    max-width: 900px;
+  }
+  
+  /* Для двухэкранных устройств - центрируем контент */
+  body.arena-page {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  
+  /* Компактная компоновка для fold-устройств */
+  .arena-zone-top,
+  .arena-zone-bottom {
+    flex-shrink: 1;
+  }
+  
+  .arena-zone-center {
+    flex: 1;
+    min-height: 150px;
+  }
+}
+
+/* iPad и планшеты в портретной ориентации */
+@media (min-width: 768px) and (max-width: 834px) and (min-height: 1024px) {
+  .arena-zone-top {
+    padding: 12px 8px 8px;
+    min-height: 200px;
+  }
+  
+  .arena-zone-bottom {
+    padding: 0px 8px 16px;
+    min-height: 280px;
+  }
+  
+  .opponent-panel-root {
+    height: 110px;
+  }
+  
+  .player-info-block {
+    height: 95px;
+  }
+  
+  .player-mana-block {
+    height: 42px;
+  }
+  
+  .board-slot {
+    width: 90px;
+    height: 125px;
+  }
+  
+  .hand-card {
+    width: 105px;
+    height: 145px;
+  }
+}
+
+/* Поддержка горизонтального fold (Samsung Galaxy Z Flip и подобные) */
+@media (min-height: 768px) and (max-height: 900px) and (max-width: 480px) {
+  .arena-zone-center {
+    flex: 1.5; /* Больше места для центральной зоны */
+  }
+  
+  .board-slot {
+    height: 115px;
+  }
+  
+  .hand-card {
+    height: 145px;
+  }
+}
+
+/* ========================================
+   КВАДРАТНЫЕ ЭКРАНЫ (Планшеты, Fold в открытом виде)
+   ======================================== */
+@media (min-aspect-ratio: 1/1) and (min-width: 600px) {
+  /* Компактные отступы для экономии вертикального пространства */
+  .arena-zone-top {
+    padding: 10px 8px 6px;
+    gap: 8px;
+    min-height: 180px;
+  }
+  
+  .arena-zone-bottom {
+    padding: 0px 8px 12px;
+    gap: 6px;
+    min-height: 260px;
+  }
+  
+  .arena-zone-center {
+    padding: 0 8px 8px;
+    gap: 8px;
+  }
+  
+  /* Компактные панели */
+  .opponent-panel-root {
+    height: 100px;
+    gap: 10px;
+  }
+  
+  .player-panel-root {
+    gap: 10px;
+  }
+  
+  .player-info-block {
+    height: 85px;
+  }
+  
+  .player-mana-block {
+    height: 38px;
+  }
+  
+  /* Уменьшенные слоты для экономии места */
+  .board-slot {
+    width: 80px;
+    min-width: 70px;
+    height: 110px;
+  }
+  
+  /* Уменьшенные карты в руке */
+  .hand-card {
+    width: 100px;
+    height: 138px;
+  }
+  
+  .arena-player-hand:has(.hand-card:nth-child(4):last-child) {
+    gap: 12px;
+  }
+  
+  /* Компактный индикатор хода */
+  .turn-indicator-container {
+    margin: 6px auto;
+    gap: 10px;
+  }
+  
+  .turn-indicator-plaque {
+    padding: 8px 20px;
+  }
+  
+  .turn-text {
+    font-size: 24px;
+  }
+  
+  /* Уменьшенная рука игрока */
+  .arena-player-hand {
+    min-height: 140px;
+  }
+}
+
+/* Очень квадратные экраны (почти 1:1) */
+@media (min-aspect-ratio: 3/4) and (max-aspect-ratio: 4/3) and (min-width: 600px) {
+  /* Еще более компактные отступы */
+  .arena-zone-top {
+    padding: 8px 8px 4px;
+    gap: 6px;
+    min-height: 160px;
+  }
+  
+  .arena-zone-bottom {
+    padding: 0px 8px 8px;
+    gap: 4px;
+    min-height: 240px;
+  }
+  
+  /* Минимальные панели */
+  .opponent-panel-root {
+    height: 85px;
+  }
+  
+  .player-info-block {
+    height: 75px;
+  }
+  
+  .player-mana-block {
+    height: 32px;
+  }
+  
+  /* Еще меньше слоты */
+  .board-slot {
+    width: 72px;
+    min-width: 65px;
+    height: 100px;
+  }
+  
+  /* Еще меньше карты */
+  .hand-card {
+    width: 85px;
+    height: 116px;
+  }
+  
+  .arena-player-hand {
+    min-height: 125px;
+  }
+  
+  /* Компактные статы */
+  .card-stat,
+  .unit-stat {
+    width: 28px;
+    height: 28px;
+    font-size: 12px;
+  }
+  
+  .mana-circle {
+    font-size: 26px;
+  }
+}
+
+/* Galaxy Z Fold в развернутом виде (специфичный кейс) */
+@media (min-width: 884px) and (max-width: 920px) and (min-height: 1104px) and (max-height: 1140px) {
+  /* Специальная компактная компоновка для Z Fold */
+  .arena-zone-top {
+    padding: 10px 8px 6px;
+    gap: 6px;
+    min-height: 170px;
+  }
+  
+  .arena-zone-bottom {
+    padding: 0px 8px 10px;
+    gap: 5px;
+    min-height: 250px;
+  }
+  
+  .arena-zone-center {
+    padding: 0 8px 6px;
+    gap: 6px;
+  }
+  
+  .opponent-panel-root {
+    height: 90px;
+  }
+  
+  .player-info-block {
+    height: 80px;
+  }
+  
+  .player-mana-block {
+    height: 35px;
+  }
+  
+  .board-slot {
+    width: 75px;
+    height: 105px;
+  }
+  
+  .hand-card {
+    width: 90px;
+    height: 123px;
+  }
+  
+  .arena-player-hand {
+    min-height: 130px;
+  }
+  
+  .turn-text {
+    font-size: 22px;
+  }
+  
+  .arena-opponent-board,
+  .arena-player-board {
+    gap: 7px;
+    padding: 10px 12px 6px;
+  }
+}
+
+/* ========================================
+   BATTLE LOG
+   ======================================== */
+.battle-log-btn {
+  background: rgba(0, 0, 0, 0.5);
+  border: none;
+  border-radius: 7px;
+  padding: 8px 12px;
+  cursor: pointer;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+  opacity: 0.8;
+  box-shadow: none;
+}
+
+.log-icon {
+  width: 20px;
+  height: 20px;
+  filter: invert(1);
+}
+
+.battle-log-btn:hover {
+  opacity: 1;
+  transform: scale(1.05);
+  background: rgba(0, 0, 0, 0.7);
+}
+
+.battle-log-overlay {
+  position: fixed;
+  top: calc(60px + env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0, 0, 0, 0.85);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-radius: 12px;
+  padding: 16px;
+  z-index: 10001;
+  display: none;
+  flex-direction: column;
+  gap: 8px;
+  width: 320px;
+  max-width: 90vw;
+  max-height: 70vh;
+  overflow-y: auto;
+  pointer-events: auto;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  box-shadow: 0 10px 30px rgba(0,0,0,0.7);
+}
+
+.battle-log-overlay[aria-hidden="false"] {
+  display: flex;
+}
+
+.battle-log-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.log-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #FFFFFF;
+  font-family: 'Futura PT', sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.4;
+  white-space: normal;
+}
+
+.log-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  animation: dotPulse 2s ease-in-out infinite;
+}
+
+.log-dot.player {
+  background-color: #4ADE80; /* Зеленый */
+  box-shadow: 0 0 10px rgba(74, 222, 128, 0.8);
+}
+
+.log-dot.opponent {
+  background-color: #EF4444; /* Красный */
+  box-shadow: 0 0 10px rgba(239, 68, 68, 0.8);
+}
+
+.log-dot.system {
+  background-color: #22D3EE; /* Бирюзовый */
+  box-shadow: 0 0 10px rgba(34, 211, 238, 0.8);
+}
+
+@keyframes dotPulse {
+  0%, 100% { 
+    opacity: 1; 
+    transform: scale(1);
+  }
+  50% { 
+    opacity: 0.7; 
+    transform: scale(0.9);
+  }
+}
+
+.log-row span:last-child {
+  flex: 1;
+}
+
+.log-footer-hint {
+  margin-top: 12px;
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.4);
+  text-align: center;
+  font-weight: 500;
+  letter-spacing: 0.5px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  padding-top: 8px;
+}
+
+/* Разделитель ходов */
+.log-separator {
+  text-align: center;
+  color: #888;
+  font-size: 11px;
+  font-weight: 600;
+  margin: 8px 0;
+  padding: 4px 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  letter-spacing: 1px;
+}
+
+/* СТИЛЬ ДЛЯ СООБЩЕНИЙ МИДОРИИ (⚡) */
+.log-row.log-midoriya {
+  color: #FFD700 !important;
+  font-weight: 900 !important;
+}
+
+/* ВСПЛЫВАЮЩИЙ ТЕКСТ УРОНА */
+.floating-text {
+  position: fixed;
+  pointer-events: none;
+  z-index: 10002;
+  font-family: 'Futura PT', 'Arial Black', sans-serif;
+  font-weight: 900;
+  font-size: 32px;
+  text-shadow: 2px 2px 0 #000, -2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000;
+  transform: translate(-50%, -100%);
+  animation: floatUpFade 1s ease-out forwards;
+}
+
+.damage-text-float {
+  color: #ED230D;
+}
+
+@keyframes floatUpFade {
+  0% { opacity: 0; transform: translate(-50%, 0); }
+  20% { opacity: 1; transform: translate(-50%, -30px); }
+  100% { opacity: 0; transform: translate(-50%, -80px); }
+}
+
+/* ========================================
+   SURRENDER MODAL
+   ======================================== */
+.surrender-modal {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  width: 100vw;
+  height: 100dvh;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+  font-family: 'Futura PT', sans-serif;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+
+.surrender-modal[aria-hidden="false"] {
+  display: flex !important;
+}
+
+.surrender-modal-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+.surrender-modal-card {
+  position: relative;
+  width: 90%;
+  max-width: 320px;
+  background: rgba(15, 5, 25, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 20px;
+  padding: 30px 24px;
+  box-shadow: 0 15px 40px rgba(0, 0, 0, 0.5);
+  z-index: 10000;
+  text-align: center;
+}
+
+.surrender-modal-header {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.surrender-icon {
+  font-size: 40px;
+  line-height: 1;
+}
+
+.surrender-modal-header h2 {
+  font-weight: 900;
+  font-size: 28px;
+  color: #FFFFFF;
+  margin: 0;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.surrender-modal-body {
+  margin-bottom: 24px;
+}
+
+.surrender-modal-body p {
+  font-weight: 500;
+  font-size: 16px;
+  color: rgba(255, 255, 255, 0.9);
+  line-height: 1.4;
+  margin: 0;
+}
+
+.surrender-modal-body b {
+  color: #FF4D4D;
+}
+
+.surrender-modal-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+}
+
+.surrender-modal-actions button {
+  font-family: 'Futura PT', sans-serif;
+  font-weight: 700;
+  font-size: 16px;
+  text-transform: uppercase;
+  padding: 14px;
+  border: none;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.2s;
+  width: 100%;
+}
+
+.surrender-confirm {
+  background: linear-gradient(180deg, #FF4D4D 0%, #B30000 100%);
+  color: #FFFFFF;
+  order: 2; /* Сдаться ниже */
+  font-size: 14px !important;
+  opacity: 0.8;
+}
+
+.surrender-confirm:hover {
+  opacity: 1;
+  transform: scale(1.02);
+}
+
+.surrender-cancel {
+  background: #10B981; /* Emerald */
+  color: #FFFFFF;
+  font-size: 18px !important;
+  padding: 18px !important;
+  order: 1; /* Продолжить выше */
+  box-shadow: 0 4px 15px rgba(16, 185, 129, 0.3);
+}
+
+.surrender-cancel:hover {
+  background: #059669;
+  transform: scale(1.05);
+  box-shadow: 0 6px 20px rgba(16, 185, 129, 0.4);
+}
+
+.surrender-modal-actions button:active {
+  transform: scale(0.98);
+}
+
+.surrender-modal-actions button:active {
+  transform: translateY(0);
+}
+
+/* ========================================
+   BATTLE RESULT MODAL (Victory/Defeat)
+   ======================================== */
+
+/* Overlay */
+.result-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  width: 100vw;
+  height: 100dvh; /* Dynamic Viewport Height */
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+  opacity: 0;
+  transition: opacity 0.4s ease-out;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+
+.result-overlay[aria-hidden="false"] {
+  display: flex !important;
+}
+
+.result-overlay.visible {
+  opacity: 1;
+}
+
+/* КРИТИЧНО: Убеждаемся что модальное окно всегда поверх всех элементов */
+#battle-result-modal {
+  z-index: 10000 !important;
+}
+
+/* Background */
+.result-overlay-bg {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.85);
+  backdrop-filter: blur(8px);
+}
+
+/* Card */
+.result-card {
+  position: relative;
+  width: 90%;
+  max-width: 500px;
+  background: linear-gradient(135deg, #2D0A40 0%, #1A0428 100%);
+  border-radius: 12px;
+  padding: 32px 24px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.8);
+  z-index: 10001;
+  animation: resultSlideIn 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+  transform-origin: center;
+}
+
+@keyframes resultSlideIn {
+  from {
+    opacity: 0;
+    transform: scale(0.8) translateY(30px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+/* Victory variant */
+.result-card.victory {
+  border: 3px solid #FFD700;
+  box-shadow: 0 20px 60px rgba(255, 215, 0, 0.5), 0 0 80px rgba(255, 215, 0, 0.3);
+}
+
+.result-card.victory .result-title {
+  color: #FFD700;
+  text-shadow: 0 0 20px rgba(255, 215, 0, 0.8);
+}
+
+.result-card.victory .result-icon {
+  animation: victoryBounce 0.8s ease-out;
+  filter: drop-shadow(0 0 20px rgba(255, 215, 0, 0.8));
+}
+
+@keyframes victoryBounce {
+  0%, 100% {
+    transform: scale(1);
+  }
+  25% {
+    transform: scale(1.2) rotate(10deg);
+  }
+  50% {
+    transform: scale(0.95) rotate(-10deg);
+  }
+  75% {
+    transform: scale(1.1) rotate(5deg);
+  }
+}
+
+/* Defeat variant */
+.result-card.defeat {
+  border: 3px solid #DC2626;
+  box-shadow: 0 20px 60px rgba(220, 38, 38, 0.4), 0 0 60px rgba(220, 38, 38, 0.2);
+}
+
+.result-card.defeat .result-title {
+  color: #DC2626;
+  text-shadow: 0 0 15px rgba(220, 38, 38, 0.6);
+}
+
+.result-card.defeat .result-icon {
+  animation: defeatShake 0.6s ease-out;
+  filter: drop-shadow(0 0 15px rgba(220, 38, 38, 0.6));
+}
+
+@keyframes defeatShake {
+  0%, 100% {
+    transform: translateX(0);
+  }
+  20% {
+    transform: translateX(-10px);
+  }
+  40% {
+    transform: translateX(10px);
+  }
+  60% {
+    transform: translateX(-8px);
+  }
+  80% {
+    transform: translateX(5px);
+  }
+}
+
+/* Header */
+.result-header {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.result-icon {
+  font-size: 80px;
+  line-height: 1;
+}
+
+.result-title {
+  font-family: 'Futura PT', 'Arial Black', sans-serif;
+  font-weight: 900;
+  font-size: clamp(36px, 8vw, 56px);
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  margin: 0;
+  line-height: 1;
+}
+
+/* Trophy & Coins Section */
+.result-trophy-section,
+.result-coins-section {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 20px;
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 8px;
+}
+
+.trophy-delta-container {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.trophy-icon {
+  font-size: 36px;
+  line-height: 1;
+}
+
+.trophy-delta {
+  font-family: 'Futura PT', 'Arial Black', sans-serif;
+  font-weight: 900;
+  font-size: clamp(32px, 6vw, 48px);
+  line-height: 1;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.8);
+}
+
+.trophy-delta.positive,
+.coins-delta.positive {
+  color: #4ADE80;
+  animation: rewardPulse 1s ease-in-out infinite;
+}
+
+.trophy-delta.negative {
+  color: #DC2626;
+}
+
+@keyframes rewardPulse {
+  0%, 100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.05);
+  }
+}
+
+.trophy-total-container {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.trophy-label {
+  font-family: 'Futura PT', 'Arial Black', sans-serif;
+  font-weight: 700;
+  font-size: clamp(14px, 2.5vw, 18px);
+  color: rgba(255, 255, 255, 0.7);
+  text-transform: uppercase;
+}
+
+.trophy-total {
+  font-family: 'Futura PT', 'Arial Black', sans-serif;
+  font-weight: 900;
+  font-size: clamp(20px, 4vw, 28px);
+  color: #FFD700;
+  text-shadow: 0 2px 6px rgba(255, 215, 0, 0.5);
+}
+
+/* Coins Section (аналогично Trophies) */
+.coins-delta-container {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.coins-icon {
+  font-size: 36px;
+  line-height: 1;
+}
+
+.coins-delta {
+  font-family: 'Futura PT', 'Arial Black', sans-serif;
+  font-weight: 900;
+  font-size: clamp(32px, 6vw, 48px);
+  line-height: 1;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.8);
+}
+
+.coins-total-container {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.coins-label {
+  font-family: 'Futura PT', 'Arial Black', sans-serif;
+  font-weight: 700;
+  font-size: clamp(14px, 2.5vw, 18px);
+  color: rgba(255, 255, 255, 0.7);
+  text-transform: uppercase;
+}
+
+.coins-total {
+  font-family: 'Futura PT', 'Arial Black', sans-serif;
+  font-weight: 900;
+  font-size: clamp(20px, 4vw, 28px);
+  color: #FCD34D;
+  text-shadow: 0 2px 6px rgba(252, 211, 77, 0.5);
+}
+
+/* Rewards Section */
+.result-rewards-section {
+  margin-bottom: 24px;
+  padding: 16px;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 8px;
+}
+
+.rewards-title {
+  font-family: 'Futura PT', 'Arial Black', sans-serif;
+  font-weight: 700;
+  font-size: clamp(16px, 3vw, 20px);
+  color: #FFFFFF;
+  text-transform: uppercase;
+  margin-bottom: 12px;
+  text-align: center;
+}
+
+.rewards-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* Actions */
+.result-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+.result-btn-primary {
+  width: 100%;
+  font-family: 'Futura PT', 'Arial Black', sans-serif;
+  font-weight: 700;
+  font-size: clamp(16px, 3vw, 20px);
+  text-transform: uppercase;
+  padding: 14px 32px;
+  background: #FF9400;
+  color: #222222;
+  border: none;
+  border-radius: 7px;
+  cursor: pointer;
+  transition: all 0.2s;
+  box-shadow: 0 4px 12px rgba(255, 148, 0, 0.4);
+}
+
+.result-btn-share {
+  width: 100%;
+  font-family: 'Futura PT', 'Arial Black', sans-serif;
+  font-weight: 700;
+  font-size: clamp(14px, 2.8vw, 18px);
+  text-transform: uppercase;
+  padding: 12px 24px;
+  background: #24A1DE; /* Telegram Blue */
+  color: #FFFFFF;
+  border: none;
+  border-radius: 7px;
+  cursor: pointer;
+  transition: all 0.2s;
+  text-decoration: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  box-shadow: 0 4px 12px rgba(36, 161, 222, 0.4);
+}
+
+.result-btn-share:hover {
+  background: #28b1f5;
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(36, 161, 222, 0.6);
+}
+
+.result-btn-primary:hover {
+  background: #FFB02E;
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(255, 148, 0, 0.6);
+}
+
+.result-btn-primary:active {
+  transform: translateY(0);
+  box-shadow: 0 2px 8px rgba(255, 148, 0, 0.4);
+}
+
+/* Mobile responsiveness */
+@media (max-width: 480px) {
+  .result-card {
+    padding: 24px 16px;
+    max-width: 95%;
+  }
+  
+  .result-icon {
+    font-size: 60px;
+  }
+  
+  .result-title {
+    font-size: 32px;
+  }
+  
+  .trophy-icon {
+    font-size: 28px;
+  }
+  
+  .trophy-delta {
+    font-size: 28px;
+  }
+  
+  .trophy-total {
+    font-size: 20px;
+  }
+  
+  .result-btn-primary {
+    padding: 12px 24px;
+    font-size: 16px;
+  }
+}
+
+/* ========================================
+   HEAL ANIMATION (Визуальный эффект исцеления)
+   ======================================== */
+
+/* Минималистичный эффект исцеления - простая пульсация с увеличением */
+.player-hp-block.heal-active,
+.opponent-hp-block.heal-active {
+  animation: heal-pulse 0.7s ease-out;
+  color: #4ADE80 !important;
+}
+
+@keyframes heal-pulse {
+  0% {
+    transform: scale(1);
+    filter: brightness(1);
+  }
+  50% {
+    transform: scale(1.1);
+    filter: brightness(1.3) drop-shadow(0 0 10px #4ADE80);
+  }
+  100% {
+    transform: scale(1);
+    filter: brightness(1);
+  }
+}
+
+/* Всплывающий индикатор "+HP" */
+.heal-indicator {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 48px;
+  font-weight: 900;
+  color: #4ADE80;
+  text-shadow: 
+    0 0 10px rgba(74, 222, 128, 1),
+    0 2px 4px rgba(0, 0, 0, 0.8);
+  pointer-events: none;
+  z-index: 100;
+  animation: heal-indicator-rise 0.8s ease-out forwards;
+}
+
+@keyframes heal-indicator-rise {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.5);
+  }
+  20% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1.2);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -150%) scale(0.8);
+  }
+}
+

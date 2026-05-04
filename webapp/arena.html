@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>Арена — ExtraArena</title>
+  <link rel="stylesheet" href="arena-styles.css">
+</head>
+<body class="arena-page">
+  
+  <!-- ARENA BATTLEFIELD CONTAINER -->
+  <div id="arena-battlefield-container">
+    
+    <!-- Surrender Button (White Flag) -->
+    <button class="surrender-button" id="surrender-button" title="Сдаться">
+      🏳️
+    </button>
+
+    <!-- Battle Log Overlay -->
+    <div class="battle-log-overlay" id="battle-log-overlay" aria-hidden="true">
+      <div class="battle-log-rows" id="battle-log-rows">
+        <!-- Last actions will be here -->
+      </div>
+      <div class="log-footer-hint">Нажмите в любом месте, чтобы закрыть</div>
+    </div>
+    
+    <!-- ========== ZONE TOP: OPPONENT ========== -->
+    <div class="arena-zone arena-zone-top">
+      
+      <!-- Opponent Panel (Horizontal Layout) -->
+      <div class="opponent-panel-root">
+        
+        <!-- LEFT ISLAND: Opponent Info Block (2/3) -->
+        <div class="opponent-info-island">
+          
+          <!-- Avatar Section (33% width) -->
+          <div class="opponent-avatar-section">
+            <span class="avatar-letter" id="opponent-avatar-letter">О</span>
+          </div>
+          
+          <!-- Stats Section (66% width) -->
+          <div class="opponent-stats-section">
+            
+            <!-- HP Block (2/3 height) -->
+            <div class="opponent-hp-block">
+              <span class="hp-value-large" id="opponent-hp-text">30</span>
+              <span class="hp-max-text" id="opponent-hp-max-text">/30</span>
+              <img src="../DesignAssets/Arena/HealthPoints.png" alt="HP" class="hp-heart-icon-white">
+              
+              <!-- Status Icons for Hero -->
+              <div class="status-icon-container status-icon-target"><img src="../DesignAssets/Arena/CardEffects/target.png" class="status-icon"></div>
+              <div class="status-icon-container status-icon-heal"><img src="../DesignAssets/Arena/CardEffects/toHeal.png" class="status-icon"></div>
+            </div>
+            
+            <!-- Name Block (1/3 height) -->
+            <div class="opponent-name-block">
+              <span class="opponent-name-text" id="opponent-name-text">ОППОНЕНТ</span>
+            </div>
+            
+          </div>
+          
+        </div>
+        
+        <!-- RIGHT ISLAND: Cards Widget (1/3) -->
+        <div class="opponent-cards-widget">
+          <div class="cards-widget-icon">
+            <img src="../DesignAssets/Arena/CardsAvailable.png" alt="Cards" class="cards-icon-white">
+          </div>
+          <div class="cards-widget-counter">
+            <span class="cards-count-text" id="opponent-hand-count">5</span>
+          </div>
+        </div>
+        
+      </div>
+      
+      <!-- Opponent Board (Slots) -->
+      <div class="arena-board arena-opponent-board" id="opponent-board-zone">
+        <div class="board-slot opponent-slot" data-slot="0"></div>
+        <div class="board-slot opponent-slot" data-slot="1"></div>
+        <div class="board-slot opponent-slot" data-slot="2"></div>
+        <div class="board-slot opponent-slot" data-slot="3"></div>
+        <div class="board-slot opponent-slot" data-slot="4"></div>
+      </div>
+      
+    </div>
+    
+    <!-- ========== ZONE CENTER: BATTLEFIELD ========== -->
+    <div class="arena-zone arena-zone-center">
+      
+      <!-- Player Board (Slots) -->
+      <div class="arena-board arena-player-board" id="player-board-zone">
+        <div class="board-slot player-slot" data-slot="0"></div>
+        <div class="board-slot player-slot" data-slot="1"></div>
+        <div class="board-slot player-slot" data-slot="2"></div>
+        <div class="board-slot player-slot" data-slot="3"></div>
+        <div class="board-slot player-slot" data-slot="4"></div>
+      </div>
+      
+    </div>
+    
+    <!-- ========== ZONE BOTTOM: PLAYER ========== -->
+    <div class="arena-zone arena-zone-bottom">
+      
+      <!-- Turn Indicator (Above Cards) -->
+      <div class="turn-indicator-container">
+        <!-- Battle Log Toggle Button (moved to top) -->
+        <button class="battle-log-btn" id="battle-log-btn" title="Лог боя">
+          <img src="/DesignAssets/Arena/log.png" alt="Log" class="log-icon">
+        </button>
+        <div class="turn-timer-display" id="turn-timer-container">
+          <span class="timer-icon">⏱</span>
+          <span class="timer-value" id="turn-timer-text">25</span>
+        </div>
+        <div class="turn-indicator-plaque" id="turn-indicator-display">
+          <span class="turn-text" id="turn-status-text">Ожидание...</span>
+        </div>
+      </div>
+      
+      <!-- Player Hand -->
+      <div class="arena-player-hand" id="player-hand-zone">
+        <!-- Cards will be injected here -->
+      </div>
+      
+      <!-- Player Panel Root: 66% / 33% Grid -->
+      <div class="player-panel-root">
+        
+        <!-- LEFT STACK (66%): Unified Data Capsule -->
+        <div class="player-data-stack">
+          
+          <!-- INFO BLOCK: Avatar (33%) + Stats (66%) -->
+          <div class="player-info-block">
+            
+            <!-- Avatar Section (33% width) -->
+            <div class="player-avatar-section">
+              <span class="avatar-letter" id="player-avatar-letter">Я</span>
+            </div>
+            
+            <!-- Stats Section (66% width) -->
+            <div class="player-stats-section">
+              
+              <!-- HP Block (2/3 height) -->
+              <div class="player-hp-block">
+                <span class="hp-value-large" id="player-hp-text">24</span>
+                <span class="hp-max-text" id="player-hp-max-text">/30</span>
+                <img src="../DesignAssets/Arena/HealthPoints.png" alt="HP" class="hp-heart-icon-white">
+
+                <!-- Status Icons for Hero -->
+                <div class="status-icon-container status-icon-target"><img src="../DesignAssets/Arena/CardEffects/target.png" class="status-icon"></div>
+                <div class="status-icon-container status-icon-heal"><img src="../DesignAssets/Arena/CardEffects/toHeal.png" class="status-icon"></div>
+              </div>
+              
+              <!-- Name Block (1/3 height) -->
+              <div class="player-name-block">
+                <span class="player-name-text" id="player-name-text">Имя игрока</span>
+              </div>
+              
+            </div>
+            
+          </div>
+          
+          <!-- MANA BLOCK: Counter + Progress Bar -->
+          <div class="player-mana-block">
+            <div class="mana-counter">
+              <span class="mana-counter-text" id="player-mana-text">5</span>
+              <span class="mana-counter-max" id="player-mana-max-text">/10</span>
+            </div>
+            <div class="mana-progressbar">
+              <div class="mana-progressbar-fill" id="player-mana-fill"></div>
+            </div>
+          </div>
+          
+        </div>
+        
+        <!-- RIGHT COLUMN (33%): End Turn Button -->
+        <button class="end-turn-button-ref" id="end-turn-button">
+          <div class="end-turn-icon-ref"></div>
+        </button>
+        
+      </div>
+      
+    </div>
+    
+  </div>
+  
+  <!-- Surrender Modals -->
+  <div class="surrender-modal" id="surrender-modal" aria-hidden="true">
+    <div class="surrender-modal-overlay" data-close="true"></div>
+    <div class="surrender-modal-card">
+      <div class="surrender-modal-header">
+        <div class="surrender-icon">🏳️</div>
+        <h2>Сдаться?</h2>
+      </div>
+      <div class="surrender-modal-body">
+        <p>Если ты сдашься, то мы автоматически засчитаем тебе поражения, <b>а трофеи будут списаны!</b></p>
+      </div>
+      <div class="surrender-modal-actions">
+        <button type="button" class="btn-secondary surrender-cancel" data-action="cancel">Продолжить</button>
+        <button type="button" class="btn-primary surrender-confirm" data-action="confirm">Сдаться</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="surrender-modal surrender-result" id="surrender-result-modal" aria-hidden="true">
+    <div class="surrender-modal-overlay" data-close-result="true"></div>
+    <div class="surrender-modal-card">
+      <div class="surrender-modal-header">
+        <div class="surrender-icon">💔</div>
+        <div>
+          <h2>Вы покинули бой</h2>
+          <p>Сдача зафиксирована.</p>
+        </div>
+      </div>
+      <div class="surrender-modal-body">
+        <p class="surrender-result-text" id="surrender-result-text">
+          Матч завершен поражением. Мы вернем вас в главное меню.
+        </p>
+      </div>
+      <div class="surrender-modal-actions">
+        <button type="button" class="btn-primary" data-action="result-close">Вернуться в меню</button>
+      </div>
+    </div>
+  </div>
+  
+  <!-- Battle Result Modal (Victory/Defeat) -->
+  <div class="result-overlay" id="battle-result-modal" aria-hidden="true">
+    <div class="result-overlay-bg"></div>
+    <div class="result-card">
+      <!-- Result Icon & Title -->
+      <div class="result-header">
+        <div class="result-icon" id="result-icon">🏆</div>
+        <h1 class="result-title" id="result-title">Победа!</h1>
+      </div>
+      
+      <!-- Trophy Section -->
+      <div class="result-trophy-section" id="result-trophy-section">
+        <div class="trophy-delta-container">
+          <span class="trophy-icon">🏆</span>
+          <span class="trophy-delta" id="result-trophy-delta">+25</span>
+        </div>
+        <div class="trophy-total-container">
+          <span class="trophy-label">Всего трофеев:</span>
+          <span class="trophy-total" id="result-trophy-total">1025</span>
+        </div>
+      </div>
+      
+      <!-- Coins Section -->
+      <div class="result-coins-section" id="result-coins-section">
+        <div class="coins-delta-container">
+          <span class="coins-icon">🪙</span>
+          <span class="coins-delta" id="result-coins-delta">+15</span>
+        </div>
+        <div class="coins-total-container">
+          <span class="coins-label">Всего монет:</span>
+          <span class="coins-total" id="result-coins-total">450</span>
+        </div>
+      </div>
+      
+      <!-- Rewards Section (Optional) -->
+      <div class="result-rewards-section" id="result-rewards-section" style="display: none;">
+        <h3 class="rewards-title">Награды:</h3>
+        <div class="rewards-list" id="result-rewards-list">
+          <!-- Rewards will be injected here -->
+        </div>
+      </div>
+      
+      <!-- Actions -->
+      <div class="result-actions">
+        <a href="#" class="result-btn-share" id="result-share-btn" target="_blank">
+          <span>Поделиться результатом</span>
+          <span style="font-size: 20px;">✈️</span>
+        </a>
+        <button type="button" class="result-btn-primary" id="result-close-btn">Вернуться в меню</button>
+      </div>
+    </div>
+  </div>
+  
+  <!-- Arena Background Music -->
+  <audio id="arena-bg-music" loop preload="auto">
+    <source src="../DesignAssets/Arena/Sounds/arena_theme.wav" type="audio/wav">
+  </audio>
+  
+  <!-- Scripts -->
+  <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+  <script src="arena.js"></script>
+  
+</body>
+</html>

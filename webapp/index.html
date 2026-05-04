@@ -1,0 +1,1835 @@
+<!DOCTYPE html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ChibiArena</title>
+    <link rel="stylesheet" href="./styles.css?v=1.4" />
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <audio id="background-music" loop>
+      <source src="/DesignAssets/Sounds/main_theme.mp3" type="audio/mpeg">
+    </audio>
+    <audio id="button-sound" preload="auto">
+      <source src="/DesignAssets/Sounds/button_click.mp3" type="audio/mpeg">
+    </audio>
+    <audio id="battle-mode-sound" preload="auto">
+      <source src="/DesignAssets/Sounds/battle_mode_choose_menu_open.wav" type="audio/wav">
+    </audio>
+    <audio id="resource-purchase-sound" preload="auto">
+      <source src="/DesignAssets/Sounds/resource_purchase.wav" type="audio/wav">
+    </audio>
+    <audio id="case-tap-sound" preload="auto">
+      <source src="/DesignAssets/Sounds/case_tap.wav" type="audio/wav">
+    </audio>
+    <audio id="case-opened-sound" preload="auto">
+      <source src="/DesignAssets/Sounds/CaseOpened.wav" type="audio/wav">
+    </audio>
+    <audio id="case-rewards-sound" preload="auto">
+      <source src="/DesignAssets/Sounds/CaseRewards.wav" type="audio/wav">
+    </audio>
+    <script defer src="./main.js?v=1.4"></script>
+  </head>
+  <body>
+    <!-- Полноэкранный оверлей поиска соперника; включается сразу при старте матчмейкинга -->
+    <div
+      id="searchOverlay"
+      class="search-overlay"
+      style="
+        display: none;
+        position: fixed;
+        inset: 0;
+        z-index: 20000;
+        background: rgba(0, 0, 0, 0.65);
+        backdrop-filter: blur(4px);
+        color: #fff;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+        padding: 24px;
+      "
+    >
+      <div
+        class="search-overlay-box"
+        style="
+          background: rgba(15, 23, 42, 0.8);
+          border: 1px solid rgba(255, 255, 255, 0.2);
+          border-radius: 16px;
+          padding: 22px 24px;
+          max-width: 360px;
+          width: 100%;
+          box-shadow: 0 10px 50px rgba(0, 0, 0, 0.35);
+        "
+      >
+        <div
+          class="search-overlay-title"
+          style="font-size: 20px; font-weight: 800; margin-bottom: 8px; letter-spacing: 0.3px;"
+        >
+          Идет поиск противника...
+        </div>
+        <div
+          data-role="search-overlay-text"
+          style="font-size: 16px; opacity: 0.9; line-height: 1.4;"
+        >
+          Подбираем соперника, это займет пару секунд
+        </div>
+      </div>
+    </div>
+
+    <!-- Экран загрузки -->
+    <div id="loading-screen" class="loading-screen">
+      <!-- Фоновое изображение -->
+      <div class="loading-bg-image"></div>
+      
+      <!-- Логотип V в левом верхнем углу -->
+      <img src="/DesignAssets/LoadingScreen/Copyright_V_logo.png" alt="V" class="loading-v-logo" />
+      
+      <!-- Логотип Extra Arena в центре сверху -->
+      <img src="/DesignAssets/LoadingScreen/Logotype.png" alt="Extra Arena" class="loading-logotype" />
+      
+      <!-- Нижняя панель с информацией о загрузке -->
+      <div class="loading-bottom-panel">
+        <!-- Текст загрузки слева -->
+        <div class="loading-status-text" id="loading-text">Загружаем кейсы...</div>
+        
+        <!-- Процент справа -->
+        <div class="loading-percentage" id="loading-percentage">0%</div>
+      </div>
+      
+      <!-- Прогресс-бар -->
+      <div class="loading-progress-bar-wrapper">
+        <div class="loading-progress-bar-bg"></div>
+        <div class="loading-progress-bar-fill" id="loading-progress-bar">
+          <div class="loading-progress-bar-indicator"></div>
+        </div>
+      </div>
+      
+      <!-- Сообщение о долгой загрузке -->
+      <div class="loading-message" id="loading-message" style="display: none;">
+        Похоже, для наших серверов настали трудные времена. Придется немного подождать...
+      </div>
+    </div>
+
+    <div id="app" style="display: none;">
+      <!-- Верхняя панель с информацией о пользователе -->
+      <header class="top-bar" id="top-bar">
+        <div class="player-info">
+          <div class="player-avatar" id="player-avatar">
+            <img id="avatar-img" src="" alt="" style="display: none;" />
+            <div class="extrapass-badge" id="extrapass-badge" style="display: none;">⚡</div>
+            <span class="rocket-icon" id="rocket-icon" style="display: none;">🚀</span>
+          </div>
+          <div class="player-details">
+            <div class="player-name-wrapper">
+              <div class="player-name" id="player-name">—</div>
+            </div>
+            <div class="player-title" id="player-title">—</div>
+          </div>
+        </div>
+        <div class="resources-wrapper">
+          <div class="resources-bar">
+            <div class="resource-item" data-resource="gems">
+              <span class="resource-icon">💎</span>
+              <span id="resource-gems">0</span>
+            </div>
+            <div class="resource-item" data-resource="coins">
+              <span class="resource-icon">💰</span>
+              <span id="resource-coins">0</span>
+            </div>
+          </div>
+          <button class="menu-button" id="menu-button">
+            ☰
+            <span class="menu-notification-badge" id="menu-notification-badge" style="display: none;"></span>
+          </button>
+        </div>
+      </header>
+
+      <!-- Меню (скрыто по умолчанию) -->
+      <div class="menu-overlay" id="menu-overlay" style="display: none;">
+        <div class="menu-panel">
+          <div class="menu-header">
+            <h3>Меню</h3>
+            <button class="menu-close" id="menu-close">✕</button>
+          </div>
+          <div class="menu-content">
+            <button class="menu-item" data-menu="settings">
+              <span class="menu-item-icon">⚙️</span>
+              <span>Настройки</span>
+            </button>
+            <button class="menu-item" data-menu="mail">
+              <span class="menu-item-icon">📬</span>
+              <span>Почта</span>
+              <span class="menu-item-notification-badge" id="mail-menu-notification-badge" style="display: none;"></span>
+            </button>
+            <button class="menu-item" data-menu="friends">
+              <span class="menu-item-icon">👥</span>
+              <span>Друзья</span>
+            </button>
+            <div class="menu-item-row">
+              <button class="menu-item menu-item-half" data-menu="support">
+                <span class="menu-item-icon">💬</span>
+                <span>Поддержка</span>
+              </button>
+              <button class="menu-item menu-item-half" data-menu="info">
+                <span class="menu-item-icon">ℹ️</span>
+                <span>Информация</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Модальное окно аналитики (при клике на аватарку) -->
+      <div class="modal-overlay" id="analytics-modal" style="display: none;">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h2>📊 Аналитика</h2>
+            <button class="modal-close" data-modal="analytics">✕</button>
+          </div>
+          <div class="modal-body" id="analytics-content">
+            <!-- Контент аналитики будет добавлен через JS -->
+          </div>
+        </div>
+      </div>
+
+      <!-- Модальное окно настроек -->
+      <div class="modal-overlay" id="settings-modal" style="display: none;">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h2>⚙️ Настройки</h2>
+            <button class="modal-close" data-modal="settings">✕</button>
+          </div>
+          <div class="modal-body" id="settings-content">
+            <!-- Контент настроек будет добавлен через JS -->
+          </div>
+          <div class="modal-footer">
+            <button class="btn-secondary" id="reset-settings-btn">По умолчанию</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Модальное окно поддержки -->
+      <div class="modal-overlay" id="support-modal" style="display: none;">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h2>💬 Поддержка</h2>
+            <button class="modal-close" data-modal="support">✕</button>
+          </div>
+          <div class="modal-body">
+            <p>Если у вас возникли вопросы, обратитесь в нашу поддержку:</p>
+            <a href="https://t.me/lqsup" target="_blank" class="support-link">Перейти в поддержку</a>
+          </div>
+        </div>
+      </div>
+
+      <!-- Модальное окно информации -->
+      <div class="modal-overlay" id="info-modal" style="display: none;">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h2>ℹ️ Информация</h2>
+            <button class="modal-close" data-modal="info">✕</button>
+          </div>
+          <div class="modal-body">
+            <div class="info-item">
+              <span class="info-label">ID:</span>
+              <span class="info-value" id="info-user-id">—</span>
+              <button class="copy-btn" data-copy="user-id">📋</button>
+            </div>
+            <div class="info-item">
+              <span class="info-label">Версия:</span>
+              <span class="info-value">1.0.0</span>
+              <button class="copy-btn" data-copy="version">📋</button>
+            </div>
+            <div class="info-links">
+              <a href="https://telegra.ph/Pravila-chestnoj-igry-Fair-Play-ExtraArena-12-01" target="_blank" class="info-link">📜 Правила игры</a>
+              <a href="https://telegra.ph/Polzovatelskoe-soglashenie-ExtraArena-12-01" target="_blank" class="info-link">📄 Пользовательское соглашение</a>
+              <a href="https://telegra.ph/Politika-konfidencialnosti-ExtraArena-12-01" target="_blank" class="info-link">🔒 Политика конфиденциальности</a>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Модальное окно почты -->
+      <div class="modal-overlay" id="mail-modal" style="display: none;">
+        <div class="modal-content modal-large">
+          <div class="modal-header">
+            <h2>📬 Почта</h2>
+            <button class="modal-close" data-modal="mail">✕</button>
+          </div>
+          <div class="modal-body">
+            <div class="mail-filters">
+              <button class="mail-filter-btn active">Все</button>
+              <button class="mail-filter-btn">Награды</button>
+              <button class="mail-filter-btn">Новости</button>
+              <button class="mail-filter-btn">События</button>
+            </div>
+            <div class="mail-list">
+              <!-- Письма будут загружены через API -->
+            </div>
+            <div class="mail-empty-state" style="display: none;">
+              <div class="empty-icon">📭</div>
+              <div class="empty-text">Нет новых сообщений</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Модальное окно друзей -->
+      <div class="modal-overlay" id="friends-modal" style="display: none;">
+        <div class="modal-content modal-large">
+          <div class="modal-header">
+            <h2>👥 Друзья</h2>
+            <button class="modal-close" data-modal="friends">✕</button>
+          </div>
+          <div class="modal-body">
+            <div class="friends-tabs">
+              <button class="friends-tab active" data-tab="friends">Друзья (3)</button>
+              <button class="friends-tab" data-tab="requests">Запросы (2)</button>
+              <button class="friends-tab" data-tab="search">Поиск</button>
+            </div>
+            
+            <div class="friends-tab-content" id="friends-tab-content">
+              <div class="friends-search">
+                <input type="text" class="friends-search-input" placeholder="🔍 Поиск друзей..." />
+              </div>
+              <div class="friends-list-container">
+                <div class="friend-card">
+                  <div class="friend-avatar">A</div>
+                  <div class="friend-info">
+                    <div class="friend-name">AlexPlayer</div>
+                    <div class="friend-stats">🏆 1250 | ⚡ Активен</div>
+                  </div>
+                  <div class="friend-actions">
+                    <button class="friend-action-btn" title="Написать">💬</button>
+                    <button class="friend-action-btn" title="Сыграть">⚔️</button>
+                  </div>
+                </div>
+                <div class="friend-card">
+                  <div class="friend-avatar">M</div>
+                  <div class="friend-info">
+                    <div class="friend-name">MasterGamer</div>
+                    <div class="friend-stats">🏆 890 | ⚡ Был 5 мин назад</div>
+                  </div>
+                  <div class="friend-actions">
+                    <button class="friend-action-btn" title="Написать">💬</button>
+                    <button class="friend-action-btn" title="Сыграть">⚔️</button>
+                  </div>
+                </div>
+                <div class="friend-card">
+                  <div class="friend-avatar">S</div>
+                  <div class="friend-info">
+                    <div class="friend-name">SuperChibi</div>
+                    <div class="friend-stats">🏆 2100 | ⚡ Был 2 часа назад</div>
+                  </div>
+                  <div class="friend-actions">
+                    <button class="friend-action-btn" title="Написать">💬</button>
+                    <button class="friend-action-btn" title="Сыграть">⚔️</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            
+            <div class="friends-tab-content" id="requests-tab-content" style="display: none;">
+              <div class="friend-request-list">
+                <div class="friend-request-item">
+                  <div class="friend-avatar">N</div>
+                  <div class="friend-info">
+                    <div class="friend-name">NewPlayer123</div>
+                    <div class="friend-stats">🏆 450</div>
+                  </div>
+                  <div class="friend-request-actions">
+                    <button class="friend-request-btn accept">✓</button>
+                    <button class="friend-request-btn decline">✕</button>
+                  </div>
+                </div>
+                <div class="friend-request-item">
+                  <div class="friend-avatar">T</div>
+                  <div class="friend-info">
+                    <div class="friend-name">TestUser</div>
+                    <div class="friend-stats">🏆 320</div>
+                  </div>
+                  <div class="friend-request-actions">
+                    <button class="friend-request-btn accept">✓</button>
+                    <button class="friend-request-btn decline">✕</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            
+            <div class="friends-tab-content" id="search-tab-content" style="display: none;">
+              <div class="friends-search-full">
+                <input type="text" class="friends-search-input" placeholder="🔍 Введите ID или ник игрока..." />
+                <button class="btn-primary" style="margin-top: 12px; width: 100%;">Найти</button>
+              </div>
+              <div class="search-results" style="margin-top: 20px;">
+                <div class="search-result-item">
+                  <div class="friend-avatar">P</div>
+                  <div class="friend-info">
+                    <div class="friend-name">ProGamer</div>
+                    <div class="friend-stats">🏆 3500 | ID: 123456789</div>
+                  </div>
+                  <button class="friend-add-btn">+ Добавить</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Основной контент -->
+      <main class="content-area">
+        <!-- Раздел: Арена (главный) -->
+        <section id="arena-section" class="section active">
+          <div class="arena-container">
+            <!-- Блок баттлпасса -->
+            <div class="battlepass-card">
+              <div class="battlepass-header">
+                <div class="battlepass-title-row">
+                  <span class="battlepass-title">⚡ Боевой пропуск</span>
+                  <span class="battlepass-stars">
+                    <span class="stars-icon">⭐</span>
+                    <span id="battlepass-stars-current">0</span>
+                    <span class="stars-separator">/</span>
+                    <span id="battlepass-stars-next">100</span>
+                  </span>
+                </div>
+                <div class="battlepass-season">Сезон <span id="battlepass-season">0</span></div>
+              </div>
+              <div class="battlepass-progress">
+                <div class="progress-bar">
+                  <div class="progress-fill" id="battlepass-progress" style="width: 0%"></div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Блок арены -->
+            <div class="arena-main-card">
+              <button class="info-btn arena-info-btn" data-info="arena" title="Информация об арене">i</button>
+              <div class="arena-shield">
+                <div class="shield-icon">🛡️</div>
+              </div>
+              <div class="arena-name" id="arena-name">Арена новичков</div>
+              <div class="arena-stats-row">
+                <div class="arena-trophies">
+                  <span class="trophy-icon">🏆</span>
+                  <span id="arena-trophies-value">0</span>
+                  <span class="trophies-separator">/</span>
+                  <span id="arena-trophies-next">200</span>
+                </div>
+                <div class="arena-energy-compact" id="arena-energy-compact">
+                  <span class="energy-icon">⚡</span>
+                  <span class="energy-text">
+                    <span id="energy-current-display">5</span><span class="energy-separator">/</span><span id="energy-max-display">5</span>
+                  </span>
+                  <button class="energy-extrapass-hint" id="energy-extrapass-hint" style="display: none;" title="Получите +1 энергию с ExtraPass">+1</button>
+                </div>
+              </div>
+              <div class="arena-actions-main">
+                <button class="battle-btn btn-primary btn-large" id="start-battle">В БОЙ</button>
+                <div class="arena-actions-secondary">
+                  <button class="target-btn" id="training-battle" title="Тренировка и дружеские бои">
+                    <span class="target-icon">🎯</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Блок кейсов -->
+            <div class="cases-widget" id="cases-widget">
+              <div class="cases-widget-content">
+                <div class="cases-icon">📦</div>
+                <div class="cases-info">
+                  <div class="cases-title">Кейсы</div>
+                  <div class="cases-count" id="cases-count">0</div>
+                </div>
+                <button class="cases-action-btn" id="cases-open-btn" style="display: none;">
+                  Открыть
+                </button>
+                <button class="cases-shop-btn" id="cases-shop-btn">
+                  Купить
+                </button>
+              </div>
+            </div>
+
+        </section>
+
+        <!-- Раздел: Магазин -->
+        <section id="shop-section" class="section">
+          <div class="section-container">
+            <!-- Красивый заголовок магазина -->
+            <div class="shop-header">
+              <h2 class="shop-title-main">
+                <span class="shop-title-glow">✨</span>
+                <span class="shop-title-text">МАГАЗИН</span>
+                <span class="shop-title-glow">✨</span>
+              </h2>
+              <p class="shop-subtitle">Откройте для себя эксклюзивные предложения и усильте свою игру!</p>
+            </div>
+            
+            <div class="shop-content">
+              <!-- Игровые наборы -->
+              <div class="shop-category-block">
+                <h3 class="shop-block-title">🎁 Игровые наборы</h3>
+                <div class="shop-items-grid shop-items-compact" id="shop-sets-grid">
+                  <!-- Наборы будут загружаться динамически -->
+                  <div class="shop-empty-state">
+                    <img src="/DesignAssets/Cases/Case.png" alt="Кейс" class="empty-icon" />
+                    <div class="empty-text">Наборы появятся здесь скоро</div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Подписки -->
+              <div class="shop-category-block">
+                <h3 class="shop-block-title">⭐ Подписки</h3>
+                <div class="shop-items-grid shop-items-subscriptions">
+                  <!-- ExtraPass -->
+                  <div class="shop-item-card shop-subscription-card" data-item-type="extrapass" data-item-price="299">
+                    <div class="subscription-badge">EXTRA PASS</div>
+                    <div class="item-image subscription-image">
+                      <div class="item-icon">⭐</div>
+                  </div>
+                    <div class="item-info">
+                      <div class="item-name">ExtraPass</div>
+                      <div class="item-description">Премиум подписка на 30 дней с эксклюзивными привилегиями</div>
+                      <div class="item-stats">
+                        <span class="stat-item">✨ Эксклюзивные награды</span>
+                        <span class="stat-item">🎁 Ежедневные бонусы</span>
+                        <span class="stat-item">⚡ Приоритетная поддержка</span>
+                      </div>
+                    </div>
+                    <button class="item-buy-btn item-price-btn">
+                      <span class="price-value">299</span>
+                      <span class="price-icon">₽</span>
+                    </button>
+                  </div>
+
+                  <!-- ExtraPass Ultra -->
+                  <div class="shop-item-card shop-subscription-card shop-subscription-ultra" data-item-type="extrapass_ultra" data-item-price="599">
+                    <div class="subscription-badge subscription-badge-ultra">EXTRA PASS ULTRA</div>
+                    <div class="item-image subscription-image subscription-image-ultra">
+                      <div class="item-icon">💫</div>
+                    </div>
+                    <div class="item-info">
+                      <div class="item-name">ExtraPass Ultra</div>
+                      <div class="item-description">Максимальная подписка на 30 дней со всеми привилегиями</div>
+                      <div class="item-stats">
+                        <span class="stat-item">💎 Удвоенные награды</span>
+                        <span class="stat-item">🎁 Эксклюзивные предметы</span>
+                        <span class="stat-item">👑 VIP статус</span>
+                      </div>
+                    </div>
+                    <button class="item-buy-btn item-price-btn">
+                      <span class="price-value">599</span>
+                      <span class="price-icon">₽</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Кейсы за гемы -->
+              <div class="shop-category-block">
+                <h3 class="shop-block-title">📦 Кейсы</h3>
+                <div class="shop-items-container shop-cases-container">
+                  <div class="shop-items-grid shop-items-cases" id="shop-cases-grid">
+                  <!-- Кейсы: 40 гемов → 1 кейс -->
+                  <div class="shop-item-card shop-case-card" data-item-type="keys_1" data-item-price="40" data-currency="gems">
+                    <div class="item-image case-image">
+                      <img src="/DesignAssets/Cases/Case.png" alt="Кейс" class="item-icon" />
+                    </div>
+                    <div class="item-info">
+                      <div class="item-name">1 Кейс</div>
+                      <div class="item-description">Базовый набор кейсов</div>
+                    </div>
+                    <button class="item-buy-btn item-price-btn">
+                      <span class="price-value">40</span>
+                      <span class="price-icon">💎</span>
+                    </button>
+                  </div>
+
+                  <!-- Кейсы: 120 гемов → 3 кейса -->
+                  <div class="shop-item-card shop-case-card" data-item-type="keys_3" data-item-price="120" data-currency="gems">
+                    <div class="item-image case-image">
+                      <img src="/DesignAssets/Cases/Case.png" alt="Кейс" class="item-icon" />
+                    </div>
+                    <div class="item-info">
+                      <div class="item-name">3 Кейса</div>
+                      <div class="item-description">Популярный набор</div>
+                    </div>
+                    <button class="item-buy-btn item-price-btn">
+                      <span class="price-value">120</span>
+                      <span class="price-icon">💎</span>
+                    </button>
+                  </div>
+
+                  <!-- Кейсы: 380 гемов → 10 кейсов -->
+                  <div class="shop-item-card shop-case-card" data-item-type="keys_10" data-item-price="380" data-currency="gems">
+                    <div class="item-image case-image">
+                      <img src="/DesignAssets/Cases/Case.png" alt="Кейс" class="item-icon" />
+                    </div>
+                    <div class="item-info">
+                      <div class="item-name">10 Кейсов</div>
+                      <div class="item-description">Большой набор</div>
+                    </div>
+                    <button class="item-buy-btn item-price-btn">
+                      <span class="price-value">380</span>
+                      <span class="price-icon">💎</span>
+                    </button>
+                  </div>
+
+                  <!-- Кейсы: 900 гемов → 25 кейсов -->
+                  <div class="shop-item-card shop-case-card" data-item-type="keys_25" data-item-price="900" data-currency="gems">
+                    <div class="item-image case-image">
+                      <img src="/DesignAssets/Cases/Case.png" alt="Кейс" class="item-icon" />
+                    </div>
+                    <div class="item-info">
+                      <div class="item-name">25 Кейсов</div>
+                      <div class="item-description">Огромный набор</div>
+                    </div>
+                    <button class="item-buy-btn item-price-btn">
+                      <span class="price-value">900</span>
+                      <span class="price-icon">💎</span>
+                    </button>
+                  </div>
+
+                  <!-- Кейсы: 1 700 гемов → 50 кейсов -->
+                  <div class="shop-item-card shop-case-card" data-item-type="keys_50" data-item-price="1700" data-currency="gems">
+                    <div class="item-image case-image">
+                      <img src="/DesignAssets/Cases/Case.png" alt="Кейс" class="item-icon" />
+                    </div>
+                    <div class="item-info">
+                      <div class="item-name">50 Кейсов</div>
+                      <div class="item-description">Максимальный набор</div>
+                    </div>
+                    <button class="item-buy-btn item-price-btn">
+                      <span class="price-value">1 700</span>
+                      <span class="price-icon">💎</span>
+                    </button>
+                  </div>
+
+                  <!-- Кейсы: 3 000 гемов → 100 кейсов -->
+                  <div class="shop-item-card shop-case-card" data-item-type="keys_100" data-item-price="3000" data-currency="gems">
+                    <div class="item-image case-image">
+                      <img src="/DesignAssets/Cases/Case.png" alt="Кейс" class="item-icon" />
+                    </div>
+                    <div class="item-info">
+                      <div class="item-name">100 Кейсов</div>
+                      <div class="item-description">Легендарный набор</div>
+                    </div>
+                    <button class="item-buy-btn item-price-btn">
+                      <span class="price-value">3 000</span>
+                      <span class="price-icon">💎</span>
+                    </button>
+                  </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Гемы за рубли -->
+              <div class="shop-category-block">
+                <h3 class="shop-block-title">💎 Гемы</h3>
+                <div class="shop-items-container shop-gems-container">
+                  <div class="shop-items-grid shop-items-gems" id="shop-gems-grid">
+                  <!-- Гемы: 79 ₽ → 120 гемов -->
+                  <div class="shop-item-card shop-gem-card" data-item-type="gems_120" data-item-price="79">
+                    <div class="item-image gem-image">
+                      <div class="item-icon">💎</div>
+                    </div>
+                    <div class="item-info">
+                      <div class="item-name">120 Гемов</div>
+                      <div class="item-description">Базовый набор гемов</div>
+                    </div>
+                    <button class="item-buy-btn item-price-btn">
+                      <span class="price-value">79</span>
+                      <span class="price-icon">₽</span>
+                    </button>
+                  </div>
+
+                  <!-- Гемы: 249 ₽ → 420 гемов -->
+                  <div class="shop-item-card shop-gem-card" data-item-type="gems_420" data-item-price="249">
+                    <div class="item-image gem-image">
+                      <div class="item-icon">💎</div>
+                    </div>
+                    <div class="item-info">
+                      <div class="item-name">420 Гемов</div>
+                      <div class="item-description">Популярный набор</div>
+                    </div>
+                    <button class="item-buy-btn item-price-btn">
+                      <span class="price-value">249</span>
+                      <span class="price-icon">₽</span>
+                    </button>
+                  </div>
+
+                  <!-- Гемы: 449 ₽ → 800 гемов -->
+                  <div class="shop-item-card shop-gem-card" data-item-type="gems_800" data-item-price="449">
+                    <div class="item-image gem-image">
+                      <div class="item-icon">💎</div>
+                    </div>
+                    <div class="item-info">
+                      <div class="item-name">800 Гемов</div>
+                      <div class="item-description">Большой набор</div>
+                    </div>
+                    <button class="item-buy-btn item-price-btn">
+                      <span class="price-value">449</span>
+                      <span class="price-icon">₽</span>
+                    </button>
+                  </div>
+
+                  <!-- Гемы: 899 ₽ → 1700 гемов -->
+                  <div class="shop-item-card shop-gem-card" data-item-type="gems_1700" data-item-price="899">
+                    <div class="item-image gem-image">
+                      <div class="item-icon">💎</div>
+                    </div>
+                    <div class="item-info">
+                      <div class="item-name">1700 Гемов</div>
+                      <div class="item-description">Огромный набор</div>
+                    </div>
+                    <button class="item-buy-btn item-price-btn">
+                      <span class="price-value">899</span>
+                      <span class="price-icon">₽</span>
+                    </button>
+                  </div>
+
+                  <!-- Гемы: 1 790 ₽ → 3600 гемов -->
+                  <div class="shop-item-card shop-gem-card" data-item-type="gems_3600" data-item-price="1790">
+                    <div class="item-image gem-image">
+                      <div class="item-icon">💎</div>
+                    </div>
+                    <div class="item-info">
+                      <div class="item-name">3600 Гемов</div>
+                      <div class="item-description">Максимальный набор</div>
+                    </div>
+                    <button class="item-buy-btn item-price-btn">
+                      <span class="price-value">1 790</span>
+                      <span class="price-icon">₽</span>
+                    </button>
+                  </div>
+
+                  <!-- Гемы: 3 490 ₽ → 7600 гемов -->
+                  <div class="shop-item-card shop-gem-card" data-item-type="gems_7600" data-item-price="3490">
+                    <div class="item-image gem-image">
+                      <div class="item-icon">💎</div>
+                    </div>
+                    <div class="item-info">
+                      <div class="item-name">7600 Гемов</div>
+                      <div class="item-description">Легендарный набор</div>
+                    </div>
+                    <button class="item-buy-btn item-price-btn">
+                      <span class="price-value">3 490</span>
+                      <span class="price-icon">₽</span>
+                    </button>
+                  </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Монеты за гемы -->
+              <div class="shop-category-block">
+                <h3 class="shop-block-title">💰 Монеты</h3>
+                <div class="shop-items-container shop-coins-container">
+                  <div class="shop-items-grid shop-items-coins" id="shop-coins-grid">
+                  <!-- Монеты: 20 гемов → 300 монет -->
+                  <div class="shop-item-card shop-coin-card" data-item-type="coins_300" data-item-price="20" data-currency="gems">
+                    <div class="item-image coin-image">
+                      <div class="item-icon">💰</div>
+                    </div>
+                    <div class="item-info">
+                      <div class="item-name">300 Монет</div>
+                      <div class="item-description">Базовый набор монет</div>
+                    </div>
+                    <button class="item-buy-btn item-price-btn">
+                      <span class="price-value">20</span>
+                      <span class="price-icon">💎</span>
+                    </button>
+                  </div>
+
+                  <!-- Монеты: 80 гемов → 1 400 монет -->
+                  <div class="shop-item-card shop-coin-card" data-item-type="coins_1400" data-item-price="80" data-currency="gems">
+                    <div class="item-image coin-image">
+                      <div class="item-icon">💰</div>
+                    </div>
+                    <div class="item-info">
+                      <div class="item-name">1 400 Монет</div>
+                      <div class="item-description">Популярный набор</div>
+                    </div>
+                    <button class="item-buy-btn item-price-btn">
+                      <span class="price-value">80</span>
+                      <span class="price-icon">💎</span>
+                    </button>
+                  </div>
+
+                  <!-- Монеты: 250 гемов → 5 000 монет -->
+                  <div class="shop-item-card shop-coin-card" data-item-type="coins_5000" data-item-price="250" data-currency="gems">
+                    <div class="item-image coin-image">
+                      <div class="item-icon">💰</div>
+                    </div>
+                    <div class="item-info">
+                      <div class="item-name">5 000 Монет</div>
+                      <div class="item-description">Большой набор</div>
+                    </div>
+                    <button class="item-buy-btn item-price-btn">
+                      <span class="price-value">250</span>
+                      <span class="price-icon">💎</span>
+                    </button>
+                  </div>
+
+                  <!-- Монеты: 800 гемов → 20 000 монет -->
+                  <div class="shop-item-card shop-coin-card" data-item-type="coins_20000" data-item-price="800" data-currency="gems">
+                    <div class="item-image coin-image">
+                      <div class="item-icon">💰</div>
+                    </div>
+                    <div class="item-info">
+                      <div class="item-name">20 000 Монет</div>
+                      <div class="item-description">Максимальный набор</div>
+                    </div>
+                    <button class="item-buy-btn item-price-btn">
+                      <span class="price-value">800</span>
+                      <span class="price-icon">💎</span>
+                    </button>
+                  </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Раздел: Коллекция -->
+        <section id="collection-section" class="section">
+          <div class="section-container">
+            <div class="collection-content">
+              <!-- Вкладки: Карты / Предметы -->
+              <div class="collection-tabs">
+                <button class="collection-tab active" data-tab="cards">🃏 Карты</button>
+                <button class="collection-tab" data-tab="items">🎒 Предметы</button>
+                <button class="collection-tab" data-tab="cases">📦 Кейсы</button>
+              </div>
+              
+              <!-- Вкладка Карты -->
+              <div class="collection-tab-content active" id="cards-tab-content">
+                <!-- Мои колоды -->
+                <div class="deck-presets-section">
+                  <div class="deck-presets-header">
+                    <h3 class="deck-presets-title">📋 Мои колоды</h3>
+                    <button class="preset-create-btn" id="create-preset-btn" title="Создать новую колоду">➕</button>
+                  </div>
+                  <div class="deck-presets-list" id="deck-presets-list">
+                    <!-- Пресеты будут добавлены через JS -->
+                  </div>
+                </div>
+                
+                <!-- Колода (9 слотов, полный 3x3 ряд для бэкенда) -->
+                <div class="deck-section">
+                  <div class="deck-header">
+                    <div>
+                      <h3 class="deck-title">⚔️ Моя колода</h3>
+                      <div class="deck-power" id="deck-power">Мощь: 0</div>
+                    </div>
+                    <button class="deck-save-btn">💾 Сохранить</button>
+                  </div>
+                  <div class="deck-grid" id="deck-grid">
+                    <div class="deck-slot" data-slot="1">
+                      <div class="slot-empty">+</div>
+                    </div>
+                    <div class="deck-slot" data-slot="2">
+                      <div class="slot-empty">+</div>
+                    </div>
+                    <div class="deck-slot" data-slot="3">
+                      <div class="slot-empty">+</div>
+                    </div>
+                    <div class="deck-slot" data-slot="4">
+                      <div class="slot-empty">+</div>
+                    </div>
+                    <div class="deck-slot" data-slot="5">
+                      <div class="slot-empty">+</div>
+                    </div>
+                    <div class="deck-slot" data-slot="6">
+                      <div class="slot-empty">+</div>
+                    </div>
+                    <div class="deck-slot" data-slot="7">
+                      <div class="slot-empty">+</div>
+                    </div>
+                    <div class="deck-slot" data-slot="8">
+                      <div class="slot-empty">+</div>
+                    </div>
+                    <div class="deck-slot" data-slot="9">
+                      <div class="slot-empty">+</div>
+                    </div>
+                  </div>
+                </div>
+                
+                <!-- Фильтры и список карт -->
+                <div class="cards-section">
+                  <div class="cards-filters">
+                    <div class="filters-header">
+                      <div class="filters-main">
+                        <div class="custom-sort-select-wrapper">
+                          <button class="custom-sort-select" id="cards-sort-select-btn">
+                            <span class="sort-select-text">⚔️ По мощи</span>
+                            <span class="sort-select-arrow">▼</span>
+                          </button>
+                          <div class="custom-sort-dropdown" id="cards-sort-dropdown" style="display: none;">
+                            <div class="sort-option" data-value="power">⚔️ По мощи</div>
+                            <div class="sort-option" data-value="level">📊 По уровню</div>
+                            <div class="sort-option" data-value="upgrade">⬆️ Близость к апгрейду</div>
+                            <div class="sort-option" data-value="date">📅 По дате получения</div>
+                            <div class="sort-option" data-value="name">🔤 По имени</div>
+                          </div>
+                        </div>
+                        <button class="sort-direction-btn" id="sort-direction-btn" title="Направление сортировки">🔽</button>
+                        <button class="filter-toggle-btn" id="rarity-filter-toggle">🔽 Редкости</button>
+                      </div>
+                    </div>
+                    <div class="rarity-filters-collapsible" id="rarity-filters-collapsible" style="display: none;">
+                      <div class="rarity-filters">
+                        <button class="rarity-filter active" data-rarity="all">Все</button>
+                        <button class="rarity-filter" data-rarity="start">Стартовые</button>
+                        <button class="rarity-filter" data-rarity="common">Обычные</button>
+                        <button class="rarity-filter" data-rarity="rare">Редкие</button>
+                        <button class="rarity-filter" data-rarity="superrare">Сверхредкие</button>
+                        <button class="rarity-filter" data-rarity="epic">Эпические</button>
+                        <button class="rarity-filter" data-rarity="legendary">Легендарные</button>
+                        <button class="rarity-filter" data-rarity="mythic">Мифические</button>
+                        <button class="rarity-filter" data-rarity="divine">Божественные</button>
+                        <button class="rarity-filter" data-rarity="limited">Лимитированные</button>
+                      </div>
+                    </div>
+                    <div class="admin-cards-actions" id="admin-cards-actions" style="display: none; margin-top: 12px; gap: 8px;">
+                      <button class="btn-primary btn-small" id="admin-create-card-btn">➕ Добавить карту</button>
+                      <button class="btn-primary btn-small" id="admin-get-all-cards-btn">📥 Получить все карты</button>
+                      <button class="btn-secondary btn-small" id="admin-delete-all-cards-btn">🗑️ Удалить все карты</button>
+                    </div>
+                  <div class="card-stat-legend" style="display: flex; gap: 8px; align-items: center; margin: 10px 0; font-size: 13px; color: var(--chibi-text-muted);">
+                    <span class="card-stat mana">🪄 Мана</span>
+                    <span class="card-stat attack">⚔️ Атака</span>
+                    <span class="card-stat hp">❤️ Здоровье</span>
+                    <span class="card-stat particles">🧪 Частицы</span>
+                    <span class="card-stat coins">💰 Монеты</span>
+                  </div>
+                  </div>
+                  
+                  <div class="cards-grid" id="cards-grid">
+                    <!-- Карты будут добавлены через JS -->
+                    <div class="card-placeholder">
+                      <div class="card-icon">🃏</div>
+                      <div class="card-name">Карта #1</div>
+                      <div class="card-rarity common">Обычная</div>
+                    </div>
+                    <div class="card-placeholder">
+                      <div class="card-icon">🃏</div>
+                      <div class="card-name">Карта #2</div>
+                      <div class="card-rarity rare">Редкая</div>
+                    </div>
+                    <div class="card-placeholder">
+                      <div class="card-icon">🃏</div>
+                      <div class="card-name">Карта #3</div>
+                      <div class="card-rarity epic">Эпическая</div>
+                    </div>
+                    <div class="card-placeholder">
+                      <div class="card-icon">🃏</div>
+                      <div class="card-name">Карта #4</div>
+                      <div class="card-rarity legendary">Легендарная</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              
+              <!-- Вкладка Кейсы -->
+              <div class="collection-tab-content" id="cases-tab-content">
+                <div class="cases-section">
+                  <h3 class="cases-title">📦 Мои кейсы</h3>
+                  <div class="cases-grid" id="cases-grid">
+                    <!-- Кейсы будут добавлены через JS -->
+                  </div>
+                  <div class="cases-empty-state" id="cases-empty-state" style="display: none;">
+                    <img src="/DesignAssets/Cases/Case.png" alt="Кейс" class="empty-icon" />
+                    <div class="empty-text">У вас пока нет кейсов</div>
+                  </div>
+                </div>
+              </div>
+              
+              <!-- Вкладка Предметы -->
+              <div class="collection-tab-content" id="items-tab-content">
+                <div class="items-section">
+                  <div class="items-filters">
+                    <div class="filter-group">
+                      <label>Редкость:</label>
+                      <div class="rarity-filters">
+                        <button class="rarity-filter active" data-rarity="all">Все</button>
+                        <button class="rarity-filter" data-rarity="common">Обычные</button>
+                        <button class="rarity-filter" data-rarity="rare">Редкие</button>
+                        <button class="rarity-filter" data-rarity="superrare">Сверхредкие</button>
+                        <button class="rarity-filter" data-rarity="epic">Эпические</button>
+                        <button class="rarity-filter" data-rarity="legendary">Легендарные</button>
+                        <button class="rarity-filter" data-rarity="mythic">Мифические</button>
+                        <button class="rarity-filter" data-rarity="divine">Божественные</button>
+                        <button class="rarity-filter" data-rarity="limited">Лимитированные</button>
+                      </div>
+                    </div>
+                  </div>
+                  
+                  <div class="items-grid" id="items-grid">
+                    <!-- Предметы будут добавлены через JS -->
+                    <div class="item-placeholder">
+                      <div class="item-icon">🎒</div>
+                      <div class="item-name">Предмет #1</div>
+                      <div class="item-rarity common">Обычный</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Раздел: Сквады -->
+        <section id="squads-section" class="section">
+          <div class="section-container">
+            <h2 class="section-title">👥 Сквады</h2>
+            <div class="squads-content">
+              <div class="placeholder-card">
+                <div class="placeholder-icon">👥</div>
+                <h3 class="placeholder-title">Сквады</h3>
+                <p class="placeholder-text">Сквады скоро будут доступны. Объединяйтесь с друзьями, создавайте команды и участвуйте в командных сражениях за награды!</p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Раздел: Коммьюнити -->
+        <section id="community-section" class="section">
+          <div class="section-container">
+            <h2 class="section-title">🌐 Коммьюнити</h2>
+            <div class="community-content">
+              <!-- Вкладки коммьюнити -->
+              <div class="community-tabs">
+                <button class="community-tab active" data-tab="posts">
+                  <span class="tab-icon">📝</span>
+                  <span class="tab-label">Посты</span>
+                </button>
+                <button class="community-tab" data-tab="chat">
+                  <span class="tab-icon">💬</span>
+                  <span class="tab-label">Чат</span>
+                </button>
+                <button class="community-tab" data-tab="guides">
+                  <span class="tab-icon">📚</span>
+                  <span class="tab-label">Гайды</span>
+                </button>
+              </div>
+
+              <!-- Вкладка Посты -->
+              <div class="community-tab-content active" id="posts-tab">
+                <!-- Кнопка создания поста (только для админа) -->
+                <div class="admin-post-create-btn-container" id="admin-post-create-btn-container" style="display: none;">
+                  <button class="btn-primary" id="create-post-btn">➕ Создать пост</button>
+                </div>
+                <div class="community-posts-list" id="community-posts-list">
+                  <!-- Посты будут добавлены через JS -->
+                </div>
+                <div class="community-empty-state" id="posts-empty-state" style="display: none;">
+                  <div class="empty-icon">📝</div>
+                  <div class="empty-text">Пока нет постов</div>
+                </div>
+              </div>
+
+              <!-- Вкладка Чат -->
+              <div class="community-tab-content" id="chat-tab">
+                <div class="global-chat-header">
+                  <div class="global-chat-icon">🌐</div>
+                  <div class="global-chat-title">Глобальный всеигровой чат</div>
+                  <div class="chat-header-actions">
+                    <button class="chat-fullscreen-btn" id="chat-fullscreen-btn" title="Открыть на весь экран">⛶</button>
+                    <button class="chat-fullscreen-close-btn" id="chat-fullscreen-close-btn" title="Выйти из полноэкранного режима" style="display: none;">✕</button>
+                  </div>
+                </div>
+                <div class="global-chat-container">
+                  <div class="chat-messages" id="chat-messages">
+                    <!-- Сообщения будут добавлены через JS -->
+                  </div>
+                  <div class="chat-input-container">
+                    <input type="text" class="chat-input" id="chat-input" placeholder="Написать сообщение..." maxlength="500" />
+                    <button class="chat-send-btn" id="chat-send-btn">Отправить</button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Вкладка Гайды -->
+              <div class="community-tab-content" id="guides-tab">
+                <div class="guides-list" id="guides-list">
+                  <div class="guide-card">
+                    <div class="guide-icon">📖</div>
+                    <div class="guide-content">
+                      <h3 class="guide-title">Начало игры</h3>
+                      <p class="guide-description">Узнайте основы игры, как собирать колоду и участвовать в боях</p>
+                    </div>
+                  </div>
+                  <div class="guide-card">
+                    <div class="guide-icon">⚔️</div>
+                    <div class="guide-content">
+                      <h3 class="guide-title">Стратегии боя</h3>
+                      <p class="guide-description">Изучите различные тактики и стратегии для победы в сражениях</p>
+                    </div>
+                  </div>
+                  <div class="guide-card">
+                    <div class="guide-icon">🃏</div>
+                    <div class="guide-content">
+                      <h3 class="guide-title">Сборка колоды</h3>
+                      <p class="guide-description">Советы по созданию эффективных колод для разных режимов игры</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <!-- Нижняя панель навигации -->
+      <nav class="bottom-nav">
+        <button class="nav-item" data-section="shop">
+          <span class="nav-icon">🛒</span>
+          <span class="nav-label">Магазин</span>
+        </button>
+        <button class="nav-item" data-section="collection">
+          <span class="nav-icon">📚</span>
+          <span class="nav-label">Коллекция</span>
+        </button>
+        <button class="nav-item active" data-section="arena">
+          <span class="nav-icon">⚔️</span>
+          <span class="nav-label">Арена</span>
+        </button>
+        <button class="nav-item" data-section="squads">
+          <span class="nav-icon">👥</span>
+          <span class="nav-label">Сквады</span>
+        </button>
+        <button class="nav-item" data-section="community">
+          <span class="nav-icon">🌐</span>
+          <span class="nav-label">Коммьюнити</span>
+        </button>
+      </nav>
+    </div>
+
+    <!-- Модальное окно выбора режима боя -->
+    <div class="modal-overlay" id="battle-mode-modal" style="display: none;">
+      <div class="modal-content modal-large">
+        <div class="modal-header">
+          <h2>⚔️ Выбор режима боя</h2>
+          <button class="modal-close" data-modal="battle-mode">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="battle-modes">
+            <label class="battle-mode-item" data-mode="classic" data-match-type="ranked">
+              <input type="radio" name="battle-mode" value="classic" class="mode-radio">
+              <div class="mode-checkmark"></div>
+              <div class="mode-content">
+                <div class="mode-icon">⚔️</div>
+                <div class="mode-info">
+                  <div class="mode-name">Классика</div>
+                  <div class="mode-time">Время игры: 1-3 минуты</div>
+                  <div class="mode-desc">Классический режим - отличный выбор для быстрой игры, где стоит полагаться на свой выбор карт и умение составлять колоды</div>
+                </div>
+              </div>
+            </label>
+            <label class="battle-mode-item" data-mode="siege" data-match-type="ranked">
+              <input type="radio" name="battle-mode" value="siege" class="mode-radio">
+              <div class="mode-checkmark"></div>
+              <div class="mode-content">
+                <div class="mode-icon">🏰</div>
+                <div class="mode-info">
+                  <div class="mode-name">Осада</div>
+                  <div class="mode-time">Время игры: 3-5 минут</div>
+                  <div class="mode-desc">Осада - режим для любителей стратегического планирования. Здесь победа - не только карты, но и тактика! И награды больше</div>
+                </div>
+              </div>
+            </label>
+            <label class="battle-mode-item" data-mode="fortune" data-match-type="ranked">
+              <input type="radio" name="battle-mode" value="fortune" class="mode-radio">
+              <div class="mode-checkmark"></div>
+              <div class="mode-content">
+                <div class="mode-icon">🎲</div>
+                <div class="mode-info">
+                  <div class="mode-name">Фортуна</div>
+                  <div class="mode-time">Время игры: 1-3 минуты</div>
+                  <div class="mode-desc">Фортуна - гейммод для способных поймать удачу за хвост. Колода формируется случайно из ваших карт. Много веселья и приятной интриги</div>
+                </div>
+              </div>
+            </label>
+            <label class="battle-mode-item" data-mode="dungeon" data-match-type="ranked">
+              <input type="radio" name="battle-mode" value="dungeon" class="mode-radio">
+              <div class="mode-checkmark"></div>
+              <div class="mode-content">
+                <div class="mode-icon">🕳️</div>
+                <div class="mode-info">
+                  <div class="mode-name">Подземелье</div>
+                  <div class="mode-time">Время игры: от 1 минуты</div>
+                  <div class="mode-desc">Подземелье - сотни вражеских карт, потерянных при вайпе. Прореди их ряды и получи награды!</div>
+                </div>
+              </div>
+            </label>
+            <label class="battle-mode-item" data-mode="classic" data-match-type="training">
+              <input type="radio" name="battle-mode" value="training" class="mode-radio">
+              <div class="mode-checkmark"></div>
+              <div class="mode-content">
+                <div class="mode-icon">🤖</div>
+                <div class="mode-info">
+                  <div class="mode-name">Тренировка с ИИ</div>
+                  <div class="mode-time">Время игры: 1-3 минуты</div>
+                  <div class="mode-desc">Тренируйтесь против искусственного интеллекта без затрат энергии и наград. Идеально для проверки новых колод!</div>
+                </div>
+              </div>
+            </label>
+          </div>
+          
+          <div class="difficulty-selection" id="difficulty-selection" style="display: none; margin-top: 20px; padding: 12px; background: rgba(255, 255, 255, 0.05); border-radius: 12px;">
+            <div class="selection-title" style="margin-bottom: 12px; font-weight: 700; font-size: 15px;">Уровень сложности</div>
+            <div class="difficulty-options" style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px;">
+              <label class="difficulty-item" data-difficulty="easy" style="cursor: pointer;">
+                <input type="radio" name="battle-difficulty" value="easy" class="difficulty-radio">
+                <div class="difficulty-card" style="padding: 10px; border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; text-align: center;">
+                  Легкий
+                </div>
+              </label>
+              <label class="difficulty-item" data-difficulty="normal" style="cursor: pointer;">
+                <input type="radio" name="battle-difficulty" value="normal" class="difficulty-radio">
+                <div class="difficulty-card" style="padding: 10px; border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; text-align: center;">
+                  Нормальный
+                </div>
+              </label>
+              <label class="difficulty-item" data-difficulty="hard" style="cursor: pointer;">
+                <input type="radio" name="battle-difficulty" value="hard" class="difficulty-radio">
+                <div class="difficulty-card" style="padding: 10px; border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; text-align: center;">
+                  Сложный
+                </div>
+              </label>
+              <label class="difficulty-item" data-difficulty="extreme" style="cursor: pointer;">
+                <input type="radio" name="battle-difficulty" value="extreme" class="difficulty-radio">
+                <div class="difficulty-card" style="padding: 10px; border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; text-align: center;">
+                  Экстрим
+                </div>
+              </label>
+            </div>
+          </div>
+
+          <div class="deck-selection" id="deck-selection" style="display: none;">
+            <div class="selection-title">Выбор колоды</div>
+            <div class="decks-list" id="decks-list">
+              <!-- Колоды будут загружены через JS -->
+            </div>
+          </div>
+          <div class="battle-play-footer" id="battle-play-footer" style="display: none;">
+            <button class="btn-primary btn-play-battle" id="play-battle-btn" disabled>ИГРАТЬ</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Модальное окно тренировки/друзей -->
+    <div class="modal-overlay" id="training-modal" style="display: none;">
+      <div class="modal-content modal-large">
+        <div class="modal-header">
+          <h2>🎯 Тренировка и дружеские бои</h2>
+          <button class="modal-close" data-modal="training">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="training-notice">
+            <p>⚠️ За бои через тренировку игрок не получит награды, но и энергия не потратится</p>
+          </div>
+          <div class="training-options" id="training-options">
+            <div class="training-option" id="training-friends">
+              <div class="option-icon">👥</div>
+              <div class="option-name">Игра с друзьями</div>
+              <div class="option-desc">Выберите друга для дружеского боя</div>
+            </div>
+            <div class="training-option" id="training-bot">
+              <div class="option-icon">🤖</div>
+              <div class="option-name">Бот-тренер</div>
+              <div class="option-desc">Тренируйтесь против ИИ</div>
+            </div>
+          </div>
+          
+          <!-- Выбор режима для друзей -->
+          <div class="friends-mode-selection" id="friends-mode-selection" style="display: none;">
+            <div class="selection-title">Выбор режима</div>
+            <div class="training-modes-list">
+              <label class="training-mode-item" data-mode="classic">
+                <input type="radio" name="training-mode" value="classic" class="training-mode-radio">
+                <div class="training-mode-checkmark"></div>
+                <div class="training-mode-content">
+                  <div class="training-mode-icon">⚔️</div>
+                  <div class="training-mode-info">
+                    <div class="training-mode-name">Классика</div>
+                    <div class="training-mode-time">Время игры: 1-3 минуты</div>
+                  </div>
+                </div>
+              </label>
+              <label class="training-mode-item" data-mode="siege">
+                <input type="radio" name="training-mode" value="siege" class="training-mode-radio">
+                <div class="training-mode-checkmark"></div>
+                <div class="training-mode-content">
+                  <div class="training-mode-icon">🏰</div>
+                  <div class="training-mode-info">
+                    <div class="training-mode-name">Осада</div>
+                    <div class="training-mode-time">Время игры: 3-5 минут</div>
+                  </div>
+                </div>
+              </label>
+              <label class="training-mode-item" data-mode="fortune">
+                <input type="radio" name="training-mode" value="fortune" class="training-mode-radio">
+                <div class="training-mode-checkmark"></div>
+                <div class="training-mode-content">
+                  <div class="training-mode-icon">🎲</div>
+                  <div class="training-mode-info">
+                    <div class="training-mode-name">Фортуна</div>
+                    <div class="training-mode-time">Время игры: 1-3 минуты</div>
+                  </div>
+                </div>
+              </label>
+            </div>
+            <div class="friends-selection" id="friends-selection" style="display: none;">
+              <div class="selection-title">Выбор друга</div>
+              <div class="friends-list">
+                <div class="friend-item">Друг #1</div>
+                <div class="friend-item">Друг #2</div>
+                <div class="friend-item">Друг #3</div>
+              </div>
+            </div>
+          </div>
+          
+          <!-- Выбор уровня сложности для бота -->
+          <div class="bot-difficulty" id="bot-difficulty" style="display: none;">
+            <div class="selection-title">Выбор уровня сложности</div>
+            <label class="difficulty-item" data-difficulty="easy">
+              <input type="radio" name="difficulty" value="easy" class="difficulty-radio">
+              <div class="difficulty-checkmark"></div>
+              <div class="difficulty-content">
+                <div class="difficulty-name">Легкий</div>
+                <div class="difficulty-desc">Бот играет без каких-либо бонусов. Машина не всегда умнее, и без бонусов может и проиграть, но для тренировки сойдет</div>
+              </div>
+            </label>
+            <label class="difficulty-item" data-difficulty="normal">
+              <input type="radio" name="difficulty" value="normal" class="difficulty-radio">
+              <div class="difficulty-checkmark"></div>
+              <div class="difficulty-content">
+                <div class="difficulty-name">Нормальный</div>
+                <div class="difficulty-desc">Бот получает ряд преимуществ. Самое то для тех, кто уже успел набраться опыта в сражениях</div>
+              </div>
+            </label>
+            <label class="difficulty-item" data-difficulty="hard">
+              <input type="radio" name="difficulty" value="hard" class="difficulty-radio">
+              <div class="difficulty-checkmark"></div>
+              <div class="difficulty-content">
+                <div class="difficulty-name">Сложный</div>
+                <div class="difficulty-desc">Бонусов боту больше, а игрок получает не то, чтобы слишком, но все же неприятные дебаффы</div>
+              </div>
+            </label>
+            <label class="difficulty-item" data-difficulty="extreme">
+              <input type="radio" name="difficulty" value="extreme" class="difficulty-radio">
+              <div class="difficulty-checkmark"></div>
+              <div class="difficulty-content">
+                <div class="difficulty-name">Экстрим</div>
+                <div class="difficulty-desc">Мы дали боту все, что только можно, а у игрока все задали. Эта игра точно вам запомнится</div>
+              </div>
+            </label>
+          </div>
+          
+          <!-- Кнопка "Играть" для тренировки -->
+          <div class="training-play-footer" id="training-play-footer" style="display: none;">
+            <button class="btn-primary btn-play-training" id="play-training-btn" disabled>ИГРАТЬ</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Модальное окно энергии -->
+    <div class="modal-overlay" id="energy-modal" style="display: none;">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2>⚡ Энергия</h2>
+          <button class="modal-close" data-modal="energy">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="energy-info">
+            <div class="energy-current">
+              <span class="energy-label">Текущая энергия:</span>
+              <span class="energy-value" id="energy-current">5</span>
+              <span class="energy-max" id="energy-max">/ 5</span>
+            </div>
+            <div class="energy-cd">
+              <span class="cd-label">Восстановление:</span>
+              <span class="cd-value" id="energy-cd">1 час</span>
+            </div>
+            <div class="energy-reset">
+              <button class="btn-secondary" id="energy-reset-btn">Сбросить КД (5 💎 за энергию)</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Модальное окно информации о ресурсах -->
+    <div class="modal-overlay" id="resource-info-modal" style="display: none;">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2 id="resource-info-title">💎 Gems</h2>
+          <button class="modal-close" onclick="document.getElementById('resource-info-modal').style.display='none'">✕</button>
+        </div>
+        <div class="modal-body">
+          <div id="resource-info-content">
+            <p>Информация о ресурсе...</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Модальное окно информации об арене/энергии -->
+    <div class="modal-overlay" id="info-tooltip-modal" style="display: none;">
+      <div class="modal-content modal-small">
+        <div class="modal-header">
+          <h2 id="info-tooltip-title">Информация</h2>
+          <button class="modal-close" onclick="document.getElementById('info-tooltip-modal').style.display='none'">✕</button>
+        </div>
+        <div class="modal-body">
+          <div id="info-tooltip-content">
+            <p>Информация...</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Кастомное уведомление -->
+    <div class="game-notification" id="game-notification" style="display: none;">
+      <div class="notification-content">
+        <div class="notification-icon" id="notification-icon">ℹ️</div>
+        <div class="notification-text" id="notification-text"></div>
+      </div>
+    </div>
+
+    <!-- Кастомное модальное окно для alert -->
+    <div class="modal-overlay game-alert-modal" id="game-alert-modal" style="display: none;">
+      <div class="game-alert-content">
+        <div class="game-alert-header">
+          <div class="game-alert-icon" id="game-alert-icon">ℹ️</div>
+          <button class="game-alert-close" id="game-alert-close">✕</button>
+        </div>
+        <div class="game-alert-body">
+          <div class="game-alert-message" id="game-alert-message"></div>
+        </div>
+        <div class="game-alert-footer">
+          <button class="game-alert-btn" id="game-alert-ok">OK</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Кастомное модальное окно для confirm -->
+    <div class="modal-overlay game-confirm-modal" id="game-confirm-modal" style="display: none;">
+      <div class="game-confirm-content">
+        <div class="game-confirm-header">
+          <div class="game-confirm-icon" id="game-confirm-icon">⚠️</div>
+          <button class="game-confirm-close" id="game-confirm-close">✕</button>
+        </div>
+        <div class="game-confirm-body">
+          <div class="game-confirm-message" id="game-confirm-message"></div>
+        </div>
+        <div class="game-confirm-footer">
+          <button class="game-confirm-btn game-confirm-btn-cancel" id="game-confirm-cancel">Отмена</button>
+          <button class="game-confirm-btn game-confirm-btn-confirm" id="game-confirm-ok">Подтвердить</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Модальное окно выбора метода оплаты -->
+    <div class="modal-overlay payment-method-modal-overlay" id="payment-method-modal" style="display: none;">
+      <div class="payment-method-modal-content">
+        <div class="payment-method-modal-header">
+          <h2 class="payment-method-modal-title">Выберите способ оплаты</h2>
+          <button class="payment-method-modal-close" id="payment-method-modal-close">✕</button>
+        </div>
+        <div class="payment-method-modal-body">
+          <!-- Опция 1: Telegram Stars -->
+          <div class="payment-method-option payment-method-stars" data-method="stars">
+            <div class="payment-method-icon-wrapper">
+              <div class="payment-method-icon stars-icon">⭐</div>
+            </div>
+            <div class="payment-method-info">
+              <div class="payment-method-name">Оплатить Stars</div>
+              <div class="payment-method-price" id="payment-method-stars-price">
+                <span class="payment-price-value">—</span>
+                <span class="payment-price-label"> Stars</span>
+              </div>
+            </div>
+            <div class="payment-method-checkmark">✓</div>
+          </div>
+
+          <!-- Опция 2: Банковская карта (Юкасса) -->
+          <div class="payment-method-option payment-method-card" data-method="yookassa">
+            <div class="payment-method-badges">
+              <span class="payment-method-badge badge-profitable">Выгодно</span>
+              <span class="payment-method-badge badge-recommended">Рекомендуем</span>
+            </div>
+            <div class="payment-method-icon-wrapper">
+              <div class="payment-method-icon card-icon">💳</div>
+            </div>
+            <div class="payment-method-info">
+              <div class="payment-method-name">Банковская карта</div>
+              <div class="payment-method-price" id="payment-method-card-price">
+                <span class="payment-price-value">—</span>
+                <span class="payment-price-label"> ₽</span>
+              </div>
+            </div>
+            <div class="payment-method-checkmark">✓</div>
+          </div>
+        </div>
+        <div class="payment-method-modal-footer">
+          <button class="payment-method-cancel-btn" id="payment-method-cancel-btn">Отмена</button>
+          <div class="payment-method-footer-links">
+            <a href="https://telegra.ph/Politika-vozvrata-sredstv-Refund-Policy-12-01" target="_blank" class="payment-method-refund-link">Политика возвратов</a>
+            <a href="https://telegra.ph/Politika-vozvrata-sredstv-Refund-Policy-12-01" target="_blank" class="payment-method-refund-link">Условия возврата</a>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Модальное окно инструкций по оплате через Telegram Stars -->
+    <div class="modal-overlay stars-payment-instruction-modal" id="stars-payment-instruction-modal" style="display: none;">
+      <div class="stars-payment-instruction-content">
+        <div class="stars-payment-instruction-header">
+          <div class="stars-payment-instruction-icon">⭐</div>
+          <h2 class="stars-payment-instruction-title">Оплата через Telegram Stars</h2>
+          <button class="stars-payment-instruction-close" id="stars-payment-instruction-close">✕</button>
+        </div>
+        <div class="stars-payment-instruction-body">
+          <div class="stars-payment-instruction-main">
+            <p class="stars-payment-instruction-text">
+              Инвойс для оплаты отправлен в чат с ботом. Пожалуйста, проверьте сообщения в Telegram.
+            </p>
+            <div class="stars-payment-instruction-steps">
+              <div class="instruction-step">
+                <div class="step-number">1</div>
+                <div class="step-text">Откройте чат с ботом в Telegram</div>
+              </div>
+              <div class="instruction-step">
+                <div class="step-number">2</div>
+                <div class="step-text">Найдите сообщение с инвойсом и нажмите "Оплатить"</div>
+              </div>
+              <div class="instruction-step">
+                <div class="step-number">3</div>
+                <div class="step-text">Подтвердите оплату Telegram Stars</div>
+              </div>
+              <div class="instruction-step">
+                <div class="step-number">4</div>
+                <div class="step-text">Дождитесь обработки платежа</div>
+              </div>
+            </div>
+          </div>
+          <div class="stars-payment-instruction-important">
+            <div class="important-icon">⚠️</div>
+            <div class="important-content">
+              <div class="important-title">Важно!</div>
+              <div class="important-text">
+                Если после оплаты вы не получили товар, <strong>закройте и снова откройте приложение</strong>.
+                Награды будут начислены автоматически после перезапуска.
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="stars-payment-instruction-footer">
+          <button class="btn-primary stars-payment-instruction-btn" id="stars-payment-instruction-ok-btn">Понятно</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Страница ожидания платежа -->
+    <div class="modal-overlay" id="payment-waiting-modal" style="display: none;">
+      <div class="modal-content" style="max-width: 400px; text-align: center;">
+        <div class="modal-header">
+          <h2>💳 Ожидание оплаты</h2>
+        </div>
+        <div class="modal-body">
+          <div style="padding: 30px 20px;">
+            <div style="font-size: 64px; margin-bottom: 20px; animation: pulse 2s infinite;">⏳</div>
+            <h3 style="margin-bottom: 15px;">Ожидание подтверждения платежа</h3>
+            <p style="color: #666; margin-bottom: 20px;" id="payment-waiting-text">
+              Пожалуйста, завершите оплату на странице YooKassa.<br>
+              После успешной оплаты вы автоматически вернетесь сюда.
+            </p>
+            <div class="payment-status" id="payment-status" style="display: none;">
+              <div class="payment-status-icon" id="payment-status-icon"></div>
+              <div class="payment-status-text" id="payment-status-text"></div>
+            </div>
+            <div style="margin-top: 20px;">
+              <button class="btn-secondary" id="payment-waiting-close" style="display: none;">Закрыть</button>
+              <button class="btn-secondary" id="payment-waiting-cancel" style="display: block; margin-top: 12px;">Отмена</button>
+              <div style="margin-top: 16px; text-align: center;">
+                <a href="https://telegra.ph/Politika-vozvrata-sredstv-Refund-Policy-12-01" target="_blank" style="color: var(--chibi-text-muted); font-size: 12px; text-decoration: underline;">Политика возвратов</a>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Всплывающее окно успешной покупки -->
+    <div class="modal-overlay purchase-success-modal" id="purchase-success-modal" style="display: none;">
+      <div class="modal-content purchase-success-content">
+        <div class="purchase-success-header">
+          <div class="purchase-success-icon">🎉</div>
+          <h2 class="purchase-success-title">Покупка успешна!</h2>
+        </div>
+        <div class="purchase-success-body">
+          <div class="purchase-success-message" id="purchase-success-message">
+            Ваш платеж успешно обработан
+          </div>
+          <div class="purchase-rewards-container" id="purchase-rewards-container">
+            <!-- Награды будут добавлены динамически -->
+          </div>
+        </div>
+        <div class="purchase-success-footer">
+          <button class="btn-primary purchase-success-btn" id="purchase-success-ok-btn">Отлично!</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Модальное окно промокодов -->
+    <div class="modal-overlay" id="promocode-modal" style="display: none;">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2>🎟️ Промокод</h2>
+          <button class="modal-close" data-modal="promocode">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="promocode-input-wrapper">
+            <input type="text" class="promocode-input" id="promocode-input" placeholder="Введите промокод" maxlength="50" />
+            <button class="btn-primary" id="promocode-submit-btn">Активировать</button>
+          </div>
+          <div class="promocode-result" id="promocode-result" style="display: none;"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Модальное окно создания поста (только для админа) -->
+    <div class="modal-overlay" id="create-post-modal" style="display: none;">
+      <div class="modal-content modal-large">
+        <div class="modal-header">
+          <h2>📝 Создать пост</h2>
+          <button class="modal-close" data-modal="create-post">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="post-form">
+            <div class="form-group">
+              <label for="post-title-input">Заголовок</label>
+              <input type="text" class="form-input" id="post-title-input" placeholder="Введите заголовок поста" maxlength="200" />
+            </div>
+            <div class="form-group">
+              <label for="post-content-input">Содержание</label>
+              <textarea class="form-textarea" id="post-content-input" placeholder="Введите текст поста" rows="8" maxlength="5000"></textarea>
+              <div class="form-char-count">
+                <span id="post-content-char-count">0</span> / 5000
+              </div>
+            </div>
+            <div class="form-group">
+              <label for="post-photo-input">Изображение (file_id из Telegram)</label>
+              <input type="text" class="form-input" id="post-photo-input" placeholder="Опционально: file_id изображения" />
+              <small class="form-hint">Отправьте изображение боту и скопируйте file_id</small>
+            </div>
+            <div class="form-actions">
+              <button class="btn-secondary" data-modal="create-post">Отмена</button>
+              <button class="btn-primary" id="post-submit-btn">Опубликовать</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Модальное окно кубика -->
+    <div class="modal-overlay dice-modal-overlay" id="dice-modal" style="display: none;">
+      <div class="dice-modal-content">
+        <div class="dice-modal-header">
+          <h2 class="dice-modal-title">🎲 Счастливый кубик</h2>
+          <button class="dice-modal-close" id="dice-modal-close">✕</button>
+        </div>
+        <div class="dice-modal-body">
+          <div class="dice-modal-dice">
+            <button class="dice-modal-btn" id="dice-modal-btn" disabled>
+              <div class="dice-modal-icon" id="dice-modal-icon">🎲</div>
+              <div class="dice-modal-result" id="dice-modal-result" style="display: none;"></div>
+            </button>
+          </div>
+          <div class="dice-modal-rewards">
+            <div class="dice-reward-item">
+              <span class="reward-value">6</span>
+              <span class="reward-text">= 5 💎</span>
+            </div>
+            <div class="dice-reward-item">
+              <span class="reward-value">5</span>
+              <span class="reward-text">= 50 💰</span>
+            </div>
+            <div class="dice-reward-item">
+              <span class="reward-value">4</span>
+              <span class="reward-text">= 40 💰</span>
+            </div>
+            <div class="dice-reward-item">
+              <span class="reward-value">3</span>
+              <span class="reward-text">= 30 💰</span>
+            </div>
+            <div class="dice-reward-item">
+              <span class="reward-value">2</span>
+              <span class="reward-text">= 20 💰</span>
+            </div>
+            <div class="dice-reward-item">
+              <span class="reward-value">1</span>
+              <span class="reward-text">= 10 💰</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Модальное окно предложения включить уведомления -->
+    <div class="modal-overlay dice-notification-prompt-overlay" id="dice-notification-prompt" style="display: none;">
+      <div class="dice-notification-prompt-content">
+        <div class="dice-notification-prompt-icon">🔔</div>
+        <h3 class="dice-notification-prompt-title">Включить уведомления?</h3>
+        <p class="dice-notification-prompt-text">Получай уведомления, когда кубик снова будет готов к броску!</p>
+        <div class="dice-notification-prompt-buttons">
+          <button class="dice-notification-prompt-btn dice-notification-prompt-btn-yes" id="dice-notification-prompt-yes">Включить</button>
+          <button class="dice-notification-prompt-btn dice-notification-prompt-btn-no" id="dice-notification-prompt-no">Не сейчас</button>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Модальное окно приветствия -->
+    <div class="modal-overlay welcome-modal-overlay" id="welcome-modal" style="display: none;">
+      <div class="welcome-modal-content">
+        <!-- Этап 1: Выдача карты -->
+        <div class="welcome-step" id="welcome-step-card" style="display: none;">
+          <div class="welcome-card-animation">
+            <div class="welcome-card-container" id="welcome-card-container">
+              <div class="welcome-card-image" id="welcome-card-image"></div>
+              <div class="welcome-card-name" id="welcome-card-name"></div>
+              <div class="welcome-card-rarity start" id="welcome-card-rarity">Стартовая</div>
+            </div>
+          </div>
+          <h2 class="welcome-title welcome-title-glow">Добро пожаловать в ChibiArena!</h2>
+          <p class="welcome-text welcome-text-sparkle">Твоя первая карта уже ждет тебя!</p>
+          <button class="welcome-btn" id="welcome-card-next">Продолжить</button>
+        </div>
+        
+        <!-- Этап 2: Инструктаж по основным разделам -->
+        <div class="welcome-step" id="welcome-step-tutorial" style="display: none;">
+          <h2 class="welcome-title">Основные разделы</h2>
+          <div class="welcome-tutorial-content">
+            <div class="tutorial-item">
+              <div class="tutorial-icon">🏟️</div>
+              <div class="tutorial-text">
+                <strong>Арена</strong> - открывай кейсы, бросай кубик, получай награды
+              </div>
+            </div>
+            <div class="tutorial-item">
+              <div class="tutorial-icon">🃏</div>
+              <div class="tutorial-text">
+                <strong>Коллекция</strong> - собирай карты, создавай колоды, улучшай карты
+              </div>
+            </div>
+            <div class="tutorial-item">
+              <div class="tutorial-icon">💎</div>
+              <div class="tutorial-text">
+                <strong>Магазин</strong> - покупай гемы, кейсы и эксклюзивные предметы
+              </div>
+            </div>
+            <div class="tutorial-item">
+              <div class="tutorial-icon">👥</div>
+              <div class="tutorial-text">
+                <strong>Сквады</strong> - объединяйся с друзьями в команды
+              </div>
+            </div>
+            <div class="tutorial-item">
+              <div class="tutorial-icon">🌐</div>
+              <div class="tutorial-text">
+                <strong>Коммьюнити</strong> - общайся, делись постами, находи друзей
+              </div>
+            </div>
+          </div>
+          <button class="welcome-btn" id="welcome-tutorial-next">Понятно!</button>
+        </div>
+        
+        <!-- Этап 3: Приветственный подарок -->
+        <div class="welcome-step" id="welcome-step-gift" style="display: none;">
+          <h2 class="welcome-title">Приветственный подарок!</h2>
+          <div class="welcome-gift-animation">
+            <div class="gift-item" id="gift-gems">
+              <div class="gift-icon">💎</div>
+              <div class="gift-amount" id="gift-gems-amount">+50</div>
+            </div>
+            <div class="gift-item" id="gift-coins">
+              <div class="gift-icon">💰</div>
+              <div class="gift-amount" id="gift-coins-amount">+200</div>
+            </div>
+          </div>
+          <p class="welcome-text">Эти ресурсы помогут тебе начать путь к победе!</p>
+          <button class="welcome-btn" id="welcome-gift-next">Начать игру!</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Модальное окно открытия кейса -->
+    <div class="modal-overlay" id="case-opening-modal" style="display: none;">
+      <div class="modal-content modal-large case-opening-content">
+        <div class="case-opening-header">
+          <h2 id="case-opening-title">Открытие кейса</h2>
+          <button class="modal-close" id="case-opening-close">✕</button>
+        </div>
+        <div class="case-opening-body">
+          <!-- Этап 1: Выбор кейса - уже выбран, показываем кейс -->
+          <div class="case-opening-stage" id="case-opening-stage-select">
+            <div class="case-display-container">
+              <div class="case-display" id="case-display">
+                <!-- Кейс будет отрисован здесь -->
+              </div>
+              <div class="case-tier-badge" id="case-tier-badge">T1</div>
+              <div class="case-stage-info" id="case-stage-info"></div>
+              <button class="case-open-btn" id="case-open-start-btn">Нажми, чтобы открыть</button>
+              <button class="case-skip-btn" id="case-skip-btn">Пропустить</button>
+            </div>
+          </div>
+          
+          <!-- Этап 2: 4 тапа -->
+          <div class="case-opening-stage" id="case-opening-stage-taps" style="display: none;">
+            <div class="case-display-container">
+              <div class="case-display case-display-tapping" id="case-display-tapping">
+                <!-- Кейс с анимацией -->
+              </div>
+              <div class="case-tier-badge" id="case-tier-badge-tapping">T1</div>
+              <div class="case-tap-counter">
+                <span id="case-tap-current">0</span> / 4
+              </div>
+              <div class="case-tap-hint" id="case-tap-hint">Нажимай на кейс, чтобы усилить его</div>
+              <div class="case-tap-indicators" id="case-tap-indicators">
+                <div class="tap-indicator"></div>
+                <div class="tap-indicator"></div>
+                <div class="tap-indicator"></div>
+                <div class="tap-indicator"></div>
+              </div>
+              <div class="case-upgrade-notification" id="case-upgrade-notification" style="display: none;">
+                ✨ Качество повышено! ✨
+              </div>
+              <button class="case-skip-btn" id="case-skip-btn-taps">Пропустить</button>
+            </div>
+          </div>
+          
+          <!-- Этап 3: Показ наград -->
+          <div class="case-opening-stage" id="case-opening-stage-rewards" style="display: none;">
+            <div class="case-rewards-container">
+              <h3 class="case-rewards-title">🎉 Ваши награды:</h3>
+              <div class="case-rewards-list" id="case-rewards-list">
+                <!-- Награды будут добавлены через JS -->
+              </div>
+              <div class="case-rewards-note" id="case-rewards-note"></div>
+              <button class="case-close-btn" id="case-rewards-close-btn">Закрыть</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </body>
+</html>
