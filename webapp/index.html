@@ -78,9 +78,47 @@ window.cancelSearch = function() {
   document.getElementById('searchOverlay').style.display = 'none';
 };
 
+// ── Музыка ──────────────────────────────────────────────
+let _musicStarted = false;
+window._musicEnabled = true;
+
+window.startBgMusic = function() {
+  if (_musicStarted || !window._musicEnabled) return;
+  const audio = document.getElementById('bg-music');
+  if (!audio) return;
+  audio.volume = 0.35;
+  audio.play().then(() => {
+    _musicStarted = true;
+  }).catch(() => {
+    // Ждём первого взаимодействия
+    const tryOnInteraction = () => {
+      if (_musicStarted || !window._musicEnabled) return;
+      audio.play().then(() => {
+        _musicStarted = true;
+        ['click','touchstart','keydown'].forEach(e => document.removeEventListener(e, tryOnInteraction));
+      }).catch(() => {});
+    };
+    ['click','touchstart','keydown'].forEach(e => document.addEventListener(e, tryOnInteraction, {once:false}));
+  });
+};
+
+window.stopBgMusic = function() {
+  const audio = document.getElementById('bg-music');
+  if (audio) { audio.pause(); audio.currentTime = 0; _musicStarted = false; }
+};
+
+window.toggleMusic = function(enabled) {
+  window._musicEnabled = enabled;
+  if (enabled) window.startBgMusic();
+  else window.stopBgMusic();
+};
+// ────────────────────────────────────────────────────────
+
 document.addEventListener('DOMContentLoaded', () => {
   const cancelBtn = document.getElementById('cancelSearchBtn');
   if (cancelBtn) cancelBtn.onclick = window.cancelSearch;
+  // Пробуем запустить музыку сразу (может сработать на Android)
+  window.startBgMusic();
 });
 
 window._getUserId = function() {
@@ -175,15 +213,18 @@ window.saveNickname = async function(nick) {
 window.loadProfile = async function() {
   try {
     const tg = window.Telegram?.WebApp;
-    const urlId = new URLSearchParams(location.search).get('user_id');
+    const urlParams = new URLSearchParams(location.search);
+    const urlId = urlParams.get('user_id');
     let url = '/api/profile';
-    const headers = {};
     if (tg?.initData) {
-      headers['X-Telegram-Init-Data'] = tg.initData;
+      // Сервер читает initData из query param ?_auth=
+      url += '?_auth=' + encodeURIComponent(tg.initData);
+    } else if (tg?.initDataUnsafe?.user?.id) {
+      url += '?_auth=' + encodeURIComponent(String(tg.initDataUnsafe.user.id));
     } else if (urlId) {
-      url += `?user_id=${urlId}`;
+      url += '?user_id=' + encodeURIComponent(urlId);
     }
-    const res = await fetch(url, { headers });
+    const res = await fetch(url);
     if (!res.ok) return null;
     return await res.json();
   } catch(e) {
@@ -277,8 +318,9 @@ const BottomNav = ({active, onChange}) => (
 const TopBar = ({title, onBack, onMenu, showBack=false, extra=null, profile}) => {
   const coins = profile ? (profile.coins ?? 0) : '—';
   const gems  = profile ? (profile.gems  ?? 0) : '—';
-
   const fmtNum = v => typeof v === 'number' ? v.toLocaleString('ru-RU') : v;
+  const avatarLetter = (title || 'E')[0].toUpperCase();
+  const photoUrl = profile?.photo_url || null;
 
   return (
     <div style={{height:'52px',background:'rgba(15,10,26,0.98)',display:'flex',alignItems:'center',justifyContent:'space-between',padding:'0 14px',flexShrink:0,borderBottom:`1px solid ${T.purple1}`}}>
@@ -289,8 +331,11 @@ const TopBar = ({title, onBack, onMenu, showBack=false, extra=null, profile}) =>
           </button>
         ) : (
           <div style={{display:'flex',alignItems:'center',gap:'8px'}}>
-            <div style={{width:'34px',height:'34px',borderRadius:'50%',background:`linear-gradient(135deg,${T.purple2},${T.purple3})`,border:`2px solid ${T.purpleHL}`,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
-              <span style={{fontSize:'14px',fontWeight:'900',color:'white',fontFamily:"'Exo 2',sans-serif"}}>E</span>
+            <div style={{width:'34px',height:'34px',borderRadius:'50%',background:`linear-gradient(135deg,${T.purple2},${T.purple3})`,border:`2px solid ${T.purpleHL}`,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,overflow:'hidden'}}>
+              {photoUrl
+                ? <img src={photoUrl} alt="" style={{width:'100%',height:'100%',objectFit:'cover'}}/>
+                : <span style={{fontSize:'14px',fontWeight:'900',color:'white',fontFamily:"'Exo 2',sans-serif"}}>{avatarLetter}</span>
+              }
             </div>
             <span style={{fontSize:'15px',fontWeight:'700',color:T.white,fontFamily:"'Exo 2',sans-serif",overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{title}</span>
           </div>
@@ -363,10 +408,18 @@ const Toggle = ({value, onChange}) => (
 // SETTINGS SCREEN
 // ═══════════════════════════════════════════
 const SettingsScreen = ({onClose, profile}) => {
-  const [notifs, setNotifs] = React.useState({cases:true,daily:true,invites:true,friends:true,events:true,news:false});
-  const [music,  setMusic]  = React.useState(true);
-  const [sfx,    setSfx]    = React.useState(true);
-  const [blockFr,setBlockFr]= React.useState(false);
+  const s = profile?.settings || {};
+  const [notifs, setNotifs] = React.useState({
+    cases:   s.notif_cases           ?? true,
+    daily:   s.notif_daily_rewards   ?? true,
+    invites: s.notif_game_invites    ?? true,
+    friends: s.notif_friend_requests ?? true,
+    events:  s.notif_events          ?? true,
+    news:    s.notif_news            ?? false,
+  });
+  const [music,  setMusic]  = React.useState(s.sound_music ?? true);
+  const [sfx,    setSfx]    = React.useState(s.sound_sfx   ?? true);
+  const [blockFr,setBlockFr]= React.useState(s.social_block_friend_requests ?? false);
   const [nick,   setNick]   = React.useState(profile?.custom_nickname || '');
   const [nickStatus, setNickStatus] = React.useState(null); // null | 'saving' | 'ok' | 'err'
   const nickChanged = profile?.nickname_changed || false;
@@ -434,7 +487,7 @@ const SettingsScreen = ({onClose, profile}) => {
           </div>
         </Section>
         <Section icon="🔊" title="Звук">
-          <Row label="Музыка"           value={music} onChange={setMusic}/>
+          <Row label="Музыка"           value={music} onChange={v=>{setMusic(v);window.toggleMusic(v);}}/>
           <Row label="Звуковые эффекты" value={sfx}   onChange={setSfx}/>
         </Section>
         <Section icon="👥" title="Социальные">
@@ -916,7 +969,17 @@ const App = () => {
       try { tg.setHeaderColor?.('#0f0a1a'); } catch(e){}
       try { tg.setBackgroundColor?.('#0f0a1a'); } catch(e){}
     }
-    window.loadProfile().then(data => { if(data) setProfile(data); });
+    // Запуск музыки (с автозапуском или по первому тапу)
+    window.startBgMusic();
+    window.loadProfile().then(data => {
+      if (data) {
+        setProfile(data);
+        // Синхронизируем настройку музыки из профиля
+        const musicOn = data?.settings?.sound_music ?? true;
+        window._musicEnabled = musicOn;
+        if (musicOn) window.startBgMusic(); else window.stopBgMusic();
+      }
+    });
   },[]);
 
   const displayName = profile?.custom_nickname || profile?.first_name || profile?.username || 'ExtraArena';
