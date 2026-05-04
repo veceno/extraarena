@@ -83,6 +83,12 @@ document.addEventListener('DOMContentLoaded', () => {
   if (cancelBtn) cancelBtn.onclick = window.cancelSearch;
 });
 
+window._getUserId = function() {
+  const tg = window.Telegram?.WebApp;
+  const urlId = new URLSearchParams(location.search).get('user_id');
+  return tg?.initDataUnsafe?.user?.id || (urlId ? parseInt(urlId) : null);
+};
+
 window.startBattle = async function(profile) {
   const tg = window.Telegram?.WebApp;
   const overlay = document.getElementById('searchOverlay');
@@ -91,8 +97,7 @@ window.startBattle = async function(profile) {
   try {
     document.getElementById('battle-sound')?.play().catch(()=>{});
 
-    const urlId = new URLSearchParams(location.search).get('user_id');
-    const userId = tg?.initDataUnsafe?.user?.id || (urlId ? parseInt(urlId) : null);
+    const userId = window._getUserId();
     const initData = tg?.initData || '';
 
     const res = await fetch('/api/match/find', {
@@ -105,15 +110,65 @@ window.startBattle = async function(profile) {
     const data = await res.json();
 
     if (data.match_id) {
-      const resolvedId = userId || urlId;
-      window.location.href = `${location.origin}/arena?id=${encodeURIComponent(data.match_id)}&user_id=${encodeURIComponent(resolvedId)}`;
+      window.location.href = `${location.origin}/arena?id=${encodeURIComponent(data.match_id)}&user_id=${encodeURIComponent(userId)}`;
     } else {
-      // polling fallback
       matchmakingTimer = setTimeout(() => window.startBattle(profile), 3000);
     }
   } catch(e) {
     console.error('Battle search error:', e);
     if (overlay) overlay.style.display = 'none';
+  }
+};
+
+window.startVsBot = async function(difficulty, profile) {
+  const overlay = document.getElementById('searchOverlay');
+  const overlayText = document.querySelector('[data-role="search-overlay-text"]');
+  if (overlay) overlay.style.display = 'flex';
+  if (overlayText) overlayText.textContent = 'Подготавливаем бой с ботом...';
+
+  try {
+    document.getElementById('battle-sound')?.play().catch(()=>{});
+    const userId = window._getUserId();
+
+    const res = await fetch('/api/match/vs-bot', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_id: userId, difficulty }),
+    });
+
+    if (!res.ok) throw new Error('vs-bot failed');
+    const data = await res.json();
+
+    if (data.match_id) {
+      window.location.href = `${location.origin}/arena?id=${encodeURIComponent(data.match_id)}&user_id=${encodeURIComponent(userId)}`;
+    } else {
+      throw new Error(data.error || 'no match_id');
+    }
+  } catch(e) {
+    console.error('VS Bot error:', e);
+    if (overlay) overlay.style.display = 'none';
+  }
+};
+
+window.saveNickname = async function(nick) {
+  try {
+    const tg = window.Telegram?.WebApp;
+    const userId = window._getUserId();
+    const initData = tg?.initData || '';
+    let url = '/api/change-nickname';
+    const params = new URLSearchParams();
+    if (initData) params.set('_auth', initData);
+    else if (userId) params.set('user_id', String(userId));
+    if (params.toString()) url += '?' + params.toString();
+
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ nickname: nick }),
+    });
+    return await res.json();
+  } catch(e) {
+    return { success: false, error: e.message };
   }
 };
 
@@ -220,8 +275,10 @@ const BottomNav = ({active, onChange}) => (
 // TOP BAR
 // ═══════════════════════════════════════════
 const TopBar = ({title, onBack, onMenu, showBack=false, extra=null, profile}) => {
-  const coins = profile?.coins ?? '—';
-  const gems  = profile?.gems  ?? profile?.crystals ?? '—';
+  const coins = profile ? (profile.coins ?? 0) : '—';
+  const gems  = profile ? (profile.gems  ?? 0) : '—';
+
+  const fmtNum = v => typeof v === 'number' ? v.toLocaleString('ru-RU') : v;
 
   return (
     <div style={{height:'52px',background:'rgba(15,10,26,0.98)',display:'flex',alignItems:'center',justifyContent:'space-between',padding:'0 14px',flexShrink:0,borderBottom:`1px solid ${T.purple1}`}}>
@@ -233,7 +290,7 @@ const TopBar = ({title, onBack, onMenu, showBack=false, extra=null, profile}) =>
         ) : (
           <div style={{display:'flex',alignItems:'center',gap:'8px'}}>
             <div style={{width:'34px',height:'34px',borderRadius:'50%',background:`linear-gradient(135deg,${T.purple2},${T.purple3})`,border:`2px solid ${T.purpleHL}`,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
-              <span style={{fontSize:'14px',fontWeight:'900',color:'white',fontFamily:"'Exo 2',sans-serif"}}>V</span>
+              <span style={{fontSize:'14px',fontWeight:'900',color:'white',fontFamily:"'Exo 2',sans-serif"}}>E</span>
             </div>
             <span style={{fontSize:'15px',fontWeight:'700',color:T.white,fontFamily:"'Exo 2',sans-serif",overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{title}</span>
           </div>
@@ -243,13 +300,11 @@ const TopBar = ({title, onBack, onMenu, showBack=false, extra=null, profile}) =>
       <div style={{display:'flex',gap:'6px',alignItems:'center',flexShrink:0}}>
         {extra}
         <div style={{display:'flex',gap:'4px',background:T.purple1,borderRadius:'20px',padding:'5px 9px',alignItems:'center'}}>
-          <IconCoin size={13}/><span style={{color:T.orange,fontWeight:'700',fontSize:'12px',fontFamily:"'Exo 2',sans-serif"}}>{typeof coins==='number'?coins.toLocaleString():coins}</span>
+          <IconCoin size={13}/><span style={{color:T.orange,fontWeight:'700',fontSize:'12px',fontFamily:"'Exo 2',sans-serif"}}>{fmtNum(coins)}</span>
         </div>
-        {gems!=='—' && (
-          <div style={{display:'flex',gap:'4px',background:T.purple1,borderRadius:'20px',padding:'5px 9px',alignItems:'center'}}>
-            <IconGem size={13}/><span style={{color:'#c4b5fd',fontWeight:'700',fontSize:'12px',fontFamily:"'Exo 2',sans-serif"}}>{gems}</span>
-          </div>
-        )}
+        <div style={{display:'flex',gap:'4px',background:T.purple1,borderRadius:'20px',padding:'5px 9px',alignItems:'center'}}>
+          <IconGem size={13}/><span style={{color:'#c4b5fd',fontWeight:'700',fontSize:'12px',fontFamily:"'Exo 2',sans-serif"}}>{fmtNum(gems)}</span>
+        </div>
         {onMenu && (
           <button onClick={onMenu} style={{width:'34px',height:'34px',borderRadius:'10px',background:T.bgCard,border:`1px solid ${T.purple1}`,display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:'3px',padding:'9px',cursor:'pointer',alignItems:'center',justifyItems:'center',flexShrink:0}}>
             {Array(9).fill(0).map((_,i)=><div key={i} style={{width:'4px',height:'4px',borderRadius:'1px',background:T.grey1}}/>)}
@@ -307,12 +362,27 @@ const Toggle = ({value, onChange}) => (
 // ═══════════════════════════════════════════
 // SETTINGS SCREEN
 // ═══════════════════════════════════════════
-const SettingsScreen = ({onClose}) => {
+const SettingsScreen = ({onClose, profile}) => {
   const [notifs, setNotifs] = React.useState({cases:true,daily:true,invites:true,friends:true,events:true,news:false});
   const [music,  setMusic]  = React.useState(true);
   const [sfx,    setSfx]    = React.useState(true);
   const [blockFr,setBlockFr]= React.useState(false);
-  const [nick,   setNick]   = React.useState('');
+  const [nick,   setNick]   = React.useState(profile?.custom_nickname || '');
+  const [nickStatus, setNickStatus] = React.useState(null); // null | 'saving' | 'ok' | 'err'
+  const nickChanged = profile?.nickname_changed || false;
+
+  const saveNick = async () => {
+    if (!nick.trim() || nickStatus === 'saving') return;
+    setNickStatus('saving');
+    const res = await window.saveNickname(nick.trim());
+    if (res?.success) {
+      setNickStatus('ok');
+      setTimeout(() => setNickStatus(null), 2000);
+    } else {
+      setNickStatus('err');
+      setTimeout(() => setNickStatus(null), 2500);
+    }
+  };
 
   const Section = ({icon,title,children}) => (
     <div style={{marginBottom:'4px'}}>
@@ -372,18 +442,100 @@ const SettingsScreen = ({onClose}) => {
           <div style={{background:T.bgCard,borderRadius:'12px',padding:'12px 14px',border:`1px solid ${T.purple1}`}}>
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'8px'}}>
               <span style={{fontSize:'13px',color:T.grey1}}>Никнейм</span>
-              <span style={{fontSize:'11px',color:T.orange,fontWeight:'600'}}>Бесплатно</span>
+              <span style={{fontSize:'11px',color:nickChanged?T.grey2:T.orange,fontWeight:'600'}}>{nickChanged?'500 💎':'Бесплатно'}</span>
             </div>
             <div style={{display:'flex',gap:'8px'}}>
-              <input value={nick} onChange={e=>setNick(e.target.value)} placeholder="Введите никнейм..."
-                style={{flex:1,background:T.bgDeep,border:`1px solid ${T.purple2}`,borderRadius:'9px',padding:'8px 11px',color:T.white,fontSize:'12px',fontFamily:"'Inter',sans-serif",outline:'none'}}/>
-              <button style={{width:'38px',height:'38px',borderRadius:'9px',background:T.purple2,border:`1px solid ${T.purple3}`,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer'}}>
-                <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 14l3-1 8-8-2-2-8 8-1 3z" fill={T.purpleLt}/><path d="M10 3l2 2" stroke={T.purpleLt} strokeWidth="1.2"/></svg>
+              <input value={nick} onChange={e=>setNick(e.target.value)}
+                onKeyDown={e=>e.key==='Enter'&&saveNick()}
+                placeholder="Введите никнейм..."
+                maxLength={20}
+                style={{flex:1,background:T.bgDeep,border:`1px solid ${nickStatus==='err'?'#f87171':T.purple2}`,borderRadius:'9px',padding:'8px 11px',color:T.white,fontSize:'12px',fontFamily:"'Inter',sans-serif",outline:'none'}}/>
+              <button onClick={saveNick} disabled={nickStatus==='saving'} style={{width:'38px',height:'38px',borderRadius:'9px',background:nickStatus==='ok'?'#166534':nickStatus==='err'?'#7f1d1d':T.purple2,border:`1px solid ${T.purple3}`,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',transition:'background 0.2s',opacity:nickStatus==='saving'?0.6:1}}>
+                {nickStatus==='saving' ? <div style={{width:'14px',height:'14px',border:'2px solid rgba(255,255,255,0.3)',borderTopColor:T.purpleLt,borderRadius:'50%',animation:'spin 0.7s linear infinite'}}/> :
+                 nickStatus==='ok'     ? <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 7l4 4 6-7" stroke="#4ade80" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg> :
+                 nickStatus==='err'    ? <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 2L12 12M12 2L2 12" stroke="#f87171" strokeWidth="1.8" strokeLinecap="round"/></svg> :
+                 <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 14l3-1 8-8-2-2-8 8-1 3z" fill={T.purpleLt}/><path d="M10 3l2 2" stroke={T.purpleLt} strokeWidth="1.2"/></svg>}
               </button>
             </div>
+            {nickStatus==='err' && <div style={{fontSize:'11px',color:'#f87171',marginTop:'5px'}}>Не удалось сохранить. Проверьте гемы или попробуйте позже.</div>}
           </div>
         </Section>
         <button style={{width:'100%',height:'46px',background:T.bgCard,border:`1px solid ${T.purple2}`,borderRadius:'14px',color:T.grey1,fontSize:'14px',fontWeight:'600',fontFamily:"'Exo 2',sans-serif",cursor:'pointer',marginTop:'6px'}}>По умолчанию</button>
+      </div>
+    </div>
+  );
+};
+
+// ═══════════════════════════════════════════
+// BATTLE PICK SHEET (спасательный круг)
+// ═══════════════════════════════════════════
+const DIFFICULTIES = [
+  {id:'lite',  label:'Новичок',    desc:'Лёгкий бот-случайщик',  color:'#4ade80'},
+  {id:'easy',  label:'Лёгкий',     desc:'Базовая тактика',        color:'#a3e635'},
+  {id:'medium',label:'Средний',    desc:'Сбалансированная игра',  color:T.orange},
+  {id:'hard',  label:'Сложный',    desc:'ONNX — читает игру',     color:'#fb923c'},
+  {id:'max',   label:'Максимум',   desc:'Лучшая модель, 0.1T',    color:'#f87171'},
+];
+
+const BattlePickSheet = ({onClose, profile}) => {
+  const [tab, setTab]           = React.useState('bot');   // 'bot' | 'friend'
+  const [diff, setDiff]         = React.useState('medium');
+  const [friendId, setFriendId] = React.useState('');
+  const [starting, setStarting] = React.useState(false);
+
+  const startBot = async () => {
+    if (starting) return;
+    setStarting(true);
+    onClose();
+    await window.startVsBot(diff, profile);
+  };
+
+  return (
+    <div style={{position:'absolute',inset:0,background:'rgba(5,3,14,0.75)',backdropFilter:'blur(9px)',zIndex:20,display:'flex',flexDirection:'column',justifyContent:'flex-end'}} onClick={onClose}>
+      <div onClick={e=>e.stopPropagation()} className="safe-pad-bottom" style={{background:`linear-gradient(180deg,#1a1238 0%,#130d26 100%)`,borderRadius:'24px 24px 0 0',padding:'16px 18px 24px',border:`1px solid ${T.purple1}`,borderBottom:'none',boxShadow:'0 -16px 50px rgba(0,0,0,0.5)',animation:'slideUp 0.28s cubic-bezier(0.32,0.72,0,1)'}}>
+        <div style={{width:'36px',height:'4px',borderRadius:'2px',background:T.purple2,margin:'0 auto 14px'}}/>
+
+        {/* Tabs */}
+        <div style={{display:'flex',background:T.bgDeep,borderRadius:'12px',padding:'3px',marginBottom:'16px',gap:'3px'}}>
+          {[{id:'bot',label:'🤖 Против бота'},{id:'friend',label:'🤝 Дружеская игра'}].map(t=>(
+            <button key={t.id} onClick={()=>setTab(t.id)} style={{flex:1,padding:'8px 4px',borderRadius:'10px',background:tab===t.id?T.purple2:'none',border:'none',color:tab===t.id?T.white:T.grey2,fontSize:'12px',fontWeight:tab===t.id?'700':'400',fontFamily:"'Exo 2',sans-serif",cursor:'pointer',transition:'all 0.15s'}}>{t.label}</button>
+          ))}
+        </div>
+
+        {tab === 'bot' && <>
+          <div style={{fontSize:'11px',color:T.grey3,textTransform:'uppercase',letterSpacing:'0.5px',marginBottom:'8px'}}>Сложность</div>
+          <div style={{display:'flex',flexDirection:'column',gap:'6px',marginBottom:'16px'}}>
+            {DIFFICULTIES.map(d=>(
+              <button key={d.id} onClick={()=>setDiff(d.id)} style={{display:'flex',alignItems:'center',gap:'12px',padding:'10px 14px',background:diff===d.id?`${d.color}18`:T.bgCard,border:`1px solid ${diff===d.id?d.color:T.purple1}`,borderRadius:'12px',cursor:'pointer',transition:'all 0.15s',textAlign:'left'}}>
+                <div style={{width:'10px',height:'10px',borderRadius:'50%',background:d.color,flexShrink:0,boxShadow:diff===d.id?`0 0 8px ${d.color}88`:'none'}}/>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:'13px',fontWeight:'700',color:diff===d.id?T.white:T.grey1,fontFamily:"'Exo 2',sans-serif"}}>{d.label}</div>
+                  <div style={{fontSize:'11px',color:T.grey3,marginTop:'1px'}}>{d.desc}</div>
+                </div>
+                {diff===d.id && <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 7l4 4 6-7" stroke={d.color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+              </button>
+            ))}
+          </div>
+          <button onClick={startBot} style={{width:'100%',height:'50px',background:`linear-gradient(135deg,${T.orange},${T.orangeD})`,border:'none',borderRadius:'14px',color:'white',fontSize:'17px',fontWeight:'900',fontFamily:"'Exo 2',sans-serif",cursor:'pointer',boxShadow:`0 5px 20px ${T.orange}44`}}>
+            ⚔️ В БОЙ
+          </button>
+        </>}
+
+        {tab === 'friend' && <>
+          <div style={{fontSize:'12px',color:T.grey1,marginBottom:'12px',lineHeight:1.5}}>Введи ID друга, чтобы вызвать его на дуэль. Он получит уведомление в Telegram.</div>
+          <div style={{background:T.bgCard,border:`1px solid ${T.purple2}`,borderRadius:'12px',padding:'12px 14px',marginBottom:'12px'}}>
+            <div style={{fontSize:'11px',color:T.grey3,marginBottom:'6px',textTransform:'uppercase',letterSpacing:'0.5px'}}>Telegram ID соперника</div>
+            <input value={friendId} onChange={e=>setFriendId(e.target.value.replace(/\D/g,''))}
+              placeholder="Например: 123456789" inputMode="numeric"
+              style={{width:'100%',background:'transparent',border:'none',color:T.white,fontSize:'15px',fontWeight:'600',fontFamily:"'Exo 2',sans-serif",outline:'none'}}/>
+          </div>
+          <div style={{background:`rgba(245,146,30,0.08)`,border:`1px solid rgba(245,146,30,0.25)`,borderRadius:'10px',padding:'9px 12px',marginBottom:'16px',fontSize:'11px',color:T.grey1,lineHeight:1.5}}>
+            ⏳ Дружеские игры в разработке. Скоро можно будет вызывать друзей напрямую!
+          </div>
+          <button disabled style={{width:'100%',height:'50px',background:T.bgCard,border:`1px solid ${T.purple2}`,borderRadius:'14px',color:T.grey3,fontSize:'15px',fontWeight:'700',fontFamily:"'Exo 2',sans-serif",cursor:'not-allowed'}}>
+            🤝 Отправить вызов
+          </button>
+        </>}
       </div>
     </div>
   );
@@ -433,7 +585,7 @@ const MenuSheet = ({onClose, onSettings}) => {
 // ═══════════════════════════════════════════
 // ARENA SCREEN
 // ═══════════════════════════════════════════
-const ArenaScreen = ({onMenu, onAI, profile}) => {
+const ArenaScreen = ({onMenu, onAI, onBattlePick, profile}) => {
   const [hasCases,    setHasCases]    = React.useState((profile?.keys || profile?.cases_count || 0) > 0);
   const [battleHover, setBattleHover] = React.useState(false);
   const [shineAnim,   setShineAnim]   = React.useState(false);
@@ -527,7 +679,7 @@ const ArenaScreen = ({onMenu, onAI, profile}) => {
           В БОЙ
           {shineAnim && <div style={{position:'absolute',top:0,width:'35%',height:'100%',background:'linear-gradient(90deg,transparent,rgba(255,255,255,0.18),transparent)',transform:'skewX(-18deg)',pointerEvents:'none',animation:'shine 0.5s ease forwards'}}/>}
         </button>
-        <button style={{width:'60px',height:'60px',background:T.bgCard,border:`1px solid ${T.purple2}`,borderRadius:'16px',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
+        <button onClick={onBattlePick} style={{width:'60px',height:'60px',background:T.bgCard,border:`1px solid ${T.purple2}`,borderRadius:'16px',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,transition:'all 0.15s'}}>
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke={T.purpleLt} strokeWidth="1.4"/><circle cx="12" cy="12" r="4" fill={T.purpleHL}/><path d="M12 3v3M12 18v3M3 12h3M18 12h3" stroke={T.purpleLt} strokeWidth="1.4" strokeLinecap="round"/></svg>
         </button>
       </div>
@@ -749,11 +901,12 @@ const PlaceholderScreen = ({label}) => (
 // ROOT APP
 // ═══════════════════════════════════════════
 const App = () => {
-  const [navTab,       setNavTab]       = React.useState(2);
-  const [showMenu,     setShowMenu]     = React.useState(false);
-  const [showSettings, setShowSettings] = React.useState(false);
-  const [showAI,       setShowAI]       = React.useState(false);
-  const [profile,      setProfile]      = React.useState(null);
+  const [navTab,         setNavTab]         = React.useState(2);
+  const [showMenu,       setShowMenu]       = React.useState(false);
+  const [showSettings,   setShowSettings]   = React.useState(false);
+  const [showAI,         setShowAI]         = React.useState(false);
+  const [showBattlePick, setShowBattlePick] = React.useState(false);
+  const [profile,        setProfile]        = React.useState(null);
 
   React.useEffect(()=>{
     const tg = window.Telegram?.WebApp;
@@ -789,7 +942,7 @@ const App = () => {
         {showAI ? (
           <AIScreen onBack={()=>setShowAI(false)}/>
         ) : navTab===2 ? (
-          <ArenaScreen onMenu={()=>setShowMenu(true)} onAI={()=>setShowAI(true)} profile={profile}/>
+          <ArenaScreen onMenu={()=>setShowMenu(true)} onAI={()=>setShowAI(true)} onBattlePick={()=>setShowBattlePick(true)} profile={profile}/>
         ) : (
           <PlaceholderScreen label={['Магазин','Коллекция','','Скводы','Сообщество'][navTab]}/>
         )}
@@ -797,8 +950,9 @@ const App = () => {
 
       {!showAI && <BottomNav active={navTab} onChange={setNavTab}/>}
 
-      {showMenu     && <MenuSheet    onClose={()=>setShowMenu(false)} onSettings={openSettings}/>}
-      {showSettings && <SettingsScreen onClose={()=>setShowSettings(false)}/>}
+      {showMenu       && <MenuSheet       onClose={()=>setShowMenu(false)} onSettings={openSettings}/>}
+      {showSettings   && <SettingsScreen  onClose={()=>setShowSettings(false)} profile={profile}/>}
+      {showBattlePick && <BattlePickSheet onClose={()=>setShowBattlePick(false)} profile={profile}/>}
     </div>
   );
 };

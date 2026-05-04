@@ -4175,6 +4175,65 @@ def create_web_app(
             logging.getLogger(__name__).error("Ошибка матчмейкинга: %s", e, exc_info=True)
             return web.json_response({"error": "matchmaking_failed"}, status=500)
 
+    async def match_vs_bot_handler(request: web.Request) -> web.Response:
+        """Немедленный бой против бота с заданной сложностью."""
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid_json"}, status=400)
+
+        user_id = data.get("user_id")
+        difficulty = data.get("difficulty", "medium")
+        selected_deck_id = data.get("deck_id")
+
+        valid_difficulties = ("lite", "easy", "medium", "hard", "max")
+        if difficulty not in valid_difficulties:
+            difficulty = "medium"
+
+        try:
+            user_id = int(user_id)
+        except (TypeError, ValueError):
+            return web.json_response({"error": "invalid_user_id"}, status=400)
+
+        matchmaker: Matchmaker = request.app["matchmaker"]
+        try:
+            result = await matchmaker._create_bot_match(
+                user_id=user_id,
+                trophies=0,
+                user_avg_level=1,
+                selected_deck_id=selected_deck_id,
+            )
+            # Override difficulty with the user's explicit choice
+            if result.get("bot_info"):
+                result["bot_info"]["difficulty"] = difficulty
+            else:
+                result["bot_info"] = {"difficulty": difficulty}
+
+            match_id = str(result["match_id"])
+            player_ids = result.get("player_ids", [user_id, result.get("opponent_id", -1)])
+            bot_info = result.get("bot_info")
+
+            ok = await asyncio.wait_for(
+                _prepare_and_cache_engine(
+                    request,
+                    match_id=match_id,
+                    player_ids=player_ids,
+                    is_bot=True,
+                    bot_info=bot_info,
+                    player_decks=result.get("player_decks"),
+                ),
+                timeout=10.0,
+            )
+            if not ok:
+                return web.json_response({"error": "battle_init_failed"}, status=500)
+
+            return web.json_response({"status": "found", "match_id": match_id})
+        except asyncio.TimeoutError:
+            return web.json_response({"error": "timeout"}, status=504)
+        except Exception as e:
+            logging.getLogger(__name__).error("vs_bot error: %s", e, exc_info=True)
+            return web.json_response({"error": "internal_error", "message": str(e)}, status=500)
+
     async def match_status_handler(request: web.Request) -> web.Response:
         """Статус матча по match_id для периодического поллинга фронта."""
         match_id = request.rel_url.query.get("id")
@@ -4989,6 +5048,7 @@ def create_web_app(
     app.router.add_get("/battle", battle_page_handler)  # обратная совместимость
     app.router.add_get("/api/profile", profile_handler)
     app.router.add_post("/api/match/find", match_find_handler)
+    app.router.add_post("/api/match/vs-bot", match_vs_bot_handler)
     app.router.add_get("/api/match/status", match_status_handler)
     app.router.add_get("/api/battle/state", battle_state_handler)
     # Новые роуты с дефисами (используются фронтендом)
