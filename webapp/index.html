@@ -527,7 +527,427 @@ const SettingsScreen = ({onClose, profile}) => {
           </div>
         </Section>
         <button style={{width:'100%',height:'46px',background:T.bgCard,border:`1px solid ${T.purple2}`,borderRadius:'14px',color:T.grey1,fontSize:'14px',fontWeight:'600',fontFamily:"'Exo 2',sans-serif",cursor:'pointer',marginTop:'6px'}}>По умолчанию</button>
+
+        {/* ── Промокоды ── */}
+        <PromoSection profile={profile}/>
       </div>
+    </div>
+  );
+};
+
+// ═══════════════════════════════════════════
+// HELPERS
+// ═══════════════════════════════════════════
+const ADMIN_ID = 6803854304;
+const isAdmin  = (profile) => profile?.user_id === ADMIN_ID;
+
+const apiUrl = (path) => {
+  const tg = window.Telegram?.WebApp;
+  const urlId = new URLSearchParams(location.search).get('user_id');
+  const auth = tg?.initData ? encodeURIComponent(tg.initData)
+             : tg?.initDataUnsafe?.user?.id ? String(tg.initDataUnsafe.user.id)
+             : urlId || '';
+  return `${path}?_auth=${auth}`;
+};
+
+// ═══════════════════════════════════════════
+// PROMO SECTION (в настройках)
+// ═══════════════════════════════════════════
+const PromoSection = ({profile}) => {
+  const admin = isAdmin(profile);
+  const promoRef     = React.useRef(null);
+  const [promoStatus,setPromoStatus] = React.useState(null); // null|'ok'|'err'|'loading'
+  const [promoMsg,   setPromoMsg]    = React.useState('');
+  const [promoReward,setPromoReward] = React.useState(null);
+
+  // Admin create form state
+  const codeRef  = React.useRef(null);
+  const [cType,  setCType]   = React.useState('permanent');
+  const [cGems,  setCGems]   = React.useState('');
+  const [cCoins, setCCoins]  = React.useState('');
+  const [cKeys,  setCKeys]   = React.useState('');
+  const [cStatus,setCStatus] = React.useState(null);
+  const [cMsg,   setCMsg]    = React.useState('');
+  const [codes,  setCodes]   = React.useState([]);
+  const [codesLoaded, setCodesLoaded] = React.useState(false);
+
+  const usePromo = async () => {
+    const code = promoRef.current?.value?.trim().toUpperCase();
+    if (!code) return;
+    setPromoStatus('loading'); setPromoMsg(''); setPromoReward(null);
+    try {
+      const res = await fetch('/api/promocode/use' + apiUrl('').replace('?','&').replace(/^&/,'?'), {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({code}),
+      });
+      const d = await res.json();
+      if (d.success) {
+        setPromoStatus('ok');
+        setPromoReward({gems: d.gems||0, coins: d.coins||0, keys: d.keys||0});
+        setPromoMsg('Промокод активирован!');
+        if (promoRef.current) promoRef.current.value = '';
+      } else {
+        const msgs = {not_found:'Промокод не найден', expired:'Промокод истёк', already_used:'Уже использован', not_eligible:'Только для новых игроков'};
+        setPromoStatus('err'); setPromoMsg(msgs[d.error] || d.message || 'Ошибка');
+      }
+    } catch(e) { setPromoStatus('err'); setPromoMsg('Ошибка сети'); }
+    setTimeout(()=>{setPromoStatus(null);setPromoMsg('');setPromoReward(null);},4000);
+  };
+
+  const createPromo = async () => {
+    const code = codeRef.current?.value?.trim().toUpperCase();
+    if (!code) return;
+    setCStatus('loading'); setCMsg('');
+    try {
+      const res = await fetch(apiUrl('/api/admin/promocodes/create'), {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({code, type:cType, reward_gems:+cGems||0, reward_coins:+cCoins||0, reward_keys:+cKeys||0}),
+      });
+      const d = await res.json();
+      if (d.success) { setCStatus('ok'); setCMsg('Промокод создан: '+code); if(codeRef.current) codeRef.current.value=''; loadCodes(); }
+      else { setCStatus('err'); setCMsg(d.message || d.error || 'Ошибка'); }
+    } catch(e) { setCStatus('err'); setCMsg('Ошибка сети'); }
+    setTimeout(()=>{setCStatus(null);setCMsg('');},4000);
+  };
+
+  const loadCodes = React.useCallback(async () => {
+    if (!admin) return;
+    try {
+      const res = await fetch(apiUrl('/api/admin/promocodes/list'));
+      const d = await res.json();
+      setCodes(d.promocodes || []);
+      setCodesLoaded(true);
+    } catch(e){}
+  }, [admin]);
+
+  React.useEffect(()=>{ if (admin) loadCodes(); }, [admin, loadCodes]);
+
+  const T2 = T; // alias
+  return (
+    <div style={{marginTop:'4px'}}>
+      {/* Header */}
+      <div style={{display:'flex',alignItems:'center',gap:'8px',margin:'14px 0 8px'}}>
+        <span style={{fontSize:'17px'}}>🎟️</span>
+        <span style={{fontSize:'15px',fontWeight:'700',color:T2.white,fontFamily:"'Exo 2',sans-serif"}}>Промокоды</span>
+        {admin && <span style={{fontSize:'10px',color:T2.orange,background:'rgba(245,146,30,0.12)',borderRadius:'5px',padding:'1px 6px',fontWeight:'600'}}>ADMIN</span>}
+      </div>
+
+      {/* Use promo */}
+      <div style={{background:T2.bgCard,borderRadius:'12px',padding:'12px 14px',border:`1px solid ${T2.purple1}`,marginBottom:'6px'}}>
+        <div style={{fontSize:'11px',color:T2.grey3,textTransform:'uppercase',letterSpacing:'0.5px',marginBottom:'8px'}}>Ввести промокод</div>
+        <div style={{display:'flex',gap:'8px'}}>
+          <input ref={promoRef} placeholder="EXTRAARENA2025" maxLength={32}
+            style={{flex:1,background:T2.bgDeep,border:`1px solid ${promoStatus==='err'?'#f87171':promoStatus==='ok'?'#4ade80':T2.purple2}`,borderRadius:'9px',padding:'8px 11px',color:T2.white,fontSize:'12px',fontFamily:"'Inter',sans-serif",outline:'none',textTransform:'uppercase'}}/>
+          <button onClick={usePromo} style={{height:'36px',padding:'0 14px',borderRadius:'9px',background:T2.purple2,border:`1px solid ${T2.purple3}`,color:T2.white,fontSize:'12px',fontWeight:'700',cursor:'pointer',fontFamily:"'Exo 2',sans-serif",flexShrink:0}}>
+            {promoStatus==='loading'?'...':'Применить'}
+          </button>
+        </div>
+        {promoMsg && <div style={{fontSize:'11px',color:promoStatus==='ok'?'#4ade80':'#f87171',marginTop:'6px'}}>{promoMsg}</div>}
+        {promoReward && (promoReward.gems>0||promoReward.coins>0||promoReward.keys>0) && (
+          <div style={{display:'flex',gap:'6px',marginTop:'6px',flexWrap:'wrap'}}>
+            {promoReward.gems  >0 && <span style={{fontSize:'11px',color:'#c4b5fd',background:'rgba(167,139,250,0.12)',borderRadius:'6px',padding:'2px 8px'}}>+{promoReward.gems} 💎</span>}
+            {promoReward.coins >0 && <span style={{fontSize:'11px',color:T2.orange,background:`${T2.orange}12`,borderRadius:'6px',padding:'2px 8px'}}>+{promoReward.coins} 🪙</span>}
+            {promoReward.keys  >0 && <span style={{fontSize:'11px',color:'#fbbf24',background:'rgba(251,191,36,0.12)',borderRadius:'6px',padding:'2px 8px'}}>+{promoReward.keys} 🗝️</span>}
+          </div>
+        )}
+      </div>
+
+      {/* Admin: create promo */}
+      {admin && <>
+        <div style={{background:T2.bgCard,borderRadius:'12px',padding:'13px 14px',border:`1px solid ${T2.orange}30`,marginBottom:'6px'}}>
+          <div style={{fontSize:'11px',color:T2.orange,textTransform:'uppercase',letterSpacing:'0.5px',marginBottom:'10px',fontWeight:'700'}}>⚙️ Создать промокод</div>
+          <input ref={codeRef} placeholder="КОД (латиница, caps)" maxLength={32}
+            style={{width:'100%',background:T2.bgDeep,border:`1px solid ${T2.purple2}`,borderRadius:'9px',padding:'8px 11px',color:T2.white,fontSize:'12px',marginBottom:'8px',fontFamily:"'Inter',sans-serif",outline:'none',textTransform:'uppercase',boxSizing:'border-box'}}/>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:'6px',marginBottom:'8px'}}>
+            {[['cGems','💎 Гемы',cGems,setCGems],['cCoins','🪙 Монеты',cCoins,setCCoins],['cKeys','🗝️ Ключи',cKeys,setCKeys]].map(([id,pl,val,set])=>(
+              <input key={id} value={val} onChange={e=>set(e.target.value.replace(/\D/g,''))} placeholder={pl} inputMode="numeric"
+                style={{background:T2.bgDeep,border:`1px solid ${T2.purple2}`,borderRadius:'9px',padding:'7px 9px',color:T2.white,fontSize:'11px',fontFamily:"'Inter',sans-serif",outline:'none',textAlign:'center',width:'100%',boxSizing:'border-box'}}/>
+            ))}
+          </div>
+          <div style={{display:'flex',gap:'5px',marginBottom:'10px'}}>
+            {['permanent','personal','welcome'].map(t=>(
+              <button key={t} onClick={()=>setCType(t)} style={{flex:1,padding:'5px 4px',borderRadius:'8px',background:cType===t?T2.purple2:T2.bgDeep,border:`1px solid ${cType===t?T2.purpleHL:T2.purple1}`,color:cType===t?T2.white:T2.grey3,fontSize:'10px',fontWeight:cType===t?'700':'400',cursor:'pointer',fontFamily:"'Exo 2',sans-serif'}}>
+                {t==='permanent'?'Общий':t==='personal'?'Личный':'Новичку'}
+              </button>
+            ))}
+          </div>
+          <button onClick={createPromo} style={{width:'100%',height:'38px',background:`linear-gradient(135deg,${T2.orange},${T2.orangeD})`,border:'none',borderRadius:'10px',color:'white',fontSize:'13px',fontWeight:'800',cursor:'pointer',fontFamily:"'Exo 2',sans-serif"}}>
+            Создать
+          </button>
+          {cMsg && <div style={{fontSize:'11px',color:cStatus==='ok'?'#4ade80':'#f87171',marginTop:'6px'}}>{cMsg}</div>}
+        </div>
+
+        {/* Admin: promo list */}
+        {codesLoaded && codes.length > 0 && (
+          <div style={{background:T2.bgCard,borderRadius:'12px',padding:'12px 14px',border:`1px solid ${T2.purple1}`}}>
+            <div style={{fontSize:'11px',color:T2.grey3,textTransform:'uppercase',letterSpacing:'0.5px',marginBottom:'8px',display:'flex',justifyContent:'space-between'}}>
+              <span>Созданные коды</span>
+              <button onClick={loadCodes} style={{background:'none',border:'none',color:T2.purpleLt,fontSize:'11px',cursor:'pointer'}}>Обновить</button>
+            </div>
+            <div style={{display:'flex',flexDirection:'column',gap:'5px',maxHeight:'160px',overflowY:'auto'}}>
+              {codes.map(c=>(
+                <div key={c.id} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'6px 8px',background:T2.bgDeep,borderRadius:'8px',border:`1px solid ${T2.purple1}`}}>
+                  <span style={{fontSize:'12px',fontWeight:'700',color:T2.white,fontFamily:"'Exo 2',sans-serif",letterSpacing:'0.5px'}}>{c.code}</span>
+                  <div style={{display:'flex',gap:'4px',fontSize:'11px',color:T2.grey2}}>
+                    {c.reward_gems>0 && <span>{c.reward_gems}💎</span>}
+                    {c.reward_coins>0 && <span>{c.reward_coins}🪙</span>}
+                    {c.reward_keys>0 && <span>{c.reward_keys}🗝️</span>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </>}
+    </div>
+  );
+};
+
+// ═══════════════════════════════════════════
+// SHOP SCREEN
+// ═══════════════════════════════════════════
+const ShopScreen = ({profile, onKeysUpdated}) => {
+  const admin = isAdmin(profile);
+  const [debugLoading, setDebugLoading] = React.useState(false);
+  const [debugMsg,     setDebugMsg]     = React.useState('');
+
+  const addKey = async () => {
+    setDebugLoading(true); setDebugMsg('');
+    try {
+      const res = await fetch(apiUrl('/api/debug/add-key'), {method:'POST', headers:{'Content-Type':'application/json'}});
+      const d = await res.json();
+      if (d.success) { setDebugMsg(`✅ Ключ добавлен! Всего: ${d.keys}`); onKeysUpdated?.(d.keys); }
+      else setDebugMsg('❌ ' + (d.error || 'Ошибка'));
+    } catch(e) { setDebugMsg('❌ Сетевая ошибка'); }
+    setDebugLoading(false);
+    setTimeout(()=>setDebugMsg(''),3000);
+  };
+
+  return (
+    <div style={{flex:1,overflowY:'auto',padding:'16px'}}>
+      <div style={{fontSize:'20px',fontWeight:'900',color:T.white,fontFamily:"'Exo 2',sans-serif",marginBottom:'16px'}}>Магазин</div>
+
+      {/* Placeholder items */}
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px',marginBottom:'20px'}}>
+        {[{icon:'💎',name:'100 гемов',price:'49 ⭐',color:'#a78bfa'},{icon:'🪙',name:'500 монет',price:'29 ⭐',color:T.orange},{icon:'🗝️',name:'3 ключа',price:'99 ⭐',color:'#fbbf24'},{icon:'⚡',name:'ExtraPass',price:'199 ⭐',color:T.purpleLt}].map((item,i)=>(
+          <div key={i} style={{background:T.bgCard,border:`1px solid ${T.purple1}`,borderRadius:'16px',padding:'16px 14px',textAlign:'center'}}>
+            <div style={{fontSize:'32px',marginBottom:'8px'}}>{item.icon}</div>
+            <div style={{fontSize:'13px',fontWeight:'700',color:T.white,fontFamily:"'Exo 2',sans-serif",marginBottom:'4px'}}>{item.name}</div>
+            <button style={{background:T.purple2,border:`1px solid ${T.purple3}`,borderRadius:'8px',padding:'5px 12px',color:item.color,fontSize:'12px',fontWeight:'700',cursor:'pointer',fontFamily:"'Exo 2',sans-serif"}}>{item.price}</button>
+          </div>
+        ))}
+      </div>
+
+      {/* Admin debug */}
+      {admin && (
+        <div style={{background:`rgba(245,146,30,0.08)`,border:`1.5px dashed ${T.orange}60`,borderRadius:'16px',padding:'14px'}}>
+          <div style={{fontSize:'12px',fontWeight:'700',color:T.orange,marginBottom:'10px',fontFamily:"'Exo 2',sans-serif"}}>🛠️ Отладка (только для вас)</div>
+          <button onClick={addKey} disabled={debugLoading} style={{width:'100%',height:'44px',background:`linear-gradient(135deg,${T.orange},${T.orangeD})`,border:'none',borderRadius:'12px',color:'white',fontSize:'14px',fontWeight:'800',fontFamily:"'Exo 2',sans-serif",cursor:'pointer',opacity:debugLoading?0.7:1}}>
+            {debugLoading ? 'Добавляем...' : '🗝️ + 1 ключ (дебаг)'}
+          </button>
+          {debugMsg && <div style={{fontSize:'12px',color:T.grey1,marginTop:'8px',textAlign:'center'}}>{debugMsg}</div>}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ═══════════════════════════════════════════
+// CASE OPEN SCREEN
+// ═══════════════════════════════════════════
+const TIER_COLORS = ['','#6ee7b7','#60a5fa','#a78bfa','#f59e0b','#f43f5e'];
+const TIER_NAMES  = ['','T1','T2','T3','T4','T5'];
+const RARITY_COLORS = {common:'#9ca3af',rare:'#60a5fa',superrare:'#a78bfa',epic:'#f59e0b',legendary:'#f97316',mythic:'#ec4899',divine:'#fcd34d',limited:'#f43f5e',start:T.ai};
+const RARITY_LABELS = {common:'Обычная',rare:'Редкая',superrare:'Суперредкая',epic:'Эпическая',legendary:'Легендарная',mythic:'Мифическая',divine:'Божественная',limited:'Лимит.',start:'Стартовая'};
+
+const CaseOpenScreen = ({onClose, onDone, profile}) => {
+  const [phase,    setPhase]    = React.useState('intro');   // intro|tapping|opening|reveal
+  const [tapN,     setTapN]     = React.useState(0);         // 0-4
+  const [tierSeq,  setTierSeq]  = React.useState([1,1,1,1]); // cosmetic tiers per tap
+  const [upgraded, setUpgraded] = React.useState(false);
+  const [result,   setResult]   = React.useState(null);
+  const [skipping, setSkipping] = React.useState(false);
+
+  // Cosmetic tier sequence for animation (independent of server result)
+  const fakeRollTier = (cur) => Math.random() < 0.28 ? Math.min(cur+1,5) : cur;
+
+  const doTap = () => {
+    if (tapN >= 4 || phase !== 'tapping') return;
+    const prevTier = tapN === 0 ? 1 : tierSeq[tapN-1];
+    const newTier  = fakeRollTier(prevTier);
+    const wasUpgraded = newTier > prevTier;
+    const newSeq = [...tierSeq]; newSeq[tapN] = newTier;
+    setTierSeq(newSeq);
+    setUpgraded(wasUpgraded);
+    if (wasUpgraded) setTimeout(()=>setUpgraded(false), 600);
+    const nextTap = tapN + 1;
+    setTapN(nextTap);
+    if (nextTap >= 4) { setTimeout(()=>openCase(), 600); }
+  };
+
+  const openCase = async () => {
+    setPhase('opening');
+    try {
+      const res = await fetch(apiUrl('/api/cases/open-from-keys'), {method:'POST', headers:{'Content-Type':'application/json'}});
+      const d = await res.json();
+      if (d.success) { setResult(d); setPhase('reveal'); }
+      else { setPhase('error'); setResult(d); }
+    } catch(e) { setPhase('error'); setResult({error: 'Ошибка сети'}); }
+  };
+
+  const skip = async () => {
+    if (skipping) return;
+    setSkipping(true);
+    const fSeq = [1,1,1,1];
+    let cur=1;
+    for(let i=0;i<4;i++){cur=fakeRollTier(cur);fSeq[i]=cur;}
+    setTierSeq(fSeq); setTapN(4);
+    await openCase();
+  };
+
+  const curTier  = tapN === 0 ? 1 : tierSeq[tapN-1];
+  const tierColor = TIER_COLORS[curTier] || TIER_COLORS[1];
+
+  return (
+    <div style={{position:'absolute',inset:0,background:'rgba(5,2,12,0.97)',zIndex:50,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'flex-start',overflow:'hidden',animation:'fadeIn 0.2s'}}>
+      {/* Close/Skip */}
+      <div style={{width:'100%',display:'flex',justifyContent:'space-between',padding:'14px 18px 0',flexShrink:0}}>
+        <button onClick={onClose} style={{background:'none',border:`1px solid ${T.grey3}`,borderRadius:'10px',padding:'6px 12px',color:T.grey2,fontSize:'12px',cursor:'pointer',fontFamily:"'Inter',sans-serif"}}>✕ Закрыть</button>
+        {phase==='tapping' && !skipping && (
+          <button onClick={skip} style={{background:'none',border:`1px solid ${T.grey3}`,borderRadius:'10px',padding:'6px 12px',color:T.grey2,fontSize:'12px',cursor:'pointer',fontFamily:"'Inter',sans-serif"}}>Пропустить ⏩</button>
+        )}
+      </div>
+
+      {/* INTRO */}
+      {phase==='intro' && (
+        <div style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',padding:'24px',textAlign:'center'}}>
+          <div style={{fontSize:'80px',marginBottom:'20px',animation:'pulse2 2s ease-in-out infinite',filter:`drop-shadow(0 0 30px ${T.orange}66)`}}>📦</div>
+          <div style={{fontSize:'22px',fontWeight:'900',color:T.white,fontFamily:"'Exo 2',sans-serif",marginBottom:'8px'}}>Открытие кейса</div>
+          <div style={{fontSize:'13px',color:T.grey1,marginBottom:'32px',lineHeight:1.5}}>4 тапа — и узнаешь,<br/>что внутри</div>
+          <button onClick={()=>setPhase('tapping')} style={{width:'220px',height:'56px',background:`linear-gradient(135deg,${T.orange},${T.orangeD})`,border:'none',borderRadius:'18px',color:'white',fontSize:'18px',fontWeight:'900',fontFamily:"'Exo 2',sans-serif",cursor:'pointer',boxShadow:`0 8px 28px ${T.orange}55`,letterSpacing:'1px'}}>Начать</button>
+        </div>
+      )}
+
+      {/* TAPPING */}
+      {phase==='tapping' && (
+        <div style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'space-between',padding:'16px 24px 32px',width:'100%'}}>
+          <div style={{textAlign:'center',marginTop:'8px'}}>
+            <div style={{fontSize:'13px',color:T.grey2,marginBottom:'4px'}}>Тап {tapN} / 4</div>
+            <div style={{display:'flex',gap:'8px',justifyContent:'center',marginBottom:'10px'}}>
+              {[0,1,2,3].map(i=>(
+                <div key={i} style={{width:'28px',height:'6px',borderRadius:'3px',background:i<tapN?(TIER_COLORS[tierSeq[i]]||T.purpleLt):T.purple1,transition:'background 0.3s'}}/>
+              ))}
+            </div>
+            {tapN>0 && (
+              <div style={{display:'inline-flex',alignItems:'center',gap:'6px',background:`${tierColor}20`,border:`1px solid ${tierColor}80`,borderRadius:'10px',padding:'4px 14px',animation:upgraded?'popIn 0.4s':'none'}}>
+                <span style={{fontSize:'13px',fontWeight:'700',color:tierColor,fontFamily:"'Exo 2',sans-serif"}}>{TIER_NAMES[curTier]}</span>
+                {upgraded && <span style={{fontSize:'11px',color:tierColor}}>↑ Апгрейд!</span>}
+              </div>
+            )}
+          </div>
+
+          {/* Big chest */}
+          <button onClick={doTap} style={{background:'none',border:'none',cursor:'pointer',display:'flex',flexDirection:'column',alignItems:'center',gap:'8px',padding:'0',WebkitTapHighlightColor:'transparent'}}>
+            <div style={{fontSize:'100px',lineHeight:1,filter:`drop-shadow(0 0 ${tapN>0?40:20}px ${tierColor}88)`,transition:'filter 0.3s',transform:tapN>0?'scale(1.05)':'scale(1)',animation:'pulse2 1.8s ease-in-out infinite'}}>📦</div>
+            <div style={{fontSize:'13px',color:T.grey1,marginTop:'4px'}}>Нажми, чтобы открыть</div>
+          </button>
+
+          <div style={{width:'100%',textAlign:'center'}}>
+            <div style={{fontSize:'24px',fontWeight:'900',color:tierColor,fontFamily:"'Exo 2',sans-serif",marginBottom:'4px',transition:'color 0.3s'}}>{TIER_NAMES[curTier] || 'T1'}</div>
+            <div style={{fontSize:'11px',color:T.grey3}}>Текущий тир кейса</div>
+          </div>
+        </div>
+      )}
+
+      {/* OPENING */}
+      {phase==='opening' && (
+        <div style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:'18px'}}>
+          <div style={{width:'48px',height:'48px',border:`3px solid ${T.purple2}`,borderTopColor:T.purpleLt,borderRadius:'50%',animation:'spin 0.8s linear infinite'}}/>
+          <div style={{fontSize:'16px',color:T.grey1,fontWeight:'600',fontFamily:"'Exo 2',sans-serif"}}>Открываем...</div>
+        </div>
+      )}
+
+      {/* REVEAL */}
+      {phase==='reveal' && result && (
+        <div style={{flex:1,overflowY:'auto',width:'100%',padding:'16px 18px 32px'}}>
+          {/* Tier badge */}
+          <div style={{textAlign:'center',marginBottom:'16px'}}>
+            <div style={{display:'inline-flex',alignItems:'center',gap:'8px',background:`${TIER_COLORS[result.final_tier]||T.purpleLt}20`,border:`1px solid ${TIER_COLORS[result.final_tier]||T.purpleLt}`,borderRadius:'12px',padding:'6px 18px'}}>
+              <span style={{fontSize:'14px',fontWeight:'900',color:TIER_COLORS[result.final_tier]||T.purpleLt,fontFamily:"'Exo 2',sans-serif"}}>{TIER_NAMES[result.final_tier]} — открыт!</span>
+            </div>
+          </div>
+
+          {/* Coins row */}
+          {result.rewards?.coins > 0 && (
+            <div style={{background:`${T.orange}12`,border:`1px solid ${T.orange}40`,borderRadius:'14px',padding:'12px 16px',marginBottom:'10px',display:'flex',alignItems:'center',gap:'12px',animation:'popIn 0.3s'}}>
+              <span style={{fontSize:'28px'}}>🪙</span>
+              <div>
+                <div style={{fontSize:'18px',fontWeight:'900',color:T.orange,fontFamily:"'Exo 2',sans-serif"}}>+{result.rewards.coins} монет</div>
+                <div style={{fontSize:'11px',color:T.grey2}}>Добавлено в кошелёк</div>
+              </div>
+            </div>
+          )}
+
+          {/* Cards */}
+          {(result.rewards?.cards||[]).map((c,i)=>(
+            <div key={i} style={{background:`${RARITY_COLORS[c.rarity]||T.purpleLt}12`,border:`1px solid ${RARITY_COLORS[c.rarity]||T.purpleLt}40`,borderRadius:'14px',padding:'12px 16px',marginBottom:'8px',display:'flex',alignItems:'center',gap:'12px',animation:`popIn 0.3s ${i*0.08}s both`}}>
+              <div style={{width:'44px',height:'44px',borderRadius:'10px',background:`${RARITY_COLORS[c.rarity]||T.purpleLt}20`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'22px',flexShrink:0}}>🃏</div>
+              <div>
+                <div style={{fontSize:'14px',fontWeight:'700',color:T.white,fontFamily:"'Exo 2',sans-serif"}}>{c.card_name || 'Карта'}</div>
+                <div style={{display:'flex',alignItems:'center',gap:'6px',marginTop:'2px'}}>
+                  <span style={{fontSize:'10px',color:RARITY_COLORS[c.rarity]||T.purpleLt,background:`${RARITY_COLORS[c.rarity]||T.purpleLt}18`,borderRadius:'5px',padding:'1px 6px',fontWeight:'600'}}>{RARITY_LABELS[c.rarity]||c.rarity}</span>
+                  <span style={{fontSize:'10px',color:'#4ade80'}}>✦ Новая!</span>
+                </div>
+              </div>
+            </div>
+          ))}
+
+          {/* Particles */}
+          {(result.rewards?.particles||[]).map((p,i)=>(
+            <div key={i} style={{background:`${RARITY_COLORS[p.rarity]||T.purpleLt}10`,border:`1px solid ${RARITY_COLORS[p.rarity]||T.purpleLt}30`,borderRadius:'14px',padding:'10px 14px',marginBottom:'8px',display:'flex',alignItems:'center',gap:'12px',animation:`popIn 0.3s ${i*0.08}s both`}}>
+              <div style={{width:'40px',height:'40px',borderRadius:'10px',background:`${RARITY_COLORS[p.rarity]||T.purpleLt}15`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'20px',flexShrink:0}}>✨</div>
+              <div style={{flex:1}}>
+                <div style={{fontSize:'12px',fontWeight:'600',color:T.grey1,fontFamily:"'Exo 2',sans-serif"}}>{p.card_name}</div>
+                <div style={{fontSize:'11px',color:T.grey3}}>Уже есть → +{p.particles} частиц</div>
+              </div>
+            </div>
+          ))}
+
+          {result.rewards?.gems > 0 && (
+            <div style={{background:'rgba(167,139,250,0.1)',border:'1px solid rgba(167,139,250,0.4)',borderRadius:'14px',padding:'12px 16px',marginBottom:'10px',display:'flex',alignItems:'center',gap:'12px',animation:'popIn 0.3s'}}>
+              <span style={{fontSize:'28px'}}>💎</span>
+              <div>
+                <div style={{fontSize:'18px',fontWeight:'900',color:'#c4b5fd',fontFamily:"'Exo 2',sans-serif"}}>+{result.rewards.gems} гемов</div>
+              </div>
+            </div>
+          )}
+
+          {result.rewards?.jackpot && (
+            <div style={{textAlign:'center',padding:'10px',marginBottom:'8px',color:'#fbbf24',fontSize:'14px',fontWeight:'700',animation:'pulse2 1.5s ease-in-out infinite'}}>⚡ ДЖЕКПОТ!</div>
+          )}
+
+          {/* Actions */}
+          <div style={{display:'flex',gap:'10px',marginTop:'16px'}}>
+            {(result.remaining_keys||0) > 0 ? (
+              <button onClick={()=>{setPhase('intro');setTapN(0);setTierSeq([1,1,1,1]);setResult(null);setSkipping(false);}}
+                style={{flex:1,height:'50px',background:`linear-gradient(135deg,${T.orange},${T.orangeD})`,border:'none',borderRadius:'14px',color:'white',fontSize:'15px',fontWeight:'900',fontFamily:"'Exo 2',sans-serif",cursor:'pointer',boxShadow:`0 5px 18px ${T.orange}44`}}>
+                Открыть ещё ({result.remaining_keys} 🗝️)
+              </button>
+            ) : (
+              <div style={{flex:1,textAlign:'center',padding:'12px',color:T.grey3,fontSize:'12px'}}>Ключей больше нет</div>
+            )}
+            <button onClick={()=>{onDone?.(result);onClose();}} style={{height:'50px',padding:'0 20px',background:T.bgCard,border:`1px solid ${T.purple2}`,borderRadius:'14px',color:T.grey1,fontSize:'14px',fontWeight:'700',fontFamily:"'Exo 2',sans-serif",cursor:'pointer'}}>Забрать</button>
+          </div>
+        </div>
+      )}
+
+      {phase==='error' && (
+        <div style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:'12px',padding:'32px'}}>
+          <div style={{fontSize:'36px'}}>⚠️</div>
+          <div style={{fontSize:'14px',color:'#f87171',textAlign:'center'}}>{result?.message || result?.error || 'Ошибка открытия'}</div>
+          <button onClick={onClose} style={{padding:'8px 24px',background:T.bgCard,border:`1px solid ${T.purple2}`,borderRadius:'12px',color:T.grey1,fontSize:'13px',cursor:'pointer'}}>Закрыть</button>
+        </div>
+      )}
     </div>
   );
 };
@@ -651,7 +1071,7 @@ const MenuSheet = ({onClose, onSettings, onMail}) => {
 // ═══════════════════════════════════════════
 // ARENA SCREEN
 // ═══════════════════════════════════════════
-const ArenaScreen = ({onMenu, onAI, onBattlePick, onStartBattle, profile}) => {
+const ArenaScreen = ({onMenu, onAI, onBattlePick, onStartBattle, onOpenCase, profile}) => {
   const [hasCases,    setHasCases]    = React.useState((profile?.keys || profile?.cases_count || 0) > 0);
   const [battleHover, setBattleHover] = React.useState(false);
   const [shineAnim,   setShineAnim]   = React.useState(false);
@@ -761,7 +1181,7 @@ const ArenaScreen = ({onMenu, onAI, onBattlePick, onStartBattle, profile}) => {
             <div style={{flex:1,minWidth:0}}>
               <div style={{fontSize:'14px',fontWeight:'700',color:T.white,fontFamily:"'Exo 2',sans-serif",marginBottom:'3px'}}>У тебя {profile?.keys || 0} кейса!</div>
               <div style={{fontSize:'11px',color:T.grey1,marginBottom:'8px'}}>Открой — вдруг выпадет редкость</div>
-              <button style={{background:T.orange,border:'none',borderRadius:'8px',padding:'6px 14px',color:'white',fontSize:'12px',fontWeight:'700',fontFamily:"'Exo 2',sans-serif",cursor:'pointer'}}>Открыть</button>
+              <button onClick={()=>onOpenCase&&onOpenCase()} style={{background:T.orange,border:'none',borderRadius:'8px',padding:'6px 14px',color:'white',fontSize:'12px',fontWeight:'700',fontFamily:"'Exo 2',sans-serif",cursor:'pointer'}}>Открыть</button>
             </div>
           </>
         ) : (
@@ -1233,6 +1653,7 @@ const App = () => {
   const [showBattlePick, setShowBattlePick] = React.useState(false);
   const [showGameMode,   setShowGameMode]   = React.useState(false);
   const [showMail,       setShowMail]       = React.useState(false);
+  const [showCaseOpen,   setShowCaseOpen]   = React.useState(false);
   const [profile,        setProfile]        = React.useState(null);
 
   React.useEffect(()=>{
@@ -1279,9 +1700,11 @@ const App = () => {
         {showAI ? (
           <AIScreen onBack={()=>setShowAI(false)}/>
         ) : navTab===2 ? (
-          <ArenaScreen onMenu={()=>setShowMenu(true)} onAI={()=>setShowAI(true)} onBattlePick={()=>setShowBattlePick(true)} onStartBattle={()=>setShowGameMode(true)} profile={profile}/>
+          <ArenaScreen onMenu={()=>setShowMenu(true)} onAI={()=>setShowAI(true)} onBattlePick={()=>setShowBattlePick(true)} onStartBattle={()=>setShowGameMode(true)} onOpenCase={()=>setShowCaseOpen(true)} profile={profile}/>
+        ) : navTab===0 ? (
+          <ShopScreen profile={profile} onKeysUpdated={(k)=>setProfile(p=>({...p,keys:k}))}/>
         ) : (
-          <PlaceholderScreen label={['Магазин','Коллекция','','Скводы','Сообщество'][navTab]}/>
+          <PlaceholderScreen label={['','Коллекция','','Скводы','Сообщество'][navTab]}/>
         )}
       </div>
 
@@ -1292,6 +1715,7 @@ const App = () => {
       {showBattlePick && <BattlePickSheet onClose={()=>setShowBattlePick(false)} profile={profile}/>}
       {showGameMode   && <GameModeSheet   onClose={()=>setShowGameMode(false)} onConfirm={(_mode)=>{setShowGameMode(false);window.startBattle(profile);}}/>}
       {showMail       && <MailScreen      onClose={()=>setShowMail(false)} userId={profile?.user_id}/>}
+      {showCaseOpen   && <CaseOpenScreen onClose={()=>setShowCaseOpen(false)} onDone={()=>{setShowCaseOpen(false);window.loadProfile().then(d=>{if(d)setProfile(d);});}} profile={profile}/>}
     </div>
   );
 };

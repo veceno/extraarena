@@ -3795,6 +3795,95 @@ def create_web_app(
             )
             return web.json_response({"error": "internal_server_error"}, status=500)
 
+    async def case_open_from_keys_handler(request: web.Request) -> web.Response:
+        """Открыть кейс напрямую из ключей (keys), без user_case_id."""
+        init_data = request.rel_url.query.get("_auth")
+        user_id = None
+        if init_data and init_data.isdigit():
+            try: user_id = int(init_data)
+            except ValueError: pass
+        if not user_id and init_data:
+            v = _verify_init_data(init_data, bot_token)
+            if v: user_id = _extract_user_id_from_init_data(v)
+        if not user_id:
+            p = request.rel_url.query.get("user_id")
+            if p:
+                try: user_id = int(p)
+                except ValueError: return web.json_response({"error": "invalid_user_id"}, status=400)
+        if not user_id:
+            return web.json_response({"error": "authentication required"}, status=401)
+        try:
+            keys = await db.fetchval("SELECT COALESCE(keys,0) FROM users WHERE user_id=$1", user_id)
+            if not keys or keys < 1:
+                return web.json_response({"error": "no_keys", "message": "Нет ключей"}, status=400)
+
+            # Симулируем 4 тапа (tier может расти с каждым тапом)
+            current_tier = 1
+            tap_results = []
+            for tap_num in range(1, 5):
+                new_tier = roll_tier_upgrade(current_tier, tap_num)
+                if new_tier > current_tier:
+                    current_tier = new_tier
+                tap_results.append(current_tier)
+            final_tier = current_tier
+
+            # Получаем карты пользователя для проверки дубликатов
+            user_cards = await db.get_user_cards(user_id)
+            user_card_ids = {card["id"] for card in (user_cards or [])}
+
+            # Генерируем награды
+            rewards = await generate_case_rewards(db, final_tier, user_id, user_card_ids)
+
+            # Выдаём
+            if rewards["coins"] > 0:
+                await db.add_coins(user_id, rewards["coins"])
+            for c in rewards.get("cards", []):
+                await db.add_card_to_user(user_id, c["card_id"])
+            for p2 in rewards.get("particles", []):
+                await db.add_particles_to_card(user_id, p2["card_id"], p2["particles"])
+            if rewards.get("gems", 0) > 0:
+                await db.add_gems(user_id, rewards["gems"])
+
+            # Снимаем ключ
+            await db.execute("UPDATE users SET keys = GREATEST(0, keys-1) WHERE user_id=$1", user_id)
+            new_keys = await db.fetchval("SELECT COALESCE(keys,0) FROM users WHERE user_id=$1", user_id)
+
+            return web.json_response({
+                "success": True,
+                "final_tier": final_tier,
+                "tap_results": tap_results,
+                "rewards": rewards,
+                "remaining_keys": new_keys,
+            })
+        except Exception as e:
+            logging.getLogger(__name__).error("case_open_from_keys error uid=%s: %s", user_id, e, exc_info=True)
+            return web.json_response({"error": "internal_server_error"}, status=500)
+
+    async def debug_add_key_handler(request: web.Request) -> web.Response:
+        """Admin-only: добавить +1 ключ пользователю."""
+        init_data = request.rel_url.query.get("_auth")
+        user_id = None
+        if init_data and init_data.isdigit():
+            try: user_id = int(init_data)
+            except ValueError: pass
+        if not user_id and init_data:
+            v = _verify_init_data(init_data, bot_token)
+            if v: user_id = _extract_user_id_from_init_data(v)
+        if not user_id:
+            p = request.rel_url.query.get("user_id")
+            if p:
+                try: user_id = int(p)
+                except ValueError: pass
+        from bot.constants import ADMIN_ID
+        if not user_id or user_id != ADMIN_ID:
+            return web.json_response({"error": "admin_access_required"}, status=403)
+        try:
+            await db.execute("UPDATE users SET keys = COALESCE(keys,0)+1 WHERE user_id=$1", user_id)
+            new_keys = await db.fetchval("SELECT COALESCE(keys,0) FROM users WHERE user_id=$1", user_id)
+            return web.json_response({"success": True, "keys": new_keys})
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
     async def _prepare_and_cache_engine(
         request: web.Request,
         match_id: str,
@@ -5083,6 +5172,8 @@ def create_web_app(
     app.router.add_post("/api/cases/tap", case_tap_handler)
     app.router.add_post("/api/cases/open", case_open_handler)
     app.router.add_post("/api/cases/skip", case_skip_handler)
+    app.router.add_post("/api/cases/open-from-keys", case_open_from_keys_handler)
+    app.router.add_post("/api/debug/add-key", debug_add_key_handler)
     app.router.add_post("/api/admin/cards/get-all", admin_get_all_cards_handler)
     app.router.add_post("/api/admin/cards/delete-all", admin_delete_all_cards_handler)
     app.router.add_post("/api/cards/upgrade", card_upgrade_handler)
