@@ -953,6 +953,408 @@ const AIScreen = ({onBack}) => {
 // ═══════════════════════════════════════════
 // PLACEHOLDER
 // ═══════════════════════════════════════════
+// ═══════════════════════════════════════════
+// COLLECTION SCREEN
+// ═══════════════════════════════════════════
+const RARITY_COLOR = {
+  common:    '#94a3b8',
+  rare:      '#60a5fa',
+  superrare: '#2dd4bf',
+  epic:      '#a78bfa',
+  legendary: '#fbbf24',
+  mythic:    '#f472b6',
+  divine:    '#e0e7ff',
+  limited:   '#f87171',
+  unique:    '#c084fc',
+  start:     '#94a3b8',
+};
+const RARITY_LABEL = {
+  common:    'Обычная',  rare:      'Редкая',
+  superrare: 'С.Редкая', epic:      'Эпик',
+  legendary: 'Легенда',  mythic:    'Мифик',
+  divine:    'Дивайн',   limited:   'Лимитед',
+  unique:    'Уникум',   start:     'Базовая',
+};
+const RARITY_ORDER = ['divine','limited','mythic','legendary','epic','superrare','unique','rare','common','start'];
+
+const _buildAuthUrl = (path) => {
+  const tg = window.Telegram?.WebApp;
+  const uid = window._getUserId?.();
+  const p = new URLSearchParams();
+  if (tg?.initData) p.set('_auth', tg.initData);
+  else if (uid) p.set('user_id', String(uid));
+  const q = p.toString();
+  return q ? `${path}?${q}` : path;
+};
+
+const CardTile = ({card, onClick}) => {
+  const [imgErr, setImgErr] = React.useState(false);
+  const rc = RARITY_COLOR[card.rarity] || '#94a3b8';
+  return (
+    <button onClick={onClick} style={{position:'relative',display:'flex',flexDirection:'column',background:`linear-gradient(180deg,${T.bgCard} 0%,${T.bgDeep} 100%)`,border:`1.5px solid ${rc}44`,borderRadius:'12px',overflow:'hidden',cursor:'pointer',padding:'0',aspectRatio:'2/3',boxShadow:'0 2px 10px rgba(0,0,0,0.35)',transition:'transform 0.12s'}}>
+      <div style={{position:'absolute',top:0,left:0,right:0,height:'2px',background:`linear-gradient(90deg,transparent,${rc},transparent)`,zIndex:2}}/>
+      <div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',padding:'6px 5px 3px'}}>
+        {!imgErr
+          ? <img src={`/api/card-image?card_id=${card.id}`} alt={card.name} onError={()=>setImgErr(true)} style={{width:'100%',height:'100%',objectFit:'contain'}}/>
+          : <div style={{width:'52px',height:'52px',borderRadius:'8px',background:T.purple1,border:`1px solid ${rc}33`,display:'flex',alignItems:'center',justifyContent:'center'}}><span style={{fontSize:'22px',opacity:0.5}}>🃏</span></div>
+        }
+      </div>
+      <div style={{padding:'0 5px 6px',textAlign:'center'}}>
+        <div style={{fontSize:'9px',fontWeight:'700',color:T.white,fontFamily:"'Exo 2',sans-serif",overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',lineHeight:1.3}}>{card.name}</div>
+        <div style={{fontSize:'8px',color:rc,fontWeight:'600',marginTop:'1px'}}>{RARITY_LABEL[card.rarity] || card.rarity}</div>
+      </div>
+      <div style={{position:'absolute',top:'5px',left:'4px',background:'rgba(0,0,0,0.6)',borderRadius:'4px',padding:'1px 5px',fontSize:'8px',fontWeight:'700',color:T.orange,fontFamily:"'Exo 2',sans-serif",lineHeight:1.4}}>⚡{card.power||0}</div>
+      {(card.level||1) > 1 && <div style={{position:'absolute',bottom:'28px',right:'4px',background:`linear-gradient(135deg,${T.orange},${T.orangeD})`,borderRadius:'5px',padding:'1px 5px',fontSize:'8px',fontWeight:'900',color:'white',fontFamily:"'Exo 2',sans-serif",lineHeight:1.4}}>Lv{card.level}</div>}
+    </button>
+  );
+};
+
+const CardDetailScreen = ({card, onBack}) => {
+  const [imgErr, setImgErr] = React.useState(false);
+  const rc = RARITY_COLOR[card.rarity] || '#94a3b8';
+  const mechanics = (() => { try { return Array.isArray(card.mechanics) ? card.mechanics : JSON.parse(card.mechanics||'[]'); } catch { return []; } })();
+  const PARTICLES_NEEDED = {common:50,rare:100,superrare:200,epic:400,legendary:800,mythic:1200,divine:2000,limited:600,unique:1500,start:50};
+  const pNeeded = PARTICLES_NEEDED[card.rarity] || 100;
+  const pHave   = card.particles || 0;
+  const upgPct  = Math.min(pHave / pNeeded * 100, 100);
+  return (
+    <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden',animation:'fadeIn 0.18s'}}>
+      <div style={{height:'52px',background:'rgba(15,10,26,0.98)',display:'flex',alignItems:'center',gap:'10px',padding:'0 16px',flexShrink:0,borderBottom:`1px solid ${T.purple1}`}}>
+        <button onClick={onBack} style={{width:'32px',height:'32px',borderRadius:'10px',background:T.bgCard,border:`1px solid ${T.purple1}`,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',flexShrink:0}}>
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 3L5 7L9 11" stroke={T.grey2} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg>
+        </button>
+        <span style={{flex:1,fontSize:'15px',fontWeight:'700',color:T.white,fontFamily:"'Exo 2',sans-serif",overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{card.name}</span>
+        <div style={{padding:'3px 10px',background:`${rc}18`,border:`1px solid ${rc}44`,borderRadius:'8px',fontSize:'11px',fontWeight:'700',color:rc,fontFamily:"'Exo 2',sans-serif",flexShrink:0}}>{RARITY_LABEL[card.rarity]||card.rarity}</div>
+      </div>
+      <div style={{flex:1,overflowY:'auto',padding:'14px 16px 20px'}}>
+        {/* Card image + stats row */}
+        <div style={{display:'flex',gap:'12px',marginBottom:'12px'}}>
+          <div style={{width:'118px',flexShrink:0,borderRadius:'14px',background:`linear-gradient(180deg,${T.bgCard},${T.bgDeep})`,border:`2px solid ${rc}44`,overflow:'hidden',position:'relative',aspectRatio:'2/3'}}>
+            <div style={{position:'absolute',top:0,left:0,right:0,height:'3px',background:`linear-gradient(90deg,transparent,${rc},transparent)`}}/>
+            {!imgErr
+              ? <img src={`/api/card-image?card_id=${card.id}`} alt={card.name} onError={()=>setImgErr(true)} style={{width:'100%',height:'100%',objectFit:'contain',padding:'8px'}}/>
+              : <div style={{display:'flex',alignItems:'center',justifyContent:'center',height:'100%'}}><span style={{fontSize:'52px',opacity:0.3}}>🃏</span></div>
+            }
+          </div>
+          <div style={{flex:1,display:'flex',flexDirection:'column',gap:'7px'}}>
+            {[
+              {label:'⚔️ Атака', val: card.current_attack ?? card.base_attack ?? 0, clr:'#f87171'},
+              {label:'❤️ HP',    val: card.current_hp    ?? card.base_hp    ?? 0, clr:'#4ade80'},
+              {label:'💧 Мана',  val: card.mana_cost ?? 0, clr:'#60a5fa'},
+              {label:'⚡ Сила',  val: card.power ?? 0,     clr:T.orange},
+            ].map(({label,val,clr}) => (
+              <div key={label} style={{background:T.bgCard,borderRadius:'10px',padding:'8px 11px',border:`1px solid ${T.purple1}`}}>
+                <div style={{fontSize:'10px',color:T.grey3,marginBottom:'2px'}}>{label}</div>
+                <div style={{fontSize:'19px',fontWeight:'900',color:clr,fontFamily:"'Exo 2',sans-serif",lineHeight:1}}>{val}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+        {/* Level & upgrade */}
+        <div style={{background:T.bgCard,borderRadius:'14px',padding:'12px 14px',border:`1px solid ${T.purple1}`,marginBottom:'10px'}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'8px'}}>
+            <div style={{display:'flex',alignItems:'center',gap:'7px'}}>
+              <div style={{width:'26px',height:'26px',borderRadius:'7px',background:`linear-gradient(135deg,${T.orange},${T.orangeD})`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'13px',fontWeight:'900',color:'white',fontFamily:"'Exo 2',sans-serif"}}>{card.level||1}</div>
+              <span style={{fontSize:'13px',fontWeight:'700',color:T.white,fontFamily:"'Exo 2',sans-serif"}}>Уровень {card.level||1}</span>
+            </div>
+            <span style={{fontSize:'11px',color:T.grey2}}>{pHave} / {pNeeded} ✨</span>
+          </div>
+          <div style={{height:'6px',background:T.purple1,borderRadius:'3px',overflow:'hidden'}}>
+            <div style={{width:`${upgPct}%`,height:'100%',background:`linear-gradient(90deg,${T.orange},${T.orangeLt})`,borderRadius:'3px',boxShadow:`0 0 8px ${T.orange}55`,transition:'width 0.3s'}}/>
+          </div>
+          {upgPct >= 100 && <div style={{marginTop:'7px',fontSize:'11px',color:T.orange,fontWeight:'700',textAlign:'center'}}>✨ Готово к улучшению!</div>}
+        </div>
+        {/* Mechanics */}
+        {mechanics.length > 0 && (
+          <div style={{background:T.bgCard,borderRadius:'14px',padding:'12px 14px',border:`1px solid ${T.purple1}`,marginBottom:'10px'}}>
+            <div style={{fontSize:'10px',color:T.grey3,textTransform:'uppercase',letterSpacing:'0.5px',marginBottom:'8px'}}>Механики</div>
+            <div style={{display:'flex',flexWrap:'wrap',gap:'6px'}}>
+              {mechanics.map((m,i) => <div key={i} style={{background:`${T.purpleHL}18`,border:`1px solid ${T.purpleHL}35`,borderRadius:'8px',padding:'3px 10px',fontSize:'11px',color:T.purpleLt,fontWeight:'600',fontFamily:"'Exo 2',sans-serif"}}>{m}</div>)}
+            </div>
+          </div>
+        )}
+        {/* Description */}
+        {card.description && (
+          <div style={{background:T.bgCard,borderRadius:'14px',padding:'12px 14px',border:`1px solid ${T.purple1}`}}>
+            <div style={{fontSize:'10px',color:T.grey3,textTransform:'uppercase',letterSpacing:'0.5px',marginBottom:'6px'}}>Описание</div>
+            <div style={{fontSize:'13px',color:T.grey1,lineHeight:1.65}}>{card.description}</div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+const DeckPreviewSlot = ({cardId, allCards}) => {
+  const [imgErr, setImgErr] = React.useState(false);
+  const card = allCards.find(c => c.id === cardId);
+  const rc = card ? (RARITY_COLOR[card.rarity] || '#94a3b8') : T.grey3;
+  return (
+    <div style={{aspectRatio:'2/3',background:card ? `linear-gradient(180deg,${T.bgDeep},${T.bg})` : T.bgDeep,borderRadius:'6px',border:`1px solid ${cardId ? rc+'2a' : T.grey3+'18'}`,overflow:'hidden',display:'flex',alignItems:'center',justifyContent:'center'}}>
+      {card && !imgErr
+        ? <img src={`/api/card-image?card_id=${card.id}`} alt="" onError={()=>setImgErr(true)} style={{width:'100%',height:'100%',objectFit:'contain'}}/>
+        : card ? <span style={{fontSize:'10px',opacity:0.4}}>🃏</span>
+        : <div style={{width:'3px',height:'3px',borderRadius:'50%',background:T.grey3,opacity:0.25}}/>
+      }
+    </div>
+  );
+};
+
+const DeckSlotCard = ({cardId, allCards, onRemove, onPick}) => {
+  const [imgErr, setImgErr] = React.useState(false);
+  const card = allCards.find(c => c.id === cardId);
+  const rc = card ? (RARITY_COLOR[card.rarity] || '#94a3b8') : T.grey3;
+  if (!card) {
+    return (
+      <button onClick={onPick} style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',background:T.bgDeep,border:`1.5px dashed ${T.grey3}44`,borderRadius:'10px',aspectRatio:'2/3',cursor:'pointer',gap:'3px',transition:'border-color 0.15s'}}>
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 4v8M4 8h8" stroke={T.grey3} strokeWidth="1.5" strokeLinecap="round"/></svg>
+        <span style={{fontSize:'7px',color:T.grey3,fontFamily:"'Exo 2',sans-serif",fontWeight:'600'}}>Добавить</span>
+      </button>
+    );
+  }
+  return (
+    <button onClick={onRemove} style={{position:'relative',display:'flex',flexDirection:'column',background:`linear-gradient(180deg,${T.bgCard},${T.bgDeep})`,border:`1.5px solid ${rc}44`,borderRadius:'10px',overflow:'hidden',cursor:'pointer',aspectRatio:'2/3',transition:'all 0.12s'}}>
+      <div style={{position:'absolute',top:0,left:0,right:0,height:'2px',background:`linear-gradient(90deg,transparent,${rc},transparent)`}}/>
+      <div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',padding:'3px'}}>
+        {!imgErr
+          ? <img src={`/api/card-image?card_id=${card.id}`} alt={card.name} onError={()=>setImgErr(true)} style={{width:'100%',height:'100%',objectFit:'contain'}}/>
+          : <span style={{fontSize:'16px',opacity:0.45}}>🃏</span>
+        }
+      </div>
+      <div style={{padding:'0 3px 3px',textAlign:'center',fontSize:'7px',color:T.white,fontFamily:"'Exo 2',sans-serif",fontWeight:'700',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{card.name}</div>
+      <div style={{position:'absolute',top:'2px',right:'2px',width:'14px',height:'14px',borderRadius:'50%',background:'rgba(248,113,113,0.88)',display:'flex',alignItems:'center',justifyContent:'center'}}>
+        <svg width="7" height="7" viewBox="0 0 7 7" fill="none"><path d="M1 1l5 5M6 1L1 6" stroke="white" strokeWidth="1.2" strokeLinecap="round"/></svg>
+      </div>
+    </button>
+  );
+};
+
+const CardPickerSheet = ({allCards, deckCardIds, onPick, onClose}) => {
+  const [search, setSearch] = React.useState('');
+  const available = allCards.filter(c => !deckCardIds.includes(c.id));
+  const filtered = search ? available.filter(c => c.name.toLowerCase().includes(search.toLowerCase())) : available;
+  return (
+    <div style={{position:'absolute',inset:0,background:'rgba(5,3,14,0.82)',backdropFilter:'blur(10px)',zIndex:40,display:'flex',flexDirection:'column',justifyContent:'flex-end'}} onClick={onClose}>
+      <div onClick={e=>e.stopPropagation()} className="safe-pad-bottom"
+        style={{background:'linear-gradient(180deg,#1c1340 0%,#130d26 100%)',borderRadius:'22px 22px 0 0',padding:'14px 16px 0',border:`1px solid ${T.purple1}`,borderBottom:'none',boxShadow:'0 -20px 60px rgba(0,0,0,0.7)',animation:'slideUp 0.26s cubic-bezier(0.32,0.72,0,1)',maxHeight:'75vh',display:'flex',flexDirection:'column'}}>
+        <div style={{width:'36px',height:'4px',borderRadius:'2px',background:T.purple2,margin:'0 auto 12px'}}/>
+        <div style={{fontSize:'15px',fontWeight:'800',color:T.white,fontFamily:"'Exo 2',sans-serif",marginBottom:'10px'}}>Выбери карту</div>
+        <div style={{background:T.bgDeep,border:`1px solid ${T.purple2}`,borderRadius:'10px',padding:'7px 12px',display:'flex',gap:'8px',alignItems:'center',marginBottom:'10px',flexShrink:0}}>
+          <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><circle cx="5.5" cy="5.5" r="3.5" stroke={T.grey3} strokeWidth="1.3"/><path d="M9 9l2 2" stroke={T.grey3} strokeWidth="1.3" strokeLinecap="round"/></svg>
+          <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Поиск по названию..." autoFocus
+            style={{flex:1,background:'none',border:'none',color:T.white,fontSize:'13px',fontFamily:"'Inter',sans-serif",outline:'none'}}/>
+          {search && <button onClick={()=>setSearch('')} style={{background:'none',border:'none',cursor:'pointer',color:T.grey3,fontSize:'14px',padding:'0',lineHeight:1}}>✕</button>}
+        </div>
+        <div style={{flex:1,overflowY:'auto',paddingBottom:'20px'}}>
+          {filtered.length === 0
+            ? <div style={{textAlign:'center',padding:'32px 0',color:T.grey3,fontSize:'13px'}}>{available.length===0 ? 'Все карты уже в колоде' : 'Нет результатов'}</div>
+            : <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:'8px'}}>{filtered.map(card => <CardTile key={card.id} card={card} onClick={()=>onPick(card.id)}/>)}</div>
+          }
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const DecksTab = ({presets, allCards, onReload}) => {
+  const [editing, setEditing]   = React.useState(null);
+  const [pickSlot, setPickSlot] = React.useState(null);
+  const [saving,   setSaving]   = React.useState(false);
+  const [saveMsg,  setSaveMsg]  = React.useState(null);
+
+  const savePreset = async () => {
+    if (!editing || saving) return;
+    setSaving(true);
+    try {
+      const slots = Array.from({length:9}, (_,i) => editing.slots[i] || null);
+      const res = await fetch(_buildAuthUrl('/api/deck/presets/save'), {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({preset_number: editing.preset_number, preset_name: editing.preset_name, card_slots: slots}),
+      });
+      if (!res.ok) throw new Error('save failed');
+      setSaveMsg('ok');
+      await onReload();
+      setTimeout(() => { setSaveMsg(null); setEditing(null); }, 700);
+    } catch(e) {
+      setSaveMsg('err');
+      setTimeout(() => setSaveMsg(null), 2200);
+    }
+    setSaving(false);
+  };
+
+  const presetSlots = [1,2,3].map(n => presets.find(p => p.preset_number===n) || {id:null, preset_number:n, preset_name:`Колода ${n}`, card_ids:[]});
+
+  if (editing) {
+    const deckCardIds = editing.slots.filter(Boolean);
+    const filled = deckCardIds.length;
+    return (
+      <div style={{flex:1,display:'flex',flexDirection:'column',minHeight:0,position:'relative'}}>
+        <div style={{padding:'10px 16px 10px',display:'flex',alignItems:'center',gap:'8px',flexShrink:0,borderBottom:`1px solid ${T.purple1}`}}>
+          <button onClick={()=>setEditing(null)} style={{width:'32px',height:'32px',borderRadius:'10px',background:T.bgCard,border:`1px solid ${T.purple1}`,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',flexShrink:0}}>
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 3L5 7L9 11" stroke={T.grey2} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg>
+          </button>
+          <input value={editing.preset_name} onChange={e=>setEditing(p=>({...p,preset_name:e.target.value}))} maxLength={24}
+            style={{flex:1,background:T.bgDeep,border:`1px solid ${T.purple2}`,borderRadius:'9px',padding:'7px 11px',color:T.white,fontSize:'14px',fontWeight:'700',fontFamily:"'Exo 2',sans-serif",outline:'none'}}/>
+          <button onClick={savePreset} disabled={saving}
+            style={{padding:'7px 14px',background:saveMsg==='ok'?'#166534':saveMsg==='err'?'#7f1d1d':`linear-gradient(135deg,${T.orange},${T.orangeD})`,border:'none',borderRadius:'9px',color:'white',fontSize:'12px',fontWeight:'700',fontFamily:"'Exo 2',sans-serif",cursor:saving?'default':'pointer',opacity:saving?0.65:1,transition:'all 0.15s',flexShrink:0,minWidth:'70px',textAlign:'center'}}>
+            {saving ? <div style={{width:'14px',height:'14px',border:'2px solid rgba(255,255,255,0.3)',borderTopColor:'white',borderRadius:'50%',animation:'spin 0.7s linear infinite',margin:'0 auto'}}/> : saveMsg==='ok' ? '✓ Сохранено' : saveMsg==='err' ? '✗ Ошибка' : 'Сохранить'}
+          </button>
+        </div>
+        <div style={{padding:'8px 16px 4px',fontSize:'11px',color:T.grey3,flexShrink:0,display:'flex',justifyContent:'space-between'}}>
+          <span>Нажми на пустой слот — добавить, на занятый — убрать</span>
+          <span style={{color:filled===9?T.orange:T.grey3,fontWeight:filled===9?'700':'400'}}>{filled}/9</span>
+        </div>
+        <div style={{flex:1,overflowY:'auto',padding:'8px 16px 20px'}}>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'10px'}}>
+            {editing.slots.map((cardId,i) => (
+              <DeckSlotCard key={i} cardId={cardId} allCards={allCards}
+                onRemove={() => setEditing(p => {const s=[...p.slots];s[i]=null;return {...p,slots:s};})}
+                onPick={()=>setPickSlot(i)}/>
+            ))}
+          </div>
+        </div>
+        {pickSlot !== null && (
+          <CardPickerSheet allCards={allCards} deckCardIds={deckCardIds}
+            onPick={cardId => { setEditing(p=>{const s=[...p.slots];s[pickSlot]=cardId;return{...p,slots:s};}); setPickSlot(null); }}
+            onClose={() => setPickSlot(null)}/>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div style={{flex:1,overflowY:'auto',padding:'10px 16px 24px',display:'flex',flexDirection:'column',gap:'10px'}}>
+      {presetSlots.map(preset => {
+        const hasCards = preset.card_ids?.length > 0;
+        return (
+          <div key={preset.preset_number} style={{background:T.bgCard,border:`1px solid ${T.purple1}`,borderRadius:'16px',padding:'13px 14px'}}>
+            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'11px'}}>
+              <div style={{display:'flex',alignItems:'center',gap:'9px'}}>
+                <div style={{width:'28px',height:'28px',borderRadius:'8px',background:`linear-gradient(135deg,${T.purple2},${T.purple3})`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'14px',fontWeight:'900',color:T.white,fontFamily:"'Exo 2',sans-serif",flexShrink:0}}>{preset.preset_number}</div>
+                <div>
+                  <div style={{fontSize:'14px',fontWeight:'700',color:T.white,fontFamily:"'Exo 2',sans-serif",lineHeight:1.2}}>{preset.preset_name || `Колода ${preset.preset_number}`}</div>
+                  {hasCards && <div style={{fontSize:'10px',color:T.grey3,marginTop:'1px'}}>{preset.card_ids.length} / 9 карт</div>}
+                </div>
+              </div>
+              <button onClick={() => setEditing({...preset, slots:Array.from({length:9},(_,i)=>preset.card_ids?.[i]||null)})}
+                style={{padding:'6px 14px',background:hasCards?T.purple2:`linear-gradient(135deg,${T.orange},${T.orangeD})`,border:`1px solid ${hasCards?T.purple3:T.orange}`,borderRadius:'9px',color:'white',fontSize:'11px',fontWeight:'700',fontFamily:"'Exo 2',sans-serif",cursor:'pointer',flexShrink:0}}>
+                {hasCards ? 'Редактировать' : 'Собрать колоду'}
+              </button>
+            </div>
+            {hasCards ? (
+              <div style={{display:'grid',gridTemplateColumns:'repeat(9,1fr)',gap:'4px'}}>
+                {Array.from({length:9}, (_,i) => <DeckPreviewSlot key={i} cardId={preset.card_ids?.[i]} allCards={allCards}/>)}
+              </div>
+            ) : (
+              <div style={{display:'flex',alignItems:'center',justifyContent:'center',height:'42px',border:`1px dashed ${T.grey3}25`,borderRadius:'10px'}}>
+                <span style={{fontSize:'12px',color:T.grey3}}>Колода не собрана</span>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+};
+
+const CollectionScreen = ({profile}) => {
+  const [tab,          setTab]         = React.useState('cards');
+  const [cards,        setCards]       = React.useState([]);
+  const [presets,      setPresets]     = React.useState([]);
+  const [loading,      setLoading]     = React.useState(true);
+  const [sortBy,       setSortBy]      = React.useState('obtained');
+  const [selectedCard, setSelectedCard]= React.useState(null);
+
+  const userId = profile?.user_id;
+
+  const loadCards = React.useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await fetch(_buildAuthUrl('/api/cards/user'));
+      if (!res.ok) throw new Error('failed');
+      const data = await res.json();
+      setCards(data.cards || []);
+    } catch(e) { setCards([]); }
+    setLoading(false);
+  }, [userId]);
+
+  const loadPresets = React.useCallback(async () => {
+    try {
+      const res = await fetch(_buildAuthUrl('/api/deck/presets'));
+      if (!res.ok) throw new Error('failed');
+      const data = await res.json();
+      setPresets(data.presets || []);
+    } catch(e) { setPresets([]); }
+  }, [userId]);
+
+  React.useEffect(() => { loadCards(); loadPresets(); }, [loadCards, loadPresets]);
+
+  const sortedCards = React.useMemo(() => {
+    const arr = [...cards];
+    if      (sortBy==='rarity') arr.sort((a,b) => RARITY_ORDER.indexOf(a.rarity) - RARITY_ORDER.indexOf(b.rarity));
+    else if (sortBy==='level')  arr.sort((a,b) => (b.level||1) - (a.level||1));
+    else if (sortBy==='power')  arr.sort((a,b) => (b.power||0) - (a.power||0));
+    return arr;
+  }, [cards, sortBy]);
+
+  if (selectedCard) {
+    return (
+      <div style={{flex:1,display:'flex',flexDirection:'column',minHeight:0}}>
+        <CardDetailScreen card={selectedCard} onBack={()=>setSelectedCard(null)}/>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{flex:1,display:'flex',flexDirection:'column',minHeight:0,overflow:'hidden'}}>
+      {/* Tabs */}
+      <div style={{display:'flex',background:T.bgDeep,margin:'10px 16px 0',borderRadius:'12px',padding:'3px',gap:'3px',flexShrink:0}}>
+        {[{id:'cards',label:`Карты${cards.length ? ` (${cards.length})` : ''}`},{id:'decks',label:'Колоды'}].map(t=>(
+          <button key={t.id} onClick={()=>setTab(t.id)}
+            style={{flex:1,padding:'9px 4px',borderRadius:'10px',background:tab===t.id?T.purple2:'none',border:'none',color:tab===t.id?T.white:T.grey2,fontSize:'13px',fontWeight:tab===t.id?'700':'400',fontFamily:"'Exo 2',sans-serif",cursor:'pointer',transition:'all 0.15s'}}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'cards' && (<>
+        {/* Sort bar */}
+        <div style={{padding:'8px 16px 4px',display:'flex',gap:'6px',overflowX:'auto',scrollbarWidth:'none',flexShrink:0}}>
+          {[{id:'obtained',label:'Новые'},{id:'rarity',label:'Редкость'},{id:'level',label:'Уровень'},{id:'power',label:'Сила'}].map(s=>(
+            <button key={s.id} onClick={()=>setSortBy(s.id)}
+              style={{padding:'5px 13px',borderRadius:'16px',background:sortBy===s.id?T.orange:T.bgCard,border:`1px solid ${sortBy===s.id?T.orange:T.purple1}`,color:sortBy===s.id?'white':T.grey2,fontSize:'11px',fontWeight:'600',cursor:'pointer',whiteSpace:'nowrap',fontFamily:"'Exo 2',sans-serif",flexShrink:0,transition:'all 0.15s'}}>
+              {s.label}
+            </button>
+          ))}
+        </div>
+        <div style={{flex:1,overflowY:'auto',padding:'4px 12px 16px'}}>
+          {loading
+            ? <div style={{display:'flex',alignItems:'center',justifyContent:'center',height:'200px',gap:'10px'}}>
+                <div style={{width:'22px',height:'22px',border:`2px solid ${T.purple2}`,borderTopColor:T.purpleLt,borderRadius:'50%',animation:'spin 0.8s linear infinite'}}/>
+                <span style={{color:T.grey2,fontSize:'13px'}}>Загружаем коллекцию...</span>
+              </div>
+            : cards.length === 0
+              ? <div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',height:'220px',gap:'12px'}}>
+                  <div style={{width:'68px',height:'68px',borderRadius:'20px',background:T.bgCard,border:`1px solid ${T.purple1}`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'32px',opacity:0.5}}>🃏</div>
+                  <span style={{fontSize:'15px',fontWeight:'700',color:T.grey2,fontFamily:"'Exo 2',sans-serif"}}>Коллекция пуста</span>
+                  <span style={{fontSize:'12px',color:T.grey3,textAlign:'center',lineHeight:1.6}}>Открывай кейсы в магазине,<br/>чтобы получить карты</span>
+                </div>
+              : <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'8px',paddingTop:'4px'}}>
+                  {sortedCards.map(card => <CardTile key={card.id} card={card} onClick={()=>setSelectedCard(card)}/>)}
+                </div>
+          }
+        </div>
+      </>)}
+
+      {tab === 'decks' && (
+        <DecksTab presets={presets} allCards={cards} onReload={loadPresets}/>
+      )}
+    </div>
+  );
+};
+
+// ═══════════════════════════════════════════
 const PlaceholderScreen = ({label}) => (
   <div style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:'12px',padding:'32px'}}>
     <div style={{width:'64px',height:'64px',borderRadius:'20px',background:T.bgCard,border:`1px solid ${T.purple1}`,display:'flex',alignItems:'center',justifyContent:'center'}}>
@@ -1280,8 +1682,10 @@ const App = () => {
           <AIScreen onBack={()=>setShowAI(false)}/>
         ) : navTab===2 ? (
           <ArenaScreen onMenu={()=>setShowMenu(true)} onAI={()=>setShowAI(true)} onBattlePick={()=>setShowBattlePick(true)} onStartBattle={()=>setShowGameMode(true)} profile={profile}/>
+        ) : navTab===1 ? (
+          <CollectionScreen profile={profile}/>
         ) : (
-          <PlaceholderScreen label={['Магазин','Коллекция','','Скводы','Сообщество'][navTab]}/>
+          <PlaceholderScreen label={['Магазин','','','Скводы','Сообщество'][navTab]}/>
         )}
       </div>
 
