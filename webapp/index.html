@@ -666,7 +666,7 @@ const PromoSection = ({profile}) => {
           </div>
           <div style={{display:'flex',gap:'5px',marginBottom:'10px'}}>
             {['permanent','personal','welcome'].map(t=>(
-              <button key={t} onClick={()=>setCType(t)} style={{flex:1,padding:'5px 4px',borderRadius:'8px',background:cType===t?T2.purple2:T2.bgDeep,border:`1px solid ${cType===t?T2.purpleHL:T2.purple1}`,color:cType===t?T2.white:T2.grey3,fontSize:'10px',fontWeight:cType===t?'700':'400',cursor:'pointer',fontFamily:"'Exo 2',sans-serif'}}>
+              <button key={t} onClick={()=>setCType(t)} style={{flex:1,padding:'5px 4px',borderRadius:'8px',background:cType===t?T2.purple2:T2.bgDeep,border:`1px solid ${cType===t?T2.purpleHL:T2.purple1}`,color:cType===t?T2.white:T2.grey3,fontSize:'10px',fontWeight:cType===t?'700':'400',cursor:'pointer',fontFamily:"'Exo 2',sans-serif"}}>
                 {t==='permanent'?'Общий':t==='personal'?'Личный':'Новичку'}
               </button>
             ))}
