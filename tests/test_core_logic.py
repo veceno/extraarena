@@ -379,3 +379,75 @@ class TestWarriorPassiveScaling:
         }
         lvl4 = card_from_db(warrior_data, level=4)
         assert 'aura_atk_3' in lvl4.mechanics  # ((4-1)//3) = 1 → aura_atk_3
+
+
+# ============================================================================
+# SCALING: Отсутствие дублирования механик (регрессия)
+# ============================================================================
+
+class TestScaleMechanicsNoDuplication:
+    def test_no_duplicate_mechanics_on_scaling(self):
+        """scale_card_by_level не должен дублировать механики при level > 1."""
+        warrior_data = {
+            'id': 99, 'name': 'Test', 'card_type': 'warrior',
+            'base_attack': 3, 'current_attack': 3, 'base_hp': 3, 'current_hp': 3,
+            'mana_cost': 3, 'rarity': 'common',
+            'mechanics': ['taunt', 'shield', 'lifesteal', 'charge', 'battlecry_draw_card']
+        }
+        warrior = card_from_db(warrior_data, level=5)
+
+        for mechanic in ['taunt', 'shield', 'lifesteal', 'charge', 'battlecry_draw_card']:
+            count = warrior.mechanics.count(mechanic)
+            assert count == 1, f"Механика '{mechanic}' встречается {count} раз: {warrior.mechanics}"
+
+    def test_shield_not_doubled_on_scaled_warrior(self):
+        """Scaled warrior со shield должен блокировать только 1 удар, не 2."""
+        warrior_data = {
+            'id': 100, 'name': 'Shield Guy', 'card_type': 'warrior',
+            'base_attack': 3, 'current_attack': 3, 'base_hp': 5, 'current_hp': 5,
+            'mana_cost': 3, 'rarity': 'common',
+            'mechanics': ['shield']
+        }
+        warrior = card_from_db(warrior_data, level=5)
+        hp_after_scale = warrior.hp  # 5 + (5-1)//2 = 7
+
+        apply_damage(warrior, 10)
+        assert warrior.hp == hp_after_scale, "Первый удар: shield должен заблокировать"
+        assert 'shield' not in warrior.mechanics, "Shield должен исчезнуть после первого удара"
+
+        apply_damage(warrior, 10)
+        assert warrior.hp == 0, "Второй удар: shield не должен срабатывать повторно"
+
+    def test_battlecry_draw_card_not_doubled_on_scaled_warrior(self):
+        """Scaled warrior с battlecry_draw_card должен тянуть ровно 1 карту."""
+        state = create_minimal_game_state()
+        env = ArenaEnvironment(state)
+
+        # Кладём 3 карты в колоду P1
+        for i in range(3):
+            state.p1.deck.append(CardInstance(
+                instance_id=uuid4(), card_id=i + 10, name=f"Deck Card {i}",
+                card_type=CardType.WARRIOR, hp=2, max_hp=2, attack=1, mana_cost=1,
+                mechanics=[], is_ready=False,
+            ))
+
+        warrior_data = {
+            'id': 101, 'name': 'Draw Guy', 'card_type': 'warrior',
+            'base_attack': 2, 'current_attack': 2, 'base_hp': 3, 'current_hp': 3,
+            'mana_cost': 3, 'rarity': 'common',
+            'mechanics': ['battlecry_draw_card']
+        }
+        draw_warrior = card_from_db(warrior_data, level=5)
+        state.p1.hand.append(draw_warrior)
+
+        hand_before = len(state.p1.hand)  # 1 (сам warrior)
+        deck_before = len(state.p1.deck)  # 3
+
+        success, _ = env.step(1, PlayCardAction(hand_index=0, target_id=None, position=None))
+        assert success
+
+        # После розыгрыша: warrior ушёл из руки (-1), тянется 1 карта (+1) → итого 1
+        assert len(state.p1.hand) == 1, \
+            f"Должна быть ровно 1 карта в руке, получено {len(state.p1.hand)}"
+        assert len(state.p1.deck) == deck_before - 1, \
+            f"Из колоды должна уйти ровно 1 карта"

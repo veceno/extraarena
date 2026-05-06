@@ -96,10 +96,7 @@ def scale_card_by_level(card: CardInstance, level: int) -> CardInstance:
             if passive_scaled:
                 continue
 
-            # Остальные механики без изменений
-            scaled_mechanics.append(mechanic)
-
-            # 3. Lifesteal и Charge - флаги, без изменений
+            # Остальные механики без изменений (taunt, shield, charge, lifesteal, etc.)
             scaled_mechanics.append(mechanic)
         
         card.mechanics = scaled_mechanics
