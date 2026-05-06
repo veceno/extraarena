@@ -1102,9 +1102,12 @@ async def run_bot_routine(engine: BattleEngine, bot_id: int | str) -> None:
         # Получаем сложность бота для расчёта задержек
         difficulty = getattr(engine, "bot_difficulty", "medium")
         match_id = getattr(engine, "match_id", "unknown")
+        is_blitz = getattr(engine, "_is_blitz", False)
         
         # Единая задержка хода (Turn Delay): бот «раздумывает» перед серией действий
-        if difficulty in ("hard", "max"):
+        if is_blitz:
+            turn_delay = random.uniform(0.3, 0.8)
+        elif difficulty in ("hard", "max"):
             turn_delay = random.uniform(1.5, 2.5)
         else:  # lite, easy, medium, noob
             turn_delay = random.uniform(4.0, 6.0)
@@ -1151,9 +1154,9 @@ async def run_bot_routine(engine: BattleEngine, bot_id: int | str) -> None:
                 logger.info("run_bot_routine: not bot's turn at step %d", step)
                 break
             
-            # Безопасность по времени: если осталось < 5 сек, пропускаем все паузы
+            # Безопасность по времени: если осталось < 5 сек (< 2 сек для blitz), пропускаем все паузы
             time_remaining = engine.get_turn_time_remaining() if hasattr(engine, "get_turn_time_remaining") else 25
-            emergency_mode = time_remaining < 5.0
+            emergency_mode = time_remaining < (2.0 if is_blitz else 5.0)
             
             # Получаем легальные действия из core/engine
             try:
@@ -1243,10 +1246,11 @@ async def run_bot_routine(engine: BattleEngine, bot_id: int | str) -> None:
                 result = engine.execute_bot_action(action_dict)
                 action_count += 1
                 
-                # Минимальная техническая пауза для анимаций UI (0.4 - 0.8 сек)
-                # Пропускается в emergency_mode (осталось < 5 сек)
+                # Минимальная техническая пауза для анимаций UI
+                # Blitz: 0.05-0.15s, Normal: 0.4-0.8s
+                # Пропускается в emergency_mode
                 if not emergency_mode:
-                    action_gap = random.uniform(0.4, 0.8)
+                    action_gap = random.uniform(0.05, 0.15) if is_blitz else random.uniform(0.4, 0.8)
                     total_action_delays += action_gap
                     await asyncio.sleep(action_gap)
                 else:
@@ -1433,6 +1437,7 @@ def create_web_app(
     app["matchmaker"] = services["matchmaker"]
     app["active_matches"] = services["active_matches"]
     app["event_emitter"] = services["event_emitter"]
+    app["match_game_modes"] = {}
     
     # Инициализация ONNX-мозга Берсерка с профилями сложности
     global BERSERK_BRAIN
@@ -3907,6 +3912,7 @@ def create_web_app(
         is_bot: bool,
         bot_info: dict[str, Any] | None = None,
         player_decks: dict[str, int | None] | None = None,
+        game_mode: str = "classic",
     ) -> bool:
         """
         Собирает и кеширует BattleEngine для match_id.
@@ -3959,6 +3965,8 @@ def create_web_app(
         # Загружаем профили игроков для получения имен и аватаров
         p1_name, p1_avatar_url = "Игрок 1", None
         p2_name, p2_avatar_url = ("Бот" if is_bot else "Игрок 2"), None
+        p1_trophies, p2_trophies = 0, 0
+        p1_clan, p2_clan = "", ""
         
         try:
             # Загружаем профиль первого игрока
@@ -3981,7 +3989,9 @@ def create_web_app(
                         p1_profile.get("avatar_file_id") or 
                         p1_profile.get("avatar_url")
                     )
-                    print(f"✅ P1 name resolved: {p1_name}, avatar: {p1_avatar_url}")
+                    p1_trophies = int(p1_profile.get("trophies", 0) or 0)
+                    p1_clan = p1_profile.get("clan") or p1_profile.get("clan_name") or ""
+                    print(f"✅ P1 name resolved: {p1_name}, avatar: {p1_avatar_url}, trophies: {p1_trophies}, clan: {p1_clan}")
             
             # Загружаем профиль второго игрока
             if is_bot:
@@ -4024,10 +4034,14 @@ def create_web_app(
                             )
                             if p2_avatar_url:
                                 print(f"✅ P2 BOT avatar from DB: {p2_avatar_url}")
+                        p2_trophies = int(p2_profile.get("trophies", 0) or 0) if p2_trophies == 0 else p2_trophies
+                        p2_clan = p2_profile.get("clan") or p2_profile.get("clan_name") or ""
                     else:
                         print(f"❌ WARNING: No profile found in DB for bot ID {p2_id_int}")
                 
                 print(f"📝 FINAL BOT DATA: name={p2_name}, avatar={p2_avatar_url}")
+                if bot_info:
+                    p2_trophies = int(bot_info.get("trophies", 0) or 0) if p2_trophies == 0 else p2_trophies
             else:
                 # Для обычного игрока (не бота) загружаем профиль из БД
                 if p2_id_int > 0:
@@ -4047,6 +4061,8 @@ def create_web_app(
                             p2_profile.get("avatar_file_id") or 
                             p2_profile.get("avatar_url")
                         )
+                        p2_trophies = int(p2_profile.get("trophies", 0) or 0) if p2_trophies == 0 else p2_trophies
+                        p2_clan = p2_profile.get("clan") or p2_profile.get("clan_name") or ""
                         print(f"✅ P2 name resolved: {p2_name}, avatar: {p2_avatar_url}")
                 
             logger.info("Battle init: loaded player names p1=%s, p2=%s", p1_name, p2_name)
@@ -4120,6 +4136,7 @@ def create_web_app(
                 card_cache=card_cache,
                 active_matches=request.app["active_matches"],
                 event_emitter=request.app.get("event_emitter"),
+                game_mode=game_mode,
             )
             
             # Вызываем create_match для инициализации core/engine.ArenaEnvironment
@@ -4140,7 +4157,8 @@ def create_web_app(
                     "name": p1_name,
                     "avatar_url": p1_avatar_url,
                     "is_bot": False,
-                    "trophies": 0,
+                    "trophies": p1_trophies,
+                    "clan": p1_clan,
                 },
                 p2_data={
                     "user_id": p2_id_int,
@@ -4148,8 +4166,9 @@ def create_web_app(
                     "name": p2_name,
                     "avatar_url": p2_avatar_url,
                     "is_bot": is_bot,
-                    "trophies": 0,
-                    "difficulty": bot_difficulty,  # КРИТИЧНО: Передаем сложность бота
+                    "trophies": p2_trophies,
+                    "clan": p2_clan,
+                    "difficulty": bot_difficulty,
                 },
             )
             
@@ -4242,6 +4261,7 @@ def create_web_app(
                                 is_bot=bool(result.get("is_bot")),
                                 bot_info=bot_info,
                                 player_decks=result.get("player_decks"),
+                                game_mode=game_mode,
                             ),
                             timeout=6.0,
                         )
@@ -4274,6 +4294,15 @@ def create_web_app(
                         match_id,
                         current_state,
                     )
+                    if engine:
+                        result["game_mode"] = getattr(engine, "game_mode", "classic")
+                        result["opponent_name"] = engine._p2_name
+                        result["opponent_avatar_url"] = engine._p2_avatar_url
+                        result["player_name"] = engine._p1_name
+                        result["player_avatar_url"] = engine._p1_avatar_url
+                        result["opponent_trophies"] = getattr(engine, "_p2_trophies", 0)
+                        result["opponent_clan"] = getattr(engine, "_p2_clan", "")
+                        request.app["match_game_modes"][match_id] = getattr(engine, "game_mode", game_mode)
 
             logger.info("match_find_handler response: %s", result)
             return web.json_response(result)
@@ -4291,6 +4320,7 @@ def create_web_app(
         user_id = data.get("user_id")
         difficulty = data.get("difficulty", "medium")
         selected_deck_id = data.get("selected_deck_id") or data.get("deck_id")
+        game_mode = data.get("game_mode") or data.get("mode") or "classic"
 
         valid_difficulties = ("lite", "easy", "medium", "hard", "max")
         if difficulty not in valid_difficulties:
@@ -4327,13 +4357,29 @@ def create_web_app(
                     is_bot=True,
                     bot_info=bot_info,
                     player_decks=result.get("player_decks"),
+                    game_mode=game_mode,
                 ),
                 timeout=10.0,
             )
             if not ok:
                 return web.json_response({"error": "battle_init_failed"}, status=500)
 
-            return web.json_response({"status": "found", "match_id": match_id})
+            engine = request.app["active_matches"].get(match_id)
+            opponent_name = engine._p2_name if engine else "Бот"
+            opponent_avatar_url = engine._p2_avatar_url if engine else None
+            opponent_trophies = getattr(engine, "_p2_trophies", 0) if engine else 0
+            opponent_clan = getattr(engine, "_p2_clan", "") if engine else ""
+            request.app["match_game_modes"][match_id] = getattr(engine, "game_mode", game_mode) if engine else game_mode
+
+            return web.json_response({
+                "status": "found",
+                "match_id": match_id,
+                "game_mode": game_mode,
+                "opponent_name": opponent_name,
+                "opponent_avatar_url": opponent_avatar_url,
+                "opponent_trophies": opponent_trophies,
+                "opponent_clan": opponent_clan,
+            })
         except asyncio.TimeoutError:
             return web.json_response({"error": "timeout"}, status=504)
         except Exception as e:
@@ -4376,6 +4422,7 @@ def create_web_app(
                     )
                     # Извлекаем информацию о боте (если есть)
                     bot_info = result.get("bot_info") if result.get("is_bot") else None
+                    lazy_game_mode = request.app.get("match_game_modes", {}).get(match_id, "classic")
                     ok = await asyncio.wait_for(
                         _prepare_and_cache_engine(
                             request,
@@ -4383,6 +4430,7 @@ def create_web_app(
                             player_ids=player_ids,
                             is_bot=bool(result.get("is_bot")),
                             bot_info=bot_info,
+                            game_mode=lazy_game_mode,
                         ),
                         timeout=5.0,
                     )
@@ -4628,6 +4676,7 @@ def create_web_app(
                     )
                     # Извлекаем информацию о боте (если есть)
                     bot_info = status.get("bot_info") if status.get("is_bot") else None
+                    lazy_game_mode = request.app.get("match_game_modes", {}).get(match_id, "classic")
                     ok = await asyncio.wait_for(
                         _prepare_and_cache_engine(
                             request,
@@ -4636,6 +4685,7 @@ def create_web_app(
                             is_bot=bool(status.get("is_bot")),
                             bot_info=bot_info,
                             player_decks=status.get("player_decks"),
+                            game_mode=lazy_game_mode,
                         ),
                         timeout=5.0,
                     )

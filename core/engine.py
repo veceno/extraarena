@@ -204,14 +204,16 @@ class ArenaEnvironment:
     Хранит состояние и обрабатывает действия игроков.
     """
 
-    def __init__(self, state: GameState) -> None:
+    def __init__(self, state: GameState, mana_per_turn: int = 1) -> None:
         """
         Инициализировать среду с начальным состоянием.
         
         Args:
             state: Начальное игровое состояние
+            mana_per_turn: Прирост маны за ход (default 1, blitz=2)
         """
         self.state = state
+        self.mana_per_turn = mana_per_turn
         # Применяем стартовые эффекты героев (например, start_mana)
         self.apply_start_game_effects()
 
@@ -530,7 +532,7 @@ class ArenaEnvironment:
         self.state.turn_number += 1
 
         # Восстанавливаем ману противнику
-        opponent.max_mana = min(10, opponent.max_mana + 1)
+        opponent.max_mana = min(10, opponent.max_mana + self.mana_per_turn)
         opponent.mana = opponent.max_mana
 
         # Делаем всех существ противника готовыми к атаке (пробуждаем)

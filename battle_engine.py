@@ -64,6 +64,7 @@ class BattleEngine:
         p1_avatar_url: Optional[str] = None,
         p2_name: Optional[str] = None,
         p2_avatar_url: Optional[str] = None,
+        game_mode: str = "classic",
     ) -> None:
         """Инициализация боевого движка."""
         self._db = db
@@ -80,7 +81,9 @@ class BattleEngine:
         self.game_over_processed = False
         self.rewards_granted = False
         self.turn_start_time: Optional[float] = None
-        self.turn_duration = 25
+        self.game_mode = game_mode
+        self._is_blitz = (game_mode == "extra_arena:blitz")
+        self.turn_duration = 5 if self._is_blitz else 25
         self.client_ready = False
         self._card_cache: Dict[str, Any] = card_cache or {}
         self._logger = logging.getLogger(__name__)
@@ -97,6 +100,10 @@ class BattleEngine:
         self._p1_avatar_url = p1_avatar_url
         self._p2_name = p2_name or "Игрок 2"
         self._p2_avatar_url = p2_avatar_url
+        self._p1_trophies: int = 0
+        self._p2_trophies: int = 0
+        self._p1_clan: str = ""
+        self._p2_clan: str = ""
         
         # Для совместимости со старым кодом (минимальные заглушки)
         p1_id = player_ids[0] if player_ids and len(player_ids) > 0 else 1
@@ -146,8 +153,12 @@ class BattleEngine:
             # Метаданные
             self._p1_name = p1_data.get("name", "Игрок 1")
             self._p1_avatar_url = p1_data.get("avatar_url")
+            self._p1_trophies = p1_data.get("trophies", 0)
+            self._p1_clan = p1_data.get("clan", "")
             self._p2_name = p2_data.get("name", "Игрок 2")
             self._p2_avatar_url = p2_data.get("avatar_url")
+            self._p2_trophies = p2_data.get("trophies", 0)
+            self._p2_clan = p2_data.get("clan", "")
             
             # Загружаем данные карт из БД
             all_deck_ids = (p1_data.get("deck_ids") or []) + (p2_data.get("deck_ids") or [])
@@ -175,6 +186,13 @@ class BattleEngine:
             # Извлекаем героев
             p1_hero = self._extract_hero(p1_deck)
             p2_hero = self._extract_hero(p2_deck)
+
+            # Blitz: hero HP -50% for both players
+            if self._is_blitz:
+                p1_hero.hp = p1_hero.hp // 2
+                p1_hero.max_hp = p1_hero.hp
+                p2_hero.hp = p2_hero.hp // 2
+                p2_hero.max_hp = p2_hero.hp
             
             # Создаем состояния игроков
             p1_state = CorePlayerState(
@@ -270,7 +288,7 @@ class BattleEngine:
             )
             
             # Инициализируем ArenaEnvironment
-            self._arena = ArenaEnvironment(game_state)
+            self._arena = ArenaEnvironment(game_state, mana_per_turn=2 if self._is_blitz else 1)
             self.current_player_id = p1_data["user_id"]
             self.turn = 1
             self.turn_start_time = time.time()

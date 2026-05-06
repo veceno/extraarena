@@ -63,6 +63,7 @@ html, body {
 @keyframes pulse2    { 0%,100%{opacity:0.5;transform:scale(1)} 50%{opacity:1;transform:scale(1.15)} }
 @keyframes popIn     { from{opacity:0;transform:scale(0.93) translateY(10px)} to{opacity:1;transform:scale(1) translateY(0)} }
 @keyframes spin      { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
+@keyframes yellowPulse { 0%,100%{box-shadow:0 0 4px rgba(245,146,30,0.2)} 50%{box-shadow:0 0 14px rgba(245,146,30,0.6),0 0 22px rgba(245,146,30,0.3)} }
 </style>
 </head>
 <body>
@@ -155,7 +156,9 @@ window._getUserId = function() {
 window.startBattle = async function(profile, deckId, mode) {
   const tg = window.Telegram?.WebApp;
   const overlay = document.getElementById('searchOverlay');
+  const overlayText = document.querySelector('[data-role="search-overlay-text"]');
   if (overlay) overlay.style.display = 'flex';
+  if (overlayText) overlayText.textContent = 'Подбираем соперника, подождите';
 
   try {
     document.getElementById('battle-sound')?.play().catch(()=>{});
@@ -176,7 +179,8 @@ window.startBattle = async function(profile, deckId, mode) {
     const data = await res.json();
 
     if (data.match_id) {
-      window.location.href = `${location.origin}/arena?id=${encodeURIComponent(data.match_id)}&user_id=${encodeURIComponent(userId)}`;
+      if (overlay) overlay.style.display = 'none';
+      window._openPreBattle({ matchId: data.match_id, userId, profile, gameMode: data.game_mode || mode, opponentName: data.opponent_name, opponentAvatar: data.opponent_avatar_url, opponentTrophies: data.opponent_trophies, opponentClan: data.opponent_clan });
     } else {
       matchmakingTimer = setTimeout(() => window.startBattle(profile, deckId, mode), 3000);
     }
@@ -186,7 +190,7 @@ window.startBattle = async function(profile, deckId, mode) {
   }
 };
 
-window.startVsBot = async function(difficulty, profile, deckId) {
+window.startVsBot = async function(difficulty, profile, deckId, mode) {
   const overlay = document.getElementById('searchOverlay');
   const overlayText = document.querySelector('[data-role="search-overlay-text"]');
   if (overlay) overlay.style.display = 'flex';
@@ -196,7 +200,7 @@ window.startVsBot = async function(difficulty, profile, deckId) {
     document.getElementById('battle-sound')?.play().catch(()=>{});
     const userId = window._getUserId();
 
-    const body = { user_id: userId, difficulty };
+    const body = { user_id: userId, difficulty, game_mode: mode || 'classic' };
     if (deckId != null) body.deck_id = parseInt(deckId);
 
     const res = await fetch('/api/match/vs-bot', {
@@ -209,7 +213,8 @@ window.startVsBot = async function(difficulty, profile, deckId) {
     const data = await res.json();
 
     if (data.match_id) {
-      window.location.href = `${location.origin}/arena?id=${encodeURIComponent(data.match_id)}&user_id=${encodeURIComponent(userId)}`;
+      if (overlay) overlay.style.display = 'none';
+      window._openPreBattle({ matchId: data.match_id, userId, profile, gameMode: data.game_mode || mode, opponentName: data.opponent_name, opponentAvatar: data.opponent_avatar_url, opponentTrophies: data.opponent_trophies, opponentClan: data.opponent_clan });
     } else {
       throw new Error(data.error || 'no match_id');
     }
@@ -218,6 +223,9 @@ window.startVsBot = async function(difficulty, profile, deckId) {
     if (overlay) overlay.style.display = 'none';
   }
 };
+
+window._openPreBattle = function(data) { window.__preBattleData = data; window.__rootSetPreBattle?.(true); };
+window._rootSetPreBattle = null;
 
 window.saveNickname = async function(nick) {
   try {
@@ -2288,13 +2296,35 @@ const CollectionScreen = ({profile}) => {
       <div style={{display:'flex',background:T.bgDeep,margin:'10px 16px 0',borderRadius:'12px',padding:'3px',gap:'3px',flexShrink:0}}>
         {[
           {id:'decks', label:'Мои колоды'},
-          {id:'cards', label:`Карты${cards.length ? ` (${cards.length})` : ''}${upgradeReadyCount > 0 ? ` ⬆️${upgradeReadyCount}` : ''}`},
-        ].map(t=>(
+          {id:'cards', label:null},
+        ].map(t=>{
+          const isCards = t.id === 'cards';
+          const hasUpgrades = isCards && upgradeReadyCount > 0;
+          return (
           <button key={t.id} onClick={()=>setTab(t.id)}
-            style={{flex:1,padding:'9px 4px',borderRadius:'10px',background:tab===t.id?T.purple2:'none',border:'none',color:tab===t.id?T.white:T.grey2,fontSize:'13px',fontWeight:tab===t.id?'700':'400',fontFamily:"'Exo 2',sans-serif",cursor:'pointer',transition:'all 0.15s'}}>
-            {t.label}
+            style={{
+              flex:1, padding:'9px 4px', borderRadius:'10px',
+              background: tab===t.id ? T.purple2 : 'none',
+              border: hasUpgrades && tab!==t.id ? '1px solid rgba(245,146,30,0.5)' : 'none',
+              color: tab===t.id ? T.white : T.grey2,
+              fontSize:'13px', fontWeight: tab===t.id ? '700' : '400',
+              fontFamily: "'Exo 2',sans-serif", cursor:'pointer',
+              transition:'all 0.15s',
+              animation: hasUpgrades && tab!==t.id ? 'yellowPulse 2s ease-in-out infinite' : 'none',
+              position:'relative', display:'flex', alignItems:'center', justifyContent:'center',
+            }}>
+            {isCards ? (
+              <span style={{display:'flex',alignItems:'center',gap:'6px'}}>
+                <span>Карты{cards.length ? ` (${cards.length})` : ''}</span>
+                {hasUpgrades && (
+                  <span style={{display:'inline-flex',alignItems:'center',justifyContent:'center',width:'18px',height:'18px',borderRadius:'50%',background:'#ef4444',color:'white',fontSize:'10px',fontWeight:'800',lineHeight:1}}>
+                    {upgradeReadyCount}
+                  </span>
+                )}
+              </span>
+            ) : t.label}
           </button>
-        ))}
+        )})}
       </div>
 
       {tab === 'cards' && (<>
@@ -2508,12 +2538,25 @@ const GameModeSheet = ({onClose, onConfirm}) => {
           {GAME_MODES.map(m => (
             <div key={m.id}>
               <button onClick={()=>setMode(m.id)}
-                style={{width:'100%',display:'flex',gap:'14px',padding:'14px 16px',background:mode===m.id?m.bg:T.bgCard,border:`1.5px solid ${mode===m.id?m.color:T.purple1}`,borderRadius:'16px',cursor:'pointer',textAlign:'left',transition:'all 0.15s',position:'relative',overflow:'hidden'}}>
-                {mode===m.id && <div style={{position:'absolute',top:0,left:0,right:0,height:'2px',background:`linear-gradient(90deg,transparent,${m.color},transparent)`}}/>}
-                <div style={{width:'44px',height:'44px',borderRadius:'12px',background:mode===m.id?`${m.color}20`:T.purple1,border:`1px solid ${mode===m.id?m.color:T.purple2}`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'22px',flexShrink:0}}>
+                style={{
+                  width:'100%',display:'flex',gap:'14px',padding:'14px 16px',
+                  background: mode===m.id ? m.bg : T.bgCard,
+                  border:`1.5px solid ${mode===m.id?m.color:T.purple1}`,
+                  borderRadius:'16px',cursor:'pointer',textAlign:'left',
+                  transition:'all 0.15s',position:'relative',overflow:'hidden',
+                  ...(m.id==='extra_arena' ? {
+                    backgroundImage:'url(/DesignAssets/Images/arena.jpg)',
+                    backgroundSize:'cover',backgroundPosition:'center',
+                  } : {})
+                }}>
+                {m.id==='extra_arena' && (
+                  <div style={{position:'absolute',inset:0,background:'linear-gradient(135deg,rgba(19,13,38,0.82),rgba(26,16,48,0.75))',zIndex:0}}/>
+                )}
+                {mode===m.id && <div style={{position:'absolute',top:0,left:0,right:0,height:'2px',background:`linear-gradient(90deg,transparent,${m.color},transparent)`,zIndex:1}}/>}
+                <div style={{width:'44px',height:'44px',borderRadius:'12px',background:mode===m.id?`${m.color}20`:T.purple1,border:`1px solid ${mode===m.id?m.color:T.purple2}`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'22px',flexShrink:0,position:'relative',zIndex:1}}>
                   {m.icon}
                 </div>
-                <div style={{flex:1,minWidth:0}}>
+                <div style={{flex:1,minWidth:0,position:'relative',zIndex:1}}>
                   <div style={{display:'flex',alignItems:'center',gap:'8px',marginBottom:'3px'}}>
                     <span style={{fontSize:'15px',fontWeight:'800',color:mode===m.id?m.color:T.white,fontFamily:"'Exo 2',sans-serif"}}>{m.label}</span>
                     <span style={{fontSize:'10px',color:mode===m.id?m.color:T.grey3,background:mode===m.id?`${m.color}18`:T.purple1,borderRadius:'6px',padding:'1px 7px',fontWeight:'600',fontFamily:"'Exo 2',sans-serif"}}>{m.time}</span>
@@ -2790,6 +2833,126 @@ const MailScreen = ({onClose, userId}) => {
 };
 
 // ═══════════════════════════════════════════
+// PRE-BATTLE VS SCREEN
+// ═══════════════════════════════════════════
+const PreBattleScreen = ({data, onClose}) => {
+  const [countdown, setCountdown] = React.useState(3);
+  const timerRef = React.useRef(null);
+
+  React.useEffect(() => {
+    timerRef.current = setInterval(() => {
+      setCountdown(c => {
+        if (c <= 1) { clearInterval(timerRef.current); return 0; }
+        return c - 1;
+      });
+    }, 1000);
+    return () => clearInterval(timerRef.current);
+  }, []);
+
+  React.useEffect(() => {
+    if (countdown <= 0 && data) {
+      window.location.href = location.origin + '/arena?id=' + encodeURIComponent(data.matchId) + '&user_id=' + encodeURIComponent(data.userId);
+    }
+  }, [countdown, data]);
+
+  const profile = data?.profile || {};
+  const playerName = profile?.custom_nickname || profile?.display_name || profile?.nickname || profile?.first_name || profile?.username || 'Вы';
+  const playerAvatar = profile?.avatar_url || profile?.img || profile?.photo_url;
+  const playerTrophies = profile?.trophies || 0;
+  const playerClan = profile?.clan || profile?.clan_name || '';
+
+  const opponentName = data?.opponentName || 'Соперник';
+  const opponentAvatar = data?.opponentAvatar;
+  const opponentTrophies = data?.opponentTrophies || 0;
+  const opponentClan = data?.opponentClan || '';
+
+  const gameMode = data?.gameMode || 'classic';
+  const modifierLabel = gameMode === 'extra_arena:blitz' ? {icon:'⚡', text:'Блиц'} : gameMode === 'extra_arena:draft' ? {icon:'🃏', text:'Драфт'} : null;
+  const isBlitz = gameMode === 'extra_arena:blitz';
+  const isExtra = gameMode.startsWith('extra_arena');
+
+  const handleTap = () => {
+    clearInterval(timerRef.current);
+    if (data) {
+      window.location.href = location.origin + '/arena?id=' + encodeURIComponent(data.matchId) + '&user_id=' + encodeURIComponent(data.userId);
+    }
+  };
+
+  const AvatarCircle = ({src, letter, borderColor, accentColor}) => (
+    src ? (
+      <div style={{width:'96px',height:'96px',borderRadius:'50%',border:`2px solid ${borderColor}`,overflow:'hidden',boxShadow:`0 0 24px ${accentColor}22, 0 0 48px ${accentColor}08`,backgroundImage:`url(${src})`,backgroundSize:'cover',backgroundPosition:'center',flexShrink:0}}/>
+    ) : (
+      <div style={{width:'96px',height:'96px',borderRadius:'50%',border:`2px solid ${borderColor}`,background:`linear-gradient(135deg,${accentColor}20,${accentColor}08)`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'40px',fontWeight:'900',color:accentColor,fontFamily:"'Exo 2',sans-serif",boxShadow:`0 0 24px ${accentColor}22, 0 0 48px ${accentColor}08`,flexShrink:0}}>{letter}</div>
+    )
+  );
+
+  return (
+    <div onClick={handleTap} style={{position:'fixed',inset:0,zIndex:21000,background:'linear-gradient(180deg,rgba(5,3,14,0.97) 0%,rgba(15,10,26,0.95) 100%)',backdropFilter:'blur(20px)',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',padding:'24px',animation:'fadeIn 0.3s ease',cursor:'pointer'}}>
+      <div style={{position:'absolute',inset:0,backgroundImage:'radial-gradient(ellipse at 50% 40%, rgba(92,63,160,0.12) 0%, transparent 70%)',pointerEvents:'none'}}/>
+
+      <div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:'24px',marginBottom:'32px',position:'relative',zIndex:1,flexWrap:'wrap'}}>
+        {/* Player */}
+        <div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:'8px',minWidth:'130px'}}>
+          <div style={{position:'relative'}}>
+            <div style={{position:'absolute',inset:'-4px',borderRadius:'50%',background:`linear-gradient(135deg,${T.purpleHL},${T.purple3})`,opacity:0.3,filter:'blur(8px)'}}/>
+            <AvatarCircle src={playerAvatar} letter={playerName.charAt(0).toUpperCase()} borderColor={T.purpleHL} accentColor={T.purpleLt}/>
+          </div>
+          <div style={{fontSize:'16px',fontWeight:'900',color:T.white,fontFamily:"'Exo 2',sans-serif",textAlign:'center',lineHeight:1.2,maxWidth:'140px',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{playerName}</div>
+          {playerClan && <div style={{fontSize:'11px',color:T.purpleLt,fontWeight:'700',textAlign:'center',maxWidth:'140px',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',padding:'2px 10px',background:`${T.purple1}40`,borderRadius:'6px',border:`1px solid ${T.purpleLt}20`}}>{playerClan}</div>}
+          <div style={{display:'flex',alignItems:'center',gap:'4px',fontSize:'12px',fontWeight:'800',color:T.orange,fontFamily:"'Exo 2',sans-serif"}}>
+            <span style={{fontSize:'14px'}}>🏆</span> {playerTrophies.toLocaleString()}
+          </div>
+        </div>
+
+        {/* VS */}
+        <div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:'10px',flexShrink:0}}>
+          <div style={{position:'relative'}}>
+            <div style={{position:'absolute',inset:'-6px',borderRadius:'50%',background:isBlitz?T.orange:isExtra?'#c084fc':T.purpleHL,opacity:0.25,filter:'blur(12px)',animation:'pulse 1.5s ease-in-out infinite'}}/>
+            <div style={{width:'64px',height:'64px',borderRadius:'50%',background:`linear-gradient(135deg,${isBlitz?T.orangeD:T.purple3},${isBlitz?T.orange:T.purpleHL})`,border:`2px solid ${isBlitz?T.orangeLt:T.purpleLt}`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'22px',fontWeight:'900',color:'white',fontFamily:"'Exo 2',sans-serif",boxShadow:`0 0 20px ${isBlitz?T.orange:T.purpleHL}44`,position:'relative',zIndex:1}}>VS</div>
+            {/* Decorative rings */}
+            <svg style={{position:'absolute',top:'-12px',left:'-12px',width:'88px',height:'88px',pointerEvents:'none',animation:'rotateSlow 8s linear infinite'}} viewBox="0 0 88 88" fill="none">
+              <circle cx="44" cy="44" r="40" stroke={isBlitz?T.orange:T.purpleHL} strokeWidth="0.5" strokeDasharray="4 6" opacity="0.4"/>
+            </svg>
+          </div>
+          {modifierLabel && (
+            <div style={{background:isBlitz?`${T.orange}15`:'rgba(192,132,252,0.15)',border:`1px solid ${isBlitz?T.orange:'#c084fc'}44`,borderRadius:'10px',padding:'4px 12px',fontSize:'12px',fontWeight:'700',color:isBlitz?T.orangeLt:'#c084fc',fontFamily:"'Exo 2',sans-serif",display:'flex',alignItems:'center',gap:'5px'}}>
+              <span style={{fontSize:'15px'}}>{modifierLabel.icon}</span>
+              <span>{modifierLabel.text}</span>
+            </div>
+          )}
+        </div>
+
+        {/* Opponent */}
+        <div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:'8px',minWidth:'130px'}}>
+          <div style={{position:'relative'}}>
+            <div style={{position:'absolute',inset:'-4px',borderRadius:'50%',background:`linear-gradient(135deg,${T.orange},${T.orangeD})`,opacity:0.3,filter:'blur(8px)'}}/>
+            <AvatarCircle src={opponentAvatar} letter={opponentName.charAt(0).toUpperCase()} borderColor={T.orange} accentColor={T.orange}/>
+          </div>
+          <div style={{fontSize:'16px',fontWeight:'900',color:T.white,fontFamily:"'Exo 2',sans-serif",textAlign:'center',lineHeight:1.2,maxWidth:'140px',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{opponentName}</div>
+          {opponentClan && <div style={{fontSize:'11px',color:T.orangeLt,fontWeight:'700',textAlign:'center',maxWidth:'140px',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',padding:'2px 10px',background:`${T.orange}10`,borderRadius:'6px',border:`1px solid ${T.orange}20`}}>{opponentClan}</div>}
+          <div style={{display:'flex',alignItems:'center',gap:'4px',fontSize:'12px',fontWeight:'800',color:T.orange,fontFamily:"'Exo 2',sans-serif"}}>
+            <span style={{fontSize:'14px'}}>🏆</span> {opponentTrophies.toLocaleString()}
+          </div>
+        </div>
+      </div>
+
+      {/* Countdown */}
+      <div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:'10px',position:'relative',zIndex:1}}>
+        <div key={countdown} style={{fontSize:'56px',fontWeight:'900',color:countdown===0?T.orange:T.white,fontFamily:"'Exo 2',sans-serif",textShadow:countdown===0?`0 0 32px ${T.orange}88`:'none',animation:'popIn 0.45s cubic-bezier(0.32,0.72,0,1)',lineHeight:1}}>
+          {countdown > 0 ? countdown : '⚔️'}
+        </div>
+        <div style={{fontSize:'13px',color:T.grey1,fontFamily:'Inter,sans-serif',letterSpacing:'0.5px'}}>
+          {countdown > 0 ? 'Бой начнётся через' : 'В бой!'}
+        </div>
+      </div>
+
+      {/* Cancel */}
+      <div onClick={e=>{e.stopPropagation(); clearInterval(timerRef.current); onClose();}} style={{position:'absolute',bottom:'40px',left:0,right:0,textAlign:'center',fontSize:'12px',color:T.grey3,cursor:'pointer',fontFamily:'Inter,sans-serif',zIndex:1}}>Отмена</div>
+    </div>
+  );
+};
+
+// ═══════════════════════════════════════════
 // ROOT APP
 // ═══════════════════════════════════════════
 const App = () => {
@@ -2804,9 +2967,12 @@ const App = () => {
   const [showInfo,       setShowInfo]       = React.useState(false);
   const [showGloryPath,  setShowGloryPath]  = React.useState(false);
   const [showLeagueInfo, setShowLeagueInfo] = React.useState(false);
+  const [showPreBattle, setShowPreBattle]  = React.useState(false);
   const [profile,        setProfile]        = React.useState(null);
 
-  const hasOverlay = showAI || showMenu || showSettings || showBattlePick || showGameMode || showMail || showCaseOpen || showInfo || showGloryPath || showLeagueInfo;
+  const hasOverlay = showAI || showMenu || showSettings || showBattlePick || showGameMode || showMail || showCaseOpen || showInfo || showGloryPath || showLeagueInfo || showPreBattle;
+
+  React.useEffect(()=>{ window.__rootSetPreBattle = setShowPreBattle; return ()=>window.__rootSetPreBattle=null; }, []);
 
   React.useEffect(()=>{
     const anyOpen = showMenu || showSettings || showBattlePick || showGameMode || showMail || showCaseOpen || showInfo || showGloryPath || showLeagueInfo;
@@ -2888,6 +3054,7 @@ const App = () => {
       {showInfo       && <InfoSheet      onClose={()=>setShowInfo(false)}/>}
       {showGloryPath  && <TrophyRoadSheet onClose={()=>setShowGloryPath(false)} profile={profile}/>}
       {showLeagueInfo && <LeagueInfoSheet onClose={()=>setShowLeagueInfo(false)} profile={profile}/>}
+      {showPreBattle  && <PreBattleScreen  data={window.__preBattleData} onClose={()=>{setShowPreBattle(false);window.__preBattleData=null;}}/>}
     </div>
   );
 };
