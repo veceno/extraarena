@@ -1654,11 +1654,39 @@ const _buildAuthUrl = (path) => {
   return q ? `${path}?${q}` : path;
 };
 
+// ─── Upgrade cost helpers (mirrors database.py / main.js formulas) ───────────
+const _UP_PARTICLES = {1:5,2:10,3:20,4:40,5:80,6:160,7:320,8:640,9:2500};
+const _UP_COINS     = {1:50,2:150,3:400,4:900,5:2000,6:4500,7:8000,8:13000,9:40000};
+const _RARITY_PM = {common:1.0,rare:1.3,start:1.4,superrare:1.6,epic:2.0,legendary:3.0,mythic:4.0,divine:5.0,limited:6.0};
+const _RARITY_CM = {common:1.0,rare:1.2,start:1.3,superrare:1.5,epic:2.0,legendary:3.0,mythic:4.0,divine:5.0,limited:6.0};
+const calcUpgradeParticles = (rarity, level) =>
+  Math.ceil((_UP_PARTICLES[level] || 5)  * (_RARITY_PM[rarity] || 1.0));
+const calcUpgradeCoins = (rarity, level) =>
+  Math.ceil((_UP_COINS[level]     || 50) * (_RARITY_CM[rarity] || 1.0));
+// ─────────────────────────────────────────────────────────────────────────────
+
 const CardTile = ({card, onClick}) => {
   const [imgErr, setImgErr] = React.useState(false);
-  const rc = RARITY_COLOR[card.rarity] || '#94a3b8';
+  const rc       = RARITY_COLOR[card.rarity] || '#94a3b8';
+  const level    = card.level || 1;
+  const isMax    = level >= 10;
+  const pHave    = card.particles || 0;
+  const pNeeded  = isMax ? calcUpgradeParticles(card.rarity, 9) : calcUpgradeParticles(card.rarity, level);
+  const canUp    = !isMax && pHave >= pNeeded;
+  const pct      = isMax ? 100 : Math.min(pHave / (pNeeded || 1) * 100, 100);
+
+  const lvBg  = isMax
+    ? 'linear-gradient(135deg,#f59e0b,#d97706)'
+    : `linear-gradient(135deg,${T.orange},${T.orangeD})`;
+  const border = canUp
+    ? `1.5px solid ${T.orange}`
+    : `1.5px solid ${rc}44`;
+  const glow = canUp
+    ? `0 2px 10px rgba(0,0,0,0.35), 0 0 12px ${T.orange}55`
+    : '0 2px 10px rgba(0,0,0,0.35)';
+
   return (
-    <button onClick={onClick} style={{position:'relative',display:'flex',flexDirection:'column',background:`linear-gradient(180deg,${T.bgCard} 0%,${T.bgDeep} 100%)`,border:`1.5px solid ${rc}44`,borderRadius:'12px',overflow:'hidden',cursor:'pointer',padding:'0',aspectRatio:'2/3',boxShadow:'0 2px 10px rgba(0,0,0,0.35)',transition:'transform 0.12s'}}>
+    <button onClick={onClick} style={{position:'relative',display:'flex',flexDirection:'column',background:`linear-gradient(180deg,${T.bgCard} 0%,${T.bgDeep} 100%)`,border,borderRadius:'12px',overflow:'hidden',cursor:'pointer',padding:'0',aspectRatio:'2/3',boxShadow:glow,transition:'transform 0.12s, box-shadow 0.2s'}}>
       <div style={{position:'absolute',top:0,left:0,right:0,height:'2px',background:`linear-gradient(90deg,transparent,${rc},transparent)`,zIndex:2}}/>
       <div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',padding:'6px 5px 3px'}}>
         {!imgErr
@@ -1666,69 +1694,170 @@ const CardTile = ({card, onClick}) => {
           : <div style={{width:'52px',height:'52px',borderRadius:'8px',background:T.purple1,border:`1px solid ${rc}33`,display:'flex',alignItems:'center',justifyContent:'center'}}><span style={{fontSize:'22px',opacity:0.5}}>🃏</span></div>
         }
       </div>
+      {/* particles progress bar */}
+      <div style={{height:'3px',background:'rgba(0,0,0,0.4)',flexShrink:0}}>
+        <div style={{width:`${pct}%`,height:'100%',background:canUp?`linear-gradient(90deg,${T.orange},#fde68a)`:isMax?'linear-gradient(90deg,#f59e0b,#fde68a)':`linear-gradient(90deg,${T.orange},${T.orangeD})`,boxShadow:canUp?`0 0 6px ${T.orange}`:'none',transition:'width 0.3s'}}/>
+      </div>
       <div style={{padding:'0 5px 6px',textAlign:'center'}}>
         <div style={{fontSize:'9px',fontWeight:'700',color:T.white,fontFamily:"'Exo 2',sans-serif",overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',lineHeight:1.3}}>{card.name}</div>
         <div style={{fontSize:'8px',color:rc,fontWeight:'600',marginTop:'1px'}}>{RARITY_LABEL[card.rarity] || card.rarity}</div>
       </div>
       <div style={{position:'absolute',top:'5px',left:'4px',background:'rgba(0,0,0,0.6)',borderRadius:'4px',padding:'1px 5px',fontSize:'8px',fontWeight:'700',color:T.orange,fontFamily:"'Exo 2',sans-serif",lineHeight:1.4}}>⚡{card.power||0}</div>
-      {(card.level||1) > 1 && <div style={{position:'absolute',bottom:'28px',right:'4px',background:`linear-gradient(135deg,${T.orange},${T.orangeD})`,borderRadius:'5px',padding:'1px 5px',fontSize:'8px',fontWeight:'900',color:'white',fontFamily:"'Exo 2',sans-serif",lineHeight:1.4}}>Lv{card.level}</div>}
+      {/* level badge — always visible */}
+      <div style={{position:'absolute',bottom:'28px',right:'4px',background:lvBg,borderRadius:'5px',padding:'1px 5px',fontSize:'8px',fontWeight:'900',color:'white',fontFamily:"'Exo 2',sans-serif",lineHeight:1.4}}>
+        {isMax ? 'MAX' : `Lv${level}`}
+      </div>
+      {/* upgrade-ready pulse dot */}
+      {canUp && <div style={{position:'absolute',top:'5px',right:'4px',width:'7px',height:'7px',borderRadius:'50%',background:T.orange,boxShadow:`0 0 6px ${T.orange}`,animation:'pulse 1.4s ease-in-out infinite'}}/>}
     </button>
   );
 };
 
-const CardDetailScreen = ({card, onBack}) => {
-  const [imgErr, setImgErr] = React.useState(false);
-  const rc = RARITY_COLOR[card.rarity] || '#94a3b8';
-  const mechanics = (() => { try { return Array.isArray(card.mechanics) ? card.mechanics : JSON.parse(card.mechanics||'[]'); } catch { return []; } })();
-  const PARTICLES_NEEDED = {common:50,rare:100,superrare:200,epic:400,legendary:800,mythic:1200,divine:2000,limited:600,unique:1500,start:50};
-  const pNeeded = PARTICLES_NEEDED[card.rarity] || 100;
-  const pHave   = card.particles || 0;
-  const upgPct  = Math.min(pHave / pNeeded * 100, 100);
+const CardDetailScreen = ({card, onBack, onCardUpgraded}) => {
+  const [imgErr,    setImgErr]    = React.useState(false);
+  const [localCard, setLocalCard] = React.useState(card);
+  const [upgrading, setUpgrading] = React.useState(false);
+  const [upgrErr,   setUpgrErr]   = React.useState('');
+
+  const rc       = RARITY_COLOR[localCard.rarity] || '#94a3b8';
+  const mechanics = (() => { try { return Array.isArray(localCard.mechanics) ? localCard.mechanics : JSON.parse(localCard.mechanics||'[]'); } catch { return []; } })();
+  const level    = localCard.level || 1;
+  const isMax    = level >= 10;
+  const pHave    = localCard.particles || 0;
+  const pNeeded  = isMax ? calcUpgradeParticles(localCard.rarity, 9) : calcUpgradeParticles(localCard.rarity, level);
+  const cNeeded  = isMax ? 0 : calcUpgradeCoins(localCard.rarity, level);
+  const upgPct   = Math.min(pHave / (pNeeded || 1) * 100, 100);
+  const canUp    = !isMax && pHave >= pNeeded;
+
+  // Preview: what stats gain at next level (warriors only, mirrors scale_card_by_level logic)
+  const isWarrior = localCard.card_type === 'warrior';
+  const nextLevel = Math.min(level + 1, 10);
+  const nextAtkBonus = isWarrior ? (Math.floor(nextLevel / 2) - Math.floor(level / 2)) : 0;
+  const nextHpBonus  = isWarrior ? (Math.floor((nextLevel - 1) / 2) - Math.floor((level - 1) / 2)) : 0;
+
+  const doUpgrade = async () => {
+    if (!canUp || upgrading) return;
+    setUpgrading(true);
+    setUpgrErr('');
+    try {
+      const res = await fetch(_buildAuthUrl('/api/cards/upgrade'), {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({card_id: localCard.id}),
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        setUpgrErr(data.error || 'Ошибка апгрейда');
+      } else {
+        // Merge server response into local card state
+        setLocalCard(prev => ({
+          ...prev,
+          level: data.new_level ?? prev.level,
+          particles: (prev.particles || 0) - (data.particles_spent || 0),
+          current_attack: data.new_attack ?? prev.current_attack,
+          current_hp:     data.new_hp    ?? prev.current_hp,
+          power: data.new_power ?? prev.power,
+        }));
+        if (onCardUpgraded) onCardUpgraded();
+      }
+    } catch {
+      setUpgrErr('Нет соединения');
+    }
+    setUpgrading(false);
+  };
+
   return (
     <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden',animation:'fadeIn 0.18s'}}>
       <div style={{height:'52px',background:'rgba(15,10,26,0.98)',display:'flex',alignItems:'center',gap:'10px',padding:'0 16px',flexShrink:0,borderBottom:`1px solid ${T.purple1}`}}>
         <button onClick={onBack} style={{width:'32px',height:'32px',borderRadius:'10px',background:T.bgCard,border:`1px solid ${T.purple1}`,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',flexShrink:0}}>
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 3L5 7L9 11" stroke={T.grey2} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg>
         </button>
-        <span style={{flex:1,fontSize:'15px',fontWeight:'700',color:T.white,fontFamily:"'Exo 2',sans-serif",overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{card.name}</span>
-        <div style={{padding:'3px 10px',background:`${rc}18`,border:`1px solid ${rc}44`,borderRadius:'8px',fontSize:'11px',fontWeight:'700',color:rc,fontFamily:"'Exo 2',sans-serif",flexShrink:0}}>{RARITY_LABEL[card.rarity]||card.rarity}</div>
+        <span style={{flex:1,fontSize:'15px',fontWeight:'700',color:T.white,fontFamily:"'Exo 2',sans-serif",overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{localCard.name}</span>
+        <div style={{padding:'3px 10px',background:`${rc}18`,border:`1px solid ${rc}44`,borderRadius:'8px',fontSize:'11px',fontWeight:'700',color:rc,fontFamily:"'Exo 2',sans-serif",flexShrink:0}}>{RARITY_LABEL[localCard.rarity]||localCard.rarity}</div>
       </div>
       <div style={{flex:1,overflowY:'auto',padding:'14px 16px 20px'}}>
+        {/* Card image + stats */}
         <div style={{display:'flex',gap:'12px',marginBottom:'12px'}}>
           <div style={{width:'118px',flexShrink:0,borderRadius:'14px',background:`linear-gradient(180deg,${T.bgCard},${T.bgDeep})`,border:`2px solid ${rc}44`,overflow:'hidden',position:'relative',aspectRatio:'2/3'}}>
             <div style={{position:'absolute',top:0,left:0,right:0,height:'3px',background:`linear-gradient(90deg,transparent,${rc},transparent)`}}/>
             {!imgErr
-              ? <img src={`/api/cards/image?card_id=${card.id}`} alt={card.name} onError={()=>setImgErr(true)} style={{width:'100%',height:'100%',objectFit:'contain',padding:'8px'}}/>
+              ? <img src={`/api/cards/image?card_id=${localCard.id}`} alt={localCard.name} onError={()=>setImgErr(true)} style={{width:'100%',height:'100%',objectFit:'contain',padding:'8px'}}/>
               : <div style={{display:'flex',alignItems:'center',justifyContent:'center',height:'100%'}}><span style={{fontSize:'52px',opacity:0.3}}>🃏</span></div>
             }
+            {/* level badge on image */}
+            <div style={{position:'absolute',bottom:'8px',right:'8px',background:isMax?'linear-gradient(135deg,#f59e0b,#d97706)':`linear-gradient(135deg,${T.orange},${T.orangeD})`,borderRadius:'6px',padding:'2px 7px',fontSize:'10px',fontWeight:'900',color:'white',fontFamily:"'Exo 2',sans-serif"}}>
+              {isMax ? '★ MAX' : `Lv ${level}`}
+            </div>
           </div>
           <div style={{flex:1,display:'flex',flexDirection:'column',gap:'7px'}}>
             {[
-              {label:'⚔️ Атака', val: card.current_attack ?? card.base_attack ?? 0, clr:'#f87171'},
-              {label:'❤️ HP',    val: card.current_hp    ?? card.base_hp    ?? 0, clr:'#4ade80'},
-              {label:'💧 Мана',  val: card.mana_cost ?? 0, clr:'#60a5fa'},
-              {label:'⚡ Сила',  val: card.power ?? 0,     clr:T.orange},
-            ].map(({label,val,clr}) => (
-              <div key={label} style={{background:T.bgCard,borderRadius:'10px',padding:'8px 11px',border:`1px solid ${T.purple1}`}}>
+              {label:'⚔️ Атака', val: localCard.current_attack ?? localCard.base_attack ?? 0, bonus: nextAtkBonus, clr:'#f87171'},
+              {label:'❤️ HP',    val: localCard.current_hp    ?? localCard.base_hp    ?? 0, bonus: nextHpBonus, clr:'#4ade80'},
+              {label:'💧 Мана',  val: localCard.mana_cost ?? 0, bonus: 0, clr:'#60a5fa'},
+              {label:'⚡ Сила',  val: localCard.power ?? 0,     bonus: 0, clr:T.orange},
+            ].map(({label,val,bonus,clr}) => (
+              <div key={label} style={{background:T.bgCard,borderRadius:'10px',padding:'8px 11px',border:`1px solid ${T.purple1}`,position:'relative'}}>
                 <div style={{fontSize:'10px',color:T.grey3,marginBottom:'2px'}}>{label}</div>
-                <div style={{fontSize:'19px',fontWeight:'900',color:clr,fontFamily:"'Exo 2',sans-serif",lineHeight:1}}>{val}</div>
+                <div style={{display:'flex',alignItems:'baseline',gap:'5px'}}>
+                  <div style={{fontSize:'19px',fontWeight:'900',color:clr,fontFamily:"'Exo 2',sans-serif",lineHeight:1}}>{val}</div>
+                  {!isMax && bonus > 0 && <div style={{fontSize:'10px',fontWeight:'700',color:'#4ade80'}}>+{bonus}</div>}
+                </div>
               </div>
             ))}
           </div>
         </div>
-        <div style={{background:T.bgCard,borderRadius:'14px',padding:'12px 14px',border:`1px solid ${T.purple1}`,marginBottom:'10px'}}>
+
+        {/* Level & upgrade block */}
+        <div style={{background:T.bgCard,borderRadius:'14px',padding:'12px 14px',border:`1px solid ${isMax?'#f59e0b44':canUp?`${T.orange}66`:T.purple1}`,marginBottom:'10px',boxShadow:canUp?`0 0 12px ${T.orange}22`:'none'}}>
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'8px'}}>
             <div style={{display:'flex',alignItems:'center',gap:'7px'}}>
-              <div style={{width:'26px',height:'26px',borderRadius:'7px',background:`linear-gradient(135deg,${T.orange},${T.orangeD})`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'13px',fontWeight:'900',color:'white',fontFamily:"'Exo 2',sans-serif"}}>{card.level||1}</div>
-              <span style={{fontSize:'13px',fontWeight:'700',color:T.white,fontFamily:"'Exo 2',sans-serif"}}>Уровень {card.level||1}</span>
+              <div style={{width:'26px',height:'26px',borderRadius:'7px',background:isMax?'linear-gradient(135deg,#f59e0b,#d97706)':`linear-gradient(135deg,${T.orange},${T.orangeD})`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'13px',fontWeight:'900',color:'white',fontFamily:"'Exo 2',sans-serif"}}>{isMax?'★':level}</div>
+              <span style={{fontSize:'13px',fontWeight:'700',color:T.white,fontFamily:"'Exo 2',sans-serif"}}>Уровень {level}{isMax?' — Максимум':''}</span>
             </div>
-            <span style={{fontSize:'11px',color:T.grey2}}>{pHave} / {pNeeded} ✨</span>
+            {!isMax && <span style={{fontSize:'11px',color:T.grey2}}>{pHave} / {pNeeded} ✨</span>}
           </div>
-          <div style={{height:'6px',background:T.purple1,borderRadius:'3px',overflow:'hidden'}}>
-            <div style={{width:`${upgPct}%`,height:'100%',background:`linear-gradient(90deg,${T.orange},${T.orangeLt})`,borderRadius:'3px',boxShadow:`0 0 8px ${T.orange}55`,transition:'width 0.3s'}}/>
-          </div>
-          {upgPct >= 100 && <div style={{marginTop:'7px',fontSize:'11px',color:T.orange,fontWeight:'700',textAlign:'center'}}>✨ Готово к улучшению!</div>}
+
+          {isMax ? (
+            <div style={{textAlign:'center',padding:'8px 0',fontSize:'13px',fontWeight:'700',color:'#f59e0b',fontFamily:"'Exo 2',sans-serif"}}>
+              🏆 Карта прокачана до максимума!
+            </div>
+          ) : (<>
+            {/* particles bar */}
+            <div style={{height:'6px',background:T.purple1,borderRadius:'3px',overflow:'hidden',marginBottom:'8px'}}>
+              <div style={{width:`${upgPct}%`,height:'100%',background:canUp?`linear-gradient(90deg,${T.orange},#fde68a)`:`linear-gradient(90deg,${T.orange},${T.orangeLt})`,borderRadius:'3px',boxShadow:`0 0 8px ${T.orange}55`,transition:'width 0.3s'}}/>
+            </div>
+
+            {/* costs row */}
+            <div style={{display:'flex',gap:'8px',marginBottom:'10px'}}>
+              <div style={{flex:1,background:T.bgDeep,borderRadius:'8px',padding:'6px 10px',border:`1px solid ${pHave>=pNeeded?`${T.orange}44`:T.purple1}`}}>
+                <div style={{fontSize:'9px',color:T.grey3,marginBottom:'2px'}}>Частицы</div>
+                <div style={{fontSize:'13px',fontWeight:'700',color:pHave>=pNeeded?T.orange:T.grey2,fontFamily:"'Exo 2',sans-serif"}}>{pHave} <span style={{color:T.grey3,fontWeight:'400'}}>/ {pNeeded}</span></div>
+              </div>
+              <div style={{flex:1,background:T.bgDeep,borderRadius:'8px',padding:'6px 10px',border:`1px solid ${T.purple1}`}}>
+                <div style={{fontSize:'9px',color:T.grey3,marginBottom:'2px'}}>Монеты</div>
+                <div style={{fontSize:'13px',fontWeight:'700',color:T.grey2,fontFamily:"'Exo 2',sans-serif"}}>{cNeeded.toLocaleString()} 🪙</div>
+              </div>
+            </div>
+
+            {/* upgrade button */}
+            <button
+              onClick={doUpgrade}
+              disabled={!canUp || upgrading}
+              style={{
+                width:'100%',padding:'11px',borderRadius:'11px',border:'none',cursor:canUp&&!upgrading?'pointer':'default',
+                background:canUp?`linear-gradient(135deg,${T.orange},${T.orangeD})`:'rgba(255,255,255,0.06)',
+                color:canUp?'white':T.grey3,fontSize:'14px',fontWeight:'800',
+                fontFamily:"'Exo 2',sans-serif",
+                boxShadow:canUp?`0 4px 16px ${T.orange}44`:'none',
+                opacity:upgrading?0.7:1,transition:'opacity 0.2s',
+              }}>
+              {upgrading ? '⏳ Улучшаем...' : canUp ? '⬆️ Улучшить карту' : `✨ Нужно ещё ${pNeeded - pHave} частиц`}
+            </button>
+            {upgrErr && <div style={{marginTop:'6px',fontSize:'11px',color:'#f87171',textAlign:'center'}}>{upgrErr}</div>}
+          </>)}
         </div>
+
+        {/* mechanics */}
         {mechanics.length > 0 && (
           <div style={{background:T.bgCard,borderRadius:'14px',padding:'12px 14px',border:`1px solid ${T.purple1}`,marginBottom:'10px'}}>
             <div style={{fontSize:'10px',color:T.grey3,textTransform:'uppercase',letterSpacing:'0.5px',marginBottom:'8px'}}>Механики</div>
@@ -1737,10 +1866,12 @@ const CardDetailScreen = ({card, onBack}) => {
             </div>
           </div>
         )}
-        {card.description && (
+
+        {/* description */}
+        {localCard.description && (
           <div style={{background:T.bgCard,borderRadius:'14px',padding:'12px 14px',border:`1px solid ${T.purple1}`}}>
             <div style={{fontSize:'10px',color:T.grey3,textTransform:'uppercase',letterSpacing:'0.5px',marginBottom:'6px'}}>Описание</div>
-            <div style={{fontSize:'13px',color:T.grey1,lineHeight:1.65}}>{card.description}</div>
+            <div style={{fontSize:'13px',color:T.grey1,lineHeight:1.65}}>{localCard.description}</div>
           </div>
         )}
       </div>
@@ -2132,10 +2263,22 @@ const CollectionScreen = ({profile}) => {
     return arr;
   }, [cards, sortBy]);
 
+  // count cards ready to upgrade (for tab badge)
+  const upgradeReadyCount = React.useMemo(() =>
+    cards.filter(c => (c.level||1) < 10 && (c.particles||0) >= calcUpgradeParticles(c.rarity, c.level||1)).length
+  , [cards]);
+
+  // coins from profile (may be undefined for older profile shapes)
+  const coins = profile?.coins ?? profile?.balance ?? null;
+
+  const handleCardUpgraded = React.useCallback(() => {
+    loadCards();
+  }, [loadCards]);
+
   if (selectedCard) {
     return (
       <div style={{flex:1,display:'flex',flexDirection:'column',minHeight:0}}>
-        <CardDetailScreen card={selectedCard} onBack={()=>setSelectedCard(null)}/>
+        <CardDetailScreen card={selectedCard} onBack={()=>setSelectedCard(null)} onCardUpgraded={handleCardUpgraded}/>
       </div>
     );
   }
@@ -2143,7 +2286,10 @@ const CollectionScreen = ({profile}) => {
   return (
     <div style={{flex:1,display:'flex',flexDirection:'column',minHeight:0,overflow:'hidden'}}>
       <div style={{display:'flex',background:T.bgDeep,margin:'10px 16px 0',borderRadius:'12px',padding:'3px',gap:'3px',flexShrink:0}}>
-        {[{id:'decks',label:'Мои колоды'},{id:'cards',label:`Карты${cards.length ? ` (${cards.length})` : ''}`}].map(t=>(
+        {[
+          {id:'decks', label:'Мои колоды'},
+          {id:'cards', label:`Карты${cards.length ? ` (${cards.length})` : ''}${upgradeReadyCount > 0 ? ` ⬆️${upgradeReadyCount}` : ''}`},
+        ].map(t=>(
           <button key={t.id} onClick={()=>setTab(t.id)}
             style={{flex:1,padding:'9px 4px',borderRadius:'10px',background:tab===t.id?T.purple2:'none',border:'none',color:tab===t.id?T.white:T.grey2,fontSize:'13px',fontWeight:tab===t.id?'700':'400',fontFamily:"'Exo 2',sans-serif",cursor:'pointer',transition:'all 0.15s'}}>
             {t.label}
@@ -2152,13 +2298,21 @@ const CollectionScreen = ({profile}) => {
       </div>
 
       {tab === 'cards' && (<>
-        <div style={{padding:'8px 16px 4px',display:'flex',gap:'6px',overflowX:'auto',scrollbarWidth:'none',flexShrink:0}}>
-          {[{id:'obtained',label:'Новые'},{id:'rarity',label:'Редкость'},{id:'level',label:'Уровень'},{id:'power',label:'Сила'}].map(s=>(
-            <button key={s.id} onClick={()=>setSortBy(s.id)}
-              style={{padding:'5px 13px',borderRadius:'16px',background:sortBy===s.id?T.orange:T.bgCard,border:`1px solid ${sortBy===s.id?T.orange:T.purple1}`,color:sortBy===s.id?'white':T.grey2,fontSize:'11px',fontWeight:'600',cursor:'pointer',whiteSpace:'nowrap',fontFamily:"'Exo 2',sans-serif",flexShrink:0,transition:'all 0.15s'}}>
-              {s.label}
-            </button>
-          ))}
+        <div style={{padding:'6px 16px 0',display:'flex',alignItems:'center',justifyContent:'space-between',flexShrink:0}}>
+          <div style={{display:'flex',gap:'6px',overflowX:'auto',scrollbarWidth:'none',flex:1}}>
+            {[{id:'obtained',label:'Новые'},{id:'rarity',label:'Редкость'},{id:'level',label:'Уровень'},{id:'power',label:'Сила'}].map(s=>(
+              <button key={s.id} onClick={()=>setSortBy(s.id)}
+                style={{padding:'5px 13px',borderRadius:'16px',background:sortBy===s.id?T.orange:T.bgCard,border:`1px solid ${sortBy===s.id?T.orange:T.purple1}`,color:sortBy===s.id?'white':T.grey2,fontSize:'11px',fontWeight:'600',cursor:'pointer',whiteSpace:'nowrap',fontFamily:"'Exo 2',sans-serif",flexShrink:0,transition:'all 0.15s'}}>
+                {s.label}
+              </button>
+            ))}
+          </div>
+          {coins !== null && (
+            <div style={{display:'flex',alignItems:'center',gap:'4px',marginLeft:'8px',flexShrink:0,background:T.bgCard,borderRadius:'10px',padding:'4px 9px',border:`1px solid ${T.purple1}`}}>
+              <span style={{fontSize:'12px'}}>🪙</span>
+              <span style={{fontSize:'11px',fontWeight:'700',color:T.orange,fontFamily:"'Exo 2',sans-serif"}}>{Number(coins).toLocaleString()}</span>
+            </div>
+          )}
         </div>
         <div style={{flex:1,overflowY:'auto',padding:'4px 12px 16px'}}>
           {loading
