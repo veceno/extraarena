@@ -153,6 +153,15 @@ window._getUserId = function() {
   return tg?.initDataUnsafe?.user?.id || (urlId ? parseInt(urlId) : null);
 };
 
+let _mmPollInterval = null;
+
+window.cancelSearch = function() {
+  clearTimeout(matchmakingTimer);
+  if (_mmPollInterval) { clearInterval(_mmPollInterval); _mmPollInterval = null; }
+  const o = document.getElementById('searchOverlay');
+  if (o) o.style.display = 'none';
+};
+
 window.startBattle = async function(profile, deckId, mode) {
   const tg = window.Telegram?.WebApp;
   const overlay = document.getElementById('searchOverlay');
@@ -160,15 +169,21 @@ window.startBattle = async function(profile, deckId, mode) {
   if (overlay) overlay.style.display = 'flex';
   if (overlayText) overlayText.textContent = 'Подбираем соперника, подождите';
 
+  document.getElementById('battle-sound')?.play().catch(()=>{});
+
+  const userId = window._getUserId();
+  const initData = tg?.initData || '';
+  const body = { user_id: userId, trophies: profile?.trophies || 0, init_data: initData, game_mode: mode || 'classic' };
+  if (deckId != null) body.selected_deck_id = parseInt(deckId);
+
+  function openPreBattle(data) {
+    if (_mmPollInterval) { clearInterval(_mmPollInterval); _mmPollInterval = null; }
+    clearTimeout(matchmakingTimer);
+    if (overlay) overlay.style.display = 'none';
+    window._openPreBattle({ matchId: data.match_id, userId, profile, gameMode: data.game_mode || mode, opponentName: data.opponent_name, opponentAvatar: data.opponent_avatar_url, opponentTrophies: data.opponent_trophies, opponentClan: data.opponent_clan });
+  }
+
   try {
-    document.getElementById('battle-sound')?.play().catch(()=>{});
-
-    const userId = window._getUserId();
-    const initData = tg?.initData || '';
-
-    const body = { user_id: userId, trophies: profile?.trophies || 0, init_data: initData, game_mode: mode || 'classic' };
-    if (deckId != null) body.selected_deck_id = parseInt(deckId);
-
     const res = await fetch('/api/match/find', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -179,9 +194,28 @@ window.startBattle = async function(profile, deckId, mode) {
     const data = await res.json();
 
     if (data.match_id) {
-      if (overlay) overlay.style.display = 'none';
-      window._openPreBattle({ matchId: data.match_id, userId, profile, gameMode: data.game_mode || mode, opponentName: data.opponent_name, opponentAvatar: data.opponent_avatar_url, opponentTrophies: data.opponent_trophies, opponentClan: data.opponent_clan });
+      openPreBattle(data);
+    } else if (data.match_id === undefined && data.status === 'waiting') {
+      // Поллинг: ждём пока матч найдётся на сервере
+      const matchId = data.match_id_queue || data.match_id;
+      const startedAt = Date.now();
+      if (_mmPollInterval) clearInterval(_mmPollInterval);
+      _mmPollInterval = setInterval(async () => {
+        if (Date.now() - startedAt > 25000) {
+          clearInterval(_mmPollInterval); _mmPollInterval = null;
+          if (overlay) overlay.style.display = 'none';
+          return;
+        }
+        try {
+          const r = await fetch(`/api/match/status?id=${encodeURIComponent(matchId)}`);
+          if (!r.ok) return;
+          const s = await r.json();
+          if (s.status === 'found' && s.match_id) openPreBattle(s);
+          else if (s.status === 'not_found') { clearInterval(_mmPollInterval); _mmPollInterval = null; if (overlay) overlay.style.display = 'none'; }
+        } catch(e) { console.error('poll error', e); }
+      }, 2000);
     } else {
+      // Фолбэк: старый retry
       matchmakingTimer = setTimeout(() => window.startBattle(profile, deckId, mode), 3000);
     }
   } catch(e) {

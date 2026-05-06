@@ -48,11 +48,12 @@ class Matchmaker:
         self._logger = logging.getLogger(__name__)
 
     async def find_match(
-        self, 
-        user_id: int, 
-        trophies: int, 
+        self,
+        user_id: int,
+        trophies: int,
         user_avg_level: int,
-        selected_deck_id: int | None = None
+        selected_deck_id: int | None = None,
+        game_mode: str = "classic",
     ) -> Dict[str, Any]:
         """
         Главный вход: вернуть соперника или зарегистрировать ожидание.
@@ -84,7 +85,7 @@ class Matchmaker:
                     trophies,
                     user_avg_level,
                 )
-                match_payload = await self._create_bot_match(user_id, trophies, user_avg_level, selected_deck_id)
+                match_payload = await self._create_bot_match(user_id, trophies, user_avg_level, selected_deck_id, game_mode=game_mode)
                 self._logger.info("DEBUG: Bot factory returned payload: %s", match_payload)
                 return match_payload
             except Exception as exc:  # noqa: BLE001
@@ -119,10 +120,11 @@ class Matchmaker:
                 "is_bot": False,
                 "queued_at": seeker.enqueued_at,
                 "user_id": seeker.user_id,
+                "game_mode": game_mode,
             }
 
             # Запускаем фоновую корутину поиска с расширяющимися окнами
-            task = asyncio.create_task(self._search_loop(seeker))
+            task = asyncio.create_task(self._search_loop(seeker, game_mode=game_mode))
             self._tasks[seeker.match_id] = task
 
             result = {
@@ -130,6 +132,7 @@ class Matchmaker:
                 "match_id": seeker.match_id,
                 "opponent_id": None,
                 "is_bot": False,
+                "game_mode": game_mode,
             }
             if selected_deck_id:
                 result["selected_deck_id"] = selected_deck_id
@@ -148,7 +151,7 @@ class Matchmaker:
         # Если матча нет в кеше - считаем, что он не найден/просрочен.
         return {"status": "not_found", "match_id": match_id}
 
-    async def _search_loop(self, seeker: QueueEntry) -> None:
+    async def _search_loop(self, seeker: QueueEntry, game_mode: str = "classic") -> None:
         """
         Пошаговый поиск соперника:
         - Проверяем окна 50 / 200 / 500.
@@ -166,15 +169,15 @@ class Matchmaker:
 
                     opponent = self._find_candidate(seeker, window)
                     if opponent:
-                        await self._pair_players(seeker, opponent)
+                        await self._pair_players(seeker, opponent, game_mode=game_mode)
                         return
 
                 await asyncio.sleep(QUEUE_POLL_INTERVAL)
 
         # Таймаут - создаем бота и завершаем ожидание
-        await self._handle_bot_timeout(seeker)
+        await self._handle_bot_timeout(seeker, game_mode=game_mode)
 
-    async def _handle_bot_timeout(self, seeker: QueueEntry) -> None:
+    async def _handle_bot_timeout(self, seeker: QueueEntry, game_mode: str = "classic") -> None:
         """Выдача бота по истечении дедлайна."""
         async with self._lock:
             if seeker.matched:
@@ -185,7 +188,7 @@ class Matchmaker:
             if task:
                 task.cancel()
 
-        bot_match = await self._create_bot_match(seeker.user_id, seeker.trophies, seeker.avg_level)
+        bot_match = await self._create_bot_match(seeker.user_id, seeker.trophies, seeker.avg_level, game_mode=game_mode)
         async with self._lock:
             self._matches[seeker.match_id] = bot_match
 
@@ -198,7 +201,7 @@ class Matchmaker:
                 return entry
         return None
 
-    async def _pair_players(self, seeker: QueueEntry, opponent: QueueEntry) -> Dict[str, Any]:
+    async def _pair_players(self, seeker: QueueEntry, opponent: QueueEntry, game_mode: str = "classic") -> Dict[str, Any]:
         """Формируем матч между двумя игроками и фиксируем статус для обоих."""
         final_match_id = str(uuid.uuid4())
 
@@ -248,6 +251,7 @@ class Matchmaker:
                 "user_id": seeker.user_id,
                 "opponent_id": opponent.user_id,
                 "is_bot": False,
+                "game_mode": game_mode,
             }
 
             # Останавливаем фоновые задачи обоих игроков, если они были
@@ -261,11 +265,12 @@ class Matchmaker:
         return self._matches[seeker.match_id]
 
     async def _create_bot_match(
-        self, 
-        user_id: int, 
-        trophies: int, 
+        self,
+        user_id: int,
+        trophies: int,
         user_avg_level: int,
-        selected_deck_id: int | None = None
+        selected_deck_id: int | None = None,
+        game_mode: str = "classic",
     ) -> Dict[str, Any]:
         """
         Генерация боя против бота.
@@ -378,6 +383,7 @@ class Matchmaker:
             # ВСЕГДА добавляем bot_info для передачи в server.py
             "bot_info": bot_info_payload,
             "selected_deck_id": selected_deck_id,
+            "game_mode": game_mode,
             "player_decks": {
                 str(user_id): selected_deck_id,
             }
