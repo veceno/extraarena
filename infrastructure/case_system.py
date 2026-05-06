@@ -381,7 +381,7 @@ async def process_case_opening(
     
     # Выдаем монеты
     if rewards["coins"] > 0:
-        await db.add_coins(user_id, rewards["coins"])
+        await db.update_user_coins(user_id, rewards["coins"])
     
     # Выдаем карты
     for card_reward in rewards["cards"]:

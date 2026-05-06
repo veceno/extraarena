@@ -597,193 +597,27 @@ function playPurchaseSuccessSound() {
 
 // Воспроизведение звука покупки ресурсов (монет)
 function playResourcePurchaseSound() {
-  if (currentSettings && currentSettings.sound_sfx === false) {
-    return;
-  }
-  
-  const resourceSound = document.getElementById("resource-purchase-sound");
-  if (resourceSound) {
-    resourceSound.currentTime = 0;
-    resourceSound.play().catch(error => {
-      console.debug("Не удалось воспроизвести звук покупки ресурсов:", error);
-    });
-  }
+  window._playSfx?.('purchase-sound');
 }
 
 // Воспроизведение звука показа наград кейса
 function playCaseRewardsSound() {
-  // Проверяем настройки звуковых эффектов
-  if (currentSettings && currentSettings.sound_sfx === false) {
-    return; // Звуковые эффекты выключены
-  }
-  
-  // Получаем источник звука напрямую из элемента <source>
-  const caseRewardsSound = document.getElementById("case-rewards-sound");
-  if (!caseRewardsSound) {
-    return;
-  }
-  
-  // Получаем URL звука из элемента <source>
-  const sourceElement = caseRewardsSound.querySelector("source");
-  const soundUrl = sourceElement ? sourceElement.src : (caseRewardsSound.src || "/DesignAssets/Sounds/CaseRewards.wav");
-  
-  if (!soundUrl || soundUrl === window.location.href) {
-    // Если URL не найден, используем дефолтный путь
-    const defaultUrl = "/DesignAssets/Sounds/CaseRewards.wav";
-    try {
-      const audio = new Audio(defaultUrl);
-      audio.volume = 1.0;
-      audio.play().catch(error => {
-        console.debug("Не удалось воспроизвести звук показа наград кейса (дефолтный путь):", error);
-      });
-    } catch (error) {
-      console.debug("Ошибка создания Audio объекта для звука показа наград кейса:", error);
-    }
-    return;
-  }
-  
-  // Воспроизводим звук показа наград кейса
-  try {
-    const audio = new Audio(soundUrl);
-    audio.volume = 1.0;
-    audio.play().catch(error => {
-      // Игнорируем ошибки воспроизведения (например, если пользователь не взаимодействовал со страницей)
-      console.debug("Не удалось воспроизвести звук показа наград кейса:", error);
-    });
-  } catch (error) {
-    // Fallback: пытаемся использовать оригинальный элемент
-    try {
-      caseRewardsSound.currentTime = 0;
-      caseRewardsSound.play().catch(err => {
-        console.debug("Не удалось воспроизвести звук показа наград кейса (fallback):", err);
-      });
-    } catch (err) {
-      console.debug("Ошибка при воспроизведении звука показа наград кейса:", err);
-    }
-  }
+  window._playSfx?.('case-reward-sound');
 }
 
 // Воспроизведение звука начала открытия кейса
 function playCaseOpenedSound() {
-  // Проверяем настройки звуковых эффектов
-  if (currentSettings && currentSettings.sound_sfx === false) {
-    return; // Звуковые эффекты выключены
-  }
-  
-  // Получаем источник звука напрямую из элемента <source>
-  const caseOpenedSound = document.getElementById("case-opened-sound");
-  if (!caseOpenedSound) {
-    return;
-  }
-  
-  // Получаем URL звука из элемента <source>
-  const sourceElement = caseOpenedSound.querySelector("source");
-  const soundUrl = sourceElement ? sourceElement.src : (caseOpenedSound.src || "/DesignAssets/Sounds/CaseOpened.wav");
-  
-  if (!soundUrl || soundUrl === window.location.href) {
-    // Если URL не найден, используем дефолтный путь
-    const defaultUrl = "/DesignAssets/Sounds/CaseOpened.wav";
-    try {
-      const audio = new Audio(defaultUrl);
-      audio.volume = 1.0;
-      audio.play().catch(error => {
-        console.debug("Не удалось воспроизвести звук начала открытия кейса (дефолтный путь):", error);
-      });
-    } catch (error) {
-      console.debug("Ошибка создания Audio объекта для звука начала открытия кейса:", error);
-    }
-    return;
-  }
-  
-  // Воспроизводим звук начала открытия кейса
-  try {
-    const audio = new Audio(soundUrl);
-    audio.volume = 1.0;
-    audio.play().catch(error => {
-      // Игнорируем ошибки воспроизведения (например, если пользователь не взаимодействовал со страницей)
-      console.debug("Не удалось воспроизвести звук начала открытия кейса:", error);
-    });
-  } catch (error) {
-    // Fallback: пытаемся использовать оригинальный элемент
-    try {
-      caseOpenedSound.currentTime = 0;
-      caseOpenedSound.play().catch(err => {
-        console.debug("Не удалось воспроизвести звук начала открытия кейса (fallback):", err);
-      });
-    } catch (err) {
-      console.debug("Ошибка при воспроизведении звука начала открытия кейса:", err);
-    }
-  }
+  window._playSfx?.('case-open-sound');
 }
 
-// Воспроизведение звука тапа при открытии кейса
+// Воспроизведение звука тапа по кейсу
 function playCaseTapSound() {
-  // Проверяем настройки звуковых эффектов
-  if (currentSettings && currentSettings.sound_sfx === false) {
-    return; // Звуковые эффекты выключены
-  }
-  
-  // Получаем источник звука напрямую из элемента <source>
-  // Это более надежный способ, чем использование src атрибута audio элемента
-  const caseTapSound = document.getElementById("case-tap-sound");
-  if (!caseTapSound) {
-    return;
-  }
-  
-  // Получаем URL звука из элемента <source>
-  const sourceElement = caseTapSound.querySelector("source");
-  const soundUrl = sourceElement ? sourceElement.src : (caseTapSound.src || "/DesignAssets/Sounds/case_tap.wav");
-  
-  if (!soundUrl || soundUrl === window.location.href) {
-    // Если URL не найден, используем дефолтный путь
-    const defaultUrl = "/DesignAssets/Sounds/case_tap.wav";
-    try {
-      const audio = new Audio(defaultUrl);
-      audio.volume = 1.0;
-      audio.play().catch(error => {
-        console.debug("Не удалось воспроизвести звук тапа кейса (дефолтный путь):", error);
-      });
-    } catch (error) {
-      console.debug("Ошибка создания Audio объекта для звука тапа кейса:", error);
-    }
-    return;
-  }
-  
-  // Создаем новый Audio объект для каждого воспроизведения
-  // Это позволяет воспроизводить звук несколько раз подряд без задержек
-  try {
-    const audio = new Audio(soundUrl);
-    audio.volume = 1.0;
-    audio.play().catch(error => {
-      // Игнорируем ошибки воспроизведения (например, если пользователь не взаимодействовал со страницей)
-      console.debug("Не удалось воспроизвести звук тапа кейса:", error);
-    });
-  } catch (error) {
-    // Fallback: пытаемся использовать оригинальный элемент
-    try {
-      caseTapSound.currentTime = 0;
-      caseTapSound.play().catch(err => {
-        console.debug("Не удалось воспроизвести звук тапа кейса (fallback):", err);
-      });
-    } catch (err) {
-      console.debug("Ошибка при воспроизведении звука тапа кейса:", err);
-    }
-  }
+  window._playSfx?.('case-tap-sound');
 }
-
+// Воспроизведение звука тапа при открытии кейса
 // Воспроизведение звука отправки сообщения в чат
 function playChatMessageSound() {
-  if (currentSettings && currentSettings.sound_sfx === false) {
-    return;
-  }
-  
-  const chatSound = document.getElementById("chat-message-sound");
-  if (chatSound) {
-    chatSound.currentTime = 0;
-    chatSound.play().catch(error => {
-      console.debug("Не удалось воспроизвести звук отправки сообщения:", error);
-    });
-  }
+  window._playSfx?.('chat-sent-sound');
 }
 
 // Отображение профиля
@@ -920,24 +754,23 @@ function renderProfile(data) {
   const arenaTrophiesValue = document.getElementById("arena-trophies-value");
   const arenaTrophiesNext = document.getElementById("arena-trophies-next");
   
-  // Функция для определения следующей лиги (каждые 1000 кубков)
+  // Функция для определения следующей лиги
   function getNextLeagueTrophies(trophies) {
-    if (trophies < 1000) return 1000;
+    if (trophies < 300) return 300;
+    if (trophies < 600) return 600;
+    if (trophies < 1200) return 1200;
     if (trophies < 2000) return 2000;
     if (trophies < 3000) return 3000;
-    if (trophies < 4000) return 4000;
-    if (trophies < 5000) return 5000;
+    if (trophies < 4500) return 4500;
     if (trophies < 6000) return 6000;
-    if (trophies < 7000) return 7000;
-    if (trophies < 8000) return 8000;
+    if (trophies < 7500) return 7500;
     if (trophies < 9000) return 9000;
     if (trophies < 10000) return 10000;
     return trophies; // Максимальная лига
   }
   
   if (arenaName) {
-    const trophies = data.trophies || 0;
-    const league = getLeagueByTrophies(trophies);
+    const league = data.league != null ? getLeagueById(data.league) : getLeagueByTrophies(data.trophies || 0);
     arenaName.textContent = `${league.emoji} ${league.name}`;
   }
   if (arenaTrophiesValue) {
@@ -1387,60 +1220,71 @@ function renderSettings(settings) {
   }
 }
 
-// Функция для определения лиги по трофеям (10 лиг каждые 1000 кубков)
+// Функция для определения лиги по трофеям (10 лиг)
 function getLeagueByTrophies(trophies) {
-  if (trophies >= 9000) return { name: "Chibbi Arena", emoji: "🏟️", color: "#FFD700" };
-  if (trophies >= 8000) return { name: "Legendary", emoji: "👑", color: "#FF6B6B" };
-  if (trophies >= 7000) return { name: "Grandmaster", emoji: "💫", color: "#9B59B6" };
-  if (trophies >= 6000) return { name: "Champion", emoji: "🏆", color: "#E74C3C" };
-  if (trophies >= 5000) return { name: "Master", emoji: "⭐", color: "#F39C12" };
-  if (trophies >= 4000) return { name: "Crystal", emoji: "💎", color: "#3498DB" };
-  if (trophies >= 3000) return { name: "Gold", emoji: "🥇", color: "#F1C40F" };
-  if (trophies >= 2000) return { name: "Silver", emoji: "🥈", color: "#95A5A6" };
-  if (trophies >= 1000) return { name: "Bronze", emoji: "🥉", color: "#E67E22" };
-  return { name: "Novice", emoji: "🌱", color: "#2ECC71" };
+  if (trophies >= 9000) return { name: "Extra", emoji: "🏟️", color: "#FFD700", id: 10 };
+  if (trophies >= 7500) return { name: "Legendary", emoji: "👑", color: "#FF6B6B", id: 9 };
+  if (trophies >= 6000) return { name: "Grandmaster", emoji: "💫", color: "#9B59B6", id: 8 };
+  if (trophies >= 4500) return { name: "Champion", emoji: "🏆", color: "#E74C3C", id: 7 };
+  if (trophies >= 3000) return { name: "Master", emoji: "⭐", color: "#F39C12", id: 6 };
+  if (trophies >= 2000) return { name: "Crystal", emoji: "💎", color: "#3498DB", id: 5 };
+  if (trophies >= 1200) return { name: "Gold", emoji: "🥇", color: "#F1C40F", id: 4 };
+  if (trophies >= 600)  return { name: "Silver", emoji: "🥈", color: "#95A5A6", id: 3 };
+  if (trophies >= 300)  return { name: "Bronze", emoji: "🥉", color: "#E67E22", id: 2 };
+  return { name: "Novice", emoji: "🌱", color: "#2ECC71", id: 1 };
+}
+
+// Функция для получения данных лиги по ID (из profile.league с сервера)
+const LEAGUE_BY_ID = (function() {
+  const map = {};
+  [0, 300, 600, 1200, 2000, 3000, 4500, 6000, 7500, 9000].forEach((t) => {
+    const l = getLeagueByTrophies(t);
+    map[l.id] = l;
+  });
+  return map;
+})();
+function getLeagueById(leagueId) {
+  return LEAGUE_BY_ID[leagueId] || LEAGUE_BY_ID[1];
 }
 
 // Структура шагов пути славы с наградами (линейная дорога 0-10000, шаг 500)
 const GLORY_PATH_MILESTONES = [
-  // 500 - 1000 монет + кейс T1
-  { trophies: 500, rewards: [{ type: "coins", amount: 1000, icon: "💰" }, { type: "case", tier: 1, icon: "📦" }], league: null },
-  // 1000 - вход в Bronze + кейс T2 + 50 гемов
-  { trophies: 1000, rewards: [{ type: "case", tier: 2, icon: "💠" }, { type: "gems", amount: 50, icon: "💎" }], league: { name: "Bronze", emoji: "🥉" } },
-  // 1500 - 2000 монет + 20 частиц случайной Редкой карты
-  { trophies: 1500, rewards: [{ type: "coins", amount: 2000, icon: "💰" }, { type: "particles", rarity: "rare", amount: 20, icon: "✨" }], league: null },
-  // 2000 - вход в Silver + кейс T2 + гарантированная Редкая карта
-  { trophies: 2000, rewards: [{ type: "case", tier: 2, icon: "💠" }, { type: "guaranteed_card", rarity: "rare", icon: "🃏" }], league: { name: "Silver", emoji: "🥈" } },
-  // 2500 - кейс T3 + 50 осколков лимиток
-  { trophies: 2500, rewards: [{ type: "case", tier: 3, icon: "💎" }, { type: "shards", amount: 50, icon: "🔮" }], league: null },
-  // 3000 - вход в Gold + 3000 монет + 30 частиц случайной Сверхредкой карты
-  { trophies: 3000, rewards: [{ type: "coins", amount: 3000, icon: "💰" }, { type: "particles", rarity: "superrare", amount: 30, icon: "✨" }], league: { name: "Gold", emoji: "🥇" } },
-  // 3500 - кейс T3 + небольшой пакет гемов (50-100)
-  { trophies: 3500, rewards: [{ type: "case", tier: 3, icon: "💎" }, { type: "gems", amount: 75, icon: "💎" }], league: null },
-  // 4000 - вход в Crystal + гарантированная Эпическая карта
-  { trophies: 4000, rewards: [{ type: "guaranteed_card", rarity: "epic", icon: "🃏" }], league: { name: "Crystal", emoji: "💎" } },
-  // 4500 - кейс T4 + 5000 монет
-  { trophies: 4500, rewards: [{ type: "case", tier: 4, icon: "🔥" }, { type: "coins", amount: 5000, icon: "💰" }], league: null },
-  // 5000 - вход в Master + гарантированная Легендарная карта
-  { trophies: 5000, rewards: [{ type: "guaranteed_card", rarity: "legendary", icon: "🃏" }], league: { name: "Master", emoji: "⭐" } },
-  // 5500 - кейс T4 + 100 осколков лимиток
-  { trophies: 5500, rewards: [{ type: "case", tier: 4, icon: "🔥" }, { type: "shards", amount: 100, icon: "🔮" }], league: null },
-  // 6000 - вход в Champion + 8000 монет + 50 частиц случайной Эпической карты
-  { trophies: 6000, rewards: [{ type: "coins", amount: 8000, icon: "💰" }, { type: "particles", rarity: "epic", amount: 50, icon: "✨" }], league: { name: "Champion", emoji: "🏆" } },
-  // 6500 - кейс T4 + небольшой набор гемов (100-150)
-  { trophies: 6500, rewards: [{ type: "case", tier: 4, icon: "🔥" }, { type: "gems", amount: 125, icon: "💎" }], league: null },
-  // 7000 - вход в Grandmaster + кейс T5
-  { trophies: 7000, rewards: [{ type: "case", tier: 5, icon: "👑" }], league: { name: "Grandmaster", emoji: "💫" } },
-  // 7500 - 15000 монет + 100 частиц случайной Легендарной карты
-  { trophies: 7500, rewards: [{ type: "coins", amount: 15000, icon: "💰" }, { type: "particles", rarity: "legendary", amount: 100, icon: "✨" }], league: null },
-  // 8000 - вход в Legendary + гарантированная Мифическая карта
-  { trophies: 8000, rewards: [{ type: "guaranteed_card", rarity: "mythic", icon: "🃏" }], league: { name: "Legendary", emoji: "👑" } },
-  // 8500 - кейс T5 + 200 осколков лимиток
-  { trophies: 8500, rewards: [{ type: "case", tier: 5, icon: "👑" }, { type: "shards", amount: 200, icon: "🔮" }], league: null },
-  // 9000 - вход в Chibbi Arena + 20000 монет
-  { trophies: 9000, rewards: [{ type: "coins", amount: 20000, icon: "💰" }], league: { name: "Chibbi Arena", emoji: "🏟️" } },
-  // 9500 - кейс T5 + крупный пакет гемов (300-500)
-  { trophies: 9500, rewards: [{ type: "case", tier: 5, icon: "👑" }, { type: "gems", amount: 400, icon: "💎" }], league: null },
+  // 150 - промежуточная награда Novice
+  { trophies: 150, rewards: [{ type: "coins", amount: 1000, icon: "💰" }, { type: "case", tier: 1, icon: "📦" }], league: null },
+  // 300 - вход в Bronze + кейс T2 + 50 гемов
+  { trophies: 300, rewards: [{ type: "case", tier: 2, icon: "💠" }, { type: "gems", amount: 50, icon: "💎" }], league: { name: "Bronze", emoji: "🥉" } },
+  // 450 - промежуточная награда Bronze
+  { trophies: 450, rewards: [{ type: "coins", amount: 2000, icon: "💰" }, { type: "particles", rarity: "rare", amount: 20, icon: "✨" }], league: null },
+  // 600 - вход в Silver + кейс T2 + гарантированная Редкая карта
+  { trophies: 600, rewards: [{ type: "case", tier: 2, icon: "💠" }, { type: "guaranteed_card", rarity: "rare", icon: "🃏" }], league: { name: "Silver", emoji: "🥈" } },
+  // 900 - промежуточная награда Silver
+  { trophies: 900, rewards: [{ type: "case", tier: 3, icon: "💎" }, { type: "shards", amount: 50, icon: "🔮" }], league: null },
+  // 1200 - вход в Gold + 3000 монет + 30 частиц Superrare
+  { trophies: 1200, rewards: [{ type: "coins", amount: 3000, icon: "💰" }, { type: "particles", rarity: "superrare", amount: 30, icon: "✨" }], league: { name: "Gold", emoji: "🥇" } },
+  // 1600 - промежуточная награда Gold
+  { trophies: 1600, rewards: [{ type: "case", tier: 3, icon: "💎" }, { type: "gems", amount: 75, icon: "💎" }], league: null },
+  // 2000 - вход в Crystal + гарантированная Эпическая карта
+  { trophies: 2000, rewards: [{ type: "guaranteed_card", rarity: "epic", icon: "🃏" }], league: { name: "Crystal", emoji: "💎" } },
+  // 2500 - промежуточная награда Crystal
+  { trophies: 2500, rewards: [{ type: "case", tier: 4, icon: "🔥" }, { type: "coins", amount: 5000, icon: "💰" }], league: null },
+  // 3000 - вход в Master + гарантированная Легендарная карта
+  { trophies: 3000, rewards: [{ type: "guaranteed_card", rarity: "legendary", icon: "🃏" }], league: { name: "Master", emoji: "⭐" } },
+  // 3750 - промежуточная награда Master
+  { trophies: 3750, rewards: [{ type: "case", tier: 4, icon: "🔥" }, { type: "shards", amount: 100, icon: "🔮" }], league: null },
+  // 4500 - вход в Champion + 8000 монет + 50 частиц Epic
+  { trophies: 4500, rewards: [{ type: "coins", amount: 8000, icon: "💰" }, { type: "particles", rarity: "epic", amount: 50, icon: "✨" }], league: { name: "Champion", emoji: "🏆" } },
+  // 5250 - промежуточная награда Champion
+  { trophies: 5250, rewards: [{ type: "case", tier: 4, icon: "🔥" }, { type: "gems", amount: 125, icon: "💎" }], league: null },
+  // 6000 - вход в Grandmaster + кейс T5
+  { trophies: 6000, rewards: [{ type: "case", tier: 5, icon: "👑" }], league: { name: "Grandmaster", emoji: "💫" } },
+  // 6750 - промежуточная награда Grandmaster
+  { trophies: 6750, rewards: [{ type: "coins", amount: 15000, icon: "💰" }, { type: "particles", rarity: "legendary", amount: 100, icon: "✨" }], league: null },
+  // 7500 - вход в Legendary + гарантированная Мифическая карта
+  { trophies: 7500, rewards: [{ type: "guaranteed_card", rarity: "mythic", icon: "🃏" }], league: { name: "Legendary", emoji: "👑" } },
+  // 8250 - промежуточная награда Legendary
+  { trophies: 8250, rewards: [{ type: "case", tier: 5, icon: "👑" }, { type: "shards", amount: 200, icon: "🔮" }], league: null },
+  // 9000 - вход в Extra + 20000 монет
+  { trophies: 9000, rewards: [{ type: "coins", amount: 20000, icon: "💰" }], league: { name: "Extra", emoji: "🏟️" } },
   // 10000 - финальная награда: Божественный кейс T5 + косметика
   { trophies: 10000, rewards: [{ type: "case", tier: 5, divine: true, icon: "✨" }, { type: "cosmetic", icon: "🎨" }], league: null },
 ];
@@ -1475,7 +1319,7 @@ function renderGloryPath(data) {
   if (!gloryPathContent) return;
 
   const currentTrophies = data.trophies || 0;
-  const currentLeague = getLeagueByTrophies(currentTrophies);
+  const currentLeague = data.league != null ? getLeagueById(data.league) : getLeagueByTrophies(currentTrophies);
   
   // Вычисляем общий прогресс (максимум 10000)
   const maxTrophies = 10000;
@@ -1596,7 +1440,7 @@ function renderAnalytics(data) {
   if (!analyticsContent) return;
 
   const isAdmin = data.user_id === 6803854304;
-  const league = getLeagueByTrophies(data.trophies || 0);
+  const league = data.league != null ? getLeagueById(data.league) : getLeagueByTrophies(data.trophies || 0);
   const hasExtraPass = data.extra_pass === "active";
   
   // Данные для графика (примерная кривая прогресса)
@@ -2482,7 +2326,7 @@ function initEventHandlers() {
           title.textContent = "🏛️ Арена";
           content.innerHTML = `
             <p><strong>Арена</strong> - это место, где вы сражаетесь с другими игроками и зарабатываете трофеи.</p>
-            <p>Чем больше трофеев, тем выше ваша лига и тем лучше награды!</p>
+            <p>Чем больше трофеев, тем выше ваша лига — от Novice до Extra!</p>
             <p>Каждая победа приносит трофеи, а поражение их отнимает.</p>
           `;
         } else if (infoType === "energy") {
@@ -3778,6 +3622,8 @@ async function buyWithGems(itemType, gemsAmount, itemName) {
 
     const result = await response.json();
     if (result.success) {
+      // Звук успешной покупки
+      window._playSfx?.('success-sound');
       // Воспроизводим звук покупки для монет
       if (itemType && itemType.startsWith("coins_")) {
         playResourcePurchaseSound();
@@ -7968,11 +7814,7 @@ async function openCardDetail(card) {
         
         if (result.success) {
           // Воспроизводим звук левел-апа
-          const levelupSound = document.getElementById("card-levelup-sound");
-          if (levelupSound) {
-            levelupSound.currentTime = 0;
-            levelupSound.play().catch(err => console.log("Не удалось воспроизвести звук левел-апа:", err));
-          }
+          window._playSfx?.('levelup-sound');
           
           const powerIncrease = result.power_increase || 0;
           const coinsSpent = result.coins_spent || 0;

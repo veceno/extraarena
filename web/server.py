@@ -22,7 +22,7 @@ from ai.bot_ai import BotAI
 from ai.bot_brain import BerserkInference
 from battle_engine import BattleEngine, BattleEventEmitter
 from infrastructure.matchmaking import Matchmaker
-from infrastructure.case_system import roll_tier_upgrade, process_case_opening
+from infrastructure.case_system import roll_tier_upgrade, process_case_opening, generate_case_rewards
 from infrastructure.payments_logic import process_successful_payment
 
 WEBAPP_DIR = Path(__file__).resolve().parents[1] / "webapp"
@@ -1631,6 +1631,7 @@ def create_web_app(
             "extra_pass": record.get("extra_pass", "inactive"),
             "trophies": record.get("trophies", 0),
             "max_trophies": record.get("max_trophies", 0),
+            "league": record.get("league", 1),
             "keys": record.get("keys", 0),
             "gems": record.get("gems", 0),
             "coins": record.get("coins", 0),
@@ -2466,17 +2467,11 @@ def create_web_app(
 
         try:
             presets = await db.get_user_deck_presets(user_id)
-            # Подтягиваем данные героев одной пачкой, чтобы фронт сразу получил описание героя
-            hero_ids = {p.get("hero_id", 0) for p in presets if p.get("hero_id") is not None}
-            hero_map = await db.get_heroes_by_ids(list(hero_ids)) if hero_ids else {}
-            for preset in presets:
-                hero_id_value = preset.get("hero_id", 0)
-                if not preset.get("hero") and hero_id_value in hero_map:
-                    preset["hero"] = hero_map[hero_id_value]
-            # Преобразуем datetime в строки для JSON
+            primary = await db.fetchval("SELECT primary_deck FROM users WHERE user_id=$1", user_id)
             for preset in presets:
                 if preset.get("updated_at"):
                     preset["updated_at"] = preset["updated_at"].isoformat()
+                preset["is_primary"] = (preset.get("preset_number") == primary)
             return web.json_response({"presets": presets})
         except Exception as e:
             import logging
@@ -2488,7 +2483,7 @@ def create_web_app(
             )
 
     async def deck_preset_save_handler(request: web.Request) -> web.Response:
-        """Обработчик сохранения пресета колоды (9 карт + герой)."""
+        """Обработчик сохранения пресета колоды (9 карт, герой внутри колоды)."""
         init_data = request.rel_url.query.get("_auth")
         user_id = None
 
@@ -2526,12 +2521,10 @@ def create_web_app(
             preset_number = int(data.get("preset_number", 1))
             preset_name = data.get("preset_name", "Колода").strip()
             card_slots = data.get("card_slots", [])
-            hero_id_raw = data.get("hero_id", 0)
             
             if len(card_slots) != DECK_SIZE:
                 return web.json_response({"error": "invalid_slots_count"}, status=400)
             
-            # Преобразуем строки в int или None
             card_slots_processed = []
             for slot in card_slots:
                 if slot is None or slot == "":
@@ -2541,22 +2534,12 @@ def create_web_app(
                         card_slots_processed.append(int(slot))
                     except (ValueError, TypeError):
                         card_slots_processed.append(None)
-
-            try:
-                hero_id_value = int(hero_id_raw) if hero_id_raw is not None else 0
-            except (TypeError, ValueError):
-                return web.json_response({"error": "invalid_hero_id"}, status=400)
-
-            hero_exists = await db.get_hero(hero_id_value)
-            if hero_id_value != 0 and not hero_exists:
-                return web.json_response({"error": "hero_not_found"}, status=404)
             
             result = await db.save_deck_preset(
                 user_id=user_id,
                 preset_number=preset_number,
                 preset_name=preset_name,
                 card_slots=card_slots_processed,
-                hero_id=hero_id_value,
             )
             
             if not result["success"]:
@@ -2766,6 +2749,39 @@ def create_web_app(
             return web.json_response(
                 {"error": "internal_server_error", "message": str(e)}, status=500
             )
+
+    async def deck_preset_set_primary_handler(request: web.Request) -> web.Response:
+        """Установить/снять основную колоду."""
+        init_data = request.rel_url.query.get("_auth")
+        user_id = None
+        if init_data and init_data.isdigit():
+            try: user_id = int(init_data)
+            except ValueError: pass
+        if not user_id and init_data:
+            v = _verify_init_data(init_data, bot_token)
+            if v: user_id = _extract_user_id_from_init_data(v)
+        if not user_id:
+            p = request.rel_url.query.get("user_id")
+            if p: 
+                try: user_id = int(p)
+                except ValueError: return web.json_response({"error": "invalid_user_id"}, status=400)
+        if not user_id:
+            return web.json_response({"error": "authentication required"}, status=401)
+        try:
+            data = await request.json()
+            preset_number = data.get("preset_number")
+            clear = data.get("clear", False)
+            if clear:
+                result = await db.set_primary_deck(user_id, None)
+            else:
+                try: preset_number = int(preset_number)
+                except (TypeError, ValueError): return web.json_response({"error": "invalid_preset_number"}, status=400)
+                result = await db.set_primary_deck(user_id, preset_number)
+            return web.json_response(result)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error("set_primary_deck error uid=%s: %s", user_id, e, exc_info=True)
+            return web.json_response({"error": "internal_server_error"}, status=500)
 
     async def cards_catalog_handler(_: web.Request) -> web.Response:
         """Публичный список карт с текущими статами (уровень 1)."""
@@ -3836,7 +3852,7 @@ def create_web_app(
 
             # Выдаём
             if rewards["coins"] > 0:
-                await db.add_coins(user_id, rewards["coins"])
+                await db.update_user_coins(user_id, rewards["coins"])
             for c in rewards.get("cards", []):
                 await db.add_card_to_user(user_id, c["card_id"])
             for p2 in rewards.get("particles", []):
@@ -4273,7 +4289,7 @@ def create_web_app(
 
         user_id = data.get("user_id")
         difficulty = data.get("difficulty", "medium")
-        selected_deck_id = data.get("deck_id")
+        selected_deck_id = data.get("selected_deck_id") or data.get("deck_id")
 
         valid_difficulties = ("lite", "easy", "medium", "hard", "max")
         if difficulty not in valid_difficulties:
@@ -5165,6 +5181,7 @@ def create_web_app(
     app.router.add_post("/api/deck/presets/create", deck_preset_create_handler)
     app.router.add_post("/api/deck/presets/delete", deck_preset_delete_handler)
     app.router.add_post("/api/deck/presets/rename", deck_preset_rename_handler)
+    app.router.add_post("/api/deck/presets/set-primary", deck_preset_set_primary_handler)
     app.router.add_get("/api/cards", cards_catalog_handler)
     app.router.add_get("/api/cards/user", user_cards_handler)
     app.router.add_get("/api/cases/user", user_cases_handler)
@@ -7116,6 +7133,7 @@ def create_web_app(
             "extra_pass": record.get("extra_pass", "inactive"),
             "trophies": record.get("trophies", 0),
             "max_trophies": record.get("max_trophies", 0),
+            "league": record.get("league", 1),
             "keys": record.get("keys", 0),
             "gems": record.get("gems", 0),
             "coins": record.get("coins", 0),

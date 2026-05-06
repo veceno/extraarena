@@ -13,11 +13,11 @@ try:  # pragma: no cover - ветка с отсутствием asyncpg пров
 except ModuleNotFoundError:  # pragma: no cover - альтернативный путь при локальных тестах
     asyncpg = None  # type: ignore
 
-from infrastructure.config import DECK_SIZE, DatabaseSettings
+from infrastructure.config import DECK_SIZE, DatabaseSettings, get_league_by_trophies_fn
 
 
 # Версию схемы повышаем при изменении структуры таблиц
-SCHEMA_VERSION = 20
+SCHEMA_VERSION = 21
 
 # Таблица ростов статов по редкости (урон/хп растут одинаково)
 RARITY_STATS: dict[str, float] = {
@@ -375,8 +375,8 @@ class Database:
         else:
             await self.execute(
                 """
-                INSERT INTO users (user_id, username, first_name, last_name)
-                VALUES ($1, $2, $3, $4)
+                INSERT INTO users (user_id, username, first_name, last_name, league)
+                VALUES ($1, $2, $3, $4, 1)
                 """,
                 user_id,
                 username,
@@ -455,6 +455,7 @@ class Database:
                 u.extra_pass,
                 u.trophies,
                 u.max_trophies,
+                u.league,
                 COALESCE(u.keys, 0) as keys,
                 u.gems,
                 u.coins,
@@ -496,6 +497,7 @@ class Database:
                     u.extra_pass,
                     u.trophies,
                     u.max_trophies,
+                    u.league,
                     COALESCE(u.keys, 0) as keys,
                     u.gems,
                     u.coins,
@@ -697,11 +699,12 @@ class Database:
         # Обновляем или создаем запись пользователя с флагом бота
         await self.execute(
             """
-            INSERT INTO users (user_id, username, first_name, last_name, trophies, max_trophies, is_bot, status)
-            VALUES ($1, NULL, $2, NULL, $3, $3, TRUE, 'active')
+            INSERT INTO users (user_id, username, first_name, last_name, trophies, max_trophies, league, is_bot, status)
+            VALUES ($1, NULL, $2, NULL, $3, $3, $4, TRUE, 'active')
             ON CONFLICT (user_id) DO UPDATE
             SET trophies = EXCLUDED.trophies,
                 max_trophies = GREATEST(users.max_trophies, EXCLUDED.max_trophies),
+                league = EXCLUDED.league,
                 is_bot = TRUE,
                 first_name = EXCLUDED.first_name,
                 updated_at = NOW(),
@@ -710,6 +713,7 @@ class Database:
             bot_id,
             display_name,
             safe_trophies,
+            get_league_by_trophies_fn(safe_trophies),
         )
 
         # Поддерживаем профиль для отображения имени и аватарки
@@ -957,6 +961,7 @@ class Database:
                     extra_pass TEXT NOT NULL DEFAULT 'inactive',
                     trophies INTEGER NOT NULL DEFAULT 0,
                     max_trophies INTEGER NOT NULL DEFAULT 0,
+                    league INTEGER NOT NULL DEFAULT 1,
                     keys INTEGER NOT NULL DEFAULT 0,
                     gems INTEGER NOT NULL DEFAULT 0,
                     coins INTEGER NOT NULL DEFAULT 0,
@@ -980,6 +985,26 @@ class Database:
         )
         changed |= await self._add_column_if_missing(
             "users", columns, "max_trophies INTEGER NOT NULL DEFAULT 0"
+        )
+        changed |= await self._add_column_if_missing(
+            "users", columns, "league INTEGER NOT NULL DEFAULT 1"
+        )
+        # Миграция: заполнить league по текущим трофеям
+        await self.execute(
+            """
+            UPDATE users SET league = CASE
+                WHEN trophies >= 9000 THEN 10
+                WHEN trophies >= 7500 THEN 9
+                WHEN trophies >= 6000 THEN 8
+                WHEN trophies >= 4500 THEN 7
+                WHEN trophies >= 3000 THEN 6
+                WHEN trophies >= 2000 THEN 5
+                WHEN trophies >= 1200 THEN 4
+                WHEN trophies >= 600  THEN 3
+                WHEN trophies >= 300  THEN 2
+                ELSE 1
+            END
+            """
         )
         changed |= await self._add_column_if_missing(
             "users", columns, "keys INTEGER NOT NULL DEFAULT 0"
@@ -1007,6 +1032,9 @@ class Database:
         )
         changed |= await self._add_column_if_missing(
             "users", columns, "is_bot BOOLEAN NOT NULL DEFAULT FALSE"
+        )
+        changed |= await self._add_column_if_missing(
+            "users", columns, "primary_deck INTEGER DEFAULT NULL"
         )
         changed |= await self._add_column_if_missing(
             "users", columns, "reg_date TIMESTAMPTZ NOT NULL DEFAULT NOW()"
@@ -1195,22 +1223,35 @@ class Database:
             delta: Изменение трофеев (может быть положительным или отрицательным)
         
         Returns:
-            dict с новыми значениями trophies и max_trophies
+            dict с новыми значениями trophies, max_trophies и league
         """
         if not self._pool:
             raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
         
         # КРИТИЧНО: Используем GREATEST для защиты от отрицательных трофеев
         # max_trophies обновляется только если новое значение больше текущего
+        # league автоматически пересчитывается по новым трофеям
         result = await self.fetchrow(
             """
             UPDATE users 
             SET 
                 trophies = GREATEST(0, trophies + $1),
                 max_trophies = GREATEST(max_trophies, GREATEST(0, trophies + $1)),
+                league = CASE 
+                    WHEN GREATEST(0, trophies + $1) >= 9000 THEN 10
+                    WHEN GREATEST(0, trophies + $1) >= 7500 THEN 9
+                    WHEN GREATEST(0, trophies + $1) >= 6000 THEN 8
+                    WHEN GREATEST(0, trophies + $1) >= 4500 THEN 7
+                    WHEN GREATEST(0, trophies + $1) >= 3000 THEN 6
+                    WHEN GREATEST(0, trophies + $1) >= 2000 THEN 5
+                    WHEN GREATEST(0, trophies + $1) >= 1200 THEN 4
+                    WHEN GREATEST(0, trophies + $1) >= 600  THEN 3
+                    WHEN GREATEST(0, trophies + $1) >= 300  THEN 2
+                    ELSE 1
+                END,
                 updated_at = NOW()
             WHERE user_id = $2
-            RETURNING trophies, max_trophies
+            RETURNING trophies, max_trophies, league
             """,
             delta, user_id
         )
@@ -1218,10 +1259,11 @@ class Database:
         if result:
             return {
                 "trophies": result["trophies"],
-                "max_trophies": result["max_trophies"]
+                "max_trophies": result["max_trophies"],
+                "league": result["league"]
             }
         
-        return {"trophies": 0, "max_trophies": 0}
+        return {"trophies": 0, "max_trophies": 0, "league": 1}
 
     async def get_user_info(self, user_id: int) -> Optional[dict[str, Any]]:
         """
@@ -1237,9 +1279,11 @@ class Database:
                 user_id, 
                 trophies, 
                 max_trophies, 
+                league,
                 coins, 
                 gems, 
                 extra_pass,
+                primary_deck,
                 energy,
                 energy_cd
             FROM users 
@@ -1307,6 +1351,32 @@ class Database:
             return {"coins": result["coins"]}
         
         return {"coins": 0}
+
+    async def add_gems(self, user_id: int, amount: int) -> dict[str, Any]:
+        """Добавить гемы пользователю."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+        result = await self.fetchrow(
+            """
+            UPDATE users
+            SET gems = COALESCE(gems, 0) + $1,
+                updated_at = NOW()
+            WHERE user_id = $2
+            RETURNING gems
+            """,
+            amount, user_id
+        )
+        return {"gems": result["gems"] if result else 0}
+
+    async def set_primary_deck(self, user_id: int, preset_number: int | None) -> dict[str, Any]:
+        """Установить основную колоду игрока."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        await self.execute(
+            "UPDATE users SET primary_deck = $1, updated_at = NOW() WHERE user_id = $2",
+            preset_number, user_id
+        )
+        return {"success": True, "primary_deck": preset_number}
 
     async def _ensure_news_table(self) -> bool:
         changed = False
@@ -2524,6 +2594,35 @@ class Database:
             )
             cards.append(card_dict)
         return cards
+
+    async def get_cards_by_rarity(self, rarity: str) -> list[dict[str, Any]]:
+        """Получить все карты указанной редкости."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+        rows = await self.fetch(
+            """
+            SELECT id, name, description, rarity, power, mana_cost, base_attack, base_hp, mechanics, card_type, image_file_id, created_by, created_at
+            FROM cards
+            WHERE rarity = $1
+            ORDER BY created_at DESC
+            """,
+            rarity
+        )
+        return [dict(row) for row in rows]
+
+    async def get_uni_card(self) -> dict[str, Any] | None:
+        """Получить стартовую карту Юни (rarity='start' или card_type='hero')."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+        row = await self.fetchrow(
+            """
+            SELECT id, name, description, rarity, power, mana_cost, base_attack, base_hp, mechanics, card_type, image_file_id, created_by, created_at
+            FROM cards
+            WHERE rarity = 'start' OR card_type = 'hero'
+            LIMIT 1
+            """
+        )
+        return dict(row) if row else None
 
     async def get_user_cards(self, user_id: int) -> list[dict[str, Any]]:
         """Получить все карты пользователя из его коллекции."""

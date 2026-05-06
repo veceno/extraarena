@@ -129,7 +129,7 @@ def test_armor_reduces_damage():
 
 
 def test_freeze_prevents_attack_on_next_turn():
-    """Тест 3: Замороженный юнит после end_turn теряет статус freeze и не готов атаковать."""
+    """Тест 3: Замороженный юнит после end_turn теряет статус заморозки и не готов атаковать."""
     state = create_minimal_game_state()
     env = ArenaEnvironment(state)
     
@@ -143,8 +143,9 @@ def test_freeze_prevents_attack_on_next_turn():
         max_hp=5,
         attack=3,
         mana_cost=3,
-        mechanics=["freeze"],
-        is_ready=True,  # Был готов до заморозки
+        mechanics=[],
+        is_ready=True,
+        is_frozen=True,  # Движок использует is_frozen
     )
     
     state.p2.board.append(frozen_unit)
@@ -154,7 +155,7 @@ def test_freeze_prevents_attack_on_next_turn():
     assert success, f"Завершение хода должно быть успешным: {error}"
     
     # Проверяем, что заморозка снята
-    assert "freeze" not in frozen_unit.mechanics, "Статус freeze должен исчезнуть после хода"
+    assert not frozen_unit.is_frozen, "is_frozen должен быть сброшен"
     
     # Проверяем, что юнит НЕ готов атаковать (пропустил активацию)
     assert not frozen_unit.is_ready, "Замороженный юнит не должен быть готов атаковать сразу после разморозки"

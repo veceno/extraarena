@@ -319,9 +319,9 @@ def test_aoe_freeze():
     success, error = env.step(1, PlayCardAction(hand_index=0, target_id=None, position=None))
     assert success, f"Розыгрыш карты заморозки должен быть успешным: {error}"
     
-    # Проверяем, что все враги заморожены
+    # Проверяем, что все враги заморожены (движок использует is_frozen)
     for unit in enemy_units:
-        assert "freeze" in unit.mechanics, f"Юнит {unit.name} должен быть заморожен"
+        assert unit.is_frozen, f"Юнит {unit.name} должен быть заморожен"
 
 
 def test_mana_gain():

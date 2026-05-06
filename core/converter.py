@@ -67,34 +67,26 @@ def _normalize_mechanic(mechanic: str, level: int) -> str:
                         min_val = int(parts[0])
                         max_val = int(parts[1])
                         
-                        # Специальная обработка для start_mana: используем tiered scaling
+                        # start_mana: engine hero scaling добавляет bonus_tiers
                         if prefix == "start_mana_":
-                            scaled_val = _get_tiered_value(min_val, level)
-                            # Ограничиваем максимумом из диапазона
-                            chosen_val = min(scaled_val, max_val)
-                            return f"{prefix}{chosen_val}"
+                            return f"{prefix}{min_val}"
                         
-                        # Для buff механик (buff_all_X_Y, battlecry_buff_X_Y): масштабируем оба значения
+                        # buff_all_X_Y, battlecry_buff_X_Y: engine warrior scaling handles buff
                         elif prefix in ["buff_all_", "battlecry_buff_"]:
-                            scaled_atk = _get_tiered_value(min_val, level)
-                            scaled_hp = _get_tiered_value(max_val, level)
-                            return f"{prefix}{scaled_atk}_{scaled_hp}"
+                            return f"{prefix}{min_val}_{max_val}"
                         
                         else:
-                            # Для остальных механик: простой выбор min/max
-                            chosen_val = min_val if level < 3 else max_val
-                            return f"{prefix}{chosen_val}"
+                            # Для остальных механик с диапазоном: берём min_val
+                            return f"{prefix}{min_val}"
                     except ValueError:
                         # Если не удалось распарсить, возвращаем как есть
                         pass
             else:
-                # Одиночное числовое значение - применяем tiered scaling
+                # Одиночное числовое значение — возвращаем как есть (scaling в engine)
                 try:
-                    base_value = int(value_part)
-                    scaled_value = _get_tiered_value(base_value, level)
-                    return f"{prefix}{scaled_value}"
+                    int(value_part)
+                    return mechanic
                 except ValueError:
-                    # Не число, возвращаем как есть
                     pass
             
             # Если не удалось обработать, возвращаем как есть

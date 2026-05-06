@@ -13,6 +13,15 @@
 <audio id="bg-music" loop><source src="/DesignAssets/Sounds/main_theme.mp3" type="audio/mpeg"></audio>
 <audio id="btn-sound" preload="auto"><source src="/DesignAssets/Sounds/button_click.mp3" type="audio/mpeg"></audio>
 <audio id="battle-sound" preload="auto"><source src="/DesignAssets/Sounds/battle_start.wav" type="audio/wav"></audio>
+<audio id="case-tap-sound" preload="auto"><source src="/DesignAssets/Sounds/case_tap.wav" type="audio/wav"></audio>
+<audio id="case-open-sound" preload="auto"><source src="/DesignAssets/Sounds/CaseOpened.wav" type="audio/wav"></audio>
+<audio id="case-reward-sound" preload="auto"><source src="/DesignAssets/Sounds/CaseRewards.wav" type="audio/wav"></audio>
+<audio id="levelup-sound" preload="auto"><source src="/DesignAssets/Sounds/card_levelup.wav" type="audio/wav"></audio>
+<audio id="menu-open-sound" preload="auto"><source src="/DesignAssets/Sounds/battle_mode_choose_menu_open.wav" type="audio/wav"></audio>
+<audio id="chat-sent-sound" preload="auto"><source src="/DesignAssets/Sounds/global_chat_message_sent.wav" type="audio/wav"></audio>
+<audio id="purchase-sound" preload="auto"><source src="/DesignAssets/Sounds/resource_purchase.wav" type="audio/wav"></audio>
+<audio id="success-sound" preload="auto"><source src="/DesignAssets/Sounds/success_purchase.mp3" type="audio/mpeg"></audio>
+<audio id="energy-sound" preload="auto"><source src="/DesignAssets/Sounds/EnergyBought.wav" type="audio/wav"></audio>
 
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -50,6 +59,7 @@ html, body {
 @keyframes shine     { 0%{left:-60%} 100%{left:140%} }
 @keyframes blink     { 0%,100%{opacity:1} 50%{opacity:0} }
 @keyframes rotateSlow{ from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
+@keyframes pulse     { 0%,100%{opacity:1} 50%{opacity:0.5} }
 @keyframes pulse2    { 0%,100%{opacity:0.5;transform:scale(1)} 50%{opacity:1;transform:scale(1.15)} }
 @keyframes popIn     { from{opacity:0;transform:scale(0.93) translateY(10px)} to{opacity:1;transform:scale(1) translateY(0)} }
 @keyframes spin      { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
@@ -115,10 +125,14 @@ window.toggleMusic = function(enabled) {
 // ────────────────────────────────────────────────────────
 
 // ── Звук кнопок ─────────────────────────────────────────
+window._playSfx = function(id) {
+  if (!window._musicEnabled) return;
+  const el = document.getElementById(id);
+  if (!el) return;
+  try { el.currentTime = 0; el.volume = 0.55; el.play().catch(() => {}); } catch (e) {}
+};
 window.playClick = function() {
-  const snd = document.getElementById('btn-sound');
-  if (!snd || !window._musicEnabled) return;
-  try { snd.currentTime = 0; snd.volume = 0.55; snd.play().catch(()=>{}); } catch(e){}
+  window._playSfx('btn-sound');
 };
 // Глобальный обработчик — звук на каждую кнопку
 document.addEventListener('pointerdown', e => {
@@ -138,7 +152,7 @@ window._getUserId = function() {
   return tg?.initDataUnsafe?.user?.id || (urlId ? parseInt(urlId) : null);
 };
 
-window.startBattle = async function(profile) {
+window.startBattle = async function(profile, deckId) {
   const tg = window.Telegram?.WebApp;
   const overlay = document.getElementById('searchOverlay');
   if (overlay) overlay.style.display = 'flex';
@@ -149,10 +163,13 @@ window.startBattle = async function(profile) {
     const userId = window._getUserId();
     const initData = tg?.initData || '';
 
+    const body = { user_id: userId, trophies: profile?.trophies || 0, init_data: initData };
+    if (deckId != null) body.selected_deck_id = parseInt(deckId);
+
     const res = await fetch('/api/match/find', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_id: userId, trophies: profile?.trophies || 0, init_data: initData }),
+      body: JSON.stringify(body),
     });
 
     if (!res.ok) throw new Error('match find failed');
@@ -169,7 +186,7 @@ window.startBattle = async function(profile) {
   }
 };
 
-window.startVsBot = async function(difficulty, profile) {
+window.startVsBot = async function(difficulty, profile, deckId) {
   const overlay = document.getElementById('searchOverlay');
   const overlayText = document.querySelector('[data-role="search-overlay-text"]');
   if (overlay) overlay.style.display = 'flex';
@@ -179,10 +196,13 @@ window.startVsBot = async function(difficulty, profile) {
     document.getElementById('battle-sound')?.play().catch(()=>{});
     const userId = window._getUserId();
 
+    const body = { user_id: userId, difficulty };
+    if (deckId != null) body.deck_id = parseInt(deckId);
+
     const res = await fetch('/api/match/vs-bot', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_id: userId, difficulty }),
+      body: JSON.stringify(body),
     });
 
     if (!res.ok) throw new Error('vs-bot failed');
@@ -277,6 +297,67 @@ const T = {
 };
 
 // ═══════════════════════════════════════════
+// GLORY PATH DATA
+// ═══════════════════════════════════════════
+const GLORY_PATH_MILESTONES = [
+  { trophies: 150, rewards: [{ type: "coins", amount: 1000, icon: "💰" }, { type: "case", tier: 1, icon: "📦" }], league: null },
+  { trophies: 300, rewards: [{ type: "case", tier: 2, icon: "💠" }, { type: "gems", amount: 50, icon: "💎" }], league: { name: "Bronze", emoji: "🥉" } },
+  { trophies: 450, rewards: [{ type: "coins", amount: 2000, icon: "💰" }, { type: "particles", rarity: "rare", amount: 20, icon: "✨" }], league: null },
+  { trophies: 600, rewards: [{ type: "case", tier: 2, icon: "💠" }, { type: "guaranteed_card", rarity: "rare", icon: "🃏" }], league: { name: "Silver", emoji: "🥈" } },
+  { trophies: 900, rewards: [{ type: "case", tier: 3, icon: "💎" }, { type: "shards", amount: 50, icon: "🔮" }], league: null },
+  { trophies: 1200, rewards: [{ type: "coins", amount: 3000, icon: "💰" }, { type: "particles", rarity: "superrare", amount: 30, icon: "✨" }], league: { name: "Gold", emoji: "🥇" } },
+  { trophies: 1600, rewards: [{ type: "case", tier: 3, icon: "💎" }, { type: "gems", amount: 75, icon: "💎" }], league: null },
+  { trophies: 2000, rewards: [{ type: "guaranteed_card", rarity: "epic", icon: "🃏" }], league: { name: "Crystal", emoji: "💎" } },
+  { trophies: 2500, rewards: [{ type: "case", tier: 4, icon: "🔥" }, { type: "coins", amount: 5000, icon: "💰" }], league: null },
+  { trophies: 3000, rewards: [{ type: "guaranteed_card", rarity: "legendary", icon: "🃏" }], league: { name: "Master", emoji: "⭐" } },
+  { trophies: 3750, rewards: [{ type: "case", tier: 4, icon: "🔥" }, { type: "shards", amount: 100, icon: "🔮" }], league: null },
+  { trophies: 4500, rewards: [{ type: "coins", amount: 8000, icon: "💰" }, { type: "particles", rarity: "epic", amount: 50, icon: "✨" }], league: { name: "Champion", emoji: "🏆" } },
+  { trophies: 5250, rewards: [{ type: "case", tier: 4, icon: "🔥" }, { type: "gems", amount: 125, icon: "💎" }], league: null },
+  { trophies: 6000, rewards: [{ type: "case", tier: 5, icon: "👑" }], league: { name: "Grandmaster", emoji: "💫" } },
+  { trophies: 6750, rewards: [{ type: "coins", amount: 15000, icon: "💰" }, { type: "particles", rarity: "legendary", amount: 100, icon: "✨" }], league: null },
+  { trophies: 7500, rewards: [{ type: "guaranteed_card", rarity: "mythic", icon: "🃏" }], league: { name: "Legendary", emoji: "👑" } },
+  { trophies: 8250, rewards: [{ type: "case", tier: 5, icon: "👑" }, { type: "shards", amount: 200, icon: "🔮" }], league: null },
+  { trophies: 9000, rewards: [{ type: "coins", amount: 20000, icon: "💰" }], league: { name: "Extra", emoji: "🏟️" } },
+  { trophies: 10000, rewards: [{ type: "case", tier: 5, divine: true, icon: "✨" }, { type: "cosmetic", icon: "🎨" }], league: null },
+];
+
+const LEAGUE_LIST = [
+  { id: 1,  name: "Novice",      emoji: "🌱", color: "#2ECC71", min: 0,    max: 299 },
+  { id: 2,  name: "Bronze",      emoji: "🥉", color: "#E67E22", min: 300,  max: 599 },
+  { id: 3,  name: "Silver",      emoji: "🥈", color: "#95A5A6", min: 600,  max: 1199 },
+  { id: 4,  name: "Gold",        emoji: "🥇", color: "#F1C40F", min: 1200, max: 1999 },
+  { id: 5,  name: "Crystal",     emoji: "💎", color: "#3498DB", min: 2000, max: 2999 },
+  { id: 6,  name: "Master",      emoji: "⭐", color: "#F39C12", min: 3000, max: 4499 },
+  { id: 7,  name: "Champion",    emoji: "🏆", color: "#E74C3C", min: 4500, max: 5999 },
+  { id: 8,  name: "Grandmaster", emoji: "💫", color: "#9B59B6", min: 6000, max: 7499 },
+  { id: 9,  name: "Legendary",   emoji: "👑", color: "#FF6B6B", min: 7500, max: 8999 },
+  { id: 10, name: "Extra",       emoji: "🏟️", color: "#FFD700", min: 9000, max: 99999 },
+];
+
+const LEAGUE_MAP = {};
+LEAGUE_LIST.forEach(l => { LEAGUE_MAP[l.id] = l; });
+
+const formatRewardLabel = (reward) => {
+  if (reward.type === "coins") return "монет";
+  if (reward.type === "gems") return "гемов";
+  if (reward.type === "case") {
+    const n = {1:"Обычный",2:"Улучшенный",3:"Элитный",4:"Легендарный",5:"Божественный"};
+    return `кейс ${reward.divine ? "Божественный" : (n[reward.tier]||"T"+reward.tier)}`;
+  }
+  if (reward.type === "particles") {
+    const r = {rare:"Редкой",superrare:"Сверхредкой",epic:"Эпической",legendary:"Легендарной"};
+    return `${reward.amount} част. ${r[reward.rarity]||reward.rarity}`;
+  }
+  if (reward.type === "shards") return `${reward.amount} оск.`;
+  if (reward.type === "guaranteed_card") {
+    const r = {rare:"Редкая",epic:"Эпическая",legendary:"Легендарная",mythic:"Мифическая"};
+    return `Гар. ${r[reward.rarity]||reward.rarity}`;
+  }
+  if (reward.type === "cosmetic") return "Косметика";
+  return reward.type;
+};
+
+// ═══════════════════════════════════════════
 // ICONS
 // ═══════════════════════════════════════════
 const IconCoin   = ({size=14}) => <svg width={size} height={size} viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="6" fill={T.orange}/><text x="7" y="10.5" textAnchor="middle" fontSize="7" fill="white" fontWeight="700" fontFamily="Exo 2">$</text></svg>;
@@ -293,8 +374,8 @@ const NAV_ITEMS = [
   {label:'Магазин',    C:NavShop,  badge:true },
   {label:'Коллекция',  C:NavColl,  badge:false},
   {label:'Арена',      C:NavArena, badge:false},
-  {label:'Скводы',     C:NavQuests,badge:false},
-  {label:'Сообщество', C:NavComm,  badge:false},
+  {label:'Сквады',     C:NavQuests,badge:false},
+  {label:'Коммьюнити', C:NavComm,  badge:false},
 ];
 
 // ═══════════════════════════════════════════
@@ -773,6 +854,7 @@ const CaseOpenScreen = ({onClose, onDone, profile}) => {
 
   const doTap = () => {
     if (tapN >= 4 || phase !== 'tapping') return;
+    window._playSfx('case-tap-sound');
     const prevTier = tapN === 0 ? 1 : tierSeq[tapN-1];
     const newTier  = fakeRollTier(prevTier);
     const wasUpgraded = newTier > prevTier;
@@ -786,11 +868,12 @@ const CaseOpenScreen = ({onClose, onDone, profile}) => {
   };
 
   const openCase = async () => {
+    window._playSfx('case-open-sound');
     setPhase('opening');
     try {
       const res = await fetch(apiUrl('/api/cases/open-from-keys'), {method:'POST', headers:{'Content-Type':'application/json'}});
       const d = await res.json();
-      if (d.success) { setResult(d); setPhase('reveal'); }
+      if (d.success) { setResult(d); setPhase('reveal'); setTimeout(()=>window._playSfx('case-reward-sound'), 300); }
       else { setPhase('error'); setResult(d); }
     } catch(e) { setPhase('error'); setResult({error: 'Ошибка сети'}); }
   };
@@ -964,16 +1047,36 @@ const DIFFICULTIES = [
 ];
 
 const BattlePickSheet = ({onClose, profile}) => {
-  const [tab, setTab]           = React.useState('bot');   // 'bot' | 'friend'
+  const [tab, setTab]           = React.useState('friend');
   const [diff, setDiff]         = React.useState('medium');
   const [friendId, setFriendId] = React.useState('');
   const [starting, setStarting] = React.useState(false);
+  const [deckId, setDeckId]     = React.useState('');
+  const [presets, setPresets]   = React.useState([]);
+
+  React.useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch(_buildAuthUrl('/api/deck/presets'));
+        if (!res.ok) return;
+        const d = await res.json();
+        const list = d.presets || [];
+        setPresets(list);
+        const primary = list.find(p => p.is_primary && (p.card_ids?.filter(Boolean)?.length||0) > 0);
+        if (primary) setDeckId(String(primary.preset_number));
+        else { const complete = list.find(p => (p.card_ids?.filter(Boolean)?.length||0) === 9); if (complete) setDeckId(String(complete.preset_number)); else { const first = list.find(p => (p.card_ids?.filter(Boolean)?.length||0) > 0); if (first) setDeckId(String(first.preset_number)); } }
+      } catch(e){}
+    })();
+  }, []);
+
+  const selectedDeck = presets.find(p => String(p.preset_number) === deckId);
+  const deckCount = selectedDeck ? (selectedDeck.card_ids?.filter(Boolean)?.length || 0) : 0;
 
   const startBot = async () => {
     if (starting) return;
     setStarting(true);
     onClose();
-    await window.startVsBot(diff, profile);
+    await window.startVsBot(diff, profile, deckId);
   };
 
   return (
@@ -983,10 +1086,66 @@ const BattlePickSheet = ({onClose, profile}) => {
 
         {/* Tabs */}
         <div style={{display:'flex',background:T.bgDeep,borderRadius:'12px',padding:'3px',marginBottom:'16px',gap:'3px'}}>
-          {[{id:'bot',label:'🤖 Против бота'},{id:'friend',label:'🤝 Дружеская игра'}].map(t=>(
+          {[{id:'friend',label:'🤝 Дружеская игра'},{id:'bot',label:'🤖 Тренировка'}].map(t=>(
             <button key={t.id} onClick={()=>setTab(t.id)} style={{flex:1,padding:'8px 4px',borderRadius:'10px',background:tab===t.id?T.purple2:'none',border:'none',color:tab===t.id?T.white:T.grey2,fontSize:'12px',fontWeight:tab===t.id?'700':'400',fontFamily:"'Exo 2',sans-serif",cursor:'pointer',transition:'all 0.15s'}}>{t.label}</button>
           ))}
         </div>
+
+        {/* Deck selector — shared */}
+        <div style={{marginBottom:'14px'}}>
+          <div style={{fontSize:'11px',color:T.grey3,textTransform:'uppercase',letterSpacing:'0.5px',marginBottom:'8px'}}>Колода</div>
+          {presets.length === 0 ? (
+            <div style={{background:T.bgCard,border:`1px solid ${T.purple1}`,borderRadius:'12px',padding:'10px 14px'}}>
+              <div style={{display:'flex',alignItems:'center',gap:'8px'}}>
+                <div style={{width:'20px',height:'20px',borderRadius:'50%',border:`2px solid ${T.purple2}`,borderTopColor:T.purpleLt,animation:'spin 0.8s linear infinite',flexShrink:0}}/>
+                <span style={{fontSize:'12px',color:T.grey2}}>Загрузка колод...</span>
+              </div>
+            </div>
+          ) : (
+            <div style={{position:'relative'}}>
+              <select value={deckId} onChange={e=>setDeckId(e.target.value)}
+                style={{width:'100%',appearance:'none',background:T.bgCard,border:`1px solid ${T.purple2}`,borderRadius:'12px',padding:'11px 36px 11px 14px',color:T.white,fontSize:'13px',fontWeight:'600',fontFamily:"'Exo 2',sans-serif",outline:'none',cursor:'pointer'}}>
+                {presets.map(p => {
+                  const filled = (p.card_ids?.filter(Boolean)?.length || 0);
+                  return <option key={p.preset_number} value={String(p.preset_number)} style={{background:T.bgDeep,color:T.white}}>{p.preset_name || `Колода ${p.preset_number}`} ({filled}/9)</option>;
+                })}
+              </select>
+              <svg style={{position:'absolute',right:'14px',top:'50%',transform:'translateY(-50%)',pointerEvents:'none'}} width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M3 5l3 3 3-3" stroke={T.grey2} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+            </div>
+          )}
+        </div>
+
+        {tab === 'friend' && <>
+          {/* Friends online */}
+          <div style={{background:T.bgCard,border:`1px solid ${T.purple1}`,borderRadius:'14px',padding:'12px 14px',marginBottom:'12px'}}>
+            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'10px'}}>
+              <div style={{display:'flex',alignItems:'center',gap:'7px'}}>
+                <div style={{width:'8px',height:'8px',borderRadius:'50%',background:'#4ade80',boxShadow:'0 0 6px #4ade8088'}}/>
+                <span style={{fontSize:'12px',fontWeight:'700',color:T.white,fontFamily:"'Exo 2',sans-serif"}}>Друзья в сети</span>
+              </div>
+              <span style={{fontSize:'11px',color:T.grey3}}>0 онлайн</span>
+            </div>
+            <div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',padding:'18px 0',gap:'6px',border:`1px dashed ${T.grey3}25`,borderRadius:'10px'}}>
+              <svg width="28" height="28" viewBox="0 0 28 28" fill="none"><circle cx="14" cy="12" r="4" stroke={T.grey3} strokeWidth="1.5"/><path d="M6 22c0-4 3.6-6 8-6s8 2 8 6" stroke={T.grey3} strokeWidth="1.5" fill="none"/><circle cx="14" cy="14" r="12" stroke={T.grey3} strokeWidth="1" strokeDasharray="2 2"/></svg>
+              <span style={{fontSize:'12px',color:T.grey3,fontWeight:'500'}}>Никого в сети</span>
+              <span style={{fontSize:'10px',color:T.grey3,opacity:0.6}}>Социальная система появится в будущем</span>
+            </div>
+          </div>
+
+          <div style={{fontSize:'12px',color:T.grey1,marginBottom:'10px',lineHeight:1.5}}>Введи ID друга, чтобы вызвать его на дуэль.</div>
+          <div style={{background:T.bgCard,border:`1px solid ${T.purple2}`,borderRadius:'12px',padding:'12px 14px',marginBottom:'12px'}}>
+            <div style={{fontSize:'11px',color:T.grey3,marginBottom:'6px',textTransform:'uppercase',letterSpacing:'0.5px'}}>Telegram ID соперника</div>
+            <input value={friendId} onChange={e=>setFriendId(e.target.value.replace(/\D/g,''))}
+              placeholder="Например: 123456789" inputMode="numeric"
+              style={{width:'100%',background:'transparent',border:'none',color:T.white,fontSize:'15px',fontWeight:'600',fontFamily:"'Exo 2',sans-serif",outline:'none'}}/>
+          </div>
+          <div style={{background:`rgba(245,146,30,0.08)`,border:`1px solid rgba(245,146,30,0.25)`,borderRadius:'10px',padding:'9px 12px',marginBottom:'16px',fontSize:'11px',color:T.grey1,lineHeight:1.5}}>
+            ⏳ Дружеские игры в разработке. Скоро можно будет вызывать друзей напрямую!
+          </div>
+          <button disabled style={{width:'100%',height:'50px',background:T.bgCard,border:`1px solid ${T.purple2}`,borderRadius:'14px',color:T.grey3,fontSize:'15px',fontWeight:'700',fontFamily:"'Exo 2',sans-serif",cursor:'not-allowed'}}>
+            🤝 Отправить вызов
+          </button>
+        </>}
 
         {tab === 'bot' && <>
           <div style={{fontSize:'11px',color:T.grey3,textTransform:'uppercase',letterSpacing:'0.5px',marginBottom:'8px'}}>Сложность</div>
@@ -1002,25 +1161,15 @@ const BattlePickSheet = ({onClose, profile}) => {
               </button>
             ))}
           </div>
+          {deckCount < 9 || !selectedDeck?.card_ids?.[0] ? (
+            <div style={{background:'rgba(248,113,113,0.1)',border:'1px solid rgba(248,113,113,0.3)',borderRadius:'12px',padding:'9px 12px',fontSize:'11px',color:'#f87171',lineHeight:1.5,marginBottom:'8px'}}>
+              {!selectedDeck?.card_ids?.[0] ? '⚠️ Выберите героя в колоде' : `⚠️ Колода неполная (${deckCount}/9)`}
+            </div>
+          ) : (
           <button onClick={startBot} style={{width:'100%',height:'50px',background:`linear-gradient(135deg,${T.orange},${T.orangeD})`,border:'none',borderRadius:'14px',color:'white',fontSize:'17px',fontWeight:'900',fontFamily:"'Exo 2',sans-serif",cursor:'pointer',boxShadow:`0 5px 20px ${T.orange}44`}}>
             ⚔️ В БОЙ
           </button>
-        </>}
-
-        {tab === 'friend' && <>
-          <div style={{fontSize:'12px',color:T.grey1,marginBottom:'12px',lineHeight:1.5}}>Введи ID друга, чтобы вызвать его на дуэль. Он получит уведомление в Telegram.</div>
-          <div style={{background:T.bgCard,border:`1px solid ${T.purple2}`,borderRadius:'12px',padding:'12px 14px',marginBottom:'12px'}}>
-            <div style={{fontSize:'11px',color:T.grey3,marginBottom:'6px',textTransform:'uppercase',letterSpacing:'0.5px'}}>Telegram ID соперника</div>
-            <input value={friendId} onChange={e=>setFriendId(e.target.value.replace(/\D/g,''))}
-              placeholder="Например: 123456789" inputMode="numeric"
-              style={{width:'100%',background:'transparent',border:'none',color:T.white,fontSize:'15px',fontWeight:'600',fontFamily:"'Exo 2',sans-serif",outline:'none'}}/>
-          </div>
-          <div style={{background:`rgba(245,146,30,0.08)`,border:`1px solid rgba(245,146,30,0.25)`,borderRadius:'10px',padding:'9px 12px',marginBottom:'16px',fontSize:'11px',color:T.grey1,lineHeight:1.5}}>
-            ⏳ Дружеские игры в разработке. Скоро можно будет вызывать друзей напрямую!
-          </div>
-          <button disabled style={{width:'100%',height:'50px',background:T.bgCard,border:`1px solid ${T.purple2}`,borderRadius:'14px',color:T.grey3,fontSize:'15px',fontWeight:'700',fontFamily:"'Exo 2',sans-serif",cursor:'not-allowed'}}>
-            🤝 Отправить вызов
-          </button>
+          )}
         </>}
       </div>
     </div>
@@ -1030,13 +1179,16 @@ const BattlePickSheet = ({onClose, profile}) => {
 // ═══════════════════════════════════════════
 // MENU SHEET
 // ═══════════════════════════════════════════
-const MenuSheet = ({onClose, onSettings, onMail}) => {
+const MenuSheet = ({onClose, onSettings, onMail, onInfo, profile}) => {
+  const [copyMsg, setCopyMsg] = React.useState(false);
+  const extraId = profile?.user_id || profile?.id || '';
+  const copyId = () => { if(extraId){ navigator.clipboard?.writeText(String(extraId)).catch(()=>{}); setCopyMsg(true); setTimeout(()=>setCopyMsg(false), 2000); } };
   const items = [
     {icon:'⚙️',label:'Настройки', wide:false, action:onSettings},
     {icon:'✉️',label:'Почта',     wide:false, action:onMail||onClose},
     {icon:'👥',label:'Друзья',    wide:false, action:onClose},
     {icon:'💬',label:'Поддержка', wide:true,  action:onClose},
-    {icon:'ℹ️',label:'Информация',wide:true,  action:onClose},
+    {icon:'ℹ️',label:'Информация',wide:true,  action:onInfo||onClose},
   ];
   return (
     <div style={{position:'absolute',inset:0,background:'rgba(5,3,14,0.72)',backdropFilter:'blur(8px)',zIndex:20,display:'flex',flexDirection:'column',justifyContent:'flex-end'}} onClick={onClose}>
@@ -1048,6 +1200,19 @@ const MenuSheet = ({onClose, onSettings, onMail}) => {
             <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 2L10 10M10 2L2 10" stroke={T.grey1} strokeWidth="1.8" strokeLinecap="round"/></svg>
           </button>
         </div>
+
+        {/* Profile / ExtraID */}
+        <div style={{background:T.bgCard,border:`1px solid ${T.purple1}`,borderRadius:'14px',padding:'12px 14px',marginBottom:'14px',display:'flex',alignItems:'center',gap:'12px'}}>
+          <div style={{width:'42px',height:'42px',borderRadius:'50%',background:T.purple2,border:`2px solid ${T.grey3}`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'20px',flexShrink:0}}>
+            👤
+          </div>
+          <div style={{flex:1,minWidth:0}}>
+            <div style={{fontSize:'13px',fontWeight:'700',color:T.grey1,fontFamily:"'Exo 2',sans-serif"}}>Вход не выполнен</div>
+            <div style={{fontSize:'10px',color:T.grey3,marginTop:'2px'}}>Войдите для сохранения прогресса</div>
+          </div>
+          <button onClick={onClose} style={{padding:'7px 14px',borderRadius:'9px',background:T.purple2,border:`1px solid ${T.purple3}`,color:T.white,fontSize:'11px',fontWeight:'700',fontFamily:"'Exo 2',sans-serif",cursor:'pointer',flexShrink:0}}>Войти</button>
+        </div>
+
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px'}}>
           {items.filter(it=>!it.wide).map((item,i)=>(
             <button key={i} onClick={item.action} style={{background:T.bgCard,border:`1px solid ${T.purple1}`,borderRadius:'16px',padding:'16px 14px',display:'flex',alignItems:'center',gap:'10px',cursor:'pointer',transition:'all 0.15s'}}>
@@ -1062,7 +1227,88 @@ const MenuSheet = ({onClose, onSettings, onMail}) => {
             </button>
           ))}
         </div>
-        <div style={{textAlign:'center',marginTop:'14px',fontSize:'10px',color:T.grey3}}>ExtraArena v0.9.1-beta</div>
+        <div style={{marginTop:'14px',padding:'10px 14px',background:T.bgCard,border:`1px solid ${T.purple1}`,borderRadius:'12px',display:'flex',alignItems:'center',gap:'10px'}}>
+          <div style={{width:'28px',height:'28px',borderRadius:'8px',background:`linear-gradient(135deg,${T.purple2},${T.purple3})`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'13px',flexShrink:0}}>🆔</div>
+          <div style={{flex:1,minWidth:0}}>
+            <div style={{fontSize:'9px',color:T.grey3,textTransform:'uppercase',letterSpacing:'0.5px'}}>ExtraID</div>
+            <div style={{fontSize:'12px',fontWeight:'700',color:T.white,fontFamily:"'Exo 2',sans-serif",overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{extraId || 'Загрузка...'}</div>
+          </div>
+          <button onClick={copyId} style={{padding:'5px 10px',borderRadius:'7px',background:copyMsg?'#166534':T.purple2,border:`1px solid ${copyMsg?'#4ade80':T.purple3}`,color:copyMsg?'#4ade80':T.purpleLt,fontSize:'10px',fontWeight:'600',cursor:'pointer',fontFamily:"'Inter',sans-serif",flexShrink:0,transition:'all 0.2s'}}>
+            {copyMsg ? '✓ Скоп.' : 'Копир.'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ═══════════════════════════════════════════
+// INFO SHEET
+// ═══════════════════════════════════════════
+const InfoSheet = ({onClose}) => {
+  const openLink = (url) => { window.Telegram?.WebApp?.openTelegramLink?.(url) || window.open(url,'_blank'); };
+  return (
+    <div style={{position:'absolute',inset:0,background:'rgba(5,3,14,0.72)',backdropFilter:'blur(8px)',zIndex:20,display:'flex',flexDirection:'column',justifyContent:'flex-end'}} onClick={onClose}>
+      <div onClick={e=>e.stopPropagation()} className="safe-pad-bottom" style={{background:`linear-gradient(180deg,#1a1238 0%,#130d26 100%)`,borderRadius:'24px 24px 0 0',padding:'16px 18px 24px',animation:'slideUp 0.28s cubic-bezier(0.32,0.72,0,1)',border:`1px solid ${T.purple1}`,borderBottom:'none',boxShadow:'0 -16px 50px rgba(0,0,0,0.5)'}}>
+        <div style={{width:'36px',height:'4px',borderRadius:'2px',background:T.purple2,margin:'0 auto 16px'}}/>
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'18px'}}>
+          <span style={{fontSize:'22px',fontWeight:'900',color:T.white,fontFamily:"'Exo 2',sans-serif"}}>ℹ️ Информация</span>
+          <button onClick={onClose} style={{width:'34px',height:'34px',borderRadius:'50%',background:T.bgCard,border:`1px solid ${T.purple1}`,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer'}}>
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 2L10 10M10 2L2 10" stroke={T.grey1} strokeWidth="1.8" strokeLinecap="round"/></svg>
+          </button>
+        </div>
+
+        <div style={{display:'flex',flexDirection:'column',gap:'10px'}}>
+          {/* Telegram channel */}
+          <button onClick={()=>openLink('https://t.me/extracards')} style={{display:'flex',alignItems:'center',gap:'12px',padding:'14px 16px',background:T.bgCard,border:`1px solid ${T.purple1}`,borderRadius:'14px',cursor:'pointer',textAlign:'left',transition:'all 0.15s'}}>
+            <div style={{width:'40px',height:'40px',borderRadius:'12px',background:'#2aabee',display:'flex',alignItems:'center',justifyContent:'center',fontSize:'20px',flexShrink:0}}>✈️</div>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontSize:'14px',fontWeight:'700',color:T.white,fontFamily:"'Exo 2',sans-serif"}}>Телеграм канал</div>
+              <div style={{fontSize:'12px',color:'#2aabee',marginTop:'2px'}}>t.me/extracards</div>
+            </div>
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M10 7L5 2m5 5l-5 5" stroke={T.grey3} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+          </button>
+
+          {/* Chat */}
+          <button onClick={()=>openLink('https://t.me/extracards_chat')} style={{display:'flex',alignItems:'center',gap:'12px',padding:'14px 16px',background:T.bgCard,border:`1px solid ${T.purple1}`,borderRadius:'14px',cursor:'pointer',textAlign:'left',transition:'all 0.15s'}}>
+            <div style={{width:'40px',height:'40px',borderRadius:'12px',background:'#2aabee',display:'flex',alignItems:'center',justifyContent:'center',fontSize:'20px',flexShrink:0}}>💬</div>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontSize:'14px',fontWeight:'700',color:T.white,fontFamily:"'Exo 2',sans-serif"}}>Игровой чат</div>
+              <div style={{fontSize:'12px',color:'#2aabee',marginTop:'2px'}}>t.me/extracards_chat</div>
+            </div>
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M10 7L5 2m5 5l-5 5" stroke={T.grey3} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+          </button>
+
+          {/* Legal */}
+          <div style={{background:T.bgCard,border:`1px solid ${T.purple1}`,borderRadius:'14px',padding:'14px 16px',display:'flex',flexDirection:'column',gap:'10px'}}>
+            <div style={{display:'flex',alignItems:'center',gap:'12px',opacity:0.5}}>
+              <div style={{width:'40px',height:'40px',borderRadius:'12px',background:T.purple1,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'18px',flexShrink:0}}>📄</div>
+              <div style={{flex:1}}>
+                <div style={{fontSize:'13px',fontWeight:'600',color:T.grey1,fontFamily:"'Exo 2',sans-serif"}}>Пользовательское соглашение</div>
+                <div style={{fontSize:'11px',color:T.grey3,marginTop:'2px'}}>Будет доступно позже</div>
+              </div>
+            </div>
+            <div style={{display:'flex',alignItems:'center',gap:'12px',opacity:0.5}}>
+              <div style={{width:'40px',height:'40px',borderRadius:'12px',background:T.purple1,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'18px',flexShrink:0}}>🔒</div>
+              <div style={{flex:1}}>
+                <div style={{fontSize:'13px',fontWeight:'600',color:T.grey1,fontFamily:"'Exo 2',sans-serif"}}>Политика конфиденциальности</div>
+                <div style={{fontSize:'11px',color:T.grey3,marginTop:'2px'}}>Будет доступна позже</div>
+              </div>
+            </div>
+          </div>
+
+          {/* Credits */}
+          <button onClick={()=>openLink('https://t.me/croup_gang')} style={{display:'flex',alignItems:'center',gap:'12px',padding:'14px 16px',background:T.bgCard,border:`1px solid ${T.orange}30`,borderRadius:'14px',cursor:'pointer',textAlign:'left',transition:'all 0.15s'}}>
+            <div style={{width:'40px',height:'40px',borderRadius:'12px',background:`${T.orange}20`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'20px',flexShrink:0}}>🎵</div>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontSize:'13px',fontWeight:'700',color:T.orangeLt,fontFamily:"'Exo 2',sans-serif"}}>Особая благодарность</div>
+              <div style={{fontSize:'11px',color:T.orange,marginTop:'2px'}}>CROUP GANG за треки</div>
+            </div>
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M10 7L5 2m5 5l-5 5" stroke={T.orange} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+          </button>
+        </div>
+
+        <div style={{textAlign:'center',marginTop:'18px',fontSize:'10px',color:T.grey3}}>ExtraArena v0.9.1-beta</div>
       </div>
     </div>
   );
@@ -1071,7 +1317,7 @@ const MenuSheet = ({onClose, onSettings, onMail}) => {
 // ═══════════════════════════════════════════
 // ARENA SCREEN
 // ═══════════════════════════════════════════
-const ArenaScreen = ({onMenu, onAI, onBattlePick, onStartBattle, onOpenCase, profile}) => {
+const ArenaScreen = ({onMenu, onAI, onBattlePick, onStartBattle, onOpenCase, onOpenGloryPath, onOpenLeagueInfo, profile}) => {
   const [hasCases,    setHasCases]    = React.useState((profile?.keys || profile?.cases_count || 0) > 0);
   const [battleHover, setBattleHover] = React.useState(false);
   const [shineAnim,   setShineAnim]   = React.useState(false);
@@ -1084,10 +1330,14 @@ const ArenaScreen = ({onMenu, onAI, onBattlePick, onStartBattle, onOpenCase, pro
     if(battleHover){setShineAnim(false);const t=setTimeout(()=>setShineAnim(true),20);return()=>clearTimeout(t);}
   },[battleHover]);
 
-  const trophies = profile?.trophies || 0;
-  const nextLeague = trophies < 300 ? 300 : trophies < 700 ? 700 : trophies < 1000 ? 1000 : trophies + 1000;
-  const leagueName = trophies < 300 ? 'Novice' : trophies < 700 ? 'Student' : trophies < 2500 ? 'Advanced' : 'Pro';
-  const progress = Math.min((trophies % (nextLeague - (nextLeague - 300))) / 300 * 100, 100);
+  const trophyCount = profile?.trophies || 0;
+  const leagueId = profile?.league ?? 1;
+  const leagueMap = {1:'Novice',2:'Bronze',3:'Silver',4:'Gold',5:'Crystal',6:'Master',7:'Champion',8:'Grandmaster',9:'Legendary',10:'Extra'};
+  const leagueName = leagueMap[leagueId] || 'Novice';
+  const leagueThresholds = [0,300,600,1200,2000,3000,4500,6000,7500,9000,10000];
+  const leagueMin = leagueThresholds[leagueId - 1] || 0;
+  const nextLeagueTrophies = leagueId < 10 ? leagueThresholds[leagueId] : 10000;
+  const progress = leagueId < 10 ? Math.min(((trophyCount - leagueMin) / (nextLeagueTrophies - leagueMin)) * 100, 100) : 100;
 
   const artSize = Math.min(Math.round(window.innerWidth * 0.48), 190);
 
@@ -1128,7 +1378,7 @@ const ArenaScreen = ({onMenu, onAI, onBattlePick, onStartBattle, onOpenCase, pro
         <div style={{marginTop:'16px',padding:'10px 14px',background:T.bgCard,borderRadius:'13px',width:'calc(100% - 32px)',border:`1px solid ${T.purple1}`}}>
           <div style={{display:'flex',justifyContent:'space-between',marginBottom:'6px'}}>
             <span style={{fontSize:'11px',color:T.grey2}}>До следующей лиги</span>
-            <span style={{fontSize:'11px',color:T.orange,fontWeight:'600'}}>ещё {nextLeague - trophies} трофеев</span>
+            <span style={{fontSize:'11px',color:T.orange,fontWeight:'600'}}>ещё {nextLeagueTrophies - trophyCount} трофеев</span>
           </div>
           <div style={{height:'5px',background:T.purple1,borderRadius:'3px',overflow:'hidden'}}>
             <div style={{width:`${progress}%`,height:'100%',background:`linear-gradient(90deg,${T.orange},${T.orangeLt})`,borderRadius:'3px',boxShadow:`0 0 8px ${T.orange}55`}}/>
@@ -1138,15 +1388,15 @@ const ArenaScreen = ({onMenu, onAI, onBattlePick, onStartBattle, onOpenCase, pro
 
       {/* Stats */}
       <div style={{display:'flex',gap:'10px',padding:'12px 16px 0'}}>
-        <div style={{flex:1,background:T.bgCard,borderRadius:'14px',padding:'12px 14px',border:`1px solid ${T.purple1}`}}>
+        <div onClick={()=>onOpenLeagueInfo()} style={{flex:1,background:T.bgCard,borderRadius:'14px',padding:'12px 14px',border:`1px solid ${T.purple1}`,cursor:'pointer',transition:'all 0.15s'}}>
           <div style={{fontSize:'10px',color:T.grey2,textTransform:'uppercase',letterSpacing:'0.5px',marginBottom:'4px'}}>Лига</div>
           <div style={{fontSize:'20px',fontWeight:'900',color:T.white,fontFamily:"'Exo 2',sans-serif",lineHeight:1}}>{leagueName}</div>
-          <div style={{fontSize:'11px',color:T.purpleLt,marginTop:'3px'}}>Лига 1</div>
+          <div style={{fontSize:'11px',color:T.purpleLt,marginTop:'3px'}}>Лига {leagueId}</div>
         </div>
-        <div style={{flex:1,background:`linear-gradient(135deg,${T.orangeD}22,${T.orange}33)`,borderRadius:'14px',padding:'12px 14px',border:`1px solid ${T.orange}55`}}>
+        <div onClick={()=>onOpenGloryPath()} style={{flex:1,background:`linear-gradient(135deg,${T.orangeD}22,${T.orange}33)`,borderRadius:'14px',padding:'12px 14px',border:`1px solid ${T.orange}55`,cursor:'pointer',transition:'all 0.15s'}}>
           <div style={{fontSize:'10px',color:T.grey2,textTransform:'uppercase',letterSpacing:'0.5px',marginBottom:'4px'}}>Трофеи</div>
           <div style={{display:'flex',alignItems:'center',gap:'7px'}}>
-            <span style={{fontSize:'26px',fontWeight:'900',color:T.orange,fontFamily:"'Exo 2',sans-serif",lineHeight:1}}>{trophies}</span>
+            <span style={{fontSize:'26px',fontWeight:'900',color:T.orange,fontFamily:"'Exo 2',sans-serif",lineHeight:1}}>{trophyCount}</span>
             <IconTrophy size={20}/>
           </div>
         </div>
@@ -1371,6 +1621,572 @@ const AIScreen = ({onBack}) => {
 };
 
 // ═══════════════════════════════════════════
+// COLLECTION SCREEN
+// ═══════════════════════════════════════════
+const RARITY_COLOR = {
+  common:    '#94a3b8',
+  rare:      '#60a5fa',
+  superrare: '#2dd4bf',
+  epic:      '#a78bfa',
+  legendary: '#fbbf24',
+  mythic:    '#f472b6',
+  divine:    '#e0e7ff',
+  limited:   '#f87171',
+  unique:    '#c084fc',
+  start:     '#94a3b8',
+};
+const RARITY_LABEL = {
+  common:    'Обычная',  rare:      'Редкая',
+  superrare: 'С.Редкая', epic:      'Эпик',
+  legendary: 'Легенда',  mythic:    'Мифик',
+  divine:    'Дивайн',   limited:   'Лимитед',
+  unique:    'Уникум',   start:     'Базовая',
+};
+const RARITY_ORDER = ['divine','limited','mythic','legendary','epic','superrare','unique','rare','common','start'];
+
+const _buildAuthUrl = (path) => {
+  const tg = window.Telegram?.WebApp;
+  const uid = window._getUserId?.();
+  const p = new URLSearchParams();
+  if (tg?.initData) p.set('_auth', tg.initData);
+  else if (uid) p.set('user_id', String(uid));
+  const q = p.toString();
+  return q ? `${path}?${q}` : path;
+};
+
+const CardTile = ({card, onClick}) => {
+  const [imgErr, setImgErr] = React.useState(false);
+  const rc = RARITY_COLOR[card.rarity] || '#94a3b8';
+  return (
+    <button onClick={onClick} style={{position:'relative',display:'flex',flexDirection:'column',background:`linear-gradient(180deg,${T.bgCard} 0%,${T.bgDeep} 100%)`,border:`1.5px solid ${rc}44`,borderRadius:'12px',overflow:'hidden',cursor:'pointer',padding:'0',aspectRatio:'2/3',boxShadow:'0 2px 10px rgba(0,0,0,0.35)',transition:'transform 0.12s'}}>
+      <div style={{position:'absolute',top:0,left:0,right:0,height:'2px',background:`linear-gradient(90deg,transparent,${rc},transparent)`,zIndex:2}}/>
+      <div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',padding:'6px 5px 3px'}}>
+        {!imgErr
+          ? <img src={`/api/cards/image?card_id=${card.id}`} alt={card.name} onError={()=>setImgErr(true)} style={{width:'100%',height:'100%',objectFit:'contain'}}/>
+          : <div style={{width:'52px',height:'52px',borderRadius:'8px',background:T.purple1,border:`1px solid ${rc}33`,display:'flex',alignItems:'center',justifyContent:'center'}}><span style={{fontSize:'22px',opacity:0.5}}>🃏</span></div>
+        }
+      </div>
+      <div style={{padding:'0 5px 6px',textAlign:'center'}}>
+        <div style={{fontSize:'9px',fontWeight:'700',color:T.white,fontFamily:"'Exo 2',sans-serif",overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',lineHeight:1.3}}>{card.name}</div>
+        <div style={{fontSize:'8px',color:rc,fontWeight:'600',marginTop:'1px'}}>{RARITY_LABEL[card.rarity] || card.rarity}</div>
+      </div>
+      <div style={{position:'absolute',top:'5px',left:'4px',background:'rgba(0,0,0,0.6)',borderRadius:'4px',padding:'1px 5px',fontSize:'8px',fontWeight:'700',color:T.orange,fontFamily:"'Exo 2',sans-serif",lineHeight:1.4}}>⚡{card.power||0}</div>
+      {(card.level||1) > 1 && <div style={{position:'absolute',bottom:'28px',right:'4px',background:`linear-gradient(135deg,${T.orange},${T.orangeD})`,borderRadius:'5px',padding:'1px 5px',fontSize:'8px',fontWeight:'900',color:'white',fontFamily:"'Exo 2',sans-serif",lineHeight:1.4}}>Lv{card.level}</div>}
+    </button>
+  );
+};
+
+const CardDetailScreen = ({card, onBack}) => {
+  const [imgErr, setImgErr] = React.useState(false);
+  const rc = RARITY_COLOR[card.rarity] || '#94a3b8';
+  const mechanics = (() => { try { return Array.isArray(card.mechanics) ? card.mechanics : JSON.parse(card.mechanics||'[]'); } catch { return []; } })();
+  const PARTICLES_NEEDED = {common:50,rare:100,superrare:200,epic:400,legendary:800,mythic:1200,divine:2000,limited:600,unique:1500,start:50};
+  const pNeeded = PARTICLES_NEEDED[card.rarity] || 100;
+  const pHave   = card.particles || 0;
+  const upgPct  = Math.min(pHave / pNeeded * 100, 100);
+  return (
+    <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden',animation:'fadeIn 0.18s'}}>
+      <div style={{height:'52px',background:'rgba(15,10,26,0.98)',display:'flex',alignItems:'center',gap:'10px',padding:'0 16px',flexShrink:0,borderBottom:`1px solid ${T.purple1}`}}>
+        <button onClick={onBack} style={{width:'32px',height:'32px',borderRadius:'10px',background:T.bgCard,border:`1px solid ${T.purple1}`,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',flexShrink:0}}>
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 3L5 7L9 11" stroke={T.grey2} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg>
+        </button>
+        <span style={{flex:1,fontSize:'15px',fontWeight:'700',color:T.white,fontFamily:"'Exo 2',sans-serif",overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{card.name}</span>
+        <div style={{padding:'3px 10px',background:`${rc}18`,border:`1px solid ${rc}44`,borderRadius:'8px',fontSize:'11px',fontWeight:'700',color:rc,fontFamily:"'Exo 2',sans-serif",flexShrink:0}}>{RARITY_LABEL[card.rarity]||card.rarity}</div>
+      </div>
+      <div style={{flex:1,overflowY:'auto',padding:'14px 16px 20px'}}>
+        <div style={{display:'flex',gap:'12px',marginBottom:'12px'}}>
+          <div style={{width:'118px',flexShrink:0,borderRadius:'14px',background:`linear-gradient(180deg,${T.bgCard},${T.bgDeep})`,border:`2px solid ${rc}44`,overflow:'hidden',position:'relative',aspectRatio:'2/3'}}>
+            <div style={{position:'absolute',top:0,left:0,right:0,height:'3px',background:`linear-gradient(90deg,transparent,${rc},transparent)`}}/>
+            {!imgErr
+              ? <img src={`/api/cards/image?card_id=${card.id}`} alt={card.name} onError={()=>setImgErr(true)} style={{width:'100%',height:'100%',objectFit:'contain',padding:'8px'}}/>
+              : <div style={{display:'flex',alignItems:'center',justifyContent:'center',height:'100%'}}><span style={{fontSize:'52px',opacity:0.3}}>🃏</span></div>
+            }
+          </div>
+          <div style={{flex:1,display:'flex',flexDirection:'column',gap:'7px'}}>
+            {[
+              {label:'⚔️ Атака', val: card.current_attack ?? card.base_attack ?? 0, clr:'#f87171'},
+              {label:'❤️ HP',    val: card.current_hp    ?? card.base_hp    ?? 0, clr:'#4ade80'},
+              {label:'💧 Мана',  val: card.mana_cost ?? 0, clr:'#60a5fa'},
+              {label:'⚡ Сила',  val: card.power ?? 0,     clr:T.orange},
+            ].map(({label,val,clr}) => (
+              <div key={label} style={{background:T.bgCard,borderRadius:'10px',padding:'8px 11px',border:`1px solid ${T.purple1}`}}>
+                <div style={{fontSize:'10px',color:T.grey3,marginBottom:'2px'}}>{label}</div>
+                <div style={{fontSize:'19px',fontWeight:'900',color:clr,fontFamily:"'Exo 2',sans-serif",lineHeight:1}}>{val}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div style={{background:T.bgCard,borderRadius:'14px',padding:'12px 14px',border:`1px solid ${T.purple1}`,marginBottom:'10px'}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'8px'}}>
+            <div style={{display:'flex',alignItems:'center',gap:'7px'}}>
+              <div style={{width:'26px',height:'26px',borderRadius:'7px',background:`linear-gradient(135deg,${T.orange},${T.orangeD})`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'13px',fontWeight:'900',color:'white',fontFamily:"'Exo 2',sans-serif"}}>{card.level||1}</div>
+              <span style={{fontSize:'13px',fontWeight:'700',color:T.white,fontFamily:"'Exo 2',sans-serif"}}>Уровень {card.level||1}</span>
+            </div>
+            <span style={{fontSize:'11px',color:T.grey2}}>{pHave} / {pNeeded} ✨</span>
+          </div>
+          <div style={{height:'6px',background:T.purple1,borderRadius:'3px',overflow:'hidden'}}>
+            <div style={{width:`${upgPct}%`,height:'100%',background:`linear-gradient(90deg,${T.orange},${T.orangeLt})`,borderRadius:'3px',boxShadow:`0 0 8px ${T.orange}55`,transition:'width 0.3s'}}/>
+          </div>
+          {upgPct >= 100 && <div style={{marginTop:'7px',fontSize:'11px',color:T.orange,fontWeight:'700',textAlign:'center'}}>✨ Готово к улучшению!</div>}
+        </div>
+        {mechanics.length > 0 && (
+          <div style={{background:T.bgCard,borderRadius:'14px',padding:'12px 14px',border:`1px solid ${T.purple1}`,marginBottom:'10px'}}>
+            <div style={{fontSize:'10px',color:T.grey3,textTransform:'uppercase',letterSpacing:'0.5px',marginBottom:'8px'}}>Механики</div>
+            <div style={{display:'flex',flexWrap:'wrap',gap:'6px'}}>
+              {mechanics.map((m,i) => <div key={i} style={{background:`${T.purpleHL}18`,border:`1px solid ${T.purpleHL}35`,borderRadius:'8px',padding:'3px 10px',fontSize:'11px',color:T.purpleLt,fontWeight:'600',fontFamily:"'Exo 2',sans-serif"}}>{m}</div>)}
+            </div>
+          </div>
+        )}
+        {card.description && (
+          <div style={{background:T.bgCard,borderRadius:'14px',padding:'12px 14px',border:`1px solid ${T.purple1}`}}>
+            <div style={{fontSize:'10px',color:T.grey3,textTransform:'uppercase',letterSpacing:'0.5px',marginBottom:'6px'}}>Описание</div>
+            <div style={{fontSize:'13px',color:T.grey1,lineHeight:1.65}}>{card.description}</div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+const DeckPreviewSlot = ({cardId, allCards}) => {
+  const [imgErr, setImgErr] = React.useState(false);
+  const card = allCards.find(c => c.id === cardId);
+  const rc = card ? (RARITY_COLOR[card.rarity] || '#94a3b8') : T.grey3;
+  return (
+    <div style={{aspectRatio:'2/3',background:card ? `linear-gradient(180deg,${T.bgDeep},${T.bg})` : T.bgDeep,borderRadius:'6px',border:`1px solid ${cardId ? rc+'2a' : T.grey3+'18'}`,overflow:'hidden',display:'flex',alignItems:'center',justifyContent:'center'}}>
+      {card && !imgErr
+        ? <img src={`/api/cards/image?card_id=${card.id}`} alt="" onError={()=>setImgErr(true)} style={{width:'100%',height:'100%',objectFit:'contain'}}/>
+        : card ? <span style={{fontSize:'10px',opacity:0.4}}>🃏</span>
+        : <div style={{width:'3px',height:'3px',borderRadius:'50%',background:T.grey3,opacity:0.25}}/>
+      }
+    </div>
+  );
+};
+
+const CardPickerSheet = ({allCards, deckCardIds, onPick, onClose, heroOnly}) => {
+  const [search, setSearch] = React.useState('');
+  const [sort, setSort] = React.useState('rarity');
+  const cards = heroOnly ? allCards.filter(c => c.card_type === 'hero') : allCards;
+  const available = cards.filter(c => !deckCardIds.includes(c.id));
+  const filtered = React.useMemo(() => {
+    let arr = search ? available.filter(c => c.name.toLowerCase().includes(search.toLowerCase())) : [...available];
+    if (sort==='rarity') arr.sort((a,b) => RARITY_ORDER.indexOf(a.rarity) - RARITY_ORDER.indexOf(b.rarity));
+    else if (sort==='level') arr.sort((a,b) => (b.level||1) - (a.level||1));
+    else if (sort==='power') arr.sort((a,b) => (b.power||0) - (a.power||0));
+    else if (sort==='mana') arr.sort((a,b) => (a.mana_cost||0) - (b.mana_cost||0));
+    else if (sort==='name') arr.sort((a,b) => (a.name||'').localeCompare(b.name||''));
+    return arr;
+  }, [available, search, sort]);
+  const SORTS = [{id:'rarity',label:'Редк.'},{id:'level',label:'Уров.'},{id:'power',label:'Сила'},{id:'mana',label:'Мана'},{id:'name',label:'Имя'}];
+  return (
+    <div style={{position:'absolute',inset:0,background:'rgba(5,3,14,0.82)',backdropFilter:'blur(10px)',zIndex:40,display:'flex',flexDirection:'column',justifyContent:'flex-end'}} onClick={onClose}>
+      <div onClick={e=>e.stopPropagation()} className="safe-pad-bottom"
+        style={{background:'linear-gradient(180deg,#1c1340 0%,#130d26 100%)',borderRadius:'22px 22px 0 0',padding:'14px 16px 0',border:`1px solid ${T.purple1}`,borderBottom:'none',boxShadow:'0 -20px 60px rgba(0,0,0,0.7)',animation:'slideUp 0.26s cubic-bezier(0.32,0.72,0,1)',maxHeight:'80vh',display:'flex',flexDirection:'column'}}>
+        <div style={{width:'36px',height:'4px',borderRadius:'2px',background:T.purple2,margin:'0 auto 12px'}}/>
+        <div style={{fontSize:'15px',fontWeight:'800',color:T.white,fontFamily:"'Exo 2',sans-serif",marginBottom:'10px'}}>{heroOnly ? 'Выбери героя' : 'Выбери карту'}</div>
+        <div style={{background:T.bgDeep,border:`1px solid ${T.purple2}`,borderRadius:'10px',padding:'7px 12px',display:'flex',gap:'8px',alignItems:'center',marginBottom:'8px',flexShrink:0}}>
+          <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><circle cx="5.5" cy="5.5" r="3.5" stroke={T.grey3} strokeWidth="1.3"/><path d="M9 9l2 2" stroke={T.grey3} strokeWidth="1.3" strokeLinecap="round"/></svg>
+          <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Поиск..." autoFocus
+            style={{flex:1,background:'none',border:'none',color:T.white,fontSize:'13px',fontFamily:"'Inter',sans-serif",outline:'none'}}/>
+          {search && <button onClick={()=>setSearch('')} style={{background:'none',border:'none',cursor:'pointer',color:T.grey3,fontSize:'14px',padding:'0',lineHeight:1}}>✕</button>}
+        </div>
+        {!heroOnly && <div style={{display:'flex',gap:'5px',overflowX:'auto',paddingBottom:'6px',flexShrink:0,scrollbarWidth:'none'}}>
+          {SORTS.map(s=><button key={s.id} onClick={()=>setSort(s.id)} style={{padding:'5px 10px',borderRadius:'14px',background:sort===s.id?T.orange:T.bgCard,border:`1px solid ${sort===s.id?T.orange:T.purple1}`,color:sort===s.id?'white':T.grey2,fontSize:'10px',fontWeight:'600',cursor:'pointer',whiteSpace:'nowrap',fontFamily:"'Exo 2',sans-serif",flexShrink:0}}>{s.label}</button>)}
+        </div>}
+        <div style={{flex:1,overflowY:'auto',paddingBottom:'20px'}}>
+          {filtered.length === 0
+            ? <div style={{textAlign:'center',padding:'32px 0',color:T.grey3,fontSize:'13px'}}>{available.length===0 ? (heroOnly?'Все герои уже в колоде':'Все карты уже в колоде') : 'Нет результатов'}</div>
+            : <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:'8px'}}>{filtered.map(card => <CardTile key={card.id} card={card} onClick={()=>onPick(card.id)}/>)}</div>
+          }
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const DeckSlotCard = ({cardId, allCards, onRemove, onPick, isHero}) => {
+  const [imgErr, setImgErr] = React.useState(false);
+  const card = allCards.find(c => c.id === cardId);
+  const rc = card ? (RARITY_COLOR[card.rarity] || '#94a3b8') : T.grey3;
+  if (!card) {
+    return (
+      <button onClick={onPick} style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',background:isHero?`linear-gradient(135deg,${T.orange}10,${T.bgDeep})`:T.bgDeep,border:isHero?`2px dashed ${T.orange}55`:`1.5px dashed ${T.grey3}44`,borderRadius:isHero?'14px':'10px',aspectRatio:isHero?'7/4':'2/3',cursor:'pointer',gap:'3px',transition:'border-color 0.15s',minHeight:isHero?'90px':'auto',padding:isHero?'14px':'0'}}>
+        {isHero ? (
+          <><svg width="22" height="22" viewBox="0 0 22 22" fill="none"><circle cx="11" cy="8" r="4" stroke={T.orange} strokeWidth="1.5"/><path d="M3 18c0-3 3.6-5 8-5s8 2 8 5" stroke={T.orange} strokeWidth="1.5"/><path d="M6 3l9 9" stroke={T.orange} strokeWidth="1.2" strokeLinecap="round"/></svg><span style={{fontSize:'11px',color:T.orange,fontFamily:"'Exo 2',sans-serif",fontWeight:'700'}}>Выбрать героя</span></>
+        ) : (
+          <><svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 4v8M4 8h8" stroke={T.grey3} strokeWidth="1.5" strokeLinecap="round"/></svg><span style={{fontSize:'7px',color:T.grey3,fontFamily:"'Exo 2',sans-serif",fontWeight:'600'}}>Добавить</span></>
+        )}
+      </button>
+    );
+  }
+  if (isHero) {
+    return (
+      <button onClick={onRemove} style={{position:'relative',display:'flex',alignItems:'center',gap:'12px',background:`linear-gradient(135deg,${T.orange}12,${T.bgCard})`,border:`2px solid ${T.orange}44`,borderRadius:'14px',overflow:'hidden',cursor:'pointer',width:'100%',padding:'12px 14px',transition:'all 0.12s'}}>
+        <div style={{position:'absolute',top:0,left:0,right:0,height:'2px',background:`linear-gradient(90deg,transparent,${T.orange},transparent)`}}/>
+        <div style={{width:'48px',height:'48px',borderRadius:'12px',background:`${T.orange}18`,border:`1.5px solid ${T.orange}44`,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,overflow:'hidden'}}>
+          {!imgErr ? <img src={`/api/cards/image?card_id=${card.id}`} alt="" onError={()=>setImgErr(true)} style={{width:'100%',height:'100%',objectFit:'contain',padding:'4px'}}/>
+          : <span style={{fontSize:'20px',opacity:0.5}}>👑</span>}
+        </div>
+        <div style={{flex:1,minWidth:0,textAlign:'left'}}>
+          <div style={{display:'flex',alignItems:'center',gap:'6px',marginBottom:'2px'}}>
+            <span style={{fontSize:'13px',fontWeight:'800',color:T.white,fontFamily:"'Exo 2',sans-serif"}}>{card.name}</span>
+            <span style={{fontSize:'10px',color:T.orange,background:`${T.orange}18`,borderRadius:'5px',padding:'1px 6px',fontWeight:'700',fontFamily:"'Exo 2',sans-serif"}}>ГЕРОЙ</span>
+          </div>
+          <div style={{display:'flex',gap:'8px'}}>
+            <span style={{fontSize:'10px',color:'#4ade80'}}>❤️{card.base_hp||card.current_hp||0} HP</span>
+            <span style={{fontSize:'10px',color:T.grey3}}>{RARITY_LABEL[card.rarity]||card.rarity}</span>
+          </div>
+        </div>
+        <div style={{width:'22px',height:'22px',borderRadius:'50%',background:'rgba(248,113,113,0.88)',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
+          <svg width="8" height="8" viewBox="0 0 8 8" fill="none"><path d="M1 1l6 6M7 1L1 7" stroke="white" strokeWidth="1.3" strokeLinecap="round"/></svg>
+        </div>
+      </button>
+    );
+  }
+  return (
+    <button onClick={onRemove} style={{position:'relative',display:'flex',flexDirection:'column',background:`linear-gradient(180deg,${T.bgCard},${T.bgDeep})`,border:`1.5px solid ${rc}44`,borderRadius:'10px',overflow:'hidden',cursor:'pointer',aspectRatio:'2/3',transition:'all 0.12s'}}>
+      <div style={{position:'absolute',top:0,left:0,right:0,height:'2px',background:`linear-gradient(90deg,transparent,${rc},transparent)`}}/>
+      <div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',padding:'3px'}}>
+        {!imgErr ? <img src={`/api/cards/image?card_id=${card.id}`} alt={card.name} onError={()=>setImgErr(true)} style={{width:'100%',height:'100%',objectFit:'contain'}}/>
+        : <span style={{fontSize:'16px',opacity:0.45}}>🃏</span>}
+      </div>
+      <div style={{padding:'0 3px 3px',textAlign:'center',fontSize:'7px',color:T.white,fontFamily:"'Exo 2',sans-serif",fontWeight:'700',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{card.name}</div>
+      <div style={{position:'absolute',top:'2px',right:'2px',width:'14px',height:'14px',borderRadius:'50%',background:'rgba(248,113,113,0.88)',display:'flex',alignItems:'center',justifyContent:'center'}}>
+        <svg width="7" height="7" viewBox="0 0 7 7" fill="none"><path d="M1 1l5 5M6 1L1 6" stroke="white" strokeWidth="1.2" strokeLinecap="round"/></svg>
+      </div>
+    </button>
+  );
+};
+
+const DeckEditor = ({editing, allCards, onBack, onSave, saving, saveMsg}) => {
+  const [pickSlot, setPickSlot] = React.useState(null);
+  const [shareMsg, setShareMsg] = React.useState(false);
+  const heroId = editing.slots[0];
+  const warriorSlots = editing.slots.slice(1);
+  const filled = editing.slots.filter(Boolean).length;
+  const deckCardIds = editing.slots.filter(Boolean);
+  const nonHero = warriorSlots.map(id => allCards.find(c => c.id === id)).filter(Boolean);
+  const avgMana = nonHero.length ? (nonHero.reduce((s,c) => s + (c.mana_cost||0), 0) / nonHero.length).toFixed(1) : '—';
+  const aggressiveness = nonHero.length ? ((nonHero.reduce((s,c) => s + (c.current_attack||c.base_attack||0) + (c.current_hp||c.base_hp||0), 0) / nonHero.length) / 2).toFixed(1) : '—';
+  const allCardsInDeck = editing.slots.map(id => allCards.find(c => c.id === id)).filter(Boolean);
+  const uniqueMechs = new Set();
+  allCardsInDeck.forEach(c => { try { const m = Array.isArray(c.mechanics)?c.mechanics:JSON.parse(c.mechanics||'[]'); m.forEach(x=>uniqueMechs.add(x)); } catch{} });
+  const mechCount = uniqueMechs.size;
+
+  return (
+    <div style={{flex:1,display:'flex',flexDirection:'column',minHeight:0,position:'relative'}}>
+      {/* Compact header */}
+      <div style={{padding:'6px 10px',display:'flex',alignItems:'center',gap:'8px',flexShrink:0,borderBottom:`1px solid ${T.purple1}`,background:'rgba(15,10,26,0.98)'}}>
+        <button onClick={onBack} style={{width:'32px',height:'32px',borderRadius:'10px',background:T.bgCard,border:`1px solid ${T.purple1}`,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',flexShrink:0}}>
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 3L5 7L9 11" stroke={T.grey2} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg>
+        </button>
+        <input value={editing.preset_name} onChange={e=>editing.onNameChange(e.target.value)} maxLength={20}
+          style={{flex:1,background:'transparent',border:'none',color:T.white,fontSize:'14px',fontWeight:'700',fontFamily:"'Exo 2',sans-serif",outline:'none',minWidth:0}}/>
+        <span style={{fontSize:'11px',color:filled===9?T.orange:T.grey3,fontWeight:'700',fontFamily:"'Exo 2',sans-serif",flexShrink:0}}>{filled}/9</span>
+        <button onClick={onSave} disabled={saving}
+          style={{padding:'6px 14px',background:saveMsg==='ok'?'#166534':saveMsg==='err'?'#7f1d1d':`linear-gradient(135deg,${T.orange},${T.orangeD})`,border:'none',borderRadius:'9px',color:'white',fontSize:'12px',fontWeight:'700',fontFamily:"'Exo 2',sans-serif",cursor:saving?'default':'pointer',flexShrink:0}}>
+          {saving ? '...' : saveMsg==='ok' ? '✓' : saveMsg==='err' ? '✗' : 'Сохранить'}
+        </button>
+      </div>
+
+      <div style={{flex:1,overflowY:'auto',padding:'10px 12px 14px',display:'flex',flexDirection:'column',gap:'10px'}}>
+        {/* Hero row */}
+        <div style={{background:T.bgCard,border:`1px solid ${heroId?T.orange+'44':T.purple1}`,borderRadius:'14px',padding:'10px 12px'}}>
+          <div style={{fontSize:'10px',color:T.orange,textTransform:'uppercase',letterSpacing:'0.5px',marginBottom:'8px',fontWeight:'700',fontFamily:"'Exo 2',sans-serif"}}>👑 Герой</div>
+          <DeckSlotCard cardId={heroId} allCards={allCards} isHero={true}
+            onRemove={() => editing.onSlotChange(0, null)}
+            onPick={()=>setPickSlot(0)}/>
+        </div>
+
+        {/* Warrior grid */}
+        <div>
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'8px'}}>
+            <span style={{fontSize:'11px',fontWeight:'700',color:T.purpleLt,fontFamily:"'Exo 2',sans-serif",textTransform:'uppercase',letterSpacing:'0.5px'}}>⚡ Карты ({nonHero.length}/8)</span>
+            <div style={{display:'flex',gap:'4px'}}>
+              <button onClick={editing.onRandomFill} title="Случайная колода"
+                style={{width:'26px',height:'26px',borderRadius:'7px',background:T.bgCard,border:`1px solid ${T.purple2}`,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',fontSize:'12px',padding:0}}>🎲</button>
+              <button disabled title="ИИ-колода (скоро)"
+                style={{width:'26px',height:'26px',borderRadius:'7px',background:T.bgCard,border:`1px solid ${T.purple2}`,display:'flex',alignItems:'center',justifyContent:'center',cursor:'not-allowed',fontSize:'12px',padding:0,opacity:0.4}}>🤖</button>
+            </div>
+          </div>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:'7px'}}>
+            {warriorSlots.map((cardId,i) => (
+              <DeckSlotCard key={i+1} cardId={cardId} allCards={allCards}
+                onRemove={() => editing.onSlotChange(i+1, null)}
+                onPick={()=>setPickSlot(i+1)}/>
+            ))}
+          </div>
+        </div>
+
+        {/* Compact stats row */}
+        <div style={{display:'flex',gap:'6px'}}>
+          <div style={{flex:1,background:T.bgCard,border:`1px solid ${T.purple1}`,borderRadius:'10px',padding:'8px 10px',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+            <span style={{fontSize:'10px',color:T.grey3}}>Ср. мана</span>
+            <span style={{fontSize:'14px',fontWeight:'900',color:'#60a5fa',fontFamily:"'Exo 2',sans-serif"}}>{avgMana}</span>
+          </div>
+          <div style={{flex:1,background:T.bgCard,border:`1px solid ${T.purple1}`,borderRadius:'10px',padding:'8px 10px',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+            <span style={{fontSize:'10px',color:T.grey3}}>Агрес-ть</span>
+            <span style={{fontSize:'14px',fontWeight:'900',color:'#f87171',fontFamily:"'Exo 2',sans-serif"}}>{aggressiveness}</span>
+          </div>
+          <div style={{flex:1,background:T.bgCard,border:`1px solid ${T.purple1}`,borderRadius:'10px',padding:'8px 10px',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+            <span style={{fontSize:'10px',color:T.grey3}}>Механик</span>
+            <span style={{fontSize:'14px',fontWeight:'900',color:'#c084fc',fontFamily:"'Exo 2',sans-serif"}}>{mechCount}</span>
+          </div>
+        </div>
+
+        {/* Share */}
+        <button onClick={()=>{navigator.clipboard?.writeText(`extraarena://deck/${editing.preset_number}`).catch(()=>{}); setShareMsg(true); setTimeout(()=>setShareMsg(false),2000);}}
+          style={{width:'100%',padding:'9px',background:'transparent',border:`1px solid ${T.purple1}`,borderRadius:'11px',color:shareMsg?'#4ade80':T.grey2,fontSize:'11px',fontWeight:'500',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:'6px'}}>
+          <span style={{fontSize:'12px'}}>📋</span>
+          <span>{shareMsg ? 'Ссылка скопирована!' : 'Копировать ссылку на колоду'}</span>
+        </button>
+      </div>
+
+      {pickSlot !== null && (
+        <CardPickerSheet allCards={allCards} deckCardIds={deckCardIds} heroOnly={pickSlot===0}
+          onPick={cardId => { editing.onSlotChange(pickSlot, cardId); setPickSlot(null); }}
+          onClose={() => setPickSlot(null)}/>
+      )}
+    </div>
+  );
+};
+
+const DecksTab = ({presets, allCards, onReload, profile}) => {
+  const [editing, setEditing] = React.useState(null);
+  const [saving, setSaving]   = React.useState(false);
+  const [saveMsg, setSaveMsg] = React.useState(null);
+  const hasPass = profile?.extra_pass === 'active';
+  const MAX_PRESETS = 5;
+  const FREE_LIMIT = 3;
+  const presetSlots = Array.from({length:MAX_PRESETS}, (_,i) => i+1).map(n => presets.find(p => p.preset_number===n) || {id:null, preset_number:n, preset_name:`Колода ${n}`, card_ids:[], is_primary:false});
+
+  const savePreset = async () => {
+    if (!editing || saving) return;
+    const heroFilled = !!editing.slots[0];
+    const filled = editing.slots.filter(Boolean).length;
+    const totalCards = allCards.length;
+    if (!heroFilled) { setSaveMsg('no_hero'); setTimeout(()=>setSaveMsg(null),2500); return; }
+    if (totalCards >= 9 && filled < 9) { setSaveMsg('incomplete'); setTimeout(()=>setSaveMsg(null),2500); return; }
+    setSaving(true);
+    try {
+      const slots = Array.from({length:9}, (_,i) => editing.slots[i] || null);
+      const res = await fetch(_buildAuthUrl('/api/deck/presets/save'), {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({preset_number: editing.preset_number, preset_name: editing.preset_name, card_slots: slots}),
+      });
+      if (!res.ok) throw new Error('save failed');
+      setSaveMsg('ok');
+      await onReload();
+      setTimeout(() => { setSaveMsg(null); setEditing(null); }, 700);
+    } catch(e) { setSaveMsg('err'); setTimeout(() => setSaveMsg(null), 2200); }
+    setSaving(false);
+  };
+
+  const randomFill = () => {
+    const heroPool = allCards.filter(c => c.card_type === 'hero');
+    const warriorPool = allCards.filter(c => c.card_type !== 'hero');
+    const heroPick = heroPool.length ? heroPool[Math.floor(Math.random()*heroPool.length)].id : 1;
+    const shuffled = [...warriorPool].sort(()=>Math.random()-0.5);
+    const picked = shuffled.slice(0, 8).map(c => c.id);
+    while (picked.length < 8) picked.push(null);
+    const slots = [heroPick, ...picked];
+    setEditing(p => ({...p, slots, preset_name: p.preset_name || 'Колода'}));
+  };
+
+  const createPreset = async () => {
+    try {
+      const res = await fetch(_buildAuthUrl('/api/deck/presets/create'), {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({preset_name:'Новая колода'})});
+      if (res.ok) await onReload();
+    } catch(e){}
+  };
+
+  const setPrimaryDeck = async (presetNumber) => {
+    try {
+      const res = await fetch(_buildAuthUrl('/api/deck/presets/set-primary'), {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({preset_number:presetNumber})});
+      if (res.ok) await onReload();
+    } catch(e){}
+  };
+
+  if (editing) {
+    return <DeckEditor editing={{...editing, onNameChange:(name)=>setEditing(p=>({...p,preset_name:name})), onSlotChange:(idx,val)=>{setEditing(p=>{const s=[...p.slots];s[idx]=val;return{...p,slots:s};});}, onRandomFill:randomFill}} allCards={allCards} onBack={()=>setEditing(null)} onSave={savePreset} saving={saving} saveMsg={saveMsg}/>;
+  }
+
+  return (
+    <div style={{flex:1,overflowY:'auto',padding:'8px 14px 20px',display:'flex',flexDirection:'column',gap:'10px'}}>
+      {/* Create button */}
+      <div style={{display:'flex',alignItems:'center',gap:'8px',marginBottom:'2px'}}>
+        <span style={{fontSize:'13px',fontWeight:'800',color:T.white,fontFamily:"'Exo 2',sans-serif"}}>Редактор колод</span>
+        <div style={{flex:1}}/>
+        <button onClick={createPreset}
+          disabled={presets.length >= MAX_PRESETS}
+          style={{padding:'6px 12px',borderRadius:'9px',background:presets.length>=MAX_PRESETS?T.bgDeep:T.purple2,border:`1px solid ${presets.length>=MAX_PRESETS?T.purple1:T.purple3}`,color:presets.length>=MAX_PRESETS?T.grey3:T.white,fontSize:'11px',fontWeight:'700',fontFamily:"'Exo 2',sans-serif",cursor:presets.length>=MAX_PRESETS?'not-allowed':'pointer',opacity:presets.length>=MAX_PRESETS?0.5:1}}>
+          + Создать
+        </button>
+      </div>
+
+      {presetSlots.map((preset, idx) => {
+        const isLocked = idx >= FREE_LIMIT && !hasPass;
+        const hasCards = preset.card_ids?.length > 0;
+        const heroCard = allCards.find(c => c.id === preset.card_ids?.[0]);
+
+        if (isLocked) {
+          return (
+            <div key={preset.preset_number} style={{background:T.bgCard,border:`1px solid ${T.purple1}`,borderRadius:'16px',padding:'13px 14px',opacity:0.6}}>
+              <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+                <div style={{display:'flex',alignItems:'center',gap:'9px'}}>
+                  <div style={{width:'28px',height:'28px',borderRadius:'8px',background:`linear-gradient(135deg,${T.purple2},${T.purple3})`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'14px',fontWeight:'900',color:T.white,fontFamily:"'Exo 2',sans-serif",flexShrink:0}}>{preset.preset_number}</div>
+                  <div>
+                    <div style={{fontSize:'14px',fontWeight:'700',color:T.grey1,fontFamily:"'Exo 2',sans-serif"}}>{preset.preset_name || `Колода ${preset.preset_number}`}</div>
+                  </div>
+                </div>
+                <div style={{display:'flex',alignItems:'center',gap:'6px',background:`linear-gradient(135deg,${T.orange}20,${T.orangeD}20)`,border:`1px solid ${T.orange}40`,borderRadius:'8px',padding:'5px 10px'}}>
+                  <span style={{fontSize:'16px'}}>🔒</span>
+                  <span style={{fontSize:'11px',fontWeight:'700',color:T.orange,fontFamily:"'Exo 2',sans-serif"}}>ExtraPass</span>
+                </div>
+              </div>
+              <div style={{display:'flex',alignItems:'center',justifyContent:'center',height:'36px',border:`1px dashed ${T.orange}20`,borderRadius:'10px',marginTop:'8px'}}>
+                <span style={{fontSize:'11px',color:T.grey3}}>Приобретите ExtraPass для доступа</span>
+              </div>
+            </div>
+          );
+        }
+
+        return (
+          <div key={preset.preset_number} style={{background:T.bgCard,border:`1px solid ${preset.is_primary?T.orange+'55':T.purple1}`,borderRadius:'16px',padding:'13px 14px',position:'relative'}}>
+            {preset.is_primary && <div style={{position:'absolute',top:'-1px',left:'-1px',right:'-1px',height:'2px',background:`linear-gradient(90deg,transparent,${T.orange},transparent)`,borderRadius:'16px 16px 0 0'}}/>}
+            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:hasCards?'11px':'0'}}>
+              <div style={{display:'flex',alignItems:'center',gap:'9px',minWidth:0}}>
+                <div style={{width:'28px',height:'28px',borderRadius:'8px',background:preset.is_primary?`linear-gradient(135deg,${T.orange},${T.orangeD})`:`linear-gradient(135deg,${T.purple2},${T.purple3})`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'14px',fontWeight:'900',color:'white',fontFamily:"'Exo 2',sans-serif",flexShrink:0}}>{preset.preset_number}</div>
+                <div style={{minWidth:0}}>
+                  <div style={{display:'flex',alignItems:'center',gap:'6px'}}>
+                    <span style={{fontSize:'14px',fontWeight:'700',color:T.white,fontFamily:"'Exo 2',sans-serif",lineHeight:1.2,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{preset.preset_name || `Колода ${preset.preset_number}`}</span>
+                    {preset.is_primary && <span style={{fontSize:'11px',color:T.orange}}>★</span>}
+                  </div>
+                  {hasCards && <div style={{fontSize:'10px',color:T.grey3,marginTop:'1px'}}>{(preset.card_ids?.filter(Boolean)?.length||0)} / 9 карт</div>}
+                </div>
+              </div>
+              <div style={{display:'flex',gap:'5px',flexShrink:0}}>
+                {hasCards && !preset.is_primary && (
+                  <button onClick={()=>setPrimaryDeck(preset.preset_number)} title="Сделать основной"
+                    style={{padding:'5px 8px',borderRadius:'7px',background:`${T.orange}15`,border:`1px solid ${T.orange}30`,color:T.orange,fontSize:'14px',cursor:'pointer',lineHeight:1}}>☆</button>
+                )}
+                <button onClick={() => setEditing({...preset, slots:Array.from({length:9},(_,i)=>preset.card_ids?.[i]||null)})}
+                  style={{padding:'6px 12px',background:hasCards?T.purple2:`linear-gradient(135deg,${T.orange},${T.orangeD})`,border:`1px solid ${hasCards?T.purple3:T.orange}`,borderRadius:'9px',color:'white',fontSize:'11px',fontWeight:'700',fontFamily:"'Exo 2',sans-serif",cursor:'pointer',flexShrink:0}}>
+                  {hasCards ? 'Ред.' : 'Собрать'}
+                </button>
+              </div>
+            </div>
+            {hasCards ? (
+              <div style={{display:'grid',gridTemplateColumns:'repeat(9,1fr)',gap:'4px'}}>
+                {Array.from({length:9}, (_,i) => <DeckPreviewSlot key={i} cardId={preset.card_ids?.[i]} allCards={allCards}/>)}
+              </div>
+            ) : (
+              <div style={{display:'flex',alignItems:'center',justifyContent:'center',height:'42px',border:`1px dashed ${T.grey3}25`,borderRadius:'10px',marginTop:'8px'}}>
+                <span style={{fontSize:'12px',color:T.grey3}}>Колода не собрана</span>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+};
+
+const CollectionScreen = ({profile}) => {
+  const [tab,          setTab]         = React.useState('decks');
+  const [cards,        setCards]       = React.useState([]);
+  const [presets,      setPresets]     = React.useState([]);
+  const [loading,      setLoading]     = React.useState(true);
+  const [sortBy,       setSortBy]      = React.useState('obtained');
+  const [selectedCard, setSelectedCard]= React.useState(null);
+
+  const userId = profile?.user_id;
+
+  const loadCards = React.useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await fetch(_buildAuthUrl('/api/cards/user'));
+      if (!res.ok) throw new Error('failed');
+      const data = await res.json();
+      setCards(data.cards || []);
+    } catch(e) { setCards([]); }
+    setLoading(false);
+  }, [userId]);
+
+  const loadPresets = React.useCallback(async () => {
+    try {
+      const res = await fetch(_buildAuthUrl('/api/deck/presets'));
+      if (!res.ok) throw new Error('failed');
+      const data = await res.json();
+      setPresets(data.presets || []);
+    } catch(e) { setPresets([]); }
+  }, [userId]);
+
+  React.useEffect(() => { loadCards(); loadPresets(); }, [loadCards, loadPresets]);
+
+  const sortedCards = React.useMemo(() => {
+    const arr = [...cards];
+    if      (sortBy==='rarity') arr.sort((a,b) => RARITY_ORDER.indexOf(a.rarity) - RARITY_ORDER.indexOf(b.rarity));
+    else if (sortBy==='level')  arr.sort((a,b) => (b.level||1) - (a.level||1));
+    else if (sortBy==='power')  arr.sort((a,b) => (b.power||0) - (a.power||0));
+    return arr;
+  }, [cards, sortBy]);
+
+  if (selectedCard) {
+    return (
+      <div style={{flex:1,display:'flex',flexDirection:'column',minHeight:0}}>
+        <CardDetailScreen card={selectedCard} onBack={()=>setSelectedCard(null)}/>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{flex:1,display:'flex',flexDirection:'column',minHeight:0,overflow:'hidden'}}>
+      <div style={{display:'flex',background:T.bgDeep,margin:'10px 16px 0',borderRadius:'12px',padding:'3px',gap:'3px',flexShrink:0}}>
+        {[{id:'decks',label:'Мои колоды'},{id:'cards',label:`Карты${cards.length ? ` (${cards.length})` : ''}`}].map(t=>(
+          <button key={t.id} onClick={()=>setTab(t.id)}
+            style={{flex:1,padding:'9px 4px',borderRadius:'10px',background:tab===t.id?T.purple2:'none',border:'none',color:tab===t.id?T.white:T.grey2,fontSize:'13px',fontWeight:tab===t.id?'700':'400',fontFamily:"'Exo 2',sans-serif",cursor:'pointer',transition:'all 0.15s'}}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'cards' && (<>
+        <div style={{padding:'8px 16px 4px',display:'flex',gap:'6px',overflowX:'auto',scrollbarWidth:'none',flexShrink:0}}>
+          {[{id:'obtained',label:'Новые'},{id:'rarity',label:'Редкость'},{id:'level',label:'Уровень'},{id:'power',label:'Сила'}].map(s=>(
+            <button key={s.id} onClick={()=>setSortBy(s.id)}
+              style={{padding:'5px 13px',borderRadius:'16px',background:sortBy===s.id?T.orange:T.bgCard,border:`1px solid ${sortBy===s.id?T.orange:T.purple1}`,color:sortBy===s.id?'white':T.grey2,fontSize:'11px',fontWeight:'600',cursor:'pointer',whiteSpace:'nowrap',fontFamily:"'Exo 2',sans-serif",flexShrink:0,transition:'all 0.15s'}}>
+              {s.label}
+            </button>
+          ))}
+        </div>
+        <div style={{flex:1,overflowY:'auto',padding:'4px 12px 16px'}}>
+          {loading
+            ? <div style={{display:'flex',alignItems:'center',justifyContent:'center',height:'200px',gap:'10px'}}>
+                <div style={{width:'22px',height:'22px',border:`2px solid ${T.purple2}`,borderTopColor:T.purpleLt,borderRadius:'50%',animation:'spin 0.8s linear infinite'}}/>
+                <span style={{color:T.grey2,fontSize:'13px'}}>Загружаем коллекцию...</span>
+              </div>
+            : cards.length === 0
+              ? <div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',height:'220px',gap:'12px'}}>
+                  <div style={{width:'68px',height:'68px',borderRadius:'20px',background:T.bgCard,border:`1px solid ${T.purple1}`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'32px',opacity:0.5}}>🃏</div>
+                  <span style={{fontSize:'15px',fontWeight:'700',color:T.grey2,fontFamily:"'Exo 2',sans-serif"}}>Коллекция пуста</span>
+                  <span style={{fontSize:'12px',color:T.grey3,textAlign:'center',lineHeight:1.6}}>Открывай кейсы в магазине,<br/>чтобы получить карты</span>
+                </div>
+              : <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'8px',paddingTop:'4px'}}>
+                  {sortedCards.map(card => <CardTile key={card.id} card={card} onClick={()=>setSelectedCard(card)}/>)}
+                </div>
+          }
+        </div>
+      </>)}
+
+      {tab === 'decks' && (
+        <DecksTab presets={presets} allCards={cards} onReload={loadPresets} profile={profile}/>
+      )}
+    </div>
+  );
+};
+
+// ═══════════════════════════════════════════
 // PLACEHOLDER
 // ═══════════════════════════════════════════
 const PlaceholderScreen = ({label}) => (
@@ -1411,7 +2227,28 @@ const GAME_MODES = [
 
 const GameModeSheet = ({onClose, onConfirm}) => {
   const [mode, setMode] = React.useState('classic');
+  const [deckId, setDeckId] = React.useState('');
+  const [presets, setPresets] = React.useState([]);
   const chosen = GAME_MODES.find(m => m.id === mode);
+
+  React.useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch(_buildAuthUrl('/api/deck/presets'));
+        if (!res.ok) return;
+        const d = await res.json();
+        const list = d.presets || [];
+        setPresets(list);
+        const primary = list.find(p => p.is_primary && (p.card_ids?.filter(Boolean)?.length||0) > 0);
+        if (primary) setDeckId(String(primary.preset_number));
+        else { const complete = list.find(p => (p.card_ids?.filter(Boolean)?.length||0) === 9); if (complete) setDeckId(String(complete.preset_number)); else { const first = list.find(p => (p.card_ids?.filter(Boolean)?.length||0) > 0); if (first) setDeckId(String(first.preset_number)); } }
+      } catch(e){}
+    })();
+  }, []);
+
+  const selectedDeck = presets.find(p => String(p.preset_number) === deckId);
+  const deckCount = selectedDeck ? (selectedDeck.card_ids?.filter(Boolean)?.length || 0) : 0;
+
   return (
     <div style={{position:'absolute',inset:0,background:'rgba(5,3,14,0.78)',backdropFilter:'blur(10px)',zIndex:20,display:'flex',flexDirection:'column',justifyContent:'flex-end'}} onClick={onClose}>
       <div onClick={e=>e.stopPropagation()} className="safe-pad-bottom"
@@ -1419,7 +2256,7 @@ const GameModeSheet = ({onClose, onConfirm}) => {
         <div style={{width:'36px',height:'4px',borderRadius:'2px',background:T.purple2,margin:'0 auto 16px'}}/>
         <div style={{fontSize:'18px',fontWeight:'900',color:T.white,fontFamily:"'Exo 2',sans-serif",marginBottom:'14px'}}>Выбери режим</div>
 
-        <div style={{display:'flex',flexDirection:'column',gap:'10px',marginBottom:'18px'}}>
+        <div style={{display:'flex',flexDirection:'column',gap:'10px',marginBottom:'12px'}}>
           {GAME_MODES.map(m => (
             <button key={m.id} onClick={()=>setMode(m.id)}
               style={{display:'flex',gap:'14px',padding:'14px 16px',background:mode===m.id?m.bg:T.bgCard,border:`1.5px solid ${mode===m.id?m.color:T.purple1}`,borderRadius:'16px',cursor:'pointer',textAlign:'left',transition:'all 0.15s',position:'relative',overflow:'hidden'}}>
@@ -1443,10 +2280,51 @@ const GameModeSheet = ({onClose, onConfirm}) => {
           ))}
         </div>
 
-        <button onClick={()=>onConfirm(mode)}
+        {/* Deck selector */}
+        <div style={{marginBottom:'18px'}}>
+          <div style={{fontSize:'11px',color:T.grey3,textTransform:'uppercase',letterSpacing:'0.5px',marginBottom:'8px'}}>Колода</div>
+          {presets.length === 0 ? (
+            <div style={{background:T.bgCard,border:`1px solid ${T.purple1}`,borderRadius:'12px',padding:'10px 14px'}}>
+              <div style={{display:'flex',alignItems:'center',gap:'8px'}}>
+                <div style={{width:'20px',height:'20px',borderRadius:'50%',border:`2px solid ${T.purple2}`,borderTopColor:T.purpleLt,animation:'spin 0.8s linear infinite',flexShrink:0}}/>
+                <span style={{fontSize:'12px',color:T.grey2}}>Загрузка колод...</span>
+              </div>
+            </div>
+          ) : (
+            <div style={{position:'relative'}}>
+              <select value={deckId} onChange={e=>setDeckId(e.target.value)}
+                style={{width:'100%',appearance:'none',background:T.bgCard,border:`1px solid ${T.purple2}`,borderRadius:'12px',padding:'11px 36px 11px 14px',color:T.white,fontSize:'13px',fontWeight:'600',fontFamily:"'Exo 2',sans-serif",outline:'none',cursor:'pointer'}}>
+                {presets.map(p => {
+                  const filled = (p.card_ids?.filter(Boolean)?.length || 0);
+                  return <option key={p.preset_number} value={String(p.preset_number)} style={{background:T.bgDeep,color:T.white}}>{p.preset_name || `Колода ${p.preset_number}`} ({filled}/9)</option>;
+                })}
+              </select>
+              <svg style={{position:'absolute',right:'14px',top:'50%',transform:'translateY(-50%)',pointerEvents:'none'}} width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M3 5l3 3 3-3" stroke={T.grey2} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+            </div>
+          )}
+          {presets.length > 0 && deckCount < 9 && (
+            <div style={{fontSize:'10px',color:'#fbbf24',marginTop:'5px',display:'flex',alignItems:'center',gap:'4px'}}>
+              <span>⚠️</span>
+              <span>Колода неполная ({deckCount}/9). Соберите 9 карт в коллекции.</span>
+            </div>
+          )}
+        </div>
+
+        {deckCount < 9 || !selectedDeck?.card_ids?.[0] ? (
+          <div style={{marginBottom:'12px'}}>
+            <div style={{background:'rgba(248,113,113,0.1)',border:'1px solid rgba(248,113,113,0.3)',borderRadius:'12px',padding:'10px 14px',fontSize:'11px',color:'#f87171',lineHeight:1.5}}>
+              {!selectedDeck?.card_ids?.[0] ? '⚠️ Выберите героя в колоде' : `⚠️ Колода неполная (${deckCount}/9). Соберите колоду в разделе «Мои колоды»`}
+            </div>
+            <button disabled style={{width:'100%',height:'54px',background:T.bgCard,border:`1px solid ${T.purple2}`,borderRadius:'16px',color:T.grey3,fontSize:'18px',fontWeight:'900',fontFamily:"'Exo 2',sans-serif",cursor:'not-allowed',marginTop:'8px'}}>
+              {chosen.icon} В БОЙ — {chosen.label}
+            </button>
+          </div>
+        ) : (
+        <button onClick={()=>onConfirm(mode, deckId)}
           style={{width:'100%',height:'54px',background:`linear-gradient(135deg,${chosen.color},${chosen.color}cc)`,border:'none',borderRadius:'16px',color:'white',fontSize:'18px',fontWeight:'900',fontFamily:"'Exo 2',sans-serif",cursor:'pointer',boxShadow:`0 6px 24px ${chosen.color}44`,letterSpacing:'1px',transition:'all 0.15s'}}>
           {chosen.icon} В БОЙ — {chosen.label}
         </button>
+        )}
       </div>
     </div>
   );
@@ -1654,7 +2532,26 @@ const App = () => {
   const [showGameMode,   setShowGameMode]   = React.useState(false);
   const [showMail,       setShowMail]       = React.useState(false);
   const [showCaseOpen,   setShowCaseOpen]   = React.useState(false);
+  const [showInfo,       setShowInfo]       = React.useState(false);
+  const [showGloryPath,  setShowGloryPath]  = React.useState(false);
+  const [showLeagueInfo, setShowLeagueInfo] = React.useState(false);
   const [profile,        setProfile]        = React.useState(null);
+
+  const hasOverlay = showAI || showMenu || showSettings || showBattlePick || showGameMode || showMail || showCaseOpen || showInfo || showGloryPath || showLeagueInfo;
+
+  React.useEffect(()=>{
+    const anyOpen = showMenu || showSettings || showBattlePick || showGameMode || showMail || showCaseOpen || showInfo || showGloryPath || showLeagueInfo;
+    if (anyOpen) window._playSfx('menu-open-sound');
+  }, [showMenu, showSettings, showBattlePick, showGameMode, showMail, showCaseOpen, showInfo, showGloryPath, showLeagueInfo]);
+
+  const swipeRef = React.useRef(null);
+  const swipeStartX = React.useRef(0);
+  const onTouchStart = (e) => { if(!hasOverlay && e.touches.length===1) swipeStartX.current=e.touches[0].clientX; };
+  const onTouchEnd = (e) => {
+    if(hasOverlay) return;
+    const dx = (e.changedTouches[0]?.clientX||0) - swipeStartX.current;
+    if(Math.abs(dx)>50){ if(dx<0)setNavTab(t=>(t+1)%NAV_ITEMS.length); else setNavTab(t=>(t-1+NAV_ITEMS.length)%NAV_ITEMS.length); }
+  };
 
   React.useEffect(()=>{
     const tg = window.Telegram?.WebApp;
@@ -1681,7 +2578,7 @@ const App = () => {
   const openSettings = () => { setShowMenu(false); setTimeout(()=>setShowSettings(true),120); };
 
   return (
-    <div style={{width:'100%',height:'100%',background:T.bg,display:'flex',flexDirection:'column',position:'relative',overflow:'hidden'}}>
+    <div style={{width:'100%',height:'100%',background:T.bg,display:'flex',flexDirection:'column',position:'relative',overflow:'hidden',touchAction:'pan-y',overscrollBehavior:'none'}}>
       <TopBar
         title={showAI ? 'ИИ Аналитика' : displayName}
         showBack={showAI}
@@ -1696,26 +2593,261 @@ const App = () => {
       />
 
       {/* Main content */}
-      <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden',minHeight:0}}>
+      <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden',minHeight:0}}
+        onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
         {showAI ? (
           <AIScreen onBack={()=>setShowAI(false)}/>
         ) : navTab===2 ? (
-          <ArenaScreen onMenu={()=>setShowMenu(true)} onAI={()=>setShowAI(true)} onBattlePick={()=>setShowBattlePick(true)} onStartBattle={()=>setShowGameMode(true)} onOpenCase={()=>setShowCaseOpen(true)} profile={profile}/>
+          <ArenaScreen onMenu={()=>setShowMenu(true)} onAI={()=>setShowAI(true)} onBattlePick={()=>setShowBattlePick(true)} onStartBattle={()=>setShowGameMode(true)} onOpenCase={()=>setShowCaseOpen(true)} onOpenGloryPath={()=>setShowGloryPath(true)} onOpenLeagueInfo={()=>setShowLeagueInfo(true)} profile={profile}/>
         ) : navTab===0 ? (
           <ShopScreen profile={profile} onKeysUpdated={(k)=>setProfile(p=>({...p,keys:k}))}/>
+        ) : navTab===1 ? (
+          <CollectionScreen profile={profile}/>
         ) : (
-          <PlaceholderScreen label={['','Коллекция','','Скводы','Сообщество'][navTab]}/>
+          <PlaceholderScreen label={['Магазин','','Коллекция','Сквады','Коммьюнити'][navTab]}/>
         )}
       </div>
 
       {!showAI && <BottomNav active={navTab} onChange={setNavTab}/>}
 
-      {showMenu       && <MenuSheet       onClose={()=>setShowMenu(false)} onSettings={openSettings} onMail={()=>{setShowMenu(false);setTimeout(()=>setShowMail(true),120);}}/>}
+      {showMenu       && <MenuSheet       onClose={()=>setShowMenu(false)} onSettings={openSettings} onMail={()=>{setShowMenu(false);setTimeout(()=>setShowMail(true),120);}} onInfo={()=>{setShowMenu(false);setTimeout(()=>setShowInfo(true),120);}} profile={profile}/>}
       {showSettings   && <SettingsScreen  onClose={()=>setShowSettings(false)} profile={profile}/>}
       {showBattlePick && <BattlePickSheet onClose={()=>setShowBattlePick(false)} profile={profile}/>}
-      {showGameMode   && <GameModeSheet   onClose={()=>setShowGameMode(false)} onConfirm={(_mode)=>{setShowGameMode(false);window.startBattle(profile);}}/>}
+      {showGameMode   && <GameModeSheet   onClose={()=>setShowGameMode(false)} onConfirm={(_mode, deckId)=>{setShowGameMode(false);window.startBattle(profile, deckId);}}/>}
       {showMail       && <MailScreen      onClose={()=>setShowMail(false)} userId={profile?.user_id}/>}
       {showCaseOpen   && <CaseOpenScreen onClose={()=>setShowCaseOpen(false)} onDone={()=>{setShowCaseOpen(false);window.loadProfile().then(d=>{if(d)setProfile(d);});}} profile={profile}/>}
+      {showInfo       && <InfoSheet      onClose={()=>setShowInfo(false)}/>}
+      {showGloryPath  && <TrophyRoadSheet onClose={()=>setShowGloryPath(false)} profile={profile}/>}
+      {showLeagueInfo && <LeagueInfoSheet onClose={()=>setShowLeagueInfo(false)} profile={profile}/>}
+    </div>
+  );
+};
+
+// ═══════════════════════════════════════════
+// TROPHY ROAD SHEET
+// ═══════════════════════════════════════════
+const TrophyRoadSheet = ({onClose, profile}) => {
+  const trophies = profile?.trophies || 0;
+  const leagueId = profile?.league ?? 1;
+  const league = LEAGUE_MAP[leagueId] || LEAGUE_LIST[0];
+  const maxTrophies = 10000;
+  const overallProgress = Math.min(100, (trophies / maxTrophies) * 100);
+
+  return (
+    <div style={{position:'absolute',inset:0,background:T.bg,zIndex:200,display:'flex',flexDirection:'column',animation:'fadeIn 0.25s'}}>
+      {/* Header */}
+      <div style={{height:'52px',background:'rgba(15,10,26,0.98)',display:'flex',alignItems:'center',gap:'10px',padding:'0 16px',flexShrink:0,borderBottom:`1px solid ${T.purple1}`}}>
+        <button onClick={onClose} style={{width:'32px',height:'32px',borderRadius:'10px',background:T.bgCard,border:`1px solid ${T.purple1}`,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',flexShrink:0}}>
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 3L5 7L9 11" stroke={T.grey2} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg>
+        </button>
+        <span style={{fontSize:'15px',fontWeight:'700',color:T.white,fontFamily:"'Exo 2',sans-serif"}}>Трофейная дорога</span>
+      </div>
+
+      {/* Scrollable content */}
+      <div style={{flex:1,overflowY:'auto',padding:'12px 16px 20px'}}>
+
+        {/* Current league card */}
+        <div style={{background:`linear-gradient(135deg,${league.color}22,${T.bgCard})`,border:`1px solid ${league.color}44`,borderRadius:'18px',padding:'18px',marginBottom:'16px'}}>
+          <div style={{display:'flex',alignItems:'center',gap:'14px',marginBottom:'14px'}}>
+            <div style={{width:'52px',height:'52px',borderRadius:'14px',background:`${league.color}22`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'28px',border:`1px solid ${league.color}33`,flexShrink:0}}>
+              {league.emoji}
+            </div>
+            <div>
+              <div style={{fontSize:'18px',fontWeight:'900',color:T.white,fontFamily:"'Exo 2',sans-serif",lineHeight:1.1}}>{league.name}</div>
+              <div style={{fontSize:'11px',color:T.grey1,marginTop:'3px'}}>Лига {league.id} · {trophies.toLocaleString()} 🏆</div>
+            </div>
+          </div>
+          {/* Overall progress */}
+          <div>
+            <div style={{display:'flex',justifyContent:'space-between',marginBottom:'5px'}}>
+              <span style={{fontSize:'10px',color:T.grey2,textTransform:'uppercase',letterSpacing:'0.5px'}}>Общий прогресс</span>
+              <span style={{fontSize:'11px',color:T.orange,fontWeight:'700',fontFamily:"'Exo 2',sans-serif"}}>{overallProgress.toFixed(1)}%</span>
+            </div>
+            <div style={{height:'6px',background:T.purple1,borderRadius:'3px',overflow:'hidden'}}>
+              <div style={{width:`${overallProgress}%`,height:'100%',background:`linear-gradient(90deg,${T.orange},${T.orangeLt})`,borderRadius:'3px',boxShadow:`0 0 10px ${T.orange}55`,transition:'width 0.5s'}}/>
+            </div>
+          </div>
+        </div>
+
+        {/* Milestone road */}
+        <div style={{display:'flex',flexDirection:'column'}}>
+          {GLORY_PATH_MILESTONES.map((ms, i) => {
+            const completed = trophies >= ms.trophies;
+            const prev = i > 0 ? GLORY_PATH_MILESTONES[i-1].trophies : 0;
+            const isNext = !completed && trophies >= prev;
+            const locked = !completed && !isNext;
+            const segProgress = isNext ? Math.min(100, ((trophies - prev) / (ms.trophies - prev)) * 100) : 0;
+            const lineFilled = completed || (isNext && segProgress > 0);
+            const remaining = ms.trophies - trophies;
+
+            return (
+              <div key={i} style={{display:'flex',flexDirection:'column',alignItems:'stretch'}}>
+                {/* Connecting line */}
+                {i > 0 && (
+                  <div style={{width:'4px',height:'40px',marginLeft:'17px',background:T.purple1,borderRadius:'2px',position:'relative',overflow:'hidden'}}>
+                    {lineFilled && (
+                      <div style={{position:'absolute',bottom:0,left:0,right:0,height:isNext ? `${segProgress}%` : '100%',background:`linear-gradient(to top,${T.orange},${T.purple3})`,borderRadius:'2px',boxShadow:completed ? `0 0 8px ${T.orange}55` : 'none',transition:'height 0.4s'}}/>
+                    )}
+                  </div>
+                )}
+
+                {/* Milestone card */}
+                <div style={{
+                  background: completed ? `linear-gradient(135deg,${T.bgCard},#1a3a1a)` : locked ? 'rgba(26,16,48,0.5)' : T.bgCard,
+                  border: completed ? `1px solid #2ecc7144` : isNext ? `1px solid ${T.orange}55` : `1px solid ${T.purple1}`,
+                  borderRadius:'14px',padding:'12px 14px',opacity:locked?0.45:1,
+                  position:'relative',overflow:'hidden',
+                  transition:'all 0.2s'
+                }}>
+                  {/* League unlock badge */}
+                  {ms.league && (
+                    <div style={{marginBottom:'10px',display:'flex',alignItems:'center',gap:'8px'}}>
+                      <div style={{background:`${T.orange}22`,border:`1px solid ${T.orange}44`,borderRadius:'10px',padding:'4px 10px',display:'flex',alignItems:'center',gap:'6px'}}>
+                        <span style={{fontSize:'16px'}}>{ms.league.emoji}</span>
+                        <span style={{fontSize:'13px',fontWeight:'800',color:T.orange,fontFamily:"'Exo 2',sans-serif"}}>{ms.league.name}</span>
+                      </div>
+                      <span style={{fontSize:'10px',color:'#2ecc71',fontWeight:'700',textTransform:'uppercase',letterSpacing:'0.5px',animation:'pulse 1.5s ease-in-out infinite'}}>Новая лига!</span>
+                    </div>
+                  )}
+
+                  {/* Trophy threshold */}
+                  <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'8px'}}>
+                    <div style={{display:'flex',alignItems:'center',gap:'6px'}}>
+                      <span style={{fontSize:'10px',color:T.grey2}}>🏆</span>
+                      <span style={{fontSize:'15px',fontWeight:'900',color:T.white,fontFamily:"'Exo 2',sans-serif"}}>{ms.trophies.toLocaleString()}</span>
+                    </div>
+                    {isNext && (
+                      <span style={{fontSize:'10px',color:T.orange,fontWeight:'600'}}>ещё {remaining.toLocaleString()}</span>
+                    )}
+                    {completed && (
+                      <span style={{fontSize:'14px',color:'#2ecc71'}}>✓</span>
+                    )}
+                  </div>
+
+                  {/* Rewards */}
+                  <div style={{display:'flex',gap:'6px',flexWrap:'wrap'}}>
+                    {ms.rewards.map((r,j) => {
+                      const label = formatRewardLabel(r);
+                      const showAmt = r.amount && r.type !== 'particles' && r.type !== 'shards';
+                      return (
+                        <div key={j} style={{display:'flex',alignItems:'center',gap:'3px',background:`${T.purple1}88`,borderRadius:'8px',padding:'4px 8px'}}>
+                          <span style={{fontSize:'12px'}}>{r.icon}</span>
+                          {showAmt && <span style={{fontSize:'11px',color:T.grey1,fontWeight:'600',fontFamily:"'Exo 2',sans-serif"}}>{r.amount.toLocaleString()}</span>}
+                          <span style={{fontSize:'10px',color:T.grey2}}>{label}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Lock overlay */}
+                  {locked && (
+                    <div style={{position:'absolute',inset:0,display:'flex',alignItems:'center',justifyContent:'center',borderRadius:'14px'}}>
+                      <span style={{fontSize:'22px',opacity:0.5}}>🔒</span>
+                    </div>
+                  )}
+
+                  {/* Next indicator */}
+                  {isNext && (
+                    <div style={{position:'absolute',right:'10px',top:'-6px',background:T.orange,borderRadius:'6px',padding:'1px 8px'}}>
+                      <span style={{fontSize:'9px',color:'white',fontWeight:'800',fontFamily:"'Exo 2',sans-serif"}}>СЕЙЧАС</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ═══════════════════════════════════════════
+// LEAGUE INFO SHEET
+// ═══════════════════════════════════════════
+const LeagueInfoSheet = ({onClose, profile}) => {
+  const trophies = profile?.trophies || 0;
+  const currentId = profile?.league ?? 1;
+  const cur = LEAGUE_MAP[currentId] || LEAGUE_LIST[0];
+  const nextLeague = currentId < 10 ? LEAGUE_MAP[currentId + 1] : null;
+  const tierMin = cur.min;
+  const tierMax = cur.max;
+  const tierProgress = currentId < 10 ? Math.min(100, ((trophies - tierMin) / (tierMax - tierMin + 1)) * 100) : 100;
+
+  return (
+    <div style={{position:'absolute',inset:0,background:T.bg,zIndex:200,display:'flex',flexDirection:'column',animation:'fadeIn 0.25s'}}>
+      {/* Header */}
+      <div style={{height:'52px',background:'rgba(15,10,26,0.98)',display:'flex',alignItems:'center',gap:'10px',padding:'0 16px',flexShrink:0,borderBottom:`1px solid ${T.purple1}`}}>
+        <button onClick={onClose} style={{width:'32px',height:'32px',borderRadius:'10px',background:T.bgCard,border:`1px solid ${T.purple1}`,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',flexShrink:0}}>
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 3L5 7L9 11" stroke={T.grey2} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg>
+        </button>
+        <span style={{fontSize:'15px',fontWeight:'700',color:T.white,fontFamily:"'Exo 2',sans-serif"}}>Информация о лиге</span>
+      </div>
+
+      {/* Scrollable */}
+      <div style={{flex:1,overflowY:'auto',padding:'12px 16px 20px'}}>
+
+        {/* Current league highlight */}
+        <div style={{background:`linear-gradient(135deg,${cur.color}22,${T.bgCard})`,border:`1px solid ${cur.color}44`,borderRadius:'18px',padding:'18px',marginBottom:'12px'}}>
+          <div style={{display:'flex',alignItems:'center',gap:'14px',marginBottom:'14px'}}>
+            <div style={{width:'56px',height:'56px',borderRadius:'16px',background:`${cur.color}22`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'30px',border:`1px solid ${cur.color}33`,flexShrink:0,boxShadow:`0 0 20px ${cur.color}22`}}>
+              {cur.emoji}
+            </div>
+            <div>
+              <div style={{fontSize:'20px',fontWeight:'900',color:T.white,fontFamily:"'Exo 2',sans-serif",lineHeight:1.1}}>{cur.name}</div>
+              <div style={{fontSize:'11px',color:T.grey1,marginTop:'3px'}}>Лига {cur.id} · {trophies.toLocaleString()} 🏆</div>
+            </div>
+          </div>
+
+          {/* Tier progress bar */}
+          {nextLeague && (
+            <div>
+              <div style={{display:'flex',justifyContent:'space-between',marginBottom:'5px'}}>
+                <span style={{fontSize:'10px',color:T.grey2}}>{cur.name}</span>
+                <span style={{fontSize:'10px',color:T.grey2,fontWeight:'600'}}>{trophies} / {tierMax+1}</span>
+                <span style={{fontSize:'10px',color:T.purpleLt}}>{nextLeague.name}</span>
+              </div>
+              <div style={{height:'6px',background:T.purple1,borderRadius:'3px',overflow:'hidden'}}>
+                <div style={{width:`${tierProgress}%`,height:'100%',background:`linear-gradient(90deg,${cur.color},${T.orangeLt})`,borderRadius:'3px',transition:'width 0.5s'}}/>
+              </div>
+              <div style={{fontSize:'10px',color:T.grey2,marginTop:'4px',textAlign:'center'}}>ещё {nextLeague.min - trophies} 🏆 до {nextLeague.emoji} {nextLeague.name}</div>
+            </div>
+          )}
+        </div>
+
+        {/* All leagues list */}
+        <div style={{display:'flex',flexDirection:'column',gap:'6px'}}>
+          {LEAGUE_LIST.map(l => {
+            const isCurrent = l.id === currentId;
+            const isUnlocked = l.min <= trophies;
+            return (
+              <div key={l.id} style={{
+                display:'flex',alignItems:'center',gap:'10px',
+                background: isCurrent ? `${l.color}18` : (isUnlocked ? T.bgCard : 'rgba(26,16,48,0.4)'),
+                border: isCurrent ? `1px solid ${l.color}55` : `1px solid ${T.purple1}`,
+                borderRadius:'12px',padding:'10px 14px',
+                opacity: isUnlocked ? 1 : 0.4,
+                transition:'all 0.15s'
+              }}>
+                <div style={{width:'36px',height:'36px',borderRadius:'10px',background:isCurrent?`${l.color}22`:T.purple1,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'18px',flexShrink:0,border:isCurrent?`1px solid ${l.color}33`:'none'}}>
+                  {l.emoji}
+                </div>
+                <div style={{flex:1}}>
+                  <div style={{display:'flex',alignItems:'center',gap:'6px'}}>
+                    <span style={{fontSize:'13px',fontWeight:'700',color:isCurrent?T.white:T.grey1,fontFamily:"'Exo 2',sans-serif"}}>{l.name}</span>
+                    {isCurrent && <span style={{fontSize:'9px',background:`${l.color}33`,color:l.color,borderRadius:'5px',padding:'1px 6px',fontWeight:'700'}}>ВЫ ЗДЕСЬ</span>}
+                    {!isUnlocked && <span style={{fontSize:'12px'}}>🔒</span>}
+                  </div>
+                  <div style={{fontSize:'10px',color:T.grey2,marginTop:'1px'}}>{l.min.toLocaleString()} – {l.max.toLocaleString()} 🏆</div>
+                </div>
+                {isCurrent && (
+                  <div style={{width:'8px',height:'8px',borderRadius:'50%',background:l.color,flexShrink:0,boxShadow:`0 0 8px ${l.color}66`}}/>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
     </div>
   );
 };
@@ -1724,3 +2856,4 @@ ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
 </script>
 </body>
 </html>
+

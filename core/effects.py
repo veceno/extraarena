@@ -401,7 +401,7 @@ def effect_freeze(
     opponent: PlayerState,
     target_id: Optional[str] = None,
 ) -> None:
-    """Заморозить выбранную цель (зелья)."""
+    """Заморозить выбранную цель (зелья). Героев замораживать нельзя."""
     if not target_id:
         return
     
@@ -412,12 +412,6 @@ def effect_freeze(
                 unit.is_frozen = True
                 logger.debug("[EFFECTS] Юнит %s заморожен", unit.name)
             return
-    
-    # Проверяем героя противника
-    if str(opponent.hero.instance_id) == target_id:
-        if not opponent.hero.is_frozen:
-            opponent.hero.is_frozen = True
-            logger.debug("[EFFECTS] Герой противника заморожен")
 
 
 @register_effect("battlecry_freeze")
@@ -456,7 +450,7 @@ def _register_mana_effects():
         
         EFFECT_HANDLERS[f"mana_gain_{gain}"] = make_gain_handler(gain)
     
-    # mana_drain_X: отнять X маны у противника
+    # mana_drain_X: отнять X маны у противника и передать владельцу
     for drain in range(1, 11):
         def make_drain_handler(amount: int):
             def handler(
@@ -466,9 +460,11 @@ def _register_mana_effects():
                 opponent: PlayerState,
                 target_id: Optional[str] = None,
             ) -> None:
-                f"""Отнять {amount} маны у противника."""
-                opponent.mana = max(0, opponent.mana - amount)
-                logger.debug("[EFFECTS] Игрок %s потерял %d маны", opponent.user_id, amount)
+                f"""Отнять {amount} маны у противника и передать владельцу."""
+                drained = min(opponent.mana, amount)
+                opponent.mana -= drained
+                owner.mana = min(owner.max_mana, owner.mana + drained)
+                logger.debug("[EFFECTS] Игрок %s потерял %d маны, игрок %s получил %d маны", opponent.user_id, drained, owner.user_id, drained)
             return handler
         
         EFFECT_HANDLERS[f"mana_drain_{drain}"] = make_drain_handler(drain)

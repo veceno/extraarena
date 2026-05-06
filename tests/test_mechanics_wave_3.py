@@ -112,7 +112,7 @@ def test_instant_kill_unit():
 
 
 def test_instant_kill_hero():
-    """Тест 2: instant_kill может убить героя мгновенно."""
+    """Тест 2: instant_kill НЕ убивает героя мгновенно — наносит базовый урон."""
     state = create_minimal_game_state()
     env = ArenaEnvironment(state)
     
@@ -130,7 +130,7 @@ def test_instant_kill_hero():
     )
     state.p1.board.append(instant_killer)
     
-    # Атакуем героя напрямую
+    hero_hp_before = state.p2.hero.hp
     success, error = env.step(1, AttackAction(
         attacker_id=str(instant_killer.instance_id),
         target_id=None,
@@ -138,8 +138,7 @@ def test_instant_kill_hero():
     ))
     
     assert success, f"Атака героя должна быть успешной: {error}"
-    assert state.p2.hero.hp == 0, "Герой должен быть мгновенно убит"
-    assert state.status == GameStatus.P1_WIN, "Игра должна завершиться победой P1"
+    assert state.p2.hero.hp == hero_hp_before - 1, f"Герой должен получить только 1 урона, HP: {state.p2.hero.hp}"
 
 
 def test_cleave_damages_multiple_targets():

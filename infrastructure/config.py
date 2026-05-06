@@ -49,6 +49,30 @@ BOT_DIFFICULTY_PROFILES = {
     },
 }
 
+# Конфигурация лиг (идентификатор 1–10, пороги трофеев)
+LEAGUE_CONFIG = {
+    1:  {"name": "Novice",       "emoji": "\U0001f331", "color": "#2ECC71", "min_trophies": 0},
+    2:  {"name": "Bronze",       "emoji": "\U0001f949", "color": "#E67E22", "min_trophies": 300},
+    3:  {"name": "Silver",       "emoji": "\U0001f948", "color": "#95A5A6", "min_trophies": 600},
+    4:  {"name": "Gold",         "emoji": "\U0001f947", "color": "#F1C40F", "min_trophies": 1200},
+    5:  {"name": "Crystal",      "emoji": "\U0001f4ce", "color": "#3498DB", "min_trophies": 2000},
+    6:  {"name": "Master",       "emoji": "\u2b50",     "color": "#F39C12", "min_trophies": 3000},
+    7:  {"name": "Champion",     "emoji": "\U0001f3c6", "color": "#E74C3C", "min_trophies": 4500},
+    8:  {"name": "Grandmaster",  "emoji": "\U0001f4ab", "color": "#9B59B6", "min_trophies": 6000},
+    9:  {"name": "Legendary",    "emoji": "\U0001f451", "color": "#FF6B6B", "min_trophies": 7500},
+    10: {"name": "Extra",        "emoji": "\U0001f3df\ufe0f", "color": "#FFD700", "min_trophies": 9000},
+}
+
+LEAGUE_NEXT_TROPHIES = [300, 600, 1200, 2000, 3000, 4500, 6000, 7500, 9000, 10000]
+
+
+def get_league_by_trophies_fn(trophies: int) -> int:
+    for lid in range(10, 0, -1):
+        if trophies >= LEAGUE_CONFIG[lid]["min_trophies"]:
+            return lid
+    return 1
+
+
 # Тиры прогрессии для динамического расчёта трофеев и монет
 TROPHY_TIERS = {
     "novice": {

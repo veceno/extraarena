@@ -75,15 +75,29 @@ def scale_card_by_level(card: CardInstance, level: int) -> CardInstance:
                 scaled_mechanics.append(f"{prefix}{new_val}")
                 continue
 
-            # 2. Targeted Heal / Damage (Single Target): Линейный рост
-            # Паттерн: battlecry_heal_target_X или damage_X
+            # 2. Targeted Heal / Damage (Single Target): Tiered рост каждые 2 уровня
             target_match = re.match(r"(.*(?:heal_target|damage)_)(\d+)", mechanic)
             if target_match:
                 prefix, base_val = target_match.groups()
-                # Линейный рост: +1 за уровень
-                new_val = int(base_val) + (level - 1)
+                new_val = int(base_val) + ((level - 1) // 2)
                 scaled_mechanics.append(f"{prefix}{new_val}")
                 continue
+
+            # 3. Passive mechanics (regen, armor, aura, reflect): Tiered рост каждые 3 уровня
+            passive_scaled = False
+            for passive_prefix in ["regen_", "armor_", "aura_atk_", "reflect_"]:
+                passive_match = re.match(rf"({passive_prefix})(\d+)", mechanic)
+                if passive_match:
+                    prefix, base_val = passive_match.groups()
+                    new_val = int(base_val) + ((level - 1) // 3)
+                    scaled_mechanics.append(f"{prefix}{new_val}")
+                    passive_scaled = True
+                    break
+            if passive_scaled:
+                continue
+
+            # Остальные механики без изменений
+            scaled_mechanics.append(mechanic)
 
             # 3. Lifesteal и Charge - флаги, без изменений
             scaled_mechanics.append(mechanic)
@@ -105,7 +119,7 @@ def scale_card_by_level(card: CardInstance, level: int) -> CardInstance:
             if match:
                 prefix = match.group(1) or ""
                 base_damage = int(match.group(2))
-                new_damage = base_damage + (level - 1)
+                new_damage = base_damage + ((level - 1) // 3)
                 scaled_mechanic = f"{prefix}damage_{new_damage}"
                 scaled_mechanics.append(scaled_mechanic)
                 logger.debug(
@@ -536,7 +550,7 @@ class ArenaEnvironment:
             else:
                 # Пробуждаем существо (is_asleep=False)
                 unit.is_ready = True
-            
+
             # Проверка регенерации regen_X
             for mechanic in unit.mechanics:
                 if mechanic.startswith("regen_"):
@@ -1435,7 +1449,7 @@ class ArenaEnvironment:
         
         # Проверка Lifesteal
         if attacker and "lifesteal" in attacker.mechanics and effective_attack > 0:
-            text += f"...и восстанавливает {effective_attack} здоровья герою"
+            text += "...и восстанавливает здоровье герою"
         
         return (log_type, text)
     
