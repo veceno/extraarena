@@ -4189,6 +4189,7 @@ def create_web_app(
         trophies = data.get("trophies")
         user_avg_level = data.get("user_avg_level") or data.get("avg_level") or 1
         selected_deck_id = data.get("selected_deck_id") or data.get("deck_id")
+        game_mode = data.get("game_mode") or data.get("mode") or "classic"
 
         logger = logging.getLogger(__name__)
         try:
@@ -4203,8 +4204,8 @@ def create_web_app(
         matchmaker: Matchmaker = request.app["matchmaker"]
         try:
             logger.info(
-                "match_find_handler: user_id=%s trophies=%s avg_level=%s deck_id=%s",
-                user_id, trophies, user_avg_level, selected_deck_id
+                "match_find_handler: user_id=%s trophies=%s avg_level=%s deck_id=%s game_mode=%s",
+                user_id, trophies, user_avg_level, selected_deck_id, game_mode
             )
             result = await matchmaker.find_match(user_id, trophies, user_avg_level, selected_deck_id)
 

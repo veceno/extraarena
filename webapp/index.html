@@ -152,7 +152,7 @@ window._getUserId = function() {
   return tg?.initDataUnsafe?.user?.id || (urlId ? parseInt(urlId) : null);
 };
 
-window.startBattle = async function(profile, deckId) {
+window.startBattle = async function(profile, deckId, mode) {
   const tg = window.Telegram?.WebApp;
   const overlay = document.getElementById('searchOverlay');
   if (overlay) overlay.style.display = 'flex';
@@ -163,7 +163,7 @@ window.startBattle = async function(profile, deckId) {
     const userId = window._getUserId();
     const initData = tg?.initData || '';
 
-    const body = { user_id: userId, trophies: profile?.trophies || 0, init_data: initData };
+    const body = { user_id: userId, trophies: profile?.trophies || 0, init_data: initData, game_mode: mode || 'classic' };
     if (deckId != null) body.selected_deck_id = parseInt(deckId);
 
     const res = await fetch('/api/match/find', {
@@ -178,7 +178,7 @@ window.startBattle = async function(profile, deckId) {
     if (data.match_id) {
       window.location.href = `${location.origin}/arena?id=${encodeURIComponent(data.match_id)}&user_id=${encodeURIComponent(userId)}`;
     } else {
-      matchmakingTimer = setTimeout(() => window.startBattle(profile), 3000);
+      matchmakingTimer = setTimeout(() => window.startBattle(profile, deckId, mode), 3000);
     }
   } catch(e) {
     console.error('Battle search error:', e);
@@ -2368,21 +2368,108 @@ const GAME_MODES = [
     border: `rgba(245,146,30,0.3)`,
   },
   {
-    id: 'blitz',
-    icon: '⚡',
-    label: 'Блиц',
-    time: '1 минута',
-    desc: 'Нет времени на раздумья — только инстинкты и скорость. Кто не успел, тот проиграл.',
-    color: '#a78bfa',
-    bg: `rgba(167,139,250,0.08)`,
-    border: `rgba(167,139,250,0.3)`,
+    id: 'extra_arena',
+    icon: '🌀',
+    label: 'Extra Arena',
+    time: '1–5 минут',
+    desc: 'Особый режим с модификаторами. Блиц — стремительный темп, Драфт — выбери карты перед боем.',
+    color: '#c084fc',
+    bg: `rgba(192,132,252,0.08)`,
+    border: `rgba(192,132,252,0.3)`,
+    subMods: [
+      {id:'blitz', icon:'⚡', label:'Блиц',  desc:'Обычные правила, но ускоренный темп. Каждый ход — на счету.'},
+      {id:'draft', icon:'🃏', label:'Драфт', desc:'Перед боем выбери карты из случайного набора. Нет двух одинаковых игр.'},
+    ],
   },
 ];
 
+// ─── Extra Arena info modal ───────────────────────────────────────────────────
+const ExtraArenaInfoModal = ({onClose}) => {
+  const MODE_COLOR = '#c084fc';
+  const subs = GAME_MODES.find(m => m.id === 'extra_arena')?.subMods || [];
+  return (
+    <div style={{position:'absolute',inset:0,background:'rgba(5,3,14,0.88)',backdropFilter:'blur(12px)',zIndex:50,display:'flex',alignItems:'center',justifyContent:'center',padding:'20px'}} onClick={onClose}>
+      <div onClick={e=>e.stopPropagation()}
+        style={{width:'100%',maxWidth:'380px',background:'linear-gradient(180deg,#1e1445 0%,#130d26 100%)',borderRadius:'22px',border:`1.5px solid ${MODE_COLOR}44`,boxShadow:`0 20px 60px rgba(0,0,0,0.7),0 0 40px ${MODE_COLOR}18`,overflow:'hidden',animation:'fadeIn 0.18s'}}>
+        {/* header */}
+        <div style={{padding:'18px 20px 14px',borderBottom:`1px solid ${MODE_COLOR}22`,background:`${MODE_COLOR}08`}}>
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+            <div style={{display:'flex',alignItems:'center',gap:'10px'}}>
+              <div style={{width:'40px',height:'40px',borderRadius:'12px',background:`${MODE_COLOR}20`,border:`1px solid ${MODE_COLOR}55`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'22px'}}>🌀</div>
+              <div>
+                <div style={{fontSize:'17px',fontWeight:'900',color:'white',fontFamily:"'Exo 2',sans-serif"}}>Extra Arena</div>
+                <div style={{fontSize:'11px',color:MODE_COLOR,fontWeight:'600',marginTop:'1px'}}>1–5 минут · Особый режим</div>
+              </div>
+            </div>
+            <button onClick={onClose} style={{width:'30px',height:'30px',borderRadius:'10px',background:'rgba(255,255,255,0.06)',border:`1px solid ${MODE_COLOR}33`,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',color:MODE_COLOR,fontSize:'16px',fontWeight:'700',fontFamily:'monospace'}}>✕</button>
+          </div>
+          <div style={{marginTop:'12px',fontSize:'13px',color:'#d1c4fe',lineHeight:1.6}}>
+            Extra Arena — режим с модификаторами, меняющими правила игры. Перед боем ты выбираешь модификатор, и именно по этим правилам пройдёт матч.
+          </div>
+        </div>
+        {/* sub-modifiers */}
+        <div style={{padding:'14px 20px 20px'}}>
+          <div style={{fontSize:'11px',color:'rgba(255,255,255,0.4)',textTransform:'uppercase',letterSpacing:'0.6px',marginBottom:'10px'}}>Модификаторы</div>
+          <div style={{display:'flex',flexDirection:'column',gap:'10px'}}>
+            {subs.map(s => (
+              <div key={s.id} style={{background:`${MODE_COLOR}0a`,border:`1px solid ${MODE_COLOR}33`,borderRadius:'14px',padding:'13px 15px',display:'flex',gap:'12px',alignItems:'flex-start'}}>
+                <div style={{width:'38px',height:'38px',borderRadius:'10px',background:`${MODE_COLOR}18`,border:`1px solid ${MODE_COLOR}44`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'20px',flexShrink:0}}>{s.icon}</div>
+                <div>
+                  <div style={{fontSize:'14px',fontWeight:'800',color:'white',fontFamily:"'Exo 2',sans-serif",marginBottom:'4px'}}>{s.label}</div>
+                  <div style={{fontSize:'12px',color:'#c4b5fd',lineHeight:1.55}}>{s.desc}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+          <div style={{marginTop:'14px',background:'rgba(255,255,255,0.04)',borderRadius:'10px',padding:'10px 12px',fontSize:'11px',color:'rgba(255,255,255,0.4)',lineHeight:1.6}}>
+            💡 Больше модификаторов появится в будущих обновлениях.
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ─── Generic mode info modal (placeholder) ────────────────────────────────────
+const ModeInfoModal = ({modeId, onClose}) => {
+  const m = GAME_MODES.find(x => x.id === modeId);
+  if (!m) return null;
+  if (modeId === 'extra_arena') return <ExtraArenaInfoModal onClose={onClose}/>;
+  return (
+    <div style={{position:'absolute',inset:0,background:'rgba(5,3,14,0.88)',backdropFilter:'blur(12px)',zIndex:50,display:'flex',alignItems:'center',justifyContent:'center',padding:'20px'}} onClick={onClose}>
+      <div onClick={e=>e.stopPropagation()}
+        style={{width:'100%',maxWidth:'360px',background:'linear-gradient(180deg,#1e1445 0%,#130d26 100%)',borderRadius:'22px',border:`1.5px solid ${m.color}44`,boxShadow:`0 20px 60px rgba(0,0,0,0.7)`,overflow:'hidden',animation:'fadeIn 0.18s'}}>
+        <div style={{padding:'18px 20px 14px',borderBottom:`1px solid ${m.color}22`,background:`${m.color}08`}}>
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+            <div style={{display:'flex',alignItems:'center',gap:'10px'}}>
+              <div style={{width:'40px',height:'40px',borderRadius:'12px',background:`${m.color}20`,border:`1px solid ${m.color}55`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'22px'}}>{m.icon}</div>
+              <div>
+                <div style={{fontSize:'17px',fontWeight:'900',color:'white',fontFamily:"'Exo 2',sans-serif"}}>{m.label}</div>
+                <div style={{fontSize:'11px',color:m.color,fontWeight:'600',marginTop:'1px'}}>{m.time}</div>
+              </div>
+            </div>
+            <button onClick={onClose} style={{width:'30px',height:'30px',borderRadius:'10px',background:'rgba(255,255,255,0.06)',border:`1px solid ${m.color}33`,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',color:m.color,fontSize:'16px',fontWeight:'700',fontFamily:'monospace'}}>✕</button>
+          </div>
+        </div>
+        <div style={{padding:'16px 20px 22px',fontSize:'13px',color:'#d1d5db',lineHeight:1.7}}>
+          {m.desc}
+          <div style={{marginTop:'14px',background:'rgba(255,255,255,0.04)',borderRadius:'10px',padding:'10px 12px',fontSize:'11px',color:'rgba(255,255,255,0.4)'}}>
+            📝 Подробное описание режима появится позже.
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+// ─────────────────────────────────────────────────────────────────────────────
+
 const GameModeSheet = ({onClose, onConfirm}) => {
-  const [mode, setMode] = React.useState('classic');
-  const [deckId, setDeckId] = React.useState('');
+  const [mode,    setMode]    = React.useState('classic');
+  const [subMod,  setSubMod]  = React.useState('blitz');   // Extra Arena sub-modifier
+  const [deckId,  setDeckId]  = React.useState('');
   const [presets, setPresets] = React.useState([]);
+  const [infoFor, setInfoFor] = React.useState(null);      // modeId whose info is open
+
   const chosen = GAME_MODES.find(m => m.id === mode);
 
   React.useEffect(() => {
@@ -2403,34 +2490,62 @@ const GameModeSheet = ({onClose, onConfirm}) => {
   const selectedDeck = presets.find(p => String(p.preset_number) === deckId);
   const deckCount = selectedDeck ? (selectedDeck.card_ids?.filter(Boolean)?.length || 0) : 0;
 
+  // Full game_mode string passed to API: "classic", "extra_arena:blitz", "extra_arena:draft"
+  const fullMode = mode === 'extra_arena' ? `extra_arena:${subMod}` : mode;
+
   return (
     <div style={{position:'absolute',inset:0,background:'rgba(5,3,14,0.78)',backdropFilter:'blur(10px)',zIndex:20,display:'flex',flexDirection:'column',justifyContent:'flex-end'}} onClick={onClose}>
+      {/* Info modal overlay */}
+      {infoFor && <ModeInfoModal modeId={infoFor} onClose={()=>setInfoFor(null)}/>}
+
       <div onClick={e=>e.stopPropagation()} className="safe-pad-bottom"
         style={{background:'linear-gradient(180deg,#1a1238 0%,#130d26 100%)',borderRadius:'24px 24px 0 0',padding:'16px 18px 24px',border:`1px solid ${T.purple1}`,borderBottom:'none',boxShadow:'0 -20px 60px rgba(0,0,0,0.6)',animation:'slideUp 0.28s cubic-bezier(0.32,0.72,0,1)'}}>
         <div style={{width:'36px',height:'4px',borderRadius:'2px',background:T.purple2,margin:'0 auto 16px'}}/>
         <div style={{fontSize:'18px',fontWeight:'900',color:T.white,fontFamily:"'Exo 2',sans-serif",marginBottom:'14px'}}>Выбери режим</div>
 
+        {/* Mode list */}
         <div style={{display:'flex',flexDirection:'column',gap:'10px',marginBottom:'12px'}}>
           {GAME_MODES.map(m => (
-            <button key={m.id} onClick={()=>setMode(m.id)}
-              style={{display:'flex',gap:'14px',padding:'14px 16px',background:mode===m.id?m.bg:T.bgCard,border:`1.5px solid ${mode===m.id?m.color:T.purple1}`,borderRadius:'16px',cursor:'pointer',textAlign:'left',transition:'all 0.15s',position:'relative',overflow:'hidden'}}>
-              {mode===m.id && <div style={{position:'absolute',top:0,left:0,right:0,height:'2px',background:`linear-gradient(90deg,transparent,${m.color},transparent)`}}/>}
-              <div style={{width:'44px',height:'44px',borderRadius:'12px',background:mode===m.id?`${m.color}20`:T.purple1,border:`1px solid ${mode===m.id?m.color:T.purple2}`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'22px',flexShrink:0}}>
-                {m.icon}
-              </div>
-              <div style={{flex:1,minWidth:0}}>
-                <div style={{display:'flex',alignItems:'center',gap:'8px',marginBottom:'3px'}}>
-                  <span style={{fontSize:'15px',fontWeight:'800',color:mode===m.id?m.color:T.white,fontFamily:"'Exo 2',sans-serif"}}>{m.label}</span>
-                  <span style={{fontSize:'10px',color:mode===m.id?m.color:T.grey3,background:mode===m.id?`${m.color}18`:T.purple1,borderRadius:'6px',padding:'1px 7px',fontWeight:'600',fontFamily:"'Exo 2',sans-serif"}}>{m.time}</span>
+            <div key={m.id}>
+              <button onClick={()=>setMode(m.id)}
+                style={{width:'100%',display:'flex',gap:'14px',padding:'14px 16px',background:mode===m.id?m.bg:T.bgCard,border:`1.5px solid ${mode===m.id?m.color:T.purple1}`,borderRadius:'16px',cursor:'pointer',textAlign:'left',transition:'all 0.15s',position:'relative',overflow:'hidden'}}>
+                {mode===m.id && <div style={{position:'absolute',top:0,left:0,right:0,height:'2px',background:`linear-gradient(90deg,transparent,${m.color},transparent)`}}/>}
+                <div style={{width:'44px',height:'44px',borderRadius:'12px',background:mode===m.id?`${m.color}20`:T.purple1,border:`1px solid ${mode===m.id?m.color:T.purple2}`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'22px',flexShrink:0}}>
+                  {m.icon}
                 </div>
-                <div style={{fontSize:'12px',color:T.grey1,lineHeight:1.45}}>{m.desc}</div>
-              </div>
-              {mode===m.id && (
-                <div style={{width:'20px',height:'20px',borderRadius:'50%',border:`2px solid ${m.color}`,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,alignSelf:'center'}}>
-                  <div style={{width:'10px',height:'10px',borderRadius:'50%',background:m.color}}/>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{display:'flex',alignItems:'center',gap:'8px',marginBottom:'3px'}}>
+                    <span style={{fontSize:'15px',fontWeight:'800',color:mode===m.id?m.color:T.white,fontFamily:"'Exo 2',sans-serif"}}>{m.label}</span>
+                    <span style={{fontSize:'10px',color:mode===m.id?m.color:T.grey3,background:mode===m.id?`${m.color}18`:T.purple1,borderRadius:'6px',padding:'1px 7px',fontWeight:'600',fontFamily:"'Exo 2',sans-serif"}}>{m.time}</span>
+                  </div>
+                  <div style={{fontSize:'12px',color:T.grey1,lineHeight:1.45}}>{m.desc}</div>
+                </div>
+                <div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:'6px',flexShrink:0,alignSelf:'center'}}>
+                  {/* ? info button */}
+                  <button onClick={e=>{e.stopPropagation();setInfoFor(m.id);}}
+                    style={{width:'22px',height:'22px',borderRadius:'50%',background:'rgba(255,255,255,0.08)',border:`1px solid ${m.color}55`,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',fontSize:'11px',fontWeight:'900',color:m.color,fontFamily:'monospace',flexShrink:0}}>?</button>
+                  {/* radio dot */}
+                  {mode===m.id && (
+                    <div style={{width:'20px',height:'20px',borderRadius:'50%',border:`2px solid ${m.color}`,display:'flex',alignItems:'center',justifyContent:'center'}}>
+                      <div style={{width:'10px',height:'10px',borderRadius:'50%',background:m.color}}/>
+                    </div>
+                  )}
+                </div>
+              </button>
+
+              {/* Sub-modifier picker — only for extra_arena when selected */}
+              {m.id === 'extra_arena' && mode === 'extra_arena' && m.subMods && (
+                <div style={{marginTop:'8px',padding:'10px 12px',background:`${m.color}08`,border:`1px solid ${m.color}22`,borderRadius:'12px',display:'flex',gap:'8px'}}>
+                  {m.subMods.map(s => (
+                    <button key={s.id} onClick={()=>setSubMod(s.id)}
+                      style={{flex:1,padding:'9px 8px',borderRadius:'10px',border:`1.5px solid ${subMod===s.id?m.color:`${m.color}33`}`,background:subMod===s.id?`${m.color}20`:'transparent',cursor:'pointer',display:'flex',flexDirection:'column',alignItems:'center',gap:'4px',transition:'all 0.12s'}}>
+                      <span style={{fontSize:'18px'}}>{s.icon}</span>
+                      <span style={{fontSize:'12px',fontWeight:'700',color:subMod===s.id?m.color:T.grey2,fontFamily:"'Exo 2',sans-serif"}}>{s.label}</span>
+                    </button>
+                  ))}
                 </div>
               )}
-            </button>
+            </div>
           ))}
         </div>
 
@@ -2474,10 +2589,10 @@ const GameModeSheet = ({onClose, onConfirm}) => {
             </button>
           </div>
         ) : (
-        <button onClick={()=>onConfirm(mode, deckId)}
-          style={{width:'100%',height:'54px',background:`linear-gradient(135deg,${chosen.color},${chosen.color}cc)`,border:'none',borderRadius:'16px',color:'white',fontSize:'18px',fontWeight:'900',fontFamily:"'Exo 2',sans-serif",cursor:'pointer',boxShadow:`0 6px 24px ${chosen.color}44`,letterSpacing:'1px',transition:'all 0.15s'}}>
-          {chosen.icon} В БОЙ — {chosen.label}
-        </button>
+          <button onClick={()=>onConfirm(fullMode, deckId)}
+            style={{width:'100%',height:'54px',background:`linear-gradient(135deg,${chosen.color},${chosen.color}cc)`,border:'none',borderRadius:'16px',color:'white',fontSize:'18px',fontWeight:'900',fontFamily:"'Exo 2',sans-serif",cursor:'pointer',boxShadow:`0 6px 24px ${chosen.color}44`,letterSpacing:'1px',transition:'all 0.15s'}}>
+            {chosen.icon} В БОЙ — {mode==='extra_arena'?(chosen.subMods?.find(s=>s.id===subMod)?.label||chosen.label):chosen.label}
+          </button>
         )}
       </div>
     </div>
@@ -2767,7 +2882,7 @@ const App = () => {
       {showMenu       && <MenuSheet       onClose={()=>setShowMenu(false)} onSettings={openSettings} onMail={()=>{setShowMenu(false);setTimeout(()=>setShowMail(true),120);}} onInfo={()=>{setShowMenu(false);setTimeout(()=>setShowInfo(true),120);}} profile={profile}/>}
       {showSettings   && <SettingsScreen  onClose={()=>setShowSettings(false)} profile={profile}/>}
       {showBattlePick && <BattlePickSheet onClose={()=>setShowBattlePick(false)} profile={profile}/>}
-      {showGameMode   && <GameModeSheet   onClose={()=>setShowGameMode(false)} onConfirm={(_mode, deckId)=>{setShowGameMode(false);window.startBattle(profile, deckId);}}/>}
+      {showGameMode   && <GameModeSheet   onClose={()=>setShowGameMode(false)} onConfirm={(mode, deckId)=>{setShowGameMode(false);window.startBattle(profile, deckId, mode);}}/>}
       {showMail       && <MailScreen      onClose={()=>setShowMail(false)} userId={profile?.user_id}/>}
       {showCaseOpen   && <CaseOpenScreen onClose={()=>setShowCaseOpen(false)} onDone={()=>{setShowCaseOpen(false);window.loadProfile().then(d=>{if(d)setProfile(d);});}} profile={profile}/>}
       {showInfo       && <InfoSheet      onClose={()=>setShowInfo(false)}/>}
