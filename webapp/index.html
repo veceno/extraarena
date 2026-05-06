@@ -193,11 +193,12 @@ window.startBattle = async function(profile, deckId, mode) {
     if (!res.ok) throw new Error('match find failed');
     const data = await res.json();
 
-    if (data.match_id) {
+    if (data.status === 'found' && data.match_id) {
+      // Матч найден сразу — показываем PreBattle экран
       openPreBattle(data);
-    } else if (data.match_id === undefined && data.status === 'waiting') {
-      // Поллинг: ждём пока матч найдётся на сервере
-      const matchId = data.match_id_queue || data.match_id;
+    } else if (data.status === 'waiting' && data.match_id) {
+      // Игрок в очереди — поллим статус пока не найдётся соперник или бот
+      const matchId = data.match_id;
       const startedAt = Date.now();
       if (_mmPollInterval) clearInterval(_mmPollInterval);
       _mmPollInterval = setInterval(async () => {
@@ -215,8 +216,7 @@ window.startBattle = async function(profile, deckId, mode) {
         } catch(e) { console.error('poll error', e); }
       }, 2000);
     } else {
-      // Фолбэк: старый retry
-      matchmakingTimer = setTimeout(() => window.startBattle(profile, deckId, mode), 3000);
+      if (overlay) overlay.style.display = 'none';
     }
   } catch(e) {
     console.error('Battle search error:', e);
