@@ -367,6 +367,7 @@ def _register_aoe_damage_effects():
                 target_id: Optional[str] = None,
             ) -> None:
                 f"""AOE: нанести {dmg} урона всем вражеским существам."""
+                logger.debug("[EFFECTS] aoe_damage_%d: %s бьёт всех врагов (opponent=%s, targets=%d)", dmg, card.name, opponent.user_id, len(opponent.board))
                 for unit in opponent.board:
                     apply_damage(unit, dmg)
             return handler
@@ -464,7 +465,8 @@ def _register_mana_effects():
                 drained = min(opponent.mana, amount)
                 opponent.mana -= drained
                 owner.mana = min(owner.max_mana, owner.mana + drained)
-                logger.debug("[EFFECTS] Игрок %s потерял %d маны, игрок %s получил %d маны", opponent.user_id, drained, owner.user_id, drained)
+                logger.debug("[EFFECTS] mana_drain: Игрок %s потерял %d маны (было=%d), игрок %s получил %d маны (стало=%d/%d)",
+                           opponent.user_id, drained, opponent.mana + drained, owner.user_id, drained, owner.mana, owner.max_mana)
             return handler
         
         EFFECT_HANDLERS[f"mana_drain_{drain}"] = make_drain_handler(drain)

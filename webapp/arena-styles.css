@@ -926,11 +926,11 @@ body.arena-page {
   z-index: 1;
 }
 
-/* Мана (в левом верхнем углу) */
+/* Мана (в правом верхнем углу) */
 .mana-circle {
   position: absolute;
   top: 4px;
-  left: 4px;
+  right: 4px;
   width: 26px;
   height: 26px;
   background: none;
@@ -1165,7 +1165,7 @@ body.arena-page {
   right: 4px;
   color: #A855F7;
   filter: drop-shadow(0 0 5px rgba(168, 85, 247, 1));
-  z-index: 30;
+  z-index: 20;
   pointer-events: none;
   font-size: 20px;
 }
@@ -1191,16 +1191,35 @@ body.arena-page {
 /* Контейнеры иконок статусов */
 .status-icon-container {
   position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  width: 45%;
+  width: 40%;
   height: auto;
-  z-index: 10;
-  pointer-events: none;
+  z-index: 5;  pointer-events: none;
   display: none;
   align-items: center;
   justify-content: center;
+}
+
+/* Position classes */
+.status-icon-container.icon-top-left {
+  top: 4px;
+  left: 4px;
+}
+.status-icon-container.icon-top-right {
+  top: 4px;
+  right: 4px;
+}
+.status-icon-container.icon-bottom-left {
+  bottom: 4px;
+  left: 4px;
+}
+.status-icon-container.icon-bottom-right {
+  bottom: 4px;
+  right: 4px;
+}
+.status-icon-container.icon-center {
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
 }
 
 .status-icon {
@@ -1213,7 +1232,7 @@ body.arena-page {
 .status-icon-taunt {
   position: absolute;
   top: 4px;
-  left: 4px;
+  right: 4px;
   width: 20px;
   height: 20px;
   z-index: 40;
@@ -1360,6 +1379,8 @@ body.arena-page {
   text-shadow: 0 2px 6px rgba(0, 0, 0, 0.8);
   z-index: 12;
   pointer-events: none;
+  max-height: 50%;
+  overflow: hidden;
 }
 
 .charge-icon {
@@ -1368,6 +1389,14 @@ body.arena-page {
   color: #FCD34D;
   filter: drop-shadow(0 0 8px rgba(252, 211, 77, 1));
   animation: chargeFlash 1.5s ease-in-out infinite;
+}
+
+.battlecry-icon {
+  top: 4px;
+  left: 4px;
+  color: #FFFFFF;
+  filter: invert(1) drop-shadow(0 0 6px rgba(255,255,255,0.8));
+  font-size: 18px;
 }
 
 /* Для юнитов на столе - позиция может отличаться */
@@ -1412,7 +1441,7 @@ body.arena-page {
 /* Исправление отображения маны для зелий */
 .potion-card-shape .mana-circle {
     top: -2px !important;
-    left: -2px !important;
+    right: -2px !important;
     transform: none !important;
     width: 30px !important;
     height: 30px !important;
@@ -1752,23 +1781,10 @@ body.arena-page {
   .mana-circle {
     font-size: 26px;
     top: 3px;
-    left: 3px;
+    right: 3px;
   }
   
-  .card-stat {
-    width: 30px;
-    height: 30px;
-    font-size: 12.75px;
-  }
-  
-  .unit-stat {
-    width: 28px;
-    height: 28px;
-    font-size: 12.75px;
-  }
-}
 
-/* Mobile (≤480px) */
 @media (max-width: 480px) {
   /* Player Panel */
   .player-panel-root {
@@ -1829,7 +1845,7 @@ body.arena-page {
   .mana-circle {
     font-size: 24px;
     top: 3px;
-    left: 3px;
+    right: 3px;
   }
   
   .card-stat {

@@ -81,6 +81,7 @@ class BattleEngine:
         self.game_over_processed = False
         self.rewards_granted = False
         self.turn_start_time: Optional[float] = None
+        self.match_start_time: Optional[float] = None
         self.game_mode = game_mode
         self._is_blitz = (game_mode == "extra_arena:blitz")
         self.turn_duration = 5 if self._is_blitz else 25
@@ -189,6 +190,7 @@ class BattleEngine:
 
             # Blitz: hero HP -50% for both players
             if self._is_blitz:
+                self._logger.info("[BLITZ] Halving hero HP: p1=%d→%d p2=%d→%d", p1_hero.hp, p1_hero.hp // 2, p2_hero.hp, p2_hero.hp // 2)
                 p1_hero.hp = p1_hero.hp // 2
                 p1_hero.max_hp = p1_hero.hp
                 p2_hero.hp = p2_hero.hp // 2
@@ -292,6 +294,7 @@ class BattleEngine:
             self.current_player_id = p1_data["user_id"]
             self.turn = 1
             self.turn_start_time = time.time()
+            self.match_start_time = time.time()
             
             # Регистрируем в глобальном словаре
             self._active_matches[match_id] = self
@@ -746,6 +749,19 @@ class BattleEngine:
     
     # =========================================================================
     # LEGAL ACTIONS (удобные методы)
+    # =========================================================================
+    
+    def check_game_over(self) -> Dict[str, Any]:
+        """Проверить завершение игры. Возвращает {'game_over': bool, 'winner_id': int|None}."""
+        if not self._arena:
+            return {"game_over": False, "winner_id": None}
+        state = self._arena.state
+        game_over = state.status != GameStatus.ONGOING
+        winner_id = self._get_winner_id() if game_over else None
+        if game_over:
+            self.is_ended = True
+        return {"game_over": game_over, "winner_id": winner_id}
+
     # =========================================================================
     
     def get_legal_actions(self, user_id: int) -> List[Dict[str, Any]]:

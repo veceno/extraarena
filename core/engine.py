@@ -662,39 +662,31 @@ class ArenaEnvironment:
         Применить стартовые эффекты героев при инициализации игры.
         Обрабатывает механики типа start_mana_X (Капитулюга).
         """
-        # Обрабатываем героя P1
         for mechanic in self.state.p1.hero.mechanics:
             if mechanic.startswith("start_mana_"):
                 try:
-                    mana_bonus = int(mechanic[11:])  # Убираем "start_mana_"
+                    mana_bonus = int(mechanic[11:])
                     self.state.p1.mana = min(10, self.state.p1.mana + mana_bonus)
+                    self.state.p1.max_mana = min(10, self.state.p1.max_mana + mana_bonus)
                     logger.debug(
-                        "[CORE] Герой P1 получает стартовую ману: +%d (итого: %d)",
-                        mana_bonus,
-                        self.state.p1.mana,
+                        "[CORE] Герой P1 получает стартовую ману: +%d (mana=%d, max_mana=%d)",
+                        mana_bonus, self.state.p1.mana, self.state.p1.max_mana,
                     )
                 except ValueError:
-                    logger.warning(
-                        "[CORE] Некорректный формат start_mana у героя P1: %s",
-                        mechanic,
-                    )
-        
-        # Обрабатываем героя P2
+                    logger.warning("[CORE] Некорректный формат start_mana у героя P1: %s", mechanic)
+
         for mechanic in self.state.p2.hero.mechanics:
             if mechanic.startswith("start_mana_"):
                 try:
-                    mana_bonus = int(mechanic[11:])  # Убираем "start_mana_"
+                    mana_bonus = int(mechanic[11:])
                     self.state.p2.mana = min(10, self.state.p2.mana + mana_bonus)
+                    self.state.p2.max_mana = min(10, self.state.p2.max_mana + mana_bonus)
                     logger.debug(
-                        "[CORE] Герой P2 получает стартовую ману: +%d (итого: %d)",
-                        mana_bonus,
-                        self.state.p2.mana,
+                        "[CORE] Герой P2 получает стартовую ману: +%d (mana=%d, max_mana=%d)",
+                        mana_bonus, self.state.p2.mana, self.state.p2.max_mana,
                     )
                 except ValueError:
-                    logger.warning(
-                        "[CORE] Некорректный формат start_mana у героя P2: %s",
-                        mechanic,
-                    )
+                    logger.warning("[CORE] Некорректный формат start_mana у героя P2: %s", mechanic)
 
     def _find_unit_by_id(
         self, board: List[CardInstance], unit_id: Optional[str]

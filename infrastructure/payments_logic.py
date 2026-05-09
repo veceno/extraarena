@@ -168,6 +168,7 @@ async def _grant_rewards_for_item(
     logger: logging.Logger,
 ) -> Dict[str, Any]:
     """Начисляет ресурсы в зависимости от item_type и собирает описание наград."""
+    logger.info("GRANT_REWARDS: user_id=%s item_type=%s metadata=%s", user_id, item_type, {k: metadata.get(k) for k in ("item_name","package_type","recipient_id") if k in metadata})
     rewards_text: List[str] = []
     attachments: Dict[str, Any] = {}
     rewards_given = False
@@ -256,6 +257,24 @@ async def _grant_rewards_for_item(
         rewards_text.append("💫 ExtraPass Ultra (30 дней)")
         rewards_given = True
 
+    elif item_type == "extrapass_gift":
+        from datetime import datetime, timedelta
+
+        recipient_id = int(metadata.get("recipient_id", 0))
+        if recipient_id <= 0:
+            logger.error("extrapass_gift: recipient_id не указан или равен 0, отмена")
+        else:
+            expires_at = datetime.now() + timedelta(days=30)
+            await db.execute(
+                "UPDATE users SET extra_pass = 'active', extra_pass_expires_at = $1 WHERE user_id = $2",
+                expires_at, recipient_id,
+            )
+            attachments["extrapass_gift"] = True
+            attachments["gift_recipient_id"] = recipient_id
+            rewards_text.append(f"⭐ ExtraPass (подарок для ID {recipient_id})")
+            logger.info("extrapass_gift: покупатель=%s получатель=%s", user_id, recipient_id)
+            rewards_given = True
+
     elif item_type == "starter_boost":
         from datetime import datetime, timedelta
 
@@ -294,6 +313,22 @@ async def _grant_rewards_for_item(
         if granted_cases:
             attachments["cases"] = granted_cases
         rewards_given = True
+
+    elif item_type == "gems_package":
+        from infrastructure.shop_config import GEM_PACKAGES
+
+        package_type = metadata.get("package_type", "")
+        pkg = GEM_PACKAGES.get(package_type, {})
+        gems = int(pkg.get("gems", 0))
+        if gems > 0:
+            await db.execute("UPDATE users SET gems = gems + $1 WHERE user_id = $2", gems, user_id)
+            _append_currency("gems", gems, "💎 гемов")
+            rewards_given = True
+        if pkg.get("one_time") and not metadata.get("skip_starter_mark"):
+            await db.execute(
+                "UPDATE user_settings SET starter_pack_used = TRUE WHERE user_id = $1",
+                user_id,
+            )
 
     elif item_type and item_type.startswith("shop_set_"):
         try:

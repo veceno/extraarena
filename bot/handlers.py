@@ -574,6 +574,12 @@ def register_basic_handlers(dp: Dispatcher, webapp_url: str, db: Database | None
             
             # Получаем запись о платеже из БД
             payment_record = await db.get_payment_by_id(payment_id)
+
+            logger.info(
+                "STARS LOOKUP: payment_id=%s found=%s record_keys=%s",
+                payment_id, bool(payment_record),
+                list(payment_record.keys()) if payment_record else 'NONE',
+            )
             
             if not payment_record:
                 logger.warning(f"Платеж {payment_id} не найден в БД, создаем запись")

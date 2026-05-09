@@ -94,6 +94,7 @@ async def main() -> None:
             )
 
     bot, dp = create_bot(settings.bot_token, webapp_url, db=db)
+    web_app["telegram_bot"] = bot
 
     logging.getLogger(__name__).info(
         "Бот запущен в окружении %s. WebApp: %s",
@@ -111,6 +112,9 @@ async def main() -> None:
 
     # Запускаем фоновую задачу для проверки уведомлений о кубике
     asyncio.create_task(_dice_notifications_task(bot, db))
+
+    # Запускаем фоновую задачу для экспирации инвайтов в дружеские игры
+    asyncio.create_task(_expire_friend_invites_task(db))
 
     try:
         await dp.start_polling(bot)
@@ -160,6 +164,21 @@ async def _dice_notifications_task(bot: Bot, db: Database | None) -> None:
         except Exception as e:
             logger.error(f"Ошибка в задаче проверки уведомлений о кубике: {e}", exc_info=True)
             await asyncio.sleep(10)  # Ждем 10 секунд перед повторной попыткой
+
+
+async def _expire_friend_invites_task(db: Database | None) -> None:
+    if not db:
+        return
+
+    while True:
+        try:
+            await asyncio.sleep(30)
+            expired = await db.expire_old_invites()
+            if expired:
+                logger.info(f"Expired {expired} friend invite(s)")
+        except Exception as e:
+            logger.error(f"Ошибка в задаче экспирации инвайтов: {e}", exc_info=True)
+            await asyncio.sleep(10)
 
 
 async def _notify_admin(bot: Bot, settings, schema_changed: bool) -> None:

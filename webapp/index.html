@@ -64,30 +64,204 @@ html, body {
 @keyframes popIn     { from{opacity:0;transform:scale(0.93) translateY(10px)} to{opacity:1;transform:scale(1) translateY(0)} }
 @keyframes spin      { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
 @keyframes yellowPulse { 0%,100%{box-shadow:0 0 4px rgba(245,146,30,0.2)} 50%{box-shadow:0 0 14px rgba(245,146,30,0.6),0 0 22px rgba(245,146,30,0.3)} }
+@keyframes ringPulse1 { 0%,100%{opacity:0.5;transform:translate(-50%,-50%) scale(0.8)} 50%{opacity:0.9;transform:translate(-50%,-50%) scale(1)} }
+@keyframes ringPulse2 { 0%,100%{opacity:0.4;transform:translate(-50%,-50%) scale(1)} 50%{opacity:0.8;transform:translate(-50%,-50%) scale(1.3)} }
+@keyframes ringPulse3 { 0%,100%{opacity:0.2;transform:translate(-50%,-50%) scale(1.3)} 50%{opacity:0.6;transform:translate(-50%,-50%) scale(1.7)} }
+@keyframes ringExpand { from{opacity:0.7;transform:translate(-50%,-50%) scale(0.3)} to{opacity:0;transform:translate(-50%,-50%) scale(2.2)} }
+@keyframes runeFloat { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-4px)} }
+@keyframes slideDown { from{opacity:0;transform:translateY(-10px)} to{opacity:1;transform:translateY(0)} }
+@keyframes opponentReveal { from{opacity:0;transform:scale(0.85) translateY(16px)} to{opacity:1;transform:scale(1) translateY(0)} }
+@keyframes opponentGlowPulse { 0%,100%{box-shadow:0 0 12px rgba(245,146,30,0.2),0 0 32px rgba(245,146,30,0.06)} 50%{box-shadow:0 0 20px rgba(245,146,30,0.45),0 0 50px rgba(245,146,30,0.14)} }
+@keyframes tipSwap { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
+@keyframes preBattleBgPulse { 0%,100%{opacity:0.35;transform:scale(1)} 50%{opacity:0.65;transform:scale(1.06)} }
+@keyframes preBattleVsGlow { 0%,100%{box-shadow:0 0 14px rgba(124,92,191,0.3)} 50%{box-shadow:0 0 28px rgba(124,92,191,0.6),0 0 52px rgba(124,92,191,0.18)} }
+@keyframes countBounce { 0%{opacity:0;transform:scale(0.5) translateY(14px)} 55%{transform:scale(1.1) translateY(-3px)} 100%{opacity:1;transform:scale(1) translateY(0)} }
+@keyframes scaleIn { from{opacity:0;transform:scale(0.85) translateY(20px)} to{opacity:1;transform:scale(1) translateY(0)} }
+@keyframes bounce { 0%,100%{transform:translateY(0)} 40%{transform:translateY(-20px)} 60%{transform:translateY(-8px)} }
 </style>
 </head>
 <body>
 
 <!-- Matchmaking overlay -->
-<div id="searchOverlay" style="display:none;position:fixed;inset:0;z-index:20000;background:rgba(0,0,0,0.72);backdrop-filter:blur(10px);align-items:center;justify-content:center;text-align:center;padding:24px;">
-  <div style="background:rgba(19,13,38,0.97);border:1px solid rgba(93,63,160,0.4);border-radius:22px;padding:28px 24px;max-width:300px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,0.5);">
-    <div style="width:52px;height:52px;border:2px solid rgba(124,92,191,0.3);border-top-color:#9c7de0;border-radius:50%;margin:0 auto 18px;animation:spin 0.85s linear infinite;"></div>
-    <div style="font-size:18px;font-weight:800;color:#f0ecff;font-family:'Exo 2',sans-serif;margin-bottom:6px;">Поиск соперника...</div>
-    <div data-role="search-overlay-text" style="font-size:13px;color:#c4b8e8;line-height:1.5;margin-bottom:16px;">Подбираем соперника, подождите</div>
-    <button id="cancelSearchBtn" style="background:none;border:1px solid #4a3d6a;border-radius:10px;color:#7a6fa0;font-size:13px;padding:7px 20px;cursor:pointer;font-family:'Inter',sans-serif;">Отмена</button>
+<div id="searchOverlay" style="display:none;position:fixed;inset:0;z-index:20000;background:linear-gradient(180deg,rgba(7,4,15,0.94) 0%,rgba(15,10,26,0.92) 100%);backdrop-filter:blur(14px);align-items:center;justify-content:center;text-align:center;padding:24px;flex-direction:column;">
+  <div style="position:absolute;inset:0;background-image:radial-gradient(ellipse at 50% 35%,rgba(92,63,160,0.2) 0%,transparent 70%);pointer-events:none;"></div>
+
+  <div style="position:relative;width:180px;height:180px;margin-bottom:32px;">
+    <div data-role="search-ring" style="position:absolute;top:50%;left:50%;width:140px;height:140px;border-radius:50%;border:1.5px solid rgba(156,125,224,0.35);transform:translate(-50%,-50%) scale(0.3);opacity:0;animation:ringExpand 3s ease-out infinite;animation-delay:0s"></div>
+    <div data-role="search-ring" style="position:absolute;top:50%;left:50%;width:140px;height:140px;border-radius:50%;border:1.5px solid rgba(156,125,224,0.3);transform:translate(-50%,-50%) scale(0.3);opacity:0;animation:ringExpand 3s ease-out infinite;animation-delay:1s"></div>
+    <div data-role="search-ring" style="position:absolute;top:50%;left:50%;width:140px;height:140px;border-radius:50%;border:1.5px solid rgba(156,125,224,0.25);transform:translate(-50%,-50%) scale(0.3);opacity:0;animation:ringExpand 3s ease-out infinite;animation-delay:2s"></div>
+    <div style="position:absolute;top:50%;left:50%;width:80px;height:80px;border-radius:50%;border:1px solid rgba(124,92,191,0.4);transform:translate(-50%,-50%);animation:ringPulse1 2s ease-in-out infinite"></div>
+    <div style="position:absolute;top:50%;left:50%;width:110px;height:110px;border-radius:50%;border:1px solid rgba(124,92,191,0.25);transform:translate(-50%,-50%);animation:ringPulse2 2s ease-in-out infinite"></div>
+    <div style="position:absolute;top:50%;left:50%;width:146px;height:146px;border-radius:50%;border:1px solid rgba(124,92,191,0.14);transform:translate(-50%,-50%);animation:ringPulse3 2s ease-in-out infinite"></div>
+    <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:20px;height:20px;animation:runeFloat 2.5s ease-in-out infinite;">
+      <div style="width:20px;height:20px;border-radius:50%;background:radial-gradient(circle,#9c7de0,#5b3fa0);box-shadow:0 0 18px #7c5cbf,0 0 36px #5b3fa044;"></div>
+    </div>
   </div>
+
+  <div style="font-size:20px;font-weight:900;color:#f0ecff;font-family:'Exo 2',sans-serif;margin-bottom:4px;letter-spacing:0.5px;">Поиск соперника</div>
+  <div id="searchTimer" style="font-size:32px;font-weight:900;color:#9c7de0;font-family:'Exo 2',sans-serif;margin-bottom:8px;letter-spacing:2px;font-variant-numeric:tabular-nums;">00:00</div>
+  <div data-role="search-overlay-text" style="font-size:13px;color:#c4b8e8;line-height:1.5;margin-bottom:20px;max-width:260px;">Подбираем соперника, подождите</div>
+
+  <div id="searchTipsBlock" style="background:rgba(45,31,82,0.35);border:1px solid rgba(93,63,160,0.25);border-radius:12px;padding:10px 14px;max-width:270px;margin-bottom:20px;cursor:pointer;" onclick="window._nextSearchTip?.()">
+    <div style="display:flex;align-items:flex-start;gap:8px;text-align:left;">
+      <span style="font-size:14px;flex-shrink:0;opacity:0.7;">💡</span>
+      <span id="searchTipText" style="font-size:12px;color:#c4b8e8;line-height:1.5;"></span>
+    </div>
+    <div style="font-size:10px;color:#4a3d6a;margin-top:6px;text-align:center;">Нажмите, чтобы увидеть другую подсказку</div>
+  </div>
+
+  <div id="opponentReveal" style="display:none;margin-bottom:20px;">
+    <div style="background:rgba(19,13,38,0.97);border:1px solid rgba(245,146,30,0.3);border-radius:18px;padding:14px 20px;display:flex;align-items:center;gap:14px;animation:opponentGlowPulse 2.5s ease-in-out infinite;">
+      <div id="oppRevealAvatar" style="width:48px;height:48px;border-radius:50%;border:2px solid rgba(245,146,30,0.5);background:linear-gradient(135deg,rgba(245,146,30,0.2),rgba(245,146,30,0.05));display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:900;color:#f5921e;font-family:'Exo 2',sans-serif;overflow:hidden;background-size:cover;background-position:center;flex-shrink:0;"></div>
+      <div style="text-align:left;overflow:hidden;">
+        <div id="oppRevealName" style="font-size:14px;font-weight:900;color:#f0ecff;font-family:'Exo 2',sans-serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"></div>
+        <div id="oppRevealClan" style="font-size:10px;font-weight:700;color:#f5921e;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:none;padding:1px 8px;background:rgba(245,146,30,0.1);border-radius:4px;margin-top:3px;max-width:140px;"></div>
+        <div id="oppRevealTrophies" style="font-size:11px;font-weight:800;color:#ffb347;font-family:'Exo 2',sans-serif;margin-top:3px;">🏆 ...</div>
+      </div>
+    </div>
+    <div style="font-size:16px;font-weight:900;color:#f0ecff;font-family:'Exo 2',sans-serif;margin-top:14px;">Противник найден!</div>
+  </div>
+
+  <button id="cancelSearchBtn" style="background:none;border:1px solid #4a3d6a;border-radius:10px;color:#7a6fa0;font-size:13px;padding:7px 20px;cursor:pointer;font-family:'Inter',sans-serif;">Отмена</button>
 </div>
 
 <div id="root"></div>
 
 <script>
-// Matchmaking (outside React to keep DOM IDs for compatibility)
+// ── Matchmaking Tips ─────────────────────────────────
+window.__matchTips = [
+  "Используйте карты с Провокацией, чтобы защитить героя от атак",
+  "Заклинания наносят урон напрямую и игнорируют провокацию",
+  "Следите за оставшейся маной - иногда выгоднее пропустить ход",
+  "Герой получает урон только после уничтожения всех карт на столе",
+  "Повышайте уровень карт за монеты, чтобы усилить их характеристики",
+  "Открывайте кейсы после побед - в них новые карты, монеты и ресурсы",
+  "В каждом режиме свои модификаторы - изучайте их перед боем",
+  "Карты высокого уровня решают исход боя",
+  "Комбинируйте атакующие карты с защитными для баланса",
+  "Не знаете с чего начать - попробуйте готовые пресеты колод",
+  "Режим Тренировка позволяет безопасно тестировать новые колоды",
+  "За победы вы получаете трофеи, монеты и редкие награды",
+  "Не тратьте всю ману - оставляйте резерв для ответа сопернику",
+  "Чем выше ваша лига, тем сильнее соперники и ценнее награды",
+  "Каждый бой уникален - адаптируйте стратегию под карты соперника",
+];
+
+// ── Matchmaking (outside React) ──────────────────────
 let matchmakingTimer = null;
+let _mmPollInterval = null;
+let _searchTimerInterval = null;
+let _searchStartedAt = 0;
+let _searchTipIndex = -1;
 
 window.cancelSearch = function() {
   clearTimeout(matchmakingTimer);
-  document.getElementById('searchOverlay').style.display = 'none';
+  if (_mmPollInterval) { clearInterval(_mmPollInterval); _mmPollInterval = null; }
+  if (_searchTimerInterval) { clearInterval(_searchTimerInterval); _searchTimerInterval = null; }
+  var o = document.getElementById('searchOverlay');
+  if (o) o.style.display = 'none';
+  var reveal = document.getElementById('opponentReveal');
+  if (reveal) reveal.style.display = 'none';
 };
+
+function _startSearchTimer() {
+  _searchStartedAt = Date.now();
+  var el = document.getElementById('searchTimer');
+  if (_searchTimerInterval) clearInterval(_searchTimerInterval);
+  _searchTimerInterval = setInterval(function() {
+    var elapsed = Math.floor((Date.now() - _searchStartedAt) / 1000);
+    var secs = elapsed < 99 ? elapsed : 99;
+    var m = String(Math.floor(secs / 60));
+    if (m.length < 2) m = '0' + m;
+    var s = String(secs % 60);
+    if (s.length < 2) s = '0' + s;
+    if (el) el.textContent = m + ':' + s;
+  }, 250);
+}
+
+function _stopSearchTimer() {
+  if (_searchTimerInterval) { clearInterval(_searchTimerInterval); _searchTimerInterval = null; }
+}
+
+function _pickRandomTip() {
+  var tips = window.__matchTips;
+  if (!tips || tips.length === 0) return '';
+  _searchTipIndex = Math.floor(Math.random() * tips.length);
+  return tips[_searchTipIndex];
+}
+
+window._nextSearchTip = function() {
+  var tips = window.__matchTips;
+  if (!tips || tips.length === 0) return;
+  _searchTipIndex = (_searchTipIndex + 1) % tips.length;
+  var el = document.getElementById('searchTipText');
+  if (el) { el.style.animation = 'none'; el.offsetHeight; el.style.animation = 'tipSwap 0.3s ease'; el.textContent = tips[_searchTipIndex]; }
+};
+
+function _resetSearchOverlay() {
+  var overlay = document.getElementById('searchOverlay');
+  if (!overlay) return;
+  overlay.style.display = 'flex';
+  var timerEl = document.getElementById('searchTimer');
+  if (timerEl) timerEl.textContent = '00:00';
+  var textEl = document.querySelector('[data-role="search-overlay-text"]');
+  if (textEl) textEl.textContent = 'Подбираем соперника, подождите';
+  var reveal = document.getElementById('opponentReveal');
+  if (reveal) reveal.style.display = 'none';
+  var rings = document.querySelectorAll('[data-role="search-ring"]');
+  for (var i = 0; i < rings.length; i++) rings[i].style.display = '';
+  var tipEl = document.getElementById('searchTipText');
+  if (tipEl) tipEl.textContent = _pickRandomTip();
+  var tipsBlock = document.getElementById('searchTipsBlock');
+  if (tipsBlock) tipsBlock.style.display = '';
+}
+
+function _showOpponentReveal(data) {
+  _stopSearchTimer();
+  var i;
+  var rings = document.querySelectorAll('[data-role="search-ring"]');
+  for (i = 0; i < rings.length; i++) rings[i].style.display = 'none';
+  var timerEl = document.getElementById('searchTimer');
+  if (timerEl) timerEl.style.display = 'none';
+  var textEl = document.querySelector('[data-role="search-overlay-text"]');
+  if (textEl) textEl.style.display = 'none';
+  var tipsBlock = document.getElementById('searchTipsBlock');
+  if (tipsBlock) tipsBlock.style.display = 'none';
+
+  var reveal = document.getElementById('opponentReveal');
+  if (!reveal) return;
+  reveal.style.display = '';
+  reveal.style.animation = 'none';
+  reveal.offsetHeight;
+  reveal.style.animation = 'opponentReveal 0.5s cubic-bezier(0.32,0.72,0,1)';
+
+  var name = data.opponent_name || data.opponentName || 'Соперник';
+  document.getElementById('oppRevealName').textContent = name;
+
+  var avatarUrl = data.opponent_avatar_url || data.opponentAvatar;
+  var avatarEl = document.getElementById('oppRevealAvatar');
+  if (avatarUrl) {
+    avatarEl.style.backgroundImage = 'url(' + avatarUrl + ')';
+    avatarEl.textContent = '';
+  } else {
+    avatarEl.style.backgroundImage = '';
+    avatarEl.textContent = name.charAt(0).toUpperCase();
+  }
+
+  var clan = data.opponent_clan || data.opponentClan || '';
+  var clanEl = document.getElementById('oppRevealClan');
+  if (clan) {
+    clanEl.style.display = 'inline-block';
+    clanEl.textContent = clan;
+  } else {
+    clanEl.style.display = 'none';
+  }
+
+  var trophies = data.opponent_trophies;
+  if (trophies === undefined) trophies = data.opponentTrophies;
+  if (trophies === undefined) trophies = 0;
+  document.getElementById('oppRevealTrophies').textContent = '🏆 ' + Number(trophies).toLocaleString();
+}
 
 // ── Музыка ──────────────────────────────────────────────
 let _musicStarted = false;
@@ -153,108 +327,119 @@ window._getUserId = function() {
   return tg?.initDataUnsafe?.user?.id || (urlId ? parseInt(urlId) : null);
 };
 
-let _mmPollInterval = null;
-
-window.cancelSearch = function() {
-  clearTimeout(matchmakingTimer);
-  if (_mmPollInterval) { clearInterval(_mmPollInterval); _mmPollInterval = null; }
-  const o = document.getElementById('searchOverlay');
-  if (o) o.style.display = 'none';
-};
-
+// ── PvP Search ─────────────────────────────────────────
 window.startBattle = async function(profile, deckId, mode) {
-  const tg = window.Telegram?.WebApp;
-  const overlay = document.getElementById('searchOverlay');
-  const overlayText = document.querySelector('[data-role="search-overlay-text"]');
-  if (overlay) overlay.style.display = 'flex';
-  if (overlayText) overlayText.textContent = 'Подбираем соперника, подождите';
+  _resetSearchOverlay();
+  document.getElementById('battle-sound')?.play().catch(function(){});
+  _startSearchTimer();
 
-  document.getElementById('battle-sound')?.play().catch(()=>{});
-
-  const userId = window._getUserId();
-  const initData = tg?.initData || '';
-  const body = { user_id: userId, trophies: profile?.trophies || 0, init_data: initData, game_mode: mode || 'classic' };
+  var tg = window.Telegram?.WebApp;
+  var userId = window._getUserId();
+  var initData = tg?.initData || '';
+  var body = { user_id: userId, trophies: profile?.trophies || 0, init_data: initData, game_mode: mode || 'classic' };
   if (deckId != null) body.selected_deck_id = parseInt(deckId);
 
   function openPreBattle(data) {
+    _stopSearchTimer();
     if (_mmPollInterval) { clearInterval(_mmPollInterval); _mmPollInterval = null; }
     clearTimeout(matchmakingTimer);
-    if (overlay) overlay.style.display = 'none';
-    window._openPreBattle({ matchId: data.match_id, userId, profile, gameMode: data.game_mode || mode, opponentName: data.opponent_name, opponentAvatar: data.opponent_avatar_url, opponentTrophies: data.opponent_trophies, opponentClan: data.opponent_clan });
+    document.getElementById('searchOverlay').style.display = 'none';
+    window._openPreBattle({ matchId: data.match_id, userId: userId, profile: profile, gameMode: data.game_mode || mode, opponentName: data.opponent_name, opponentAvatar: data.opponent_avatar_url, opponentTrophies: data.opponent_trophies, opponentClan: data.opponent_clan });
+  }
+
+  function handleFound(s) {
+    if (s.opponent_name || s.opponentName) {
+      _showOpponentReveal(s);
+      setTimeout(function() { openPreBattle(s); }, 1400);
+    } else {
+      openPreBattle(s);
+    }
   }
 
   try {
-    const res = await fetch('/api/match/find', {
+    var res = await fetch('/api/match/find', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
-
     if (!res.ok) throw new Error('match find failed');
-    const data = await res.json();
+    var data = await res.json();
 
     if (data.status === 'found' && data.match_id) {
-      // Матч найден сразу — показываем PreBattle экран
-      openPreBattle(data);
+      handleFound(data);
     } else if (data.status === 'waiting' && data.match_id) {
-      // Игрок в очереди — поллим статус пока не найдётся соперник или бот
-      const matchId = data.match_id;
-      const startedAt = Date.now();
+      var matchId = data.match_id;
       if (_mmPollInterval) clearInterval(_mmPollInterval);
-      _mmPollInterval = setInterval(async () => {
-        if (Date.now() - startedAt > 25000) {
+      _mmPollInterval = setInterval(async function() {
+        if (Date.now() - _searchStartedAt > 25000) {
+          _stopSearchTimer();
           clearInterval(_mmPollInterval); _mmPollInterval = null;
-          if (overlay) overlay.style.display = 'none';
+          document.getElementById('searchOverlay').style.display = 'none';
           return;
         }
         try {
-          const r = await fetch(`/api/match/status?id=${encodeURIComponent(matchId)}`);
+          var r = await fetch('/api/match/status?id=' + encodeURIComponent(matchId));
           if (!r.ok) return;
-          const s = await r.json();
-          if (s.status === 'found' && s.match_id) openPreBattle(s);
-          else if (s.status === 'not_found') { clearInterval(_mmPollInterval); _mmPollInterval = null; if (overlay) overlay.style.display = 'none'; }
+          var s = await r.json();
+          if (s.status === 'found' && s.match_id) handleFound(s);
+          else if (s.status === 'not_found') {
+            _stopSearchTimer();
+            clearInterval(_mmPollInterval); _mmPollInterval = null;
+            document.getElementById('searchOverlay').style.display = 'none';
+          }
         } catch(e) { console.error('poll error', e); }
       }, 2000);
     } else {
-      if (overlay) overlay.style.display = 'none';
+      _stopSearchTimer();
+      document.getElementById('searchOverlay').style.display = 'none';
     }
   } catch(e) {
     console.error('Battle search error:', e);
-    if (overlay) overlay.style.display = 'none';
+    _stopSearchTimer();
+    document.getElementById('searchOverlay').style.display = 'none';
   }
 };
 
+// ── VS Bot Search ──────────────────────────────────────
 window.startVsBot = async function(difficulty, profile, deckId, mode) {
-  const overlay = document.getElementById('searchOverlay');
-  const overlayText = document.querySelector('[data-role="search-overlay-text"]');
-  if (overlay) overlay.style.display = 'flex';
-  if (overlayText) overlayText.textContent = 'Подготавливаем бой с ботом...';
+  _resetSearchOverlay();
+  var overlayText = document.querySelector('[data-role="search-overlay-text"]');
+  if (overlayText) overlayText.textContent = 'Подготавливаем бой...';
+  _startSearchTimer();
 
   try {
-    document.getElementById('battle-sound')?.play().catch(()=>{});
-    const userId = window._getUserId();
-
-    const body = { user_id: userId, difficulty, game_mode: mode || 'classic' };
+    document.getElementById('battle-sound')?.play().catch(function(){});
+    var userId = window._getUserId();
+    var body = { user_id: userId, difficulty: difficulty, game_mode: mode || 'classic' };
     if (deckId != null) body.deck_id = parseInt(deckId);
 
-    const res = await fetch('/api/match/vs-bot', {
+    var res = await fetch('/api/match/vs-bot', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
-
     if (!res.ok) throw new Error('vs-bot failed');
-    const data = await res.json();
+    var data = await res.json();
 
     if (data.match_id) {
-      if (overlay) overlay.style.display = 'none';
-      window._openPreBattle({ matchId: data.match_id, userId, profile, gameMode: data.game_mode || mode, opponentName: data.opponent_name, opponentAvatar: data.opponent_avatar_url, opponentTrophies: data.opponent_trophies, opponentClan: data.opponent_clan });
+      _stopSearchTimer();
+      if (data.opponent_name || data.opponentName) {
+        _showOpponentReveal(data);
+        setTimeout(function() {
+          document.getElementById('searchOverlay').style.display = 'none';
+          window._openPreBattle({ matchId: data.match_id, userId: userId, profile: profile, gameMode: data.game_mode || mode, opponentName: data.opponent_name, opponentAvatar: data.opponent_avatar_url, opponentTrophies: data.opponent_trophies, opponentClan: data.opponent_clan });
+        }, 1400);
+      } else {
+        document.getElementById('searchOverlay').style.display = 'none';
+        window._openPreBattle({ matchId: data.match_id, userId: userId, profile: profile, gameMode: data.game_mode || mode, opponentName: data.opponent_name, opponentAvatar: data.opponent_avatar_url, opponentTrophies: data.opponent_trophies, opponentClan: data.opponent_clan });
+      }
     } else {
       throw new Error(data.error || 'no match_id');
     }
   } catch(e) {
     console.error('VS Bot error:', e);
-    if (overlay) overlay.style.display = 'none';
+    _stopSearchTimer();
+    document.getElementById('searchOverlay').style.display = 'none';
   }
 };
 
@@ -406,18 +591,44 @@ const IconCoin   = ({size=14}) => <svg width={size} height={size} viewBox="0 0 1
 const IconGem    = ({size=14}) => <svg width={size} height={size} viewBox="0 0 14 14" fill="none"><polygon points="7,2 12,5 12,9 7,12 2,9 2,5" fill="#a78bfa"/><polygon points="7,4 10,6 7,10 4,6" fill="#c4b5fd"/></svg>;
 const IconTrophy = ({size=18}) => <svg width={size} height={size} viewBox="0 0 18 18" fill="none"><path d="M9 11c-2.8 0-4.5-2.2-4.5-4.5V3h9v3.5C13.5 8.8 11.8 11 9 11z" fill={T.orange}/><path d="M4.5 3H2.5v2c0 1.2.6 2.3 2 2.5M13.5 3h2v2c0 1.2-.6 2.3-2 2.5" stroke={T.orange} strokeWidth="1.2" fill="none"/><path d="M7 11v2.5M11 11v2.5M6 13.5h6" stroke={T.orange} strokeWidth="1.3" strokeLinecap="round"/><rect x="6" y="15" width="6" height="1.5" rx="0.75" fill={T.orange}/></svg>;
 
-const NavShop  = ({a}) => <svg width="22" height="22" viewBox="0 0 22 22" fill="none"><circle cx="11" cy="11" r="9" fill={a?T.orange:'none'} stroke={a?T.orange:T.grey2} strokeWidth="1.5"/><text x="11" y="15" textAnchor="middle" fontSize="9" fill={a?'white':T.grey2} fontWeight="700" fontFamily="Exo 2">$</text></svg>;
-const NavColl  = ({a}) => <svg width="22" height="22" viewBox="0 0 22 22" fill="none"><rect x="3" y="5" width="7" height="9" rx="1.5" fill={a?T.orange:'none'} stroke={a?T.orange:T.grey2} strokeWidth="1.5"/><rect x="12" y="5" width="7" height="9" rx="1.5" fill={a?T.orangeLt:'none'} stroke={a?T.orangeLt:T.grey2} strokeWidth="1.5"/><circle cx="6.5" cy="17" r="1.5" fill={a?T.orange:T.grey2}/><circle cx="15.5" cy="17" r="1.5" fill={a?T.orange:T.grey2}/></svg>;
-const NavArena = ({a}) => <svg width="22" height="22" viewBox="0 0 22 22" fill="none"><path d="M11 3L18 6.5L18 13C18 17 14.5 20 11 21C7.5 20 4 17 4 13L4 6.5Z" fill={a?T.orange:T.purple2} stroke={a?T.orangeLt:T.purpleHL} strokeWidth="1.5"/><path d="M8 11L10 13L14 9" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>;
-const NavQuests= ({a}) => <svg width="22" height="22" viewBox="0 0 22 22" fill="none"><path d="M11 3L19 7L19 15L11 19L3 15L3 7Z" fill={a?T.purple3:'none'} stroke={a?T.purpleLt:T.grey2} strokeWidth="1.5"/><path d="M11 8L11 12" stroke={a?T.purpleLt:T.grey2} strokeWidth="2" strokeLinecap="round"/><circle cx="11" cy="14.5" r="1" fill={a?T.purpleLt:T.grey2}/></svg>;
-const NavComm  = ({a}) => <svg width="22" height="22" viewBox="0 0 22 22" fill="none"><circle cx="8" cy="9" r="3" fill={a?T.orange:'none'} stroke={a?T.orange:T.grey2} strokeWidth="1.5"/><circle cx="15" cy="9" r="2.5" fill={a?T.orangeLt:'none'} stroke={a?T.orangeLt:T.grey2} strokeWidth="1.5"/><path d="M2 18c0-3 2.7-5 6-5s6 2 6 5" stroke={a?T.orange:T.grey2} strokeWidth="1.5" fill="none"/><path d="M15 13c2 0 5 1.5 5 5" stroke={a?T.orangeLt:T.grey2} strokeWidth="1.5" fill="none"/></svg>;
+const ICON_ROOT = '/DesignAssets/MainMenu/Icons/';
+const ICONS = {
+  menu: {
+    settings: ICON_ROOT+'Menu/GameSettings.png',
+    mail:     ICON_ROOT+'Menu/inGameMail.png',
+    friends:  ICON_ROOT+'Menu/FriendsSection.png',
+    support:  ICON_ROOT+'Menu/Support.png',
+    info:     ICON_ROOT+'Menu/Infromation.png',
+    profile:  ICON_ROOT+'Menu/SampleProfile.png',
+    id:       ICON_ROOT+'Menu/ID.png',
+  },
+  nav: {
+    shop:      ICON_ROOT+'NavBar/GameShop.png',
+    collection:ICON_ROOT+'NavBar/Collection.png',
+    arena:     ICON_ROOT+'NavBar/Arena.png',
+    squad:     ICON_ROOT+'NavBar/Squad.png',
+    community: ICON_ROOT+'NavBar/Community.png',
+  },
+  battle:    ICON_ROOT+'Battle.png',
+  vsBot:     ICON_ROOT+'vsBotOrFriend.png',
+  followingCase: ICON_ROOT+'FollowingCase.png',
+  trophyPath: {
+    seasonalCut: '/DesignAssets/MainMenu/TropheyPath/seasonalCut.png',
+  },
+};
+
+// CSS-фильтры для чёрных PNG (512×512, прозрачный фон) на тёмной теме
+// invert(1) — белый; orangeFilter — оранжевый #f5921e; greyFilter — серо-фиолетовый #7a6fa0
+const iconWhite  = 'brightness(0) invert(1)';
+const iconOrange = 'brightness(0) saturate(100%) invert(63%) sepia(83%) saturate(4559%) hue-rotate(1deg) brightness(103%)';
+const iconGrey   = 'brightness(0) saturate(100%) invert(50%) sepia(13%) saturate(525%) hue-rotate(214deg)';
 
 const NAV_ITEMS = [
-  {label:'Магазин',    C:NavShop,  badge:true },
-  {label:'Коллекция',  C:NavColl,  badge:false},
-  {label:'Арена',      C:NavArena, badge:false},
-  {label:'Сквады',     C:NavQuests,badge:false},
-  {label:'Коммьюнити', C:NavComm,  badge:false},
+  {label:'Магазин',    icon:ICONS.nav.shop,       badge:true },
+  {label:'Коллекция',  icon:ICONS.nav.collection,  badge:false},
+  {label:'Арена',      icon:ICONS.nav.arena,       badge:false},
+  {label:'Сквады',     icon:ICONS.nav.squad,       badge:false},
+  {label:'Коммьюнити', icon:ICONS.nav.community,   badge:false},
 ];
 
 // ═══════════════════════════════════════════
@@ -425,17 +636,17 @@ const NAV_ITEMS = [
 // ═══════════════════════════════════════════
 const BottomNav = ({active, onChange}) => (
   <div className="safe-pad-bottom" style={{background:'rgba(10,7,20,0.98)',borderTop:`1px solid ${T.purple1}`,display:'flex',alignItems:'center',padding:'0 6px',flexShrink:0,backdropFilter:'blur(14px)'}}>
-    {NAV_ITEMS.map(({label,C,badge},i)=>{
+    {NAV_ITEMS.map(({label,icon,badge},i)=>{
       const isArena=i===2, isActive=active===i;
       return (
         <button key={i} onClick={()=>onChange(i)} style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:'4px',background:'none',border:'none',cursor:'pointer',padding:'8px 4px 6px',minHeight:'60px',justifyContent:'center'}}>
           {isArena ? (
             <div style={{width:'46px',height:'46px',background:isActive?T.orange:T.purple2,borderRadius:'14px',marginTop:'-18px',display:'flex',alignItems:'center',justifyContent:'center',border:`2px solid ${isActive?T.orangeLt+'55':T.purple3}`,boxShadow:isActive?`0 5px 18px ${T.orange}66`:'none',transition:'all 0.18s',flexShrink:0}}>
-              <C a={isActive}/>
+              <img src={icon} alt={label} style={{width:'22px',height:'22px',filter:isActive?iconOrange:iconGrey}}/>
             </div>
           ) : (
             <div style={{position:'relative',display:'inline-flex',flexShrink:0}}>
-              <C a={isActive}/>
+              <img src={icon} alt={label} style={{width:'22px',height:'22px',filter:isActive?iconOrange:iconGrey}}/>
               {badge && <div style={{position:'absolute',top:'-2px',right:'-2px',width:'8px',height:'8px',borderRadius:'50%',background:T.orange,border:`1.5px solid ${T.bg}`,boxShadow:`0 0 6px ${T.orange}88`}}/>}
             </div>
           )}
@@ -829,48 +1040,497 @@ const PromoSection = ({profile}) => {
 // ═══════════════════════════════════════════
 // SHOP SCREEN
 // ═══════════════════════════════════════════
-const ShopScreen = ({profile, onKeysUpdated}) => {
-  const admin = isAdmin(profile);
-  const [debugLoading, setDebugLoading] = React.useState(false);
-  const [debugMsg,     setDebugMsg]     = React.useState('');
+const ShopScreen = ({profile, onProfileUpdate}) => {
+  const [sets,          setSets]          = React.useState([]);
+  const [particlesData, setParticlesData] = React.useState(null);
+  const [particlesTimer, setParticlesTimer] = React.useState('');
+  const [loading,       setLoading]       = React.useState(true);
+  const [boughtParts,   setBoughtParts]   = React.useState({});
+  const [buying,        setBuying]        = React.useState(null);
+  const [showPassModal, setShowPassModal] = React.useState(false);
+  const [passTab,       setPassTab]       = React.useState('basic');
+  const [payModal,      setPayModal]      = React.useState(null);
+  const [starsStep,     setStarsStep]     = React.useState(false);
+  const [showGift,      setShowGift]      = React.useState(false);
+  const [giftRecipient, setGiftRecipient] = React.useState('');
 
-  const addKey = async () => {
-    setDebugLoading(true); setDebugMsg('');
-    try {
-      const res = await fetch(apiUrl('/api/debug/add-key'), {method:'POST', headers:{'Content-Type':'application/json'}});
-      const d = await res.json();
-      if (d.success) { setDebugMsg(`✅ Ключ добавлен! Всего: ${d.keys}`); onKeysUpdated?.(d.keys); }
-      else setDebugMsg('❌ ' + (d.error || 'Ошибка'));
-    } catch(e) { setDebugMsg('❌ Сетевая ошибка'); }
-    setDebugLoading(false);
-    setTimeout(()=>setDebugMsg(''),3000);
+  React.useEffect(() => { window.__openExtraPassModal = () => setShowPassModal(true); return () => { delete window.__openExtraPassModal; }; }, []);
+
+  var reloadProfile = function(){
+    if (onProfileUpdate) {
+      window.loadProfile().then(function(data){ if (data) onProfileUpdate(data); });
+    }
   };
 
-  return (
-    <div style={{flex:1,overflowY:'auto',padding:'16px'}}>
-      <div style={{fontSize:'20px',fontWeight:'900',color:T.white,fontFamily:"'Exo 2',sans-serif",marginBottom:'16px'}}>Магазин</div>
+  var calcStars = function(price){ return Math.ceil((price / 1.5) * 1.2); };
 
-      {/* Placeholder items */}
-      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px',marginBottom:'20px'}}>
-        {[{icon:'💎',name:'100 гемов',price:'49 ⭐',color:'#a78bfa'},{icon:'🪙',name:'500 монет',price:'29 ⭐',color:T.orange},{icon:'🗝️',name:'3 ключа',price:'99 ⭐',color:'#fbbf24'},{icon:'⚡',name:'ExtraPass',price:'199 ⭐',color:T.purpleLt}].map((item,i)=>(
-          <div key={i} style={{background:T.bgCard,border:`1px solid ${T.purple1}`,borderRadius:'16px',padding:'16px 14px',textAlign:'center'}}>
-            <div style={{fontSize:'32px',marginBottom:'8px'}}>{item.icon}</div>
-            <div style={{fontSize:'13px',fontWeight:'700',color:T.white,fontFamily:"'Exo 2',sans-serif",marginBottom:'4px'}}>{item.name}</div>
-            <button style={{background:T.purple2,border:`1px solid ${T.purple3}`,borderRadius:'8px',padding:'5px 12px',color:item.color,fontSize:'12px',fontWeight:'700',cursor:'pointer',fontFamily:"'Exo 2',sans-serif"}}>{item.price}</button>
-          </div>
-        ))}
+  const loadData = React.useCallback(async function(){
+    setLoading(true);
+    try {
+      const [sr, pr] = await Promise.all([
+        fetch(_buildAuthUrl('/api/shop/sets')).then(function(r){ return r.json(); }),
+        fetch(_buildAuthUrl('/api/shop/particles/daily')).then(function(r){ return r.json(); }),
+      ]);
+      setSets(sr.sets || []);
+      setParticlesData(pr);
+      if (pr && pr.purchased_today) {
+        var nb = {};
+        pr.purchased_today.forEach(function(id){ nb[id] = true; });
+        setBoughtParts(nb);
+      }
+    } catch(e){}
+    setLoading(false);
+  }, [profile?.user_id]);
+
+  React.useEffect(function(){ loadData(); }, [loadData]);
+
+  React.useEffect(function(){
+    if (!particlesData || !particlesData.next_rotation_ts) return;
+    function tick(){
+      var now = Math.floor(Date.now()/1000);
+      var diff = Math.max(0, particlesData.next_rotation_ts - now);
+      var h = Math.floor(diff/3600);
+      var m = Math.floor((diff%3600)/60);
+      var s = diff%60;
+      setParticlesTimer(h+':'+String(m).padStart(2,'0')+':'+String(s).padStart(2,'0'));
+    }
+    tick();
+    var i = setInterval(tick, 1000);
+    return function(){ clearInterval(i); };
+  }, [particlesData]);
+
+  var buyGems = async function(itemType, itemName){
+    setBuying(itemType);
+    try {
+      var res = await fetch(_buildAuthUrl('/api/shop/buy'), {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({item_type: itemType, item_name: itemName}),
+      });
+      var d = await res.json();
+      if (d.success) {
+        window.showToast(d.message || 'Куплено!', 'success', 2500);
+        reloadProfile();
+      } else {
+        window.showToast(d.message || d.error || 'Ошибка', 'error');
+      }
+    } catch(e){ window.showToast('Ошибка сети', 'error'); }
+    setBuying(null);
+  };
+
+  var openPaymentModal = function(itemType, itemName, amountRub, metadata, pkgType){
+    setStarsStep(false);
+    setPayModal({itemType:itemType, itemName:itemName, amountRub:amountRub, metadata:metadata||{}, pkgType:pkgType});
+  };
+
+  var doRublePayment = async function(method){
+    if (!payModal) return;
+    var pm = payModal;
+    var it = pm.itemType; var nm = pm.itemName; var am = pm.amountRub;
+    var mt = pm.metadata || {}; var pk = pm.pkgType;
+    if (method === 'yookassa') {
+      setPayModal(null); setStarsStep(false);
+      setBuying(it || pk || 'yoo');
+      try {
+        var url = pk ? _buildAuthUrl('/api/payments/gems/create') : _buildAuthUrl('/api/payments/create');
+        var body = pk
+          ? JSON.stringify({package_type: pk})
+          : JSON.stringify({amount: am, description: nm, item_name: nm, metadata: Object.assign({item_type: it, item_name: nm}, mt)});
+        var res = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body: body});
+        var d = await res.json();
+        if (d.success && d.confirmation_url) {
+          window.open(d.confirmation_url, '_blank');
+          window.showToast('Оплата открыта. Баланс обновится после оплаты.', 'success', 5000);
+        } else {
+          window.showToast(d.message || d.error || 'Ошибка', 'error');
+        }
+      } catch(e){ window.showToast('Ошибка сети', 'error'); }
+      setBuying(null);
+    } else {
+      setStarsStep(true);
+      setBuying('stars_'+Date.now());
+      try {
+        var sres = await fetch(_buildAuthUrl('/api/payments/stars/create'), {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({amount_rub: am, description: nm, metadata: Object.assign({item_type: it, item_name: nm}, mt)}),
+        });
+        var sd = await sres.json();
+        if (sd.success) {
+          window.showToast('Счёт Stars отправлен в чат с ботом.', 'success', 5000);
+          setStarsStep('done');
+        } else {
+          window.showToast(sd.message || sd.error || 'Ошибка Stars', 'error');
+          setStarsStep(false);
+        }
+      } catch(e){ window.showToast('Ошибка сети', 'error'); setStarsStep(false); }
+      setBuying(null);
+    }
+  };
+
+  var buyParticles = async function(cardId){
+    setBuying('particles_'+cardId);
+    try {
+      var res = await fetch(_buildAuthUrl('/api/shop/particles/buy'), {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({card_id: cardId}),
+      });
+      var d = await res.json();
+      if (d.success) {
+        window.showToast(d.message || 'Частицы куплены!', 'success', 2500);
+        setBoughtParts(function(bp){ var nb={}; for(var k in bp)nb[k]=bp[k]; nb[cardId]=true; return nb; });
+        reloadProfile();
+      } else {
+        window.showToast(d.message || d.error || 'Ошибка', 'error');
+      }
+    } catch(e){ window.showToast('Ошибка сети', 'error'); }
+    setBuying(null);
+  };
+
+  var hasExtraPass = profile?.extra_pass === 'active';
+  var extraExpiry = profile?.extra_pass_expires_at;
+
+  if (loading) {
+    return (
+      <div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',gap:'10px'}}>
+        <div style={{width:'22px',height:'22px',border:'2px solid '+T.purple2,borderTopColor:T.purpleLt,borderRadius:'50%',animation:'spin 0.8s linear infinite'}}/>
+        <span style={{color:T.grey2,fontSize:'13px'}}>Загружаем магазин...</span>
       </div>
+    );
+  }
 
-      {/* Admin debug */}
-      {admin && (
-        <div style={{background:`rgba(245,146,30,0.08)`,border:`1.5px dashed ${T.orange}60`,borderRadius:'16px',padding:'14px'}}>
-          <div style={{fontSize:'12px',fontWeight:'700',color:T.orange,marginBottom:'10px',fontFamily:"'Exo 2',sans-serif"}}>🛠️ Отладка (только для вас)</div>
-          <button onClick={addKey} disabled={debugLoading} style={{width:'100%',height:'44px',background:`linear-gradient(135deg,${T.orange},${T.orangeD})`,border:'none',borderRadius:'12px',color:'white',fontSize:'14px',fontWeight:'800',fontFamily:"'Exo 2',sans-serif",cursor:'pointer',opacity:debugLoading?0.7:1}}>
-            {debugLoading ? 'Добавляем...' : '🗝️ + 1 ключ (дебаг)'}
-          </button>
-          {debugMsg && <div style={{fontSize:'12px',color:T.grey1,marginTop:'8px',textAlign:'center'}}>{debugMsg}</div>}
+  return (
+    <div style={{flex:1,overflowY:'auto',padding:'0 0 24px'}}>
+
+      {/* ═══════ Section 1: Наборы ═══════ */}
+      {sets.length > 0 && (
+        <div style={{padding:'16px 16px 0'}}>
+          <div style={{fontSize:'17px',fontWeight:900,color:T.white,fontFamily:"'Exo 2',sans-serif",marginBottom:'12px'}}>📦 Наборы</div>
+          <div style={{display:'flex',flexDirection:'column',gap:'10px'}}>
+            {sets.map(function(s,i){
+              var rewards = (function(){ try { return typeof s.rewards==='string'?JSON.parse(s.rewards):(s.rewards||[]); } catch(e){ return []; } })();
+              var rewardLabels = rewards.map(function(r){
+                if (r.type==='gems') return r.amount+' 💎';
+                if (r.type==='coins') return r.amount+' 🪙';
+                if (r.type==='keys'||r.type==='case') return r.amount+' 🗝️';
+                if (r.type==='particles') return r.amount+' ✨';
+                if (r.type==='card') return '🃏';
+                return '';
+              }).filter(Boolean);
+              var price = Number(s.price||0);
+              var starsCount = calcStars(price);
+              return (
+                <div key={i} style={{background:T.bgCard,border:'1px solid '+T.purple1,borderRadius:'16px',padding:'14px 16px',display:'flex',alignItems:'center',gap:'14px'}}>
+                  <div style={{width:'56px',height:'56px',borderRadius:'14px',background:T.bgDeep,border:'1px solid '+T.purple1,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'28px',flexShrink:0}}>📦</div>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontSize:'14px',fontWeight:800,color:T.white,fontFamily:"'Exo 2',sans-serif",marginBottom:'3px'}}>{s.name||'Набор'}</div>
+                    {s.description && <div style={{fontSize:'11px',color:T.grey2,marginBottom:'4px',lineHeight:1.4}}>{s.description}</div>}
+                    {rewardLabels.length > 0 && <div style={{fontSize:'11px',color:T.orange,fontWeight:600,fontFamily:"'Exo 2',sans-serif"}}>{rewardLabels.join(' + ')}</div>}
+                  </div>
+                  <button onClick={function(){ openPaymentModal('shop_set_'+s.id, s.name||'Набор', price, {item_type:'shop_set_'+s.id, item_name:s.name}, null); }} disabled={buying!=null}
+                    style={{background:'linear-gradient(135deg,'+T.purple3+','+T.purple2+')',border:'none',borderRadius:'12px',padding:'10px 16px',color:'white',cursor:'pointer',whiteSpace:'nowrap',flexShrink:0,opacity:buying!=null?0.6:1,fontSize:'14px',fontWeight:800,fontFamily:"'Exo 2',sans-serif"}}>
+                    {price} ₽
+                  </button>
+                  <div style={{fontSize:'9px',color:T.grey3,textAlign:'right',marginTop:'4px',fontFamily:"'Exo 2',sans-serif"}}>{starsCount} ⭐</div>
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
+
+      {/* ═══════ Section 2: ExtraPass ═══════ */}
+      <div style={{padding:'20px 16px 0'}}>
+        <div style={{fontSize:'17px',fontWeight:900,color:T.white,fontFamily:"'Exo 2',sans-serif",marginBottom:'12px'}}>⭐ ExtraPass</div>
+        {hasExtraPass ? (
+          <div style={{background:'linear-gradient(135deg,'+T.orange+'22,'+T.bgCard+')',border:'1px solid '+T.orange+'44',borderRadius:'16px',padding:'16px',textAlign:'center'}}>
+            <div style={{fontSize:'36px',marginBottom:'8px'}}>⭐</div>
+            <div style={{fontSize:'18px',fontWeight:900,color:T.orange,fontFamily:"'Exo 2',sans-serif",marginBottom:'6px'}}>ExtraPass активен</div>
+            {extraExpiry && (
+              <div style={{fontSize:'12px',color:T.grey2}}>
+                Действует до {new Date(extraExpiry).toLocaleDateString('ru-RU',{day:'numeric',month:'long',year:'numeric'})}
+              </div>
+            )}
+          </div>
+        ) : (
+          <div style={{background:T.bgCard,border:'1px solid '+T.purple1,borderRadius:'16px',padding:'18px',textAlign:'center'}}>
+            <div style={{fontSize:'36px',marginBottom:'8px'}}>⭐</div>
+            <div style={{fontSize:'17px',fontWeight:900,color:T.white,fontFamily:"'Exo 2',sans-serif",marginBottom:'10px'}}>ExtraPass</div>
+            <div style={{fontSize:'12px',color:T.grey2,marginBottom:'14px',lineHeight:1.5}}>
+              Отсутствие рекламы, 2 дорожка БП, +2 пресета, ×1.2 монет и многое другое
+            </div>
+            <button onClick={function(){ setShowPassModal(true); }}
+              style={{background:'linear-gradient(135deg,'+T.orange+','+T.orangeD+')',border:'none',borderRadius:'12px',padding:'12px 28px',color:'white',fontSize:'14px',fontWeight:800,fontFamily:"'Exo 2',sans-serif",cursor:'pointer'}}>
+              Купить ExtraPass
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* ═══════ Section 3: Частицы ═══════ */}
+      {particlesData && particlesData.cards && particlesData.cards.length > 0 && (
+        <div style={{padding:'20px 16px 0'}}>
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'12px'}}>
+            <div style={{fontSize:'17px',fontWeight:900,color:T.white,fontFamily:"'Exo 2',sans-serif"}}>✨ Частицы</div>
+            <div style={{fontSize:'11px',color:T.grey2,fontWeight:600,fontFamily:"'Exo 2',sans-serif",background:T.bgCard,border:'1px solid '+T.purple1,borderRadius:'8px',padding:'4px 10px'}}>
+              ⏳ {particlesTimer}
+            </div>
+          </div>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'8px'}}>
+            {particlesData.cards.map(function(card){
+              var rc = RARITY_COLOR[card.rarity] || '#94a3b8';
+              var bought = boughtParts[card.id];
+              return (
+                <div key={card.id} style={{background:T.bgCard,border:'1px solid '+T.purple1,borderRadius:'14px',overflow:'hidden',display:'flex',flexDirection:'column'}}>
+                  <div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',padding:'8px 4px 4px',position:'relative'}}>
+                    <img src={'/api/cards/image?card_id='+card.id} alt={card.name} onError={function(e){ e.target.style.display='none'; }} style={{width:'100%',aspectRatio:'2/3',objectFit:'contain'}}/>
+                  </div>
+                  <div style={{padding:'0 6px 4px',textAlign:'center'}}>
+                    <div style={{fontSize:'9px',fontWeight:700,color:T.white,fontFamily:"'Exo 2',sans-serif",overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{card.name}</div>
+                    <div style={{fontSize:'8px',color:rc,fontWeight:600,marginTop:'2px'}}>{RARITY_LABEL[card.rarity]||card.rarity}</div>
+                    <div style={{fontSize:'9px',color:T.orange,fontWeight:700,marginTop:'3px',fontFamily:"'Exo 2',sans-serif"}}>
+                      {card.particles} ✨ / 🪙{card.coins}
+                    </div>
+                    <button onClick={function(){ buyParticles(card.id); }} disabled={bought || buying!=null}
+                      style={{width:'100%',marginTop:'6px',background:bought?'#065f46':T.purple2,border:'1px solid '+(bought?'#10b981':T.purple3),borderRadius:'8px',padding:'5px 6px',color:bought?'#6ee7b7':T.purpleLt,fontSize:'10px',fontWeight:700,fontFamily:"'Exo 2',sans-serif",cursor:bought?'default':'pointer',opacity:buying!=null?0.6:1}}>
+                      {bought ? '✅ Куплено' : 'Купить'}
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* ═══════ Section 4: Монеты за гемы ═══════ */}
+      <div style={{padding:'20px 16px 0'}}>
+        <div style={{fontSize:'17px',fontWeight:900,color:T.white,fontFamily:"'Exo 2',sans-serif",marginBottom:'12px'}}>🪙 Монеты за гемы</div>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'8px'}}>
+          {[{coins:500,gems:50},{coins:2000,gems:180},{coins:5000,gems:400}].map(function(p,i){
+            var it = 'coins_'+p.coins;
+            return (
+              <div key={i} style={{background:T.bgCard,border:'1px solid '+T.purple1,borderRadius:'14px',padding:'14px 10px',textAlign:'center',display:'flex',flexDirection:'column',gap:'8px'}}>
+                <div style={{fontSize:'18px',fontWeight:900,color:T.orange,fontFamily:"'Exo 2',sans-serif"}}>{p.coins.toLocaleString()} 🪙</div>
+                <div style={{fontSize:'11px',color:T.grey2}}>{p.gems} 💎</div>
+                <button onClick={function(){ buyGems(it, p.coins+' монет'); }} disabled={buying!=null}
+                  style={{background:'linear-gradient(135deg,'+T.purple3+','+T.purple2+')',border:'none',borderRadius:'10px',padding:'8px 6px',color:'white',fontSize:'12px',fontWeight:800,fontFamily:"'Exo 2',sans-serif",cursor:'pointer',opacity:buying!=null?0.6:1}}>
+                  Купить
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* ═══════ Section 5: Гемы за рубли ═══════ */}
+      <div style={{padding:'20px 16px 0'}}>
+        <div style={{fontSize:'17px',fontWeight:900,color:T.white,fontFamily:"'Exo 2',sans-serif",marginBottom:'12px'}}>💎 Гемы за рубли</div>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px'}}>
+          {[{key:'starter_once',gems:50,price:49,disc:0,ot:true},
+            {key:'gems_100',gems:100,price:99,disc:0},
+            {key:'gems_250',gems:250,price:229,disc:7},
+            {key:'gems_600',gems:600,price:499,disc:16},
+            {key:'gems_1300',gems:1300,price:999,disc:22},
+            {key:'gems_2500',gems:2500,price:1499,disc:33},
+          ].map(function(p,i){
+            var starsCount = calcStars(p.price);
+            return (
+              <div key={i} style={{background:p.ot?T.bgCard:T.bgCard,border:'1px solid '+(p.ot?T.orange+'66':T.purple1),borderRadius:'16px',padding:'14px',textAlign:'center',display:'flex',flexDirection:'column',gap:'6px',position:'relative'}}>
+                {p.disc > 0 && (
+                  <div style={{position:'absolute',top:'-8px',right:'-4px',background:'#ef4444',borderRadius:'6px',padding:'2px 7px',fontSize:'10px',fontWeight:900,color:'white',fontFamily:"'Exo 2',sans-serif"}}>
+                    −{p.disc}%
+                  </div>
+                )}
+                {p.ot && <div style={{fontSize:'10px',color:T.orange,fontWeight:800,fontFamily:"'Exo 2',sans-serif"}}>Только 1 раз 🎁</div>}
+                <div style={{fontSize:'22px',fontWeight:900,color:p.ot?T.orange:T.white,fontFamily:"'Exo 2',sans-serif"}}>{p.gems} 💎</div>
+                <div style={{fontSize:'13px',color:T.grey2}}>{p.price} ₽</div>
+                <button onClick={function(){ openPaymentModal(null, p.gems+' гемов', p.price, {item_type:'gems_package', package_type:p.key}, p.key); }} disabled={buying!=null}
+                  style={{background:'linear-gradient(135deg,'+T.purple3+','+T.purple2+')',border:'none',borderRadius:'10px',padding:'10px 6px',color:'white',fontSize:'13px',fontWeight:800,fontFamily:"'Exo 2',sans-serif",cursor:'pointer',opacity:buying!=null?0.6:1}}>
+                  Купить
+                </button>
+                <div style={{fontSize:'9px',color:T.grey3,fontFamily:"'Exo 2',sans-serif"}}>{starsCount} ⭐</div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* ═══════ Debug Section ═══════ */}
+      {profile?.user_id === 6803854304 && (
+        <div style={{padding:'20px 16px 0'}}>
+          <div style={{fontSize:'17px',fontWeight:900,color:T.orange,fontFamily:"'Exo 2',sans-serif",marginBottom:'12px'}}>🔧 Дебаг</div>
+          <div style={{background:T.bgCard,border:'1px dashed '+T.orange+'44',borderRadius:'16px',padding:'16px',textAlign:'center'}}>
+            <div style={{fontSize:'13px',color:T.grey2,marginBottom:'10px',fontFamily:"'Exo 2',sans-serif"}}>🗝️ 1 ключ за 1 ⭐</div>
+            <button onClick={async function(){
+              setBuying('debug_key');
+              try {
+                var res = await fetch(_buildAuthUrl('/api/payments/stars/create'), {
+                  method:'POST', headers:{'Content-Type':'application/json'},
+                  body: JSON.stringify({amount_rub: 3, description: '1 ключ (дебаг)', metadata: {item_type: 'keys', keys_amount: 1, item_name: '1 ключ (дебаг)'}}),
+                });
+                var d = await res.json();
+                if (d.success) window.showToast('Счёт отправлен в чат', 'success', 5000);
+                else window.showToast(d.message || d.error, 'error');
+              } catch(e){ window.showToast('Ошибка', 'error'); }
+              setBuying(null);
+            }} disabled={buying!=null}
+              style={{background:'linear-gradient(135deg,'+T.orange+','+T.orangeD+')',border:'none',borderRadius:'10px',padding:'10px 20px',color:'white',fontSize:'13px',fontWeight:800,fontFamily:"'Exo 2',sans-serif",cursor:'pointer',opacity:buying!=null?0.6:1}}>
+              1 ⭐ — 1 ключ
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ═══ ExtraPass Modal ═══ */}
+      {showPassModal && (
+        <div onClick={function(){ setShowPassModal(false); setShowGift(false); }} style={{position:'absolute',inset:0,background:'rgba(5,2,12,0.92)',backdropFilter:'blur(10px)',zIndex:100,display:'flex',alignItems:'flex-end',justifyContent:'center',padding:'20px',animation:'fadeIn 0.2s'}}>
+          <div onClick={function(e){ e.stopPropagation(); }} style={{width:'100%',maxWidth:'420px',background:T.bgDeep,borderRadius:'22px',border:'1px solid '+T.purple1,boxShadow:'0 20px 60px rgba(0,0,0,0.7)',overflow:'hidden',animation:'popIn 0.2s',marginBottom:'10px'}}>
+            <div style={{display:'flex',background:T.bgCard,padding:'3px',gap:'3px',borderBottom:'1px solid '+T.purple1}}>
+              {[{id:'basic',label:'⭐ ExtraPass'},{id:'ultra',label:'💫 Ultra'}].map(function(t){
+                var isActive = passTab === t.id;
+                var bg = isActive ? (t.id==='ultra'?'linear-gradient(135deg,#7c3aed,#4338ca,#7dd3fc)':'linear-gradient(135deg,'+T.orange+','+T.orangeD+')') : 'transparent';
+                return (
+                  <button key={t.id} onClick={function(){ setPassTab(t.id); }}
+                    style={{flex:1,padding:'10px 8px',borderRadius:'10px',background:bg,border:'none',color:isActive?'white':T.grey2,fontSize:'13px',fontWeight:isActive?800:600,fontFamily:"'Exo 2',sans-serif",cursor:'pointer'}}>
+                    {t.label}
+                  </button>
+                );
+              })}
+            </div>
+            <div style={{padding:'18px 16px 20px'}}>
+              {passTab === 'basic' ? (
+                <div style={{display:'flex',flexDirection:'column',gap:'12px'}}>
+                  <div style={{fontSize:'36px',textAlign:'center'}}>⭐</div>
+                  <div style={{fontSize:'18px',fontWeight:900,color:T.orange,fontFamily:"'Exo 2',sans-serif",textAlign:'center'}}>ExtraPass</div>
+                  <div style={{fontSize:'11px',color:T.grey2,lineHeight:1.7}}>
+                    • Отсутствие рекламы<br/>
+                    • 2 дорожка Battle Pass<br/>
+                    • +2 пресета колод<br/>
+                    • ×1.2 монет в боях<br/>
+                    • Оформление профиля<br/>
+                    • Создание кланов<br/>
+                    • История боёв<br/>
+                    • Клановые токены<br/>
+                    • Приоритетная поддержка
+                  </div>
+                  <button onClick={function(){ openPaymentModal('extrapass','ExtraPass (мес)',179,{item_type:'extrapass'},null); setShowPassModal(false); }}
+                    style={{background:'linear-gradient(135deg,'+T.orange+','+T.orangeD+')',border:'none',borderRadius:'10px',padding:'10px',color:'white',fontWeight:800,fontFamily:"'Exo 2',sans-serif",cursor:'pointer'}}>
+                    179 ₽ / мес
+                  </button>
+                </div>
+              ) : (
+                <div style={{display:'flex',flexDirection:'column',gap:'12px'}}>
+                  <div style={{fontSize:'36px',textAlign:'center'}}>💫</div>
+                  <div style={{fontSize:'18px',fontWeight:900,background:'linear-gradient(135deg,#a78bfa,#818cf8,#60a5fa)',WebkitBackgroundClip:'text',WebkitTextFillColor:'transparent',fontFamily:"'Exo 2',sans-serif",textAlign:'center'}}>ExtraPass Ultra</div>
+                  <div style={{fontSize:'11px',color:T.grey2,lineHeight:1.7}}>
+                    • Всё из ExtraPass<br/>
+                    • Золотой ник<br/>
+                    • Повышенные шансы<br/>
+                    • Реролл кейсов<br/>
+                    • Расширенная статистика<br/>
+                    • Уникальные позиции в БП<br/>
+                    • Подарок соклановцам
+                  </div>
+                  <button onClick={function(){ openPaymentModal('extrapass_ultra','ExtraPass Ultra (мес)',349,{item_type:'extrapass_ultra'},null); setShowPassModal(false); }}
+                    style={{background:'linear-gradient(135deg,#7c3aed,#4338ca)',border:'none',borderRadius:'10px',padding:'10px',color:'white',fontWeight:800,fontFamily:"'Exo 2',sans-serif",cursor:'pointer'}}>
+                    349 ₽ / мес
+                  </button>
+                </div>
+              )}
+
+              {showGift ? (
+                <div style={{display:'flex',flexDirection:'column',gap:'10px',padding:'12px 0 0',borderTop:'1px solid '+T.purple1+'33',marginTop:'8px'}}>
+                  <div style={{fontSize:'12px',fontWeight:700,color:T.white,fontFamily:"'Exo 2',sans-serif",textAlign:'center'}}>🎁 Введите ID получателя</div>
+                  <input value={giftRecipient} onChange={function(e){ setGiftRecipient(e.target.value); }} placeholder="User ID"
+                    style={{background:T.bgCard,border:'1px solid '+T.purple1,borderRadius:'10px',padding:'10px 12px',color:T.white,fontSize:'13px',fontFamily:"'Exo 2',sans-serif",outline:'none',textAlign:'center'}}/>
+                  <button onClick={function(){
+                    var rid = parseInt(giftRecipient);
+                    if (!rid || rid <= 0) { window.showToast('Введите корректный ID', 'error'); return; }
+                    var itemType = passTab === 'ultra' ? 'extrapass_ultra' : 'extrapass';
+                    openPaymentModal('extrapass_gift', (passTab==='ultra'?'Ultra ':'')+'ExtraPass (подарок)', passTab==='ultra'?349:179, {item_type:'extrapass_gift', recipient_id: rid, item_name:'ExtraPass (подарок)'}, null);
+                    setShowGift(false); setShowPassModal(false);
+                  }}
+                    style={{background:'linear-gradient(135deg,'+T.orange+','+T.orangeD+')',border:'none',borderRadius:'10px',padding:'10px',color:'white',fontSize:'13px',fontWeight:800,fontFamily:"'Exo 2',sans-serif",cursor:'pointer'}}>
+                    Оплатить подарок
+                  </button>
+                  <button onClick={function(){ setShowGift(false); }}
+                    style={{background:'none',border:'1px solid '+T.grey3,borderRadius:'10px',padding:'8px',color:T.grey2,fontSize:'11px',fontFamily:"'Exo 2',sans-serif",cursor:'pointer'}}>
+                    Назад
+                  </button>
+                </div>
+              ) : (
+                <button onClick={function(){ setShowGift(true); }} style={{width:'100%',marginTop:'12px',background:'none',border:'1px dashed '+T.orange+'44',borderRadius:'10px',padding:'10px',color:T.orange,fontSize:'12px',fontWeight:700,fontFamily:"'Exo 2',sans-serif",cursor:'pointer'}}>
+                  🎁 Подарить
+                </button>
+              )}
+              <button onClick={function(){ setShowPassModal(false); }} style={{width:'100%',marginTop:'8px',background:'none',border:'1px solid '+T.grey3,borderRadius:'10px',padding:'8px',color:T.grey2,fontSize:'12px',fontWeight:600,fontFamily:"'Exo 2',sans-serif",cursor:'pointer'}}>
+                Отмена
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ═══ Payment Method Modal ═══ */}
+      {payModal && !starsStep && (
+        <div onClick={function(){ setPayModal(null); }} style={{position:'absolute',inset:0,background:'rgba(5,2,12,0.92)',backdropFilter:'blur(10px)',zIndex:100,display:'flex',alignItems:'flex-end',justifyContent:'center',padding:'20px',animation:'fadeIn 0.2s'}}>
+          <div onClick={function(e){ e.stopPropagation(); }} style={{width:'100%',maxWidth:'380px',background:T.bgDeep,borderRadius:'22px',border:'1px solid '+T.purple1,boxShadow:'0 20px 60px rgba(0,0,0,0.7)',overflow:'hidden',animation:'popIn 0.2s',marginBottom:'10px'}}>
+            <div style={{padding:'16px',borderBottom:'1px solid '+T.purple1,textAlign:'center'}}>
+              <div style={{fontSize:'15px',fontWeight:900,color:T.white,fontFamily:"'Exo 2',sans-serif"}}>Выберите способ оплаты</div>
+              <div style={{fontSize:'18px',fontWeight:900,color:T.orange,fontFamily:"'Exo 2',sans-serif",marginTop:'4px'}}>{payModal.itemName||'Покупка'}</div>
+              <div style={{fontSize:'13px',color:T.grey2,marginTop:'2px'}}>{payModal.amountRub} ₽ ≈ {calcStars(payModal.amountRub)} ⭐</div>
+            </div>
+            <div style={{padding:'16px',display:'flex',flexDirection:'column',gap:'10px'}}>
+              <button onClick={function(){ doRublePayment('yookassa'); }}
+                style={{width:'100%',background:'linear-gradient(135deg,'+T.bgCard+','+T.bgDeep+')',border:'2px solid #10b981',borderRadius:'16px',padding:'16px 14px',color:'white',cursor:'pointer',textAlign:'left',display:'flex',alignItems:'center',gap:'12px'}}>
+                <div style={{width:'44px',height:'44px',borderRadius:'12px',background:'#064e3b',display:'flex',alignItems:'center',justifyContent:'center',fontSize:'22px',flexShrink:0}}>💳</div>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:'14px',fontWeight:800,fontFamily:"'Exo 2',sans-serif"}}>Банковской картой</div>
+                  <div style={{fontSize:'11px',color:'#10b981',fontWeight:600,marginTop:'2px'}}>Выгодно ✅ Рекомендуем</div>
+                  <div style={{fontSize:'10px',color:T.grey2,marginTop:'1px'}}>Оплата через ЮKassa. Мгновенное зачисление</div>
+                </div>
+              </button>
+              <button onClick={function(){ doRublePayment('stars'); }}
+                style={{width:'100%',background:'linear-gradient(135deg,'+T.bgCard+','+T.bgDeep+')',border:'2px solid '+T.orange+'44',borderRadius:'16px',padding:'16px 14px',color:'white',cursor:'pointer',textAlign:'left',display:'flex',alignItems:'center',gap:'12px'}}>
+                <div style={{width:'44px',height:'44px',borderRadius:'12px',background:'#78350f',display:'flex',alignItems:'center',justifyContent:'center',fontSize:'22px',flexShrink:0}}>⭐</div>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:'14px',fontWeight:800,fontFamily:"'Exo 2',sans-serif"}}>Telegram Stars</div>
+                  <div style={{fontSize:'11px',color:T.orange,fontWeight:600,marginTop:'2px'}}>⭐ {calcStars(payModal.amountRub)} Stars</div>
+                  <div style={{fontSize:'10px',color:T.grey2,marginTop:'1px'}}>Оплата через счёт в Telegram</div>
+                </div>
+              </button>
+              <button onClick={function(){ setPayModal(null); }} style={{width:'100%',marginTop:'4px',background:'none',border:'1px solid '+T.grey3,borderRadius:'10px',padding:'10px',color:T.grey2,fontSize:'12px',fontWeight:600,fontFamily:"'Exo 2',sans-serif",cursor:'pointer'}}>
+                Отмена
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ═══ Stars Instruction ═══ */}
+      {payModal && starsStep && (
+        <div onClick={function(){ setPayModal(null); setStarsStep(false); }} style={{position:'absolute',inset:0,background:'rgba(5,2,12,0.92)',backdropFilter:'blur(10px)',zIndex:100,display:'flex',alignItems:'flex-end',justifyContent:'center',padding:'20px',animation:'fadeIn 0.2s'}}>
+          <div onClick={function(e){ e.stopPropagation(); }} style={{width:'100%',maxWidth:'380px',background:T.bgDeep,borderRadius:'22px',border:'1px solid '+T.purple1,boxShadow:'0 20px 60px rgba(0,0,0,0.7)',overflow:'hidden',animation:'popIn 0.2s',marginBottom:'10px',padding:'20px 16px',display:'flex',flexDirection:'column',gap:'14px'}}>
+            <div style={{textAlign:'center'}}>
+              <div style={{fontSize:'40px',marginBottom:'8px'}}>⭐</div>
+              <div style={{fontSize:'16px',fontWeight:900,color:T.white,fontFamily:"'Exo 2',sans-serif"}}>Счёт отправлен в Telegram</div>
+              <div style={{fontSize:'12px',color:T.grey2,marginTop:'6px',lineHeight:1.6}}>
+                Откройте чат с ботом и оплатите счёт.
+              </div>
+            </div>
+            <div style={{background:'#7f1d1d',border:'1px solid #ef4444',borderRadius:'12px',padding:'14px',textAlign:'center'}}>
+              <div style={{fontSize:'13px',fontWeight:800,color:'#fca5a5',fontFamily:"'Exo 2',sans-serif"}}>⚠️ Важная информация</div>
+              <div style={{fontSize:'11px',color:'#fecaca',marginTop:'6px',lineHeight:1.6}}>
+                Если награды не поступили сразу — перезапустите бота. Это нормально для оплаты через Stars.
+              </div>
+            </div>
+            <button onClick={function(){ setPayModal(null); setStarsStep(false); }}
+              style={{width:'100%',background:'linear-gradient(135deg,'+T.purple3+','+T.purple2+')',border:'none',borderRadius:'12px',padding:'12px',color:'white',fontSize:'14px',fontWeight:800,fontFamily:"'Exo 2',sans-serif",cursor:'pointer'}}>
+              Понятно
+            </button>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 };
@@ -1118,7 +1778,7 @@ const BattlePickSheet = ({onClose, profile}) => {
     if (starting) return;
     setStarting(true);
     onClose();
-    await window.startVsBot(diff, profile, deckId);
+    await window.startVsBot(diff, profile, deckId, 'training');
   };
 
   return (
@@ -1208,8 +1868,8 @@ const BattlePickSheet = ({onClose, profile}) => {
               {!selectedDeck?.card_ids?.[0] ? '⚠️ Выберите героя в колоде' : `⚠️ Колода неполная (${deckCount}/9)`}
             </div>
           ) : (
-          <button onClick={startBot} style={{width:'100%',height:'50px',background:`linear-gradient(135deg,${T.orange},${T.orangeD})`,border:'none',borderRadius:'14px',color:'white',fontSize:'17px',fontWeight:'900',fontFamily:"'Exo 2',sans-serif",cursor:'pointer',boxShadow:`0 5px 20px ${T.orange}44`}}>
-            ⚔️ В БОЙ
+          <button onClick={startBot} style={{width:'100%',height:'50px',background:`linear-gradient(135deg,${T.orange},${T.orangeD})`,border:'none',borderRadius:'14px',color:'white',fontSize:'17px',fontWeight:'900',fontFamily:"'Exo 2',sans-serif",cursor:'pointer',boxShadow:`0 5px 20px ${T.orange}44`,display:'flex',alignItems:'center',justifyContent:'center',gap:'8px'}}>
+            <img src={ICONS.battle} alt="" style={{width:'22px',height:'22px',filter:'brightness(0) invert(1)'}}/> В БОЙ
           </button>
           )}
         </>}
@@ -1221,16 +1881,16 @@ const BattlePickSheet = ({onClose, profile}) => {
 // ═══════════════════════════════════════════
 // MENU SHEET
 // ═══════════════════════════════════════════
-const MenuSheet = ({onClose, onSettings, onMail, onInfo, profile}) => {
+const MenuSheet = ({onClose, onSettings, onMail, onSupport, onInfo, onFriends, profile}) => {
   const [copyMsg, setCopyMsg] = React.useState(false);
   const extraId = profile?.user_id || profile?.id || '';
   const copyId = () => { if(extraId){ navigator.clipboard?.writeText(String(extraId)).catch(()=>{}); setCopyMsg(true); setTimeout(()=>setCopyMsg(false), 2000); } };
   const items = [
-    {icon:'⚙️',label:'Настройки', wide:false, action:onSettings},
-    {icon:'✉️',label:'Почта',     wide:false, action:onMail||onClose},
-    {icon:'👥',label:'Друзья',    wide:false, action:onClose},
-    {icon:'💬',label:'Поддержка', wide:true,  action:onClose},
-    {icon:'ℹ️',label:'Информация',wide:true,  action:onInfo||onClose},
+    {img:ICONS.menu.settings, label:'Настройки', wide:false, action:onSettings},
+    {img:ICONS.menu.mail,     label:'Почта',     wide:false, action:onMail||onClose},
+    {img:ICONS.menu.friends,  label:'Друзья',    wide:false, action:onFriends||onClose},
+    {img:ICONS.menu.support,  label:'Поддержка', wide:true,  action:onSupport},
+    {img:ICONS.menu.info,     label:'Информация',wide:true,  action:onInfo||onClose},
   ];
   return (
     <div style={{position:'absolute',inset:0,background:'rgba(5,3,14,0.72)',backdropFilter:'blur(8px)',zIndex:20,display:'flex',flexDirection:'column',justifyContent:'flex-end'}} onClick={onClose}>
@@ -1245,8 +1905,8 @@ const MenuSheet = ({onClose, onSettings, onMail, onInfo, profile}) => {
 
         {/* Profile / ExtraID */}
         <div style={{background:T.bgCard,border:`1px solid ${T.purple1}`,borderRadius:'14px',padding:'12px 14px',marginBottom:'14px',display:'flex',alignItems:'center',gap:'12px'}}>
-          <div style={{width:'42px',height:'42px',borderRadius:'50%',background:T.purple2,border:`2px solid ${T.grey3}`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'20px',flexShrink:0}}>
-            👤
+          <div style={{width:'42px',height:'42px',borderRadius:'50%',background:T.purple2,border:`2px solid ${T.grey3}`,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,overflow:'hidden'}}>
+            <img src={ICONS.menu.profile} alt="" style={{width:'28px',height:'28px',filter:iconWhite}}/>
           </div>
           <div style={{flex:1,minWidth:0}}>
             <div style={{fontSize:'13px',fontWeight:'700',color:T.grey1,fontFamily:"'Exo 2',sans-serif"}}>Вход не выполнен</div>
@@ -1258,19 +1918,21 @@ const MenuSheet = ({onClose, onSettings, onMail, onInfo, profile}) => {
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px'}}>
           {items.filter(it=>!it.wide).map((item,i)=>(
             <button key={i} onClick={item.action} style={{background:T.bgCard,border:`1px solid ${T.purple1}`,borderRadius:'16px',padding:'16px 14px',display:'flex',alignItems:'center',gap:'10px',cursor:'pointer',transition:'all 0.15s'}}>
-              <span style={{fontSize:'20px'}}>{item.icon}</span>
+              <img src={item.img} alt="" style={{width:'22px',height:'22px',filter:iconWhite}}/>
               <span style={{fontSize:'14px',fontWeight:'600',color:T.white,fontFamily:"'Exo 2',sans-serif"}}>{item.label}</span>
             </button>
           ))}
           {items.filter(it=>it.wide).map((item,i)=>(
             <button key={i} onClick={item.action} style={{background:T.bgCard,border:`1px solid ${T.purple1}`,borderRadius:'16px',padding:'14px',display:'flex',alignItems:'center',gap:'10px',cursor:'pointer',transition:'all 0.15s'}}>
-              <span style={{fontSize:'18px'}}>{item.icon}</span>
+              <img src={item.img} alt="" style={{width:'20px',height:'20px',filter:iconWhite}}/>
               <span style={{fontSize:'13px',fontWeight:'600',color:T.white,fontFamily:"'Exo 2',sans-serif"}}>{item.label}</span>
             </button>
           ))}
         </div>
         <div style={{marginTop:'14px',padding:'10px 14px',background:T.bgCard,border:`1px solid ${T.purple1}`,borderRadius:'12px',display:'flex',alignItems:'center',gap:'10px'}}>
-          <div style={{width:'28px',height:'28px',borderRadius:'8px',background:`linear-gradient(135deg,${T.purple2},${T.purple3})`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'13px',flexShrink:0}}>🆔</div>
+          <div style={{width:'28px',height:'28px',borderRadius:'8px',background:`linear-gradient(135deg,${T.purple2},${T.purple3})`,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
+            <img src={ICONS.menu.id} alt="" style={{width:'18px',height:'18px',filter:iconWhite}}/>
+          </div>
           <div style={{flex:1,minWidth:0}}>
             <div style={{fontSize:'9px',color:T.grey3,textTransform:'uppercase',letterSpacing:'0.5px'}}>ExtraID</div>
             <div style={{fontSize:'12px',fontWeight:'700',color:T.white,fontFamily:"'Exo 2',sans-serif",overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{extraId || 'Загрузка...'}</div>
@@ -1357,9 +2019,38 @@ const InfoSheet = ({onClose}) => {
 };
 
 // ═══════════════════════════════════════════
+// SUPPORT SHEET
+// ═══════════════════════════════════════════
+const SupportSheet = ({onClose}) => {
+  const openLink = (url) => { window.Telegram?.WebApp?.openTelegramLink?.(url) || window.open(url,'_blank'); };
+  return (
+    <div style={{position:'absolute',inset:0,background:'rgba(5,3,14,0.72)',backdropFilter:'blur(8px)',zIndex:20,display:'flex',flexDirection:'column',justifyContent:'flex-end'}} onClick={onClose}>
+      <div onClick={e=>e.stopPropagation()} className="safe-pad-bottom" style={{background:`linear-gradient(180deg,#1a1238 0%,#130d26 100%)`,borderRadius:'24px 24px 0 0',padding:'16px 18px 24px',animation:'slideUp 0.28s cubic-bezier(0.32,0.72,0,1)',border:`1px solid ${T.purple1}`,borderBottom:'none',boxShadow:'0 -16px 50px rgba(0,0,0,0.5)'}}>
+        <div style={{width:'36px',height:'4px',borderRadius:'2px',background:T.purple2,margin:'0 auto 16px'}}/>
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'18px'}}>
+          <span style={{fontSize:'22px',fontWeight:'900',color:T.white,fontFamily:"'Exo 2',sans-serif"}}>💬 Поддержка</span>
+          <button onClick={onClose} style={{width:'34px',height:'34px',borderRadius:'50%',background:T.bgCard,border:`1px solid ${T.purple1}`,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer'}}>
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 2L10 10M10 2L2 10" stroke={T.grey1} strokeWidth="1.8" strokeLinecap="round"/></svg>
+          </button>
+        </div>
+        <div style={{textAlign:'center',marginBottom:'18px'}}>
+          <div style={{fontSize:'14px',color:T.grey1,fontFamily:'Inter,sans-serif',lineHeight:1.6}}>
+            Если у тебя есть вопросы, предложения или ты нашёл баг — напиши нам в поддержку.
+          </div>
+        </div>
+        <button onClick={()=>openLink('https://t.me/lqsup')} style={{width:'100%',height:'50px',background:`linear-gradient(135deg,${T.orange},${T.orangeD})`,border:'none',borderRadius:'14px',color:'white',fontSize:'17px',fontWeight:'900',fontFamily:"'Exo 2',sans-serif",cursor:'pointer',boxShadow:`0 5px 20px ${T.orange}44`,display:'flex',alignItems:'center',justifyContent:'center',gap:'8px'}}>
+          Написать нам
+        </button>
+        <div style={{textAlign:'center',marginTop:'14px',fontSize:'11px',color:T.grey3}}>t.me/lqsup</div>
+      </div>
+    </div>
+  );
+};
+
+// ═══════════════════════════════════════════
 // ARENA SCREEN
 // ═══════════════════════════════════════════
-const ArenaScreen = ({onMenu, onAI, onBattlePick, onStartBattle, onOpenCase, onOpenGloryPath, onOpenLeagueInfo, profile}) => {
+const ArenaScreen = ({onMenu, onAI, onOpenBattles, onBattlePick, onStartBattle, onOpenCase, onOpenGloryPath, onOpenLeagueInfo, onGoToShop, onOpenBattlePass, profile}) => {
   const [hasCases,    setHasCases]    = React.useState((profile?.keys || profile?.cases_count || 0) > 0);
   const [battleHover, setBattleHover] = React.useState(false);
   const [shineAnim,   setShineAnim]   = React.useState(false);
@@ -1376,29 +2067,51 @@ const ArenaScreen = ({onMenu, onAI, onBattlePick, onStartBattle, onOpenCase, onO
   const leagueId = profile?.league ?? 1;
   const leagueMap = {1:'Novice',2:'Bronze',3:'Silver',4:'Gold',5:'Crystal',6:'Master',7:'Champion',8:'Grandmaster',9:'Legendary',10:'Extra'};
   const leagueName = leagueMap[leagueId] || 'Novice';
-  const leagueThresholds = [0,300,600,1200,2000,3000,4500,6000,7500,9000,10000];
+  const leagueThresholds = LEAGUE_LIST.map(l => l.min);
+  leagueThresholds.push(10000);
   const leagueMin = leagueThresholds[leagueId - 1] || 0;
   const nextLeagueTrophies = leagueId < 10 ? leagueThresholds[leagueId] : 10000;
-  const progress = leagueId < 10 ? Math.min(((trophyCount - leagueMin) / (nextLeagueTrophies - leagueMin)) * 100, 100) : 100;
+  const nextLeagueName = leagueId < 10 ? (leagueMap[leagueId+1] || 'Max') : 'Max';
+
+  const winsSinceLastCase = profile?.settings?.wins_since_last_case || 0;
+  const ep = profile?.extra_pass || 'inactive';
+  const winsForCase = ep === 'ultra' ? 3 : ep === 'active' ? 4 : 5;
 
   const artSize = Math.min(Math.round(window.innerWidth * 0.48), 190);
 
+  const [gloryTiers, setGloryTiers] = React.useState([]);
+
+  React.useEffect(() => {
+    const uid = profile?.user_id || window._userId || 0;
+    if (!uid) return;
+    let cancelled = false;
+    fetch("/api/rewards/track/glory?user_id=" + uid).then(r => r.json()).then(d => {
+      if (!cancelled) setGloryTiers(d.tiers || []);
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [profile?.user_id, profile?.trophies]);
+
+  const nextGloryTier = gloryTiers.find(t => t.available);
+  const nextUnreachedTier = gloryTiers.find(t => t.locked);
+  const availableGloryCount = gloryTiers.filter(t => t.available).length;
+  const nextRewardDistance = nextUnreachedTier ? nextUnreachedTier.position - trophyCount : null;
+
   return (
     <div style={{flex:1,overflowY:'auto',overflowX:'hidden',display:'flex',flexDirection:'column',minHeight:0}}>
-      {/* Season Pass */}
-      <div style={{margin:'12px 16px 0',background:'linear-gradient(135deg,#2d1460,#4a2090)',borderRadius:'16px',padding:'11px 14px',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+      {/* Season Pass — dynamic, click to open BattlePass */}  
+      <div onClick={()=>onOpenBattlePass()} style={{margin:'12px 16px 0',background:'linear-gradient(135deg,#2d1460,#4a2090)',borderRadius:'16px',padding:'11px 14px',display:'flex',justifyContent:'space-between',alignItems:'center',cursor:'pointer',transition:'all 0.15s',}}>
         <div>
-          <div style={{fontSize:'10px',color:T.grey1,letterSpacing:'0.6px',textTransform:'uppercase',marginBottom:'2px'}}>Сезон 1</div>
+          <div style={{fontSize:'10px',color:T.grey1,letterSpacing:'0.6px',textTransform:'uppercase',marginBottom:'2px'}}>Сезон {profile?.season || 1}</div>
           <div style={{fontSize:'16px',fontWeight:'800',color:T.white,fontFamily:"'Exo 2',sans-serif"}}>ExtraPass</div>
         </div>
         <div style={{display:'flex',alignItems:'center',gap:'10px'}}>
           <div style={{textAlign:'right'}}>
-            <div style={{fontSize:'11px',color:T.grey1,marginBottom:'5px'}}>53 / 250 ★</div>
+            <div style={{fontSize:'11px',color:T.grey1,marginBottom:'5px'}}>{profile?.stars || 0} / 45 ⭐</div>
             <div style={{width:'100px',height:'5px',background:T.purple1,borderRadius:'3px',overflow:'hidden'}}>
-              <div style={{width:'21%',height:'100%',background:`linear-gradient(90deg,${T.orange},${T.orangeLt})`,borderRadius:'3px'}}/>
+              <div style={{width:`${Math.min(100, ((profile?.stars||0)/45)*100)}%`,height:'100%',background:`linear-gradient(90deg,${T.orange},${T.orangeLt})`,borderRadius:'3px'}}/>
             </div>
           </div>
-          <button style={{background:T.orange,border:'none',borderRadius:'10px',padding:'7px 12px',color:'white',fontSize:'12px',fontWeight:'800',fontFamily:"'Exo 2',sans-serif",cursor:'pointer',boxShadow:`0 3px 10px ${T.orange}55`,flexShrink:0}}>Взять</button>
+          <div style={{background:`linear-gradient(135deg,${T.orange},${T.orangeLt})`,borderRadius:'10px',padding:'7px 14px',color:'white',fontSize:'12px',fontWeight:'800',fontFamily:"'Exo 2',sans-serif",boxShadow:`0 3px 10px ${T.orange}55`}}>📋</div>
         </div>
       </div>
 
@@ -1406,7 +2119,7 @@ const ArenaScreen = ({onMenu, onAI, onBattlePick, onStartBattle, onOpenCase, onO
       <div style={{position:'relative',margin:'12px 0 0',display:'flex',flexDirection:'column',alignItems:'center'}}>
         <div style={{display:'flex',gap:'8px',marginBottom:'12px',width:'100%',padding:'0 16px'}}>
           {[{id:'history',label:'История боёв'},{id:'ai',label:'ИИ аналитика ✦',accent:true}].map(({id,label,accent})=>(
-            <button key={id} onClick={()=>{if(id==='ai')onAI();}} style={{flex:1,background:T.bgCard,border:`1px solid ${T.purple1}`,borderRadius:'20px',padding:'7px 14px',color:T.grey1,fontSize:'12px',cursor:'pointer',fontFamily:"'Inter',sans-serif",transition:'all 0.15s'}}>
+            <button key={id} onClick={()=>{if(id==='history')onOpenBattles();if(id==='ai')onAI();}} style={{flex:1,background:T.bgCard,border:`1px solid ${T.purple1}`,borderRadius:'20px',padding:'7px 14px',color:T.grey1,fontSize:'12px',cursor:'pointer',fontFamily:"'Inter',sans-serif",transition:'all 0.15s'}}>
               {label}
             </button>
           ))}
@@ -1417,30 +2130,59 @@ const ArenaScreen = ({onMenu, onAI, onBattlePick, onStartBattle, onOpenCase, onO
           <div style={{position:'absolute',bottom:'-8px',left:'50%',width:'120px',height:'16px',background:T.purple3,borderRadius:'50%',filter:'blur(14px)',opacity:0.5,animation:'glowPulse 3s ease-in-out infinite'}}/>
         </div>
 
-        <div style={{marginTop:'16px',padding:'10px 14px',background:T.bgCard,borderRadius:'13px',width:'calc(100% - 32px)',border:`1px solid ${T.purple1}`}}>
-          <div style={{display:'flex',justifyContent:'space-between',marginBottom:'6px'}}>
-            <span style={{fontSize:'11px',color:T.grey2}}>До следующей лиги</span>
-            <span style={{fontSize:'11px',color:T.orange,fontWeight:'600'}}>ещё {nextLeagueTrophies - trophyCount} трофеев</span>
-          </div>
-          <div style={{height:'5px',background:T.purple1,borderRadius:'3px',overflow:'hidden'}}>
-            <div style={{width:`${progress}%`,height:'100%',background:`linear-gradient(90deg,${T.orange},${T.orangeLt})`,borderRadius:'3px',boxShadow:`0 0 8px ${T.orange}55`}}/>
+        <div style={{marginTop:'16px',display:'flex',gap:'10px',padding:'0 16px',width:'100%'}}>
+          {/* Case wins counter — stick segments */}
+          <div style={{flex:1,background:T.bgCard,borderRadius:'13px',padding:'10px 14px',border:`1px solid ${T.purple1}`}}>
+            <div style={{display:'flex',justifyContent:'space-between',marginBottom:'8px',alignItems:'center'}}>
+              <span style={{fontSize:'11px',color:T.grey2}}>{winsForCase} побед до T1 кейса</span>
+              <span style={{fontSize:'11px',color:T.orange,fontWeight:'600'}}>{winsSinceLastCase}/{winsForCase}</span>
+            </div>
+            <div style={{display:'flex',gap:'5px',alignItems:'center'}}>
+              {Array.from({length:winsForCase},(_,i)=>(
+                <div key={i} style={{
+                  flex:1,height:'8px',borderRadius:'4px',
+                  background: i < winsSinceLastCase
+                    ? `linear-gradient(90deg,${T.orange},${T.orangeLt})`
+                    : `${T.purple1}`,
+                  border: i >= winsSinceLastCase ? `1px solid ${T.purple2}` : 'none',
+                  boxShadow: i < winsSinceLastCase ? `0 0 6px ${T.orange}55` : 'none',
+                  transition:'background 0.3s',
+                }}/>
+              ))}
+              <img src={ICONS.followingCase} alt="" style={{width:'24px',height:'24px',filter:'invert(1) drop-shadow(0 0 4px orange)',flexShrink:0,opacity:winsSinceLastCase>=winsForCase?1:0.4}}/>
+            </div>
+            {ep === 'inactive' && (
+              <button onClick={()=>{onGoToShop();setTimeout(()=>{ if(window.__openExtraPassModal) window.__openExtraPassModal(); },200);}} style={{width:'100%',marginTop:'8px',background:'none',border:`1px solid ${T.orange}44`,borderRadius:'8px',padding:'6px 10px',color:T.orange,fontSize:'10px',fontWeight:'600',fontFamily:"'Exo 2',sans-serif",cursor:'pointer'}}>
+                ⚡ ExtraPass ускоряет прогресс
+              </button>
+            )}
           </div>
         </div>
       </div>
 
-      {/* Stats */}
+      {/* Stats — redesigned League + Trophy blocks */}
       <div style={{display:'flex',gap:'10px',padding:'12px 16px 0'}}>
-        <div onClick={()=>onOpenLeagueInfo()} style={{flex:1,background:T.bgCard,borderRadius:'14px',padding:'12px 14px',border:`1px solid ${T.purple1}`,cursor:'pointer',transition:'all 0.15s'}}>
-          <div style={{fontSize:'10px',color:T.grey2,textTransform:'uppercase',letterSpacing:'0.5px',marginBottom:'4px'}}>Лига</div>
+        <div onClick={()=>onOpenLeagueInfo()} style={{flex:1,background:T.bgCard,borderRadius:'14px',padding:'10px 14px',border:`1px solid ${T.purple1}`,cursor:'pointer',transition:'all 0.15s'}}>
+          <div style={{fontSize:'10px',color:T.grey2,textTransform:'uppercase',letterSpacing:'0.5px',marginBottom:'2px'}}>Лига {leagueId}</div>
           <div style={{fontSize:'20px',fontWeight:'900',color:T.white,fontFamily:"'Exo 2',sans-serif",lineHeight:1}}>{leagueName}</div>
-          <div style={{fontSize:'11px',color:T.purpleLt,marginTop:'3px'}}>Лига {leagueId}</div>
+          {nextLeagueTrophies > trophyCount && (
+            <div style={{fontSize:'11px',color:T.orange,fontWeight:'600',marginTop:'4px'}}>{nextLeagueTrophies - trophyCount} 🏆 до {nextLeagueName}</div>
+          )}
         </div>
-        <div onClick={()=>onOpenGloryPath()} style={{flex:1,background:`linear-gradient(135deg,${T.orangeD}22,${T.orange}33)`,borderRadius:'14px',padding:'12px 14px',border:`1px solid ${T.orange}55`,cursor:'pointer',transition:'all 0.15s'}}>
+        <div onClick={()=>onOpenGloryPath()} style={{flex:1,background:`linear-gradient(135deg,${T.orangeD}22,${T.orange}33)`,borderRadius:'14px',padding:'10px 14px',border:`1px solid ${T.orange}55`,cursor:'pointer',transition:'all 0.15s',position:'relative'}}>
           <div style={{fontSize:'10px',color:T.grey2,textTransform:'uppercase',letterSpacing:'0.5px',marginBottom:'4px'}}>Трофеи</div>
           <div style={{display:'flex',alignItems:'center',gap:'7px'}}>
             <span style={{fontSize:'26px',fontWeight:'900',color:T.orange,fontFamily:"'Exo 2',sans-serif",lineHeight:1}}>{trophyCount}</span>
             <IconTrophy size={20}/>
           </div>
+          {nextRewardDistance != null && (
+            <div style={{fontSize:'10px',color:'#60a5fa',fontWeight:'600',marginTop:'5px'}}>{nextRewardDistance.toLocaleString()} 🏆 до награды</div>
+          )}
+          {availableGloryCount > 0 && (
+            <span style={{position:'absolute',top:'-6px',right:'-6px',display:'inline-flex',alignItems:'center',justifyContent:'center',minWidth:'20px',height:'20px',borderRadius:'50%',background:'#ef4444',color:'white',fontSize:'11px',fontWeight:'800',fontFamily:"'Exo 2',sans-serif",lineHeight:1,border:`2px solid ${T.bg}`,padding:'0 4px',boxSizing:'border-box'}}>
+              {availableGloryCount}
+            </span>
+          )}
         </div>
       </div>
 
@@ -1485,7 +2227,7 @@ const ArenaScreen = ({onMenu, onAI, onBattlePick, onStartBattle, onOpenCase, onO
             <div style={{flex:1,minWidth:0}}>
               <div style={{fontSize:'14px',fontWeight:'700',color:T.white,fontFamily:"'Exo 2',sans-serif",marginBottom:'3px'}}>Кейсы закончились</div>
               <div style={{fontSize:'11px',color:T.grey1,marginBottom:'8px'}}>Пополни запас в магазине</div>
-              <button style={{background:T.purple3,border:`1px solid ${T.purpleHL}`,borderRadius:'8px',padding:'6px 14px',color:'white',fontSize:'12px',fontWeight:'700',fontFamily:"'Exo 2',sans-serif",cursor:'pointer'}}>Магазин</button>
+              <button onClick={onGoToShop} style={{background:`linear-gradient(135deg,${T.orange},${T.orangeD})`,border:'none',borderRadius:'8px',padding:'6px 14px',color:'white',fontSize:'12px',fontWeight:'700',fontFamily:"'Exo 2',sans-serif",cursor:'pointer',boxShadow:`0 4px 14px ${T.orange}44`}}>Магазин</button>
             </div>
           </>
         )}
@@ -2417,6 +3159,276 @@ const PlaceholderScreen = ({label}) => (
   </div>
 );
 
+var _inviteDataRef = null;
+
+const FriendsScreen = ({onClose, profile}) => {
+  const [opponents, setOpponents] = React.useState([]);
+  const [oppLoaded, setOppLoaded] = React.useState(false);
+  const [inviteId,   setInviteId]   = React.useState(null);
+  const [sending,    setSending]    = React.useState(false);
+  const [error,      setError]      = React.useState(null);
+
+  const loadOpponents = async () => {
+    setOppLoaded(false);
+    try {
+      const r = await fetch(_buildAuthUrl('/api/recent-opponents'));
+      const d = await r.json();
+      setOpponents(d.opponents || []);
+    } catch(e) {}
+    setOppLoaded(true);
+  };
+
+  React.useEffect(()=>{ loadOpponents(); }, [profile]);
+
+  const sendInvite = async (targetId) => {
+    setSending(true); setError(null);
+    try {
+      const r = await fetch(_buildAuthUrl('/api/friends/invite'), {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({to_user_id: targetId}),
+      });
+      const d = await r.json();
+      if (d.success) {
+        setInviteId(d.invite_id);
+        window.showToast('Вызов отправлен! Ожидаем ответа...');
+      } else {
+        setError(d.error || 'Ошибка');
+      }
+    } catch(e) { setError('Ошибка сети'); }
+    setSending(false);
+  };
+
+  const cancelInvite = async () => {
+    try {
+      await fetch(_buildAuthUrl('/api/friends/invite/cancel'), {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({invite_id: inviteId}),
+      });
+      setInviteId(null);
+      window.showToast('Вызов отозван');
+    } catch(e) {}
+  };
+
+  return (
+    <div style={{position:'absolute',inset:0,background:T.bg,zIndex:200,display:'flex',flexDirection:'column',animation:'fadeIn 0.25s'}}>
+      <div style={{height:'52px',background:'rgba(15,10,26,0.98)',display:'flex',alignItems:'center',gap:'10px',padding:'0 16px',flexShrink:0,borderBottom:`1px solid ${T.purple1}`}}>
+        <button onClick={onClose} style={{width:'32px',height:'32px',borderRadius:'10px',background:T.bgCard,border:`1px solid ${T.purple1}`,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',flexShrink:0}}>
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 3L5 7L9 11" stroke={T.grey2} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg>
+        </button>
+        <span style={{fontSize:'15px',fontWeight:'700',color:T.white,fontFamily:"'Exo 2',sans-serif"}}>Друзья</span>
+      </div>
+      <div style={{flex:1,overflowY:'auto',padding:'16px'}}>
+        <div style={{background:`linear-gradient(135deg,${T.bgCard},${T.purple1}18)`,border:`1px solid ${T.purple1}44`,borderRadius:'16px',padding:'18px',marginBottom:'16px'}}>
+          <div style={{fontSize:'15px',fontWeight:'700',color:T.white,marginBottom:'12px'}}>⚔️ Дружеский бой</div>
+          <p style={{fontSize:'13px',color:T.grey1,margin:'0 0 14px',lineHeight:1.5}}>Введи ID игрока, чтобы вызвать его на дружеский бой без наград.</p>
+
+          {inviteId ? (
+            <div>
+              <div style={{background:T.purple1+'22',borderRadius:'12px',padding:'10px 14px',marginBottom:'10px',fontSize:'13px',color:T.green,fontWeight:600}}>
+                Вызов отправлен! ID: {inviteId}
+              </div>
+              <button onClick={cancelInvite} style={{width:'100%',height:'44px',background:T.bgCard,border:`1px solid ${T.red}66`,borderRadius:'12px',color:T.red,fontSize:'14px',fontWeight:'700',cursor:'pointer',fontFamily:"'Exo 2',sans-serif"}}>Отозвать вызов</button>
+            </div>
+          ) : (
+            <div>
+              <InviteInput onSend={sendInvite} sending={sending}/>
+              {error && <div style={{fontSize:'12px',color:T.red,marginTop:'8px'}}>{error}</div>}
+            </div>
+          )}
+        </div>
+
+        <div style={{fontSize:'15px',fontWeight:'700',color:T.white,marginBottom:'10px'}}>Недавние соперники</div>
+        {!oppLoaded ? (
+          <div style={{fontSize:'13px',color:T.grey1,textAlign:'center',padding:'20px'}}>Загрузка...</div>
+        ) : opponents.length === 0 ? (
+          <div style={{fontSize:'13px',color:T.grey2,textAlign:'center',padding:'20px'}}>Пока нет соперников</div>
+        ) : (
+          opponents.map((op, i) => (
+            <div key={i} style={{display:'flex',alignItems:'center',gap:'10px',background:T.bgCard,border:`1px solid ${T.purple1}22`,borderRadius:'14px',padding:'10px 14px',marginBottom:'8px'}}>
+              <div style={{width:'36px',height:'36px',borderRadius:'10px',background:`linear-gradient(135deg,${T.purple2},${T.purple1})`,display:'flex',alignItems:'center',justifyContent:'center',overflow:'hidden',flexShrink:0}}>
+                {op.avatar_url ? <img src={op.avatar_url} alt="" style={{width:'100%',height:'100%',objectFit:'cover'}}/> : <span style={{fontSize:'16px'}}>👤</span>}
+              </div>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{fontSize:'14px',fontWeight:'600',color:T.white,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{op.display_name}</div>
+                <div style={{fontSize:'11px',color:T.grey2}}>ID: {op.user_id}</div>
+              </div>
+              <button onClick={()=>sendInvite(op.user_id)} disabled={sending} style={{height:'34px',padding:'0 14px',background:T.orange,border:'none',borderRadius:'10px',color:'white',fontSize:'12px',fontWeight:'700',cursor:sending?'default':'pointer',opacity:sending?0.5:1,fontFamily:"'Exo 2',sans-serif",whiteSpace:'nowrap'}}>Вызвать</button>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+};
+
+const CommunityScreen = ({profile}) => {
+  const [opponents, setOpponents] = React.useState([]);
+  const [oppLoaded, setOppLoaded] = React.useState(false);
+  const [inviteId,   setInviteId]   = React.useState(null);
+  const [sending,    setSending]    = React.useState(false);
+  const [error,      setError]      = React.useState(null);
+
+  const loadOpponents = async () => {
+    setOppLoaded(false);
+    try {
+      const r = await fetch(_buildAuthUrl('/api/recent-opponents'));
+      const d = await r.json();
+      setOpponents(d.opponents || []);
+    } catch(e) {}
+    setOppLoaded(true);
+  };
+
+  React.useEffect(()=>{ loadOpponents(); }, [profile]);
+
+  const sendInvite = async (targetId) => {
+    setSending(true); setError(null);
+    try {
+      const r = await fetch(_buildAuthUrl('/api/friends/invite'), {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({to_user_id: targetId}),
+      });
+      const d = await r.json();
+      if (d.success) {
+        setInviteId(d.invite_id);
+        window.showToast('Вызов отправлен! Ожидаем ответа...');
+      } else {
+        setError(d.error || 'Ошибка');
+      }
+    } catch(e) { setError('Ошибка сети'); }
+    setSending(false);
+  };
+
+  const cancelInvite = async () => {
+    try {
+      await fetch(_buildAuthUrl('/api/friends/invite/cancel'), {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({invite_id: inviteId}),
+      });
+      setInviteId(null);
+      window.showToast('Вызов отозван');
+    } catch(e) {}
+  };
+
+  return (
+    <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden'}}>
+      <div style={{flex:1,overflowY:'auto',padding:'16px'}}>
+        <div style={{fontSize:'20px',fontWeight:'900',color:T.white,marginBottom:'16px',fontFamily:"'Exo 2',sans-serif"}}>Коммьюнити</div>
+
+        {/* Recent opponents */}
+        <div style={{fontSize:'15px',fontWeight:'700',color:T.white,marginBottom:'10px'}}>Недавние соперники</div>
+        {!oppLoaded ? (
+          <div style={{fontSize:'13px',color:T.grey1,textAlign:'center',padding:'20px'}}>Загрузка...</div>
+        ) : opponents.length === 0 ? (
+          <div style={{fontSize:'13px',color:T.grey2,textAlign:'center',padding:'20px'}}>Пока нет соперников</div>
+        ) : (
+          opponents.map((op, i) => (
+            <div key={i} style={{display:'flex',alignItems:'center',gap:'10px',background:T.bgCard,border:`1px solid ${T.purple1}22`,borderRadius:'14px',padding:'10px 14px',marginBottom:'8px'}}>
+              <div style={{width:'36px',height:'36px',borderRadius:'10px',background:`linear-gradient(135deg,${T.purple2},${T.purple1})`,display:'flex',alignItems:'center',justifyContent:'center',overflow:'hidden',flexShrink:0}}>
+                {op.avatar_url ? <img src={op.avatar_url} alt="" style={{width:'100%',height:'100%',objectFit:'cover'}}/> : <span style={{fontSize:'16px'}}>👤</span>}
+              </div>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{fontSize:'14px',fontWeight:'600',color:T.white,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{op.display_name}</div>
+                <div style={{fontSize:'11px',color:T.grey2}}>ID: {op.user_id}</div>
+              </div>
+              <button onClick={()=>sendInvite(op.user_id)} disabled={sending} style={{height:'34px',padding:'0 14px',background:T.orange,border:'none',borderRadius:'10px',color:'white',fontSize:'12px',fontWeight:'700',cursor:sending?'default':'pointer',opacity:sending?0.5:1,fontFamily:"'Exo 2',sans-serif",whiteSpace:'nowrap'}}>Вызвать</button>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+};
+
+var InviteInput = ({onSend, sending}) => {
+  const [targetId, setTargetId] = React.useState('');
+  const submit = () => {
+    const id = parseInt(targetId.trim(), 10);
+    if (!id || id <= 0) return;
+    onSend(id);
+    setTargetId('');
+  };
+  return (
+    <div style={{display:'flex',gap:'8px'}}>
+      <input type="number" value={targetId} onChange={e=>setTargetId(e.target.value)} onKeyDown={e=>e.key==='Enter'&&submit()}
+        placeholder="ID игрока" style={{flex:1,height:'44px',background:T.bg,border:`1px solid ${T.purple1}`,borderRadius:'12px',padding:'0 14px',color:T.white,fontSize:'14px',outline:'none',fontFamily:"'Exo 2',sans-serif",MozAppearance:'textfield'}}
+      />
+      <button onClick={submit} disabled={sending}
+        style={{height:'44px',padding:'0 20px',background:T.orange,border:'none',borderRadius:'12px',color:'white',fontSize:'14px',fontWeight:'700',cursor:sending?'default':'pointer',fontFamily:"'Exo 2',sans-serif",whiteSpace:'nowrap',opacity:sending?0.5:1}}>
+        {sending ? '...' : '⚔️ Вызвать на бой'}
+      </button>
+    </div>
+  );
+};
+
+var IncomingInviteModal = ({invite, profile, onClose, onStart}) => {
+  const [timeLeft, setTimeLeft] = React.useState(300);
+  const timerRef = React.useRef(null);
+
+  React.useEffect(()=>{
+    const expires = invite.expires_at ? new Date(invite.expires_at).getTime() : Date.now() + 300000;
+    const tick = () => {
+      const left = Math.max(0, Math.floor((expires - Date.now()) / 1000));
+      setTimeLeft(left);
+      if (left <= 0) { onClose(); }
+      else { timerRef.current = setTimeout(tick, 1000); }
+    };
+    tick();
+    return () => clearTimeout(timerRef.current);
+  }, []);
+
+  var respond = async (action) => {
+    try {
+      const r = await fetch(_buildAuthUrl('/api/friends/invite/respond'), {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({invite_id: invite.id, action: action}),
+      });
+      const d = await r.json();
+      if (action === 'accept' && d.success && d.match_id) {
+        onStart();
+        onClose();
+        window._playSfx('battle-sound');
+        document.getElementById('battle-sound')?.play().catch(function(){});
+        window._openPreBattle({
+          matchId: d.match_id, userId: profile?.user_id || window._getUserId?.(),
+          profile: profile, gameMode: 'friendly',
+          opponentName: d.opponent_name, opponentAvatar: d.opponent_avatar_url,
+          opponentTrophies: d.opponent_trophies, opponentClan: d.opponent_clan,
+        });
+      } else {
+        onClose();
+      }
+    } catch(e) {}
+  };
+
+  const minutes = Math.floor(timeLeft / 60);
+  const seconds = timeLeft % 60;
+
+  return (
+    <div style={{position:'absolute',inset:0,background:'rgba(0,0,0,0.9)',zIndex:400,display:'flex',alignItems:'center',justifyContent:'center',animation:'fadeIn 0.25s'}}>
+      <div style={{background:`linear-gradient(180deg,${T.purple2},${T.bgCard})`,border:`2px solid ${T.purple1}`,borderRadius:'24px',padding:'32px 24px 24px',maxWidth:'340px',width:'85%',textAlign:'center',animation:'scaleIn 0.3s cubic-bezier(0.32,0.72,0,1)'}}>
+        <div style={{fontSize:'48px',marginBottom:'8px'}}>⚔️</div>
+        <div style={{fontSize:'20px',fontWeight:'900',color:T.white,fontFamily:"'Exo 2',sans-serif",marginBottom:'4px'}}>
+          {invite.from_username}
+        </div>
+        <div style={{fontSize:'14px',color:T.grey1,marginBottom:'20px'}}>вызывает тебя на бой!</div>
+
+        <div style={{display:'flex',gap:'10px',marginBottom:'16px'}}>
+          <button onClick={()=>respond('accept')}
+            style={{flex:1,height:'48px',background:`linear-gradient(135deg,${T.green},#059669)`,border:'none',borderRadius:'14px',color:'white',fontSize:'16px',fontWeight:'900',cursor:'pointer',fontFamily:"'Exo 2',sans-serif"}}>
+            Принять
+          </button>
+          <button onClick={()=>respond('decline')}
+            style={{flex:1,height:'48px',background:T.bgCard,border:`1px solid ${T.red}66`,borderRadius:'14px',color:T.red,fontSize:'16px',fontWeight:'700',cursor:'pointer',fontFamily:"'Exo 2',sans-serif"}}>
+            Отклонить
+          </button>
+        </div>
+
+        <div style={{fontSize:'13px',color:T.grey2}}>Истекает через {minutes}:{String(seconds).padStart(2,'0')}</div>
+      </div>
+    </div>
+  );
+};
+
 // ═══════════════════════════════════════════
 // GAME MODE SHEET
 // ═══════════════════════════════════════════
@@ -2424,6 +3436,7 @@ const GAME_MODES = [
   {
     id: 'classic',
     icon: '⚔️',
+    img:  ICONS.battle,
     label: 'Классика',
     time: '3 минуты',
     desc: 'Полноценная битва без спешки. Цена каждого хода — победа или поражение. Тактика решает всё.',
@@ -2506,7 +3519,9 @@ const ModeInfoModal = ({modeId, onClose}) => {
         <div style={{padding:'18px 20px 14px',borderBottom:`1px solid ${m.color}22`,background:`${m.color}08`}}>
           <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
             <div style={{display:'flex',alignItems:'center',gap:'10px'}}>
-              <div style={{width:'40px',height:'40px',borderRadius:'12px',background:`${m.color}20`,border:`1px solid ${m.color}55`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'22px'}}>{m.icon}</div>
+              <div style={{width:'40px',height:'40px',borderRadius:'12px',background:`${m.color}20`,border:`1px solid ${m.color}55`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'22px'}}>
+            {m.img ? <img src={m.img} alt="" style={{width:'24px',height:'24px',filter:iconWhite}}/> : m.icon}
+          </div>
               <div>
                 <div style={{fontSize:'17px',fontWeight:'900',color:'white',fontFamily:"'Exo 2',sans-serif"}}>{m.label}</div>
                 <div style={{fontSize:'11px',color:m.color,fontWeight:'600',marginTop:'1px'}}>{m.time}</div>
@@ -2588,7 +3603,7 @@ const GameModeSheet = ({onClose, onConfirm}) => {
                 )}
                 {mode===m.id && <div style={{position:'absolute',top:0,left:0,right:0,height:'2px',background:`linear-gradient(90deg,transparent,${m.color},transparent)`,zIndex:1}}/>}
                 <div style={{width:'44px',height:'44px',borderRadius:'12px',background:mode===m.id?`${m.color}20`:T.purple1,border:`1px solid ${mode===m.id?m.color:T.purple2}`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'22px',flexShrink:0,position:'relative',zIndex:1}}>
-                  {m.icon}
+                  {m.img ? <img src={m.img} alt="" style={{width:'24px',height:'24px',filter:iconWhite}}/> : m.icon}
                 </div>
                 <div style={{flex:1,minWidth:0,position:'relative',zIndex:1}}>
                   <div style={{display:'flex',alignItems:'center',gap:'8px',marginBottom:'3px'}}>
@@ -2661,14 +3676,14 @@ const GameModeSheet = ({onClose, onConfirm}) => {
             <div style={{background:'rgba(248,113,113,0.1)',border:'1px solid rgba(248,113,113,0.3)',borderRadius:'12px',padding:'10px 14px',fontSize:'11px',color:'#f87171',lineHeight:1.5}}>
               {!selectedDeck?.card_ids?.[0] ? '⚠️ Выберите героя в колоде' : `⚠️ Колода неполная (${deckCount}/9). Соберите колоду в разделе «Мои колоды»`}
             </div>
-            <button disabled style={{width:'100%',height:'54px',background:T.bgCard,border:`1px solid ${T.purple2}`,borderRadius:'16px',color:T.grey3,fontSize:'18px',fontWeight:'900',fontFamily:"'Exo 2',sans-serif",cursor:'not-allowed',marginTop:'8px'}}>
-              {chosen.icon} В БОЙ — {chosen.label}
+            <button disabled style={{width:'100%',height:'54px',background:T.bgCard,border:`1px solid ${T.purple2}`,borderRadius:'16px',color:T.grey3,fontSize:'18px',fontWeight:'900',fontFamily:"'Exo 2',sans-serif",cursor:'not-allowed',marginTop:'8px',display:'flex',alignItems:'center',justifyContent:'center',gap:'8px'}}>
+              {chosen.img ? <img src={chosen.img} alt="" style={{width:'24px',height:'24px',filter:'brightness(0) saturate(100%) invert(50%) sepia(13%) saturate(525%) hue-rotate(214deg)'}}/> : chosen.icon} В БОЙ — {chosen.label}
             </button>
           </div>
         ) : (
           <button onClick={()=>onConfirm(fullMode, deckId)}
-            style={{width:'100%',height:'54px',background:`linear-gradient(135deg,${chosen.color},${chosen.color}cc)`,border:'none',borderRadius:'16px',color:'white',fontSize:'18px',fontWeight:'900',fontFamily:"'Exo 2',sans-serif",cursor:'pointer',boxShadow:`0 6px 24px ${chosen.color}44`,letterSpacing:'1px',transition:'all 0.15s'}}>
-            {chosen.icon} В БОЙ — {mode==='extra_arena'?(chosen.subMods?.find(s=>s.id===subMod)?.label||chosen.label):chosen.label}
+            style={{width:'100%',height:'54px',background:`linear-gradient(135deg,${chosen.color},${chosen.color}cc)`,border:'none',borderRadius:'16px',color:'white',fontSize:'18px',fontWeight:'900',fontFamily:"'Exo 2',sans-serif",cursor:'pointer',boxShadow:`0 6px 24px ${chosen.color}44`,letterSpacing:'1px',transition:'all 0.15s',display:'flex',alignItems:'center',justifyContent:'center',gap:'8px'}}>
+            {chosen.img ? <img src={chosen.img} alt="" style={{width:'24px',height:'24px',filter:'brightness(0) invert(1)'}}/> : chosen.icon} В БОЙ — {mode==='extra_arena'?(chosen.subMods?.find(s=>s.id===subMod)?.label||chosen.label):chosen.label}
           </button>
         )}
       </div>
@@ -2912,76 +3927,214 @@ const PreBattleScreen = ({data, onClose}) => {
     }
   };
 
-  const AvatarCircle = ({src, letter, borderColor, accentColor}) => (
-    src ? (
-      <div style={{width:'96px',height:'96px',borderRadius:'50%',border:`2px solid ${borderColor}`,overflow:'hidden',boxShadow:`0 0 24px ${accentColor}22, 0 0 48px ${accentColor}08`,backgroundImage:`url(${src})`,backgroundSize:'cover',backgroundPosition:'center',flexShrink:0}}/>
-    ) : (
-      <div style={{width:'96px',height:'96px',borderRadius:'50%',border:`2px solid ${borderColor}`,background:`linear-gradient(135deg,${accentColor}20,${accentColor}08)`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'40px',fontWeight:'900',color:accentColor,fontFamily:"'Exo 2',sans-serif",boxShadow:`0 0 24px ${accentColor}22, 0 0 48px ${accentColor}08`,flexShrink:0}}>{letter}</div>
-    )
+  const vsAccent = isBlitz ? T.orange : isExtra ? '#c084fc' : T.purpleHL;
+  const vsAccentBg = isBlitz ? T.orangeD : T.purple3;
+  const vsAccentBorder = isBlitz ? T.orangeLt : T.purpleLt;
+
+  const PlayerCard = ({name, avatar, trophies, clan, accentColor, accentBg}) => (
+    <div style={{display:'flex',alignItems:'center',gap:'14px',padding:'10px 20px',background:'linear-gradient(135deg,rgba(26,16,48,0.8),rgba(19,13,38,0.6))',border:'1px solid ' + accentColor + '22',borderRadius:'16px',minWidth:'200px',animation:'fadeIn 0.4s ease'}}>
+      <div style={{position:'relative',flexShrink:0}}>
+        <div style={{position:'absolute',inset:'-4px',borderRadius:'50%',background:'radial-gradient(circle,' + accentColor + '30,transparent 70%)',animation:'preBattleBgPulse 2.5s ease-in-out infinite'}}/>
+        {avatar ? (
+          <div style={{width:'52px',height:'52px',borderRadius:'50%',border:'2px solid ' + accentColor,overflow:'hidden',backgroundImage:'url(' + avatar + ')',backgroundSize:'cover',backgroundPosition:'center',boxShadow:'0 0 16px ' + accentColor + '22',flexShrink:0}}/>
+        ) : (
+          <div style={{width:'52px',height:'52px',borderRadius:'50%',border:'2px solid ' + accentColor,background:'linear-gradient(135deg,' + accentColor + '20,' + accentColor + '08)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:'22px',fontWeight:'900',color:accentColor,fontFamily:"'Exo 2',sans-serif",boxShadow:'0 0 16px ' + accentColor + '22',flexShrink:0}}>{name.charAt(0).toUpperCase()}</div>
+        )}
+      </div>
+      <div style={{textAlign:'left',overflow:'hidden',flex:1}}>
+        <div style={{fontSize:'15px',fontWeight:'900',color:T.white,fontFamily:"'Exo 2',sans-serif",whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',maxWidth:'140px'}}>{name}</div>
+        {clan && <div style={{fontSize:'10px',color:accentColor,fontWeight:'700',padding:'1px 8px',background:accentBg + '15',borderRadius:'4px',display:'inline-block',marginTop:'3px',maxWidth:'120px',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{clan}</div>}
+        <div style={{display:'flex',alignItems:'center',gap:'3px',fontSize:'11px',fontWeight:'800',color:T.orange,fontFamily:"'Exo 2',sans-serif",marginTop:'4px'}}><span style={{fontSize:'12px'}}>🏆</span> {trophies.toLocaleString()}</div>
+      </div>
+    </div>
   );
 
   return (
-    <div onClick={handleTap} style={{position:'fixed',inset:0,zIndex:21000,background:'linear-gradient(180deg,rgba(5,3,14,0.97) 0%,rgba(15,10,26,0.95) 100%)',backdropFilter:'blur(20px)',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',padding:'24px',animation:'fadeIn 0.3s ease',cursor:'pointer'}}>
-      <div style={{position:'absolute',inset:0,backgroundImage:'radial-gradient(ellipse at 50% 40%, rgba(92,63,160,0.12) 0%, transparent 70%)',pointerEvents:'none'}}/>
+    <div onClick={handleTap} style={{position:'fixed',inset:0,zIndex:21000,background:'linear-gradient(180deg,rgba(4,2,12,0.98) 0%,rgba(10,7,20,0.97) 50%,rgba(16,10,28,0.96) 100%)',backdropFilter:'blur(28px)',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',padding:'24px',animation:'fadeIn 0.3s ease',cursor:'pointer'}}>
+      {/* Animated orbs */}
+      <div style={{position:'absolute',inset:0,pointerEvents:'none',overflow:'hidden'}}>
+        <div style={{position:'absolute',top:'10%',left:'5%',width:'200px',height:'200px',borderRadius:'50%',background:'radial-gradient(circle,' + vsAccent + '12,transparent 70%)',animation:'preBattleBgPulse 3.5s ease-in-out infinite'}}/>
+        <div style={{position:'absolute',bottom:'18%',right:'5%',width:'180px',height:'180px',borderRadius:'50%',background:'radial-gradient(circle,' + vsAccent + '0a,transparent 70%)',animation:'preBattleBgPulse 4s ease-in-out infinite',animationDelay:'1s'}}/>
+        <div style={{position:'absolute',top:'45%',left:'50%',width:'280px',height:'280px',borderRadius:'50%',background:'radial-gradient(circle,' + vsAccent + '06,transparent 70%)',transform:'translate(-50%,-50%)',animation:'preBattleBgPulse 5s ease-in-out infinite',animationDelay:'2s'}}/>
+      </div>
 
-      <div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:'24px',marginBottom:'32px',position:'relative',zIndex:1,flexWrap:'wrap'}}>
-        {/* Player */}
-        <div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:'8px',minWidth:'130px'}}>
-          <div style={{position:'relative'}}>
-            <div style={{position:'absolute',inset:'-4px',borderRadius:'50%',background:`linear-gradient(135deg,${T.purpleHL},${T.purple3})`,opacity:0.3,filter:'blur(8px)'}}/>
-            <AvatarCircle src={playerAvatar} letter={playerName.charAt(0).toUpperCase()} borderColor={T.purpleHL} accentColor={T.purpleLt}/>
-          </div>
-          <div style={{fontSize:'16px',fontWeight:'900',color:T.white,fontFamily:"'Exo 2',sans-serif",textAlign:'center',lineHeight:1.2,maxWidth:'140px',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{playerName}</div>
-          {playerClan && <div style={{fontSize:'11px',color:T.purpleLt,fontWeight:'700',textAlign:'center',maxWidth:'140px',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',padding:'2px 10px',background:`${T.purple1}40`,borderRadius:'6px',border:`1px solid ${T.purpleLt}20`}}>{playerClan}</div>}
-          <div style={{display:'flex',alignItems:'center',gap:'4px',fontSize:'12px',fontWeight:'800',color:T.orange,fontFamily:"'Exo 2',sans-serif"}}>
-            <span style={{fontSize:'14px'}}>🏆</span> {playerTrophies.toLocaleString()}
-          </div>
-        </div>
+      {/* Player */}
+      <div style={{position:'relative',zIndex:1,marginBottom:'12px'}}>
+        <PlayerCard name={playerName} avatar={playerAvatar} trophies={playerTrophies} clan={playerClan} accentColor={T.purpleHL} accentBg={T.purpleHL}/>
+      </div>
 
-        {/* VS */}
-        <div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:'10px',flexShrink:0}}>
-          <div style={{position:'relative'}}>
-            <div style={{position:'absolute',inset:'-6px',borderRadius:'50%',background:isBlitz?T.orange:isExtra?'#c084fc':T.purpleHL,opacity:0.25,filter:'blur(12px)',animation:'pulse 1.5s ease-in-out infinite'}}/>
-            <div style={{width:'64px',height:'64px',borderRadius:'50%',background:`linear-gradient(135deg,${isBlitz?T.orangeD:T.purple3},${isBlitz?T.orange:T.purpleHL})`,border:`2px solid ${isBlitz?T.orangeLt:T.purpleLt}`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'22px',fontWeight:'900',color:'white',fontFamily:"'Exo 2',sans-serif",boxShadow:`0 0 20px ${isBlitz?T.orange:T.purpleHL}44`,position:'relative',zIndex:1}}>VS</div>
-            {/* Decorative rings */}
-            <svg style={{position:'absolute',top:'-12px',left:'-12px',width:'88px',height:'88px',pointerEvents:'none',animation:'rotateSlow 8s linear infinite'}} viewBox="0 0 88 88" fill="none">
-              <circle cx="44" cy="44" r="40" stroke={isBlitz?T.orange:T.purpleHL} strokeWidth="0.5" strokeDasharray="4 6" opacity="0.4"/>
-            </svg>
-          </div>
-          {modifierLabel && (
-            <div style={{background:isBlitz?`${T.orange}15`:'rgba(192,132,252,0.15)',border:`1px solid ${isBlitz?T.orange:'#c084fc'}44`,borderRadius:'10px',padding:'4px 12px',fontSize:'12px',fontWeight:'700',color:isBlitz?T.orangeLt:'#c084fc',fontFamily:"'Exo 2',sans-serif",display:'flex',alignItems:'center',gap:'5px'}}>
-              <span style={{fontSize:'15px'}}>{modifierLabel.icon}</span>
-              <span>{modifierLabel.text}</span>
-            </div>
-          )}
+      {/* VS + modifier */}
+      <div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:'10px',position:'relative',zIndex:1,margin:'8px 0 12px'}}>
+        <div style={{position:'relative'}}>
+          <div style={{position:'absolute',inset:'-10px',borderRadius:'50%',background:vsAccent,opacity:0.15,filter:'blur(18px)',animation:'preBattleVsGlow 2s ease-in-out infinite'}}/>
+          <div style={{position:'absolute',inset:'-5px',borderRadius:'50%',background:vsAccent,opacity:0.25,filter:'blur(10px)',animation:'pulse 1.8s ease-in-out infinite'}}/>
+          <div style={{width:'68px',height:'68px',borderRadius:'50%',background:'linear-gradient(135deg,' + vsAccentBg + ',' + vsAccent + ')',border:'2px solid ' + vsAccentBorder,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'22px',fontWeight:'900',color:'white',fontFamily:"'Exo 2',sans-serif",boxShadow:'0 0 24px ' + vsAccent + '44',position:'relative',zIndex:1}}>VS</div>
+          {/* Orbit ring 1 — clockwise */}
+          <svg style={{position:'absolute',top:'-12px',left:'-12px',width:'92px',height:'92px',pointerEvents:'none',animation:'rotateSlow 9s linear infinite'}} viewBox="0 0 92 92" fill="none">
+            <circle cx="46" cy="46" r="42" stroke={vsAccent} strokeWidth="0.6" strokeDasharray="5 7" opacity="0.35"/>
+          </svg>
+          {/* Orbit ring 2 — counter-clockwise */}
+          <svg style={{position:'absolute',top:'-18px',left:'-18px',width:'104px',height:'104px',pointerEvents:'none',animation:'rotateSlow 13s linear infinite reverse'}} viewBox="0 0 104 104" fill="none">
+            <circle cx="52" cy="52" r="47" stroke={vsAccent} strokeWidth="0.4" strokeDasharray="3 9" opacity="0.22"/>
+          </svg>
         </div>
+        {modifierLabel && (
+          <div style={{background:isBlitz ? T.orange + '15' : 'rgba(192,132,252,0.15)',border:'1px solid ' + (isBlitz ? T.orange : '#c084fc') + '44',borderRadius:'10px',padding:'4px 12px',fontSize:'12px',fontWeight:'700',color:isBlitz ? T.orangeLt : '#c084fc',fontFamily:"'Exo 2',sans-serif",display:'flex',alignItems:'center',gap:'5px'}}>
+            <span style={{fontSize:'14px'}}>{modifierLabel.icon}</span>
+            <span>{modifierLabel.text}</span>
+          </div>
+        )}
+      </div>
 
-        {/* Opponent */}
-        <div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:'8px',minWidth:'130px'}}>
-          <div style={{position:'relative'}}>
-            <div style={{position:'absolute',inset:'-4px',borderRadius:'50%',background:`linear-gradient(135deg,${T.orange},${T.orangeD})`,opacity:0.3,filter:'blur(8px)'}}/>
-            <AvatarCircle src={opponentAvatar} letter={opponentName.charAt(0).toUpperCase()} borderColor={T.orange} accentColor={T.orange}/>
-          </div>
-          <div style={{fontSize:'16px',fontWeight:'900',color:T.white,fontFamily:"'Exo 2',sans-serif",textAlign:'center',lineHeight:1.2,maxWidth:'140px',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{opponentName}</div>
-          {opponentClan && <div style={{fontSize:'11px',color:T.orangeLt,fontWeight:'700',textAlign:'center',maxWidth:'140px',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',padding:'2px 10px',background:`${T.orange}10`,borderRadius:'6px',border:`1px solid ${T.orange}20`}}>{opponentClan}</div>}
-          <div style={{display:'flex',alignItems:'center',gap:'4px',fontSize:'12px',fontWeight:'800',color:T.orange,fontFamily:"'Exo 2',sans-serif"}}>
-            <span style={{fontSize:'14px'}}>🏆</span> {opponentTrophies.toLocaleString()}
-          </div>
-        </div>
+      {/* Opponent */}
+      <div style={{position:'relative',zIndex:1,marginBottom:'20px'}}>
+        <PlayerCard name={opponentName} avatar={opponentAvatar} trophies={opponentTrophies} clan={opponentClan} accentColor={T.orange} accentBg={T.orange}/>
       </div>
 
       {/* Countdown */}
-      <div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:'10px',position:'relative',zIndex:1}}>
-        <div key={countdown} style={{fontSize:'56px',fontWeight:'900',color:countdown===0?T.orange:T.white,fontFamily:"'Exo 2',sans-serif",textShadow:countdown===0?`0 0 32px ${T.orange}88`:'none',animation:'popIn 0.45s cubic-bezier(0.32,0.72,0,1)',lineHeight:1}}>
-          {countdown > 0 ? countdown : '⚔️'}
+      <div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:'8px',position:'relative',zIndex:1}}>
+        <div key={countdown} style={{
+          fontSize:'60px',fontWeight:'900',
+          color:countdown===0?T.orange:T.white,
+          fontFamily:"'Exo 2',sans-serif",
+          textShadow:countdown===0?'0 0 36px ' + T.orange + '88, 0 0 72px ' + T.orange + '22':'0 0 20px ' + T.purpleHL + '18',
+          animation: countdown>0?'countBounce 0.5s cubic-bezier(0.32,0.72,0,1)':'popIn 0.45s cubic-bezier(0.32,0.72,0,1)',
+          lineHeight:1,
+          display:'flex',alignItems:'center',justifyContent:'center'
+        }}>
+          {countdown > 0 ? countdown : <img src={ICONS.battle} alt="" style={{width:'50px',height:'50px',filter:'brightness(0) saturate(100%) invert(63%) sepia(83%) saturate(4559%) hue-rotate(1deg) brightness(103%)'}}/>}
         </div>
-        <div style={{fontSize:'13px',color:T.grey1,fontFamily:'Inter,sans-serif',letterSpacing:'0.5px'}}>
+        <div style={{fontSize:'14px',fontWeight:'600',color:T.grey1,fontFamily:'Inter,sans-serif',letterSpacing:'0.6px'}}>
           {countdown > 0 ? 'Бой начнётся через' : 'В бой!'}
+        </div>
+        <div style={{fontSize:'11px',color:T.grey3,fontFamily:'Inter,sans-serif',marginTop:'2px'}}>
+          Нажмите чтобы начать сейчас
         </div>
       </div>
 
       {/* Cancel */}
-      <div onClick={e=>{e.stopPropagation(); clearInterval(timerRef.current); onClose();}} style={{position:'absolute',bottom:'40px',left:0,right:0,textAlign:'center',fontSize:'12px',color:T.grey3,cursor:'pointer',fontFamily:'Inter,sans-serif',zIndex:1}}>Отмена</div>
+      <div onClick={e=>{e.stopPropagation(); clearInterval(timerRef.current); onClose();}} style={{position:'absolute',bottom:'42px',left:0,right:0,textAlign:'center',fontSize:'13px',color:T.grey2,cursor:'pointer',fontFamily:'Inter,sans-serif',zIndex:1}}>Отмена</div>
+    </div>
+  );
+};
+
+// ═══════════════════════════════════════════
+// BATTLE HISTORY SHEET
+// ═══════════════════════════════════════════
+const BattleHistorySheet = ({onClose, profile}) => {
+  const [battles, setBattles] = React.useState([]);
+  const [limit, setLimit] = React.useState(10);
+  const [isLimited, setIsLimited] = React.useState(true);
+  const [loading, setLoading] = React.useState(true);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const r = await fetch(_buildAuthUrl('/api/battles/history'));
+      const d = await r.json();
+      setBattles(d.battles || []);
+      setLimit(d.limit || 10);
+      setIsLimited(d.is_limited !== undefined ? d.is_limited : true);
+    } catch(e) {}
+    setLoading(false);
+  };
+
+  React.useEffect(()=>{ load(); }, [profile]);
+
+  const modeLabels = {
+    classic: 'Classic',
+    blitz: 'Blitz',
+    friendly: 'Friendly',
+    training: 'Тренировка',
+    pvp: 'Classic',
+  };
+
+  const formatDuration = (seconds) => {
+    if (!seconds || seconds <= 0) return null;
+    const m = Math.floor(seconds / 60);
+    const s = seconds % 60;
+    return `${m}:${s.toString().padStart(2,'0')}`;
+  };
+
+  const formatDate = (iso) => {
+    try {
+      const d = new Date(iso);
+      const dd = d.toLocaleDateString('ru-RU', {day:'2-digit',month:'2-digit',year:'2-digit'});
+      const tt = d.toLocaleTimeString('ru-RU', {hour:'2-digit',minute:'2-digit'});
+      return `${dd} ${tt}`;
+    } catch(e) { return iso; }
+  };
+
+  return (
+    <div style={{position:'absolute',inset:0,background:T.bg,zIndex:200,display:'flex',flexDirection:'column',animation:'fadeIn 0.25s'}}>
+      <div style={{height:'52px',background:'rgba(15,10,26,0.98)',display:'flex',alignItems:'center',gap:'10px',padding:'0 16px',flexShrink:0,borderBottom:`1px solid ${T.purple1}`}}>
+        <button onClick={onClose} style={{width:'32px',height:'32px',borderRadius:'10px',background:T.bgCard,border:`1px solid ${T.purple1}`,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',flexShrink:0}}>
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 3L5 7L9 11" stroke={T.grey2} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg>
+        </button>
+        <span style={{fontSize:'15px',fontWeight:'700',color:T.white,fontFamily:"'Exo 2',sans-serif"}}>История боёв</span>
+      </div>
+
+      <div style={{flex:1,overflowY:'auto',padding:'12px 16px 20px'}}>
+        {loading ? (
+          <div style={{display:'flex',alignItems:'center',justifyContent:'center',height:'200px',gap:'10px'}}>
+            <div style={{width:'22px',height:'22px',border:`2px solid ${T.purple2}`,borderTopColor:T.purpleLt,borderRadius:'50%',animation:'spin 0.8s linear infinite'}}/>
+            <span style={{color:T.grey2,fontSize:'13px'}}>Загружаем историю...</span>
+          </div>
+        ) : (
+          <>
+            {isLimited && (
+              <div style={{background:`linear-gradient(135deg,${T.orangeD}22,${T.orange}33)`,border:`1px solid ${T.orange}44`,borderRadius:'14px',padding:'12px 14px',marginBottom:'14px',display:'flex',alignItems:'center',gap:'10px'}}>
+                <span style={{fontSize:'16px',flexShrink:0}}>🔒</span>
+                <span style={{fontSize:'12px',color:T.orangeLt,fontWeight:'600',lineHeight:1.5}}>ExtraPass Ultra открывает полную историю (50 боёв)</span>
+              </div>
+            )}
+
+            {battles.length === 0 ? (
+              <div style={{textAlign:'center',padding:'40px 20px'}}>
+                <div style={{fontSize:'48px',marginBottom:'12px'}}>⚔️</div>
+                <div style={{fontSize:'15px',fontWeight:'700',color:T.white,fontFamily:"'Exo 2',sans-serif",marginBottom:'6px'}}>Ты ещё не сыграл ни одного боя</div>
+                <div style={{fontSize:'12px',color:T.grey1,lineHeight:1.5}}>Вперёд на арену!</div>
+              </div>
+            ) : (
+              <div style={{display:'flex',flexDirection:'column',gap:'8px'}}>
+                {battles.map((b, i) => {
+                  const resultIcon = b.result === 'win' ? '🏆' : b.result === 'lose' ? '💀' : '🤝';
+                  const resultColor = b.result === 'win' ? '#22c55e' : b.result === 'lose' ? '#ef4444' : T.grey2;
+                  const resultLabel = b.result === 'win' ? 'Победа' : b.result === 'lose' ? 'Поражение' : 'Ничья';
+                  const isFreeMode = b.mode === 'friendly' || b.mode === 'training';
+                  const trophyChange = b.trophies_change || 0;
+                  const modeLabel = modeLabels[b.mode] || b.mode || 'Classic';
+                  const duration = formatDuration(b.duration_seconds);
+                  const turns = b.turns_count || 0;
+                  const secondaryInfo = duration || (turns > 0 ? `${turns} ходов` : null);
+
+                  return (
+                    <div key={i} style={{background:T.bgCard,border:`1px solid ${T.purple1}`,borderRadius:'14px',padding:'10px 12px',display:'flex',alignItems:'center',gap:'10px'}}>
+                      <div style={{fontSize:'28px',flexShrink:0,textAlign:'center',width:'36px',lineHeight:1}}>{resultIcon}</div>
+                      <div style={{flex:1,minWidth:0}}>
+                        <div style={{display:'flex',alignItems:'center',gap:'6px',marginBottom:'2px'}}>
+                          <span style={{fontSize:'13px',fontWeight:'700',color:T.white,fontFamily:"'Exo 2',sans-serif",overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{b.opponent_name}</span>
+                          <span style={{fontSize:'11px',color:resultColor,fontWeight:'600',flexShrink:0}}>{resultLabel}</span>
+                        </div>
+                        <div style={{display:'flex',alignItems:'center',gap:'8px',flexWrap:'wrap'}}>
+                          <span style={{fontSize:'10px',color:T.grey2,background:`${T.purple1}55`,borderRadius:'5px',padding:'1px 6px'}}>{modeLabel}</span>
+                          {!isFreeMode && (
+                            <span style={{fontSize:'10px',color:trophyChange>0?'#22c55e':'#ef4444',fontWeight:'600'}}>{trophyChange>0?'+':''}{trophyChange} 🏆</span>
+                          )}
+                        </div>
+                      </div>
+                      <div style={{textAlign:'right',flexShrink:0}}>
+                        <div style={{fontSize:'10px',color:T.grey2,marginBottom:'2px'}}>{formatDate(b.created_at)}</div>
+                        {secondaryInfo && <div style={{fontSize:'10px',color:T.grey3}}>{secondaryInfo}</div>}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </>
+        )}
+      </div>
     </div>
   );
 };
@@ -3001,17 +4154,33 @@ const App = () => {
   const [showInfo,       setShowInfo]       = React.useState(false);
   const [showGloryPath,  setShowGloryPath]  = React.useState(false);
   const [showLeagueInfo, setShowLeagueInfo] = React.useState(false);
+  const [showBattlePass, setShowBattlePass] = React.useState(false);
   const [showPreBattle, setShowPreBattle]  = React.useState(false);
+  const [showSupport,   setShowSupport]    = React.useState(false);
+  const [showBattles,   setShowBattles]    = React.useState(false);
+  const [leagueUp,      setLeagueUp]       = React.useState(null);
   const [profile,        setProfile]        = React.useState(null);
+  const [toast,          setToast]          = React.useState(null);
+  const [incomingInvite, setIncomingInvite] = React.useState(null);
+  const [showInvite,     setShowInvite]     = React.useState(false);
+  const [showFriends,    setShowFriends]    = React.useState(false);
+  const [inBattle,       setInBattle]       = React.useState(false);
 
-  const hasOverlay = showAI || showMenu || showSettings || showBattlePick || showGameMode || showMail || showCaseOpen || showInfo || showGloryPath || showLeagueInfo || showPreBattle;
+  window.showToast = (msg, type, ms) => {
+    type = type || 'success'; ms = ms || 3000;
+    const id = Date.now();
+    setToast({message: msg, type: type, id: id});
+    setTimeout(function(){ setToast(function(t){ return t && t.id === id ? null : t; }); }, ms);
+  };
 
-  React.useEffect(()=>{ window.__rootSetPreBattle = setShowPreBattle; return ()=>window.__rootSetPreBattle=null; }, []);
+  const hasOverlay = showAI || showMenu || showSettings || showBattlePick || showGameMode || showMail || showCaseOpen || showInfo || showGloryPath || showLeagueInfo || showBattlePass || showPreBattle || showSupport || showInvite || showBattles || showFriends;
+
+  React.useEffect(()=>{ window.__rootSetPreBattle = setShowPreBattle; window.__updateProfile = setProfile; return ()=>window.__rootSetPreBattle=null; }, []);
 
   React.useEffect(()=>{
-    const anyOpen = showMenu || showSettings || showBattlePick || showGameMode || showMail || showCaseOpen || showInfo || showGloryPath || showLeagueInfo;
+    const anyOpen = showMenu || showSettings || showBattlePick || showGameMode || showMail || showCaseOpen || showInfo || showGloryPath || showLeagueInfo || showBattlePass || showSupport || showBattles;
     if (anyOpen) window._playSfx('menu-open-sound');
-  }, [showMenu, showSettings, showBattlePick, showGameMode, showMail, showCaseOpen, showInfo, showGloryPath, showLeagueInfo]);
+  }, [showMenu, showSettings, showBattlePick, showGameMode, showMail, showCaseOpen, showInfo, showGloryPath, showLeagueInfo, showSupport, showBattles]);
 
   const swipeRef = React.useRef(null);
   const swipeStartX = React.useRef(0);
@@ -3035,13 +4204,34 @@ const App = () => {
     window.loadProfile().then(data => {
       if (data) {
         setProfile(data);
-        // Синхронизируем настройку музыки из профиля
         const musicOn = data?.settings?.sound_music ?? true;
         window._musicEnabled = musicOn;
         if (musicOn) window.startBgMusic(); else window.stopBgMusic();
       }
     });
+    // Проверка league_up из arena
+    const stored = sessionStorage.getItem('arena_league_up');
+    if (stored) {
+      try { setLeagueUp(JSON.parse(stored)); } catch(e) {}
+      sessionStorage.removeItem('arena_league_up');
+    }
   },[]);
+
+  React.useEffect(()=>{
+    const pollInvites = async () => {
+      try {
+        const r = await fetch(_buildAuthUrl('/api/friends/invite/pending'));
+        if (!r.ok) return;
+        const data = await r.json();
+        if (data.invite) {
+          setIncomingInvite(data.invite);
+          setShowInvite(true);
+        }
+      } catch(e) {}
+    };
+    const interval = setInterval(pollInvites, 5000);
+    return () => clearInterval(interval);
+  }, []);
 
   const displayName = profile?.custom_nickname || profile?.first_name || profile?.username || 'ExtraArena';
   const openSettings = () => { setShowMenu(false); setTimeout(()=>setShowSettings(true),120); };
@@ -3061,17 +4251,32 @@ const App = () => {
         ) : null}
       />
 
+      {toast && (
+        <div style={{position:'fixed',top:'64px',left:'16px',right:'16px',zIndex:300,
+          background: toast.type==='error'?'#7f1d1d':'#064e3b',
+          border: '1px solid ' + (toast.type==='error'?'#ef4444':'#10b981') + '55',
+          borderRadius:'14px',padding:'14px 16px',
+          color:'white',fontSize:'13px',fontWeight:700,
+          fontFamily:"'Exo 2',sans-serif",
+          boxShadow:'0 8px 30px rgba(0,0,0,0.6)',
+          animation:'slideDown 0.2s'}}>
+          {toast.message}
+        </div>
+      )}
+
       {/* Main content */}
       <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden',minHeight:0}}
         onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
         {showAI ? (
           <AIScreen onBack={()=>setShowAI(false)}/>
         ) : navTab===2 ? (
-          <ArenaScreen onMenu={()=>setShowMenu(true)} onAI={()=>setShowAI(true)} onBattlePick={()=>setShowBattlePick(true)} onStartBattle={()=>setShowGameMode(true)} onOpenCase={()=>setShowCaseOpen(true)} onOpenGloryPath={()=>setShowGloryPath(true)} onOpenLeagueInfo={()=>setShowLeagueInfo(true)} profile={profile}/>
+          <ArenaScreen onMenu={()=>setShowMenu(true)} onAI={()=>setShowAI(true)} onOpenBattles={()=>setShowBattles(true)} onBattlePick={()=>setShowBattlePick(true)} onStartBattle={()=>setShowGameMode(true)} onOpenCase={()=>setShowCaseOpen(true)} onOpenGloryPath={()=>setShowGloryPath(true)} onOpenLeagueInfo={()=>setShowLeagueInfo(true)} onOpenBattlePass={()=>setShowBattlePass(true)} onGoToShop={()=>setNavTab(0)} profile={profile}/>
         ) : navTab===0 ? (
-          <ShopScreen profile={profile} onKeysUpdated={(k)=>setProfile(p=>({...p,keys:k}))}/>
+          <ShopScreen profile={profile} onProfileUpdate={function(p){ setProfile(p); }}/>
         ) : navTab===1 ? (
           <CollectionScreen profile={profile}/>
+        ) : navTab===4 ? (
+          <CommunityScreen profile={profile}/>
         ) : (
           <PlaceholderScreen label={['Магазин','','Коллекция','Сквады','Коммьюнити'][navTab]}/>
         )}
@@ -3079,7 +4284,7 @@ const App = () => {
 
       {!showAI && <BottomNav active={navTab} onChange={setNavTab}/>}
 
-      {showMenu       && <MenuSheet       onClose={()=>setShowMenu(false)} onSettings={openSettings} onMail={()=>{setShowMenu(false);setTimeout(()=>setShowMail(true),120);}} onInfo={()=>{setShowMenu(false);setTimeout(()=>setShowInfo(true),120);}} profile={profile}/>}
+      {showMenu       && <MenuSheet       onClose={()=>setShowMenu(false)} onSettings={openSettings} onMail={()=>{setShowMenu(false);setTimeout(()=>setShowMail(true),120);}} onSupport={()=>{setShowMenu(false);setTimeout(()=>setShowSupport(true),120);}} onInfo={()=>{setShowMenu(false);setTimeout(()=>setShowInfo(true),120);}} onFriends={()=>{setShowMenu(false);setTimeout(()=>setShowFriends(true),120);}} profile={profile}/>}
       {showSettings   && <SettingsScreen  onClose={()=>setShowSettings(false)} profile={profile}/>}
       {showBattlePick && <BattlePickSheet onClose={()=>setShowBattlePick(false)} profile={profile}/>}
       {showGameMode   && <GameModeSheet   onClose={()=>setShowGameMode(false)} onConfirm={(mode, deckId)=>{setShowGameMode(false);window.startBattle(profile, deckId, mode);}}/>}
@@ -3089,23 +4294,107 @@ const App = () => {
       {showGloryPath  && <TrophyRoadSheet onClose={()=>setShowGloryPath(false)} profile={profile}/>}
       {showLeagueInfo && <LeagueInfoSheet onClose={()=>setShowLeagueInfo(false)} profile={profile}/>}
       {showPreBattle  && <PreBattleScreen  data={window.__preBattleData} onClose={()=>{setShowPreBattle(false);window.__preBattleData=null;}}/>}
+      {showSupport    && <SupportSheet    onClose={()=>setShowSupport(false)}/>}
+      {showBattlePass && <BattlePassSheet onClose={()=>setShowBattlePass(false)} profile={profile}/>}
+      {showBattles   && <BattleHistorySheet onClose={()=>setShowBattles(false)} profile={profile}/>}
+      {showInvite   && incomingInvite && <IncomingInviteModal invite={incomingInvite} profile={profile} onClose={()=>{setShowInvite(false);setIncomingInvite(null);}} onStart={()=>setInBattle(true)}/>}
+      {showFriends && <FriendsScreen onClose={()=>setShowFriends(false)} profile={profile}/>}
+
+      {/* League Up Modal */}
+      {leagueUp && (()=>{
+        const newLeagueId = leagueUp.league_id;
+        const leagueInfo = LEAGUE_LIST.find(l => l.id === newLeagueId);
+        const leagueMilestones = leagueInfo ? GLORY_PATH_MILESTONES.filter(m => m.trophies >= leagueInfo.min && m.trophies <= leagueInfo.max) : [];
+        return (
+        <div style={{position:'absolute',inset:0,background:'rgba(0,0,0,0.85)',zIndex:300,display:'flex',alignItems:'center',justifyContent:'center',animation:'fadeIn 0.3s'}} onClick={()=>{setLeagueUp(null);window._playSfx('menu-open-sound');}}>
+          <div onClick={e=>e.stopPropagation()} style={{background:`linear-gradient(180deg,#1a1238,#130d26)`,border:`2px solid ${leagueUp.color||T.orange}`,borderRadius:'24px',padding:'28px 24px 24px',textAlign:'center',maxWidth:'360px',width:'90%',maxHeight:'80vh',overflowY:'auto',animation:'scaleIn 0.35s cubic-bezier(0.32,0.72,0,1)',boxShadow:`0 0 60px ${(leagueUp.color||T.orange)}44`}}>
+            <div style={{fontSize:'56px',marginBottom:'8px',animation:'bounce 0.6s ease-out'}}>{leagueUp.emoji}</div>
+            <div style={{fontSize:'26px',fontWeight:'900',color:'white',fontFamily:"'Exo 2',sans-serif",marginBottom:'4px'}}>{leagueUp.name}</div>
+            <div style={{fontSize:'14px',color:T.grey1,marginBottom:'20px',lineHeight:1.5}}>Ты достиг новой лиги! Продолжай в том же духе.</div>
+            {leagueMilestones.length > 0 && (
+              <div style={{textAlign:'left',marginBottom:'20px'}}>
+                <div style={{fontSize:'11px',color:T.grey2,textTransform:'uppercase',letterSpacing:'0.5px',marginBottom:'8px'}}>Награды Glory Path этой лиги</div>
+                {leagueMilestones.map((m, i) => (
+                  <div key={i} style={{display:'flex',alignItems:'center',gap:'10px',background:`${T.purple1}44`,borderRadius:'10px',padding:'8px 12px',marginBottom:'6px'}}>
+                    <span style={{fontSize:'12px',fontWeight:'900',color:T.orange,fontFamily:"'Exo 2'",flexShrink:0}}>{m.trophies}</span>
+                    <div style={{display:'flex',gap:'5px',flexWrap:'wrap'}}>
+                      {m.rewards.map((r,j) => {
+                        const rIcon = r.icon || (r.type==='coins'?'💰':r.type==='gems'?'💎':r.type==='case'?'📦':r.type==='particles'?'✨':r.type==='shards'?'🔮':r.type==='guaranteed_card'?'🃏':r.type==='cosmetic'?'🎨':'🎁');
+                        return (
+                          <span key={j} style={{display:'inline-flex',alignItems:'center',gap:'2px',fontSize:'10px',color:T.grey1,background:`${T.purple1}88`,borderRadius:'6px',padding:'2px 6px',fontFamily:"'Exo 2'"}}>
+                            <span>{rIcon}</span><span style={{fontWeight:'600'}}>{r.amount||''}</span>
+                          </span>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            <button onClick={()=>setLeagueUp(null)} style={{width:'100%',height:'50px',background:`linear-gradient(135deg,${leagueUp.color||T.orange},${T.orange})`,border:'none',borderRadius:'14px',color:'white',fontSize:'17px',fontWeight:'900',fontFamily:"'Exo 2',sans-serif",cursor:'pointer',boxShadow:`0 5px 24px ${(leagueUp.color||T.orange)}55`}}>Отлично!</button>
+          </div>
+        </div>
+        );
+      })()}
     </div>
   );
 };
 
 // ═══════════════════════════════════════════
-// TROPHY ROAD SHEET
+// TROPHY ROAD SHEET (API-connected)
 // ═══════════════════════════════════════════
 const TrophyRoadSheet = ({onClose, profile}) => {
+  const [tiers,   setTiers]   = React.useState([]);
+  const [loading, setLoading] = React.useState(true);
+  const [claiming, setClaiming] = React.useState({});
+  const [seasonDays, setSeasonDays] = React.useState(null);
+
   const trophies = profile?.trophies || 0;
   const leagueId = profile?.league ?? 1;
   const league = LEAGUE_MAP[leagueId] || LEAGUE_LIST[0];
   const maxTrophies = 10000;
   const overallProgress = Math.min(100, (trophies / maxTrophies) * 100);
 
+  const load = async () => {
+    setLoading(true);
+    try {
+      const uid = profile?.user_id || window._userId || 0;
+      const r = await fetch("/api/rewards/track/glory?user_id=" + uid);
+      const d = await r.json();
+      setTiers(d.tiers || []);
+    } catch(e){}
+    setLoading(false);
+  };
+
+  React.useEffect(()=>{ load(); }, [profile]);
+
+  React.useEffect(()=>{
+    fetch("/api/season/current").then(r=>r.json()).then(d=>{
+      if (d.days_left != null) setSeasonDays(d.days_left);
+    }).catch(()=>{});
+  }, []);
+
+  const handleClaim = async (pos) => {
+    if (claiming[pos]) return;
+    setClaiming(c => ({...c, [pos]: true}));
+    try {
+      const uid = profile?.user_id || window._userId || 0;
+      const r = await fetch("/api/rewards/claim?user_id=" + uid, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({track_type:"glory", position: pos})
+      });
+      const d = await r.json();
+      if (d.success) {
+        window._playSfx('menu-open-sound');
+        setTiers(prev => prev.map(t => t.position === pos ? {...t, claimed:true, available:false} : t));
+        window.loadProfile().then(p => { if (p && window.__updateProfile) window.__updateProfile(p); });
+      }
+    } catch(e) {}
+    setClaiming(c => ({...c, [pos]: false}));
+  };
+
   return (
     <div style={{position:'absolute',inset:0,background:T.bg,zIndex:200,display:'flex',flexDirection:'column',animation:'fadeIn 0.25s'}}>
-      {/* Header */}
       <div style={{height:'52px',background:'rgba(15,10,26,0.98)',display:'flex',alignItems:'center',gap:'10px',padding:'0 16px',flexShrink:0,borderBottom:`1px solid ${T.purple1}`}}>
         <button onClick={onClose} style={{width:'32px',height:'32px',borderRadius:'10px',background:T.bgCard,border:`1px solid ${T.purple1}`,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',flexShrink:0}}>
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 3L5 7L9 11" stroke={T.grey2} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg>
@@ -3113,120 +4402,327 @@ const TrophyRoadSheet = ({onClose, profile}) => {
         <span style={{fontSize:'15px',fontWeight:'700',color:T.white,fontFamily:"'Exo 2',sans-serif"}}>Трофейная дорога</span>
       </div>
 
-      {/* Scrollable content */}
       <div style={{flex:1,overflowY:'auto',padding:'12px 16px 20px'}}>
-
-        {/* Current league card */}
-        <div style={{background:`linear-gradient(135deg,${league.color}22,${T.bgCard})`,border:`1px solid ${league.color}44`,borderRadius:'18px',padding:'18px',marginBottom:'16px'}}>
-          <div style={{display:'flex',alignItems:'center',gap:'14px',marginBottom:'14px'}}>
-            <div style={{width:'52px',height:'52px',borderRadius:'14px',background:`${league.color}22`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'28px',border:`1px solid ${league.color}33`,flexShrink:0}}>
-              {league.emoji}
-            </div>
-            <div>
-              <div style={{fontSize:'18px',fontWeight:'900',color:T.white,fontFamily:"'Exo 2',sans-serif",lineHeight:1.1}}>{league.name}</div>
-              <div style={{fontSize:'11px',color:T.grey1,marginTop:'3px'}}>Лига {league.id} · {trophies.toLocaleString()} 🏆</div>
-            </div>
-          </div>
-          {/* Overall progress */}
-          <div>
-            <div style={{display:'flex',justifyContent:'space-between',marginBottom:'5px'}}>
-              <span style={{fontSize:'10px',color:T.grey2,textTransform:'uppercase',letterSpacing:'0.5px'}}>Общий прогресс</span>
-              <span style={{fontSize:'11px',color:T.orange,fontWeight:'700',fontFamily:"'Exo 2',sans-serif"}}>{overallProgress.toFixed(1)}%</span>
-            </div>
-            <div style={{height:'6px',background:T.purple1,borderRadius:'3px',overflow:'hidden'}}>
-              <div style={{width:`${overallProgress}%`,height:'100%',background:`linear-gradient(90deg,${T.orange},${T.orangeLt})`,borderRadius:'3px',boxShadow:`0 0 10px ${T.orange}55`,transition:'width 0.5s'}}/>
-            </div>
-          </div>
-        </div>
-
-        {/* Milestone road */}
-        <div style={{display:'flex',flexDirection:'column'}}>
-          {GLORY_PATH_MILESTONES.map((ms, i) => {
-            const completed = trophies >= ms.trophies;
-            const prev = i > 0 ? GLORY_PATH_MILESTONES[i-1].trophies : 0;
-            const isNext = !completed && trophies >= prev;
-            const locked = !completed && !isNext;
-            const segProgress = isNext ? Math.min(100, ((trophies - prev) / (ms.trophies - prev)) * 100) : 0;
-            const lineFilled = completed || (isNext && segProgress > 0);
-            const remaining = ms.trophies - trophies;
-
-            return (
-              <div key={i} style={{display:'flex',flexDirection:'column',alignItems:'stretch'}}>
-                {/* Connecting line */}
-                {i > 0 && (
-                  <div style={{width:'4px',height:'40px',marginLeft:'17px',background:T.purple1,borderRadius:'2px',position:'relative',overflow:'hidden'}}>
-                    {lineFilled && (
-                      <div style={{position:'absolute',bottom:0,left:0,right:0,height:isNext ? `${segProgress}%` : '100%',background:`linear-gradient(to top,${T.orange},${T.purple3})`,borderRadius:'2px',boxShadow:completed ? `0 0 8px ${T.orange}55` : 'none',transition:'height 0.4s'}}/>
-                    )}
-                  </div>
-                )}
-
-                {/* Milestone card */}
-                <div style={{
-                  background: completed ? `linear-gradient(135deg,${T.bgCard},#1a3a1a)` : locked ? 'rgba(26,16,48,0.5)' : T.bgCard,
-                  border: completed ? `1px solid #2ecc7144` : isNext ? `1px solid ${T.orange}55` : `1px solid ${T.purple1}`,
-                  borderRadius:'14px',padding:'12px 14px',opacity:locked?0.45:1,
-                  position:'relative',overflow:'hidden',
-                  transition:'all 0.2s'
-                }}>
-                  {/* League unlock badge */}
-                  {ms.league && (
-                    <div style={{marginBottom:'10px',display:'flex',alignItems:'center',gap:'8px'}}>
-                      <div style={{background:`${T.orange}22`,border:`1px solid ${T.orange}44`,borderRadius:'10px',padding:'4px 10px',display:'flex',alignItems:'center',gap:'6px'}}>
-                        <span style={{fontSize:'16px'}}>{ms.league.emoji}</span>
-                        <span style={{fontSize:'13px',fontWeight:'800',color:T.orange,fontFamily:"'Exo 2',sans-serif"}}>{ms.league.name}</span>
-                      </div>
-                      <span style={{fontSize:'10px',color:'#2ecc71',fontWeight:'700',textTransform:'uppercase',letterSpacing:'0.5px',animation:'pulse 1.5s ease-in-out infinite'}}>Новая лига!</span>
-                    </div>
-                  )}
-
-                  {/* Trophy threshold */}
-                  <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'8px'}}>
-                    <div style={{display:'flex',alignItems:'center',gap:'6px'}}>
-                      <span style={{fontSize:'10px',color:T.grey2}}>🏆</span>
-                      <span style={{fontSize:'15px',fontWeight:'900',color:T.white,fontFamily:"'Exo 2',sans-serif"}}>{ms.trophies.toLocaleString()}</span>
-                    </div>
-                    {isNext && (
-                      <span style={{fontSize:'10px',color:T.orange,fontWeight:'600'}}>ещё {remaining.toLocaleString()}</span>
-                    )}
-                    {completed && (
-                      <span style={{fontSize:'14px',color:'#2ecc71'}}>✓</span>
-                    )}
-                  </div>
-
-                  {/* Rewards */}
-                  <div style={{display:'flex',gap:'6px',flexWrap:'wrap'}}>
-                    {ms.rewards.map((r,j) => {
-                      const label = formatRewardLabel(r);
-                      const showAmt = r.amount && r.type !== 'particles' && r.type !== 'shards';
-                      return (
-                        <div key={j} style={{display:'flex',alignItems:'center',gap:'3px',background:`${T.purple1}88`,borderRadius:'8px',padding:'4px 8px'}}>
-                          <span style={{fontSize:'12px'}}>{r.icon}</span>
-                          {showAmt && <span style={{fontSize:'11px',color:T.grey1,fontWeight:'600',fontFamily:"'Exo 2',sans-serif"}}>{r.amount.toLocaleString()}</span>}
-                          <span style={{fontSize:'10px',color:T.grey2}}>{label}</span>
-                        </div>
-                      );
-                    })}
-                  </div>
-
-                  {/* Lock overlay */}
-                  {locked && (
-                    <div style={{position:'absolute',inset:0,display:'flex',alignItems:'center',justifyContent:'center',borderRadius:'14px'}}>
-                      <span style={{fontSize:'22px',opacity:0.5}}>🔒</span>
-                    </div>
-                  )}
-
-                  {/* Next indicator */}
-                  {isNext && (
-                    <div style={{position:'absolute',right:'10px',top:'-6px',background:T.orange,borderRadius:'6px',padding:'1px 8px'}}>
-                      <span style={{fontSize:'9px',color:'white',fontWeight:'800',fontFamily:"'Exo 2',sans-serif"}}>СЕЙЧАС</span>
-                    </div>
-                  )}
+        {loading ? (
+          <div style={{textAlign:'center',padding:'40px',color:T.grey1}}>Загрузка...</div>
+        ) : (
+          <>
+            <div style={{background:`linear-gradient(135deg,${league.color}22,${T.bgCard})`,border:`1px solid ${league.color}44`,borderRadius:'18px',padding:'18px',marginBottom:'16px'}}>
+              <div style={{display:'flex',alignItems:'center',gap:'14px',marginBottom:'14px'}}>
+                <div style={{width:'52px',height:'52px',borderRadius:'14px',background:`${league.color}22`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'28px',border:`1px solid ${league.color}33`,flexShrink:0}}>{league.emoji}</div>
+                <div>
+                  <div style={{fontSize:'18px',fontWeight:'900',color:T.white,fontFamily:"'Exo 2',sans-serif",lineHeight:1.1}}>{league.name}</div>
+                  <div style={{fontSize:'11px',color:T.grey1,marginTop:'3px'}}>Лига {league.id} · {trophies.toLocaleString()} 🏆</div>
                 </div>
               </div>
-            );
-          })}
-        </div>
+              <div>
+                <div style={{display:'flex',justifyContent:'space-between',marginBottom:'5px'}}>
+                  <span style={{fontSize:'10px',color:T.grey2,textTransform:'uppercase',letterSpacing:'0.5px'}}>Общий прогресс</span>
+                  <span style={{fontSize:'11px',color:T.orange,fontWeight:'700',fontFamily:"'Exo 2',sans-serif"}}>{overallProgress.toFixed(1)}%</span>
+                </div>
+                <div style={{height:'6px',background:T.purple1,borderRadius:'3px',overflow:'hidden'}}>
+                  <div style={{width:`${overallProgress}%`,height:'100%',background:`linear-gradient(90deg,${T.orange},${T.orangeLt})`,borderRadius:'3px',boxShadow:`0 0 10px ${T.orange}55`,transition:'width 0.5s'}}/>
+                </div>
+              </div>
+            </div>
+
+            <div style={{background:`linear-gradient(135deg,${T.purple1}33,${T.bgCard})`,border:`1px solid ${T.purple1}44`,borderRadius:'14px',padding:'14px 14px',marginBottom:'14px',display:'flex',alignItems:'center',position:'relative',overflow:'hidden',minHeight:'90px'}}>
+              <div style={{position:'absolute',left:'-25px',top:'50%',transform:'translateY(-50%) rotate(-30deg)',flexShrink:0}}>
+                <img src={ICONS.trophyPath.seasonalCut} alt="" style={{width:'90px',height:'90px',filter:iconWhite,opacity:0.45,display:'block'}}/>
+              </div>
+              <div style={{flex:1,minWidth:0,paddingLeft:'55px'}}>
+                <div style={{fontSize:'11px',fontWeight:'600',color:T.white,fontFamily:"'Exo 2'",lineHeight:1.6}}>В конце сезона трофеи срезаются до нижней границы твоей лиги — всё, что заработал сверх, конвертируется в ключи и монеты. Прокачивайся пока есть время!</div>
+                {seasonDays != null && (
+                  <div style={{fontSize:'11px',color:T.grey2,marginTop:'3px',fontFamily:"'Exo 2'"}}>
+                    Следующий сезон: через {seasonDays} {seasonDays === 1 ? 'день' : seasonDays >= 2 && seasonDays <= 4 ? 'дня' : 'дней'}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div style={{display:'flex',flexDirection:'column'}}>
+              {tiers.map((tier, i) => {
+                const completed = tier.claimed;
+                const isNext = tier.available;
+                const locked = tier.locked;
+                const segProgress = isNext ? Math.min(100, ((trophies - (i>0 ? tiers[i-1].position : 0)) / (tier.position - (i>0 ? tiers[i-1].position : 0))) * 100) : 0;
+                const lineFilled = completed || (isNext && segProgress > 0);
+                const remaining = tier.position - trophies;
+                const tierLeague = LEAGUE_LIST.find(l => l.min === tier.position);
+
+                return (
+                  <div key={i} style={{display:'flex',flexDirection:'column',alignItems:'stretch'}}>
+                    {i > 0 && (
+                      <div style={{width:'4px',height:'40px',marginLeft:'17px',background:T.purple1,borderRadius:'2px',position:'relative',overflow:'hidden'}}>
+                        {lineFilled && (
+                          <div style={{position:'absolute',bottom:0,left:0,right:0,height:isNext ? `${segProgress}%` : '100%',background:`linear-gradient(to top,${T.orange},${T.purple3})`,borderRadius:'2px',boxShadow:completed ? `0 0 8px ${T.orange}55` : 'none',transition:'height 0.4s'}}/>
+                        )}
+                      </div>
+                    )}
+
+                    <div style={{
+                      background: tierLeague
+                        ? (completed ? `linear-gradient(135deg,${tierLeague.color}18,${T.bgCard})` : locked ? `rgba(26,16,48,0.5)` : `linear-gradient(135deg,${tierLeague.color}15,${T.bgCard})`)
+                        : (completed ? `linear-gradient(135deg,${T.bgCard},#1a3a1a)` : locked ? 'rgba(26,16,48,0.5)' : T.bgCard),
+                      border: tierLeague
+                        ? (completed ? `1px solid ${tierLeague.color}44` : isNext ? `1px solid ${tierLeague.color}88` : `1px solid ${tierLeague.color}22`)
+                        : (completed ? '1px solid #2ecc7144' : isNext ? `1px solid ${T.orange}55` : `1px solid ${T.purple1}`),
+                      borderRadius:'14px',padding:'12px 14px',opacity:locked?0.45:1,
+                      position:'relative',overflow:'hidden',transition:'all 0.2s'
+                    }}>
+                      {tierLeague && (
+                        <div style={{marginBottom:'8px',display:'flex',alignItems:'center',gap:'6px'}}>
+                          <div style={{background:`${tierLeague.color}22`,border:`1px solid ${tierLeague.color}44`,borderRadius:'8px',padding:'3px 9px',display:'flex',alignItems:'center',gap:'5px'}}>
+                            <span style={{fontSize:'15px'}}>{tierLeague.emoji}</span>
+                            <span style={{fontSize:'12px',fontWeight:'800',color:tierLeague.color,fontFamily:"'Exo 2',sans-serif"}}>{tierLeague.name}</span>
+                          </div>
+                          <span style={{fontSize:'9px',color:tierLeague.color,fontWeight:'700',textTransform:'uppercase',letterSpacing:'0.5px',animation:'pulse 1.5s ease-in-out infinite'}}>Новая лига!</span>
+                        </div>
+                      )}
+                      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'8px'}}>
+                        <div style={{display:'flex',alignItems:'center',gap:'6px'}}>
+                          <span style={{fontSize:'10px',color:T.grey2}}>🏆</span>
+                          <span style={{fontSize:'15px',fontWeight:'900',color:T.white,fontFamily:"'Exo 2',sans-serif"}}>{tier.position.toLocaleString()}</span>
+                        </div>
+                        {isNext && (<span style={{fontSize:'10px',color:T.orange,fontWeight:'600'}}>ещё {remaining.toLocaleString()}</span>)}
+                        {completed && (<span style={{fontSize:'14px',color:'#2ecc71'}}>✓</span>)}
+                      </div>
+
+                      <div style={{display:'flex',gap:'6px',flexWrap:'wrap',alignItems:'center'}}>
+                        {(tier.rewards||[]).map((r,j) => {
+                          const icon = r.reward_type === 'coins' ? '💰' : r.reward_type === 'gems' ? '💎' : r.reward_type === 'keys' ? '🔑' : r.reward_type === 'card' ? '🃏' : '🎁';
+                          const label = r.reward_type === 'coins' ? 'монет' : r.reward_type === 'gems' ? 'гемов' : r.reward_type === 'keys' ? 'ключ' : r.reward_type === 'card' ? 'карта' : '';
+                          return (
+                            <div key={j} style={{display:'flex',alignItems:'center',gap:'3px',background:`${T.purple1}88`,borderRadius:'8px',padding:'4px 8px'}}>
+                              <span style={{fontSize:'12px'}}>{icon}</span>
+                              <span style={{fontSize:'11px',color:T.grey1,fontWeight:'600',fontFamily:"'Exo 2',sans-serif"}}>{r.reward_amount.toLocaleString()} {label}</span>
+                            </div>
+                          );
+                        })}
+                        {isNext && (
+                          <button onClick={()=>handleClaim(tier.position)} disabled={claiming[tier.position]}
+                            style={{marginLeft:'auto',background:`linear-gradient(135deg,${T.orange},${T.orangeLt})`,border:'none',borderRadius:'10px',padding:'8px 16px',color:'white',fontSize:'13px',fontWeight:'800',fontFamily:"'Exo 2',sans-serif",cursor:'pointer',boxShadow:`0 3px 12px ${T.orange}66`,flexShrink:0}}>
+                            {claiming[tier.position] ? '...' : 'Забрать'}
+                          </button>
+                        )}
+                      </div>
+
+                      {locked && (
+                        <div style={{position:'absolute',inset:0,display:'flex',alignItems:'center',justifyContent:'center',borderRadius:'14px'}}>
+                          <span style={{fontSize:'22px',opacity:0.5}}>🔒</span>
+                        </div>
+                      )}
+
+                      {isNext && (
+                        <div style={{position:'absolute',right:'10px',top:'-6px',background:T.orange,borderRadius:'6px',padding:'1px 8px'}}>
+                          <span style={{fontSize:'9px',color:'white',fontWeight:'800',fontFamily:"'Exo 2',sans-serif"}}>СЕЙЧАС</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+};
+
+// ═══════════════════════════════════════════
+// BATTLE PASS SHEET
+// ═══════════════════════════════════════════
+const BattlePassSheet = ({onClose, profile}) => {
+  const [tiers,    setTiers]    = React.useState([]);
+  const [loading,  setLoading]  = React.useState(true);
+  const [claiming, setClaiming] = React.useState({});
+
+  const stars = profile?.stars || 0;
+  const hasEP = profile?.extra_pass === 'active';
+  const season = profile?.season || 1;
+  const maxStars = 45;
+  const progressPercent = Math.min(100, (stars / maxStars) * 100);
+
+  const load = async () => {
+    setLoading(true);
+    const uid = profile?.user_id || window._userId || 0;
+    try {
+      const [freeR, premR, ultraR] = await Promise.all([
+        fetch("/api/rewards/track/bp_free?user_id="+uid).then(r=>r.json()),
+        fetch("/api/rewards/track/bp_premium?user_id="+uid).then(r=>r.json()),
+        fetch("/api/rewards/track/bp_ultra?user_id="+uid).then(r=>r.json()),
+      ]);
+
+      const freeTiers   = freeR.tiers  || [];
+      const premTiers   = premR.tiers  || [];
+      const ultraTiers  = ultraR.tiers || [];
+
+      // Merge by position: collect all rewards per position
+      const posMap = {};
+      const addToMap = (arr, source) => {
+        arr.forEach(t => {
+          if (!posMap[t.position]) posMap[t.position] = { position:t.position, free:[], premium:[], ultra:[], claimed:false, available:false, locked:true };
+          const entry = posMap[t.position];
+          if (source === 'free') {
+            entry.free = t.rewards || [];
+            entry.claimed = t.claimed;
+            entry.available = t.available;
+            entry.locked = t.locked;
+          } else if (source === 'premium') {
+            entry.premium = t.rewards || [];
+          } else if (source === 'ultra') {
+            entry.ultra = t.rewards || [];
+          }
+        });
+      };
+      addToMap(freeTiers, 'free');
+      addToMap(premTiers, 'premium');
+      addToMap(ultraTiers, 'ultra');
+
+      const merged = Object.values(posMap).sort((a,b) => a.position - b.position);
+      const fullTiers = [];
+      for (let pos = 1; pos <= 45; pos++) {
+        const existing = posMap[pos];
+        if (existing) {
+          fullTiers.push(existing);
+        } else {
+          fullTiers.push({
+            position: pos, free: [], premium: [], ultra: [],
+            claimed: false, available: false, locked: true, empty: true
+          });
+        }
+      }
+      setTiers(fullTiers);
+    } catch(e) {
+      console.error('BP load error', e);
+    }
+    setLoading(false);
+  };
+
+  React.useEffect(()=>{ load(); }, [profile]);
+
+  const handleClaim = async (pos) => {
+    if (claiming[pos]) return;
+    setClaiming(c => ({...c, [pos]: true}));
+    try {
+      const uid = profile?.user_id || window._userId || 0;
+      const r = await fetch("/api/rewards/claim?user_id="+uid, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({track_type:"bp_free", position: pos})
+      });
+      const d = await r.json();
+      if (d.success) {
+        window._playSfx('menu-open-sound');
+        setTiers(prev => prev.map(t => t.position === pos ? {...t, claimed:true, available:false} : t));
+        window.loadProfile().then(p => { if (p && window.__updateProfile) window.__updateProfile(p); });
+      }
+    } catch(e) {}
+    setClaiming(c => ({...c, [pos]: false}));
+  };
+
+  const renderRewardBadge = (r, mini) => {
+    const icon = r.reward_type === 'coins' ? '💰' : r.reward_type === 'gems' ? '💎' : r.reward_type === 'keys' ? '🔑' : r.reward_type === 'card' ? '🃏' : '🎁';
+    const label = r.reward_type === 'coins' ? 'монет' : r.reward_type === 'gems' ? 'гемов' : r.reward_type === 'keys' ? 'ключ' : r.reward_type === 'card' ? 'карта' : '';
+    return (
+      <div style={{display:'flex',alignItems:'center',gap:'3px',background:`${T.purple1}88`,borderRadius:'7px',padding: mini ? '3px 6px' : '4px 8px'}}>
+        <span style={{fontSize:mini?'11px':'12px'}}>{icon}</span>
+        <span style={{fontSize:mini?'10px':'11px',color:T.grey1,fontWeight:'600',fontFamily:"'Exo 2',sans-serif"}}>{r.reward_amount.toLocaleString()} {label}</span>
+      </div>
+    );
+  };
+
+  return (
+    <div style={{position:'absolute',inset:0,background:T.bg,zIndex:200,display:'flex',flexDirection:'column',animation:'fadeIn 0.25s'}}>
+      <div style={{height:'52px',background:'rgba(15,10,26,0.98)',display:'flex',alignItems:'center',gap:'10px',padding:'0 16px',flexShrink:0,borderBottom:`1px solid ${T.purple1}`}}>
+        <button onClick={onClose} style={{width:'32px',height:'32px',borderRadius:'10px',background:T.bgCard,border:`1px solid ${T.purple1}`,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',flexShrink:0}}>
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 3L5 7L9 11" stroke={T.grey2} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg>
+        </button>
+        <span style={{fontSize:'15px',fontWeight:'700',color:T.white,fontFamily:"'Exo 2',sans-serif"}}>ExtraPass · Сезон {season}</span>
+        {hasEP && (<span style={{fontSize:'9px',background:'#FFD700',color:'#000',borderRadius:'5px',padding:'2px 7px',fontWeight:'700',fontFamily:"'Exo 2'"}}>ExtraPass</span>)}
+      </div>
+
+      <div style={{flex:1,overflowY:'auto',padding:'12px 16px 20px'}}>
+        {loading ? (
+          <div style={{textAlign:'center',padding:'40px',color:T.grey1}}>Загрузка...</div>
+        ) : (
+          <>
+            {/* Progress bar card */}
+            <div style={{background:'linear-gradient(135deg,#2d1460,#4a2090)',borderRadius:'16px',padding:'16px',marginBottom:'16px',position:'sticky',top:0,zIndex:2}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'10px'}}>
+                <span style={{fontSize:'11px',color:T.grey1,textTransform:'uppercase',letterSpacing:'0.6px'}}>Прогресс сезона</span>
+                <span style={{fontSize:'16px',fontWeight:'900',color:T.white,fontFamily:"'Exo 2'"}}>{stars} / {maxStars} ⭐</span>
+              </div>
+              <div style={{height:'8px',background:T.purple1,borderRadius:'4px',overflow:'hidden'}}>
+                <div style={{width:`${progressPercent}%`,height:'100%',background:`linear-gradient(90deg,${T.orange},${T.orangeLt})`,borderRadius:'4px',boxShadow:`0 0 10px ${T.orange}55`,transition:'width 0.5s'}}/>
+              </div>
+              {!hasEP && (
+                <div style={{marginTop:'10px',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                  <span style={{fontSize:'11px',color:T.grey1}}>⚡ ExtraPass открывает премиум награды</span>
+                  <span style={{fontSize:'11px',color:T.orange,fontWeight:'700'}}>Премиум 🔒</span>
+                </div>
+              )}
+            </div>
+
+            {/* Tier list */}
+            <div style={{display:'flex',flexDirection:'column',gap:'6px'}}>
+              {tiers.map((tier, i) => {
+                const isEmpty = tier.empty === true;
+                if (isEmpty) {
+                  return (
+                    <div key={i} style={{
+                      background: 'rgba(26,16,48,0.35)', border: '1px solid rgba(124,92,191,0.15)',
+                      borderRadius:'12px', padding:'8px 12px', opacity: 0.25,
+                      display:'flex', alignItems:'center', gap:'8px'
+                    }}>
+                      <span style={{fontSize:'13px',fontWeight:'700',color:T.purple1,fontFamily:"'Exo 2'"}}>#{tier.position}</span>
+                    </div>
+                  );
+                }
+                const isUltra = tier.ultra.length > 0;
+                const hasPremium = tier.premium.length > 0;
+                const canClaim = tier.available;
+                const isClaimed = tier.claimed;
+                const showPremLock = hasPremium && !hasEP;
+
+                const renderLockedBadge = (r) => {
+                  const icon = r.reward_type === 'coins' ? '💰' : r.reward_type === 'gems' ? '💎' : r.reward_type === 'keys' ? '🔑' : r.reward_type === 'card' ? '🃏' : '🎁';
+                  return (
+                    <span style={{display:'inline-flex',alignItems:'center',gap:'2px',fontSize:'10px',color:T.grey1,opacity:0.65}}>
+                      <span style={{fontSize:'10px'}}>🔒</span><span>{icon}</span><span style={{fontFamily:"'Exo 2'",fontWeight:'600'}}>{r.reward_amount.toLocaleString()}</span>
+                    </span>
+                  );
+                };
+
+                return (
+                  <div key={i} onClick={canClaim ? (()=>handleClaim(tier.position)) : undefined} style={{
+                    background: isUltra ? 'linear-gradient(135deg,#3d1a6e,#5b2daa)' : isClaimed ? `linear-gradient(135deg,${T.bgCard},#1a3a1a)` : T.bgCard,
+                    border: isUltra ? '1px solid #FFD70055' : isClaimed ? '1px solid #2ecc7144' : canClaim ? `1px solid ${T.orange}55` : `1px solid ${T.purple1}`,
+                    borderRadius:'12px',padding:'8px 12px',opacity: tier.locked && !canClaim ? 0.45 : 1,
+                    cursor: canClaim ? 'pointer' : 'default',
+                    display:'flex',alignItems:'center',gap:'8px',position:'relative',transition:'all 0.2s'
+                  }}>
+                    <span style={{fontSize:'14px',fontWeight:'900',color:T.white,fontFamily:"'Exo 2'",flexShrink:0,minWidth:'28px'}}>#{tier.position}</span>
+                    <div style={{display:'flex',alignItems:'center',gap:'6px',flex:1,flexWrap:'wrap'}}>
+                      {tier.free.map((r,j) => renderRewardBadge(r, true))}
+                      {hasPremium && <div style={{width:'1px',height:'18px',background:T.purple1,borderRadius:'1px',flexShrink:0}}/>}
+                      {hasPremium && tier.premium.map((r,j) => showPremLock ? renderLockedBadge(r) : renderRewardBadge(r, true))}
+                      {isUltra && tier.ultra.length > 0 && <div style={{width:'1px',height:'18px',background:'#FFD70044',borderRadius:'1px',flexShrink:0}}/>}
+                      {isUltra && tier.ultra.map((r,j) => showPremLock ? renderLockedBadge(r) : renderRewardBadge(r, true))}
+                    </div>
+                    {isUltra && <span style={{fontSize:'8px',background:'#FFD700',color:'#000',borderRadius:'4px',padding:'1px 5px',fontWeight:'700',flexShrink:0}}>ULTRA</span>}
+                    {isClaimed && <span style={{fontSize:'14px',color:'#2ecc71',flexShrink:0}}>✓</span>}
+                    {canClaim && (
+                      <span style={{flexShrink:0,background:`linear-gradient(135deg,${T.orange},${T.orangeLt})`,border:'none',borderRadius:'8px',padding:'5px 12px',color:'white',fontSize:'12px',fontWeight:'800',fontFamily:"'Exo 2',sans-serif",boxShadow:`0 2px 8px ${T.orange}44`}}>
+                        {claiming[tier.position] ? '...' : 'Забрать'}
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

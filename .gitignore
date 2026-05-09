@@ -17,11 +17,16 @@ ai/train/checkpoints/
 
 # Runtime data
 infrastructure/data/
+*.log
+*.pid
+.pytest_cache/
 
 # Editors
 .cursor/
 .cursorignore
 .aider*
+.claude/
+.opencode/references/
 
 # Rust
 target/

@@ -17,7 +17,7 @@ from infrastructure.config import DECK_SIZE, DatabaseSettings, get_league_by_tro
 
 
 # Версию схемы повышаем при изменении структуры таблиц
-SCHEMA_VERSION = 21
+SCHEMA_VERSION = 23
 
 # Таблица ростов статов по редкости (урон/хп растут одинаково)
 RARITY_STATS: dict[str, float] = {
@@ -302,6 +302,12 @@ class Database:
         global_chat_changed = await self._ensure_global_chat_table()
         community_posts_changed = await self._ensure_community_posts_table()
         post_likes_changed = await self._ensure_post_likes_table()
+        reward_tracks_changed = await self._ensure_reward_tracks_table()
+        claimed_rewards_changed = await self._ensure_claimed_rewards_table()
+        seasons_changed = await self._ensure_seasons_table()
+        shop_sets_changed = await self._ensure_shop_sets_table()
+        payments_changed = await self._ensure_payments_table()
+        friend_invites_changed = await self._ensure_friend_invites_table()
 
         schema_changed = (
             (current_version != SCHEMA_VERSION)
@@ -320,6 +326,12 @@ class Database:
             or global_chat_changed
             or community_posts_changed
             or post_likes_changed
+            or reward_tracks_changed
+            or claimed_rewards_changed
+            or seasons_changed
+            or shop_sets_changed
+            or payments_changed
+            or friend_invites_changed
         )
 
         # Обновляем референсные данные для новой боевой системы
@@ -465,6 +477,8 @@ class Database:
                 COALESCE(u.stars, 0) as stars,
                 COALESCE(u.energy, 5) as energy,
                 u.energy_cd,
+                COALESCE(u.season, 0) as season,
+                u.extra_pass_expires_at,
                 COALESCE(p.img, '') as img,
                 COALESCE(p.title, 'Игрок') as title,
                 p.custom_nickname,
@@ -507,6 +521,8 @@ class Database:
                     COALESCE(u.stars, 0) as stars,
                     COALESCE(u.energy, 5) as energy,
                     u.energy_cd,
+                    COALESCE(u.season, 0) as season,
+                    u.extra_pass_expires_at,
                     COALESCE(p.img, '') as img,
                     COALESCE(p.title, 'Игрок') as title,
                     p.custom_nickname,
@@ -1037,6 +1053,9 @@ class Database:
             "users", columns, "primary_deck INTEGER DEFAULT NULL"
         )
         changed |= await self._add_column_if_missing(
+            "users", columns, "season INTEGER NOT NULL DEFAULT 0"
+        )
+        changed |= await self._add_column_if_missing(
             "users", columns, "reg_date TIMESTAMPTZ NOT NULL DEFAULT NOW()"
         )
         changed |= await self._add_column_if_missing(
@@ -1044,6 +1063,9 @@ class Database:
         )
         changed |= await self._add_column_if_missing(
             "users", columns, "updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()"
+        )
+        changed |= await self._add_column_if_missing(
+            "users", columns, "extra_pass_expires_at TIMESTAMPTZ"
         )
 
         if not await self._constraint_exists("users", "users_status_check"):
@@ -1172,6 +1194,26 @@ class Database:
                 "user_settings", columns, 
                 "welcome_shown BOOLEAN NOT NULL DEFAULT false"
             )
+            changed |= await self._add_column_if_missing(
+                "user_settings", columns,
+                "starter_pack_used BOOLEAN NOT NULL DEFAULT false"
+            )
+            changed |= await self._add_column_if_missing(
+                "user_settings", columns,
+                "particles_rotation_cards JSONB"
+            )
+            changed |= await self._add_column_if_missing(
+                "user_settings", columns,
+                "particles_rotation_date DATE"
+            )
+            changed |= await self._add_column_if_missing(
+                "user_settings", columns,
+                "particles_purchased_today JSONB DEFAULT '[]'"
+            )
+            changed |= await self._add_column_if_missing(
+                "user_settings", columns,
+                "wins_since_last_case INTEGER NOT NULL DEFAULT 0"
+            )
 
         return changed
 
@@ -1193,7 +1235,9 @@ class Database:
             "notif_cases", "notif_daily_rewards", "notif_game_invites",
             "notif_friend_requests", "notif_events", "notif_news", "notif_dice",
             "ads_enabled", "sound_music", "sound_sfx", "social_block_friend_requests",
-            "welcome_shown"
+            "welcome_shown",
+            "starter_pack_used", "particles_rotation_cards", "particles_rotation_date",
+            "particles_purchased_today", "wins_since_last_case",
         }
 
         updates = []
@@ -1308,8 +1352,8 @@ class Database:
             record = await self.fetchrow(
                 """
                 SELECT COUNT(*) as unread_count
-                FROM mail
-                WHERE user_id = $1 AND read_at IS NULL
+                FROM user_mail
+                WHERE user_id = $1 AND is_read = FALSE
                 """,
                 user_id
             )
@@ -1445,6 +1489,11 @@ class Database:
                     loser_score INTEGER DEFAULT 0,
                     match_duration INTEGER DEFAULT 0,
                     match_type TEXT DEFAULT 'pvp',
+                    p1_id BIGINT,
+                    p2_id BIGINT,
+                    p1_trophy_change INTEGER DEFAULT 0,
+                    p2_trophy_change INTEGER DEFAULT 0,
+                    turns_count INTEGER DEFAULT 0,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
                 """
@@ -1460,6 +1509,11 @@ class Database:
         changed |= await self._add_column_if_missing("battle_results", columns, "match_duration INTEGER DEFAULT 0")
         changed |= await self._add_column_if_missing("battle_results", columns, "match_type TEXT DEFAULT 'pvp'")
         changed |= await self._add_column_if_missing("battle_results", columns, "created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
+        changed |= await self._add_column_if_missing("battle_results", columns, "p1_id BIGINT")
+        changed |= await self._add_column_if_missing("battle_results", columns, "p2_id BIGINT")
+        changed |= await self._add_column_if_missing("battle_results", columns, "p1_trophy_change INTEGER DEFAULT 0")
+        changed |= await self._add_column_if_missing("battle_results", columns, "p2_trophy_change INTEGER DEFAULT 0")
+        changed |= await self._add_column_if_missing("battle_results", columns, "turns_count INTEGER DEFAULT 0")
 
         # Создаем индексы для быстрого поиска
         index_exists = await self.fetchval(
@@ -1491,8 +1545,8 @@ class Database:
 
         await self.execute(
             """
-            INSERT INTO battle_results (match_id, winner_id, loser_id, winner_score, loser_score, match_duration, match_type)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            INSERT INTO battle_results (match_id, winner_id, loser_id, winner_score, loser_score, match_duration, match_type, p1_id, p2_id, p1_trophy_change, p2_trophy_change, turns_count)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
             """,
             kwargs.get('match_id'),
             kwargs.get('winner_id'),
@@ -1500,8 +1554,65 @@ class Database:
             kwargs.get('winner_score', 0),
             kwargs.get('loser_score', 0),
             kwargs.get('match_duration', 0),
-            kwargs.get('match_type', 'pvp')
+            kwargs.get('match_type', 'pvp'),
+            kwargs.get('p1_id'),
+            kwargs.get('p2_id'),
+            kwargs.get('p1_trophy_change', 0),
+            kwargs.get('p2_trophy_change', 0),
+            kwargs.get('turns_count', 0)
         )
+
+    async def get_battle_history(self, user_id: int, limit: int = 10) -> list[dict[str, Any]]:
+        """Получить историю боёв игрока."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+
+        rows = await self.fetch(
+            """
+            SELECT b.id, b.match_id, b.winner_id, b.loser_id,
+                   b.p1_id, b.p2_id,
+                   b.p1_trophy_change, b.p2_trophy_change,
+                   b.match_duration, b.match_type, b.turns_count, b.created_at,
+                   CASE WHEN b.p1_id = $1 THEN b.p2_id ELSE b.p1_id END AS opponent_id
+            FROM battle_results b
+            WHERE b.p1_id = $1 OR b.p2_id = $1
+            ORDER BY b.created_at DESC
+            LIMIT $2
+            """,
+            user_id, limit,
+        )
+
+        opponent_ids = [r["opponent_id"] for r in rows if r["opponent_id"]]
+        opponent_names: dict[int, str] = {}
+        if opponent_ids:
+            opp_rows = await self.fetch(
+                "SELECT user_id, COALESCE(first_name, username, 'Игрок') AS name FROM users WHERE user_id = ANY($1)",
+                opponent_ids,
+            )
+            opponent_names = {r["user_id"]: r["name"] for r in opp_rows}
+
+        return [
+            {
+                "battle_id": r["id"],
+                "opponent_id": r["opponent_id"],
+                "opponent_name": opponent_names.get(r["opponent_id"], "Игрок"),
+                "result": (
+                    "win" if r["winner_id"] and r["p1_id"] == user_id and r["winner_id"] == user_id
+                    else "win" if r["winner_id"] and r["p2_id"] == user_id and r["winner_id"] == user_id
+                    else "draw" if r["winner_id"] is None
+                    else "lose"
+                ),
+                "trophies_change": (
+                    r["p1_trophy_change"] if r["p1_id"] == user_id
+                    else r["p2_trophy_change"]
+                ),
+                "mode": r["match_type"] or "classic",
+                "duration_seconds": r["match_duration"] or 0,
+                "turns_count": r["turns_count"] or 0,
+                "created_at": r["created_at"].isoformat() if isinstance(r["created_at"], datetime) else str(r["created_at"]),
+            }
+            for r in rows
+        ]
 
     async def _ensure_cooldowns_table(self) -> bool:
         """Создать универсальную таблицу кулдаунов."""
@@ -2073,6 +2184,669 @@ class Database:
             changed = True
 
         return changed
+
+    async def _ensure_reward_tracks_table(self) -> bool:
+        changed = False
+
+        table_exists = await self.fetchval("SELECT to_regclass('public.reward_tracks')")
+        if not table_exists:
+            await self.execute(
+                """
+                CREATE TABLE reward_tracks (
+                    id SERIAL PRIMARY KEY,
+                    track_type TEXT NOT NULL,
+                    position INTEGER NOT NULL,
+                    reward_type TEXT NOT NULL,
+                    reward_amount INTEGER NOT NULL DEFAULT 0,
+                    reward_meta JSONB DEFAULT NULL,
+                    extra_pass_required BOOLEAN NOT NULL DEFAULT FALSE,
+                    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE(track_type, position, reward_type)
+                )
+                """
+            )
+            changed = True
+
+        columns = await self._get_columns("reward_tracks")
+
+        changed |= await self._add_column_if_missing(
+            "reward_tracks", columns, "track_type TEXT NOT NULL DEFAULT 'glory'"
+        )
+        changed |= await self._add_column_if_missing(
+            "reward_tracks", columns, "position INTEGER NOT NULL DEFAULT 0"
+        )
+        changed |= await self._add_column_if_missing(
+            "reward_tracks", columns, "reward_type TEXT NOT NULL DEFAULT 'coins'"
+        )
+        changed |= await self._add_column_if_missing(
+            "reward_tracks", columns, "reward_amount INTEGER NOT NULL DEFAULT 0"
+        )
+        changed |= await self._add_column_if_missing(
+            "reward_tracks", columns, "reward_meta JSONB DEFAULT NULL"
+        )
+        changed |= await self._add_column_if_missing(
+            "reward_tracks", columns, "extra_pass_required BOOLEAN NOT NULL DEFAULT FALSE"
+        )
+        changed |= await self._add_column_if_missing(
+            "reward_tracks", columns, "is_active BOOLEAN NOT NULL DEFAULT TRUE"
+        )
+        changed |= await self._add_column_if_missing(
+            "reward_tracks", columns, "created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()"
+        )
+        changed |= await self._add_column_if_missing(
+            "reward_tracks", columns, "updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()"
+        )
+
+        if not await self._constraint_exists("reward_tracks", "reward_tracks_track_position_reward_key"):
+            await self.execute(
+                """
+                ALTER TABLE reward_tracks
+                ADD CONSTRAINT reward_tracks_track_position_reward_key
+                UNIQUE (track_type, position, reward_type)
+                """
+            )
+            changed = True
+
+        return changed
+
+    async def _ensure_claimed_rewards_table(self) -> bool:
+        changed = False
+
+        table_exists = await self.fetchval("SELECT to_regclass('public.claimed_rewards')")
+        if not table_exists:
+            await self.execute(
+                """
+                CREATE TABLE claimed_rewards (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL REFERENCES users(user_id),
+                    track_type TEXT NOT NULL,
+                    position INTEGER NOT NULL,
+                    claimed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE(user_id, track_type, position)
+                )
+                """
+            )
+            changed = True
+
+        columns = await self._get_columns("claimed_rewards")
+
+        changed |= await self._add_column_if_missing(
+            "claimed_rewards", columns, "user_id BIGINT NOT NULL"
+        )
+        changed |= await self._add_column_if_missing(
+            "claimed_rewards", columns, "track_type TEXT NOT NULL DEFAULT 'glory'"
+        )
+        changed |= await self._add_column_if_missing(
+            "claimed_rewards", columns, "position INTEGER NOT NULL DEFAULT 0"
+        )
+        changed |= await self._add_column_if_missing(
+            "claimed_rewards", columns, "claimed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()"
+        )
+
+        if not await self._constraint_exists("claimed_rewards", "claimed_rewards_user_track_position_key"):
+            await self.execute(
+                """
+                ALTER TABLE claimed_rewards
+                ADD CONSTRAINT claimed_rewards_user_track_position_key
+                UNIQUE (user_id, track_type, position)
+                """
+            )
+            changed = True
+
+        return changed
+
+    async def _ensure_seasons_table(self) -> bool:
+        changed = False
+
+        table_exists = await self.fetchval("SELECT to_regclass('public.seasons')")
+        if not table_exists:
+            await self.execute(
+                """
+                CREATE TABLE seasons (
+                    id SERIAL PRIMARY KEY,
+                    name TEXT NOT NULL DEFAULT '',
+                    start_date TIMESTAMPTZ,
+                    end_date TIMESTAMPTZ,
+                    is_active BOOLEAN NOT NULL DEFAULT FALSE
+                )
+                """
+            )
+            changed = True
+
+        columns = await self._get_columns("seasons")
+
+        changed |= await self._add_column_if_missing(
+            "seasons", columns, "name TEXT NOT NULL DEFAULT ''"
+        )
+        changed |= await self._add_column_if_missing(
+            "seasons", columns, "start_date TIMESTAMPTZ"
+        )
+        changed |= await self._add_column_if_missing(
+            "seasons", columns, "end_date TIMESTAMPTZ"
+        )
+        changed |= await self._add_column_if_missing(
+            "seasons", columns, "is_active BOOLEAN NOT NULL DEFAULT FALSE"
+        )
+
+        return changed
+
+    async def _ensure_shop_sets_table(self) -> bool:
+        changed = False
+
+        table_exists = await self.fetchval("SELECT to_regclass('public.shop_sets')")
+        if not table_exists:
+            await self.execute(
+                """
+                CREATE TABLE shop_sets (
+                    id SERIAL PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    description TEXT,
+                    image_file_id TEXT,
+                    price DECIMAL(10,2) NOT NULL,
+                    currency TEXT NOT NULL DEFAULT 'rubles' CHECK (currency IN ('rubles','gems','coins')),
+                    rewards JSONB NOT NULL DEFAULT '[]',
+                    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                    created_by BIGINT REFERENCES users(user_id),
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            changed = True
+
+        columns = await self._get_columns("shop_sets")
+        changed |= await self._add_column_if_missing(
+            "shop_sets", columns, "name TEXT NOT NULL"
+        )
+        changed |= await self._add_column_if_missing(
+            "shop_sets", columns, "description TEXT"
+        )
+        changed |= await self._add_column_if_missing(
+            "shop_sets", columns, "image_file_id TEXT"
+        )
+        changed |= await self._add_column_if_missing(
+            "shop_sets", columns, "price DECIMAL(10,2) NOT NULL"
+        )
+        changed |= await self._add_column_if_missing(
+            "shop_sets", columns, "currency TEXT NOT NULL DEFAULT 'rubles'"
+        )
+        changed |= await self._add_column_if_missing(
+            "shop_sets", columns, "rewards JSONB NOT NULL DEFAULT '[]'"
+        )
+        changed |= await self._add_column_if_missing(
+            "shop_sets", columns, "is_active BOOLEAN NOT NULL DEFAULT TRUE"
+        )
+        changed |= await self._add_column_if_missing(
+            "shop_sets", columns, "created_by BIGINT"
+        )
+        changed |= await self._add_column_if_missing(
+            "shop_sets", columns, "created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()"
+        )
+        changed |= await self._add_column_if_missing(
+            "shop_sets", columns, "updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()"
+        )
+
+        return changed
+
+    async def get_shop_sets(self, active_only: bool = True) -> list[dict[str, Any]]:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        query = "SELECT * FROM shop_sets"
+        if active_only:
+            query += " WHERE is_active = TRUE"
+        query += " ORDER BY created_at DESC"
+        rows = await self.fetch(query)
+        return [dict(r) for r in rows]
+
+    async def get_shop_set(self, set_id: int) -> Optional[dict[str, Any]]:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        row = await self.fetchrow(
+            "SELECT * FROM shop_sets WHERE id = $1", set_id
+        )
+        return dict(row) if row else None
+
+    async def create_shop_set(
+        self,
+        *,
+        name: str,
+        description: Optional[str] = None,
+        image_file_id: Optional[str] = None,
+        price: float,
+        currency: str = "rubles",
+        created_by: int,
+        rewards: Optional[list] = None,
+    ) -> dict[str, Any]:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        import json as _json
+        rewards_json = _json.dumps(rewards or [])
+        try:
+            record = await self.fetchrow(
+                """
+                INSERT INTO shop_sets (name, description, image_file_id, price, currency, created_by, rewards)
+                VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
+                RETURNING id
+                """,
+                name, description, image_file_id, price, currency, created_by, rewards_json,
+            )
+            return {"success": True, "set_id": record["id"]}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def update_shop_set(self, set_id: int, **kwargs) -> dict[str, Any]:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        import json as _json
+        valid_keys = {
+            "name", "description", "image_file_id",
+            "price", "currency", "rewards", "is_active",
+        }
+        updates = []
+        values = []
+        for key, value in kwargs.items():
+            if key in valid_keys:
+                if key == "rewards" and not isinstance(value, str):
+                    value = _json.dumps(value)
+                updates.append(f"{key} = ${len(values) + 1}")
+                values.append(value)
+        if not updates:
+            return {"success": False, "error": "no_valid_fields"}
+        updates.append(f"updated_at = NOW()")
+        values.append(set_id)
+        query = f"UPDATE shop_sets SET {', '.join(updates)} WHERE id = ${len(values)}"
+        try:
+            await self.execute(query, *values)
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def delete_shop_set(self, set_id: int) -> dict[str, Any]:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        try:
+            await self.execute(
+                "UPDATE shop_sets SET is_active = FALSE, updated_at = NOW() WHERE id = $1",
+                set_id,
+            )
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def grant_shop_set_rewards(
+        self, user_id: int, set_id: int
+    ) -> dict[str, Any]:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        import json as _json
+
+        row = await self.fetchrow(
+            "SELECT id, rewards FROM shop_sets WHERE id = $1 AND is_active = TRUE",
+            set_id,
+        )
+        if not row:
+            return {"success": False, "error": "set_not_found"}
+
+        rewards_data = row["rewards"]
+        if isinstance(rewards_data, str):
+            rewards_data = _json.loads(rewards_data)
+        if not isinstance(rewards_data, list):
+            return {"success": False, "error": "invalid_rewards_format"}
+
+        granted: list[dict[str, Any]] = []
+
+        for reward in rewards_data:
+            r_type = reward.get("type")
+            amount = int(reward.get("amount", 0))
+            card_id = reward.get("card_id")
+
+            if r_type == "gems" and amount > 0:
+                await self.execute(
+                    "UPDATE users SET gems = gems + $1 WHERE user_id = $2",
+                    amount, user_id,
+                )
+                granted.append({"type": "gems", "amount": amount})
+
+            elif r_type == "coins" and amount > 0:
+                await self.execute(
+                    "UPDATE users SET coins = coins + $1 WHERE user_id = $2",
+                    amount, user_id,
+                )
+                granted.append({"type": "coins", "amount": amount})
+
+            elif r_type == "keys" and amount > 0:
+                await self.increment_user_keys(user_id, amount)
+                granted.append({"type": "keys", "amount": amount})
+
+            elif r_type == "case":
+                count = max(1, amount)
+                await self.increment_user_keys(user_id, count)
+                granted.append({"type": "keys", "amount": count})
+
+            elif r_type == "card" and card_id:
+                from datetime import datetime, timezone
+                await self.execute(
+                    """
+                    INSERT INTO user_cards (user_id, card_id, level, particles, obtained_at)
+                    VALUES ($1, $2, 1, 0, $3)
+                    ON CONFLICT (user_id, card_id) DO UPDATE
+                    SET level = user_cards.level + 1,
+                        obtained_at = $3
+                    """,
+                    user_id, int(card_id), datetime.now(timezone.utc),
+                )
+                granted.append({"type": "card", "card_id": int(card_id)})
+
+            elif r_type == "particles" and amount > 0 and card_id:
+                await self.execute(
+                    """
+                    INSERT INTO user_cards (user_id, card_id, level, particles, obtained_at)
+                    VALUES ($1, $2, 1, $3, NOW())
+                    ON CONFLICT (user_id, card_id) DO UPDATE
+                    SET particles = COALESCE(user_cards.particles, 0) + $3
+                    """,
+                    user_id, int(card_id), amount,
+                )
+                granted.append({"type": "particles", "amount": amount, "card_id": int(card_id)})
+
+        return {"success": True, "granted": granted}
+
+    async def _ensure_payments_table(self) -> bool:
+        changed = False
+
+        table_exists = await self.fetchval("SELECT to_regclass('public.payments')")
+        if not table_exists:
+            await self.execute(
+                """
+                CREATE TABLE payments (
+                    id SERIAL PRIMARY KEY,
+                    payment_id TEXT NOT NULL UNIQUE,
+                    user_id BIGINT NOT NULL,
+                    amount DECIMAL(12,2) NOT NULL,
+                    currency TEXT NOT NULL DEFAULT 'RUB',
+                    description TEXT,
+                    metadata JSONB NOT NULL DEFAULT '{}',
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    rewards_processed BOOLEAN NOT NULL DEFAULT FALSE,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            changed = True
+
+        columns = await self._get_columns("payments")
+        changed |= await self._add_column_if_missing(
+            "payments", columns, "payment_id TEXT NOT NULL"
+        )
+        changed |= await self._add_column_if_missing(
+            "payments", columns, "user_id BIGINT NOT NULL"
+        )
+        changed |= await self._add_column_if_missing(
+            "payments", columns, "amount DECIMAL(12,2) NOT NULL"
+        )
+        changed |= await self._add_column_if_missing(
+            "payments", columns, "currency TEXT NOT NULL DEFAULT 'RUB'"
+        )
+        changed |= await self._add_column_if_missing(
+            "payments", columns, "description TEXT"
+        )
+        changed |= await self._add_column_if_missing(
+            "payments", columns, "metadata JSONB NOT NULL DEFAULT '{}'"
+        )
+        changed |= await self._add_column_if_missing(
+            "payments", columns, "status TEXT NOT NULL DEFAULT 'pending'"
+        )
+        changed |= await self._add_column_if_missing(
+            "payments", columns, "rewards_processed BOOLEAN NOT NULL DEFAULT FALSE"
+        )
+        changed |= await self._add_column_if_missing(
+            "payments", columns, "created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()"
+        )
+        changed |= await self._add_column_if_missing(
+            "payments", columns, "updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()"
+        )
+
+        if not await self._constraint_exists("payments", "payments_payment_id_key"):
+            try:
+                await self.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS payments_payment_id_idx ON payments(payment_id)"
+                )
+            except Exception:
+                pass
+
+        return changed
+
+    async def _ensure_friend_invites_table(self) -> bool:
+        """Создать таблицу friend_invites для дружеских матчей."""
+        changed = False
+
+        table_exists = await self.fetchval("SELECT to_regclass('public.friend_invites')")
+        if not table_exists:
+            await self.execute(
+                """
+                CREATE TABLE friend_invites (
+                    id SERIAL PRIMARY KEY,
+                    from_user_id BIGINT NOT NULL REFERENCES users(user_id),
+                    to_user_id BIGINT NOT NULL REFERENCES users(user_id),
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    expires_at TIMESTAMPTZ NOT NULL DEFAULT NOW() + INTERVAL '5 minutes',
+                    battle_id TEXT DEFAULT NULL
+                )
+                """
+            )
+            changed = True
+
+        columns = await self._get_columns("friend_invites")
+        changed |= await self._add_column_if_missing("friend_invites", columns, "from_user_id BIGINT NOT NULL DEFAULT 0")
+        changed |= await self._add_column_if_missing("friend_invites", columns, "to_user_id BIGINT NOT NULL DEFAULT 0")
+        changed |= await self._add_column_if_missing("friend_invites", columns, "status TEXT NOT NULL DEFAULT 'pending'")
+        changed |= await self._add_column_if_missing("friend_invites", columns, "created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
+        changed |= await self._add_column_if_missing("friend_invites", columns, "expires_at TIMESTAMPTZ NOT NULL DEFAULT NOW() + INTERVAL '5 minutes'")
+        changed |= await self._add_column_if_missing("friend_invites", columns, "battle_id TEXT DEFAULT NULL")
+
+        index_exists = await self.fetchval(
+            "SELECT 1 FROM pg_indexes WHERE tablename = 'friend_invites' AND indexname = 'friend_invites_to_user_idx'"
+        )
+        if not index_exists:
+            await self.execute("CREATE INDEX friend_invites_to_user_idx ON friend_invites(to_user_id, status)")
+            changed = True
+
+        return changed
+
+    async def create_friend_invite(self, from_user_id: int, to_user_id: int) -> dict[str, Any]:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        try:
+            row = await self.fetchrow(
+                """
+                INSERT INTO friend_invites (from_user_id, to_user_id)
+                VALUES ($1, $2)
+                RETURNING id, created_at, expires_at
+                """,
+                from_user_id, to_user_id,
+            )
+            return {"success": True, "id": row["id"], "created_at": row["created_at"].isoformat(), "expires_at": row["expires_at"].isoformat()}
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error("create_friend_invite error: %s", e, exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def get_pending_invite(self, to_user_id: int) -> Optional[dict[str, Any]]:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        row = await self.fetchrow(
+            """
+            SELECT i.*, p.custom_nickname, p.img AS avatar_url,
+                   COALESCE(p.custom_nickname, u.first_name, u.username, 'Игрок') AS display_name
+            FROM friend_invites i
+            JOIN users u ON u.user_id = i.from_user_id
+            LEFT JOIN profiles p ON p.user_id = i.from_user_id
+            WHERE i.to_user_id = $1
+              AND i.status = 'pending'
+              AND i.expires_at > NOW()
+            ORDER BY i.created_at DESC
+            LIMIT 1
+            """,
+            to_user_id,
+        )
+        if not row:
+            return None
+        return {
+            "id": row["id"],
+            "from_user_id": row["from_user_id"],
+            "from_username": row["display_name"],
+            "from_avatar_url": row["avatar_url"],
+            "status": row["status"],
+            "created_at": row["created_at"].isoformat(),
+            "expires_at": row["expires_at"].isoformat(),
+            "battle_id": row["battle_id"],
+        }
+
+    async def get_friend_invite_by_id(self, invite_id: int) -> Optional[dict[str, Any]]:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        row = await self.fetchrow(
+            "SELECT * FROM friend_invites WHERE id = $1", invite_id
+        )
+        return dict(row) if row else None
+
+    async def has_active_pending_invite(self, from_user_id: int, to_user_id: int) -> bool:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        val = await self.fetchval(
+            """
+            SELECT 1 FROM friend_invites
+            WHERE from_user_id = $1 AND to_user_id = $2
+              AND status = 'pending' AND expires_at > NOW()
+            LIMIT 1
+            """,
+            from_user_id, to_user_id,
+        )
+        return bool(val)
+
+    async def update_invite_status(
+        self, invite_id: int, status: str, battle_id: Optional[str] = None
+    ) -> None:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        if battle_id:
+            await self.execute(
+                "UPDATE friend_invites SET status = $1, battle_id = $2 WHERE id = $3",
+                status, battle_id, invite_id,
+            )
+        else:
+            await self.execute(
+                "UPDATE friend_invites SET status = $1 WHERE id = $2",
+                status, invite_id,
+            )
+
+    async def expire_old_invites(self) -> int:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        result = await self.execute(
+            """
+            UPDATE friend_invites SET status = 'expired'
+            WHERE expires_at < NOW() AND status = 'pending'
+            """
+        )
+        return result
+
+    async def get_recent_opponents(self, user_id: int, limit: int = 5) -> list[dict[str, Any]]:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        rows = await self.fetch(
+            """
+            WITH opponents AS (
+                SELECT winner_id AS opponent_id
+                FROM battle_results
+                WHERE loser_id = $1 AND winner_id IS NOT NULL
+                UNION ALL
+                SELECT loser_id AS opponent_id
+                FROM battle_results
+                WHERE winner_id = $1 AND loser_id IS NOT NULL
+            ),
+            ranked AS (
+                SELECT DISTINCT ON (opponent_id) opponent_id
+                FROM opponents
+                ORDER BY opponent_id
+                LIMIT $2
+            )
+            SELECT r.opponent_id, p.custom_nickname, p.img AS avatar_url,
+                   COALESCE(p.custom_nickname, u.first_name, u.username, 'Игрок') AS display_name
+            FROM ranked r
+            JOIN users u ON u.user_id = r.opponent_id
+            LEFT JOIN profiles p ON p.user_id = r.opponent_id
+            """,
+            user_id, limit,
+        )
+        return [
+            {
+                "user_id": r["opponent_id"],
+                "display_name": r["display_name"],
+                "avatar_url": r["avatar_url"],
+            }
+            for r in rows
+        ]
+
+    async def create_payment(
+        self,
+        *,
+        user_id: int,
+        payment_id: str,
+        amount: float,
+        currency: str,
+        description: str,
+        metadata: Optional[dict] = None,
+        status: str = "pending",
+    ) -> dict[str, Any]:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        import json as _json
+        try:
+            record = await self.fetchrow(
+                """
+                INSERT INTO payments (payment_id, user_id, amount, currency, description, metadata, status)
+                VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)
+                ON CONFLICT (payment_id) DO UPDATE
+                SET amount = EXCLUDED.amount,
+                    currency = EXCLUDED.currency,
+                    description = EXCLUDED.description,
+                    metadata = EXCLUDED.metadata,
+                    status = EXCLUDED.status,
+                    updated_at = NOW()
+                RETURNING id
+                """,
+                payment_id,
+                user_id,
+                amount,
+                currency,
+                description,
+                _json.dumps(metadata or {}),
+                status,
+            )
+            return {"success": True, "id": record["id"]}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def get_payment_by_id(self, payment_id: str) -> Optional[dict[str, Any]]:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        row = await self.fetchrow(
+            "SELECT * FROM payments WHERE payment_id = $1", payment_id
+        )
+        return dict(row) if row else None
+
+    async def update_payment_status(self, payment_id: str, status: str) -> None:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        await self.execute(
+            "UPDATE payments SET status = $1, updated_at = NOW() WHERE payment_id = $2",
+            status, payment_id,
+        )
 
     async def create_community_post(
         self,
@@ -2677,14 +3451,13 @@ class Database:
 
 
     async def _seed_game_defaults(self) -> None:
-        """Приводим ключевые карты к новым статам."""
+        """Приводим ключевые карты к новым статам и инициализируем reward_tracks."""
         if not self._pool:
             raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
 
         import logging
 
         try:
-            # Переводим ключевые карты на новую систему статов
             await self.execute(
                 """
                 UPDATE cards
@@ -2709,6 +3482,340 @@ class Database:
             logging.getLogger(__name__).warning(
                 f"Не удалось применить дефолтные данные боевой системы: {e}"
             )
+
+        await self._seed_reward_tracks()
+
+    async def _seed_reward_tracks(self) -> None:
+        """Заполнить таблицу reward_tracks начальными значениями."""
+        if not self._pool:
+            return
+
+        import json as _json
+        import logging
+
+        rows = [
+            # Glory Path
+            ("glory", 150,  "coins", 500,  None,                          False),
+            ("glory", 300,  "keys",  1,    None,                          False),
+            ("glory", 500,  "coins", 800,  None,                          False),
+            ("glory", 700,  "gems",  50,   None,                          False),
+            ("glory", 1000, "gems",  150,  '{"original":"case_tier_2","case_tier":2}', False),
+            ("glory", 1500, "keys",  2,    None,                          False),
+            ("glory", 2000, "coins", 1200, None,                          False),
+            ("glory", 2500, "gems",  100,  None,                          False),
+            ("glory", 3000, "gems",  300,  '{"original":"case_tier_3","case_tier":3}', False),
+            ("glory", 3000, "card",  1,    '{"rarity":["common","rare"]}', False),
+            ("glory", 4000, "keys",  2,    None,                          False),
+            ("glory", 5000, "coins", 1500, None,                          False),
+            ("glory", 6000, "gems",  150,  None,                          False),
+            ("glory", 7000, "gems",  300,  '{"original":"case_tier_3","case_tier":3}', False),
+            ("glory", 8000, "keys",  3,    None,                          False),
+            ("glory", 9000, "coins", 2000, None,                          False),
+            ("glory", 9500, "gems",  200,  None,                          False),
+            ("glory", 10000,"gems",  500,  '{"original":"case_tier_4","case_tier":4}', False),
+
+            # BP Free
+            ("bp_free", 1,  "coins", 200,  None,                         False),
+            ("bp_free", 3,  "keys",  1,    None,                         False),
+            ("bp_free", 5,  "coins", 300,  None,                         False),
+            ("bp_free", 8,  "gems",  50,   None,                         False),
+            ("bp_free", 10, "gems",  150,  '{"original":"case_tier_2","case_tier":2}', False),
+            ("bp_free", 13, "coins", 400,  None,                         False),
+            ("bp_free", 15, "keys",  1,    None,                         False),
+            ("bp_free", 18, "coins", 500,  None,                         False),
+            ("bp_free", 20, "gems",  300,  '{"original":"case_tier_3","case_tier":3}', False),
+            ("bp_free", 20, "gems",  100,  None,                         False),
+            ("bp_free", 23, "keys",  2,    None,                         False),
+            ("bp_free", 25, "coins", 600,  None,                         False),
+            ("bp_free", 28, "gems",  100,  None,                         False),
+            ("bp_free", 30, "gems",  300,  '{"original":"case_tier_3","case_tier":3}', False),
+            ("bp_free", 30, "card",  1,    '{"rarity":["common","rare"]}', False),
+            ("bp_free", 33, "keys",  2,    None,                         False),
+            ("bp_free", 35, "coins", 700,  None,                         False),
+            ("bp_free", 38, "gems",  150,  None,                         False),
+            ("bp_free", 40, "gems",  500,  '{"original":"case_tier_4","case_tier":4}', False),
+            ("bp_free", 43, "keys",  3,    None,                         False),
+            ("bp_free", 45, "coins", 500,  None,                         False),
+            ("bp_free", 45, "gems",  200,  None,                         False),
+
+            # BP Premium
+            ("bp_premium", 1,  "coins", 400,  None,                                      True),
+            ("bp_premium", 3,  "keys",  2,    None,                                      True),
+            ("bp_premium", 5,  "coins", 600,  None,                                      True),
+            ("bp_premium", 8,  "gems",  100,  None,                                      True),
+            ("bp_premium", 10, "gems",  300,  '{"original":"case_tier_3","case_tier":3}', True),
+            ("bp_premium", 10, "gems",  100,  None,                                      True),
+            ("bp_premium", 13, "coins", 700,  None,                                      True),
+            ("bp_premium", 15, "keys",  2,    None,                                      True),
+            ("bp_premium", 18, "coins", 800,  None,                                      True),
+            ("bp_premium", 20, "gems",  500,  '{"original":"case_tier_4","case_tier":4}', True),
+            ("bp_premium", 20, "gems",  150,  None,                                      True),
+            ("bp_premium", 23, "keys",  3,    None,                                      True),
+            ("bp_premium", 25, "coins", 1000, None,                                      True),
+            ("bp_premium", 28, "gems",  150,  None,                                      True),
+            ("bp_premium", 30, "gems",  500,  '{"original":"case_tier_4","case_tier":4}', True),
+            ("bp_premium", 30, "card",  1,    '{"rarity":["common","rare"]}',             True),
+            ("bp_premium", 33, "keys",  3,    None,                                      True),
+            ("bp_premium", 35, "coins", 1000, None,                                      True),
+            ("bp_premium", 35, "gems",  100,  None,                                      True),
+            ("bp_premium", 38, "gems",  200,  None,                                      True),
+            ("bp_premium", 40, "gems",  800,  '{"original":"case_tier_5","case_tier":5}', True),
+            ("bp_premium", 43, "keys",  4,    None,                                      True),
+            ("bp_premium", 45, "coins", 1000, None,                                      True),
+            ("bp_premium", 45, "gems",  300,  None,                                      True),
+
+            # BP Ultra
+            ("bp_ultra", 42, "gems", 500, '{"original":"case_tier_5","case_tier":5}', True),
+            ("bp_ultra", 43, "keys", 4,   None,                                      True),
+            ("bp_ultra", 44, "gems", 500, None,                                      True),
+            ("bp_ultra", 45, "card", 1,   '{"rarity":["common","rare"]}',            True),
+            ("bp_ultra", 45, "gems", 300, None,                                      True),
+        ]
+
+        for track_type, position, reward_type, reward_amount, reward_meta, ep_required in rows:
+            try:
+                await self.execute(
+                    """
+                    INSERT INTO reward_tracks (track_type, position, reward_type, reward_amount, reward_meta, extra_pass_required)
+                    VALUES ($1, $2, $3, $4, $5::jsonb, $6)
+                    ON CONFLICT (track_type, position, reward_type) DO NOTHING
+                    """,
+                    track_type, position, reward_type, reward_amount,
+                    _json.dumps(_json.loads(reward_meta)) if reward_meta else None,
+                    ep_required,
+                )
+            except Exception as e:
+                logging.getLogger(__name__).warning(
+                    "Failed to seed reward_track %s pos=%d: %s", track_type, position, e
+                )
+
+    async def get_reward_tracks(self, track_type: str) -> list[dict[str, Any]]:
+        """Получить все активные тиры трека."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        rows = await self.fetch(
+            """
+            SELECT id, track_type, position, reward_type, reward_amount, reward_meta,
+                   extra_pass_required, is_active
+            FROM reward_tracks
+            WHERE track_type = $1 AND is_active = TRUE
+            ORDER BY position
+            """,
+            track_type,
+        )
+        return [dict(row) for row in rows]
+
+    async def get_all_reward_tracks(self) -> list[dict[str, Any]]:
+        """Получить все тиры всех треков (для админки)."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        rows = await self.fetch(
+            """
+            SELECT id, track_type, position, reward_type, reward_amount, reward_meta,
+                   extra_pass_required, is_active, created_at, updated_at
+            FROM reward_tracks
+            ORDER BY track_type, position
+            """
+        )
+        return [dict(row) for row in rows]
+
+    async def get_reward_track_by_id(self, reward_id: int) -> dict[str, Any] | None:
+        """Получить один тир по id."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        row = await self.fetchrow(
+            "SELECT id, track_type, position, reward_type, reward_amount, reward_meta, extra_pass_required, is_active FROM reward_tracks WHERE id = $1",
+            reward_id,
+        )
+        return dict(row) if row else None
+
+    async def get_reward_track_entries(self, track_type: str, position: int) -> list[dict[str, Any]]:
+        """Получить все награды на конкретной позиции трека."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        rows = await self.fetch(
+            """
+            SELECT id, track_type, position, reward_type, reward_amount, reward_meta,
+                   extra_pass_required, is_active
+            FROM reward_tracks
+            WHERE track_type = $1 AND position = $2 AND is_active = TRUE
+            """,
+            track_type, position,
+        )
+        return [dict(row) for row in rows]
+
+    async def create_reward_track(
+        self,
+        track_type: str,
+        position: int,
+        reward_type: str,
+        reward_amount: int,
+        reward_meta: dict[str, Any] | None = None,
+        extra_pass_required: bool = False,
+    ) -> dict[str, Any]:
+        """Создать новый тир."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        import json as _json
+        try:
+            row = await self.fetchrow(
+                """
+                INSERT INTO reward_tracks (track_type, position, reward_type, reward_amount, reward_meta, extra_pass_required)
+                VALUES ($1, $2, $3, $4, $5::jsonb, $6)
+                ON CONFLICT (track_type, position, reward_type) DO UPDATE
+                SET reward_amount = EXCLUDED.reward_amount,
+                    reward_meta = EXCLUDED.reward_meta,
+                    extra_pass_required = EXCLUDED.extra_pass_required,
+                    is_active = TRUE,
+                    updated_at = NOW()
+                RETURNING id, track_type, position, reward_type, reward_amount, reward_meta, extra_pass_required, is_active
+                """,
+                track_type, position, reward_type, reward_amount,
+                _json.dumps(reward_meta) if reward_meta else None,
+                extra_pass_required,
+            )
+            return dict(row) if row else {"error": "insert_failed"}
+        except Exception as e:
+            return {"error": str(e)}
+
+    async def update_reward_track(self, reward_id: int, **fields) -> dict[str, Any]:
+        """Обновить поля тира. fields может содержать: reward_type, reward_amount, reward_meta, extra_pass_required, is_active."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        import json as _json
+
+        existing = await self.get_reward_track_by_id(reward_id)
+        if not existing:
+            return {"error": "not_found"}
+
+        updates = []
+        params = []
+        idx = 1
+
+        for key in ("reward_type", "reward_amount", "extra_pass_required", "is_active"):
+            if key in fields and fields[key] is not None:
+                updates.append(f"{key} = ${idx}")
+                params.append(fields[key])
+                idx += 1
+
+        if "reward_meta" in fields:
+            updates.append(f"reward_meta = ${idx}::jsonb")
+            params.append(_json.dumps(fields["reward_meta"]) if fields["reward_meta"] else None)
+            idx += 1
+
+        if not updates:
+            return existing
+
+        updates.append(f"updated_at = NOW()")
+        params.append(reward_id)
+
+        row = await self.fetchrow(
+            f"UPDATE reward_tracks SET {', '.join(updates)} WHERE id = ${idx} RETURNING id, track_type, position, reward_type, reward_amount, reward_meta, extra_pass_required, is_active",
+            *params,
+        )
+        return dict(row) if row else {"error": "update_failed"}
+
+    async def delete_reward_track(self, reward_id: int) -> bool:
+        """Мягкое удаление: is_active = FALSE."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        await self.execute(
+            "UPDATE reward_tracks SET is_active = FALSE, updated_at = NOW() WHERE id = $1",
+            reward_id,
+        )
+        return True
+
+    async def get_claimed_rewards(self, user_id: int, track_type: str) -> set[int]:
+        """Множество позиций, которые игрок уже забрал."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        rows = await self.fetch(
+            "SELECT position FROM claimed_rewards WHERE user_id = $1 AND track_type = $2",
+            user_id, track_type,
+        )
+        return {row["position"] for row in rows}
+
+    async def claim_reward(self, user_id: int, track_type: str, position: int) -> bool:
+        """Записать получение награды. False если уже была получена."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        try:
+            await self.execute(
+                """
+                INSERT INTO claimed_rewards (user_id, track_type, position)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (user_id, track_type, position) DO NOTHING
+                """,
+                user_id, track_type, position,
+            )
+            return True
+        except Exception:
+            return False
+
+    async def update_user_stars(self, user_id: int, delta: int) -> int:
+        """Обновить звёзды пользователя. Возвращает новое значение."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        result = await self.fetchrow(
+            """
+            UPDATE users
+            SET stars = GREATEST(0, COALESCE(stars, 0) + $1),
+                updated_at = NOW()
+            WHERE user_id = $2
+            RETURNING stars
+            """,
+            delta, user_id,
+        )
+        return result["stars"] if result else 0
+
+    async def increment_user_keys(self, user_id: int, amount: int = 1) -> int:
+        """Увеличить ключи пользователя. Возвращает новое значение."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        result = await self.fetchrow(
+            """
+            UPDATE users
+            SET keys = COALESCE(keys, 0) + $1,
+                updated_at = NOW()
+            WHERE user_id = $2
+            RETURNING keys
+            """,
+            amount, user_id,
+        )
+        return result["keys"] if result else 0
+
+    async def decrement_user_keys(self, user_id: int, amount: int = 1) -> int:
+        """Уменьшить ключи пользователя. Возвращает новое значение."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        result = await self.fetchrow(
+            """
+            UPDATE users
+            SET keys = GREATEST(0, COALESCE(keys, 0) - $1),
+                updated_at = NOW()
+            WHERE user_id = $2
+            RETURNING keys
+            """,
+            amount, user_id,
+        )
+        return result["keys"] if result else 0
+
+    async def get_random_cards_by_rarities(self, rarities: list[str], limit: int = 1) -> list[dict[str, Any]]:
+        """Получить случайные карты из указанных редкостей без limited и start."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        rows = await self.fetch(
+            """
+            SELECT id, name, description, rarity, power, mana_cost, base_attack, base_hp, mechanics, card_type, image_file_id
+            FROM cards
+            WHERE rarity = ANY($1)
+              AND card_type = 'warrior'
+            ORDER BY RANDOM()
+            LIMIT $2
+            """,
+            rarities, limit,
+        )
+        return [dict(row) for row in rows]
 
     async def add_card_to_user(self, user_id: int, card_id: int) -> dict[str, Any]:
         """Выдать карту игроку. Возвращает dict с результатом."""

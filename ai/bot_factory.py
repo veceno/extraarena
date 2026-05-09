@@ -210,6 +210,7 @@ class BotGenerator:
                 "name": bot_name,
                 "avatar_url": bot_avatar_url,
                 "difficulty": difficulty,
+                "trophies": bot_trophies,
             }
 
         # Возвращаем структуру бота
@@ -220,6 +221,7 @@ class BotGenerator:
             "name": bot_name,
             "avatar_url": bot_avatar_url,
             "difficulty": difficulty,
+            "trophies": bot_trophies,
         }
         self._logger.info("DEBUG: create_persistent_bot result=%s", payload)
         return payload

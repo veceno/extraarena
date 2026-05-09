@@ -6,6 +6,8 @@ import hmac
 import math
 import logging
 import random
+import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -15,7 +17,7 @@ from aiohttp import web
 import socketio
 
 from bot.constants import ADMIN_ID
-from infrastructure.config import DECK_SIZE
+from infrastructure.config import DECK_SIZE, LEAGUE_CONFIG
 from infrastructure.database import Card, Database
 from ai.bot_factory import BotGenerator
 from ai.bot_ai import BotAI
@@ -24,6 +26,7 @@ from battle_engine import BattleEngine, BattleEventEmitter
 from infrastructure.matchmaking import Matchmaker
 from infrastructure.case_system import roll_tier_upgrade, process_case_opening, generate_case_rewards
 from infrastructure.payments_logic import process_successful_payment
+from infrastructure.shop_config import SHOP_PRICES, GEM_PACKAGES, PARTICLES_COSTS
 
 WEBAPP_DIR = Path(__file__).resolve().parents[1] / "webapp"
 DESIGN_ASSETS_DIR = Path(__file__).resolve().parents[1] / "DesignAssets"
@@ -343,6 +346,15 @@ def calculate_coins_reward(
     return random.randint(coin_min, coin_max)
 
 
+def _resolve_match_game_mode(app: web.Application, match_id: str, engine: Any) -> str:
+    """Резолв режима игры: match_game_modes > engine.game_mode > classic."""
+    return (
+        app.get("match_game_modes", {}).get(match_id, "")
+        or getattr(engine, "game_mode", "")
+        or "classic"
+    )
+
+
 async def _process_battle_end(
     app: web.Application, 
     match_id: str, 
@@ -365,200 +377,290 @@ async def _process_battle_end(
         logger.error("❌ Database not available for processing battle end")
         return
     
-    # КРИТИЧНО: Проверяем флаг rewards_granted - если трофеи уже начислены, выходим
     if getattr(engine, 'rewards_granted', False):
         logger.info("⚠️ Rewards already granted for match %s, skipping duplicate trophy award", match_id)
         return
-    
-    # Определяем игроков
-    p1_id = engine.p1_state.user_id
-    p2_id = engine.p2_state.user_id
-    
-    # Проверяем, что оба игрока - реальные пользователи (не боты)
+
+    # ── Нормализация идентификаторов (int() только для приведения, не для детекта ботов) ──
     try:
-        p1_id_int = int(p1_id)
-        p2_id_int = int(p2_id)
+        p1_id_int = int(engine.p1_state.user_id)
     except (ValueError, TypeError):
-        logger.info("🤖 Battle involves bot, skipping trophy calculation")
-        return
-    
-    # Получаем статусы замены игроков
+        p1_id_int = 0
+    try:
+        p2_id_int = int(engine.p2_state.user_id)
+    except (ValueError, TypeError):
+        p2_id_int = 0
+    try:
+        winner_id_int = int(winner_id) if winner_id is not None else None
+    except (ValueError, TypeError):
+        winner_id_int = None
+
+    # ── Детект ботов: engine.is_bot() > p1_state.is_bot > engine.is_bot_match ──
+    p1_is_bot = False
+    p2_is_bot = False
+    if hasattr(engine, "is_bot"):
+        p1_is_bot = engine.is_bot(p1_id_int) if p1_id_int else False
+        p2_is_bot = engine.is_bot(p2_id_int) if p2_id_int else False
+    p1_is_bot = p1_is_bot or bool(getattr(engine.p1_state, "is_bot", False))
+    p2_is_bot = p2_is_bot or bool(getattr(engine.p2_state, "is_bot", False))
+    is_bot_match = bool(getattr(engine, "is_bot_match", False)) or p1_is_bot or p2_is_bot
+    if is_bot_match:
+        logger.info("🤖 Bot match detected: p1_is_bot=%s p2_is_bot=%s match=%s", p1_is_bot, p2_is_bot, match_id)
+
+    # ── Резолв game_mode: match_game_modes > engine.game_mode > classic ──
+    game_mode = _resolve_match_game_mode(app, match_id, engine)
+    is_training_or_friendly = game_mode in ("training", "friendly")
+    if is_training_or_friendly:
+        logger.info("🤝 No rewards for game_mode=%s match %s", game_mode, match_id)
+
+    # ── Вычисление loser_id (нужен для всех веток) ──
+    loser_id = None
+    if winner_id_int is not None:
+        loser_id = p2_id_int if winner_id_int == p1_id_int else p1_id_int
+
     from core.state import ReplacementStatus
     p1_status = getattr(engine.p1_state, "replacement_status", ReplacementStatus.ACTIVE)
     p2_status = getattr(engine.p2_state, "replacement_status", ReplacementStatus.ACTIVE)
-    
-    # Определяем победителя и проигравшего
-    if winner_id is None:
-        logger.info("🤝 Draw - no trophies awarded")
-        loser_id = None
-        winner_trophy_delta = 0
-        loser_trophy_delta = 0
-    else:
-        try:
-            winner_id_int = int(winner_id)
-        except (ValueError, TypeError):
-            logger.error("❌ Invalid winner_id: %s", winner_id)
-            return
+
+    # ── Трофейные дельты (будут переопределены ниже для PvP с экономикой) ──
+    winner_trophy_delta = 0
+    loser_trophy_delta = 0
+
+    if not is_training_or_friendly and winner_id_int is not None:
+        # ═══════════ PvP / classic с экономикой ═══════════
+        winner_is_bot = p1_is_bot if winner_id_int == p1_id_int else p2_is_bot
+        loser_is_bot = p2_is_bot if winner_id_int == p1_id_int else p1_is_bot
+        winning_side_is_p1 = (winner_id_int == p1_id_int)
         
-        loser_id = p2_id_int if winner_id_int == p1_id_int else p1_id_int
+        winner_status = p1_status if winning_side_is_p1 else p2_status
+        loser_status = p2_status if winning_side_is_p1 else p1_status
         
-        # Определяем статусы победителя и проигравшего
-        winner_status = p1_status if winner_id_int == p1_id_int else p2_status
-        loser_status = p2_status if winner_id_int == p1_id_int else p1_status
+        winner_state = engine.p1_state if winning_side_is_p1 else engine.p2_state
+        loser_state = engine.p2_state if winning_side_is_p1 else engine.p1_state
         
-        # Получаем состояния игроков для проверки surrender_processed
-        winner_state = engine.p1_state if winner_id_int == p1_id_int else engine.p2_state
-        loser_state = engine.p2_state if winner_id_int == p1_id_int else engine.p1_state
-        
-        # Проверяем флаги surrender_processed
         winner_surrender_processed = getattr(winner_state, "surrender_processed", False)
         loser_surrender_processed = getattr(loser_state, "surrender_processed", False)
         
-        # Получаем текущие трофеи из БД для расчёта тира
-        try:
-            winner_info = await db.get_user_info(winner_id_int)
-            loser_info = await db.get_user_info(loser_id)
-            
-            winner_current_trophies = winner_info.get("trophies", 0) if winner_info else 0
-            loser_current_trophies = loser_info.get("trophies", 0) if loser_info else 0
-        except Exception as exc:
-            logger.error("❌ Failed to get user trophies: %s", exc)
-            winner_current_trophies = 0
-            loser_current_trophies = 0
+        # DB info только для реальных игроков
+        winner_info = None
+        loser_info = None
+        winner_current_trophies = 0
+        loser_current_trophies = 0
         
-        # Динамический расчёт трофеев и монет на основе тиров
-        winner_trophy_delta, winner_tier, winner_tier_data = calculate_trophy_delta(
-            winner_current_trophies,
-            is_winner=True,
-            status=winner_status
-        )
+        if not winner_is_bot:
+            try:
+                winner_info = await db.get_user_info(winner_id_int)
+                winner_current_trophies = winner_info.get("trophies", 0) if winner_info else 0
+            except Exception as exc:
+                logger.error("❌ Failed to get winner trophies: %s", exc)
         
-        loser_trophy_delta, loser_tier, loser_tier_data = calculate_trophy_delta(
-            loser_current_trophies,
-            is_winner=False,
-            status=loser_status
-        )
+        if not loser_is_bot:
+            try:
+                loser_info = await db.get_user_info(loser_id)
+                loser_current_trophies = loser_info.get("trophies", 0) if loser_info else 0
+            except Exception as exc:
+                logger.error("❌ Failed to get loser trophies: %s", exc)
         
-        # Рассчитываем награду монетами для победителя
-        winner_coins_delta = calculate_coins_reward(
-            winner_tier_data,
-            is_winner=True,
-            status=winner_status
-        )
+        # Расчёт дельт (те же формулы, но боту ставим 0)
+        if not winner_is_bot:
+            winner_trophy_delta, winner_tier, winner_tier_data = calculate_trophy_delta(
+                winner_current_trophies, is_winner=True, status=winner_status
+            )
+        else:
+            winner_trophy_delta, winner_tier, winner_tier_data = 0, "bot", {}
         
-        logger.info(
-            "🏆 Trophy calculation (dynamic): Winner=%s (+%d, trophies=%d, tier=%s, status=%s), "
-            "Loser=%s (%d, trophies=%d, tier=%s, status=%s)",
-            winner_id_int, winner_trophy_delta, winner_current_trophies, winner_tier, winner_status.value,
-            loser_id, loser_trophy_delta, loser_current_trophies, loser_tier, loser_status.value
-        )
+        if not loser_is_bot:
+            loser_trophy_delta, loser_tier, loser_tier_data = calculate_trophy_delta(
+                loser_current_trophies, is_winner=False, status=loser_status
+            )
+        else:
+            loser_trophy_delta, loser_tier, loser_tier_data = 0, "bot", {}
+        
+        winner_coins_delta = calculate_coins_reward(winner_tier_data, is_winner=True, status=winner_status) if not winner_is_bot else 0
         
         logger.info(
-            "[ECONOMY] Winner %s earned %d coins (Tier: %s)",
-            winner_id_int, winner_coins_delta, winner_tier
+            "🏆 Trophy calculation: Winner=%s (+%d, tier=%s bot=%s) Loser=%s (%d, tier=%s bot=%s)",
+            winner_id_int, winner_trophy_delta, winner_tier, winner_is_bot,
+            loser_id, loser_trophy_delta, loser_tier, loser_is_bot,
         )
+        if winner_coins_delta > 0:
+            logger.info("[ECONOMY] Winner %s earned %d coins (Tier: %s)", winner_id_int, winner_coins_delta, winner_tier)
         
-        # Начисляем трофеи победителю (если не обнулены и не было surrender_processed)
-        try:
-            if winner_surrender_processed:
-                logger.info("⚠️ Winner %s already processed surrender, skipping trophy award", winner_id_int)
-            elif winner_trophy_delta > 0:
-                winner_result = await db.update_user_trophies(winner_id_int, winner_trophy_delta)
-                logger.info(
-                    "✅ Winner trophies updated: %s -> %d (max: %d)",
-                    winner_id_int, winner_result.get("trophies", 0), winner_result.get("max_trophies", 0)
-                )
-                
-                # Сохраняем изменение трофеев в состоянии движка для отправки на фронт
-                if not hasattr(engine, "_trophy_changes"):
-                    engine._trophy_changes = {}
-                engine._trophy_changes[winner_id_int] = winner_trophy_delta
-                
-                # ДОБАВЛЕНО: Сохраняем текущее количество трофеев напрямую из БД
-                if not hasattr(engine, "_trophy_totals"):
-                    engine._trophy_totals = {}
-                engine._trophy_totals[winner_id_int] = winner_result.get("trophies", 0)
-            else:
-                logger.info("⚠️ Winner rewards nullified (status: %s)", winner_status.value)
+        # ── Начисление трофеев победителю ──
+        if not winner_is_bot:
+            try:
+                if winner_surrender_processed:
+                    logger.info("⚠️ Winner %s already processed surrender, skipping trophy award", winner_id_int)
+                elif winner_trophy_delta > 0:
+                    winner_trophy_result = await db.update_user_trophies(winner_id_int, winner_trophy_delta)
+                    logger.info("✅ Winner trophies updated: %s -> %d (max: %d)",
+                        winner_id_int,
+                        winner_trophy_result.get("trophies", 0),
+                        winner_trophy_result.get("max_trophies", 0),
+                    )
+                    if not hasattr(engine, "_trophy_changes"):
+                        engine._trophy_changes = {}
+                    engine._trophy_changes[winner_id_int] = winner_trophy_delta
+                    if not hasattr(engine, "_trophy_totals"):
+                        engine._trophy_totals = {}
+                    engine._trophy_totals[winner_id_int] = winner_trophy_result.get("trophies", 0)
+                    
+                    old_winner_league = (winner_info or {}).get("league", 1)
+                    new_winner_league = winner_trophy_result.get("league", 1)
+                    if new_winner_league > old_winner_league:
+                        league_data = LEAGUE_CONFIG[new_winner_league]
+                        await db.create_mail(
+                            user_id=winner_id_int, sender="Система",
+                            subject="🏆 Повышение лиги!",
+                            text="Ты достиг лиги {} {}! Продолжай в том же духе.".format(league_data["emoji"], league_data["name"]),
+                        )
+                        if not hasattr(engine, "_league_up"):
+                            engine._league_up = {}
+                        engine._league_up[winner_id_int] = {
+                            "league_id": new_winner_league, "name": league_data["name"],
+                            "emoji": league_data["emoji"], "color": league_data["color"],
+                        }
+                        logger.info("🏆 League UP: user=%s → %s", winner_id_int, league_data["name"])
+                else:
+                    logger.info("⚠️ Winner rewards nullified (status: %s)", winner_status.value)
+            except Exception as exc:
+                logger.error("❌ Failed to update winner trophies: %s", exc, exc_info=True)
             
-            # Начисление монет победителю (динамически на основе тира)
+            # Монеты победителю
             if winner_coins_delta > 0:
                 try:
-                    # Начисляем монеты
                     coins_result = await db.update_user_coins(winner_id_int, winner_coins_delta)
-                    new_coins_total = coins_result.get("coins", 0) if coins_result else 0
-                    
-                    logger.info(
-                        "✅ Winner coins updated: %s -> %d (+%d, tier=%s)",
-                        winner_id_int, new_coins_total, winner_coins_delta, winner_tier
-                    )
-                    
-                    # Сохраняем данные о монетах в движке для фронтенда
-                    if not hasattr(engine, "_coins_changes"):
-                        engine._coins_changes = {}
-                    engine._coins_changes[winner_id_int] = winner_coins_delta
-                    
-                    if not hasattr(engine, "_coins_totals"):
-                        engine._coins_totals = {}
-                    engine._coins_totals[winner_id_int] = new_coins_total
-                    
+                    if coins_result:
+                        if not hasattr(engine, "_coins_changes"):
+                            engine._coins_changes = {}
+                        engine._coins_changes[winner_id_int] = winner_coins_delta
+                        if not hasattr(engine, "_coins_totals"):
+                            engine._coins_totals = {}
+                        engine._coins_totals[winner_id_int] = coins_result.get("coins", 0)
+                        logger.info("✅ Winner coins updated: %s +%d", winner_id_int, winner_coins_delta)
                 except Exception as coin_exc:
-                    logger.error("❌ Failed to update winner coins: %s", coin_exc)
-            else:
-                logger.info("⚠️ Winner coins nullified (status: %s)", winner_status.value)
-            
-        except Exception as exc:
-            logger.error("❌ Failed to update winner trophies: %s", exc)
+                    logger.error("❌ Failed to update winner coins: %s", coin_exc, exc_info=True)
         
-        # Отнимаем трофеи у проигравшего (если не было surrender_processed)
+        # ── Списывание трофеев проигравшему ──
+        if not loser_is_bot:
+            try:
+                if loser_surrender_processed:
+                    logger.info("⚠️ Loser %s already processed surrender, skipping trophy deduction", loser_id)
+                else:
+                    loser_trophy_result = await db.update_user_trophies(loser_id, loser_trophy_delta)
+                    logger.info("✅ Loser trophies updated: %s -> %d (max: %d)",
+                        loser_id,
+                        loser_trophy_result.get("trophies", 0),
+                        loser_trophy_result.get("max_trophies", 0),
+                    )
+                    if not hasattr(engine, "_trophy_changes"):
+                        engine._trophy_changes = {}
+                    engine._trophy_changes[loser_id] = loser_trophy_delta
+                    if not hasattr(engine, "_trophy_totals"):
+                        engine._trophy_totals = {}
+                    engine._trophy_totals[loser_id] = loser_trophy_result.get("trophies", 0)
+                    
+                    old_loser_league = loser_info.get("league", 1) if loser_info else 1
+                    new_loser_league = loser_trophy_result.get("league", 1)
+                    if new_loser_league < old_loser_league:
+                        old_league_data = LEAGUE_CONFIG[old_loser_league]
+                        next_min = LEAGUE_CONFIG[old_loser_league]["min_trophies"]
+                        await db.create_mail(
+                            user_id=loser_id, sender="Система",
+                            subject="📉 Понижение лиги",
+                            text="Ты покинул лигу {} {}. Набери {} трофеев чтобы вернуться.".format(
+                                old_league_data["emoji"], old_league_data["name"], next_min
+                            ),
+                        )
+                        logger.info("📉 League DOWN: user=%s → %s", loser_id, new_loser_league)
+            except Exception as exc:
+                logger.error("❌ Failed to update loser trophies: %s", exc, exc_info=True)
+        
+        # ── Звёзды: только реальным игрокам ──
         try:
-            if loser_surrender_processed:
-                logger.info("⚠️ Loser %s already processed surrender, skipping trophy deduction", loser_id)
-            else:
-                loser_result = await db.update_user_trophies(loser_id, loser_trophy_delta)
-                logger.info(
-                    "✅ Loser trophies updated: %s -> %d (max: %d)",
-                    loser_id, loser_result.get("trophies", 0), loser_result.get("max_trophies", 0)
-                )
-                
-                # Сохраняем изменение трофеев для проигравшего напрямую из БД
-                if not hasattr(engine, "_trophy_changes"):
-                    engine._trophy_changes = {}
-                engine._trophy_changes[loser_id] = loser_trophy_delta
-                
-                # ДОБАВЛЕНО: Сохраняем текущее количество трофеев напрямую из БД
-                if not hasattr(engine, "_trophy_totals"):
-                    engine._trophy_totals = {}
-                engine._trophy_totals[loser_id] = loser_result.get("trophies", 0)
-            
+            if not hasattr(engine, "_stars_changes"):
+                engine._stars_changes = {}
+            if not hasattr(engine, "_stars_totals"):
+                engine._stars_totals = {}
+            if not winner_is_bot:
+                ws = await db.update_user_stars(winner_id_int, 3)
+                engine._stars_changes[winner_id_int] = 3
+                engine._stars_totals[winner_id_int] = ws
+            if not loser_is_bot:
+                ls = await db.update_user_stars(loser_id, 1)
+                engine._stars_changes[loser_id] = 1
+                engine._stars_totals[loser_id] = ls
+            logger.info("⭐ Stars: winner=%s +3 loser=%s +1", winner_id_int, loser_id)
         except Exception as exc:
-            logger.error("❌ Failed to update loser trophies: %s", exc)
+            logger.error("❌ Failed to update stars: %s", exc, exc_info=True)
+        
+        # ── Win counter → кейс: только реальному победителю ──
+        if not winner_is_bot:
+            try:
+                winner_extra_pass = winner_info.get("extra_pass", "inactive") if winner_info else "inactive"
+                wins_for_case = 3 if winner_extra_pass == "ultra" else (4 if winner_extra_pass == "active" else 5)
+                winner_settings = await db.get_user_settings(winner_id_int)
+                current_wins = (winner_settings.get("wins_since_last_case", 0) if winner_settings else 0) + 1
+                if current_wins >= wins_for_case:
+                    await db.update_user_settings(winner_id_int, wins_since_last_case=0)
+                    new_keys = await db.increment_user_keys(winner_id_int, 1)
+                    if not hasattr(engine, "_keys_changes"):
+                        engine._keys_changes = {}
+                    engine._keys_changes[winner_id_int] = 1
+                    if not hasattr(engine, "_keys_totals"):
+                        engine._keys_totals = {}
+                    engine._keys_totals[winner_id_int] = new_keys
+                    logger.info("📦 Case reward: winner %s → T1 case (keys=%d)", winner_id_int, new_keys)
+                else:
+                    await db.update_user_settings(winner_id_int, wins_since_last_case=current_wins)
+                logger.info("🔄 Win counter: winner %s = %d/%d", winner_id_int, current_wins, wins_for_case)
+            except Exception as exc:
+                logger.error("❌ Failed to update win counter: %s", exc, exc_info=True)
     
-    # КРИТИЧНО: Устанавливаем флаги завершения игры
-    # is_ended - останавливает все фоновые задачи для этого матча
-    # rewards_granted - предотвращает повторное начисление трофеев
+    else:
+        # ═══════════ training/friendly/draw: экономика не применяется ═══════════
+        if is_training_or_friendly:
+            logger.info("🤝 No economy for game_mode=%s match %s", game_mode, match_id)
+        else:
+            logger.info("🤝 Draw match %s – no trophy changes", match_id)
+
+    # ═══════════ Сохранение результата (ВСЕГДА) ═══════════
     engine.is_ended = True
     engine.rewards_granted = True
-    logger.info("✅ Battle end flags set for match %s (is_ended=True, rewards_granted=True)", match_id)
-    
-    # Сохраняем результат боя в таблицу battle_results
+    logger.info("✅ Battle end flags set for match %s", match_id)
+
     try:
-        battle_result_id = await db.save_battle_result(
-            match_id=match_id,
-            winner_id=winner_id if winner_id else None,
-            loser_id=loser_id if winner_id else None,
-            p1_hp=engine.p1_state.hero_hp,
-            p2_hp=engine.p2_state.hero_hp,
-            trophy_change=abs(winner_trophy_delta) if winner_id else 0
-        )
-        
-        if battle_result_id:
-            logger.info("✅ Battle result saved: ID=%s, match=%s", battle_result_id, match_id)
+        if winner_id_int is not None:
+            if winner_id_int == p1_id_int:
+                p1_trophy_change = winner_trophy_delta
+                p2_trophy_change = loser_trophy_delta
+            else:
+                p1_trophy_change = loser_trophy_delta
+                p2_trophy_change = winner_trophy_delta
         else:
-            logger.warning("⚠️ Failed to save battle result to database")
-            
+            p1_trophy_change = 0
+            p2_trophy_change = 0
+
+        match_duration_seconds = int(time.time() - engine.match_start_time) if hasattr(engine, 'match_start_time') and engine.match_start_time else 0
+
+        await db.save_battle_result(
+            match_id=match_id,
+            winner_id=winner_id,
+            loser_id=loser_id,
+            winner_score=0,
+            loser_score=0,
+            match_duration=match_duration_seconds,
+            match_type=game_mode,
+            p1_id=p1_id_int,
+            p2_id=p2_id_int,
+            p1_trophy_change=p1_trophy_change,
+            p2_trophy_change=p2_trophy_change,
+            turns_count=engine.turn,
+        )
+        logger.info("✅ Battle result saved for match %s (mode=%s draw=%s bot=%s)",
+                     match_id, game_mode, winner_id is None, is_bot_match)
     except Exception as exc:
-        logger.error("❌ Error saving battle result: %s", exc)
+        logger.error("❌ Error saving battle result: %s", exc, exc_info=True)
 
 
 @sio.event
@@ -639,6 +741,17 @@ async def surrender(sid: str, data: dict[str, Any]) -> None:
         except Exception as exc:
             logger.error("Failed to get user trophies: %s", exc)
             current_trophies = 0
+
+        # SIO handler: проверяем режим — training/friendly без штрафа
+        game_mode = _resolve_match_game_mode(app, match_id, engine)
+        if game_mode in ("training", "friendly"):
+            logger.info("🤝 Surrender in %s mode — no trophy deduction for %s", game_mode, user_id_int)
+            player_state.surrender_processed = True
+            await sio.emit("surrender_ack", {"match_id": match_id, "user_id": user_id_int, "trophy_penalty": 0, "new_trophies": current_trophies}, to=sid)
+            game_over_result = engine.check_game_over()
+            if game_over_result.get("game_over"):
+                await _process_battle_end(app, match_id, engine, game_over_result.get("winner_id"))
+            return
         
         # Рассчитываем штраф (максимальный для SURRENDERED)
         from core.state import ReplacementStatus
@@ -1623,6 +1736,7 @@ def create_web_app(
                 "sound_music": settings_record["sound_music"],
                 "sound_sfx": settings_record["sound_sfx"],
                 "social_block_friend_requests": settings_record["social_block_friend_requests"],
+                "wins_since_last_case": settings_record.get("wins_since_last_case", 0),
             }
 
         # Убеждаемся, что title есть (по умолчанию "Игрок")
@@ -3536,6 +3650,319 @@ def create_web_app(
                 {"error": "internal_server_error", "message": str(e)}, status=500
             )
 
+    # ========== Хэндлеры дружеских матчей ==========
+
+    async def _resolve_user_id_from_request(request: web.Request) -> int | None:
+        init_data = request.rel_url.query.get("_auth")
+        if init_data and init_data.isdigit():
+            try:
+                return int(init_data)
+            except ValueError:
+                pass
+        if init_data:
+            verified_data = _verify_init_data(init_data, bot_token)
+            if verified_data:
+                uid = _extract_user_id_from_init_data(verified_data)
+                if uid:
+                    return uid
+        user_id_param = request.rel_url.query.get("user_id")
+        if user_id_param:
+            try:
+                return int(user_id_param)
+            except ValueError:
+                pass
+        return None
+
+    async def recent_opponents_handler(request: web.Request) -> web.Response:
+        user_id = await _resolve_user_id_from_request(request)
+        if not user_id:
+            return web.json_response({"error": "authentication required"}, status=401)
+        opponents = await db.get_recent_opponents(user_id)
+        return web.json_response({"opponents": opponents})
+
+    async def battle_history_handler(request: web.Request) -> web.Response:
+        user_id = await _resolve_user_id_from_request(request)
+        if not user_id:
+            return web.json_response({"error": "authentication required"}, status=401)
+
+        user_info = await db.get_user_info(user_id)
+        extra_pass = (user_info or {}).get("extra_pass", "inactive")
+        is_ultra = extra_pass == "ultra"
+        limit = 50 if is_ultra else 10
+
+        battles = await db.get_battle_history(user_id, limit)
+        return web.json_response({
+            "battles": battles,
+            "total": len(battles),
+            "limit": limit,
+            "is_limited": not is_ultra,
+        })
+
+    async def friend_invite_handler(request: web.Request) -> web.Response:
+        logger = logging.getLogger(__name__)
+        user_id = await _resolve_user_id_from_request(request)
+        if not user_id:
+            return web.json_response({"error": "authentication required"}, status=401)
+
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid_json"}, status=400)
+
+        to_user_id = data.get("to_user_id")
+        try:
+            to_user_id = int(to_user_id)
+        except (TypeError, ValueError):
+            return web.json_response({"error": "invalid_to_user_id"}, status=400)
+
+        if to_user_id == user_id:
+            return web.json_response({"error": "cannot_invite_self"}, status=400)
+
+        target_exists = await db.fetchval("SELECT 1 FROM users WHERE user_id = $1", to_user_id)
+        if not target_exists:
+            return web.json_response({"error": "user_not_found"}, status=404)
+
+        has_active = await db.has_active_pending_invite(user_id, to_user_id)
+        if has_active:
+            return web.json_response({"error": "invite_already_sent"}, status=409)
+
+        result = await db.create_friend_invite(user_id, to_user_id)
+        if not result.get("success"):
+            return web.json_response({"error": "invite_create_failed"}, status=500)
+
+        invite_id = result["id"]
+
+        from_profile = await db.get_user_profile(user_id)
+        from_name = "Игрок"
+        if from_profile:
+            from_name = (
+                from_profile.get("display_name")
+                or from_profile.get("custom_nickname")
+                or from_profile.get("nickname")
+                or from_profile.get("name")
+                or from_profile.get("username")
+                or str(user_id)
+            )
+
+        try:
+            bot = app.get("telegram_bot") or app.get("bot")
+            if bot:
+                keyboard = None
+                from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
+                webapp_url = app.get("webapp_url", "")
+                keyboard = InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(text="В бой 🎮", web_app=WebAppInfo(url=webapp_url))
+                ]])
+                await bot.send_message(
+                    chat_id=to_user_id,
+                    text=f"⚔️ <b>{from_name}</b> вызывает тебя на бой!",
+                    parse_mode="HTML",
+                    reply_markup=keyboard,
+                )
+        except Exception as e:
+            logger.warning("Failed to send Telegram invite notification: %s", e)
+
+        return web.json_response({
+            "success": True,
+            "invite_id": invite_id,
+            "created_at": result.get("created_at"),
+            "expires_at": result.get("expires_at"),
+        })
+
+    async def friend_invite_respond_handler(request: web.Request) -> web.Response:
+        logger = logging.getLogger(__name__)
+        user_id = await _resolve_user_id_from_request(request)
+        if not user_id:
+            return web.json_response({"error": "authentication required"}, status=401)
+
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid_json"}, status=400)
+
+        invite_id = data.get("invite_id")
+        action = data.get("action")
+        try:
+            invite_id = int(invite_id)
+        except (TypeError, ValueError):
+            return web.json_response({"error": "invalid_invite_id"}, status=400)
+
+        if action not in ("accept", "decline"):
+            return web.json_response({"error": "invalid_action"}, status=400)
+
+        invite = await db.get_friend_invite_by_id(invite_id)
+        if not invite:
+            return web.json_response({"error": "invite_not_found"}, status=404)
+
+        if invite["to_user_id"] != user_id:
+            return web.json_response({"error": "not_your_invite"}, status=403)
+
+        if invite["status"] != "pending":
+            return web.json_response({"error": "invite_already_responded"}, status=409)
+
+        if action == "decline":
+            await db.update_invite_status(invite_id, "declined")
+            return web.json_response({"success": True, "status": "declined"})
+
+        from_user_id = invite["from_user_id"]
+        match_id = str(uuid.uuid4())
+        await db.update_invite_status(invite_id, "accepted", battle_id=match_id)
+
+        try:
+            (p1_raw_deck, _), (p2_raw_deck, _) = await asyncio.wait_for(
+                asyncio.gather(
+                    _load_player_deck_and_hero(user_id),
+                    _load_player_deck_and_hero(from_user_id),
+                ),
+                timeout=3.0,
+            )
+        except asyncio.TimeoutError:
+            return web.json_response({"error": "deck_load_timeout"}, status=504)
+        except Exception as e:
+            logger.error("Deck load failed: %s", e, exc_info=True)
+            return web.json_response({"error": "deck_load_failed"}, status=500)
+
+        p1_profile = await db.get_user_profile(user_id)
+        p2_profile = await db.get_user_profile(from_user_id)
+
+        p1_name = "Игрок 1"
+        p1_avatar = None
+        if p1_profile:
+            p1_name = (
+                p1_profile.get("display_name")
+                or p1_profile.get("custom_nickname")
+                or p1_profile.get("nickname")
+                or p1_profile.get("name")
+                or p1_profile.get("username")
+                or f"Игрок {user_id}"
+            )
+            p1_avatar = (
+                p1_profile.get("img")
+                or p1_profile.get("photo_url")
+                or p1_profile.get("avatar_file_id")
+                or p1_profile.get("avatar_url")
+            )
+
+        p2_name = "Игрок 2"
+        p2_avatar = None
+        if p2_profile:
+            p2_name = (
+                p2_profile.get("display_name")
+                or p2_profile.get("custom_nickname")
+                or p2_profile.get("nickname")
+                or p2_profile.get("name")
+                or p2_profile.get("username")
+                or f"Игрок {from_user_id}"
+            )
+            p2_avatar = (
+                p2_profile.get("img")
+                or p2_profile.get("photo_url")
+                or p2_profile.get("avatar_file_id")
+                or p2_profile.get("avatar_url")
+            )
+
+        try:
+            card_cache = await asyncio.wait_for(_load_card_cache(), timeout=3.0)
+        except asyncio.TimeoutError:
+            card_cache = {}
+        except Exception:
+            card_cache = {}
+
+        p1_deck_ids = _normalize_deck_with_cache(p1_raw_deck or [], card_cache)
+        p2_deck_ids = _normalize_deck_with_cache(p2_raw_deck or [], card_cache)
+
+        p1_deck_int = [int(str(d).split(":")[0]) for d in p1_deck_ids if d]
+        p2_deck_int = [int(str(d).split(":")[0]) for d in p2_deck_ids if d]
+
+        engine = BattleEngine(
+            db=db,
+            match_id=match_id,
+            player_ids=[user_id, from_user_id],
+            is_bot_match=False,
+            card_cache=card_cache,
+            active_matches=request.app["active_matches"],
+            event_emitter=request.app.get("event_emitter"),
+            game_mode="friendly",
+        )
+        logger.info("game_mode in engine (friendly): %s", engine.game_mode)
+
+        create_result = await engine.create_match(
+            match_id=match_id,
+            p1_data={
+                "user_id": user_id,
+                "deck_ids": p1_deck_int,
+                "name": p1_name,
+                "avatar_url": p1_avatar,
+                "is_bot": False,
+                "trophies": p1_profile.get("trophies", 0) if p1_profile else 0,
+                "clan": p1_profile.get("clan", "") if p1_profile else "",
+            },
+            p2_data={
+                "user_id": from_user_id,
+                "deck_ids": p2_deck_int,
+                "name": p2_name,
+                "avatar_url": p2_avatar,
+                "is_bot": False,
+                "trophies": p2_profile.get("trophies", 0) if p2_profile else 0,
+                "clan": p2_profile.get("clan", "") if p2_profile else "",
+            },
+        )
+
+        if not create_result.get("success"):
+            return web.json_response({"error": "match_create_failed", "details": create_result.get("error")}, status=500)
+
+        request.app["active_matches"][match_id] = engine
+        request.app["match_game_modes"][match_id] = "friendly"
+
+        return web.json_response({
+            "success": True,
+            "status": "accepted",
+            "match_id": match_id,
+            "game_mode": "friendly",
+            "opponent_name": p2_name,
+            "opponent_avatar_url": p2_avatar,
+            "opponent_trophies": p2_profile.get("trophies", 0) if p2_profile else 0,
+            "opponent_clan": p2_profile.get("clan", "") if p2_profile else "",
+            "player_name": p1_name,
+            "player_avatar_url": p1_avatar,
+        })
+
+    async def friend_invite_pending_handler(request: web.Request) -> web.Response:
+        user_id = await _resolve_user_id_from_request(request)
+        if not user_id:
+            return web.json_response({"error": "authentication required"}, status=401)
+        invite = await db.get_pending_invite(user_id)
+        return web.json_response({"invite": invite})
+
+    async def friend_invite_cancel_handler(request: web.Request) -> web.Response:
+        user_id = await _resolve_user_id_from_request(request)
+        if not user_id:
+            return web.json_response({"error": "authentication required"}, status=401)
+
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid_json"}, status=400)
+
+        invite_id = data.get("invite_id")
+        try:
+            invite_id = int(invite_id)
+        except (TypeError, ValueError):
+            return web.json_response({"error": "invalid_invite_id"}, status=400)
+
+        invite = await db.get_friend_invite_by_id(invite_id)
+        if not invite:
+            return web.json_response({"error": "invite_not_found"}, status=404)
+
+        if invite["from_user_id"] != user_id:
+            return web.json_response({"error": "not_your_invite"}, status=403)
+
+        if invite["status"] != "pending":
+            return web.json_response({"error": "invite_not_pending"}, status=409)
+
+        await db.update_invite_status(invite_id, "cancelled")
+        return web.json_response({"success": True, "status": "cancelled"})
+
     # ========== Хэндлеры для работы с кейсами ==========
     
     async def user_cases_handler(request: web.Request) -> web.Response:
@@ -4042,6 +4469,17 @@ def create_web_app(
                 print(f"📝 FINAL BOT DATA: name={p2_name}, avatar={p2_avatar_url}")
                 if bot_info:
                     p2_trophies = int(bot_info.get("trophies", 0) or 0) if p2_trophies == 0 else p2_trophies
+
+                # Fallback: если трофеи всё ещё 0 — загрузить из БД
+                if p2_id_int > 0 and p2_trophies == 0:
+                    try:
+                        p2_db = await db_instance.get_user_profile(p2_id_int)
+                        if p2_db:
+                            p2_trophies = int(p2_db.get("trophies", 0) or 0)
+                            if p2_trophies:
+                                print(f"✅ P2 BOT trophies patched from DB: {p2_trophies}")
+                    except Exception:
+                        pass
             else:
                 # Для обычного игрока (не бота) загружаем профиль из БД
                 if p2_id_int > 0:
@@ -4138,6 +4576,7 @@ def create_web_app(
                 event_emitter=request.app.get("event_emitter"),
                 game_mode=game_mode,
             )
+            logger.info("game_mode in engine: %s", engine.game_mode)
             
             # Вызываем create_match для инициализации core/engine.ArenaEnvironment
             # Конвертируем deck_ids в int для совместимости с converter.deck_from_card_ids
@@ -4226,7 +4665,7 @@ def create_web_app(
                 "match_find_handler: user_id=%s trophies=%s avg_level=%s deck_id=%s game_mode=%s",
                 user_id, trophies, user_avg_level, selected_deck_id, game_mode
             )
-            result = await matchmaker.find_match(user_id, trophies, user_avg_level, selected_deck_id)
+            result = await matchmaker.find_match(user_id, trophies, user_avg_level, selected_deck_id, game_mode=game_mode)
 
             # Если матч найден сразу - прогреваем движок до ответа, чтобы арена
             # по прямому редиректу не упала с 404.
@@ -4371,6 +4810,11 @@ def create_web_app(
             opponent_clan = getattr(engine, "_p2_clan", "") if engine else ""
             request.app["match_game_modes"][match_id] = getattr(engine, "game_mode", game_mode) if engine else game_mode
 
+            if game_mode == "training":
+                opponent_name = "🤖 Тренер"
+                opponent_trophies = 0
+                opponent_clan = ""
+
             return web.json_response({
                 "status": "found",
                 "match_id": match_id,
@@ -4438,6 +4882,12 @@ def create_web_app(
                         return web.json_response({"error": "battle_init_failed"}, status=500)
                     else:
                         engine = request.app["active_matches"].get(match_id)
+                        if engine:
+                            request.app["match_game_modes"][match_id] = lazy_game_mode
+                            result["opponent_name"] = getattr(engine, "_p2_name", "Соперник")
+                            result["opponent_avatar_url"] = getattr(engine, "_p2_avatar_url", None)
+                            result["opponent_trophies"] = getattr(engine, "_p2_trophies", 0)
+                            result["opponent_clan"] = getattr(engine, "_p2_clan", "")
                         try:
                             snapshot = engine.get_full_state() if engine and hasattr(engine, "get_full_state") else None
                         except Exception:
@@ -4827,12 +5277,16 @@ def create_web_app(
             # Получаем состояние с legal_actions
             state = engine.get_full_state(viewer_id=user_id_int)
             
-            # Добавляем данные о трофеях/монетах если game_over
+            # Добавляем данные о трофеях/монетах/звёздах если game_over (end_turn/attack)
             if result.get("game_over"):
                 trophy_changes = getattr(engine, "_trophy_changes", {})
                 trophy_totals = getattr(engine, "_trophy_totals", {})
                 coins_changes = getattr(engine, "_coins_changes", {})
                 coins_totals = getattr(engine, "_coins_totals", {})
+                stars_changes = getattr(engine, "_stars_changes", {})
+                stars_totals = getattr(engine, "_stars_totals", {})
+                keys_changes = getattr(engine, "_keys_changes", {})
+                keys_totals = getattr(engine, "_keys_totals", {})
                 
                 if user_id_int in trophy_changes:
                     state["trophy_delta"] = trophy_changes[user_id_int]
@@ -4840,6 +5294,15 @@ def create_web_app(
                 if user_id_int in coins_changes:
                     state["coins_delta"] = coins_changes[user_id_int]
                     state["coins_total"] = coins_totals.get(user_id_int, 0)
+                if user_id_int in stars_changes:
+                    state["stars_delta"] = stars_changes[user_id_int]
+                    state["stars_total"] = stars_totals.get(user_id_int, 0)
+                if user_id_int in keys_changes:
+                    state["keys_delta"] = keys_changes[user_id_int]
+                    state["keys_total"] = keys_totals.get(user_id_int, 0)
+                league_up = getattr(engine, "_league_up", {})
+                if user_id_int in league_up:
+                    state["league_up"] = league_up[user_id_int]
             
             # Рассылаем обновление всем через Socket.IO
             sio_inst = request.app.get("socketio")
@@ -4911,20 +5374,33 @@ def create_web_app(
             # Получаем состояние с legal_actions
             state = engine.get_full_state(viewer_id=user_id_int)
             
-            # Добавляем данные о трофеях/монетах если game_over
+            # Добавляем данные о трофеях/монетах/звёздах если game_over (play_card)
             if result.get("game_over"):
                 trophy_changes = getattr(engine, "_trophy_changes", {})
                 trophy_totals = getattr(engine, "_trophy_totals", {})
                 coins_changes = getattr(engine, "_coins_changes", {})
                 coins_totals = getattr(engine, "_coins_totals", {})
-                
+                stars_changes = getattr(engine, "_stars_changes", {})
+                stars_totals = getattr(engine, "_stars_totals", {})
+                keys_changes = getattr(engine, "_keys_changes", {})
+                keys_totals = getattr(engine, "_keys_totals", {})
+
                 if user_id_int in trophy_changes:
                     state["trophy_delta"] = trophy_changes[user_id_int]
                     state["trophy_total"] = trophy_totals.get(user_id_int, 0)
                 if user_id_int in coins_changes:
                     state["coins_delta"] = coins_changes[user_id_int]
                     state["coins_total"] = coins_totals.get(user_id_int, 0)
-            
+                if user_id_int in stars_changes:
+                    state["stars_delta"] = stars_changes[user_id_int]
+                    state["stars_total"] = stars_totals.get(user_id_int, 0)
+                if user_id_int in keys_changes:
+                    state["keys_delta"] = keys_changes[user_id_int]
+                    state["keys_total"] = keys_totals.get(user_id_int, 0)
+                league_up = getattr(engine, "_league_up", {})
+                if user_id_int in league_up:
+                    state["league_up"] = league_up[user_id_int]
+
             # Рассылаем обновление всем через Socket.IO
             sio_inst = request.app.get("socketio")
             if sio_inst and not result.get("game_over"):
@@ -5003,9 +5479,16 @@ def create_web_app(
         except Exception as exc:
             logger.error("Failed to get user trophies: %s", exc)
             current_trophies = 0
-        
-        # Рассчитываем штраф (максимальный для SURRENDERED)
-        from core.state import ReplacementStatus
+
+        # HTTP handler: проверяем режим — training/friendly без штрафа
+        game_mode = _resolve_match_game_mode(request.app, match_id, engine)
+        if game_mode in ("training", "friendly"):
+            logger.info("🤝 Surrender (HTTP) in %s mode — no trophy deduction for %s", game_mode, user_id_int)
+            player_state.surrender_processed = True
+            game_over_result = engine.check_game_over()
+            if game_over_result.get("game_over"):
+                await _process_battle_end(request.app, match_id, engine, game_over_result.get("winner_id"))
+            return web.json_response({"success": True, "surrender_processed": True, "trophy_penalty": 0, "new_trophies": current_trophies, "game_over": game_over_result.get("game_over")})
         penalty_delta, tier_name, tier_data = calculate_trophy_delta(
             current_trophies,
             is_winner=False,
@@ -5359,7 +5842,156 @@ def create_web_app(
             )
     
     app.router.add_post("/api/admin/stars-test-mode/toggle", admin_stars_test_mode_toggle_handler)
-    
+
+    async def admin_rewards_tracks_handler(request: web.Request) -> web.Response:
+        """GET /api/admin/rewards/tracks — все тиры всех треков."""
+        init_data = request.rel_url.query.get("_auth")
+        user_id = None
+        if init_data and init_data.isdigit():
+            try: user_id = int(init_data)
+            except ValueError: pass
+        if not user_id and init_data:
+            verified_data = _verify_init_data(init_data, bot_token)
+            if verified_data:
+                user_id = _extract_user_id_from_init_data(verified_data)
+        if not user_id:
+            user_id_param = request.rel_url.query.get("user_id")
+            if user_id_param:
+                try: user_id = int(user_id_param)
+                except ValueError:
+                    return web.json_response({"error": "user_id must be integer"}, status=400)
+        if not user_id or user_id != 6803854304:
+            return web.json_response({"error": "admin_access_required"}, status=403)
+
+        try:
+            tracks = await db.get_all_reward_tracks()
+            return web.json_response({"tracks": tracks})
+        except Exception as e:
+            logging.getLogger(__name__).error("admin_rewards_tracks error: %s", e, exc_info=True)
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def admin_rewards_track_create_handler(request: web.Request) -> web.Response:
+        """POST /api/admin/rewards/tracks/create — создать новый тир."""
+        init_data = request.rel_url.query.get("_auth")
+        user_id = None
+        if init_data and init_data.isdigit():
+            try: user_id = int(init_data)
+            except ValueError: pass
+        if not user_id and init_data:
+            verified_data = _verify_init_data(init_data, bot_token)
+            if verified_data:
+                user_id = _extract_user_id_from_init_data(verified_data)
+        if not user_id:
+            user_id_param = request.rel_url.query.get("user_id")
+            if user_id_param:
+                try: user_id = int(user_id_param)
+                except ValueError:
+                    return web.json_response({"error": "user_id must be integer"}, status=400)
+        if not user_id or user_id != 6803854304:
+            return web.json_response({"error": "admin_access_required"}, status=403)
+
+        if request.method != "POST":
+            return web.json_response({"error": "method_not_allowed"}, status=405)
+
+        try:
+            data = await request.json()
+            track_type = str(data.get("track_type", ""))
+            position = int(data.get("position", 0))
+            reward_type = str(data.get("reward_type", "coins"))
+            reward_amount = int(data.get("reward_amount", 0))
+            reward_meta = data.get("reward_meta")
+            extra_pass_required = bool(data.get("extra_pass_required", False))
+        except (TypeError, ValueError):
+            return web.json_response({"error": "invalid_body"}, status=400)
+
+        result = await db.create_reward_track(
+            track_type=track_type,
+            position=position,
+            reward_type=reward_type,
+            reward_amount=reward_amount,
+            reward_meta=reward_meta,
+            extra_pass_required=extra_pass_required,
+        )
+        if result.get("error"):
+            return web.json_response({"error": result.get("error")}, status=400)
+        return web.json_response({"success": True, "tier": result})
+
+    async def admin_rewards_track_update_handler(request: web.Request) -> web.Response:
+        """POST /api/admin/rewards/tracks/update — обновить тир."""
+        init_data = request.rel_url.query.get("_auth")
+        user_id = None
+        if init_data and init_data.isdigit():
+            try: user_id = int(init_data)
+            except ValueError: pass
+        if not user_id and init_data:
+            verified_data = _verify_init_data(init_data, bot_token)
+            if verified_data:
+                user_id = _extract_user_id_from_init_data(verified_data)
+        if not user_id:
+            user_id_param = request.rel_url.query.get("user_id")
+            if user_id_param:
+                try: user_id = int(user_id_param)
+                except ValueError:
+                    return web.json_response({"error": "user_id must be integer"}, status=400)
+        if not user_id or user_id != 6803854304:
+            return web.json_response({"error": "admin_access_required"}, status=403)
+
+        if request.method != "POST":
+            return web.json_response({"error": "method_not_allowed"}, status=405)
+
+        try:
+            data = await request.json()
+            reward_id = int(data.get("id", 0))
+        except (TypeError, ValueError):
+            return web.json_response({"error": "invalid_body"}, status=400)
+
+        fields = {}
+        for key in ("reward_type", "reward_amount", "reward_meta", "extra_pass_required", "is_active"):
+            if key in data:
+                fields[key] = data[key]
+
+        result = await db.update_reward_track(reward_id, **fields)
+        if result.get("error"):
+            return web.json_response({"error": result.get("error")}, status=400)
+        return web.json_response({"success": True, "tier": result})
+
+    async def admin_rewards_track_delete_handler(request: web.Request) -> web.Response:
+        """POST /api/admin/rewards/tracks/delete — мягкое удаление тира."""
+        init_data = request.rel_url.query.get("_auth")
+        user_id = None
+        if init_data and init_data.isdigit():
+            try: user_id = int(init_data)
+            except ValueError: pass
+        if not user_id and init_data:
+            verified_data = _verify_init_data(init_data, bot_token)
+            if verified_data:
+                user_id = _extract_user_id_from_init_data(verified_data)
+        if not user_id:
+            user_id_param = request.rel_url.query.get("user_id")
+            if user_id_param:
+                try: user_id = int(user_id_param)
+                except ValueError:
+                    return web.json_response({"error": "user_id must be integer"}, status=400)
+        if not user_id or user_id != 6803854304:
+            return web.json_response({"error": "admin_access_required"}, status=403)
+
+        if request.method != "POST":
+            return web.json_response({"error": "method_not_allowed"}, status=405)
+
+        try:
+            data = await request.json()
+            reward_id = int(data.get("id", 0))
+        except (TypeError, ValueError):
+            return web.json_response({"error": "invalid_body"}, status=400)
+
+        await db.delete_reward_track(reward_id)
+        return web.json_response({"success": True})
+
+    app.router.add_get("/api/admin/rewards/tracks", admin_rewards_tracks_handler)
+    app.router.add_post("/api/admin/rewards/tracks/create", admin_rewards_track_create_handler)
+    app.router.add_post("/api/admin/rewards/tracks/update", admin_rewards_track_update_handler)
+    app.router.add_post("/api/admin/rewards/tracks/delete", admin_rewards_track_delete_handler)
+
     async def post_delete_handler(request: web.Request) -> web.Response:
         """Обработчик удаления поста (только для админа)."""
         init_data = request.rel_url.query.get("_auth")
@@ -5483,6 +6115,222 @@ def create_web_app(
             return web.json_response(
                 {"error": "internal_server_error", "message": str(e)}, status=500
             )
+
+    async def rewards_track_handler(request: web.Request) -> web.Response:
+        """GET /api/rewards/track/{track_type} — список тиров с claimed/available/locked."""
+        import json as _json
+
+        init_data = request.rel_url.query.get("_auth")
+        user_id = None
+
+        if init_data and init_data.isdigit():
+            try: user_id = int(init_data)
+            except ValueError: pass
+
+        if not user_id and init_data:
+            verified_data = _verify_init_data(init_data, bot_token)
+            if verified_data:
+                user_id = _extract_user_id_from_init_data(verified_data)
+
+        if not user_id:
+            user_id_param = request.rel_url.query.get("user_id")
+            if user_id_param:
+                try: user_id = int(user_id_param)
+                except ValueError:
+                    return web.json_response({"error": "user_id must be integer"}, status=400)
+
+        if not user_id:
+            return web.json_response({"error": "authentication required"}, status=401)
+
+        track_type = request.match_info.get("track_type", "")
+        if track_type not in ("glory", "bp_free", "bp_premium", "bp_ultra"):
+            return web.json_response({"error": "invalid_track_type"}, status=400)
+
+        try:
+            tracks = await db.get_reward_tracks(track_type)
+            profile = await db.get_user_profile(user_id)
+            if not profile:
+                return web.json_response({"error": "user_not_found"}, status=404)
+
+            extra_pass = profile.get("extra_pass", "inactive")
+            has_extra_pass = extra_pass == "active"
+            user_trophies = profile.get("trophies", 0)
+            user_stars = profile.get("stars", 0)
+            required_value = user_trophies if track_type == "glory" else user_stars
+
+            claimed_set = await db.get_claimed_rewards(user_id, track_type)
+
+            tiers_by_position: dict[int, list[dict[str, Any]]] = {}
+            for t in tracks:
+                pos = t["position"]
+                reward_info = {
+                    "reward_type": t["reward_type"],
+                    "reward_amount": t["reward_amount"],
+                    "reward_meta": t["reward_meta"],
+                }
+                if pos not in tiers_by_position:
+                    tiers_by_position[pos] = []
+                tiers_by_position[pos].append(reward_info)
+
+            tiers_response = []
+            for pos in sorted(tiers_by_position):
+                entry = tracks[0]  # use any entry at this position for meta
+                for t in tracks:
+                    if t["position"] == pos:
+                        entry = t
+                        break
+
+                claimed = pos in claimed_set
+                ep_required = entry.get("extra_pass_required", False)
+                locked = required_value < pos
+                if ep_required and not has_extra_pass:
+                    locked = True
+                available = not claimed and not locked
+
+                tiers_response.append({
+                    "position": pos,
+                    "rewards": tiers_by_position[pos],
+                    "claimed": claimed,
+                    "available": available,
+                    "locked": locked,
+                    "extra_pass_required": ep_required,
+                })
+
+            return web.json_response({
+                "track_type": track_type,
+                "required_value": required_value,
+                "extra_pass": extra_pass,
+                "has_extra_pass": has_extra_pass,
+                "tiers": tiers_response,
+            })
+        except Exception as e:
+            logging.getLogger(__name__).error("reward_track error: %s", e, exc_info=True)
+            return web.json_response({"error": "internal_error", "message": str(e)}, status=500)
+
+    async def rewards_claim_handler(request: web.Request) -> web.Response:
+        """POST /api/rewards/claim — запросить награду за конкретную позицию."""
+        import json as _json
+
+        init_data = request.rel_url.query.get("_auth")
+        user_id = None
+
+        if init_data and init_data.isdigit():
+            try: user_id = int(init_data)
+            except ValueError: pass
+
+        if not user_id and init_data:
+            verified_data = _verify_init_data(init_data, bot_token)
+            if verified_data:
+                user_id = _extract_user_id_from_init_data(verified_data)
+
+        if not user_id:
+            user_id_param = request.rel_url.query.get("user_id")
+            if user_id_param:
+                try: user_id = int(user_id_param)
+                except ValueError:
+                    return web.json_response({"error": "user_id must be integer"}, status=400)
+
+        if not user_id:
+            return web.json_response({"error": "authentication required"}, status=401)
+
+        if request.method != "POST":
+            return web.json_response({"error": "method_not_allowed"}, status=405)
+
+        try:
+            data = await request.json()
+            track_type = str(data.get("track_type", ""))
+            position = int(data.get("position", 0))
+        except (TypeError, ValueError):
+            return web.json_response({"error": "invalid_body"}, status=400)
+
+        if track_type not in ("glory", "bp_free", "bp_premium", "bp_ultra"):
+            return web.json_response({"error": "invalid_track_type"}, status=400)
+
+        try:
+            entries = await db.get_reward_track_entries(track_type, position)
+            if not entries:
+                return web.json_response({"error": "tier_not_found"}, status=404)
+
+            profile = await db.get_user_profile(user_id)
+            if not profile:
+                return web.json_response({"error": "user_not_found"}, status=404)
+
+            extra_pass = profile.get("extra_pass", "inactive")
+            has_extra_pass = extra_pass == "active"
+            user_trophies = profile.get("trophies", 0)
+            user_stars = profile.get("stars", 0)
+            required_value = user_trophies if track_type == "glory" else user_stars
+
+            if required_value < position:
+                return web.json_response({"error": "tier_locked", "message": "Недостаточно прогресса"}, status=400)
+
+            ep_required = any(e.get("extra_pass_required", False) for e in entries)
+            if ep_required and not has_extra_pass:
+                return web.json_response({"error": "extra_pass_required", "message": "Нужен ExtraPass"}, status=400)
+
+            # Mark claimed first to prevent race conditions
+            await db.claim_reward(user_id, track_type, position)
+
+            granted = []
+            for entry in entries:
+                rtype = entry["reward_type"]
+                ramount = entry["reward_amount"]
+                rmeta = entry.get("reward_meta")
+
+                if rtype == "coins":
+                    await db.update_user_coins(user_id, ramount)
+                    granted.append({"reward_type": "coins", "reward_amount": ramount})
+
+                elif rtype == "gems":
+                    await db.add_gems(user_id, ramount)
+                    granted.append({"reward_type": "gems", "reward_amount": ramount})
+
+                elif rtype == "keys":
+                    await db.increment_user_keys(user_id, ramount)
+                    granted.append({"reward_type": "keys", "reward_amount": ramount})
+
+                elif rtype == "card":
+                    rarities = ["common", "rare"]
+                    if isinstance(rmeta, dict) and "rarity" in rmeta:
+                        rarities = rmeta["rarity"]
+
+                    cards = await db.get_random_cards_by_rarities(rarities, limit=1)
+                    if cards:
+                        card = cards[0]
+                        await db.add_card_to_user(user_id, card["id"])
+                        granted.append({
+                            "reward_type": "card",
+                            "reward_amount": 1,
+                            "card_id": card["id"],
+                            "card_name": card.get("name", ""),
+                        })
+                    else:
+                        # fallback: coins вместо карты
+                        fallback_coins = 100
+                        await db.update_user_coins(user_id, fallback_coins)
+                        granted.append({
+                            "reward_type": "coins",
+                            "reward_amount": fallback_coins,
+                            "fallback_for": "card",
+                        })
+
+            logging.getLogger(__name__).info(
+                "Reward claimed: user=%s track=%s pos=%s granted=%s",
+                user_id, track_type, position, _json.dumps(granted),
+            )
+
+            return web.json_response({
+                "success": True,
+                "track_type": track_type,
+                "position": position,
+                "granted": granted,
+            })
+        except Exception as e:
+            logging.getLogger(__name__).error("claim_reward error: %s", e, exc_info=True)
+            return web.json_response({"error": "internal_error", "message": str(e)}, status=500)
+
+    app.router.add_get("/api/rewards/track/{track_type}", rewards_track_handler)
+    app.router.add_post("/api/rewards/claim", rewards_claim_handler)
 
     async def yookassa_webhook_handler(request: web.Request) -> web.Response:
         """Обработчик вебхуков от YooKassa."""
@@ -6008,6 +6856,12 @@ def create_web_app(
     app.router.add_post("/api/community/posts/like", post_like_handler)
     app.router.add_get("/api/community/chat/messages", global_chat_messages_handler)
     app.router.add_post("/api/community/chat/send", global_chat_send_handler)
+    app.router.add_get("/api/recent-opponents", recent_opponents_handler)
+    app.router.add_get("/api/battles/history", battle_history_handler)
+    app.router.add_post("/api/friends/invite", friend_invite_handler)
+    app.router.add_post("/api/friends/invite/respond", friend_invite_respond_handler)
+    app.router.add_get("/api/friends/invite/pending", friend_invite_pending_handler)
+    app.router.add_post("/api/friends/invite/cancel", friend_invite_cancel_handler)
     async def payment_config_handler(_: web.Request) -> web.Response:
         """Отдать конфигурацию платежей (курсы и коэффициенты)."""
         return web.json_response({
@@ -6170,7 +7024,9 @@ def create_web_app(
                 
                 logger.info(
                     f"Инвойс Stars отправлен пользователю {user_id}, invoice_payload={invoice_payload}, "
-                    f"amount_rub={amount_rub}, stars={stars_amount}"
+                    f"amount_rub={amount_rub}, stars={stars_amount}, "
+                    f"item_type={metadata.get('item_type')}, item_name={item_name}, "
+                    f"description={description}, payment_id={payment_id}"
                 )
                 
                 return web.json_response({
@@ -6249,7 +7105,6 @@ def create_web_app(
         try:
             data = await request.json()
             item_type = data.get("item_type")
-            gems_amount = int(data.get("gems_amount", 0))
             item_name = data.get("item_name", "Товар")
 
             if not item_type:
@@ -6270,7 +7125,44 @@ def create_web_app(
 
             current_gems = user_profile["gems"] if user_profile.get("gems") is not None else 0
 
-            if admin_case_tier is None:
+            # Определяем цену из конфига
+            gems_amount: int = 0
+            if admin_case_tier is not None:
+                gems_amount = 1  # админская тест-цена
+            elif item_type.startswith("shop_set_"):
+                # Цена набора — из БД (рубли/монеты, гемы опционально)
+                pass  # gems_amount остаётся 0, будет определён ниже по set_data
+            else:
+                gems_amount = SHOP_PRICES.get(item_type)
+                if gems_amount is None:
+                    return web.json_response({
+                        "success": False,
+                        "error": "unknown_item_type",
+                        "message": f"Неизвестный тип товара: {item_type}"
+                    }, status=400)
+
+            if admin_case_tier is not None:
+                if not is_admin:
+                    return web.json_response({"error": "admin_only"}, status=403)
+                if not (1 <= admin_case_tier <= 5):
+                    return web.json_response({"error": "invalid_admin_case_tier"}, status=400)
+
+                gems_amount = 1
+                if current_gems < gems_amount:
+                    return web.json_response({
+                        "success": False,
+                        "error": "insufficient_gems",
+                        "message": f"Недостаточно гемов! Нужно {gems_amount} 💎, у вас {current_gems} 💎"
+                    }, status=400)
+
+                await db.execute(
+                    "UPDATE users SET gems = gems - $1 WHERE user_id = $2",
+                    gems_amount, user_id
+                )
+            elif item_type.startswith("shop_set_"):
+                # Цена и валюта определяются из БД в ветке shop_set_ ниже
+                pass
+            else:
                 if gems_amount <= 0:
                     return web.json_response({"error": "invalid_gems_amount"}, status=400)
                 if current_gems < gems_amount:
@@ -6280,27 +7172,6 @@ def create_web_app(
                         "message": f"Недостаточно гемов! Нужно {gems_amount} 💎, у вас {current_gems} 💎"
                     }, status=400)
 
-                # Списываем гемы
-                await db.execute(
-                    "UPDATE users SET gems = gems - $1 WHERE user_id = $2",
-                    gems_amount, user_id
-                )
-            else:
-                if not is_admin:
-                    return web.json_response({"error": "admin_only"}, status=403)
-                if not (1 <= admin_case_tier <= 5):
-                    return web.json_response({"error": "invalid_admin_case_tier"}, status=400)
-
-                # Для админов покупки кейсов стоят 1 гем для тестов
-                gems_amount = 1
-                if current_gems < gems_amount:
-                    return web.json_response({
-                        "success": False,
-                        "error": "insufficient_gems",
-                        "message": f"Недостаточно гемов! Нужно {gems_amount} 💎, у вас {current_gems} 💎"
-                    }, status=400)
-                
-                # Списываем 1 гем у админа
                 await db.execute(
                     "UPDATE users SET gems = gems - $1 WHERE user_id = $2",
                     gems_amount, user_id
@@ -6591,8 +7462,405 @@ def create_web_app(
             )
 
     app.router.add_post("/api/shop/buy", shop_buy_handler)
-    
+
     async def card_image_handler(request: web.Request) -> web.Response:
+        """
+        Возвращает изображение карты из локальной файловой системы.
+        Изображение берется из DesignAssets/Cards/<card_id>.png
+        """
+        card_id = request.rel_url.query.get("card_id")
+        file_id = request.rel_url.query.get("file_id")
+
+        if file_id and not card_id:
+            try:
+                card_record = await db.fetchrow(
+                    "SELECT id FROM cards WHERE image_file_id = $1 LIMIT 1",
+                    file_id
+                )
+                if card_record:
+                    card_id = str(card_record["id"])
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).debug(f"Не удалось найти card_id по file_id: {e}")
+
+        if not card_id:
+            return web.json_response({"error": "card_id required"}, status=400)
+
+        try:
+            card_id_int = int(card_id)
+        except ValueError:
+            return web.json_response({"error": "invalid_card_id"}, status=400)
+
+        card_image_path = DESIGN_ASSETS_DIR / "Cards" / f"{card_id_int}.png"
+
+        if not card_image_path.exists() or not card_image_path.is_file():
+            import logging
+            logging.getLogger(__name__).warning(f"Изображение карты не найдено: {card_image_path}")
+            return web.json_response({"error": "card_image_not_found"}, status=404)
+
+        try:
+            with open(card_image_path, "rb") as f:
+                image_data = f.read()
+            content_type = "image/png"
+            response = web.Response(
+                body=image_data,
+                content_type=content_type,
+                headers={
+                    "Cache-Control": "public, max-age=86400",
+                    "Access-Control-Allow-Origin": "*"
+                }
+            )
+            return response
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Ошибка чтения изображения карты: {e}", exc_info=True)
+            return web.json_response({"error": "internal_server_error"}, status=500)
+
+    async def gems_payment_handler(request: web.Request) -> web.Response:
+        """Создать платёж YooKassa за пакет гемов."""
+        import logging
+        logger = logging.getLogger(__name__)
+
+        init_data = request.rel_url.query.get("_auth")
+        user_id = None
+        if init_data and init_data.isdigit():
+            try: user_id = int(init_data)
+            except ValueError: pass
+        if not user_id and init_data:
+            verified_data = _verify_init_data(init_data, bot_token)
+            if verified_data:
+                user_id = _extract_user_id_from_init_data(verified_data)
+        if not user_id:
+            user_id_param = request.rel_url.query.get("user_id")
+            if user_id_param:
+                try: user_id = int(user_id_param)
+                except ValueError:
+                    return web.json_response({"error": "user_id must be integer"}, status=400)
+        if not user_id:
+            return web.json_response({"error": "authentication required"}, status=401)
+        if request.method != "POST":
+            return web.json_response({"error": "method_not_allowed"}, status=405)
+
+        payment_service = request.app.get("payment_service")
+        if not payment_service:
+            return web.json_response({
+                "error": "payment_service_not_configured",
+                "message": "Платежный сервис не настроен. Проверьте настройки YooKassa в .env файле."
+            }, status=503)
+
+        try:
+            data = await request.json()
+            package_type = data.get("package_type", "").strip()
+
+            pkg = GEM_PACKAGES.get(package_type)
+            if not pkg:
+                return web.json_response({"error": "unknown_package_type"}, status=400)
+
+            if pkg.get("one_time"):
+                settings = await db.get_user_settings(user_id)
+                if settings and settings.get("starter_pack_used"):
+                    return web.json_response({
+                        "error": "already_used",
+                        "message": "Стартовый пакет уже куплен"
+                    }, status=400)
+
+            price_rub = float(pkg["price"])
+            gems_count = int(pkg["gems"])
+            item_name = f"{gems_count} гемов"
+            if pkg.get("one_time"):
+                item_name += " (стартовый)"
+
+            metadata = {
+                "user_id": user_id,
+                "item_type": "gems_package",
+                "package_type": package_type,
+                "package_gems": gems_count,
+                "amount_rub": price_rub,
+                "item_name": item_name,
+                "starter": package_type == "starter_once",
+            }
+
+            return_url = data.get("return_url", request.app.get("webapp_url", "https://t.me/your_bot"))
+
+            payment_result = payment_service.create_payment(
+                amount=price_rub,
+                currency="RUB",
+                description=item_name,
+                return_url=return_url,
+                metadata=metadata,
+            )
+
+            if not payment_result.get("success"):
+                err = payment_result.get("error", "unknown")
+                logger.error("Ошибка создания платежа за гемы: %s", err)
+                return web.json_response({
+                    "success": False,
+                    "error": err,
+                    "message": f"Ошибка создания платежа: {err}"
+                }, status=400)
+
+            payment_id = payment_result.get("payment_id")
+
+            db_result = await db.create_payment(
+                user_id=user_id,
+                payment_id=payment_id,
+                amount=price_rub,
+                currency="RUB",
+                description=item_name,
+                metadata=metadata,
+            )
+            if not db_result.get("success"):
+                logger.warning("Не удалось сохранить платёж %s в БД: %s", payment_id, db_result.get("error"))
+
+            return web.json_response({
+                "success": True,
+                "payment_id": payment_id,
+                "confirmation_url": payment_result.get("confirmation_url"),
+                "package_type": package_type,
+                "gems_amount": gems_count,
+            })
+        except Exception as e:
+            logger.error("Ошибка создания платежа за гемы для user_id %s: %s", user_id, e, exc_info=True)
+            return web.json_response({"error": "internal_server_error", "message": str(e)}, status=500)
+
+    async def particles_daily_handler(request: web.Request) -> web.Response:
+        """Получить сегодняшнюю ротацию карт на частицы."""
+        init_data = request.rel_url.query.get("_auth")
+        user_id = None
+        if init_data and init_data.isdigit():
+            try: user_id = int(init_data)
+            except ValueError: pass
+        if not user_id and init_data:
+            verified_data = _verify_init_data(init_data, bot_token)
+            if verified_data:
+                user_id = _extract_user_id_from_init_data(verified_data)
+        if not user_id:
+            user_id_param = request.rel_url.query.get("user_id")
+            if user_id_param:
+                try: user_id = int(user_id_param)
+                except ValueError:
+                    return web.json_response({"error": "user_id must be integer"}, status=400)
+        if not user_id:
+            return web.json_response({"error": "authentication required"}, status=401)
+
+        from datetime import date, datetime, timedelta, timezone
+
+        try:
+            today = date.today()
+            settings_record = await db.get_user_settings(user_id)
+            rotation_date = settings_record.get("particles_rotation_date") if settings_record else None
+            raw_cards = settings_record.get("particles_rotation_cards") if settings_record else None
+            purchased_raw = settings_record.get("particles_purchased_today") if settings_record else None
+
+            if isinstance(rotation_date, datetime):
+                rotation_date = rotation_date.date()
+
+            if isinstance(raw_cards, str):
+                import json as _json
+                raw_cards = _json.loads(raw_cards)
+            if isinstance(purchased_raw, str):
+                purchased_raw = _json.loads(purchased_raw)
+            purchased_today = purchased_raw if isinstance(purchased_raw, list) else []
+
+            if rotation_date != today or not raw_cards or not isinstance(raw_cards, list) or len(raw_cards) == 0:
+                common = await db.get_random_cards_by_rarities(["common"], limit=1)
+                rare = await db.get_random_cards_by_rarities(["rare"], limit=1)
+                epic = await db.get_random_cards_by_rarities(["epic"], limit=1)
+
+                raw_cards = [
+                    common[0]["id"] if common else None,
+                    rare[0]["id"] if rare else None,
+                    epic[0]["id"] if epic else None,
+                ]
+                raw_cards = [c for c in raw_cards if c is not None]
+
+                import json as _json
+                await db.update_user_settings(
+                    user_id,
+                    particles_rotation_cards=_json.dumps(raw_cards),
+                    particles_rotation_date=today,
+                    particles_purchased_today="[]",
+                )
+
+            if not raw_cards:
+                return web.json_response({"cards": [], "rotation_date": today.isoformat(), "purchased_today": []})
+
+            placeholders = ",".join(f"${i+1}" for i in range(len(raw_cards)))
+            rows = await db.fetch(
+                f"SELECT id, name, rarity FROM cards WHERE id IN ({placeholders})",
+                *raw_cards,
+            )
+
+            now = datetime.now(timezone.utc)
+            midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+            next_rotation_ts = int(midnight.timestamp())
+
+            cards = []
+            for row in rows:
+                rarity = row["rarity"]
+                cost = PARTICLES_COSTS.get(rarity, PARTICLES_COSTS["common"])
+                cards.append({
+                    "id": row["id"],
+                    "name": row["name"],
+                    "rarity": rarity,
+                    "particles": cost["particles"],
+                    "coins": cost["coins"],
+                })
+
+            return web.json_response({
+                "cards": cards,
+                "rotation_date": today.isoformat(),
+                "next_rotation_ts": next_rotation_ts,
+                "purchased_today": purchased_today,
+            })
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error("Ошибка particles/daily: %s", e, exc_info=True)
+            return web.json_response({"error": "internal_server_error", "message": str(e)}, status=500)
+
+    async def particles_buy_handler(request: web.Request) -> web.Response:
+        """Купить частицы за монеты."""
+        init_data = request.rel_url.query.get("_auth")
+        user_id = None
+        if init_data and init_data.isdigit():
+            try: user_id = int(init_data)
+            except ValueError: pass
+        if not user_id and init_data:
+            verified_data = _verify_init_data(init_data, bot_token)
+            if verified_data:
+                user_id = _extract_user_id_from_init_data(verified_data)
+        if not user_id:
+            user_id_param = request.rel_url.query.get("user_id")
+            if user_id_param:
+                try: user_id = int(user_id_param)
+                except ValueError:
+                    return web.json_response({"error": "user_id must be integer"}, status=400)
+        if not user_id:
+            return web.json_response({"error": "authentication required"}, status=401)
+        if request.method != "POST":
+            return web.json_response({"error": "method_not_allowed"}, status=405)
+
+        try:
+            data = await request.json()
+            card_id = int(data.get("card_id", 0))
+            if card_id <= 0:
+                return web.json_response({"error": "invalid_card_id"}, status=400)
+
+            from datetime import date
+            settings_record = await db.get_user_settings(user_id)
+            raw_cards = settings_record.get("particles_rotation_cards") if settings_record else None
+            rotation_date = settings_record.get("particles_rotation_date") if settings_record else None
+            purchased_raw = settings_record.get("particles_purchased_today") if settings_record else None
+
+            import json as _json
+            if isinstance(purchased_raw, str):
+                purchased_raw = _json.loads(purchased_raw)
+
+            if isinstance(rotation_date, datetime):
+                rotation_date = rotation_date.date()  # type: ignore[assignment]
+            if isinstance(raw_cards, str):
+                import json as _json
+                raw_cards = _json.loads(raw_cards)
+
+            if rotation_date != date.today() or not raw_cards or card_id not in raw_cards:
+                return web.json_response({"error": "card_not_in_rotation"}, status=400)
+
+            purchased = _json.loads(purchased_raw) if isinstance(purchased_raw, str) else (purchased_raw or [])
+            if card_id in purchased:
+                return web.json_response({"error": "already_purchased", "message": "Вы уже купили частицы для этой карты сегодня"}, status=400)
+
+            rarity_row = await db.fetchrow("SELECT rarity FROM cards WHERE id = $1", card_id)
+            if not rarity_row:
+                return web.json_response({"error": "card_not_found"}, status=404)
+
+            rarity = rarity_row["rarity"]
+            cost = PARTICLES_COSTS.get(rarity)
+            if not cost:
+                return web.json_response({"error": "unsupported_rarity"}, status=400)
+
+            coins_cost = cost["coins"]
+            particles_amount = cost["particles"]
+
+            result = await db.fetchrow(
+                "UPDATE users SET coins = coins - $1 WHERE user_id = $2 AND coins >= $1 RETURNING coins",
+                coins_cost, user_id,
+            )
+            if not result:
+                return web.json_response({
+                    "success": False,
+                    "error": "insufficient_coins",
+                    "message": f"Недостаточно монет! Нужно {coins_cost} 🪙"
+                }, status=400)
+
+            updated_coins = result["coins"]
+
+            await db.execute(
+                """
+                INSERT INTO user_cards (user_id, card_id, level, particles, obtained_at)
+                VALUES ($1, $2, 1, $3, NOW())
+                ON CONFLICT (user_id, card_id) DO UPDATE
+                SET particles = COALESCE(user_cards.particles, 0) + $3
+                """,
+                user_id, card_id, particles_amount,
+            )
+
+            particles_row = await db.fetchrow(
+                "SELECT COALESCE(particles, 0) as particles FROM user_cards WHERE user_id = $1 AND card_id = $2",
+                user_id, card_id,
+            )
+            updated_particles = particles_row["particles"] if particles_row else particles_amount
+
+            purchased = _json.loads(purchased_raw) if isinstance(purchased_raw, str) else (purchased_raw or [])
+            if card_id not in purchased:
+                purchased.append(card_id)
+            await db.update_user_settings(user_id, particles_purchased_today=_json.dumps(purchased))
+
+            return web.json_response({
+                "success": True,
+                "updated_coins": updated_coins,
+                "updated_particles": updated_particles,
+                "card_id": card_id,
+                "message": f"Куплено {particles_amount} ✨ для карты",
+            })
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error("Ошибка particles/buy: %s", e, exc_info=True)
+            return web.json_response({"error": "internal_server_error", "message": str(e)}, status=500)
+
+    async def shop_sets_image_handler(request: web.Request) -> web.Response:
+        """Прокси для получения изображения набора по Telegram file_id."""
+        file_id = request.rel_url.query.get("file_id", "").strip()
+        if not file_id:
+            return web.json_response({"error": "file_id_required"}, status=400)
+
+        import logging, aiohttp
+        logger = logging.getLogger(__name__)
+        token = app["bot_token"]
+
+        try:
+            from aiogram import Bot
+            bot = Bot(token=token)
+            tg_file = await bot.get_file(file_id)
+            file_path = tg_file.file_path
+            await bot.session.close()
+
+            url = f"https://api.telegram.org/file/bot{token}/{file_path}"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url) as resp:
+                    if resp.status != 200:
+                        return web.json_response({"error": "file_not_found"}, status=404)
+                    image_data = await resp.read()
+
+            content_type = "image/png"
+            if file_path.endswith(".jpg") or file_path.endswith(".jpeg"):
+                content_type = "image/jpeg"
+            elif file_path.endswith(".webp"):
+                content_type = "image/webp"
+
+            return web.Response(body=image_data, content_type=content_type)
+        except Exception as e:
+            logger.error("Ошибка загрузки изображения набора: %s", e, exc_info=True)
+            return web.json_response({"error": "image_fetch_failed", "message": str(e)}, status=500)
         """
         Возвращает изображение карты из локальной файловой системы.
         Изображение берется из DesignAssets/Cards/<card_id>.png
@@ -6908,6 +8176,10 @@ def create_web_app(
     app.router.add_post("/api/admin/shop/sets/create", shop_set_create_handler)
     app.router.add_post("/api/admin/shop/sets/update", shop_set_update_handler)
     app.router.add_post("/api/admin/shop/sets/delete", shop_set_delete_handler)
+    app.router.add_get("/api/shop/sets/image", shop_sets_image_handler)
+    app.router.add_get("/api/shop/particles/daily", particles_daily_handler)
+    app.router.add_post("/api/shop/particles/buy", particles_buy_handler)
+    app.router.add_post("/api/payments/gems/create", gems_payment_handler)
     
     async def dice_status_handler(request: web.Request) -> web.Response:
         """Получить статус кубика (можно ли бросать, когда был последний бросок)."""
@@ -7016,6 +8288,30 @@ def create_web_app(
             import logging
             logging.getLogger(__name__).error(f"Ошибка отметки предложения: {e}", exc_info=True)
             return web.json_response({"error": str(e)}, status=500)
+
+    async def season_current_handler(request: web.Request) -> web.Response:
+        """GET /api/season/current — возвращает активный сезон."""
+        try:
+            record = await db.fetchrow(
+                "SELECT id, name, start_date, end_date FROM seasons WHERE is_active = TRUE LIMIT 1"
+            )
+            if not record:
+                return web.json_response({"error": "no_active_season"}, status=404)
+
+            now = datetime.now(datetime.timezone.utc)
+            end_date = record["end_date"]
+            days_left = max(0, (end_date - now).days) if end_date else 0
+
+            return web.json_response({
+                "season_id": record["id"],
+                "name": record["name"],
+                "start_date": record["start_date"].isoformat() if record["start_date"] else None,
+                "end_date": end_date.isoformat() if end_date else None,
+                "days_left": days_left,
+            })
+        except Exception as e:
+            logging.getLogger(__name__).error("season_current error: %s", e, exc_info=True)
+            return web.json_response({"error": "internal_error"}, status=500)
 
     async def welcome_status_handler(request: web.Request) -> web.Response:
         """Получить статус приветствия и данные о стартовой карте (работает даже если пользователя еще нет)."""
@@ -7205,6 +8501,7 @@ def create_web_app(
 
         return web.json_response(payload)
 
+    app.router.add_get("/api/season/current", season_current_handler)
     app.router.add_get("/api/welcome/status", welcome_status_handler)
     app.router.add_post("/api/welcome/mark-shown", welcome_mark_shown_handler)
     app.router.add_post("/api/welcome/create-user", welcome_create_user_handler)

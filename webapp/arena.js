@@ -461,6 +461,14 @@ function renderBattleState(state) {
     // КРИТИЧНО: Извлекаем данные о монетах из state (синхронизированы с БД)
     const coinsDelta = parseInt(state.coins_change || state.coins_delta, 10) || 0;
     const coinsTotal = parseInt(state.coins_total || state.new_coins, 10) || null;
+
+    const starsDelta = parseInt(state.stars_delta, 10) || 0;
+    const starsTotal = parseInt(state.stars_total, 10) || null;
+
+    const leagueUp = state.league_up || null;
+    if (leagueUp) {
+      sessionStorage.setItem('arena_league_up', JSON.stringify(leagueUp));
+    }
     
     console.log('[ARENA] 🎯 Результат игры:', { 
       isWinner, 
@@ -468,12 +476,15 @@ function renderBattleState(state) {
       trophyDelta, 
       trophyTotal, 
       coinsDelta, 
-      coinsTotal 
+      coinsTotal,
+      starsDelta,
+      starsTotal,
+      leagueUp
     });
     
     // Показываем экран результата с задержкой для драматического эффекта
     setTimeout(() => {
-      showBattleResult(isWinner, trophyDelta, trophyTotal, coinsDelta, coinsTotal);
+      showBattleResult(isWinner, trophyDelta, trophyTotal, coinsDelta, coinsTotal, starsDelta, starsTotal);
     }, 1200);
   }
 }
@@ -786,13 +797,6 @@ function createHandCardElement(card, index) {
     if (mechanics.includes('charge')) {
       cardDiv.classList.add('card-charge');
     }
-    if (mechanics.includes('deathrattle')) {
-      cardDiv.classList.add('card-deathrattle');
-      const drIcon = document.createElement('div');
-      drIcon.className = 'mechanic-icon deathrattle-icon';
-      drIcon.textContent = '💀';
-      cardDiv.appendChild(drIcon);
-    }
   }
   
   // ДОБАВЛЕНО: Визуализация заморозки в руке
@@ -820,10 +824,23 @@ function createHandCardElement(card, index) {
 
   artWrapper.appendChild(img);
 
-  // Мана (теперь прямой ребенок cardDiv, чтобы не обрезалась)
-  const manaDiv = document.createElement('div');
-  manaDiv.className = 'mana-circle';
-  manaDiv.textContent = cardMana;
+  // Иконки механик — внутри artWrapper, чтобы не выходить за пределы арта
+  if (Array.isArray(mechanics)) {
+    if (mechanics.includes('deathrattle')) {
+      cardDiv.classList.add('card-deathrattle');
+      const drIcon = document.createElement('div');
+      drIcon.className = 'mechanic-icon deathrattle-icon';
+      drIcon.textContent = '💀';
+      artWrapper.appendChild(drIcon);
+    }
+    const hasBC = mechanics.some(m => m.startsWith('battlecry_'));
+    if (hasBC) {
+      const bcIcon = document.createElement('div');
+      bcIcon.className = 'mechanic-icon battlecry-icon';
+      bcIcon.textContent = '🔔';
+      artWrapper.appendChild(bcIcon);
+    }
+  }
 
   cardDiv.appendChild(artWrapper);
   cardDiv.appendChild(manaDiv);
@@ -888,10 +905,10 @@ function createHandCardElement(card, index) {
  */
 function addStatusIcons(cardDiv, card) {
   const effectsPath = '../DesignAssets/Arena/CardEffects/';
-  
-  const createIcon = (className, fileName) => {
+
+  const createIcon = (typeClass, fileName, posClass) => {
     const container = document.createElement('div');
-    container.className = `status-icon-container ${className}`;
+    container.className = `status-icon-container ${typeClass} ${posClass}`;
     const img = document.createElement('img');
     img.src = effectsPath + fileName;
     img.className = 'status-icon';
@@ -899,22 +916,21 @@ function addStatusIcons(cardDiv, card) {
     return container;
   };
 
-  cardDiv.appendChild(createIcon('status-icon-shield', 'shield.png'));
-  cardDiv.appendChild(createIcon('status-icon-taunt', 'provocation.png'));
-  
-  const frozenIcon = createIcon('status-icon-frozen', 'freeze.png');
+  cardDiv.appendChild(createIcon('status-icon-shield',  'shield.png',      'icon-top-left'));
+  cardDiv.appendChild(createIcon('status-icon-taunt',   'provocation.png', 'icon-top-right'));
+
+  const frozenIcon = createIcon('status-icon-frozen', 'freeze.png', 'icon-bottom-right');
   if (card && card.is_frozen) {
     const counter = document.createElement('span');
     counter.className = 'freeze-counter';
-    // Берем freeze_turns или 1 как заглушку
     counter.textContent = card.freeze_turns || "1";
     frozenIcon.appendChild(counter);
   }
   cardDiv.appendChild(frozenIcon);
 
-  cardDiv.appendChild(createIcon('status-icon-asleep', 'asleep.png'));
-  cardDiv.appendChild(createIcon('status-icon-target', 'target.png'));
-  cardDiv.appendChild(createIcon('status-icon-heal', 'toHeal.png'));
+  cardDiv.appendChild(createIcon('status-icon-asleep', 'asleep.png', 'icon-bottom-left'));
+  cardDiv.appendChild(createIcon('status-icon-target', 'target.png', 'icon-center'));
+  cardDiv.appendChild(createIcon('status-icon-heal',   'toHeal.png', 'icon-center'));
 }
 
 // ============================================
@@ -1008,13 +1024,6 @@ function createBoardCardElement(card, side) {
     if (mechanics.includes('charge')) {
       cardDiv.classList.add('card-charge');
     }
-    if (mechanics.includes('deathrattle')) {
-      cardDiv.classList.add('card-deathrattle');
-      const drIcon = document.createElement('div');
-      drIcon.className = 'mechanic-icon deathrattle-icon';
-      drIcon.textContent = '💀';
-      cardDiv.appendChild(drIcon);
-    }
   }
   
   // Враппер для арта
@@ -1035,6 +1044,25 @@ function createBoardCardElement(card, side) {
   }
   
   artWrapper.appendChild(img);
+
+  // Иконки механик — внутри artWrapper, чтобы не выходить за пределы арта
+  if (Array.isArray(mechanics)) {
+    if (mechanics.includes('deathrattle')) {
+      cardDiv.classList.add('card-deathrattle');
+      const drIcon = document.createElement('div');
+      drIcon.className = 'mechanic-icon deathrattle-icon';
+      drIcon.textContent = '💀';
+      artWrapper.appendChild(drIcon);
+    }
+    const hasBC = mechanics.some(m => m.startsWith('battlecry_'));
+    if (hasBC) {
+      const bcIcon = document.createElement('div');
+      bcIcon.className = 'mechanic-icon battlecry-icon';
+      bcIcon.textContent = '🔔';
+      artWrapper.appendChild(bcIcon);
+    }
+  }
+
   cardDiv.appendChild(artWrapper);
 
   // Статы: не добавляем для зелий
@@ -2276,17 +2304,27 @@ function handleGameOver(data) {
   // Эти значения приходят из server.py после вызова db.update_user_coins()
   const coinsDelta = parseInt(data.coins_delta || data.coins_change || currentState?.coins_delta || currentState?.coins_change, 10) || 0;
   const coinsTotal = parseInt(data.coins_total || currentState?.coins_total, 10) || null;
-  
+
+  const starsDelta = parseInt(data.stars_delta || currentState?.stars_delta, 10) || 0;
+  const starsTotal = parseInt(data.stars_total || currentState?.stars_total, 10) || null;
+
+  const leagueUp = data.league_up || currentState?.league_up || null;
+  if (leagueUp) {
+    sessionStorage.setItem('arena_league_up', JSON.stringify(leagueUp));
+  }
+
   console.log('[ARENA] 🏆 Трофеи: delta =', trophyDelta, '| total =', trophyTotal);
   console.log('[ARENA] 🪙 Монеты: delta =', coinsDelta, '| total =', coinsTotal);
+  console.log('[ARENA] ⭐ Звёзды: delta =', starsDelta, '| total =', starsTotal);
+  if (leagueUp) console.log('[ARENA] 🏆 Повышение лиги:', leagueUp);
   
   // Показываем экран результата с небольшой задержкой для драматического эффекта
   setTimeout(() => {
-    showBattleResult(isWinner, trophyDelta, trophyTotal, coinsDelta, coinsTotal);
+    showBattleResult(isWinner, trophyDelta, trophyTotal, coinsDelta, coinsTotal, starsDelta, starsTotal);
   }, 800);
 }
 
-function showBattleResult(isWinner, trophyDelta, trophyTotal, coinsDelta, coinsTotal) {
+function showBattleResult(isWinner, trophyDelta, trophyTotal, coinsDelta, coinsTotal, starsDelta, starsTotal) {
   const modal = document.getElementById('battle-result-modal');
   const icon = document.getElementById('result-icon');
   const title = document.getElementById('result-title');
@@ -2410,6 +2448,35 @@ function showBattleResult(isWinner, trophyDelta, trophyTotal, coinsDelta, coinsT
   } else if (coinsSection) {
     // Скрываем секцию монет, если нет ни дельты, ни общего количества
     coinsSection.style.display = 'none';
+  }
+
+  // Звёзды (Battle Pass)
+  const starsDeltaEl = document.getElementById('result-stars-delta');
+  const starsTotalEl = document.getElementById('result-stars-total');
+  const starsSection = document.getElementById('result-stars-section');
+  const hasStarsDelta = starsDelta !== undefined && starsDelta !== null && starsDelta !== 0;
+  const hasStarsTotal = starsTotal !== undefined && starsTotal !== null;
+
+  if (hasStarsDelta || hasStarsTotal) {
+    if (starsSection) starsSection.style.display = 'flex';
+
+    if (starsDeltaEl) {
+      if (hasStarsDelta) {
+        const deltaSign = starsDelta > 0 ? '+' : '-';
+        starsDeltaEl.className = 'stars-delta positive';
+        animateCounter(starsDeltaEl, 0, Math.abs(starsDelta), 1200, deltaSign);
+        if (starsDeltaEl.parentElement) starsDeltaEl.parentElement.style.display = 'flex';
+      } else if (starsDeltaEl.parentElement) {
+        starsDeltaEl.parentElement.style.display = 'none';
+      }
+    }
+
+    if (starsTotalEl && hasStarsTotal) {
+      const startValue = hasStarsDelta ? Math.max(0, starsTotal - starsDelta) : starsTotal;
+      animateCounter(starsTotalEl, startValue, starsTotal, 1200);
+    }
+  } else if (starsSection) {
+    starsSection.style.display = 'none';
   }
   
   // Показываем модальное окно

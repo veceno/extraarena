@@ -184,9 +184,7 @@ class Matchmaker:
                 return
             # Убираем из очереди, чтобы не мешал будущим подборам
             self._queue = [entry for entry in self._queue if entry.match_id != seeker.match_id]
-            task = self._tasks.pop(seeker.match_id, None)
-            if task:
-                task.cancel()
+            self._tasks.pop(seeker.match_id, None)
 
         bot_match = await self._create_bot_match(seeker.user_id, seeker.trophies, seeker.avg_level, game_mode=game_mode)
         async with self._lock:
@@ -202,63 +200,65 @@ class Matchmaker:
         return None
 
     async def _pair_players(self, seeker: QueueEntry, opponent: QueueEntry, game_mode: str = "classic") -> Dict[str, Any]:
-        """Формируем матч между двумя игроками и фиксируем статус для обоих."""
+        """Формируем матч между двумя игроками и фиксируем статус для обоих.
+        ВАЖНО: вызывающая сторона уже держит self._lock."""
         final_match_id = str(uuid.uuid4())
 
-        async with self._lock:
-            seeker.matched = opponent.matched = True
-            self._queue = [
-                entry for entry in self._queue if not entry.matched and entry.match_id not in {seeker.match_id, opponent.match_id}
-            ]
+        seeker.matched = opponent.matched = True
+        self._queue = [
+            entry for entry in self._queue if not entry.matched and entry.match_id not in {seeker.match_id, opponent.match_id}
+        ]
 
-            # Обновляем статусы обоих участников (используем один final_match_id)
-            self._matches[seeker.match_id] = {
-                "status": "found",
-                "match_id": final_match_id,
-                "opponent_id": opponent.user_id,
-                "is_bot": False,
-                "user_id": seeker.user_id,
-            }
-            self._matches[opponent.match_id] = {
-                "status": "found",
-                "match_id": final_match_id,
-                "opponent_id": seeker.user_id,
-                "is_bot": False,
-                "user_id": opponent.user_id,
-            }
+        # Обновляем статусы обоих участников (используем один final_match_id)
+        self._matches[seeker.match_id] = {
+            "status": "found",
+            "match_id": final_match_id,
+            "opponent_id": opponent.user_id,
+            "is_bot": False,
+            "user_id": seeker.user_id,
+            "game_mode": game_mode,
+        }
+        self._matches[opponent.match_id] = {
+            "status": "found",
+            "match_id": final_match_id,
+            "opponent_id": seeker.user_id,
+            "is_bot": False,
+            "user_id": opponent.user_id,
+            "game_mode": game_mode,
+        }
 
-            # Дополнительная запись по итоговому match_id.
-            #
-            # Зачем она нужна:
-            # - фронт после редиректа ходит в /api/battle/state?id=<final_match_id>
-            # - сервер (battle_state_handler) умеет «лениво» инициализировать движок, если
-            #   по этому match_id ещё нет BattleEngine в кеше, но для этого ему нужен matchmaker.get_status().
-            # - в PvE (бот) такая запись часто уже есть, а в PvP раньше её не было, из‑за чего
-            #   on-demand init мог не срабатывать и приводить к 404 match_not_found.
-            #
-            # Поэтому фиксируем финальный match_id -> (оба игрока) в совместимом формате.
-            self._matches[final_match_id] = {
-                "status": "found",
-                "match_id": final_match_id,
-                "player_ids": [seeker.user_id, opponent.user_id],
-                # Сохраняем выбранные пресеты для каждого игрока
-                "player_decks": {
-                    str(seeker.user_id): seeker.selected_deck_id,
-                    str(opponent.user_id): opponent.selected_deck_id,
-                },
-                # Для совместимости со старым форматом возвращаем user_id/opponent_id,
-                # даже если запрос к этому ключу не привязан к конкретному игроку.
-                "user_id": seeker.user_id,
-                "opponent_id": opponent.user_id,
-                "is_bot": False,
-                "game_mode": game_mode,
-            }
+        # Дополнительная запись по итоговому match_id.
+        #
+        # Зачем она нужна:
+        # - фронт после редиректа ходит в /api/battle/state?id=<final_match_id>
+        # - сервер (battle_state_handler) умеет «лениво» инициализировать движок, если
+        #   по этому match_id ещё нет BattleEngine в кеше, но для этого ему нужен matchmaker.get_status().
+        # - в PvE (бот) такая запись часто уже есть, а в PvP раньше её не было, из‑за чего
+        #   on-demand init мог не срабатывать и приводить к 404 match_not_found.
+        #
+        # Поэтому фиксируем финальный match_id -> (оба игрока) в совместимом формате.
+        self._matches[final_match_id] = {
+            "status": "found",
+            "match_id": final_match_id,
+            "player_ids": [seeker.user_id, opponent.user_id],
+            # Сохраняем выбранные пресеты для каждого игрока
+            "player_decks": {
+                str(seeker.user_id): seeker.selected_deck_id,
+                str(opponent.user_id): opponent.selected_deck_id,
+            },
+            # Для совместимости со старым форматом возвращаем user_id/opponent_id,
+            # даже если запрос к этому ключу не привязан к конкретному игроку.
+            "user_id": seeker.user_id,
+            "opponent_id": opponent.user_id,
+            "is_bot": False,
+            "game_mode": game_mode,
+        }
 
-            # Останавливаем фоновые задачи обоих игроков, если они были
-            for match_id in (seeker.match_id, opponent.match_id):
-                task = self._tasks.pop(match_id, None)
-                if task:
-                    task.cancel()
+        # Останавливаем фоновые задачи обоих игроков, если они были
+        for match_id in (seeker.match_id, opponent.match_id):
+            task = self._tasks.pop(match_id, None)
+            if task:
+                task.cancel()
 
         # Пробуем зарегистрировать бой в движке, если он предоставлен
         await self._safe_call_battle_engine(final_match_id, [seeker.user_id, opponent.user_id], is_bot=False)
@@ -316,6 +316,7 @@ class Matchmaker:
                     "opponent_id": opponent_id,
                     "is_bot": True,
                     "user_id": user_id,
+                    "game_mode": game_mode,
                     # Единый список участников - помогает серверу инициализировать бой,
                     # не завися от того, какой именно ключ использован в кеше статусов.
                     "player_ids": [user_id, opponent_id],
