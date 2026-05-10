@@ -321,6 +321,7 @@ document.addEventListener('DOMContentLoaded', () => {
   window.startBgMusic();
 });
 
+// display only — never used as server authority
 window._getUserId = function() {
   const tg = window.Telegram?.WebApp;
   const urlId = new URLSearchParams(location.search).get('user_id');
@@ -336,15 +337,20 @@ window.startBattle = async function(profile, deckId, mode) {
   var tg = window.Telegram?.WebApp;
   var userId = window._getUserId();
   var initData = tg?.initData || '';
-  var body = { user_id: userId, trophies: profile?.trophies || 0, init_data: initData, game_mode: mode || 'classic' };
-  if (deckId != null) body.selected_deck_id = parseInt(deckId);
+  var body = { user_id: userId, _auth: initData, trophies: profile?.trophies || 0, game_mode: mode || 'classic' };
+  const parsedDeck = parseInt(deckId);
+  if (deckId && !isNaN(parsedDeck)) body.selected_deck_id = parsedDeck;
+  console.log('[startBattle] deckId=', deckId, 'parsedDeck=', parsedDeck, 'body=', JSON.stringify(body));
 
   function openPreBattle(data) {
     _stopSearchTimer();
     if (_mmPollInterval) { clearInterval(_mmPollInterval); _mmPollInterval = null; }
     clearTimeout(matchmakingTimer);
     document.getElementById('searchOverlay').style.display = 'none';
-    window._openPreBattle({ matchId: data.match_id, userId: userId, profile: profile, gameMode: data.game_mode || mode, opponentName: data.opponent_name, opponentAvatar: data.opponent_avatar_url, opponentTrophies: data.opponent_trophies, opponentClan: data.opponent_clan });
+    window._openPreBattle({ matchId: data.match_id, userId: userId, authData: initData,
+      profile: profile, gameMode: data.game_mode || mode,
+      opponentName: data.opponent_name, opponentAvatar: data.opponent_avatar_url,
+      opponentTrophies: data.opponent_trophies, opponentClan: data.opponent_clan });
   }
 
   function handleFound(s) {
@@ -378,7 +384,7 @@ window.startBattle = async function(profile, deckId, mode) {
           return;
         }
         try {
-          var r = await fetch('/api/match/status?id=' + encodeURIComponent(matchId));
+          var r = await fetch('/api/match/status?id=' + encodeURIComponent(matchId) + '&_auth=' + encodeURIComponent(initData));
           if (!r.ok) return;
           var s = await r.json();
           if (s.status === 'found' && s.match_id) handleFound(s);
@@ -400,7 +406,7 @@ window.startBattle = async function(profile, deckId, mode) {
   }
 };
 
-// ── VS Bot Search ──────────────────────────────────────
+// ── VS Bot Search ───────────────────────────────────────
 window.startVsBot = async function(difficulty, profile, deckId, mode) {
   _resetSearchOverlay();
   var overlayText = document.querySelector('[data-role="search-overlay-text"]');
@@ -409,8 +415,10 @@ window.startVsBot = async function(difficulty, profile, deckId, mode) {
 
   try {
     document.getElementById('battle-sound')?.play().catch(function(){});
+    var tg = window.Telegram?.WebApp;
     var userId = window._getUserId();
-    var body = { user_id: userId, difficulty: difficulty, game_mode: mode || 'classic' };
+    var initData = tg?.initData || '';
+    var body = { _auth: initData, difficulty: difficulty, game_mode: mode || 'classic' };
     if (deckId != null) body.deck_id = parseInt(deckId);
 
     var res = await fetch('/api/match/vs-bot', {
@@ -423,15 +431,20 @@ window.startVsBot = async function(difficulty, profile, deckId, mode) {
 
     if (data.match_id) {
       _stopSearchTimer();
+      document.getElementById('searchOverlay').style.display = 'none';
       if (data.opponent_name || data.opponentName) {
         _showOpponentReveal(data);
         setTimeout(function() {
-          document.getElementById('searchOverlay').style.display = 'none';
-          window._openPreBattle({ matchId: data.match_id, userId: userId, profile: profile, gameMode: data.game_mode || mode, opponentName: data.opponent_name, opponentAvatar: data.opponent_avatar_url, opponentTrophies: data.opponent_trophies, opponentClan: data.opponent_clan });
+          window._openPreBattle({ matchId: data.match_id, userId: userId, authData: initData,
+            profile: profile, gameMode: data.game_mode || mode,
+            opponentName: data.opponent_name, opponentAvatar: data.opponent_avatar_url,
+            opponentTrophies: data.opponent_trophies, opponentClan: data.opponent_clan });
         }, 1400);
       } else {
-        document.getElementById('searchOverlay').style.display = 'none';
-        window._openPreBattle({ matchId: data.match_id, userId: userId, profile: profile, gameMode: data.game_mode || mode, opponentName: data.opponent_name, opponentAvatar: data.opponent_avatar_url, opponentTrophies: data.opponent_trophies, opponentClan: data.opponent_clan });
+        window._openPreBattle({ matchId: data.match_id, userId: userId, authData: initData,
+          profile: profile, gameMode: data.game_mode || mode,
+          opponentName: data.opponent_name, opponentAvatar: data.opponent_avatar_url,
+          opponentTrophies: data.opponent_trophies, opponentClan: data.opponent_clan });
       }
     } else {
       throw new Error(data.error || 'no match_id');
@@ -449,13 +462,9 @@ window._rootSetPreBattle = null;
 window.saveNickname = async function(nick) {
   try {
     const tg = window.Telegram?.WebApp;
-    const userId = window._getUserId();
     const initData = tg?.initData || '';
     let url = '/api/change-nickname';
-    const params = new URLSearchParams();
-    if (initData) params.set('_auth', initData);
-    else if (userId) params.set('user_id', String(userId));
-    if (params.toString()) url += '?' + params.toString();
+    if (initData) url += '?_auth=' + encodeURIComponent(initData);
 
     const res = await fetch(url, {
       method: 'POST',
@@ -471,16 +480,9 @@ window.saveNickname = async function(nick) {
 window.loadProfile = async function() {
   try {
     const tg = window.Telegram?.WebApp;
-    const urlParams = new URLSearchParams(location.search);
-    const urlId = urlParams.get('user_id');
     let url = '/api/profile';
     if (tg?.initData) {
-      // Сервер читает initData из query param ?_auth=
       url += '?_auth=' + encodeURIComponent(tg.initData);
-    } else if (tg?.initDataUnsafe?.user?.id) {
-      url += '?_auth=' + encodeURIComponent(String(tg.initDataUnsafe.user.id));
-    } else if (urlId) {
-      url += '?user_id=' + encodeURIComponent(urlId);
     }
     const res = await fetch(url);
     if (!res.ok) return null;
@@ -755,12 +757,13 @@ const Toggle = ({value, onChange}) => (
 const SettingsScreen = ({onClose, profile}) => {
   const s = profile?.settings || {};
   const [notifs, setNotifs] = React.useState({
-    cases:   s.notif_cases           ?? true,
-    daily:   s.notif_daily_rewards   ?? true,
-    invites: s.notif_game_invites    ?? true,
-    friends: s.notif_friend_requests ?? true,
-    events:  s.notif_events          ?? true,
-    news:    s.notif_news            ?? false,
+    cases:     s.notif_cases           ?? true,
+    daily:     s.notif_daily_rewards   ?? true,
+    invites:   s.notif_game_invites    ?? true,
+    friends:   s.notif_friend_requests ?? true,
+    events:    s.notif_events          ?? true,
+    news:      s.notif_news            ?? false,
+    generator: s.notif_generator      ?? true,
   });
   const [music,  setMusic]  = React.useState(s.sound_music ?? true);
   const [sfx,    setSfx]    = React.useState(s.sound_sfx   ?? true);
@@ -782,6 +785,36 @@ const SettingsScreen = ({onClose, profile}) => {
       setTimeout(() => setNickStatus(null), 2500);
     }
   };
+
+  const saveAllSettings = React.useCallback(async (n, m, s, b) => {
+    try {
+      const payload = {
+        notif_cases: n.cases,
+        notif_daily_rewards: n.daily,
+        notif_game_invites: n.invites,
+        notif_friend_requests: n.friends,
+        notif_events: n.events,
+        notif_news: n.news,
+        notif_generator: n.generator,
+        sound_music: m,
+        sound_sfx: s,
+        social_block_friend_requests: b,
+      };
+      await fetch(apiUrl('/api/settings'), {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+      if (window.__updateProfile && window.loadProfile) {
+        window.loadProfile().then(d => { if (d && window.__updateProfile) window.__updateProfile(d); });
+      }
+    } catch(e) {}
+  }, []);
+
+  const stateRef = React.useRef({notifs, music, sfx, blockFr});
+  stateRef.current = {notifs, music, sfx, blockFr};
+  React.useEffect(() => {
+    return () => {
+      const st = stateRef.current;
+      saveAllSettings(st.notifs, st.music, st.sfx, st.blockFr);
+    };
+  }, [saveAllSettings]);
 
   const Section = ({icon,title,children}) => (
     <div style={{marginBottom:'4px'}}>
@@ -822,6 +855,7 @@ const SettingsScreen = ({onClose, profile}) => {
           <Row label="Запросы в друзья"     value={notifs.friends} onChange={v=>setNotifs(n=>({...n,friends:v}))}/>
           <Row label="События"              value={notifs.events}  onChange={v=>setNotifs(n=>({...n,events:v}))}/>
           <Row label="Новости"              value={notifs.news}    onChange={v=>setNotifs(n=>({...n,news:v}))}/>
+          <Row label="Генератор ключей"     value={notifs.generator} onChange={v=>setNotifs(n=>({...n,generator:v}))}/>
         </Section>
         <Section icon="📺" title="Реклама">
           <div style={{background:`linear-gradient(135deg,rgba(245,146,30,0.1),rgba(245,146,30,0.06))`,border:`1.5px solid rgba(245,146,30,0.35)`,borderRadius:'14px',padding:'14px'}}>
@@ -877,11 +911,8 @@ const isAdmin  = (profile) => profile?.user_id === ADMIN_ID;
 
 const apiUrl = (path) => {
   const tg = window.Telegram?.WebApp;
-  const urlId = new URLSearchParams(location.search).get('user_id');
-  const auth = tg?.initData ? encodeURIComponent(tg.initData)
-             : tg?.initDataUnsafe?.user?.id ? String(tg.initDataUnsafe.user.id)
-             : urlId || '';
-  return `${path}?_auth=${auth}`;
+  if (!tg?.initData) return path;
+  return `${path}?_auth=${encodeURIComponent(tg.initData)}`;
 };
 
 // ═══════════════════════════════════════════
@@ -1881,14 +1912,14 @@ const BattlePickSheet = ({onClose, profile}) => {
 // ═══════════════════════════════════════════
 // MENU SHEET
 // ═══════════════════════════════════════════
-const MenuSheet = ({onClose, onSettings, onMail, onSupport, onInfo, onFriends, profile}) => {
+const MenuSheet = ({onClose, onSettings, onMail, onSupport, onInfo, onFriends, profile, frPending}) => {
   const [copyMsg, setCopyMsg] = React.useState(false);
   const extraId = profile?.user_id || profile?.id || '';
   const copyId = () => { if(extraId){ navigator.clipboard?.writeText(String(extraId)).catch(()=>{}); setCopyMsg(true); setTimeout(()=>setCopyMsg(false), 2000); } };
   const items = [
     {img:ICONS.menu.settings, label:'Настройки', wide:false, action:onSettings},
     {img:ICONS.menu.mail,     label:'Почта',     wide:false, action:onMail||onClose},
-    {img:ICONS.menu.friends,  label:'Друзья',    wide:false, action:onFriends||onClose},
+    {img:ICONS.menu.friends,  label:'Друзья',    wide:false, action:onFriends||onClose, badge: frPending || 0},
     {img:ICONS.menu.support,  label:'Поддержка', wide:true,  action:onSupport},
     {img:ICONS.menu.info,     label:'Информация',wide:true,  action:onInfo||onClose},
   ];
@@ -1917,9 +1948,10 @@ const MenuSheet = ({onClose, onSettings, onMail, onSupport, onInfo, onFriends, p
 
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px'}}>
           {items.filter(it=>!it.wide).map((item,i)=>(
-            <button key={i} onClick={item.action} style={{background:T.bgCard,border:`1px solid ${T.purple1}`,borderRadius:'16px',padding:'16px 14px',display:'flex',alignItems:'center',gap:'10px',cursor:'pointer',transition:'all 0.15s'}}>
+            <button key={i} onClick={item.action} style={{background:T.bgCard,border:`1px solid ${T.purple1}`,borderRadius:'16px',padding:'16px 14px',display:'flex',alignItems:'center',gap:'10px',cursor:'pointer',transition:'all 0.15s',position:'relative'}}>
               <img src={item.img} alt="" style={{width:'22px',height:'22px',filter:iconWhite}}/>
               <span style={{fontSize:'14px',fontWeight:'600',color:T.white,fontFamily:"'Exo 2',sans-serif"}}>{item.label}</span>
+              {item.badge > 0 && <span style={{position:'absolute',top:'-4px',right:'-4px',minWidth:'18px',height:'18px',borderRadius:'9px',background:T.red,color:'white',fontSize:'10px',fontWeight:'800',display:'flex',alignItems:'center',justifyContent:'center',padding:'0 4px',fontFamily:"'Inter',sans-serif"}}>{item.badge}</span>}
             </button>
           ))}
           {items.filter(it=>it.wide).map((item,i)=>(
@@ -2050,14 +2082,29 @@ const SupportSheet = ({onClose}) => {
 // ═══════════════════════════════════════════
 // ARENA SCREEN
 // ═══════════════════════════════════════════
-const ArenaScreen = ({onMenu, onAI, onOpenBattles, onBattlePick, onStartBattle, onOpenCase, onOpenGloryPath, onOpenLeagueInfo, onGoToShop, onOpenBattlePass, profile}) => {
+const ArenaScreen = ({onMenu, onAI, onGenerator, onOpenBattles, onBattlePick, onStartBattle, onOpenCase, onOpenGloryPath, onOpenLeagueInfo, onGoToShop, onOpenBattlePass, profile}) => {
   const [hasCases,    setHasCases]    = React.useState((profile?.keys || profile?.cases_count || 0) > 0);
   const [battleHover, setBattleHover] = React.useState(false);
   const [shineAnim,   setShineAnim]   = React.useState(false);
+  const [genStatus,   setGenStatus]   = React.useState(null);
+  const [genTick,     setGenTick]     = React.useState(0);
 
   React.useEffect(()=>{
     setHasCases((profile?.keys || profile?.cases_count || 0) > 0);
   },[profile]);
+
+  React.useEffect(() => {
+    const fetch_ = async () => {
+      try {
+        const r = await fetch(_buildAuthUrl('/api/generator/status'));
+        if (r.ok) setGenStatus(await r.json());
+      } catch(e) {}
+    };
+    fetch_();
+    const pollIv = setInterval(fetch_, 10000);
+    const tickIv = setInterval(() => setGenTick(t => t + 1), 1000);
+    return () => { clearInterval(pollIv); clearInterval(tickIv); };
+  }, []);
 
   React.useEffect(()=>{
     if(battleHover){setShineAnim(false);const t=setTimeout(()=>setShineAnim(true),20);return()=>clearTimeout(t);}
@@ -2096,6 +2143,22 @@ const ArenaScreen = ({onMenu, onAI, onOpenBattles, onBattlePick, onStartBattle, 
   const availableGloryCount = gloryTiers.filter(t => t.available).length;
   const nextRewardDistance = nextUnreachedTier ? nextUnreachedTier.position - trophyCount : null;
 
+  const genLevel = genStatus?.level || 1;
+  const canClaimGen = genStatus?.can_claim;
+  const genNextSec = genStatus?.next_key_seconds != null
+    ? Math.max(0, genStatus.next_key_seconds - genTick)
+    : null;
+  const fmtGenTimer = (sec) => {
+    if (sec == null) return null;
+    const h = Math.floor(sec / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    const s = Math.floor(sec % 60);
+    return h > 0
+      ? `${h}ч ${String(m).padStart(2,'0')}м`
+      : `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+  };
+  const genTimerStr = fmtGenTimer(genNextSec);
+
   return (
     <div style={{flex:1,overflowY:'auto',overflowX:'hidden',display:'flex',flexDirection:'column',minHeight:0}}>
       {/* Season Pass — dynamic, click to open BattlePass */}  
@@ -2118,11 +2181,24 @@ const ArenaScreen = ({onMenu, onAI, onOpenBattles, onBattlePick, onStartBattle, 
       {/* Arena hero */}
       <div style={{position:'relative',margin:'12px 0 0',display:'flex',flexDirection:'column',alignItems:'center'}}>
         <div style={{display:'flex',gap:'8px',marginBottom:'12px',width:'100%',padding:'0 16px'}}>
-          {[{id:'history',label:'История боёв'},{id:'ai',label:'ИИ аналитика ✦',accent:true}].map(({id,label,accent})=>(
-            <button key={id} onClick={()=>{if(id==='history')onOpenBattles();if(id==='ai')onAI();}} style={{flex:1,background:T.bgCard,border:`1px solid ${T.purple1}`,borderRadius:'20px',padding:'7px 14px',color:T.grey1,fontSize:'12px',cursor:'pointer',fontFamily:"'Inter',sans-serif",transition:'all 0.15s'}}>
-              {label}
-            </button>
-          ))}
+          <button onClick={onOpenBattles} style={{flex:1,background:T.bgCard,border:`1px solid ${T.purple1}`,borderRadius:'20px',padding:'7px 14px',color:T.grey1,fontSize:'12px',cursor:'pointer',fontFamily:"'Inter',sans-serif",transition:'all 0.15s'}}>
+            История боёв
+          </button>
+          <button onClick={onGenerator} style={{flex:1,background:canClaimGen?'rgba(245,146,30,0.15)':T.bgCard,border:`1px solid ${canClaimGen?T.orange:T.purple1}`,borderRadius:'20px',padding:'7px 14px',color:canClaimGen?T.orange:T.grey1,fontSize:'12px',cursor:'pointer',fontFamily:"'Inter',sans-serif",transition:'all 0.15s',boxShadow:canClaimGen?`0 0 10px ${T.orange}44`:'none'}}>
+            <span style={{display:'flex',alignItems:'center',gap:'5px',justifyContent:'center'}}>
+              <span style={{borderRadius:'5px',background:T.ai,color:T.bg,
+                fontSize:'8px',fontWeight:'900',padding:'1px 4px',
+                flexShrink:0,lineHeight:'14px',letterSpacing:'0.3px'}}>
+                LVL {genLevel}
+              </span>
+              <span>Генератор</span>
+              {genTimerStr && (
+                <span style={{fontSize:'10px',color:T.ai,fontWeight:'600',fontVariantNumeric:'tabular-nums'}}>
+                  {genTimerStr}
+                </span>
+              )}
+            </span>
+          </button>
         </div>
 
         <div style={{position:'relative'}}>
@@ -2430,12 +2506,10 @@ const RARITY_ORDER = ['divine','limited','mythic','legendary','epic','superrare'
 
 const _buildAuthUrl = (path) => {
   const tg = window.Telegram?.WebApp;
-  const uid = window._getUserId?.();
+  if (!tg?.initData) return path;
   const p = new URLSearchParams();
-  if (tg?.initData) p.set('_auth', tg.initData);
-  else if (uid) p.set('user_id', String(uid));
-  const q = p.toString();
-  return q ? `${path}?${q}` : path;
+  p.set('_auth', tg.initData);
+  return `${path}?${p.toString()}`;
 };
 
 // ─── Upgrade cost helpers (mirrors database.py / main.js formulas) ───────────
@@ -2494,6 +2568,143 @@ const CardTile = ({card, onClick}) => {
       {/* upgrade-ready pulse dot */}
       {canUp && <div style={{position:'absolute',top:'5px',right:'4px',width:'7px',height:'7px',borderRadius:'50%',background:T.orange,boxShadow:`0 0 6px ${T.orange}`,animation:'pulse 1.4s ease-in-out infinite'}}/>}
     </button>
+  );
+};
+
+const GeneratorScreen = ({onBack, profile}) => {
+  const [status,  setStatus]  = React.useState(null);
+  const [loading, setLoading] = React.useState(false);
+  const [error,   setError]   = React.useState(null);
+
+  const fetchStatus = async () => {
+    setLoading(true); setError(null);
+    try {
+      const res = await fetch(apiUrl('/api/generator/status'));
+      const data = await res.json();
+      if (data.error) { setError(data.error); } else { setStatus(data); }
+    } catch(e) { setError('Ошибка загрузки'); }
+    finally { setLoading(false); }
+  };
+
+  React.useEffect(() => { fetchStatus(); const iv = setInterval(fetchStatus, 5000); return () => clearInterval(iv); }, []);
+
+  const doClaim = async () => {
+    setLoading(true); setError(null);
+    try {
+      const res = await fetch(apiUrl('/api/generator/claim'), {method:'POST'});
+      const data = await res.json();
+      if (data.error) { setError(data.error); setLoading(false); return; }
+      if (data.success && window.loadProfile) {
+        window.loadProfile().then(d => { if (d) { if (window.__updateProfile) window.__updateProfile(d); } });
+      }
+      fetchStatus();
+    } catch(e) { setError('Ошибка claim'); setLoading(false); }
+  };
+
+  const doUpgrade = async (currency) => {
+    setLoading(true); setError(null);
+    try {
+      const res = await fetch(apiUrl('/api/generator/upgrade'), {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({currency})});
+      const data = await res.json();
+      if (data.error) { setError(data.message || data.error); setLoading(false); return; }
+      if (window.loadProfile) {
+        window.loadProfile().then(d => { if (d) { if (window.__updateProfile) window.__updateProfile(d); } });
+      }
+      fetchStatus();
+    } catch(e) { setError('Ошибка upgrade'); setLoading(false); }
+  };
+
+  const fmtTimer = (sec) => {
+    if (sec == null) return '—';
+    const h = Math.floor(sec / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    const s = Math.floor(sec % 60);
+    return `${h}ч ${m}м ${s}с`;
+  };
+
+  const level = status?.level || 1;
+  const acc   = status?.accumulated_keys || 0;
+  const cap   = status?.cap || 0;
+  const ivH   = status?.interval_hours || '—';
+  const nextS = status?.next_key_seconds;
+  const uc    = status?.upgrade_cost;
+  const canClaim = status?.can_claim;
+  const isMax = status?.level === status?.max_level;
+
+  return (
+    <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'auto',animation:'fadeIn 0.2s',minHeight:0}}>
+      <div style={{padding:'16px 16px 0'}}>
+        <div style={{background:`linear-gradient(135deg,${T.aiDeep},#1a1050)`,border:`1px solid ${T.aiBorder}`,borderRadius:'16px',padding:'16px',marginBottom:'12px'}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'10px'}}>
+            <span style={{fontSize:'10px',color:T.ai,textTransform:'uppercase',letterSpacing:'0.5px',fontWeight:'600'}}>Генератор ключей</span>
+            <span style={{fontSize:'12px',fontWeight:'700',color:T.white,background:`${T.orange}22`,borderRadius:'8px',padding:'2px 10px',fontFamily:"'Exo 2',sans-serif"}}>Уровень {level}</span>
+          </div>
+          <div style={{display:'flex',gap:'12px'}}>
+            <div style={{flex:1,background:`${T.purple1}44`,borderRadius:'12px',padding:'12px',textAlign:'center'}}>
+              <div style={{fontSize:'32px',fontWeight:'900',color:canClaim?T.orange:T.white,fontFamily:"'Exo 2',sans-serif"}}>{acc}</div>
+              <div style={{fontSize:'11px',color:T.grey2}}>из {cap} ключей</div>
+            </div>
+            <div style={{flex:1,background:`${T.purple1}44`,borderRadius:'12px',padding:'12px',textAlign:'center'}}>
+              <div style={{fontSize:'14px',fontWeight:'700',color:T.grey1,fontFamily:"'Exo 2',sans-serif",marginBottom:'2px'}}>{ivH}ч / ключ</div>
+              <div style={{fontSize:'12px',color:nextS?T.orange:T.grey2,fontWeight:'600',marginTop:'2px',minHeight:'16px'}}>
+                {nextS ? `⚡ ${fmtTimer(nextS)}` : (acc >= cap ? 'Полный!' : 'Расчёт...')}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {error && (
+          <div style={{background:'#7f1d1d44',border:'1px solid #ef444455',borderRadius:'10px',padding:'8px 14px',marginBottom:'12px',color:'#f87171',fontSize:'12px',fontWeight:'600'}}>
+            {error}
+          </div>
+        )}
+
+        <button onClick={doClaim} disabled={!canClaim || loading}
+          style={{
+            width:'100%',padding:'12px',borderRadius:'14px',border:'none',cursor:canClaim?'pointer':'default',
+            background:canClaim?`linear-gradient(135deg,${T.orange},${T.orangeLt})`:'rgba(255,255,255,0.08)',
+            color:canClaim?'#1a0a00':'#666',fontSize:'15px',fontWeight:'800',
+            fontFamily:"'Exo 2',sans-serif",marginBottom:'14px',opacity:canClaim?1:0.5,transition:'all 0.15s'
+          }}
+        >
+          {loading ? 'Загрузка...' : canClaim ? `🔑 Забрать ${acc} ключ(ей)` : 'Нет ключей для сбора'}
+        </button>
+
+        {/* Upgrade block */}
+        {!isMax && uc && (
+          <div style={{background:T.bgCard,borderRadius:'14px',padding:'14px',border:`1px solid ${T.purple1}`,marginBottom:'12px'}}>
+            <div style={{fontSize:'13px',fontWeight:'700',color:T.white,marginBottom:'10px',fontFamily:"'Exo 2',sans-serif"}}>
+              Улучшить до уровня {level + 1}
+            </div>
+            <div style={{fontSize:'11px',color:T.grey2,marginBottom:'10px'}}>При апгрейде накопленные ключи сбрасываются, интервал сокращается.</div>
+            <div style={{display:'flex',gap:'8px'}}>
+              {uc.coins && (
+                <button onClick={()=>doUpgrade('coins')} disabled={loading || (profile?.coins||0)<uc.coins}
+                  style={{
+                    flex:1,padding:'10px',borderRadius:'10px',border:`1px solid ${T.orange}44`,
+                    background:`${T.orange}11`,color:T.orange,cursor:'pointer',fontSize:'13px',fontWeight:'700',
+                    fontFamily:"'Exo 2',sans-serif",opacity:(profile?.coins||0)>=uc.coins?1:0.5
+                  }}
+                >
+                  💰 {uc.coins} монет
+                </button>
+              )}
+              {uc.gems && (
+                <button onClick={()=>doUpgrade('gems')} disabled={loading || (profile?.gems||0)<uc.gems}
+                  style={{
+                    flex:1,padding:'10px',borderRadius:'10px',border:`1px solid ${T.purpleLt}44`,
+                    background:`${T.purpleLt}11`,color:T.purpleLt,cursor:'pointer',fontSize:'13px',fontWeight:'700',
+                    fontFamily:"'Exo 2',sans-serif",opacity:(profile?.gems||0)>=uc.gems?1:0.5
+                  }}
+                >
+                  💎 {uc.gems} гемов
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
   );
 };
 
@@ -2870,7 +3081,7 @@ const DecksTab = ({presets, allCards, onReload, profile}) => {
   const [editing, setEditing] = React.useState(null);
   const [saving, setSaving]   = React.useState(false);
   const [saveMsg, setSaveMsg] = React.useState(null);
-  const hasPass = profile?.extra_pass === 'active';
+  const hasPass = profile?.extra_pass === 'active' || profile?.extra_pass === 'ultra';
   const MAX_PRESETS = 5;
   const FREE_LIMIT = 3;
   const presetSlots = Array.from({length:MAX_PRESETS}, (_,i) => i+1).map(n => presets.find(p => p.preset_number===n) || {id:null, preset_number:n, preset_name:`Колода ${n}`, card_ids:[], is_primary:false});
@@ -3162,23 +3373,38 @@ const PlaceholderScreen = ({label}) => (
 var _inviteDataRef = null;
 
 const FriendsScreen = ({onClose, profile}) => {
+  const [tab, setTab] = React.useState('friends');
+  const [friends, setFriends] = React.useState([]);
+  const [friendsLoaded, setFriendsLoaded] = React.useState(false);
   const [opponents, setOpponents] = React.useState([]);
   const [oppLoaded, setOppLoaded] = React.useState(false);
-  const [inviteId,   setInviteId]   = React.useState(null);
-  const [sending,    setSending]    = React.useState(false);
-  const [error,      setError]      = React.useState(null);
+  const [incoming, setIncoming] = React.useState([]);
+  const [outgoing, setOutgoing] = React.useState([]);
+  const [reqLoaded, setReqLoaded] = React.useState(false);
+  const [inviteId, setInviteId] = React.useState(null);
+  const [sending, setSending] = React.useState(false);
+  const [error, setError] = React.useState(null);
+  const [frTargetId, setFrTargetId] = React.useState('');
 
-  const loadOpponents = async () => {
+  const loadAll = () => {
+    setFriendsLoaded(false);
+    fetch(_buildAuthUrl('/api/friends/list')).then(r=>r.json()).then(d=>{
+      setFriends(d.friends||[]);
+    }).catch(()=>{}).finally(()=>setFriendsLoaded(true));
+
     setOppLoaded(false);
-    try {
-      const r = await fetch(_buildAuthUrl('/api/recent-opponents'));
-      const d = await r.json();
-      setOpponents(d.opponents || []);
-    } catch(e) {}
-    setOppLoaded(true);
+    fetch(_buildAuthUrl('/api/recent-opponents')).then(r=>r.json()).then(d=>{
+      setOpponents(d.opponents||[]);
+    }).catch(()=>{}).finally(()=>setOppLoaded(true));
+
+    setReqLoaded(false);
+    fetch(_buildAuthUrl('/api/friends/requests')).then(r=>r.json()).then(d=>{
+      setIncoming(d.incoming||[]);
+      setOutgoing(d.outgoing||[]);
+    }).catch(()=>{}).finally(()=>setReqLoaded(true));
   };
 
-  React.useEffect(()=>{ loadOpponents(); }, [profile]);
+  React.useEffect(()=>{ loadAll(); }, [profile]);
 
   const sendInvite = async (targetId) => {
     setSending(true); setError(null);
@@ -3209,6 +3435,76 @@ const FriendsScreen = ({onClose, profile}) => {
     } catch(e) {}
   };
 
+  const addFriend = async (addresseeId) => {
+    setSending(true); setError(null);
+    try {
+      const r = await fetch(_buildAuthUrl('/api/friends/request'), {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({addressee_id: addresseeId}),
+      });
+      const d = await r.json();
+      if (d.success) {
+        window.showToast('Заявка отправлена!');
+        loadAll();
+      } else {
+        setError(d.error||'Ошибка');
+      }
+    } catch(e) { setError('Ошибка сети'); }
+    setSending(false);
+  };
+
+  const respondToRequest = async (requestId, action) => {
+    try {
+      const r = await fetch(_buildAuthUrl('/api/friends/request/respond'), {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({request_id: requestId, action: action}),
+      });
+      const d = await r.json();
+      if (d.success) {
+        window.showToast(action==='accept'?'Добавлен в друзья!':'Заявка отклонена');
+        loadAll();
+      }
+    } catch(e) {}
+  };
+
+  const cancelRequest = async (requestId) => {
+    try {
+      await fetch(_buildAuthUrl('/api/friends/request/cancel'), {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({request_id: requestId}),
+      });
+      window.showToast('Заявка отозвана');
+      loadAll();
+    } catch(e) {}
+  };
+
+  const removeFriend = async (friendId) => {
+    try {
+      const r = await fetch(_buildAuthUrl('/api/friends/remove'), {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({friend_id: friendId}),
+      });
+      const d = await r.json();
+      if (d.success) {
+        window.showToast('Удалён из друзей');
+        loadAll();
+      }
+    } catch(e) {}
+  };
+
+  const submitFrTarget = () => {
+    const id = parseInt(frTargetId.trim(), 10);
+    if (!id || id <= 0) return;
+    addFriend(id);
+    setFrTargetId('');
+  };
+
+  const tabs = [
+    {id:'friends', label:'👥 Друзья'},
+    {id:'requests', label:`📩 Запросы${(incoming.length+outgoing.length)>0?' ('+(incoming.length+outgoing.length)+')':''}`},
+    {id:'opponents', label:'🎯 Соперники'},
+  ];
+
   return (
     <div style={{position:'absolute',inset:0,background:T.bg,zIndex:200,display:'flex',flexDirection:'column',animation:'fadeIn 0.25s'}}>
       <div style={{height:'52px',background:'rgba(15,10,26,0.98)',display:'flex',alignItems:'center',gap:'10px',padding:'0 16px',flexShrink:0,borderBottom:`1px solid ${T.purple1}`}}>
@@ -3217,45 +3513,141 @@ const FriendsScreen = ({onClose, profile}) => {
         </button>
         <span style={{fontSize:'15px',fontWeight:'700',color:T.white,fontFamily:"'Exo 2',sans-serif"}}>Друзья</span>
       </div>
-      <div style={{flex:1,overflowY:'auto',padding:'16px'}}>
-        <div style={{background:`linear-gradient(135deg,${T.bgCard},${T.purple1}18)`,border:`1px solid ${T.purple1}44`,borderRadius:'16px',padding:'18px',marginBottom:'16px'}}>
-          <div style={{fontSize:'15px',fontWeight:'700',color:T.white,marginBottom:'12px'}}>⚔️ Дружеский бой</div>
-          <p style={{fontSize:'13px',color:T.grey1,margin:'0 0 14px',lineHeight:1.5}}>Введи ID игрока, чтобы вызвать его на дружеский бой без наград.</p>
 
+      {/* Tabs */}
+      <div style={{display:'flex',background:T.bgDeep,borderRadius:'0',padding:'6px 16px',gap:'4px',flexShrink:0,borderBottom:`1px solid ${T.purple1}22`}}>
+        {tabs.map(t=>(
+          <button key={t.id} onClick={()=>setTab(t.id)} style={{flex:1,padding:'7px 4px',borderRadius:'10px',background:tab===t.id?T.purple2:'none',border:'none',color:tab===t.id?T.white:T.grey2,fontSize:'11px',fontWeight:tab===t.id?'700':'400',cursor:'pointer',fontFamily:"'Exo 2',sans-serif",whiteSpace:'nowrap',transition:'all 0.15s'}}>{t.label}</button>
+        ))}
+      </div>
+
+      <div style={{flex:1,overflowY:'auto',padding:'16px'}}>
+        {/* Add friend by ID */}
+        <div style={{background:`linear-gradient(135deg,${T.bgCard},${T.purple1}18)`,border:`1px solid ${T.purple1}44`,borderRadius:'16px',padding:'14px',marginBottom:'14px'}}>
+          <div style={{fontSize:'13px',fontWeight:'700',color:T.white,marginBottom:'8px'}}>👋 Добавить друга</div>
+          <div style={{display:'flex',gap:'8px'}}>
+            <input type="number" value={frTargetId} onChange={e=>setFrTargetId(e.target.value)} onKeyDown={e=>e.key==='Enter'&&submitFrTarget()}
+              placeholder="ID игрока" style={{flex:1,height:'40px',background:T.bg,border:`1px solid ${T.purple1}`,borderRadius:'10px',padding:'0 12px',color:T.white,fontSize:'13px',outline:'none',fontFamily:"'Exo 2',sans-serif",MozAppearance:'textfield'}}
+            />
+            <button onClick={submitFrTarget} disabled={sending}
+              style={{height:'40px',padding:'0 16px',background:T.green,border:'none',borderRadius:'10px',color:'white',fontSize:'13px',fontWeight:'700',cursor:sending?'default':'pointer',fontFamily:"'Exo 2',sans-serif",whiteSpace:'nowrap',opacity:sending?0.5:1}}>
+              {sending?'...':'Добавить'}
+            </button>
+          </div>
+          {error && <div style={{fontSize:'12px',color:T.red,marginTop:'8px'}}>{error}</div>}
+        </div>
+
+        {/* Battle invite bar */}
+        <div style={{background:`linear-gradient(135deg,${T.bgCard},${T.purple1}18)`,border:`1px solid ${T.purple1}44`,borderRadius:'16px',padding:'14px',marginBottom:'14px'}}>
+          <div style={{fontSize:'13px',fontWeight:'700',color:T.white,marginBottom:'8px'}}>⚔️ Дружеский бой</div>
           {inviteId ? (
             <div>
-              <div style={{background:T.purple1+'22',borderRadius:'12px',padding:'10px 14px',marginBottom:'10px',fontSize:'13px',color:T.green,fontWeight:600}}>
+              <div style={{background:T.purple1+'22',borderRadius:'10px',padding:'8px 12px',marginBottom:'8px',fontSize:'12px',color:T.green,fontWeight:600}}>
                 Вызов отправлен! ID: {inviteId}
               </div>
-              <button onClick={cancelInvite} style={{width:'100%',height:'44px',background:T.bgCard,border:`1px solid ${T.red}66`,borderRadius:'12px',color:T.red,fontSize:'14px',fontWeight:'700',cursor:'pointer',fontFamily:"'Exo 2',sans-serif"}}>Отозвать вызов</button>
+              <button onClick={cancelInvite} style={{width:'100%',height:'40px',background:T.bgCard,border:`1px solid ${T.red}66`,borderRadius:'10px',color:T.red,fontSize:'13px',fontWeight:'700',cursor:'pointer',fontFamily:"'Exo 2',sans-serif"}}>Отозвать вызов</button>
             </div>
           ) : (
-            <div>
-              <InviteInput onSend={sendInvite} sending={sending}/>
-              {error && <div style={{fontSize:'12px',color:T.red,marginTop:'8px'}}>{error}</div>}
-            </div>
+            <InviteInput onSend={sendInvite} sending={sending}/>
           )}
         </div>
 
-        <div style={{fontSize:'15px',fontWeight:'700',color:T.white,marginBottom:'10px'}}>Недавние соперники</div>
-        {!oppLoaded ? (
-          <div style={{fontSize:'13px',color:T.grey1,textAlign:'center',padding:'20px'}}>Загрузка...</div>
-        ) : opponents.length === 0 ? (
-          <div style={{fontSize:'13px',color:T.grey2,textAlign:'center',padding:'20px'}}>Пока нет соперников</div>
-        ) : (
-          opponents.map((op, i) => (
-            <div key={i} style={{display:'flex',alignItems:'center',gap:'10px',background:T.bgCard,border:`1px solid ${T.purple1}22`,borderRadius:'14px',padding:'10px 14px',marginBottom:'8px'}}>
-              <div style={{width:'36px',height:'36px',borderRadius:'10px',background:`linear-gradient(135deg,${T.purple2},${T.purple1})`,display:'flex',alignItems:'center',justifyContent:'center',overflow:'hidden',flexShrink:0}}>
-                {op.avatar_url ? <img src={op.avatar_url} alt="" style={{width:'100%',height:'100%',objectFit:'cover'}}/> : <span style={{fontSize:'16px'}}>👤</span>}
+        {/* Tab content */}
+        {tab === 'friends' && <>
+          <div style={{fontSize:'14px',fontWeight:'700',color:T.white,marginBottom:'10px'}}>Мои друзья</div>
+          {!friendsLoaded ? (
+            <div style={{fontSize:'13px',color:T.grey1,textAlign:'center',padding:'20px'}}>Загрузка...</div>
+          ) : friends.length === 0 ? (
+            <div style={{fontSize:'13px',color:T.grey2,textAlign:'center',padding:'20px'}}>Пока нет друзей</div>
+          ) : (
+            friends.map((f,i) => (
+              <div key={i} style={{display:'flex',alignItems:'center',gap:'10px',background:T.bgCard,border:`1px solid ${T.purple1}22`,borderRadius:'14px',padding:'10px 14px',marginBottom:'8px'}}>
+                <div style={{width:'36px',height:'36px',borderRadius:'10px',background:`linear-gradient(135deg,${T.purple2},${T.purple1})`,display:'flex',alignItems:'center',justifyContent:'center',overflow:'hidden',flexShrink:0}}>
+                  {f.avatar_url ? <img src={f.avatar_url} alt="" style={{width:'100%',height:'100%',objectFit:'cover'}}/> : <span style={{fontSize:'16px'}}>👤</span>}
+                </div>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontSize:'14px',fontWeight:'600',color:T.white,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{f.display_name}</div>
+                  <div style={{fontSize:'11px',color:T.grey2}}>ID: {f.user_id}</div>
+                </div>
+                <button onClick={()=>sendInvite(f.user_id)} disabled={sending} style={{height:'32px',padding:'0 12px',background:T.orange,border:'none',borderRadius:'8px',color:'white',fontSize:'11px',fontWeight:'700',cursor:sending?'default':'pointer',opacity:sending?0.5:1,fontFamily:"'Exo 2',sans-serif",whiteSpace:'nowrap'}}>⚔️ В бой</button>
+                <button onClick={()=>removeFriend(f.user_id)} style={{height:'32px',padding:'0 10px',background:T.bgCard,border:`1px solid ${T.red}44`,borderRadius:'8px',color:T.red,fontSize:'11px',fontWeight:'600',cursor:'pointer',fontFamily:"'Exo 2',sans-serif",whiteSpace:'nowrap'}}>Удалить</button>
               </div>
-              <div style={{flex:1,minWidth:0}}>
-                <div style={{fontSize:'14px',fontWeight:'600',color:T.white,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{op.display_name}</div>
-                <div style={{fontSize:'11px',color:T.grey2}}>ID: {op.user_id}</div>
+            ))
+          )}
+        </>}
+
+        {tab === 'requests' && <>
+          {!reqLoaded ? (
+            <div style={{fontSize:'13px',color:T.grey1,textAlign:'center',padding:'20px'}}>Загрузка...</div>
+          ) : (
+            <>
+              {incoming.length > 0 && (
+                <>
+                  <div style={{fontSize:'14px',fontWeight:'700',color:T.white,marginBottom:'10px'}}>Входящие</div>
+                  {incoming.map((r,i) => (
+                    <div key={'in'+i} style={{display:'flex',alignItems:'center',gap:'10px',background:T.bgCard,border:`1px solid ${T.purple1}22`,borderRadius:'14px',padding:'10px 14px',marginBottom:'8px'}}>
+                      <div style={{width:'36px',height:'36px',borderRadius:'10px',background:`linear-gradient(135deg,${T.purple2},${T.purple1})`,display:'flex',alignItems:'center',justifyContent:'center',overflow:'hidden',flexShrink:0}}>
+                        {r.avatar_url ? <img src={r.avatar_url} alt="" style={{width:'100%',height:'100%',objectFit:'cover'}}/> : <span style={{fontSize:'16px'}}>👤</span>}
+                      </div>
+                      <div style={{flex:1,minWidth:0}}>
+                        <div style={{fontSize:'14px',fontWeight:'600',color:T.white,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{r.display_name}</div>
+                        <div style={{fontSize:'11px',color:T.grey2}}>ID: {r.requester_id}</div>
+                      </div>
+                      <button onClick={()=>respondToRequest(r.id,'accept')} style={{height:'32px',padding:'0 12px',background:T.green,border:'none',borderRadius:'8px',color:'white',fontSize:'11px',fontWeight:'700',cursor:'pointer',fontFamily:"'Exo 2',sans-serif",whiteSpace:'nowrap'}}>Принять</button>
+                      <button onClick={()=>respondToRequest(r.id,'decline')} style={{height:'32px',padding:'0 10px',background:T.bgCard,border:`1px solid ${T.red}44`,borderRadius:'8px',color:T.red,fontSize:'11px',fontWeight:'600',cursor:'pointer',fontFamily:"'Exo 2',sans-serif",whiteSpace:'nowrap'}}>Отклонить</button>
+                    </div>
+                  ))}
+                </>
+              )}
+              {outgoing.length > 0 && (
+                <>
+                  <div style={{fontSize:'14px',fontWeight:'700',color:T.white,marginBottom:'10px',marginTop: incoming.length>0?'16px':'0'}}>Исходящие</div>
+                  {outgoing.map((r,i) => (
+                    <div key={'out'+i} style={{display:'flex',alignItems:'center',gap:'10px',background:T.bgCard,border:`1px solid ${T.purple1}22`,borderRadius:'14px',padding:'10px 14px',marginBottom:'8px'}}>
+                      <div style={{width:'36px',height:'36px',borderRadius:'10px',background:`linear-gradient(135deg,${T.purple2},${T.purple1})`,display:'flex',alignItems:'center',justifyContent:'center',overflow:'hidden',flexShrink:0}}>
+                        {r.avatar_url ? <img src={r.avatar_url} alt="" style={{width:'100%',height:'100%',objectFit:'cover'}}/> : <span style={{fontSize:'16px'}}>👤</span>}
+                      </div>
+                      <div style={{flex:1,minWidth:0}}>
+                        <div style={{fontSize:'14px',fontWeight:'600',color:T.white,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{r.display_name}</div>
+                        <div style={{fontSize:'11px',color:T.grey2}}>ID: {r.addressee_id}</div>
+                      </div>
+                      <button onClick={()=>cancelRequest(r.id)} style={{height:'32px',padding:'0 10px',background:T.bgCard,border:`1px solid ${T.red}44`,borderRadius:'8px',color:T.red,fontSize:'11px',fontWeight:'600',cursor:'pointer',fontFamily:"'Exo 2',sans-serif",whiteSpace:'nowrap'}}>Отозвать</button>
+                    </div>
+                  ))}
+                </>
+              )}
+              {incoming.length === 0 && outgoing.length === 0 && (
+                <div style={{fontSize:'13px',color:T.grey2,textAlign:'center',padding:'20px'}}>Нет запросов</div>
+              )}
+            </>
+          )}
+        </>}
+
+        {tab === 'opponents' && <>
+          <div style={{fontSize:'14px',fontWeight:'700',color:T.white,marginBottom:'10px'}}>Недавние соперники</div>
+          {!oppLoaded ? (
+            <div style={{fontSize:'13px',color:T.grey1,textAlign:'center',padding:'20px'}}>Загрузка...</div>
+          ) : opponents.length === 0 ? (
+            <div style={{fontSize:'13px',color:T.grey2,textAlign:'center',padding:'20px'}}>Пока нет соперников</div>
+          ) : (
+            opponents.map((op,i) => (
+              <div key={i} style={{display:'flex',alignItems:'center',gap:'10px',background:T.bgCard,border:`1px solid ${T.purple1}22`,borderRadius:'14px',padding:'10px 14px',marginBottom:'8px'}}>
+                <div style={{width:'36px',height:'36px',borderRadius:'10px',background:`linear-gradient(135deg,${T.purple2},${T.purple1})`,display:'flex',alignItems:'center',justifyContent:'center',overflow:'hidden',flexShrink:0}}>
+                  {op.avatar_url ? <img src={op.avatar_url} alt="" style={{width:'100%',height:'100%',objectFit:'cover'}}/> : <span style={{fontSize:'16px'}}>👤</span>}
+                </div>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontSize:'14px',fontWeight:'600',color:T.white,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{op.display_name}</div>
+                  <div style={{fontSize:'11px',color:T.grey2}}>ID: {op.user_id}</div>
+                </div>
+                {op.is_friend ? (
+                  <button onClick={()=>sendInvite(op.user_id)} disabled={sending} style={{height:'32px',padding:'0 12px',background:T.orange,border:'none',borderRadius:'8px',color:'white',fontSize:'11px',fontWeight:'700',cursor:sending?'default':'pointer',opacity:sending?0.5:1,fontFamily:"'Exo 2',sans-serif",whiteSpace:'nowrap'}}>⚔️ В бой</button>
+                ) : (
+                  <button onClick={()=>addFriend(op.user_id)} disabled={sending} style={{height:'32px',padding:'0 12px',background:T.green,border:'none',borderRadius:'8px',color:'white',fontSize:'11px',fontWeight:'700',cursor:sending?'default':'pointer',opacity:sending?0.5:1,fontFamily:"'Exo 2',sans-serif",whiteSpace:'nowrap'}}>Добавить</button>
+                )}
               </div>
-              <button onClick={()=>sendInvite(op.user_id)} disabled={sending} style={{height:'34px',padding:'0 14px',background:T.orange,border:'none',borderRadius:'10px',color:'white',fontSize:'12px',fontWeight:'700',cursor:sending?'default':'pointer',opacity:sending?0.5:1,fontFamily:"'Exo 2',sans-serif",whiteSpace:'nowrap'}}>Вызвать</button>
-            </div>
-          ))
-        )}
+            ))
+          )}
+        </>}
       </div>
     </div>
   );
@@ -3390,6 +3782,7 @@ var IncomingInviteModal = ({invite, profile, onClose, onStart}) => {
         document.getElementById('battle-sound')?.play().catch(function(){});
         window._openPreBattle({
           matchId: d.match_id, userId: profile?.user_id || window._getUserId?.(),
+          authData: window.Telegram?.WebApp?.initData || '',
           profile: profile, gameMode: 'friendly',
           opponentName: d.opponent_name, opponentAvatar: d.opponent_avatar_url,
           opponentTrophies: d.opponent_trophies, opponentClan: d.opponent_clan,
@@ -3681,10 +4074,11 @@ const GameModeSheet = ({onClose, onConfirm}) => {
             </button>
           </div>
         ) : (
-          <button onClick={()=>onConfirm(fullMode, deckId)}
-            style={{width:'100%',height:'54px',background:`linear-gradient(135deg,${chosen.color},${chosen.color}cc)`,border:'none',borderRadius:'16px',color:'white',fontSize:'18px',fontWeight:'900',fontFamily:"'Exo 2',sans-serif",cursor:'pointer',boxShadow:`0 6px 24px ${chosen.color}44`,letterSpacing:'1px',transition:'all 0.15s',display:'flex',alignItems:'center',justifyContent:'center',gap:'8px'}}>
+          (()=>{const canStart = deckId && deckCount === 9 && selectedDeck?.card_ids?.[0]; return <button onClick={()=>onConfirm(fullMode, deckId)}
+            disabled={!canStart}
+            style={{width:'100%',height:'54px',background:`linear-gradient(135deg,${chosen.color},${chosen.color}cc)`,border:'none',borderRadius:'16px',color:'white',fontSize:'18px',fontWeight:'900',fontFamily:"'Exo 2',sans-serif",cursor:canStart?'pointer':'not-allowed',boxShadow:`0 6px 24px ${chosen.color}44`,letterSpacing:'1px',transition:'all 0.15s',display:'flex',alignItems:'center',justifyContent:'center',gap:'8px',opacity:canStart?1:0.4}}>
             {chosen.img ? <img src={chosen.img} alt="" style={{width:'24px',height:'24px',filter:'brightness(0) invert(1)'}}/> : chosen.icon} В БОЙ — {mode==='extra_arena'?(chosen.subMods?.find(s=>s.id===subMod)?.label||chosen.label):chosen.label}
-          </button>
+          </button>})()
         )}
       </div>
     </div>
@@ -3900,7 +4294,8 @@ const PreBattleScreen = ({data, onClose}) => {
 
   React.useEffect(() => {
     if (countdown <= 0 && data) {
-      window.location.href = location.origin + '/arena?id=' + encodeURIComponent(data.matchId) + '&user_id=' + encodeURIComponent(data.userId);
+      const authParam = data.authData ? '&_auth=' + encodeURIComponent(data.authData) : '';
+      window.location.href = location.origin + '/arena?id=' + encodeURIComponent(data.matchId) + authParam;
     }
   }, [countdown, data]);
 
@@ -3923,7 +4318,8 @@ const PreBattleScreen = ({data, onClose}) => {
   const handleTap = () => {
     clearInterval(timerRef.current);
     if (data) {
-      window.location.href = location.origin + '/arena?id=' + encodeURIComponent(data.matchId) + '&user_id=' + encodeURIComponent(data.userId);
+      const authParam = data.authData ? '&_auth=' + encodeURIComponent(data.authData) : '';
+      window.location.href = location.origin + '/arena?id=' + encodeURIComponent(data.matchId) + authParam;
     }
   };
 
@@ -4026,6 +4422,8 @@ const BattleHistorySheet = ({onClose, profile}) => {
   const [limit, setLimit] = React.useState(10);
   const [isLimited, setIsLimited] = React.useState(true);
   const [loading, setLoading] = React.useState(true);
+  const [filter, setFilter] = React.useState('all');
+  const [showTraining, setShowTraining] = React.useState(false);
 
   const load = async () => {
     setLoading(true);
@@ -4043,10 +4441,13 @@ const BattleHistorySheet = ({onClose, profile}) => {
 
   const modeLabels = {
     classic: 'Classic',
-    blitz: 'Blitz',
+    'extra_arena:blitz': 'ExtraArena · Blitz',
+    'extra_arena:draft': 'ExtraArena · Draft',
     friendly: 'Friendly',
     training: 'Тренировка',
     pvp: 'Classic',
+    blitz: 'ExtraArena · Blitz',
+    draft: 'ExtraArena · Draft',
   };
 
   const formatDuration = (seconds) => {
@@ -4064,6 +4465,20 @@ const BattleHistorySheet = ({onClose, profile}) => {
       return `${dd} ${tt}`;
     } catch(e) { return iso; }
   };
+
+  const now = Date.now();
+  const sevenDaysAgo = now - 7 * 24 * 3600 * 1000;
+  const weeklyDelta = battles
+    .filter(b => new Date(b.created_at).getTime() >= sevenDaysAgo
+                 && b.mode !== 'friendly' && b.mode !== 'training')
+    .reduce((sum, b) => sum + (b.trophies_change || 0), 0);
+  const maxTrophies = profile?.max_trophies ?? null;
+  const parseTs = s => { if (!s) return 0; return new Date(String(s).replace(' ','T')).getTime() || 0; };
+  const sortedBattles = [...battles].sort((a, b) => parseTs(b.created_at) - parseTs(a.created_at));
+  let visibleBattles = filter === 'all'
+    ? sortedBattles
+    : sortedBattles.filter(b => b.result === filter);
+  if (!showTraining) visibleBattles = visibleBattles.filter(b => b.mode !== 'training' && b.mode !== 'friendly');
 
   return (
     <div style={{position:'absolute',inset:0,background:T.bg,zIndex:200,display:'flex',flexDirection:'column',animation:'fadeIn 0.25s'}}>
@@ -4089,27 +4504,78 @@ const BattleHistorySheet = ({onClose, profile}) => {
               </div>
             )}
 
+            {battles.length > 0 && (
+              <>
+                <div style={{display:'flex',gap:'8px',marginBottom:'12px'}}>
+                  {maxTrophies != null && (
+                    <div style={{flex:1,background:T.bgCard,border:`1px solid ${T.purple1}`,
+                                 borderRadius:'12px',padding:'8px 12px',textAlign:'center'}}>
+                      <div style={{fontSize:'10px',color:T.grey2,marginBottom:'2px'}}>Рекорд</div>
+                      <div style={{fontSize:'15px',fontWeight:'800',color:T.orange,fontFamily:"'Exo 2',sans-serif"}}>
+                        {maxTrophies} 🏆
+                      </div>
+                    </div>
+                  )}
+                  {battles.length > 0 && (
+                    <div style={{flex:1,background:T.bgCard,border:`1px solid ${T.purple1}`,
+                                 borderRadius:'12px',padding:'8px 12px',textAlign:'center'}}>
+                      <div style={{fontSize:'10px',color:T.grey2,marginBottom:'2px'}}>За 7 дней</div>
+                      <div style={{fontSize:'15px',fontWeight:'800',
+                                   color:weeklyDelta>=0?'#22c55e':'#ef4444',
+                                   fontFamily:"'Exo 2',sans-serif"}}>
+                        {weeklyDelta>0?'+':''}{weeklyDelta} 🏆
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div style={{display:'flex',gap:'6px',marginBottom:'10px'}}>
+                  {[['all','Все'],['win','Победы'],['lose','Поражения'],['draw','Ничья']].map(([val,lbl])=>(
+                    <button key={val} onClick={()=>setFilter(val)} style={{
+                      flex:1,padding:'5px 4px',borderRadius:'10px',border:'none',cursor:'pointer',
+                      fontSize:'10px',fontWeight:'600',
+                      background: filter===val ? T.purple3 : T.bgCard,
+                      color: filter===val ? T.white : T.grey2,
+                      transition:'all 0.15s'
+                    }}>{lbl}</button>
+                  ))}
+                </div>
+
+                <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'10px',padding:'0 2px'}}>
+                  <span style={{fontSize:'11px',color:T.grey2,fontWeight:'600'}}>Тренировки и Дружеские бои</span>
+                  <div onClick={()=>setShowTraining(v=>!v)} style={{width:'44px',height:'25px',borderRadius:'13px',background:showTraining?T.purpleLt:T.purple1,border:`1px solid ${showTraining?T.purpleHL:T.grey3}`,position:'relative',cursor:'pointer',transition:'all 0.2s',flexShrink:0}}>
+                    <div style={{position:'absolute',top:'3px',left:showTraining?'21px':'3px',width:'17px',height:'17px',borderRadius:'50%',background:showTraining?'white':T.grey2,boxShadow:showTraining?`0 2px 6px ${T.purpleHL}88`:'none',transition:'left 0.2s, background 0.2s'}}/>
+                  </div>
+                </div>
+              </>
+            )}
+
             {battles.length === 0 ? (
               <div style={{textAlign:'center',padding:'40px 20px'}}>
                 <div style={{fontSize:'48px',marginBottom:'12px'}}>⚔️</div>
                 <div style={{fontSize:'15px',fontWeight:'700',color:T.white,fontFamily:"'Exo 2',sans-serif",marginBottom:'6px'}}>Ты ещё не сыграл ни одного боя</div>
                 <div style={{fontSize:'12px',color:T.grey1,lineHeight:1.5}}>Вперёд на арену!</div>
               </div>
+            ) : visibleBattles.length === 0 ? (
+              <div style={{textAlign:'center',padding:'30px',color:T.grey2,fontSize:'13px'}}>
+                Боёв с таким результатом нет
+              </div>
             ) : (
               <div style={{display:'flex',flexDirection:'column',gap:'8px'}}>
-                {battles.map((b, i) => {
+                {visibleBattles.map((b, i) => {
                   const resultIcon = b.result === 'win' ? '🏆' : b.result === 'lose' ? '💀' : '🤝';
                   const resultColor = b.result === 'win' ? '#22c55e' : b.result === 'lose' ? '#ef4444' : T.grey2;
                   const resultLabel = b.result === 'win' ? 'Победа' : b.result === 'lose' ? 'Поражение' : 'Ничья';
                   const isFreeMode = b.mode === 'friendly' || b.mode === 'training';
                   const trophyChange = b.trophies_change || 0;
                   const modeLabel = modeLabels[b.mode] || b.mode || 'Classic';
-                  const duration = formatDuration(b.duration_seconds);
-                  const turns = b.turns_count || 0;
-                  const secondaryInfo = duration || (turns > 0 ? `${turns} ходов` : null);
+                  const durationStr = formatDuration(b.duration_seconds);
+                  const turnsStr = b.turns_count > 0 ? `${b.turns_count} ходов` : null;
+                  const secondaryInfo = durationStr || turnsStr;
+                  const isTraining = b.mode === 'training' || b.mode === 'friendly';
 
                   return (
-                    <div key={i} style={{background:T.bgCard,border:`1px solid ${T.purple1}`,borderRadius:'14px',padding:'10px 12px',display:'flex',alignItems:'center',gap:'10px'}}>
+                    <div key={i} style={{background:T.bgCard,border:`1px solid ${isTraining?T.grey3:T.purple1}`,borderRadius:'14px',padding:'10px 12px',display:'flex',alignItems:'center',gap:'10px',opacity:isTraining?0.5:1}}>
                       <div style={{fontSize:'28px',flexShrink:0,textAlign:'center',width:'36px',lineHeight:1}}>{resultIcon}</div>
                       <div style={{flex:1,minWidth:0}}>
                         <div style={{display:'flex',alignItems:'center',gap:'6px',marginBottom:'2px'}}>
@@ -4147,6 +4613,7 @@ const App = () => {
   const [showMenu,       setShowMenu]       = React.useState(false);
   const [showSettings,   setShowSettings]   = React.useState(false);
   const [showAI,         setShowAI]         = React.useState(false);
+  const [showGenerator,  setShowGenerator]  = React.useState(false);
   const [showBattlePick, setShowBattlePick] = React.useState(false);
   const [showGameMode,   setShowGameMode]   = React.useState(false);
   const [showMail,       setShowMail]       = React.useState(false);
@@ -4164,6 +4631,7 @@ const App = () => {
   const [incomingInvite, setIncomingInvite] = React.useState(null);
   const [showInvite,     setShowInvite]     = React.useState(false);
   const [showFriends,    setShowFriends]    = React.useState(false);
+  const [frPendingCount, setFrPendingCount] = React.useState(0);
   const [inBattle,       setInBattle]       = React.useState(false);
 
   window.showToast = (msg, type, ms) => {
@@ -4173,12 +4641,12 @@ const App = () => {
     setTimeout(function(){ setToast(function(t){ return t && t.id === id ? null : t; }); }, ms);
   };
 
-  const hasOverlay = showAI || showMenu || showSettings || showBattlePick || showGameMode || showMail || showCaseOpen || showInfo || showGloryPath || showLeagueInfo || showBattlePass || showPreBattle || showSupport || showInvite || showBattles || showFriends;
+  const hasOverlay = showAI || showGenerator || showMenu || showSettings || showBattlePick || showGameMode || showMail || showCaseOpen || showInfo || showGloryPath || showLeagueInfo || showBattlePass || showPreBattle || showSupport || showInvite || showBattles || showFriends;
 
   React.useEffect(()=>{ window.__rootSetPreBattle = setShowPreBattle; window.__updateProfile = setProfile; return ()=>window.__rootSetPreBattle=null; }, []);
 
   React.useEffect(()=>{
-    const anyOpen = showMenu || showSettings || showBattlePick || showGameMode || showMail || showCaseOpen || showInfo || showGloryPath || showLeagueInfo || showBattlePass || showSupport || showBattles;
+    const anyOpen = showAI || showGenerator || showMenu || showSettings || showBattlePick || showGameMode || showMail || showCaseOpen || showInfo || showGloryPath || showLeagueInfo || showBattlePass || showSupport || showBattles;
     if (anyOpen) window._playSfx('menu-open-sound');
   }, [showMenu, showSettings, showBattlePick, showGameMode, showMail, showCaseOpen, showInfo, showGloryPath, showLeagueInfo, showSupport, showBattles]);
 
@@ -4229,8 +4697,18 @@ const App = () => {
         }
       } catch(e) {}
     };
+    const pollFrReqs = async () => {
+      try {
+        const r = await fetch(_buildAuthUrl('/api/friends/requests'));
+        if (!r.ok) return;
+        const d = await r.json();
+        setFrPendingCount((d.incoming||[]).length + (d.outgoing||[]).length);
+      } catch(e) {}
+    };
     const interval = setInterval(pollInvites, 5000);
-    return () => clearInterval(interval);
+    const frInterval = setInterval(pollFrReqs, 10000);
+    pollFrReqs();
+    return () => { clearInterval(interval); clearInterval(frInterval); };
   }, []);
 
   const displayName = profile?.custom_nickname || profile?.first_name || profile?.username || 'ExtraArena';
@@ -4239,15 +4717,17 @@ const App = () => {
   return (
     <div style={{width:'100%',height:'100%',background:T.bg,display:'flex',flexDirection:'column',position:'relative',overflow:'hidden',touchAction:'pan-y',overscrollBehavior:'none'}}>
       <TopBar
-        title={showAI ? 'ИИ Аналитика' : displayName}
-        showBack={showAI}
-        onBack={()=>setShowAI(false)}
-        onMenu={!showAI ? ()=>setShowMenu(true) : null}
+        title={showAI ? 'ИИ Аналитика' : showGenerator ? 'Генератор' : displayName}
+        showBack={showAI || showGenerator}
+        onBack={()=>{setShowAI(false);setShowGenerator(false);}}
+        onMenu={!showAI && !showGenerator ? ()=>setShowMenu(true) : null}
         profile={profile}
         extra={showAI ? (
           <div style={{width:'28px',height:'28px',borderRadius:'8px',background:T.aiBg,border:`1px solid ${T.aiBorder}`,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="2.5" fill={T.ai}/><path d="M7 1v2M7 11v2M1 7h2M11 7h2" stroke={T.ai} strokeWidth="1.2" strokeLinecap="round"/></svg>
           </div>
+        ) : showGenerator ? (
+          <span style={{fontSize:'20px'}}>🔑</span>
         ) : null}
       />
 
@@ -4269,8 +4749,10 @@ const App = () => {
         onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
         {showAI ? (
           <AIScreen onBack={()=>setShowAI(false)}/>
+        ) : showGenerator ? (
+          <GeneratorScreen onBack={()=>setShowGenerator(false)} profile={profile}/>
         ) : navTab===2 ? (
-          <ArenaScreen onMenu={()=>setShowMenu(true)} onAI={()=>setShowAI(true)} onOpenBattles={()=>setShowBattles(true)} onBattlePick={()=>setShowBattlePick(true)} onStartBattle={()=>setShowGameMode(true)} onOpenCase={()=>setShowCaseOpen(true)} onOpenGloryPath={()=>setShowGloryPath(true)} onOpenLeagueInfo={()=>setShowLeagueInfo(true)} onOpenBattlePass={()=>setShowBattlePass(true)} onGoToShop={()=>setNavTab(0)} profile={profile}/>
+          <ArenaScreen onMenu={()=>setShowMenu(true)} onAI={()=>setShowAI(true)} onGenerator={()=>setShowGenerator(true)} onOpenBattles={()=>setShowBattles(true)} onBattlePick={()=>setShowBattlePick(true)} onStartBattle={()=>setShowGameMode(true)} onOpenCase={()=>setShowCaseOpen(true)} onOpenGloryPath={()=>setShowGloryPath(true)} onOpenLeagueInfo={()=>setShowLeagueInfo(true)} onOpenBattlePass={()=>setShowBattlePass(true)} onGoToShop={()=>setNavTab(0)} profile={profile}/>
         ) : navTab===0 ? (
           <ShopScreen profile={profile} onProfileUpdate={function(p){ setProfile(p); }}/>
         ) : navTab===1 ? (
@@ -4282,9 +4764,9 @@ const App = () => {
         )}
       </div>
 
-      {!showAI && <BottomNav active={navTab} onChange={setNavTab}/>}
+      {!showAI && !showGenerator && <BottomNav active={navTab} onChange={setNavTab}/>}
 
-      {showMenu       && <MenuSheet       onClose={()=>setShowMenu(false)} onSettings={openSettings} onMail={()=>{setShowMenu(false);setTimeout(()=>setShowMail(true),120);}} onSupport={()=>{setShowMenu(false);setTimeout(()=>setShowSupport(true),120);}} onInfo={()=>{setShowMenu(false);setTimeout(()=>setShowInfo(true),120);}} onFriends={()=>{setShowMenu(false);setTimeout(()=>setShowFriends(true),120);}} profile={profile}/>}
+      {showMenu       && <MenuSheet       onClose={()=>setShowMenu(false)} onSettings={openSettings} onMail={()=>{setShowMenu(false);setTimeout(()=>setShowMail(true),120);}} onSupport={()=>{setShowMenu(false);setTimeout(()=>setShowSupport(true),120);}} onInfo={()=>{setShowMenu(false);setTimeout(()=>setShowInfo(true),120);}} onFriends={()=>{setShowMenu(false);setTimeout(()=>setShowFriends(true),120);}} profile={profile} frPending={frPendingCount}/>}
       {showSettings   && <SettingsScreen  onClose={()=>setShowSettings(false)} profile={profile}/>}
       {showBattlePick && <BattlePickSheet onClose={()=>setShowBattlePick(false)} profile={profile}/>}
       {showGameMode   && <GameModeSheet   onClose={()=>setShowGameMode(false)} onConfirm={(mode, deckId)=>{setShowGameMode(false);window.startBattle(profile, deckId, mode);}}/>}
@@ -4298,7 +4780,7 @@ const App = () => {
       {showBattlePass && <BattlePassSheet onClose={()=>setShowBattlePass(false)} profile={profile}/>}
       {showBattles   && <BattleHistorySheet onClose={()=>setShowBattles(false)} profile={profile}/>}
       {showInvite   && incomingInvite && <IncomingInviteModal invite={incomingInvite} profile={profile} onClose={()=>{setShowInvite(false);setIncomingInvite(null);}} onStart={()=>setInBattle(true)}/>}
-      {showFriends && <FriendsScreen onClose={()=>setShowFriends(false)} profile={profile}/>}
+      {showFriends && <FriendsScreen onClose={()=>{setShowFriends(false);setTimeout(async()=>{try{const r=await fetch(_buildAuthUrl('/api/friends/requests'));const d=await r.json();setFrPendingCount((d.incoming||[]).length+(d.outgoing||[]).length);}catch(e){}},300);}} profile={profile}/>}
 
       {/* League Up Modal */}
       {leagueUp && (()=>{

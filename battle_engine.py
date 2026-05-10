@@ -597,6 +597,7 @@ class BattleEngine:
             "current_player_id": state.current_turn_owner_id,
             "is_my_turn": is_my_turn,
             "player_ids": [p1.user_id, p2.user_id],
+            "viewer_id": viewer_id,
             "is_ended": self.is_ended,
             "game_over": state.status != GameStatus.ONGOING,
             "winner_id": self._get_winner_id(),

@@ -17,6 +17,7 @@
 let socket = null;
 let matchId = null;
 let userId = null;
+let authToken = null;
 let currentState = null;
 
 // Для drag & drop
@@ -114,14 +115,25 @@ document.addEventListener('DOMContentLoaded', () => {
   // Извлекаем параметры из URL
   const urlParams = new URLSearchParams(window.location.search);
   matchId = urlParams.get('id');
-  userId = urlParams.get('user_id');
-  
+  const _auth = urlParams.get('_auth');
+
+  if (_auth) {
+    sessionStorage.setItem('arena_auth', _auth);
+    history.replaceState(null, '', '/arena?id=' + matchId);
+  }
+  authToken = sessionStorage.getItem('arena_auth');
+
   console.log('[ARENA] Match ID:', matchId);
-  console.log('[ARENA] User ID:', userId);
-  
-  if (!matchId || !userId) {
-    console.error('[ARENA] Отсутствует match_id или user_id в URL');
+
+  if (!matchId) {
+    console.error('[ARENA] Отсутствует match_id в URL');
     alert('Ошибка: параметры боя не найдены');
+    return;
+  }
+
+  if (!authToken) {
+    console.error('[ARENA] Отсутствует _auth токен');
+    alert('Ошибка: токен аутентификации не найден');
     return;
   }
   
@@ -156,7 +168,7 @@ function initSocketIO() {
     // Входим в комнату матча
     socket.emit('join_match', {
       match_id: matchId,
-      user_id: parseInt(userId, 10)
+      _auth: authToken
     });
     
     // ВАЖНО: НЕ отправляем client_ready здесь
@@ -178,8 +190,7 @@ function initSocketIO() {
     // Это позволяет серверу запустить бота (если он ходит первым)
     console.log('[SOCKET.IO] Отправка сигнала client_ready...');
     socket.emit('client_ready', {
-      match_id: matchId,
-      user_id: Number(userId) // Приводим к числу для консистентности
+      match_id: matchId
     });
   });
   
@@ -259,6 +270,69 @@ function initSocketIO() {
     console.log('[SOCKET.IO] game_over получено:', data);
     handleGameOver(data);
   });
+  
+   // Очищаем кеш результата при старте нового матча
+  window.__battleResultEconomy = null;
+  window.__resultModalShown = false;
+}
+
+// ── Helpers для безопасного мержа экономики результата ──
+
+function _isEconomyNonEmpty(e) {
+  if (!e) return false;
+  return (
+    (e.trophyDelta != null && e.trophyDelta !== 0) ||
+    e.trophyTotal != null ||
+    (e.coinsDelta != null && e.coinsDelta !== 0) ||
+    e.coinsTotal != null ||
+    (e.starsDelta != null && e.starsDelta !== 0) ||
+    e.starsTotal != null
+  );
+}
+
+function _mergeDelta(nextValue, cachedValue) {
+  if (nextValue != null && nextValue !== 0) return nextValue;
+  if (cachedValue != null && cachedValue !== 0) return cachedValue;
+  return nextValue ?? cachedValue ?? 0;
+}
+
+function _mergeBattleResultEconomy(next) {
+  const cached = window.__battleResultEconomy || {};
+  const nextNonEmpty = _isEconomyNonEmpty(next);
+  const cachedNonEmpty = _isEconomyNonEmpty(cached);
+
+  if (!nextNonEmpty && cachedNonEmpty) {
+    console.log('[ARENA] 🔒 Кеш экономики непустой, пропускаем пустой payload');
+    return cached;
+  }
+
+  // ⚠️ Не перезаписываем непустые поля нулями/пустыми
+  const merged = {
+    trophyDelta: _mergeDelta(next.trophyDelta, cached.trophyDelta),
+    trophyTotal: next.trophyTotal != null ? next.trophyTotal : cached.trophyTotal,
+    coinsDelta: _mergeDelta(next.coinsDelta, cached.coinsDelta),
+    coinsTotal: next.coinsTotal != null ? next.coinsTotal : cached.coinsTotal,
+    starsDelta: _mergeDelta(next.starsDelta, cached.starsDelta),
+    starsTotal: next.starsTotal != null ? next.starsTotal : cached.starsTotal,
+    leagueUp: next.leagueUp ?? cached.leagueUp ?? null,
+  };
+
+  window.__battleResultEconomy = merged;
+  console.log('[ARENA] 💾 Экономика сохранена в кеш:', merged);
+  return merged;
+}
+
+function _readEconomyFromCache() {
+  const cached = window.__battleResultEconomy || {};
+  return {
+    trophyDelta: cached.trophyDelta ?? 0,
+    trophyTotal: cached.trophyTotal ?? null,
+    coinsDelta: cached.coinsDelta ?? 0,
+    coinsTotal: cached.coinsTotal ?? null,
+    starsDelta: cached.starsDelta ?? 0,
+    starsTotal: cached.starsTotal ?? null,
+    leagueUp: cached.leagueUp ?? null,
+  };
 }
 
 function handleStateChanged(eventData) {
@@ -311,7 +385,7 @@ async function loadBattleState() {
   try {
     console.log('[ARENA] Загрузка состояния боя...');
     
-    const response = await fetch(`/api/battle/state?match_id=${matchId}&user_id=${userId}`);
+    const response = await fetch(`/api/battle/state?_auth=${encodeURIComponent(authToken)}&match_id=${matchId}`);
     
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -354,15 +428,20 @@ function renderBattleState(state) {
   
   console.log('[ARENA] Рендеринг состояния боя...');
   
+  // КРИТИЧНО: Устанавливаем userId из server-authoritative viewer_id
+  if (!userId && state.viewer_id != null) {
+    userId = state.viewer_id;
+    console.log('[ARENA] Identity derived from server: userId =', userId);
+  }
+
   // КРИТИЧНО: Кешируем legal_actions для использования в рендеринге
   cachedLegalActions = state.legal_actions || [];
   console.log('[ARENA] 📋 Legal actions:', cachedLegalActions.length, 'доступных действий');
-  
+
   const userIdNum = Number(userId);
-  
-  // Локально рассчитываем is_my_turn (на случай broadcast без viewer_id)
-  const isMyTurn = Number(state.current_player_id) === userIdNum;
-  state.is_my_turn = isMyTurn;
+
+  // Используем server-authoritative is_my_turn
+  const isMyTurn = Boolean(state.is_my_turn);
   
   // Определяем, кто игрок, а кто оппонент
   const playerState = state.player || (state.player_ids && state.player_ids[0] == userIdNum ? state : null);
@@ -446,40 +525,48 @@ function renderBattleState(state) {
   
   // КРИТИЧНО: Проверяем завершение игры и показываем финальный экран
   if (state.is_ended === true || state.game_over === true) {
-    console.log('[ARENA] 🏁 Игра завершена, показываем финальный экран');
+    // ⛔ Не перезаписываем результат, если game_over уже обработан с реальной экономикой
+    if (window.__resultModalShown) {
+      console.log('[ARENA] 🚫 game_over уже обработан, игнорируем late state_changed');
+      return;
+    }
+    
+    console.log('[ARENA] 🏁 Игра завершена через state_changed, показываем финальный экран');
     
     // Извлекаем данные о победителе
     const winnerId = state.winner_id || state.winner;
     const isWinner = String(winnerId) === String(userId);
     
-    // КРИТИЧНО: Извлекаем данные о трофеях из state (синхронизированы с БД)
-    // state.trophy_total и state.coins_total берутся напрямую из результатов
-    // db.update_user_trophies() и db.update_user_coins() в server.py
-    const trophyDelta = parseInt(state.trophy_change || state.trophy_delta, 10) || 0;
-    const trophyTotal = parseInt(state.trophy_total || state.new_trophies, 10) || null;
+    // Пытаемся достать экономику из кеша (game_over мог прийти раньше)
+    const cached = _readEconomyFromCache();
+    const trophyDelta = (cached.trophyDelta != null && cached.trophyDelta !== 0)
+      ? cached.trophyDelta
+      : parseInt(state.trophy_change || state.trophy_delta, 10) || 0;
+    const trophyTotal = (cached.trophyTotal != null)
+      ? cached.trophyTotal
+      : parseInt(state.trophy_total || state.new_trophies, 10) || null;
     
-    // КРИТИЧНО: Извлекаем данные о монетах из state (синхронизированы с БД)
-    const coinsDelta = parseInt(state.coins_change || state.coins_delta, 10) || 0;
-    const coinsTotal = parseInt(state.coins_total || state.new_coins, 10) || null;
+    const coinsDelta = (cached.coinsDelta != null && cached.coinsDelta !== 0)
+      ? cached.coinsDelta
+      : parseInt(state.coins_change || state.coins_delta, 10) || 0;
+    const coinsTotal = (cached.coinsTotal != null)
+      ? cached.coinsTotal
+      : parseInt(state.coins_total || state.new_coins, 10) || null;
 
-    const starsDelta = parseInt(state.stars_delta, 10) || 0;
-    const starsTotal = parseInt(state.stars_total, 10) || null;
+    const starsDelta = (cached.starsDelta != null && cached.starsDelta !== 0)
+      ? cached.starsDelta
+      : parseInt(state.stars_delta, 10) || 0;
+    const starsTotal = (cached.starsTotal != null)
+      ? cached.starsTotal
+      : parseInt(state.stars_total, 10) || null;
 
-    const leagueUp = state.league_up || null;
+    const leagueUp = cached.leagueUp || state.league_up || null;
     if (leagueUp) {
       sessionStorage.setItem('arena_league_up', JSON.stringify(leagueUp));
     }
     
-    console.log('[ARENA] 🎯 Результат игры:', { 
-      isWinner, 
-      winnerId, 
-      trophyDelta, 
-      trophyTotal, 
-      coinsDelta, 
-      coinsTotal,
-      starsDelta,
-      starsTotal,
-      leagueUp
+    console.log('[ARENA] 🎯 Результат игры (state_changed):', { 
+      isWinner, winnerId, trophyDelta, trophyTotal, coinsDelta, coinsTotal, starsDelta, starsTotal, leagueUp
     });
     
     // Показываем экран результата с задержкой для драматического эффекта
@@ -784,6 +871,10 @@ function createHandCardElement(card, index) {
   if (cardMana > playerMana) {
     cardDiv.classList.add('insufficient-mana');
   }
+
+  const manaDiv = document.createElement('div');
+  manaDiv.className = 'mana-circle';
+  manaDiv.textContent = cardMana;
   
   // ДОБАВЛЕНО: Визуализация механик карты (минималистичные классы)
   const mechanics = card.mechanics || [];
@@ -1840,7 +1931,7 @@ async function showDamagePreview(targetEl, isHero, targetData) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         match_id: matchId,
-        user_id: parseInt(userId, 10),
+        _auth: authToken,
         action: action
       })
     });
@@ -2003,7 +2094,7 @@ async function playCard(card, position, targetId = null, targetIsHero = false) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         match_id: matchId,
-        user_id: parseInt(userId, 10),
+        _auth: authToken,
         hand_index: handIndex,
         card_id: card.card_id || card.id || card.instance_id,
         target_position: position,
@@ -2061,7 +2152,7 @@ async function playPotionCard(card, targetId, targetIsHero) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         match_id: matchId,
-        user_id: parseInt(userId, 10),
+        _auth: authToken,
         hand_index: handIndex,
         card_id: card.card_id || card.id || card.instance_id,
         target_id: targetId,
@@ -2162,7 +2253,7 @@ async function attack(attackerId, targetId, targetIsHero) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         match_id: matchId,
-        user_id: parseInt(userId, 10),
+        _auth: authToken,
         attacker_id: attackerId,
         target_id: targetId,
         target_is_hero: targetIsHero
@@ -2207,7 +2298,7 @@ async function endTurn() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         match_id: matchId,
-        user_id: parseInt(userId, 10)
+        _auth: authToken
       })
     });
     
@@ -2238,13 +2329,17 @@ async function surrender() {
     // Отправляем событие сдачи через Socket.IO
     socket.emit('surrender', {
       match_id: matchId,
-      user_id: parseInt(userId, 10)
+      _auth: authToken
     });
     
     // Ждём подтверждения от сервера
     socket.once('surrender_ack', (data) => {
       console.log('[ARENA] Сдача подтверждена:', data);
-      console.log('[ARENA] Сдача принята сервером, ждем game_over...');
+
+      window.__surrenderAck = {
+        trophy_penalty: data.trophy_penalty || 0,
+        new_trophies: data.new_trophies || null,
+      };
 
       // Fallback: если game_over не пришел за 1500мс
       setTimeout(() => {
@@ -2253,12 +2348,13 @@ async function surrender() {
         
         if (!isVisible) {
           console.warn('[ARENA] Server game_over timeout. Forcing local defeat screen.');
+          const ack = window.__surrenderAck || {};
           showBattleResult(
-            false, // isWinner
-            -15,   // trophyDelta (заглушка)
-            null,  // trophyTotal
-            0,     // coinsDelta
-            null   // coinsTotal
+            false,
+            ack.trophy_penalty || 0,
+            ack.new_trophies || null,
+            0,
+            null
           );
         }
       }, 1500);
@@ -2296,19 +2392,48 @@ function handleGameOver(data) {
   console.log('[ARENA] 🎯 Результат: isWinner =', isWinner, '| winnerId =', winnerId, '| myId =', userId);
   
   // КРИТИЧНО: Извлекаем данные о трофеях из state (синхронизированы с БД)
-  // Эти значения приходят из server.py после вызова db.update_user_trophies()
-  const trophyDelta = parseInt(data.trophy_change || data.trophy_delta || currentState?.trophy_change || currentState?.trophy_delta, 10) || 0;
-  const trophyTotal = parseInt(data.trophy_total || currentState?.trophy_total, 10) || null;
+  // Приоритет: players[userId] (новый game_over) > top-level (surrender personalized) > currentState > __surrenderAck
+  const myEconomy = (data.players && (data.players[String(userId)] || data.players[userId])) || {};
+  const surrenderAck = window.__surrenderAck || {};
+  const trophyDelta = parseInt(
+    myEconomy.trophy_delta
+    || data.trophy_change || data.trophy_delta
+    || currentState?.trophy_change || currentState?.trophy_delta
+    || surrenderAck.trophy_penalty
+    , 10
+  ) || 0;
+  const trophyTotal = parseInt(
+    myEconomy.trophy_total
+    || data.trophy_total
+    || currentState?.trophy_total
+    || surrenderAck.new_trophies
+    , 10
+  ) || null;
   
   // КРИТИЧНО: Извлекаем данные о монетах из state (синхронизированы с БД)
-  // Эти значения приходят из server.py после вызова db.update_user_coins()
-  const coinsDelta = parseInt(data.coins_delta || data.coins_change || currentState?.coins_delta || currentState?.coins_change, 10) || 0;
-  const coinsTotal = parseInt(data.coins_total || currentState?.coins_total, 10) || null;
+  const coinsDelta = parseInt(
+    myEconomy.coins_delta
+    || data.coins_delta || data.coins_change
+    || currentState?.coins_delta || currentState?.coins_change
+    , 10) || 0;
+  const coinsTotal = parseInt(
+    myEconomy.coins_total
+    || data.coins_total
+    || currentState?.coins_total
+    , 10) || null;
 
-  const starsDelta = parseInt(data.stars_delta || currentState?.stars_delta, 10) || 0;
-  const starsTotal = parseInt(data.stars_total || currentState?.stars_total, 10) || null;
+  const starsDelta = parseInt(
+    myEconomy.stars_delta
+    || data.stars_delta
+    || currentState?.stars_delta
+    , 10) || 0;
+  const starsTotal = parseInt(
+    myEconomy.stars_total
+    || data.stars_total
+    || currentState?.stars_total
+    , 10) || null;
 
-  const leagueUp = data.league_up || currentState?.league_up || null;
+  const leagueUp = myEconomy.league_up || data.league_up || currentState?.league_up || null;
   if (leagueUp) {
     sessionStorage.setItem('arena_league_up', JSON.stringify(leagueUp));
   }
@@ -2318,6 +2443,14 @@ function handleGameOver(data) {
   console.log('[ARENA] ⭐ Звёзды: delta =', starsDelta, '| total =', starsTotal);
   if (leagueUp) console.log('[ARENA] 🏆 Повышение лиги:', leagueUp);
   
+  // Сохраняем экономику в кеш с мержем (не перезатираем непустую пустой)
+  _mergeBattleResultEconomy({
+    trophyDelta, trophyTotal,
+    coinsDelta, coinsTotal,
+    starsDelta, starsTotal,
+    leagueUp,
+  });
+  
   // Показываем экран результата с небольшой задержкой для драматического эффекта
   setTimeout(() => {
     showBattleResult(isWinner, trophyDelta, trophyTotal, coinsDelta, coinsTotal, starsDelta, starsTotal);
@@ -2325,6 +2458,26 @@ function handleGameOver(data) {
 }
 
 function showBattleResult(isWinner, trophyDelta, trophyTotal, coinsDelta, coinsTotal, starsDelta, starsTotal) {
+  console.log('[ARENA] 🎬 showBattleResult called:', {
+    isWinner, trophyDelta, trophyTotal, coinsDelta, coinsTotal, starsDelta, starsTotal,
+    alreadyShown: !!window.__resultModalShown,
+    cached: window.__battleResultEconomy ? 'yes' : 'no'
+  });
+  
+  // ⛔ Если модал уже показан и новые данные пустые — пользуемся кешем
+  if (window.__resultModalShown) {
+    const cached = _readEconomyFromCache();
+    const nextNonEmpty = _isEconomyNonEmpty({trophyDelta, trophyTotal, coinsDelta, coinsTotal, starsDelta, starsTotal});
+    if (!nextNonEmpty) {
+      console.log('[ARENA] 🚫 Повторный вызов с пустой экономикой, игнорируем');
+      return;
+    }
+    // Непустая экономика при повторном вызове — разрешаем обновить модал
+    console.log('[ARENA] 🔄 Обновляем модал новыми непустыми данными');
+  }
+  
+  window.__resultModalShown = true;
+  
   const modal = document.getElementById('battle-result-modal');
   const icon = document.getElementById('result-icon');
   const title = document.getElementById('result-title');
@@ -2339,7 +2492,6 @@ function showBattleResult(isWinner, trophyDelta, trophyTotal, coinsDelta, coinsT
   
   if (!modal || !icon || !title) {
     console.error('[ARENA] Элементы модального окна результата не найдены');
-    // Фолбэк на старый способ
     alert(isWinner ? '🎉 Победа!' : '💔 Поражение');
     setTimeout(() => window.location.href = '/', 1500);
     return;

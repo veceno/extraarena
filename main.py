@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from datetime import datetime
 
 from aiogram import Bot
@@ -113,8 +114,14 @@ async def main() -> None:
     # Запускаем фоновую задачу для проверки уведомлений о кубике
     asyncio.create_task(_dice_notifications_task(bot, db))
 
+    # Запускаем фоновую задачу для проверки уведомлений о генераторе ключей
+    asyncio.create_task(_generator_notifications_task(bot, db))
+
     # Запускаем фоновую задачу для экспирации инвайтов в дружеские игры
     asyncio.create_task(_expire_friend_invites_task(db))
+
+    # Запускаем фоновую задачу для очистки сгенерированных inline-карточек
+    asyncio.create_task(_generated_inline_cleanup_task())
 
     try:
         await dp.start_polling(bot)
@@ -166,6 +173,37 @@ async def _dice_notifications_task(bot: Bot, db: Database | None) -> None:
             await asyncio.sleep(10)  # Ждем 10 секунд перед повторной попыткой
 
 
+async def _generator_notifications_task(bot: Bot, db: Database | None) -> None:
+    """Фоновая задача для проверки и отправки уведомлений о готовых ключах генератора."""
+    if not db:
+        return
+
+    from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest
+
+    while True:
+        try:
+            await asyncio.sleep(30)
+
+            notifications = await db.check_generator_notifications()
+            for notif in notifications:
+                user_id = notif["user_id"]
+                try:
+                    status = await db.get_generator_status(user_id)
+                    key_count = status.get("accumulated_keys", 0)
+                    await bot.send_message(
+                        chat_id=user_id,
+                        text=f"🔑 Генератор накопил {key_count} ключ(ей)! Забери их в разделе «Генератор».",
+                    )
+                    await db.mark_generator_notification_sent(user_id)
+                except (TelegramForbiddenError, TelegramBadRequest):
+                    await db.mark_generator_notification_sent(user_id)
+                except Exception as e:
+                    logger.debug(f"Не удалось отправить уведомление о генераторе пользователю {user_id}: {e}")
+        except Exception as e:
+            logger.error(f"Ошибка в задаче проверки уведомлений о генераторе: {e}", exc_info=True)
+            await asyncio.sleep(10)
+
+
 async def _expire_friend_invites_task(db: Database | None) -> None:
     if not db:
         return
@@ -179,6 +217,41 @@ async def _expire_friend_invites_task(db: Database | None) -> None:
         except Exception as e:
             logger.error(f"Ошибка в задаче экспирации инвайтов: {e}", exc_info=True)
             await asyncio.sleep(10)
+
+
+async def _generated_inline_cleanup_task() -> None:
+    from pathlib import Path
+
+    GENERATED_DIR = Path(__file__).parent / "generated" / "inline" / "profile"
+    TTL_SECONDS = 900  # 15 minutes
+    MAX_FILES = 200
+
+    while True:
+        await asyncio.sleep(300)  # run every 5 minutes
+        try:
+            if not GENERATED_DIR.exists():
+                continue
+            files = sorted(
+                GENERATED_DIR.glob("*.png"),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+            now = time.time()
+            removed = 0
+            for fp in files:
+                age = now - fp.stat().st_mtime
+                if age > TTL_SECONDS:
+                    fp.unlink(missing_ok=True)
+                    removed += 1
+            # cap total files
+            remaining = [f for f in files if f.exists()]
+            for fp in remaining[MAX_FILES:]:
+                fp.unlink(missing_ok=True)
+                removed += 1
+            if removed:
+                logger.info(f"Inline card cleanup: removed {removed} old PNG(s)")
+        except Exception:
+            pass
 
 
 async def _notify_admin(bot: Bot, settings, schema_changed: bool) -> None:

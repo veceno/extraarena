@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import math
 import logging
+import os
 import random
 import time
 import uuid
@@ -17,7 +18,7 @@ from aiohttp import web
 import socketio
 
 from bot.constants import ADMIN_ID
-from infrastructure.config import DECK_SIZE, LEAGUE_CONFIG
+from infrastructure.config import DECK_SIZE, LEAGUE_CONFIG, get_settings
 from infrastructure.database import Card, Database
 from ai.bot_factory import BotGenerator
 from ai.bot_ai import BotAI
@@ -99,43 +100,44 @@ async def connect(sid: str, environ: dict[str, Any]) -> None:
 @sio.event
 async def disconnect(sid: str) -> None:
     """
-    Обработчик отключения клиента.
-    При разрыве соединения мгновенно переводит игрока в статус AFK.
+    Multi-session: mark AFK only when last session for that user in that match leaves.
     """
     from core.state import ReplacementStatus
-    
-    # Проверяем, есть ли данные по этому sid
+
     session_data = SID_TO_MATCH.get(sid)
-    
+
     if session_data:
         match_id = session_data.get("match_id")
         user_id = session_data.get("user_id")
-        
-        # Находим активный BattleEngine для этого матча
+
+        del SID_TO_MATCH[sid]
+
+        is_last_session = _unregister_session(match_id, user_id, sid)
+
         engine = ACTIVE_MATCHES.get(match_id)
-        
-        if engine and user_id:
-            # Переводим игрока в статус AFK через метод engine
-            if hasattr(engine, 'set_player_replacement_status'):
+
+        if engine and user_id and is_last_session:
+            if hasattr(engine, "set_player_replacement_status"):
                 engine.set_player_replacement_status(user_id, ReplacementStatus.AFK)
                 logging.warning(
-                    "[SOCKET] Player %s disconnected. Status set to AFK in match %s",
-                    user_id, match_id
+                    "[SOCKET] Last session for player %s in match %s disconnected. Marked AFK.",
+                    user_id, match_id,
                 )
-            
-            # Проверяем, нужно ли запустить бота (если отключился игрок, чей ход сейчас)
-            if hasattr(engine, 'get_current_player_id'):
+
+            if hasattr(engine, "get_current_player_id"):
                 current_player_id = engine.get_current_player_id()
                 if current_player_id == user_id:
                     logging.info(
                         "[SOCKET] Disconnected player %s was on turn. Starting bot replacement.",
-                        user_id
+                        user_id,
                     )
-                    # Запускаем бота асинхронно
                     asyncio.create_task(check_and_run_bot(match_id, ACTIVE_MATCHES))
-        
-        # Удаляем sid из словаря
-        del SID_TO_MATCH[sid]
+        elif engine and user_id and not is_last_session:
+            remaining = len((MATCH_SESSIONS.get(match_id) or {}).get(user_id, set()))
+            logging.info(
+                "[SOCKET] Session closed for player %s in match %s. %d session(s) remain.",
+                user_id, match_id, remaining,
+            )
     else:
         logging.info("[SOCKET] disconnect sid=%s match_id=unknown", sid)
 
@@ -144,42 +146,53 @@ async def disconnect(sid: str) -> None:
 async def join_match(sid: str, data: dict[str, Any]) -> None:
     """
     Клиент присоединяется к комнате матча.
-    
-    Параметры:
-        - match_id: идентификатор матча
-        - user_id: идентификатор игрока (строка по раздел 8.2 MULTIPLAYER.md)
+    Требует _auth (Telegram initData) для верификации.
     """
     try:
         match_id = str(data.get("match_id", ""))
-        user_id = str(data.get("user_id", ""))
-        
-        if not match_id or not user_id:
-            await sio.emit("error", {"message": "match_id и user_id обязательны"}, to=sid)
+        if not match_id:
+            await sio.emit("error", {"message": "match_id required"}, to=sid)
             return
-        
-        # Создаём комнату для матча (формат: match:<match_id>)
-        # ВАЖНО: используем единое имя комнаты = match_id (без префикса),
-        # потому что в других местах сервера эмиты идут в `room=match_id`.
-        # Раньше здесь был `match:{match_id}`, из-за чего часть событий "терялась"
-        # (клиент сидит в одной комнате, сервер эмитит в другую).
+
+        auth_token = data.get("_auth") or data.get("auth")
+        bot_token = getattr(sio, "app", {}).get("bot_token", "") if hasattr(sio, "app") else ""
+
+        if not auth_token or not bot_token:
+            await sio.emit("error", {"message": "authentication required"}, to=sid)
+            return
+
+        user_id = _require_user_id_from_init_data_str(str(auth_token), str(bot_token))
+        if user_id is None:
+            await sio.emit("error", {"message": "invalid_auth"}, to=sid)
+            return
+
+        engine = ACTIVE_MATCHES.get(match_id)
+        if not engine:
+            await sio.emit("error", {"message": "match_not_found"}, to=sid)
+            return
+
+        p1_uid = getattr(engine.p1_state, "user_id", None)
+        p2_uid = getattr(engine.p2_state, "user_id", None)
+        if user_id not in (p1_uid, p2_uid):
+            await sio.emit("error", {"message": "not_participant"}, to=sid)
+            return
+
         room_name = str(match_id)
         await sio.enter_room(sid, room_name)
-        
-        # Сохраняем связь sid -> {match_id, user_id} для обработки disconnect
+
         SID_TO_MATCH[sid] = {"match_id": match_id, "user_id": int(user_id)}
-        
+
+        _register_session(match_id, user_id, sid)
+
         logging.info(
             "[SOCKET] join_match sid=%s match_id=%s user_id=%s",
-            sid,
-            match_id,
-            user_id,
+            sid, match_id, user_id,
         )
-        
-        # Отправляем подтверждение клиенту
-        await sio.emit("joined_match", {"match_id": match_id, "user_id": user_id}, to=sid)
-        
+
+        await sio.emit("joined_match", {"match_id": match_id, "user_id": str(user_id)}, to=sid)
+
     except Exception as exc:
-        logging.error(f"Ошибка при присоединении к матчу: {exc}")
+        logging.error("join_match error: %s", exc, exc_info=True)
         await sio.emit("error", {"message": str(exc)}, to=sid)
 
 
@@ -205,53 +218,41 @@ async def leave_match(sid: str, data: dict[str, Any]) -> None:
 @sio.event
 async def client_ready(sid: str, data: dict[str, Any]) -> None:
     """
-    Клиент сигнализирует о том, что загрузил состояние боя и готов к игре.
-    После этого сервер может запустить бота, если тот ходит первым.
-    
-    Параметры:
-        - match_id: идентификатор матча
-        - user_id: идентификатор игрока
+    Клиент сигнализирует о загрузке боя. Использует sid-bound user_id.
     """
     logger = logging.getLogger(__name__)
     try:
-        match_id = str(data.get("match_id", ""))
-        user_id = data.get("user_id", "")
+        session = SID_TO_MATCH.get(sid)
+        if not session:
+            await sio.emit("error", {"message": "not authenticated"}, to=sid)
+            return
+
+        match_id = str(session.get("match_id", ""))
+        user_id = session.get("user_id")
+
         logger.info(
             "[SOCKET] client_ready sid=%s match_id=%s user_id=%s",
-            sid,
-            match_id or "unknown",
-            user_id,
+            sid, match_id or "unknown", user_id,
         )
-        
-        if not match_id:
-            logger.warning("client_ready: получен запрос без match_id от sid=%s", sid)
-            await sio.emit("error", {"message": "match_id обязателен"}, to=sid)
-            return
-        
-        # ИСПРАВЛЕНО: Используем глобальный ACTIVE_MATCHES вместо обращения к sio.server
+
         engine = ACTIVE_MATCHES.get(match_id)
-        
+
         if not engine:
-            logger.warning("client_ready: движок не найден для match_id=%s", match_id)
+            logger.warning("client_ready: engine not found for match_id=%s", match_id)
             await sio.emit("error", {"message": "Match not found"}, to=sid)
             return
-        
-        # Помечаем клиента как готового
-        if hasattr(engine, 'mark_client_ready'):
+
+        if hasattr(engine, "mark_client_ready"):
             engine.mark_client_ready()
-            logger.info("client_ready: клиент готов для match_id=%s, user_id=%s", match_id, user_id)
-            print(f"!!! [SERVER] client_ready: клиент готов для match_id={match_id}, user_id={user_id}")
+            logger.info("client_ready: client ready for match_id=%s, user_id=%s", match_id, user_id)
         else:
-            logger.warning("client_ready: движок не имеет метода mark_client_ready для match_id=%s", match_id)
-        
-        # Проверяем и запускаем бота, если нужно
+            logger.warning("client_ready: engine has no mark_client_ready for match_id=%s", match_id)
+
         try:
             await check_and_run_bot(match_id, ACTIVE_MATCHES)
         except Exception as exc:
-            logger.error("client_ready: ошибка при запуске check_and_run_bot для match_id=%s: %s", match_id, exc, exc_info=True)
-            print(f"!!! [SERVER] client_ready: ошибка check_and_run_bot: {exc}")
-        
-        # Отправляем подтверждение клиенту
+            logger.error("client_ready: error in check_and_run_bot: %s", exc, exc_info=True)
+
         await sio.emit("client_ready_ack", {"match_id": match_id}, to=sid)
         
     except Exception as exc:
@@ -666,50 +667,42 @@ async def _process_battle_end(
 @sio.event
 async def surrender(sid: str, data: dict[str, Any]) -> None:
     """
-    Обработчик сдачи игрока. Трофеи списываются немедленно,
-    но бой продолжается под управлением бота.
-    
-    Параметры:
-        - match_id: идентификатор матча
-        - user_id: идентификатор игрока, который сдаётся
+    Сдача игрока. Использует sid-bound user_id, игнорирует client-sent user_id.
     """
     logger = logging.getLogger(__name__)
     try:
-        match_id = str(data.get("match_id", ""))
-        user_id = data.get("user_id")
-        
+        session = SID_TO_MATCH.get(sid)
+        if not session:
+            logger.warning("surrender: no session for sid=%s", sid)
+            await sio.emit("error", {"message": "not_authenticated"}, to=sid)
+            return
+
+        match_id = str(session.get("match_id", ""))
+        user_id = session.get("user_id")
+
         logger.info(
             "[SOCKET] surrender sid=%s match_id=%s user_id=%s",
-            sid, match_id or "unknown", user_id
+            sid, match_id or "unknown", user_id,
         )
-        
+
         if not match_id or user_id is None:
-            logger.warning("surrender: получен запрос без match_id/user_id от sid=%s", sid)
-            await sio.emit("error", {"message": "match_id и user_id обязательны"}, to=sid)
+            logger.warning("surrender: missing match_id/user_id for sid=%s", sid)
+            await sio.emit("error", {"message": "match_id and user_id required"}, to=sid)
             return
-        
-        # Получаем движок
+
         engine = ACTIVE_MATCHES.get(match_id)
         if not engine:
-            logger.warning("surrender: движок не найден для match_id=%s", match_id)
+            logger.warning("surrender: engine not found for match_id=%s", match_id)
             await sio.emit("error", {"message": "Match not found"}, to=sid)
             return
-        
-        # Помечаем игрока как сдавшегося
-        try:
-            user_id_int = int(user_id)
-        except (ValueError, TypeError):
-            logger.error("surrender: invalid user_id=%s", user_id)
-            await sio.emit("error", {"message": "Invalid user_id"}, to=sid)
-            return
-        
-        # Проверяем, что игрок участвует в матче
+
+        user_id_int = int(user_id)
+
         if str(engine.p1_state.user_id) != str(user_id_int) and str(engine.p2_state.user_id) != str(user_id_int):
-            logger.error("surrender: игрок %s не участвует в матче %s", user_id_int, match_id)
+            logger.error("surrender: player %s not in match %s", user_id_int, match_id)
             await sio.emit("error", {"message": "User not in match"}, to=sid)
             return
-        
-        # Помечаем игрока как SURRENDERED (бот продолжит играть)
+
         engine.mark_surrender(user_id_int)
         
         # Получаем состояние сдавшегося игрока
@@ -1003,6 +996,159 @@ def _extract_user_id_from_init_data(data_dict: dict[str, str]) -> int | None:
     except Exception:
         return None
 
+
+
+# ============================================================================
+# Центральный модуль аутентификации
+# ============================================================================
+
+AUTH_MAX_AGE_SECONDS = 86400
+AUTH_CLOCK_SKEW_SECONDS = 300
+
+MATCH_SESSIONS: dict[str, dict[int, set[str]]] = {}
+MATCH_LOCKS: dict[str, asyncio.Lock] = {}
+
+
+def _is_dev_local(request) -> bool:
+    settings = get_settings()
+    return (
+        settings.environment == "development"
+        and request.remote in {"127.0.0.1", "::1", "localhost"}
+    )
+
+
+def _validate_auth_date(data_dict: dict[str, str]) -> bool:
+    try:
+        auth_date_str = data_dict.get("auth_date", "")
+        if not auth_date_str:
+            return False
+        auth_date = int(auth_date_str)
+        now = int(time.time())
+        if auth_date < now - AUTH_MAX_AGE_SECONDS - AUTH_CLOCK_SKEW_SECONDS:
+            return False
+        if auth_date > now + AUTH_CLOCK_SKEW_SECONDS:
+            return False
+        return True
+    except (ValueError, TypeError):
+        return False
+
+
+async def require_user_id(request) -> int:
+    init_data = request.rel_url.query.get("_auth")
+    if init_data:
+        verified_data = _verify_init_data(init_data, request.app["bot_token"])
+        if verified_data:
+            if not _validate_auth_date(verified_data):
+                raise web.HTTPUnauthorized(
+                    reason="auth_expired",
+                    text='{"error":"auth_expired"}',
+                    content_type="application/json",
+                )
+            uid = _extract_user_id_from_init_data(verified_data)
+            if uid:
+                return uid
+
+        if _is_dev_local(request):
+            if init_data.isdigit():
+                return int(init_data)
+            raise web.HTTPUnauthorized(
+                reason="invalid_init_data",
+                text='{"error":"invalid_auth"}',
+                content_type="application/json",
+            )
+        raise web.HTTPUnauthorized(
+            reason="invalid_init_data",
+            text='{"error":"invalid_auth"}',
+            content_type="application/json",
+        )
+
+    if _is_dev_local(request):
+        user_id_param = request.rel_url.query.get("user_id")
+        if user_id_param:
+            try:
+                return int(user_id_param)
+            except ValueError:
+                pass
+
+    raise web.HTTPUnauthorized(
+        reason="authentication_required",
+        text='{"error":"authentication_required"}',
+        content_type="application/json",
+    )
+
+
+def require_user_id_from_payload(request, payload: dict) -> int:
+    auth_token = payload.get("_auth") or payload.get("auth")
+    if auth_token:
+        verified_data = _verify_init_data(str(auth_token), request.app["bot_token"])
+        if verified_data:
+            if not _validate_auth_date(verified_data):
+                raise web.HTTPUnauthorized(
+                    reason="auth_expired",
+                    text='{"error":"auth_expired"}',
+                    content_type="application/json",
+                )
+            uid = _extract_user_id_from_init_data(verified_data)
+            if uid:
+                return uid
+
+    if _is_dev_local(request):
+        if "user_id" in payload:
+            try:
+                return int(payload["user_id"])
+            except (ValueError, TypeError):
+                pass
+
+    raise web.HTTPUnauthorized(
+        reason="authentication_required",
+        text='{"error":"authentication_required"}',
+        content_type="application/json",
+    )
+
+
+def _require_user_id_from_init_data_str(init_data_str: str, bot_token: str) -> int | None:
+    verified_data = _verify_init_data(init_data_str, bot_token)
+    if not verified_data:
+        return None
+    if not _validate_auth_date(verified_data):
+        return None
+    return _extract_user_id_from_init_data(verified_data)
+
+
+def _verify_participant(engine, user_id: int) -> None:
+    p1_uid = getattr(engine.p1_state, "user_id", None)
+    p2_uid = getattr(engine.p2_state, "user_id", None)
+    if user_id not in (p1_uid, p2_uid):
+        raise web.HTTPForbidden(
+            reason="not_participant",
+            text='{"error":"not_participant"}',
+            content_type="application/json",
+        )
+
+
+def _get_match_lock(match_id: str) -> asyncio.Lock:
+    if match_id not in MATCH_LOCKS:
+        MATCH_LOCKS[match_id] = asyncio.Lock()
+    return MATCH_LOCKS[match_id]
+
+
+def _register_session(match_id: str, user_id: int, sid: str) -> None:
+    if match_id not in MATCH_SESSIONS:
+        MATCH_SESSIONS[match_id] = {}
+    if user_id not in MATCH_SESSIONS[match_id]:
+        MATCH_SESSIONS[match_id][user_id] = set()
+    MATCH_SESSIONS[match_id][user_id].add(sid)
+
+
+def _unregister_session(match_id: str, user_id: int, sid: str) -> bool:
+    user_sessions = (MATCH_SESSIONS.get(match_id) or {}).get(user_id)
+    if not user_sessions:
+        return True
+    user_sessions.discard(sid)
+    remaining = len(user_sessions)
+    if remaining == 0:
+        MATCH_SESSIONS[match_id].pop(user_id, None)
+    return remaining == 0
 
 def _create_ssl_disabled_session():
     """Создать aiohttp сессию с отключенной проверкой SSL для локальной разработки."""
@@ -1639,27 +1785,18 @@ def create_web_app(
         return web.FileResponse(file_path, headers={"Cache-Control": "no-store, no-cache, must-revalidate"})
 
     async def profile_handler(request: web.Request) -> web.Response:
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
         photo_url = None
         first_name = None
-
-        # Если _auth это число (user_id из initDataUnsafe), используем его напрямую
-        if init_data and init_data.isdigit():
-            try:
-                user_id = int(init_data)
-            except ValueError:
-                pass
-
-        # Извлекаем данные пользователя из initData
         username = None
         first_name_from_data = None
         last_name = None
-        
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
+
+        user_id = await require_user_id(request)
+
+        init_data = request.rel_url.query.get("_auth")
+        if init_data and not init_data.isdigit():
+            verified_data = _verify_init_data(init_data, request.app["bot_token"])
             if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
                 user_str = verified_data.get("user", "")
                 if user_str:
                     import json
@@ -1673,41 +1810,24 @@ def create_web_app(
                     except Exception:
                         pass
 
-        # Если photo_url не получен из initData, пытаемся получить через Bot API
         if user_id and not photo_url:
             try:
                 async with _create_ssl_disabled_session() as session:
-                    url = f"https://api.telegram.org/bot{bot_token}/getUserProfilePhotos"
+                    url = f"https://api.telegram.org/bot{request.app['bot_token']}/getUserProfilePhotos"
                     async with session.get(url, params={"user_id": user_id, "limit": 1}) as resp:
                         if resp.status == 200:
                             data = await resp.json()
                             if data.get("ok") and data.get("result", {}).get("total_count", 0) > 0:
                                 file_id = data["result"]["photos"][0][0]["file_id"]
-                                # Получаем URL файла
-                                file_url = f"https://api.telegram.org/bot{bot_token}/getFile"
+                                file_url = f"https://api.telegram.org/bot{request.app['bot_token']}/getFile"
                                 async with session.get(file_url, params={"file_id": file_id}) as file_resp:
                                     if file_resp.status == 200:
                                         file_data = await file_resp.json()
                                         if file_data.get("ok"):
                                             file_path = file_data["result"]["file_path"]
-                                            photo_url = f"https://api.telegram.org/file/bot{bot_token}/{file_path}"
+                                            photo_url = f"https://api.telegram.org/file/bot{request.app['bot_token']}/{file_path}"
             except Exception:
-                pass  # Игнорируем ошибки получения фото
-
-        if not user_id:
-            user_id_param = request.rel_url.query.get("user_id")
-            if user_id_param:
-                try:
-                    user_id = int(user_id_param)
-                except ValueError:
-                    return web.json_response(
-                        {"error": "user_id must be integer"}, status=400
-                    )
-
-        if not user_id:
-            return web.json_response(
-                {"error": "authentication required"}, status=401
-            )
+                pass
 
         # Проверяем, есть ли пользователь
         record = await db.get_user_profile(user_id)
@@ -1773,35 +1893,7 @@ def create_web_app(
         return web.json_response(payload)
 
     async def settings_handler(request: web.Request) -> web.Response:
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-
-        # Если _auth это число (user_id из initDataUnsafe), используем его напрямую
-        if init_data and init_data.isdigit():
-            try:
-                user_id = int(init_data)
-            except ValueError:
-                pass
-
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-
-        if not user_id:
-            user_id_param = request.rel_url.query.get("user_id")
-            if user_id_param:
-                try:
-                    user_id = int(user_id_param)
-                except ValueError:
-                    return web.json_response(
-                        {"error": "user_id must be integer"}, status=400
-                    )
-
-        if not user_id:
-            return web.json_response(
-                {"error": "authentication required"}, status=401
-            )
+        user_id = await require_user_id(request)
 
         if request.method == "GET":
             try:
@@ -1888,34 +1980,9 @@ def create_web_app(
                 )
 
     async def admin_players_handler(request: web.Request) -> web.Response:
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-
-        if init_data and init_data.isdigit():
-            try:
-                user_id = int(init_data)
-            except ValueError:
-                pass
-
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-
-        if not user_id:
-            user_id_param = request.rel_url.query.get("user_id")
-            if user_id_param:
-                try:
-                    user_id = int(user_id_param)
-                except ValueError:
-                    return web.json_response(
-                        {"error": "user_id must be integer"}, status=400
-                    )
-
-        if not user_id or user_id != 6803854304:
-            return web.json_response(
-                {"error": "admin_access_required"}, status=403
-            )
+        user_id = await require_user_id(request)
+        if user_id != 6803854304:
+            return web.json_response({"error": "admin_access_required"}, status=403)
 
         if request.method == "GET":
             # Получаем список всех игроков
@@ -1978,67 +2045,15 @@ def create_web_app(
             return web.json_response({"status": "ok"})
 
     async def admin_stats_handler(request: web.Request) -> web.Response:
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-
-        if init_data and init_data.isdigit():
-            try:
-                user_id = int(init_data)
-            except ValueError:
-                pass
-
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-
-        if not user_id:
-            user_id_param = request.rel_url.query.get("user_id")
-            if user_id_param:
-                try:
-                    user_id = int(user_id_param)
-                except ValueError:
-                    return web.json_response(
-                        {"error": "user_id must be integer"}, status=400
-                    )
-
-        if not user_id or user_id != 6803854304:
-            return web.json_response(
-                {"error": "admin_access_required"}, status=403
-            )
+        user_id = await require_user_id(request)
+        if user_id != 6803854304:
+            return web.json_response({"error": "admin_access_required"}, status=403)
 
         stats = await db.get_statistics()
         return web.json_response(stats)
 
     async def change_nickname_handler(request: web.Request) -> web.Response:
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-
-        if init_data and init_data.isdigit():
-            try:
-                user_id = int(init_data)
-            except ValueError:
-                pass
-
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-
-        if not user_id:
-            user_id_param = request.rel_url.query.get("user_id")
-            if user_id_param:
-                try:
-                    user_id = int(user_id_param)
-                except ValueError:
-                    return web.json_response(
-                        {"error": "user_id must be integer"}, status=400
-                    )
-
-        if not user_id:
-            return web.json_response(
-                {"error": "authentication required"}, status=401
-            )
+        user_id = await require_user_id(request)
 
         if request.method != "POST":
             return web.json_response({"error": "method_not_allowed"}, status=405)
@@ -2082,34 +2097,7 @@ def create_web_app(
 
     async def promocode_use_handler(request: web.Request) -> web.Response:
         """Обработчик использования промокода."""
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-
-        if init_data and init_data.isdigit():
-            try:
-                user_id = int(init_data)
-            except ValueError:
-                pass
-
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-
-        if not user_id:
-            user_id_param = request.rel_url.query.get("user_id")
-            if user_id_param:
-                try:
-                    user_id = int(user_id_param)
-                except ValueError:
-                    return web.json_response(
-                        {"error": "user_id must be integer"}, status=400
-                    )
-
-        if not user_id:
-            return web.json_response(
-                {"error": "authentication required"}, status=401
-            )
+        user_id = await require_user_id(request)
 
         if request.method != "POST":
             return web.json_response({"error": "method_not_allowed"}, status=405)
@@ -2148,34 +2136,9 @@ def create_web_app(
 
     async def promocode_create_handler(request: web.Request) -> web.Response:
         """Обработчик создания промокода (только для админа)."""
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-
-        if init_data and init_data.isdigit():
-            try:
-                user_id = int(init_data)
-            except ValueError:
-                pass
-
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-
-        if not user_id:
-            user_id_param = request.rel_url.query.get("user_id")
-            if user_id_param:
-                try:
-                    user_id = int(user_id_param)
-                except ValueError:
-                    return web.json_response(
-                        {"error": "user_id must be integer"}, status=400
-                    )
-
-        if not user_id or user_id != 6803854304:
-            return web.json_response(
-                {"error": "admin_access_required"}, status=403
-            )
+        user_id = await require_user_id(request)
+        if user_id != 6803854304:
+            return web.json_response({"error": "admin_access_required"}, status=403)
 
         if request.method != "POST":
             return web.json_response({"error": "method_not_allowed"}, status=405)
@@ -2237,34 +2200,9 @@ def create_web_app(
 
     async def promocode_list_handler(request: web.Request) -> web.Response:
         """Обработчик получения списка промокодов (только для админа)."""
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-
-        if init_data and init_data.isdigit():
-            try:
-                user_id = int(init_data)
-            except ValueError:
-                pass
-
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-
-        if not user_id:
-            user_id_param = request.rel_url.query.get("user_id")
-            if user_id_param:
-                try:
-                    user_id = int(user_id_param)
-                except ValueError:
-                    return web.json_response(
-                        {"error": "user_id must be integer"}, status=400
-                    )
-
-        if not user_id or user_id != 6803854304:
-            return web.json_response(
-                {"error": "admin_access_required"}, status=403
-            )
+        user_id = await require_user_id(request)
+        if user_id != 6803854304:
+            return web.json_response({"error": "admin_access_required"}, status=403)
 
         try:
             promocodes = await db.get_promocodes_list(created_by=user_id)
@@ -2298,38 +2236,7 @@ def create_web_app(
         Возвращает JSON с результатом создания карты и card_id.
         """
         # Извлекаем user_id из параметров запроса
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-
-        # Пытаемся получить user_id из init_data (если это число)
-        if init_data and init_data.isdigit():
-            try:
-                user_id = int(init_data)
-            except ValueError:
-                pass
-
-        # Если не получилось, проверяем подпись init_data
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-
-        # Если все еще нет user_id, пытаемся получить из параметра user_id
-        if not user_id:
-            user_id_param = request.rel_url.query.get("user_id")
-            if user_id_param:
-                try:
-                    user_id = int(user_id_param)
-                except ValueError:
-                    return web.json_response(
-                        {"error": "user_id must be integer"}, status=400
-                    )
-
-        # Проверяем, что пользователь является админом
-        if not user_id or user_id != ADMIN_ID:
-            return web.json_response(
-                {"error": "admin_access_required"}, status=403
-            )
+        user_id = await require_user_id(request)
 
         # Проверяем метод запроса
         if request.method != "POST":
@@ -2388,34 +2295,9 @@ def create_web_app(
 
     async def admin_cards_list_handler(request: web.Request) -> web.Response:
         """Обработчик получения списка карт (только для админа)."""
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-
-        if init_data and init_data.isdigit():
-            try:
-                user_id = int(init_data)
-            except ValueError:
-                pass
-
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-
-        if not user_id:
-            user_id_param = request.rel_url.query.get("user_id")
-            if user_id_param:
-                try:
-                    user_id = int(user_id_param)
-                except ValueError:
-                    return web.json_response(
-                        {"error": "user_id must be integer"}, status=400
-                    )
-
-        if not user_id or user_id != 6803854304:
-            return web.json_response(
-                {"error": "admin_access_required"}, status=403
-            )
+        user_id = await require_user_id(request)
+        if user_id != 6803854304:
+            return web.json_response({"error": "admin_access_required"}, status=403)
 
         try:
             cards = await db.get_cards_list()
@@ -2433,34 +2315,9 @@ def create_web_app(
 
     async def admin_items_create_handler(request: web.Request) -> web.Response:
         """Обработчик создания предмета (только для админа)."""
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-
-        if init_data and init_data.isdigit():
-            try:
-                user_id = int(init_data)
-            except ValueError:
-                pass
-
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-
-        if not user_id:
-            user_id_param = request.rel_url.query.get("user_id")
-            if user_id_param:
-                try:
-                    user_id = int(user_id_param)
-                except ValueError:
-                    return web.json_response(
-                        {"error": "user_id must be integer"}, status=400
-                    )
-
-        if not user_id or user_id != 6803854304:
-            return web.json_response(
-                {"error": "admin_access_required"}, status=403
-            )
+        user_id = await require_user_id(request)
+        if user_id != 6803854304:
+            return web.json_response({"error": "admin_access_required"}, status=403)
 
         if request.method != "POST":
             return web.json_response({"error": "method_not_allowed"}, status=405)
@@ -2508,34 +2365,9 @@ def create_web_app(
 
     async def admin_items_list_handler(request: web.Request) -> web.Response:
         """Обработчик получения списка предметов (только для админа)."""
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-
-        if init_data and init_data.isdigit():
-            try:
-                user_id = int(init_data)
-            except ValueError:
-                pass
-
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-
-        if not user_id:
-            user_id_param = request.rel_url.query.get("user_id")
-            if user_id_param:
-                try:
-                    user_id = int(user_id_param)
-                except ValueError:
-                    return web.json_response(
-                        {"error": "user_id must be integer"}, status=400
-                    )
-
-        if not user_id or user_id != 6803854304:
-            return web.json_response(
-                {"error": "admin_access_required"}, status=403
-            )
+        user_id = await require_user_id(request)
+        if user_id != 6803854304:
+            return web.json_response({"error": "admin_access_required"}, status=403)
 
         try:
             items = await db.get_items_list()
@@ -2555,34 +2387,7 @@ def create_web_app(
 
     async def deck_presets_list_handler(request: web.Request) -> web.Response:
         """Обработчик получения списка пресетов колод пользователя."""
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-
-        if init_data and init_data.isdigit():
-            try:
-                user_id = int(init_data)
-            except ValueError:
-                pass
-
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-
-        if not user_id:
-            user_id_param = request.rel_url.query.get("user_id")
-            if user_id_param:
-                try:
-                    user_id = int(user_id_param)
-                except ValueError:
-                    return web.json_response(
-                        {"error": "user_id must be integer"}, status=400
-                    )
-
-        if not user_id:
-            return web.json_response(
-                {"error": "authentication required"}, status=401
-            )
+        user_id = await require_user_id(request)
 
         try:
             presets = await db.get_user_deck_presets(user_id)
@@ -2603,34 +2408,7 @@ def create_web_app(
 
     async def deck_preset_save_handler(request: web.Request) -> web.Response:
         """Обработчик сохранения пресета колоды (9 карт, герой внутри колоды)."""
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-
-        if init_data and init_data.isdigit():
-            try:
-                user_id = int(init_data)
-            except ValueError:
-                pass
-
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-
-        if not user_id:
-            user_id_param = request.rel_url.query.get("user_id")
-            if user_id_param:
-                try:
-                    user_id = int(user_id_param)
-                except ValueError:
-                    return web.json_response(
-                        {"error": "user_id must be integer"}, status=400
-                    )
-
-        if not user_id:
-            return web.json_response(
-                {"error": "authentication required"}, status=401
-            )
+        user_id = await require_user_id(request)
 
         if request.method != "POST":
             return web.json_response({"error": "method_not_allowed"}, status=405)
@@ -2680,34 +2458,7 @@ def create_web_app(
 
     async def deck_preset_create_handler(request: web.Request) -> web.Response:
         """Обработчик создания нового пресета колоды."""
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-
-        if init_data and init_data.isdigit():
-            try:
-                user_id = int(init_data)
-            except ValueError:
-                pass
-
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-
-        if not user_id:
-            user_id_param = request.rel_url.query.get("user_id")
-            if user_id_param:
-                try:
-                    user_id = int(user_id_param)
-                except ValueError:
-                    return web.json_response(
-                        {"error": "user_id must be integer"}, status=400
-                    )
-
-        if not user_id:
-            return web.json_response(
-                {"error": "authentication required"}, status=401
-            )
+        user_id = await require_user_id(request)
 
         if request.method != "POST":
             return web.json_response({"error": "method_not_allowed"}, status=405)
@@ -2743,34 +2494,7 @@ def create_web_app(
 
     async def deck_preset_delete_handler(request: web.Request) -> web.Response:
         """Обработчик удаления пресета колоды."""
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-
-        if init_data and init_data.isdigit():
-            try:
-                user_id = int(init_data)
-            except ValueError:
-                pass
-
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-
-        if not user_id:
-            user_id_param = request.rel_url.query.get("user_id")
-            if user_id_param:
-                try:
-                    user_id = int(user_id_param)
-                except ValueError:
-                    return web.json_response(
-                        {"error": "user_id must be integer"}, status=400
-                    )
-
-        if not user_id:
-            return web.json_response(
-                {"error": "authentication required"}, status=401
-            )
+        user_id = await require_user_id(request)
 
         if request.method != "POST":
             return web.json_response({"error": "method_not_allowed"}, status=405)
@@ -2806,34 +2530,7 @@ def create_web_app(
 
     async def deck_preset_rename_handler(request: web.Request) -> web.Response:
         """Обработчик переименования пресета колоды."""
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-
-        if init_data and init_data.isdigit():
-            try:
-                user_id = int(init_data)
-            except ValueError:
-                pass
-
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-
-        if not user_id:
-            user_id_param = request.rel_url.query.get("user_id")
-            if user_id_param:
-                try:
-                    user_id = int(user_id_param)
-                except ValueError:
-                    return web.json_response(
-                        {"error": "user_id must be integer"}, status=400
-                    )
-
-        if not user_id:
-            return web.json_response(
-                {"error": "authentication required"}, status=401
-            )
+        user_id = await require_user_id(request)
 
         if request.method != "POST":
             return web.json_response({"error": "method_not_allowed"}, status=405)
@@ -2871,21 +2568,7 @@ def create_web_app(
 
     async def deck_preset_set_primary_handler(request: web.Request) -> web.Response:
         """Установить/снять основную колоду."""
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-        if init_data and init_data.isdigit():
-            try: user_id = int(init_data)
-            except ValueError: pass
-        if not user_id and init_data:
-            v = _verify_init_data(init_data, bot_token)
-            if v: user_id = _extract_user_id_from_init_data(v)
-        if not user_id:
-            p = request.rel_url.query.get("user_id")
-            if p: 
-                try: user_id = int(p)
-                except ValueError: return web.json_response({"error": "invalid_user_id"}, status=400)
-        if not user_id:
-            return web.json_response({"error": "authentication required"}, status=401)
+        user_id = await require_user_id(request)
         try:
             data = await request.json()
             preset_number = data.get("preset_number")
@@ -2919,34 +2602,7 @@ def create_web_app(
 
     async def user_cards_handler(request: web.Request) -> web.Response:
         """Обработчик получения карт пользователя."""
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-
-        if init_data and init_data.isdigit():
-            try:
-                user_id = int(init_data)
-            except ValueError:
-                pass
-
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-
-        if not user_id:
-            user_id_param = request.rel_url.query.get("user_id")
-            if user_id_param:
-                try:
-                    user_id = int(user_id_param)
-                except ValueError:
-                    return web.json_response(
-                        {"error": "user_id must be integer"}, status=400
-                    )
-
-        if not user_id:
-            return web.json_response(
-                {"error": "authentication required"}, status=401
-            )
+        user_id = await require_user_id(request)
 
         try:
             cards = await db.get_user_cards(user_id)
@@ -2964,34 +2620,9 @@ def create_web_app(
 
     async def admin_get_all_cards_handler(request: web.Request) -> web.Response:
         """Обработчик получения всех карт в коллекцию админа (только для админа)."""
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-
-        if init_data and init_data.isdigit():
-            try:
-                user_id = int(init_data)
-            except ValueError:
-                pass
-
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-
-        if not user_id:
-            user_id_param = request.rel_url.query.get("user_id")
-            if user_id_param:
-                try:
-                    user_id = int(user_id_param)
-                except ValueError:
-                    return web.json_response(
-                        {"error": "user_id must be integer"}, status=400
-                    )
-
-        if not user_id or user_id != 6803854304:
-            return web.json_response(
-                {"error": "admin_access_required"}, status=403
-            )
+        user_id = await require_user_id(request)
+        if user_id != 6803854304:
+            return web.json_response({"error": "admin_access_required"}, status=403)
 
         if request.method != "POST":
             return web.json_response({"error": "method_not_allowed"}, status=405)
@@ -3018,34 +2649,9 @@ def create_web_app(
 
     async def admin_delete_all_cards_handler(request: web.Request) -> web.Response:
         """Обработчик удаления всех карт из коллекции админа (только для админа)."""
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-
-        if init_data and init_data.isdigit():
-            try:
-                user_id = int(init_data)
-            except ValueError:
-                pass
-
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-
-        if not user_id:
-            user_id_param = request.rel_url.query.get("user_id")
-            if user_id_param:
-                try:
-                    user_id = int(user_id_param)
-                except ValueError:
-                    return web.json_response(
-                        {"error": "user_id must be integer"}, status=400
-                    )
-
-        if not user_id or user_id != 6803854304:
-            return web.json_response(
-                {"error": "admin_access_required"}, status=403
-            )
+        user_id = await require_user_id(request)
+        if user_id != 6803854304:
+            return web.json_response({"error": "admin_access_required"}, status=403)
 
         if request.method != "POST":
             return web.json_response({"error": "method_not_allowed"}, status=405)
@@ -3070,34 +2676,7 @@ def create_web_app(
 
     async def card_upgrade_handler(request: web.Request) -> web.Response:
         """Обработчик улучшения карты."""
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-
-        if init_data and init_data.isdigit():
-            try:
-                user_id = int(init_data)
-            except ValueError:
-                pass
-
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-
-        if not user_id:
-            user_id_param = request.rel_url.query.get("user_id")
-            if user_id_param:
-                try:
-                    user_id = int(user_id_param)
-                except ValueError:
-                    return web.json_response(
-                        {"error": "user_id must be integer"}, status=400
-                    )
-
-        if not user_id:
-            return web.json_response(
-                {"error": "authentication required"}, status=401
-            )
+        user_id = await require_user_id(request)
 
         if request.method != "POST":
             return web.json_response({"error": "method_not_allowed"}, status=405)
@@ -3137,34 +2716,7 @@ def create_web_app(
 
     async def card_add_particles_handler(request: web.Request) -> web.Response:
         """Обработчик добавления частиц к карте."""
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-
-        if init_data and init_data.isdigit():
-            try:
-                user_id = int(init_data)
-            except ValueError:
-                pass
-
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-
-        if not user_id:
-            user_id_param = request.rel_url.query.get("user_id")
-            if user_id_param:
-                try:
-                    user_id = int(user_id_param)
-                except ValueError:
-                    return web.json_response(
-                        {"error": "user_id must be integer"}, status=400
-                    )
-
-        if not user_id:
-            return web.json_response(
-                {"error": "authentication required"}, status=401
-            )
+        user_id = await require_user_id(request)
 
         if request.method != "POST":
             return web.json_response({"error": "method_not_allowed"}, status=405)
@@ -3202,27 +2754,7 @@ def create_web_app(
 
     async def community_posts_list_handler(request: web.Request) -> web.Response:
         """Обработчик получения списка постов коммьюнити."""
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-
-        if init_data and init_data.isdigit():
-            try:
-                user_id = int(init_data)
-            except ValueError:
-                pass
-
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-
-        if not user_id:
-            user_id_param = request.rel_url.query.get("user_id")
-            if user_id_param:
-                try:
-                    user_id = int(user_id_param)
-                except ValueError:
-                    pass
+        user_id = await require_user_id(request)
 
         try:
             limit = int(request.rel_url.query.get("limit", 50))
@@ -3346,34 +2878,9 @@ def create_web_app(
 
     async def community_post_create_handler(request: web.Request) -> web.Response:
         """Обработчик создания поста коммьюнити (только для админа)."""
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-
-        if init_data and init_data.isdigit():
-            try:
-                user_id = int(init_data)
-            except ValueError:
-                pass
-
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-
-        if not user_id:
-            user_id_param = request.rel_url.query.get("user_id")
-            if user_id_param:
-                try:
-                    user_id = int(user_id_param)
-                except ValueError:
-                    return web.json_response(
-                        {"error": "user_id must be integer"}, status=400
-                    )
-
-        if not user_id or user_id != 6803854304:
-            return web.json_response(
-                {"error": "admin_access_required"}, status=403
-            )
+        user_id = await require_user_id(request)
+        if user_id != 6803854304:
+            return web.json_response({"error": "admin_access_required"}, status=403)
 
         if request.method != "POST":
             return web.json_response({"error": "method_not_allowed"}, status=405)
@@ -3533,34 +3040,7 @@ def create_web_app(
 
     async def global_chat_send_handler(request: web.Request) -> web.Response:
         """Обработчик отправки сообщения в глобальный чат."""
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-
-        if init_data and init_data.isdigit():
-            try:
-                user_id = int(init_data)
-            except ValueError:
-                pass
-
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-
-        if not user_id:
-            user_id_param = request.rel_url.query.get("user_id")
-            if user_id_param:
-                try:
-                    user_id = int(user_id_param)
-                except ValueError:
-                    return web.json_response(
-                        {"error": "user_id must be integer"}, status=400
-                    )
-
-        if not user_id:
-            return web.json_response(
-                {"error": "authentication required"}, status=401
-            )
+        user_id = await require_user_id(request)
 
         if request.method != "POST":
             return web.json_response({"error": "method_not_allowed"}, status=405)
@@ -3652,38 +3132,13 @@ def create_web_app(
 
     # ========== Хэндлеры дружеских матчей ==========
 
-    async def _resolve_user_id_from_request(request: web.Request) -> int | None:
-        init_data = request.rel_url.query.get("_auth")
-        if init_data and init_data.isdigit():
-            try:
-                return int(init_data)
-            except ValueError:
-                pass
-        if init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                uid = _extract_user_id_from_init_data(verified_data)
-                if uid:
-                    return uid
-        user_id_param = request.rel_url.query.get("user_id")
-        if user_id_param:
-            try:
-                return int(user_id_param)
-            except ValueError:
-                pass
-        return None
-
     async def recent_opponents_handler(request: web.Request) -> web.Response:
-        user_id = await _resolve_user_id_from_request(request)
-        if not user_id:
-            return web.json_response({"error": "authentication required"}, status=401)
+        user_id = await require_user_id(request)
         opponents = await db.get_recent_opponents(user_id)
         return web.json_response({"opponents": opponents})
 
     async def battle_history_handler(request: web.Request) -> web.Response:
-        user_id = await _resolve_user_id_from_request(request)
-        if not user_id:
-            return web.json_response({"error": "authentication required"}, status=401)
+        user_id = await require_user_id(request)
 
         user_info = await db.get_user_info(user_id)
         extra_pass = (user_info or {}).get("extra_pass", "inactive")
@@ -3700,7 +3155,7 @@ def create_web_app(
 
     async def friend_invite_handler(request: web.Request) -> web.Response:
         logger = logging.getLogger(__name__)
-        user_id = await _resolve_user_id_from_request(request)
+        user_id = await require_user_id(request)
         if not user_id:
             return web.json_response({"error": "authentication required"}, status=401)
 
@@ -3771,7 +3226,7 @@ def create_web_app(
 
     async def friend_invite_respond_handler(request: web.Request) -> web.Response:
         logger = logging.getLogger(__name__)
-        user_id = await _resolve_user_id_from_request(request)
+        user_id = await require_user_id(request)
         if not user_id:
             return web.json_response({"error": "authentication required"}, status=401)
 
@@ -3928,14 +3383,14 @@ def create_web_app(
         })
 
     async def friend_invite_pending_handler(request: web.Request) -> web.Response:
-        user_id = await _resolve_user_id_from_request(request)
+        user_id = await require_user_id(request)
         if not user_id:
             return web.json_response({"error": "authentication required"}, status=401)
         invite = await db.get_pending_invite(user_id)
         return web.json_response({"invite": invite})
 
     async def friend_invite_cancel_handler(request: web.Request) -> web.Response:
-        user_id = await _resolve_user_id_from_request(request)
+        user_id = await require_user_id(request)
         if not user_id:
             return web.json_response({"error": "authentication required"}, status=401)
 
@@ -3967,30 +3422,7 @@ def create_web_app(
     
     async def user_cases_handler(request: web.Request) -> web.Response:
         """Получить список неоткрытых кейсов пользователя."""
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-
-        if init_data and init_data.isdigit():
-            try:
-                user_id = int(init_data)
-            except ValueError:
-                pass
-
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-
-        if not user_id:
-            user_id_param = request.rel_url.query.get("user_id")
-            if user_id_param:
-                try:
-                    user_id = int(user_id_param)
-                except ValueError:
-                    return web.json_response({"error": "user_id must be integer"}, status=400)
-
-        if not user_id:
-            return web.json_response({"error": "authentication required"}, status=401)
+        user_id = await require_user_id(request)
 
         try:
             # Система кейсов удалена, возвращаем пустой список
@@ -4006,30 +3438,7 @@ def create_web_app(
 
     async def user_case_detail_handler(request: web.Request) -> web.Response:
         """Получить информацию о конкретном кейсе пользователя."""
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-
-        if init_data and init_data.isdigit():
-            try:
-                user_id = int(init_data)
-            except ValueError:
-                pass
-
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-
-        if not user_id:
-            user_id_param = request.rel_url.query.get("user_id")
-            if user_id_param:
-                try:
-                    user_id = int(user_id_param)
-                except ValueError:
-                    return web.json_response({"error": "user_id must be integer"}, status=400)
-
-        if not user_id:
-            return web.json_response({"error": "authentication required"}, status=401)
+        user_id = await require_user_id(request)
 
         user_case_id = request.match_info.get("user_case_id")
         if not user_case_id:
@@ -4053,30 +3462,7 @@ def create_web_app(
 
     async def case_tap_handler(request: web.Request) -> web.Response:
         """Обработать тап по кейсу (один из 4 тапов с проверкой апгрейда тира)."""
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-
-        if init_data and init_data.isdigit():
-            try:
-                user_id = int(init_data)
-            except ValueError:
-                pass
-
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-
-        if not user_id:
-            user_id_param = request.rel_url.query.get("user_id")
-            if user_id_param:
-                try:
-                    user_id = int(user_id_param)
-                except ValueError:
-                    return web.json_response({"error": "user_id must be integer"}, status=400)
-
-        if not user_id:
-            return web.json_response({"error": "authentication required"}, status=401)
+        user_id = await require_user_id(request)
 
         if request.method != "POST":
             return web.json_response({"error": "method_not_allowed"}, status=405)
@@ -4124,30 +3510,7 @@ def create_web_app(
 
     async def case_open_handler(request: web.Request) -> web.Response:
         """Открыть кейс и получить награды."""
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-
-        if init_data and init_data.isdigit():
-            try:
-                user_id = int(init_data)
-            except ValueError:
-                pass
-
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-
-        if not user_id:
-            user_id_param = request.rel_url.query.get("user_id")
-            if user_id_param:
-                try:
-                    user_id = int(user_id_param)
-                except ValueError:
-                    return web.json_response({"error": "user_id must be integer"}, status=400)
-
-        if not user_id:
-            return web.json_response({"error": "authentication required"}, status=401)
+        user_id = await require_user_id(request)
 
         if request.method != "POST":
             return web.json_response({"error": "method_not_allowed"}, status=405)
@@ -4177,30 +3540,7 @@ def create_web_app(
 
     async def case_skip_handler(request: web.Request) -> web.Response:
         """Пропустить анимацию и сразу открыть кейс."""
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-
-        if init_data and init_data.isdigit():
-            try:
-                user_id = int(init_data)
-            except ValueError:
-                pass
-
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-
-        if not user_id:
-            user_id_param = request.rel_url.query.get("user_id")
-            if user_id_param:
-                try:
-                    user_id = int(user_id_param)
-                except ValueError:
-                    return web.json_response({"error": "user_id must be integer"}, status=400)
-
-        if not user_id:
-            return web.json_response({"error": "authentication required"}, status=401)
+        user_id = await require_user_id(request)
 
         if request.method != "POST":
             return web.json_response({"error": "method_not_allowed"}, status=405)
@@ -4245,21 +3585,7 @@ def create_web_app(
 
     async def case_open_from_keys_handler(request: web.Request) -> web.Response:
         """Открыть кейс напрямую из ключей (keys), без user_case_id."""
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-        if init_data and init_data.isdigit():
-            try: user_id = int(init_data)
-            except ValueError: pass
-        if not user_id and init_data:
-            v = _verify_init_data(init_data, bot_token)
-            if v: user_id = _extract_user_id_from_init_data(v)
-        if not user_id:
-            p = request.rel_url.query.get("user_id")
-            if p:
-                try: user_id = int(p)
-                except ValueError: return web.json_response({"error": "invalid_user_id"}, status=400)
-        if not user_id:
-            return web.json_response({"error": "authentication required"}, status=401)
+        user_id = await require_user_id(request)
         try:
             keys = await db.fetchval("SELECT COALESCE(keys,0) FROM users WHERE user_id=$1", user_id)
             if not keys or keys < 1:
@@ -4309,22 +3635,7 @@ def create_web_app(
 
     async def debug_add_key_handler(request: web.Request) -> web.Response:
         """Admin-only: добавить +1 ключ пользователю."""
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-        if init_data and init_data.isdigit():
-            try: user_id = int(init_data)
-            except ValueError: pass
-        if not user_id and init_data:
-            v = _verify_init_data(init_data, bot_token)
-            if v: user_id = _extract_user_id_from_init_data(v)
-        if not user_id:
-            p = request.rel_url.query.get("user_id")
-            if p:
-                try: user_id = int(p)
-                except ValueError: pass
-        from bot.constants import ADMIN_ID
-        if not user_id or user_id != ADMIN_ID:
-            return web.json_response({"error": "admin_access_required"}, status=403)
+        user_id = await require_user_id(request)
         try:
             await db.execute("UPDATE users SET keys = COALESCE(keys,0)+1 WHERE user_id=$1", user_id)
             new_keys = await db.fetchval("SELECT COALESCE(keys,0) FROM users WHERE user_id=$1", user_id)
@@ -4643,7 +3954,7 @@ def create_web_app(
         except Exception:
             return web.json_response({"error": "invalid_json"}, status=400)
 
-        user_id = data.get("user_id")
+        user_id = require_user_id_from_payload(request, data)
         trophies = data.get("trophies")
         user_avg_level = data.get("user_avg_level") or data.get("avg_level") or 1
         selected_deck_id = data.get("selected_deck_id") or data.get("deck_id")
@@ -4756,7 +4067,7 @@ def create_web_app(
         except Exception:
             return web.json_response({"error": "invalid_json"}, status=400)
 
-        user_id = data.get("user_id")
+        user_id = require_user_id_from_payload(request, data)
         difficulty = data.get("difficulty", "medium")
         selected_deck_id = data.get("selected_deck_id") or data.get("deck_id")
         game_mode = data.get("game_mode") or data.get("mode") or "classic"
@@ -4866,7 +4177,11 @@ def create_web_app(
                     )
                     # Извлекаем информацию о боте (если есть)
                     bot_info = result.get("bot_info") if result.get("is_bot") else None
-                    lazy_game_mode = request.app.get("match_game_modes", {}).get(match_id, "classic")
+                    lazy_game_mode = (
+                        result.get("game_mode")
+                        or request.app.get("match_game_modes", {}).get(match_id, "")
+                        or "classic"
+                    )
                     ok = await asyncio.wait_for(
                         _prepare_and_cache_engine(
                             request,
@@ -4874,6 +4189,7 @@ def create_web_app(
                             player_ids=player_ids,
                             is_bot=bool(result.get("is_bot")),
                             bot_info=bot_info,
+                            player_decks=result.get("player_decks"),
                             game_mode=lazy_game_mode,
                         ),
                         timeout=5.0,
@@ -5001,26 +4317,6 @@ def create_web_app(
             normalized = list(list(available_ids)[:9])
 
         return normalized
-
-    def _resolve_user_id_from_payload(payload: dict[str, Any]) -> int | None:
-        """
-        Унифицированное извлечение user_id из JSON тела (_auth или явный user_id).
-        """
-        if not payload:
-            return None
-        if "user_id" in payload:
-            try:
-                return int(payload.get("user_id"))
-            except Exception:
-                pass
-
-        auth_token = payload.get("_auth") or payload.get("auth")
-        if not auth_token:
-            return None
-        verified = _verify_init_data(str(auth_token), bot_token)
-        if not verified:
-            return None
-        return _extract_user_id_from_init_data(verified)
 
     async def _load_player_deck_and_hero(user_id: int, selected_deck_id: int | None = None) -> tuple[list[str], int | None]:
         """
@@ -5167,28 +4463,22 @@ def create_web_app(
                         "⏰ Turn timer expired for player %s in match %s, auto-ending turn",
                         current_player, match_id
                     )
+                    lock = _get_match_lock(match_id)
+                    async with lock:
+                        try:
+                            engine.end_turn(current_player)
+                        except Exception as exc:
+                            logger.warning("Failed to auto-end turn on timer expiry: %s", exc)
                     try:
-                        # Автоматически завершаем ход
-                        engine.end_turn(current_player)
-                        # Проверяем и запускаем бота если нужно
                         await check_and_run_bot(match_id, request.app["active_matches"])
                     except Exception as exc:
-                        logger.warning("Failed to auto-end turn on timer expiry: %s", exc)
+                        logger.warning("Failed to check/run bot after auto-end: %s", exc)
 
         try:
-            # Получаем user_id из query параметров для правильного определения is_my_turn
-            # КРИТИЧНО: Приводим к int, чтобы сравнение с current_player_id работало
-            raw_user_id = request.rel_url.query.get("user_id")
-            viewer_id = None
-            if raw_user_id:
-                try:
-                    viewer_id = int(raw_user_id)
-                except (ValueError, TypeError):
-                    # Если не удалось конвертировать, оставляем None
-                    viewer_id = None
-            
+            viewer_id = await require_user_id(request)
+            _verify_participant(engine, viewer_id)
+
             if hasattr(engine, "get_full_state"):
-                # Передаем viewer_id — состояние включит legal_actions для текущего игрока
                 state = engine.get_full_state(viewer_id=viewer_id)
             else:
                 state = _extract_engine_state(engine)
@@ -5226,7 +4516,7 @@ def create_web_app(
         # Поддержка: card_id, card_id_from_hand, hand_index
         raw_card_id = payload.get("card_id") or payload.get("card_id_from_hand") or payload.get("hand_index")
         board_position = payload.get("target_position") or payload.get("board_position") or payload.get("position") or 0
-        user_id_int = _resolve_user_id_from_payload(payload)
+        user_id_int = require_user_id_from_payload(request, payload)
         
         # Параметры для зелий / battlecry
         target_id = payload.get("target_id")
@@ -5250,77 +4540,81 @@ def create_web_app(
         if not engine:
             return web.json_response({"error": "match_not_found"}, status=404)
 
-        try:
-            result = engine.play_card(
-                user_id_int, 
-                raw_card_id, 
-                board_position,
-                target_id=target_id,
-                target_is_hero=target_is_hero
-            )
-            
-            # Обработка завершения игры
-            if result.get("game_over"):
-                logger.info("🏁 Game Over after play_card! Winner: %s", result.get("winner"))
-                await _process_battle_end(request.app, match_id, engine, result.get("winner"))
+        _verify_participant(engine, user_id_int)
+
+        lock = _get_match_lock(match_id)
+        async with lock:
+            try:
+                result = engine.play_card(
+                    user_id_int, 
+                    raw_card_id, 
+                    board_position,
+                    target_id=target_id,
+                    target_is_hero=target_is_hero
+                )
                 
+                # Обработка завершения игры
+                if result.get("game_over"):
+                    logger.info("🏁 Game Over after play_card! Winner: %s", result.get("winner"))
+                    await _process_battle_end(request.app, match_id, engine, result.get("winner"))
+                    
+                    sio_inst = request.app.get("socketio")
+                    if sio_inst:
+                        await sio_inst.emit("game_over", {
+                            "game_over": True,
+                            "winner_id": result.get("winner"),
+                            "p1_hp": engine.p1_state.hero_hp,
+                            "p2_hp": engine.p2_state.hero_hp,
+                            "reason": "hero_death"
+                        }, room=match_id)
+                
+                # Получаем состояние с legal_actions
+                state = engine.get_full_state(viewer_id=user_id_int)
+                
+                # Добавляем данные о трофеях/монетах/звёздах если game_over
+                if result.get("game_over"):
+                    trophy_changes = getattr(engine, "_trophy_changes", {})
+                    trophy_totals = getattr(engine, "_trophy_totals", {})
+                    coins_changes = getattr(engine, "_coins_changes", {})
+                    coins_totals = getattr(engine, "_coins_totals", {})
+                    stars_changes = getattr(engine, "_stars_changes", {})
+                    stars_totals = getattr(engine, "_stars_totals", {})
+                    keys_changes = getattr(engine, "_keys_changes", {})
+                    keys_totals = getattr(engine, "_keys_totals", {})
+                    
+                    if user_id_int in trophy_changes:
+                        state["trophy_delta"] = trophy_changes[user_id_int]
+                        state["trophy_total"] = trophy_totals.get(user_id_int, 0)
+                    if user_id_int in coins_changes:
+                        state["coins_delta"] = coins_changes[user_id_int]
+                        state["coins_total"] = coins_totals.get(user_id_int, 0)
+                    if user_id_int in stars_changes:
+                        state["stars_delta"] = stars_changes[user_id_int]
+                        state["stars_total"] = stars_totals.get(user_id_int, 0)
+                    if user_id_int in keys_changes:
+                        state["keys_delta"] = keys_changes[user_id_int]
+                        state["keys_total"] = keys_totals.get(user_id_int, 0)
+                    league_up = getattr(engine, "_league_up", {})
+                    if user_id_int in league_up:
+                        state["league_up"] = league_up[user_id_int]
+                
+                # Рассылаем обновление всем через Socket.IO
                 sio_inst = request.app.get("socketio")
-                if sio_inst:
-                    await sio_inst.emit("game_over", {
-                        "game_over": True,
-                        "winner_id": result.get("winner"),
-                        "p1_hp": engine.p1_state.hero_hp,
-                        "p2_hp": engine.p2_state.hero_hp,
-                        "reason": "hero_death"
+                if sio_inst and not result.get("game_over"):
+                    await sio_inst.emit("state_changed", {
+                        "match_id": match_id,
+                        "action": "play_card",
+                        "state": state
                     }, room=match_id)
-            
-            # Получаем состояние с legal_actions
-            state = engine.get_full_state(viewer_id=user_id_int)
-            
-            # Добавляем данные о трофеях/монетах/звёздах если game_over (end_turn/attack)
-            if result.get("game_over"):
-                trophy_changes = getattr(engine, "_trophy_changes", {})
-                trophy_totals = getattr(engine, "_trophy_totals", {})
-                coins_changes = getattr(engine, "_coins_changes", {})
-                coins_totals = getattr(engine, "_coins_totals", {})
-                stars_changes = getattr(engine, "_stars_changes", {})
-                stars_totals = getattr(engine, "_stars_totals", {})
-                keys_changes = getattr(engine, "_keys_changes", {})
-                keys_totals = getattr(engine, "_keys_totals", {})
                 
-                if user_id_int in trophy_changes:
-                    state["trophy_delta"] = trophy_changes[user_id_int]
-                    state["trophy_total"] = trophy_totals.get(user_id_int, 0)
-                if user_id_int in coins_changes:
-                    state["coins_delta"] = coins_changes[user_id_int]
-                    state["coins_total"] = coins_totals.get(user_id_int, 0)
-                if user_id_int in stars_changes:
-                    state["stars_delta"] = stars_changes[user_id_int]
-                    state["stars_total"] = stars_totals.get(user_id_int, 0)
-                if user_id_int in keys_changes:
-                    state["keys_delta"] = keys_changes[user_id_int]
-                    state["keys_total"] = keys_totals.get(user_id_int, 0)
-                league_up = getattr(engine, "_league_up", {})
-                if user_id_int in league_up:
-                    state["league_up"] = league_up[user_id_int]
-            
-            # Рассылаем обновление всем через Socket.IO
-            sio_inst = request.app.get("socketio")
-            if sio_inst and not result.get("game_over"):
-                await sio_inst.emit("state_changed", {
-                    "match_id": match_id,
-                    "action": "play_card",
-                    "state": state
-                }, room=match_id)
-            
-            # Проверяем, перешел ли ход к боту (если игра не завершена)
-            if not result.get("game_over"):
-                await trigger_bot_move(match_id)
-            
-            return web.json_response({"result": result, "state": state})
-        except Exception as exc:
-            logger.warning("Ошибка розыгрыша карты в матче %s: %s", match_id, exc, exc_info=True)
-            return web.json_response({"error": "play_card_failed", "details": str(exc)}, status=400)
+                # Проверяем, перешел ли ход к боту
+                if not result.get("game_over"):
+                    await trigger_bot_move(match_id)
+                
+                return web.json_response({"result": result, "state": state})
+            except Exception as exc:
+                logger.warning("Ошибка розыгрыша карты в матче %s: %s", match_id, exc, exc_info=True)
+                return web.json_response({"error": "play_card_failed", "details": str(exc)}, status=400)
 
     async def battle_attack_handler(request: web.Request) -> web.Response:
         """
@@ -5335,7 +4629,7 @@ def create_web_app(
         attacker_id = payload.get("attacker_id")
         target_id = payload.get("target_id")
         target_is_hero = bool(payload.get("target_is_hero"))
-        user_id_int = _resolve_user_id_from_payload(payload)
+        user_id_int = require_user_id_from_payload(request, payload)
 
         if not match_id or attacker_id is None or user_id_int is None:
             return web.json_response({"error": "invalid_parameters"}, status=400)
@@ -5344,80 +4638,84 @@ def create_web_app(
         if not engine:
             return web.json_response({"error": "match_not_found"}, status=404)
 
+        _verify_participant(engine, user_id_int)
+
         logger = logging.getLogger(__name__)
         logger.info("attack_handler: match=%s attacker=%s target=%s hero=%s user=%s",
                     match_id, attacker_id, target_id, target_is_hero, user_id_int)
 
-        try:
-            result = engine.attack_target(
-                user_id_int,
-                attacker_id,
-                target_id,
-                target_is_hero=target_is_hero,
-            )
-            
-            # Обработка завершения игры
-            if result.get("game_over"):
-                logger.info("🏁 Game Over after attack! Winner: %s", result.get("winner"))
-                await _process_battle_end(request.app, match_id, engine, result.get("winner"))
+        lock = _get_match_lock(match_id)
+        async with lock:
+            try:
+                result = engine.attack_target(
+                    user_id_int,
+                    attacker_id,
+                    target_id,
+                    target_is_hero=target_is_hero,
+                )
                 
+                # Обработка завершения игры
+                if result.get("game_over"):
+                    logger.info("🏁 Game Over after attack! Winner: %s", result.get("winner"))
+                    await _process_battle_end(request.app, match_id, engine, result.get("winner"))
+                    
+                    sio_inst = request.app.get("socketio")
+                    if sio_inst:
+                        await sio_inst.emit("game_over", {
+                            "game_over": True,
+                            "winner_id": result.get("winner"),
+                            "p1_hp": engine.p1_state.hero_hp,
+                            "p2_hp": engine.p2_state.hero_hp,
+                            "reason": "hero_death"
+                        }, room=match_id)
+                
+                # Получаем состояние с legal_actions
+                state = engine.get_full_state(viewer_id=user_id_int)
+                
+                # Добавляем данные о трофеях/монетах/звёздах если game_over
+                if result.get("game_over"):
+                    trophy_changes = getattr(engine, "_trophy_changes", {})
+                    trophy_totals = getattr(engine, "_trophy_totals", {})
+                    coins_changes = getattr(engine, "_coins_changes", {})
+                    coins_totals = getattr(engine, "_coins_totals", {})
+                    stars_changes = getattr(engine, "_stars_changes", {})
+                    stars_totals = getattr(engine, "_stars_totals", {})
+                    keys_changes = getattr(engine, "_keys_changes", {})
+                    keys_totals = getattr(engine, "_keys_totals", {})
+
+                    if user_id_int in trophy_changes:
+                        state["trophy_delta"] = trophy_changes[user_id_int]
+                        state["trophy_total"] = trophy_totals.get(user_id_int, 0)
+                    if user_id_int in coins_changes:
+                        state["coins_delta"] = coins_changes[user_id_int]
+                        state["coins_total"] = coins_totals.get(user_id_int, 0)
+                    if user_id_int in stars_changes:
+                        state["stars_delta"] = stars_changes[user_id_int]
+                        state["stars_total"] = stars_totals.get(user_id_int, 0)
+                    if user_id_int in keys_changes:
+                        state["keys_delta"] = keys_changes[user_id_int]
+                        state["keys_total"] = keys_totals.get(user_id_int, 0)
+                    league_up = getattr(engine, "_league_up", {})
+                    if user_id_int in league_up:
+                        state["league_up"] = league_up[user_id_int]
+
+                # Рассылаем обновление всем через Socket.IO
                 sio_inst = request.app.get("socketio")
-                if sio_inst:
-                    await sio_inst.emit("game_over", {
-                        "game_over": True,
-                        "winner_id": result.get("winner"),
-                        "p1_hp": engine.p1_state.hero_hp,
-                        "p2_hp": engine.p2_state.hero_hp,
-                        "reason": "hero_death"
+                if sio_inst and not result.get("game_over"):
+                    await sio_inst.emit("state_changed", {
+                        "match_id": match_id,
+                        "action": "attack",
+                        "state": state
                     }, room=match_id)
-            
-            # Получаем состояние с legal_actions
-            state = engine.get_full_state(viewer_id=user_id_int)
-            
-            # Добавляем данные о трофеях/монетах/звёздах если game_over (play_card)
-            if result.get("game_over"):
-                trophy_changes = getattr(engine, "_trophy_changes", {})
-                trophy_totals = getattr(engine, "_trophy_totals", {})
-                coins_changes = getattr(engine, "_coins_changes", {})
-                coins_totals = getattr(engine, "_coins_totals", {})
-                stars_changes = getattr(engine, "_stars_changes", {})
-                stars_totals = getattr(engine, "_stars_totals", {})
-                keys_changes = getattr(engine, "_keys_changes", {})
-                keys_totals = getattr(engine, "_keys_totals", {})
-
-                if user_id_int in trophy_changes:
-                    state["trophy_delta"] = trophy_changes[user_id_int]
-                    state["trophy_total"] = trophy_totals.get(user_id_int, 0)
-                if user_id_int in coins_changes:
-                    state["coins_delta"] = coins_changes[user_id_int]
-                    state["coins_total"] = coins_totals.get(user_id_int, 0)
-                if user_id_int in stars_changes:
-                    state["stars_delta"] = stars_changes[user_id_int]
-                    state["stars_total"] = stars_totals.get(user_id_int, 0)
-                if user_id_int in keys_changes:
-                    state["keys_delta"] = keys_changes[user_id_int]
-                    state["keys_total"] = keys_totals.get(user_id_int, 0)
-                league_up = getattr(engine, "_league_up", {})
-                if user_id_int in league_up:
-                    state["league_up"] = league_up[user_id_int]
-
-            # Рассылаем обновление всем через Socket.IO
-            sio_inst = request.app.get("socketio")
-            if sio_inst and not result.get("game_over"):
-                await sio_inst.emit("state_changed", {
-                    "match_id": match_id,
-                    "action": "attack",
-                    "state": state
-                }, room=match_id)
-            
-            # Проверяем, перешел ли ход к боту (если игра не завершена)
-            if not result.get("game_over"):
-                await trigger_bot_move(match_id)
-            
-            return web.json_response({"result": result, "state": state})
-        except Exception as exc:
-            logger.warning("Ошибка атаки в матче %s: %s", match_id, exc, exc_info=True)
-            return web.json_response({"error": "attack_failed", "details": str(exc)}, status=400)
+                
+                # Проверяем, перешел ли ход к боту
+                if not result.get("game_over"):
+                    await trigger_bot_move(match_id)
+                
+                return web.json_response({"result": result, "state": state})
+            except Exception as exc:
+                logger.warning("Ошибка атаки в матче %s: %s", match_id, exc, exc_info=True)
+                return web.json_response({"error": "attack_failed", "details": str(exc)}, status=400)
 
     # calculate_trophy_delta и calculate_coins_reward вынесены на уровень модуля
     
@@ -5443,7 +4741,7 @@ def create_web_app(
             return web.json_response({"error": "match_id_required"}, status=400)
 
         # Получаем user_id из payload
-        user_id_int = _resolve_user_id_from_payload(payload)
+        user_id_int = require_user_id_from_payload(request, payload)
         if user_id_int is None:
             return web.json_response({"error": "user_id_required"}, status=400)
 
@@ -5451,12 +4749,11 @@ def create_web_app(
         if not engine:
             return web.json_response({"error": "match_not_found"}, status=404)
 
-        # Проверяем, что игрок участвует в матче
-        if str(engine.p1_state.user_id) != str(user_id_int) and str(engine.p2_state.user_id) != str(user_id_int):
-            return web.json_response({"error": "user_not_in_match"}, status=403)
+        _verify_participant(engine, user_id_int)
 
-        # Помечаем игрока как SURRENDERED (бот продолжит играть)
-        engine.mark_surrender(user_id_int)
+        lock = _get_match_lock(match_id)
+        async with lock:
+            engine.mark_surrender(user_id_int)
         
         # Получаем состояние сдавшегося игрока
         player_state = engine.get_player_state(user_id_int)
@@ -5560,7 +4857,7 @@ def create_web_app(
         if not match_id:
             return web.json_response({"error": "match_id_required"}, status=400)
         
-        user_id_int = _resolve_user_id_from_payload(payload)
+        user_id_int = require_user_id_from_payload(request, payload)
         if user_id_int is None:
             return web.json_response({"error": "user_id_required"}, status=400)
 
@@ -5568,15 +4865,19 @@ def create_web_app(
         if not engine:
             return web.json_response({"error": "match_not_found"}, status=404)
 
+        _verify_participant(engine, user_id_int)
+
         logger = logging.getLogger(__name__)
         logger.info("turn_end_handler: match=%s user=%s", match_id, user_id_int)
 
-        try:
-            result = engine.end_turn(user_id_int)
-            logger.info("turn_end_handler: success, current_player=%s", engine.get_current_player_id())
-        except Exception as exc:
-            logger.warning("Ошибка завершения хода для матча %s: %s", match_id, exc, exc_info=True)
-            return web.json_response({"error": "turn_end_failed", "details": str(exc)}, status=400)
+        lock = _get_match_lock(match_id)
+        async with lock:
+            try:
+                result = engine.end_turn(user_id_int)
+                logger.info("turn_end_handler: success, current_player=%s", engine.get_current_player_id())
+            except Exception as exc:
+                logger.warning("Ошибка завершения хода для матча %s: %s", match_id, exc, exc_info=True)
+                return web.json_response({"error": "turn_end_failed", "details": str(exc)}, status=400)
 
         # Запускаем бота, если ход перешел к нему
         try:
@@ -5615,7 +4916,7 @@ def create_web_app(
         if not match_id or not action_data:
             return web.json_response({"error": "match_id_and_action_required"}, status=400)
         
-        user_id_int = _resolve_user_id_from_payload(payload)
+        user_id_int = require_user_id_from_payload(request, payload)
         if user_id_int is None:
             return web.json_response({"error": "user_id_required"}, status=400)
 
@@ -5735,34 +5036,9 @@ def create_web_app(
     
     async def admin_tps_handler(request: web.Request) -> web.Response:
         """Обработчик получения TPS статистики (только для админа)."""
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-
-        if init_data and init_data.isdigit():
-            try:
-                user_id = int(init_data)
-            except ValueError:
-                pass
-
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-
-        if not user_id:
-            user_id_param = request.rel_url.query.get("user_id")
-            if user_id_param:
-                try:
-                    user_id = int(user_id_param)
-                except ValueError:
-                    return web.json_response(
-                        {"error": "user_id must be integer"}, status=400
-                    )
-
-        # Проверяем, что это админ
-        ADMIN_ID = 6803854304
-        if not user_id or user_id != ADMIN_ID:
-            return web.json_response({"error": "Forbidden"}, status=403)
+        user_id = await require_user_id(request)
+        if user_id != 6803854304:
+            return web.json_response({"error": "admin_access_required"}, status=403)
 
         try:
             from tps_monitor import get_tps_monitor
@@ -5783,35 +5059,7 @@ def create_web_app(
     
     async def admin_stars_test_mode_toggle_handler(request: web.Request) -> web.Response:
         """Обработчик переключения тестового режима Stars (только для админа)."""
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-
-        if init_data and init_data.isdigit():
-            try:
-                user_id = int(init_data)
-            except ValueError:
-                pass
-
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-
-        if not user_id:
-            user_id_param = request.rel_url.query.get("user_id")
-            if user_id_param:
-                try:
-                    user_id = int(user_id_param)
-                except ValueError:
-                    return web.json_response(
-                        {"error": "user_id must be integer"}, status=400
-                    )
-
-        # Проверяем, что это админ
-        if not user_id or user_id not in app.get("admin_ids", set()):
-            return web.json_response(
-                {"error": "admin_access_required"}, status=403
-            )
+        user_id = await require_user_id(request)
 
         if request.method != "POST":
             return web.json_response({"error": "method_not_allowed"}, status=405)
@@ -5845,22 +5093,8 @@ def create_web_app(
 
     async def admin_rewards_tracks_handler(request: web.Request) -> web.Response:
         """GET /api/admin/rewards/tracks — все тиры всех треков."""
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-        if init_data and init_data.isdigit():
-            try: user_id = int(init_data)
-            except ValueError: pass
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-        if not user_id:
-            user_id_param = request.rel_url.query.get("user_id")
-            if user_id_param:
-                try: user_id = int(user_id_param)
-                except ValueError:
-                    return web.json_response({"error": "user_id must be integer"}, status=400)
-        if not user_id or user_id != 6803854304:
+        user_id = await require_user_id(request)
+        if user_id != 6803854304:
             return web.json_response({"error": "admin_access_required"}, status=403)
 
         try:
@@ -5872,22 +5106,8 @@ def create_web_app(
 
     async def admin_rewards_track_create_handler(request: web.Request) -> web.Response:
         """POST /api/admin/rewards/tracks/create — создать новый тир."""
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-        if init_data and init_data.isdigit():
-            try: user_id = int(init_data)
-            except ValueError: pass
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-        if not user_id:
-            user_id_param = request.rel_url.query.get("user_id")
-            if user_id_param:
-                try: user_id = int(user_id_param)
-                except ValueError:
-                    return web.json_response({"error": "user_id must be integer"}, status=400)
-        if not user_id or user_id != 6803854304:
+        user_id = await require_user_id(request)
+        if user_id != 6803854304:
             return web.json_response({"error": "admin_access_required"}, status=403)
 
         if request.method != "POST":
@@ -5918,22 +5138,8 @@ def create_web_app(
 
     async def admin_rewards_track_update_handler(request: web.Request) -> web.Response:
         """POST /api/admin/rewards/tracks/update — обновить тир."""
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-        if init_data and init_data.isdigit():
-            try: user_id = int(init_data)
-            except ValueError: pass
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-        if not user_id:
-            user_id_param = request.rel_url.query.get("user_id")
-            if user_id_param:
-                try: user_id = int(user_id_param)
-                except ValueError:
-                    return web.json_response({"error": "user_id must be integer"}, status=400)
-        if not user_id or user_id != 6803854304:
+        user_id = await require_user_id(request)
+        if user_id != 6803854304:
             return web.json_response({"error": "admin_access_required"}, status=403)
 
         if request.method != "POST":
@@ -5957,22 +5163,8 @@ def create_web_app(
 
     async def admin_rewards_track_delete_handler(request: web.Request) -> web.Response:
         """POST /api/admin/rewards/tracks/delete — мягкое удаление тира."""
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-        if init_data and init_data.isdigit():
-            try: user_id = int(init_data)
-            except ValueError: pass
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-        if not user_id:
-            user_id_param = request.rel_url.query.get("user_id")
-            if user_id_param:
-                try: user_id = int(user_id_param)
-                except ValueError:
-                    return web.json_response({"error": "user_id must be integer"}, status=400)
-        if not user_id or user_id != 6803854304:
+        user_id = await require_user_id(request)
+        if user_id != 6803854304:
             return web.json_response({"error": "admin_access_required"}, status=403)
 
         if request.method != "POST":
@@ -5994,34 +5186,9 @@ def create_web_app(
 
     async def post_delete_handler(request: web.Request) -> web.Response:
         """Обработчик удаления поста (только для админа)."""
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-
-        if init_data and init_data.isdigit():
-            try:
-                user_id = int(init_data)
-            except ValueError:
-                pass
-
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-
-        if not user_id:
-            user_id_param = request.rel_url.query.get("user_id")
-            if user_id_param:
-                try:
-                    user_id = int(user_id_param)
-                except ValueError:
-                    return web.json_response(
-                        {"error": "user_id must be integer"}, status=400
-                    )
-
-        if not user_id or user_id != 6803854304:
-            return web.json_response(
-                {"error": "admin_access_required"}, status=403
-            )
+        user_id = await require_user_id(request)
+        if user_id != 6803854304:
+            return web.json_response({"error": "admin_access_required"}, status=403)
 
         if request.method != "POST":
             return web.json_response({"error": "method_not_allowed"}, status=405)
@@ -6058,34 +5225,7 @@ def create_web_app(
 
     async def post_like_handler(request: web.Request) -> web.Response:
         """Обработчик лайка/дизлайка поста."""
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-
-        if init_data and init_data.isdigit():
-            try:
-                user_id = int(init_data)
-            except ValueError:
-                pass
-
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-
-        if not user_id:
-            user_id_param = request.rel_url.query.get("user_id")
-            if user_id_param:
-                try:
-                    user_id = int(user_id_param)
-                except ValueError:
-                    return web.json_response(
-                        {"error": "user_id must be integer"}, status=400
-                    )
-
-        if not user_id:
-            return web.json_response(
-                {"error": "authentication required"}, status=401
-            )
+        user_id = await require_user_id(request)
 
         if request.method != "POST":
             return web.json_response({"error": "method_not_allowed"}, status=405)
@@ -6120,27 +5260,7 @@ def create_web_app(
         """GET /api/rewards/track/{track_type} — список тиров с claimed/available/locked."""
         import json as _json
 
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-
-        if init_data and init_data.isdigit():
-            try: user_id = int(init_data)
-            except ValueError: pass
-
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-
-        if not user_id:
-            user_id_param = request.rel_url.query.get("user_id")
-            if user_id_param:
-                try: user_id = int(user_id_param)
-                except ValueError:
-                    return web.json_response({"error": "user_id must be integer"}, status=400)
-
-        if not user_id:
-            return web.json_response({"error": "authentication required"}, status=401)
+        user_id = await require_user_id(request)
 
         track_type = request.match_info.get("track_type", "")
         if track_type not in ("glory", "bp_free", "bp_premium", "bp_ultra"):
@@ -6211,27 +5331,7 @@ def create_web_app(
         """POST /api/rewards/claim — запросить награду за конкретную позицию."""
         import json as _json
 
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-
-        if init_data and init_data.isdigit():
-            try: user_id = int(init_data)
-            except ValueError: pass
-
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-
-        if not user_id:
-            user_id_param = request.rel_url.query.get("user_id")
-            if user_id_param:
-                try: user_id = int(user_id_param)
-                except ValueError:
-                    return web.json_response({"error": "user_id must be integer"}, status=400)
-
-        if not user_id:
-            return web.json_response({"error": "authentication required"}, status=401)
+        user_id = await require_user_id(request)
 
         if request.method != "POST":
             return web.json_response({"error": "method_not_allowed"}, status=405)
@@ -6454,46 +5554,7 @@ def create_web_app(
         import logging
         logger = logging.getLogger(__name__)
         
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-
-        # Логируем для отладки (без чувствительных данных)
-        logger.info(f"Создание платежа: init_data присутствует: {bool(init_data)}, длина: {len(init_data) if init_data else 0}")
-
-        # Сначала пробуем как число (user_id напрямую)
-        if init_data and init_data.isdigit():
-            try:
-                user_id = int(init_data)
-                logger.info(f"Использован user_id из цифрового параметра: {user_id}")
-            except ValueError:
-                pass
-
-        # Если не получилось, пробуем проверить как initData
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-                logger.info(f"Использован user_id из проверенного initData: {user_id}")
-            else:
-                logger.warning("initData не прошел проверку подписи")
-
-        # Fallback: пробуем user_id из отдельного параметра
-        if not user_id:
-            user_id_param = request.rel_url.query.get("user_id")
-            if user_id_param:
-                try:
-                    user_id = int(user_id_param)
-                    logger.info(f"Использован user_id из параметра user_id: {user_id}")
-                except ValueError:
-                    return web.json_response(
-                        {"error": "user_id must be integer"}, status=400
-                    )
-
-        if not user_id:
-            logger.error("Не удалось определить user_id. init_data присутствует: %s", bool(init_data))
-            return web.json_response(
-                {"error": "authentication required", "message": "Не удалось определить пользователя. Убедитесь, что вы открыли игру через Telegram."}, status=401
-            )
+        user_id = await require_user_id(request)
 
         payment_service = request.app.get("payment_service")
         if not payment_service:
@@ -6580,34 +5641,7 @@ def create_web_app(
 
     async def get_payment_status_handler(request: web.Request) -> web.Response:
         """Обработчик получения статуса платежа."""
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-
-        if init_data and init_data.isdigit():
-            try:
-                user_id = int(init_data)
-            except ValueError:
-                pass
-
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-
-        if not user_id:
-            user_id_param = request.rel_url.query.get("user_id")
-            if user_id_param:
-                try:
-                    user_id = int(user_id_param)
-                except ValueError:
-                    return web.json_response(
-                        {"error": "user_id must be integer"}, status=400
-                    )
-
-        if not user_id:
-            return web.json_response(
-                {"error": "authentication required"}, status=401
-            )
+        user_id = await require_user_id(request)
 
         payment_id = request.rel_url.query.get("payment_id")
         if not payment_id:
@@ -6682,34 +5716,7 @@ def create_web_app(
 
     async def user_mail_handler(request: web.Request) -> web.Response:
         """Обработчик получения писем пользователя."""
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-
-        if init_data and init_data.isdigit():
-            try:
-                user_id = int(init_data)
-            except ValueError:
-                pass
-
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-
-        if not user_id:
-            user_id_param = request.rel_url.query.get("user_id")
-            if user_id_param:
-                try:
-                    user_id = int(user_id_param)
-                except ValueError:
-                    return web.json_response(
-                        {"error": "user_id must be integer"}, status=400
-                    )
-
-        if not user_id:
-            return web.json_response(
-                {"error": "authentication required"}, status=401
-            )
+        user_id = await require_user_id(request)
 
         try:
             category = request.rel_url.query.get("category")
@@ -6750,34 +5757,7 @@ def create_web_app(
 
     async def mark_mail_read_handler(request: web.Request) -> web.Response:
         """Обработчик отметки письма как прочитанного."""
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-
-        if init_data and init_data.isdigit():
-            try:
-                user_id = int(init_data)
-            except ValueError:
-                pass
-
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-
-        if not user_id:
-            user_id_param = request.rel_url.query.get("user_id")
-            if user_id_param:
-                try:
-                    user_id = int(user_id_param)
-                except ValueError:
-                    return web.json_response(
-                        {"error": "user_id must be integer"}, status=400
-                    )
-
-        if not user_id:
-            return web.json_response(
-                {"error": "authentication required"}, status=401
-            )
+        user_id = await require_user_id(request)
 
         if request.method != "POST":
             return web.json_response({"error": "method_not_allowed"}, status=405)
@@ -6806,34 +5786,7 @@ def create_web_app(
 
     async def get_unread_mail_count_handler(request: web.Request) -> web.Response:
         """Обработчик получения количества непрочитанных писем."""
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-
-        if init_data and init_data.isdigit():
-            try:
-                user_id = int(init_data)
-            except ValueError:
-                pass
-
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-
-        if not user_id:
-            user_id_param = request.rel_url.query.get("user_id")
-            if user_id_param:
-                try:
-                    user_id = int(user_id_param)
-                except ValueError:
-                    return web.json_response(
-                        {"error": "user_id must be integer"}, status=400
-                    )
-
-        if not user_id:
-            return web.json_response(
-                {"error": "authentication required"}, status=401
-            )
+        user_id = await require_user_id(request)
 
         try:
             unread_count = await db.get_unread_mail_count(user_id)
@@ -6876,34 +5829,7 @@ def create_web_app(
         import logging
         logger = logging.getLogger(__name__)
         
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-
-        if init_data and init_data.isdigit():
-            try:
-                user_id = int(init_data)
-            except ValueError:
-                pass
-
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-
-        if not user_id:
-            user_id_param = request.rel_url.query.get("user_id")
-            if user_id_param:
-                try:
-                    user_id = int(user_id_param)
-                except ValueError:
-                    return web.json_response(
-                        {"error": "user_id must be integer"}, status=400
-                    )
-
-        if not user_id:
-            return web.json_response(
-                {"error": "authentication required"}, status=401
-            )
+        user_id = await require_user_id(request)
 
         if request.method != "POST":
             return web.json_response({"error": "method_not_allowed"}, status=405)
@@ -7070,34 +5996,7 @@ def create_web_app(
     
     async def shop_buy_handler(request: web.Request) -> web.Response:
         """Обработчик покупки товара за гемы."""
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-
-        if init_data and init_data.isdigit():
-            try:
-                user_id = int(init_data)
-            except ValueError:
-                pass
-
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-
-        if not user_id:
-            user_id_param = request.rel_url.query.get("user_id")
-            if user_id_param:
-                try:
-                    user_id = int(user_id_param)
-                except ValueError:
-                    return web.json_response(
-                        {"error": "user_id must be integer"}, status=400
-                    )
-
-        if not user_id:
-            return web.json_response(
-                {"error": "authentication required"}, status=401
-            )
+        user_id = await require_user_id(request)
 
         if request.method != "POST":
             return web.json_response({"error": "method_not_allowed"}, status=405)
@@ -7521,23 +6420,7 @@ def create_web_app(
         import logging
         logger = logging.getLogger(__name__)
 
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-        if init_data and init_data.isdigit():
-            try: user_id = int(init_data)
-            except ValueError: pass
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-        if not user_id:
-            user_id_param = request.rel_url.query.get("user_id")
-            if user_id_param:
-                try: user_id = int(user_id_param)
-                except ValueError:
-                    return web.json_response({"error": "user_id must be integer"}, status=400)
-        if not user_id:
-            return web.json_response({"error": "authentication required"}, status=401)
+        user_id = await require_user_id(request)
         if request.method != "POST":
             return web.json_response({"error": "method_not_allowed"}, status=405)
 
@@ -7625,23 +6508,7 @@ def create_web_app(
 
     async def particles_daily_handler(request: web.Request) -> web.Response:
         """Получить сегодняшнюю ротацию карт на частицы."""
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-        if init_data and init_data.isdigit():
-            try: user_id = int(init_data)
-            except ValueError: pass
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-        if not user_id:
-            user_id_param = request.rel_url.query.get("user_id")
-            if user_id_param:
-                try: user_id = int(user_id_param)
-                except ValueError:
-                    return web.json_response({"error": "user_id must be integer"}, status=400)
-        if not user_id:
-            return web.json_response({"error": "authentication required"}, status=401)
+        user_id = await require_user_id(request)
 
         from datetime import date, datetime, timedelta, timezone
 
@@ -7720,23 +6587,7 @@ def create_web_app(
 
     async def particles_buy_handler(request: web.Request) -> web.Response:
         """Купить частицы за монеты."""
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-        if init_data and init_data.isdigit():
-            try: user_id = int(init_data)
-            except ValueError: pass
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-        if not user_id:
-            user_id_param = request.rel_url.query.get("user_id")
-            if user_id_param:
-                try: user_id = int(user_id_param)
-                except ValueError:
-                    return web.json_response({"error": "user_id must be integer"}, status=400)
-        if not user_id:
-            return web.json_response({"error": "authentication required"}, status=401)
+        user_id = await require_user_id(request)
         if request.method != "POST":
             return web.json_response({"error": "method_not_allowed"}, status=405)
 
@@ -7926,22 +6777,7 @@ def create_web_app(
     # API для управления наборами магазина (только для админа)
     async def shop_sets_list_handler(request: web.Request) -> web.Response:
         """Получить список всех наборов."""
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-
-        if init_data and init_data.isdigit():
-            try:
-                user_id = int(init_data)
-            except ValueError:
-                pass
-
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-
-        if not user_id:
-            return web.json_response({"error": "authentication required"}, status=401)
+        user_id = await require_user_id(request)
 
         is_admin = user_id in app.get("admin_ids", set())
         if not is_admin:
@@ -7958,22 +6794,7 @@ def create_web_app(
 
     async def shop_set_detail_handler(request: web.Request) -> web.Response:
         """Получить детали набора по ID."""
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-
-        if init_data and init_data.isdigit():
-            try:
-                user_id = int(init_data)
-            except ValueError:
-                pass
-
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-
-        if not user_id:
-            return web.json_response({"error": "authentication required"}, status=401)
+        user_id = await require_user_id(request)
 
         is_admin = user_id in app.get("admin_ids", set())
         if not is_admin:
@@ -7992,22 +6813,7 @@ def create_web_app(
 
     async def shop_set_create_handler(request: web.Request) -> web.Response:
         """Создать новый набор."""
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-
-        if init_data and init_data.isdigit():
-            try:
-                user_id = int(init_data)
-            except ValueError:
-                pass
-
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-
-        if not user_id:
-            return web.json_response({"error": "authentication required"}, status=401)
+        user_id = await require_user_id(request)
 
         is_admin = user_id in app.get("admin_ids", set())
         if not is_admin:
@@ -8053,22 +6859,7 @@ def create_web_app(
 
     async def shop_set_update_handler(request: web.Request) -> web.Response:
         """Обновить набор."""
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-
-        if init_data and init_data.isdigit():
-            try:
-                user_id = int(init_data)
-            except ValueError:
-                pass
-
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-
-        if not user_id:
-            return web.json_response({"error": "authentication required"}, status=401)
+        user_id = await require_user_id(request)
 
         is_admin = user_id in app.get("admin_ids", set())
         if not is_admin:
@@ -8122,22 +6913,7 @@ def create_web_app(
 
     async def shop_set_delete_handler(request: web.Request) -> web.Response:
         """Удалить набор."""
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-
-        if init_data and init_data.isdigit():
-            try:
-                user_id = int(init_data)
-            except ValueError:
-                pass
-
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-
-        if not user_id:
-            return web.json_response({"error": "authentication required"}, status=401)
+        user_id = await require_user_id(request)
 
         is_admin = user_id in app.get("admin_ids", set())
         if not is_admin:
@@ -8183,22 +6959,7 @@ def create_web_app(
     
     async def dice_status_handler(request: web.Request) -> web.Response:
         """Получить статус кубика (можно ли бросать, когда был последний бросок)."""
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-
-        if init_data and init_data.isdigit():
-            try:
-                user_id = int(init_data)
-            except ValueError:
-                pass
-
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-
-        if not user_id:
-            return web.json_response({"error": "authentication required"}, status=401)
+        user_id = await require_user_id(request)
 
         try:
             status = await db.get_dice_status(user_id)
@@ -8210,22 +6971,7 @@ def create_web_app(
 
     async def dice_roll_handler(request: web.Request) -> web.Response:
         """Бросить кубик."""
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-
-        if init_data and init_data.isdigit():
-            try:
-                user_id = int(init_data)
-            except ValueError:
-                pass
-
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-
-        if not user_id:
-            return web.json_response({"error": "authentication required"}, status=401)
+        user_id = await require_user_id(request)
 
         try:
             result = await db.roll_dice(user_id)
@@ -8237,22 +6983,7 @@ def create_web_app(
 
     async def dice_notification_prompt_status_handler(request: web.Request) -> web.Response:
         """Проверить, показывалось ли уже предложение включить уведомления."""
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-
-        if init_data and init_data.isdigit():
-            try:
-                user_id = int(init_data)
-            except ValueError:
-                pass
-
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-
-        if not user_id:
-            return web.json_response({"error": "authentication required"}, status=401)
+        user_id = await require_user_id(request)
 
         try:
             prompt_shown = await db.get_dice_notification_prompt_status(user_id)
@@ -8264,22 +6995,7 @@ def create_web_app(
 
     async def dice_notification_prompt_mark_handler(request: web.Request) -> web.Response:
         """Отметить, что предложение включить уведомления было показано."""
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-
-        if init_data and init_data.isdigit():
-            try:
-                user_id = int(init_data)
-            except ValueError:
-                pass
-
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-
-        if not user_id:
-            return web.json_response({"error": "authentication required"}, status=401)
+        user_id = await require_user_id(request)
 
         try:
             await db.mark_dice_notification_prompt_shown(user_id)
@@ -8287,6 +7003,45 @@ def create_web_app(
         except Exception as e:
             import logging
             logging.getLogger(__name__).error(f"Ошибка отметки предложения: {e}", exc_info=True)
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def generator_status_handler(request: web.Request) -> web.Response:
+        user_id = await require_user_id(request)
+        try:
+            data = await db.get_generator_status(int(user_id))
+            return web.json_response(data)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Ошибка получения статуса генератора: {e}", exc_info=True)
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def generator_claim_handler(request: web.Request) -> web.Response:
+        try:
+            body = await request.json()
+        except Exception:
+            body = None
+        if body is not None:
+            user_id = require_user_id_from_payload(request, body)
+        else:
+            user_id = await require_user_id(request)
+        try:
+            data = await db.claim_generator_keys(int(user_id))
+            return web.json_response(data)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Ошибка сбора ключей генератора: {e}", exc_info=True)
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def generator_upgrade_handler(request: web.Request) -> web.Response:
+        payload = await request.json()
+        user_id = await require_user_id(request)
+        currency = payload.get("currency")
+        try:
+            data = await db.upgrade_generator(int(user_id), currency)
+            return web.json_response(data)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Ошибка улучшения генератора: {e}", exc_info=True)
             return web.json_response({"error": str(e)}, status=500)
 
     async def season_current_handler(request: web.Request) -> web.Response:
@@ -8315,22 +7070,7 @@ def create_web_app(
 
     async def welcome_status_handler(request: web.Request) -> web.Response:
         """Получить статус приветствия и данные о стартовой карте (работает даже если пользователя еще нет)."""
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-
-        if init_data and init_data.isdigit():
-            try:
-                user_id = int(init_data)
-            except ValueError:
-                pass
-
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-
-        if not user_id:
-            return web.json_response({"error": "authentication required"}, status=401)
+        user_id = await require_user_id(request)
 
         try:
             # Проверяем, существует ли пользователь
@@ -8361,22 +7101,7 @@ def create_web_app(
 
     async def welcome_mark_shown_handler(request: web.Request) -> web.Response:
         """Отметить, что приветствие было показано."""
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-
-        if init_data and init_data.isdigit():
-            try:
-                user_id = int(init_data)
-            except ValueError:
-                pass
-
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-
-        if not user_id:
-            return web.json_response({"error": "authentication required"}, status=401)
+        user_id = await require_user_id(request)
 
         try:
             await db.mark_welcome_shown(user_id)
@@ -8390,37 +7115,12 @@ def create_web_app(
     app.router.add_post("/api/dice/roll", dice_roll_handler)
     app.router.add_get("/api/dice/notification-prompt-status", dice_notification_prompt_status_handler)
     app.router.add_post("/api/dice/notification-prompt-mark", dice_notification_prompt_mark_handler)
+    app.router.add_get("/api/generator/status", generator_status_handler)
+    app.router.add_post("/api/generator/claim", generator_claim_handler)
+    app.router.add_post("/api/generator/upgrade", generator_upgrade_handler)
     async def welcome_create_user_handler(request: web.Request) -> web.Response:
         """Создать пользователя после завершения приветствия."""
-        init_data = request.rel_url.query.get("_auth")
-        user_id = None
-        username = None
-        first_name_from_data = None
-        last_name = None
-
-        if init_data and init_data.isdigit():
-            try:
-                user_id = int(init_data)
-            except ValueError:
-                pass
-
-        if not user_id and init_data:
-            verified_data = _verify_init_data(init_data, bot_token)
-            if verified_data:
-                user_id = _extract_user_id_from_init_data(verified_data)
-                user_str = verified_data.get("user", "")
-                if user_str:
-                    import json
-                    try:
-                        user_data = json.loads(user_str)
-                        username = user_data.get("username")
-                        first_name_from_data = user_data.get("first_name")
-                        last_name = user_data.get("last_name")
-                    except Exception:
-                        pass
-
-        if not user_id:
-            return web.json_response({"error": "authentication required"}, status=401)
+        user_id = await require_user_id(request)
 
         # Если данных пользователя нет в initData, пытаемся получить через Bot API
         if not first_name_from_data:

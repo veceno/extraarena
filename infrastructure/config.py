@@ -9,7 +9,6 @@ from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent  # Поднимаемся на уровень выше (корень проекта)
 ENV_FILE = BASE_DIR / ".env"
-DEFAULT_BOT_TOKEN = "7486089212:AAFCc70OihXGVbiseIgrgLRIy4QBBRAT-KI"
 DEFAULT_WEBAPP_URL = "https://digitally-upbeat-chow.cloudpub.ru/"
 DEFAULT_STARS_RATE_RUB = 1.5  # руб. за 1 Telegram Star
 DEFAULT_STARS_MARKUP = 1.2    # коэффициент наценки (20%)
@@ -19,6 +18,8 @@ DEFAULT_STARS_TEST_MODE = False
 MM_TROPHY_LIMIT_CLASSIC = 300  # лимит трофеев для мгновенного PvE
 MM_BOT_TIMEOUT = 15  # таймаут поиска реального игрока (секунды)
 DECK_SIZE = 9  # размер колоды (1 герой + 8 обычных карт)
+MAX_FREE_DECK_PRESETS = 3   # максимум пресетов без ExtraPass
+MAX_TOTAL_DECK_PRESETS = 5  # максимум пресетов с ExtraPass
 
 # Профили сложности ботов с ONNX-моделями
 BOT_DIFFICULTY_PROFILES = {
@@ -189,8 +190,11 @@ def get_settings() -> Settings:
     stars_markup = float(os.getenv("STARS_MARKUP", DEFAULT_STARS_MARKUP))
     stars_test_mode = os.getenv("STARS_TEST_MODE", str(DEFAULT_STARS_TEST_MODE)).lower() in {"1", "true", "yes"}
 
+    bot_token = os.getenv("BOT_TOKEN")
+    if not bot_token:
+        raise RuntimeError("BOT_TOKEN env var is required (not set in .env or environment)")
     return Settings(
-        bot_token=os.getenv("BOT_TOKEN", DEFAULT_BOT_TOKEN),
+        bot_token=bot_token,
         webapp_url=os.getenv("WEBAPP_URL", DEFAULT_WEBAPP_URL),
         environment=os.getenv("ENVIRONMENT", "development"),
         database=db_settings,

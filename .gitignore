@@ -17,6 +17,7 @@ ai/train/checkpoints/
 
 # Runtime data
 infrastructure/data/
+generated/
 *.log
 *.pid
 .pytest_cache/

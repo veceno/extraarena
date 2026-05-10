@@ -176,7 +176,7 @@ async function startMatchmaking(selectedDeckId = null, mode = 'classic', matchTy
   try {
     console.log("Sending matchmaking request...");
     const requestBody = {
-      user_id: userId,
+      _auth: authData,
       trophies,
       user_avg_level: avgLevel,
       mode: mode,
@@ -214,19 +214,17 @@ async function startMatchmaking(selectedDeckId = null, mode = 'classic', matchTy
       console.log("Match found immediately. Redirecting...");
       setMatchmakingStatus("Матч найден! Подготовка к бою...");
 
-    // Явно достаем user_id и гарантируем его передачу в URL для арены
-    const telegramUserId = window.Telegram?.WebApp?.initDataUnsafe?.user?.id;
-    const currentUrlId = new URLSearchParams(window.location.search).get("user_id");
-      const resolvedUserId = telegramUserId || currentUrlId || userId;
+    // Передаем initData для аутентификации в арене
+    const resolvedUserId = userId;
 
-    if (!resolvedUserId) {
-      console.error("CRITICAL: Could not resolve User ID for redirect!");
-      alert("Error: User ID missing. Cannot start battle.");
+    if (!authData || typeof authData !== "string") {
+      console.error("CRITICAL: Could not resolve initData for redirect!");
+      alert("Error: Auth data missing. Cannot start battle.");
       return;
     }
 
-    const targetUrl = `${window.location.origin}/arena?id=${encodeURIComponent(data.match_id)}&user_id=${encodeURIComponent(resolvedUserId)}`;
-    console.log(`Redirecting to Arena. Match: ${data.match_id}, User: ${resolvedUserId}, url=${targetUrl}`);
+    const targetUrl = `${window.location.origin}/arena?id=${encodeURIComponent(data.match_id)}&_auth=${encodeURIComponent(authData)}`;
+    console.log(`Redirecting to Arena. Match: ${data.match_id}, url=${targetUrl}`);
 
       try {
         window.location.replace(targetUrl);
@@ -301,7 +299,8 @@ function appendAuthParams(url, authData) {
     return `${url}${separator}_auth=${encodeURIComponent(authData)}`;
   }
   if (typeof authData === "number") {
-    return `${url}${separator}user_id=${authData}`;
+    console.warn("appendAuthParams: numeric userId unsupported; use initData string for auth.");
+    return url;
   }
   return url;
 }
@@ -322,7 +321,8 @@ if (tg) {
   }
 }
 
-// Получение user_id из initData
+// Display-only: resolves identity for rendering/client use.
+// Auth for API calls should always be the string initData via _auth param.
 function resolveUserId() {
   const urlParams = new URLSearchParams(window.location.search);
   
@@ -374,8 +374,6 @@ async function loadProfile(authData) {
     let url = "/api/profile";
     if (typeof authData === "string") {
       url += `?_auth=${encodeURIComponent(authData)}`;
-    } else if (typeof authData === "number") {
-      url += `?user_id=${authData}`;
     } else {
       throw new Error("Invalid authentication data");
     }
@@ -463,8 +461,6 @@ async function loadSettings(authData) {
     let url = "/api/settings";
     if (typeof authData === "string") {
       url += `?_auth=${encodeURIComponent(authData)}`;
-    } else if (typeof authData === "number") {
-      url += `?user_id=${authData}`;
     } else {
       throw new Error("Invalid authentication data");
     }
@@ -498,8 +494,6 @@ async function saveSettings(authData, settings) {
 
     if (typeof authData === "string") {
       url += `?_auth=${encodeURIComponent(authData)}`;
-    } else if (typeof authData === "number") {
-      url += `?user_id=${authData}`;
     }
 
     const response = await fetch(url, options);
@@ -539,6 +533,7 @@ function getDefaultSettings() {
     notif_events: true,
     notif_news: false,
     notif_dice: false,
+    notif_generator: true,
     ads_enabled: true,
     sound_music: true,
     sound_sfx: true,
@@ -967,6 +962,10 @@ function renderSettings(settings) {
         <span class="setting-label">Новости</span>
         <div class="toggle-switch ${mergedSettings.notif_news ? "active" : ""}" data-setting="notif_news"></div>
       </div>
+      <div class="setting-item">
+        <span class="setting-label">Генератор ключей</span>
+        <div class="toggle-switch ${mergedSettings.notif_generator ? "active" : ""}" data-setting="notif_generator"></div>
+      </div>
     </div>
 
     <div class="setting-group">
@@ -1180,7 +1179,7 @@ function renderSettings(settings) {
         if (typeof authData === "string") {
           url += `?_auth=${encodeURIComponent(authData)}`;
         } else if (typeof authData === "number") {
-          url += `?user_id=${authData}`;
+          console.warn("auth: numeric userId unsupported, skipping auth param");
         }
         
         const response = await fetch(url, {
@@ -1545,7 +1544,7 @@ function renderAnalytics(data) {
         if (typeof authData === "string") {
           url += `?_auth=${encodeURIComponent(authData)}`;
         } else if (typeof authData === "number") {
-          url += `?user_id=${authData}`;
+          console.warn("auth: numeric userId unsupported, skipping auth param");
         }
         
         const response = await fetch(url);
@@ -1593,7 +1592,7 @@ function renderAnalytics(data) {
                 if (typeof authData === "string") {
                   url += `?_auth=${encodeURIComponent(authData)}`;
                 } else if (typeof authData === "number") {
-                  url += `?user_id=${authData}`;
+                  console.warn("auth: numeric userId unsupported, skipping auth param");
                 }
                 
                 const response = await fetch(url, {
@@ -1696,7 +1695,7 @@ function renderAnalytics(data) {
         if (typeof authData === "string") {
           url += `?_auth=${encodeURIComponent(authData)}`;
         } else if (typeof authData === "number") {
-          url += `?user_id=${authData}`;
+          console.warn("auth: numeric userId unsupported, skipping auth param");
         }
         
         const response = await fetch(url);
@@ -1894,7 +1893,7 @@ function renderAnalytics(data) {
         if (typeof authData === "string") {
           url += `?_auth=${encodeURIComponent(authData)}`;
         } else if (typeof authData === "number") {
-          url += `?user_id=${authData}`;
+          console.warn("auth: numeric userId unsupported, skipping auth param");
         }
         
         const response = await fetch(url);
@@ -3221,8 +3220,6 @@ async function checkAndShowWelcome(authData) {
     let url = "/api/welcome/status";
     if (typeof authData === "string") {
       url += `?_auth=${encodeURIComponent(authData)}`;
-    } else if (typeof authData === "number") {
-      url += `?user_id=${authData}`;
     } else {
       return;
     }
@@ -3357,7 +3354,7 @@ function initWelcomeHandlers() {
         if (typeof authData === "string") {
           url += `?_auth=${encodeURIComponent(authData)}`;
         } else if (typeof authData === "number") {
-          url += `?user_id=${authData}`;
+          console.warn("auth: numeric userId unsupported, skipping auth param");
         }
         
         const response = await fetch(url, { method: "POST" });
@@ -3524,8 +3521,6 @@ async function checkPaymentFromUrl(authData) {
     let url = `/api/payments/status?payment_id=${paymentId}`;
     if (typeof authData === "string") {
       url += `&_auth=${encodeURIComponent(authData)}`;
-    } else if (typeof authData === "number") {
-      url += `&user_id=${authData}`;
     }
     
     const response = await fetch(url);
@@ -3600,8 +3595,6 @@ async function buyWithGems(itemType, gemsAmount, itemName) {
     let url = "/api/shop/buy";
     if (typeof authData === "string") {
       url += `?_auth=${encodeURIComponent(authData)}`;
-    } else if (typeof authData === "number") {
-      url += `?user_id=${authData}`;
     }
 
     const response = await fetch(url, {
@@ -4544,8 +4537,6 @@ async function checkPendingPayment(authData) {
     let url = `/api/payments/status?payment_id=${pendingPaymentId}`;
     if (typeof authData === "string") {
       url += `&_auth=${encodeURIComponent(authData)}`;
-    } else if (typeof authData === "number") {
-      url += `&user_id=${authData}`;
     }
     
     const response = await fetch(url);
@@ -5168,8 +5159,6 @@ async function loadMail(authData, category = null) {
     let url = "/api/mail";
     if (typeof authData === "string") {
       url += `?_auth=${encodeURIComponent(authData)}`;
-    } else if (typeof authData === "number") {
-      url += `?user_id=${authData}`;
     } else {
       throw new Error("Invalid authentication data");
     }
@@ -5253,8 +5242,6 @@ async function updateMailNotificationBadge(authData) {
     let url = "/api/mail/unread-count";
     if (typeof authData === "string") {
       url += `?_auth=${encodeURIComponent(authData)}`;
-    } else if (typeof authData === "number") {
-      url += `?user_id=${authData}`;
     }
     
     console.log("Проверка непрочитанных писем:", url);
@@ -6921,8 +6908,6 @@ async function loadUserCards() {
     let url = "/api/cards/user";
     if (typeof authData === "string") {
       url += `?_auth=${encodeURIComponent(authData)}`;
-    } else if (typeof authData === "number") {
-      url += `?user_id=${authData}`;
     }
 
     const response = await fetch(url);
@@ -7131,8 +7116,6 @@ async function loadDeckPresets() {
     let url = "/api/deck/presets";
     if (typeof authData === "string") {
       url += `?_auth=${encodeURIComponent(authData)}`;
-    } else if (typeof authData === "number") {
-      url += `?user_id=${authData}`;
     }
 
     const response = await fetch(url);
@@ -7222,8 +7205,6 @@ async function loadBattleDecks() {
     let url = "/api/deck/presets";
     if (typeof authData === "string") {
       url += `?_auth=${encodeURIComponent(authData)}`;
-    } else if (typeof authData === "number") {
-      url += `?user_id=${authData}`;
     }
 
     const response = await fetch(url);
@@ -7800,8 +7781,6 @@ async function openCardDetail(card) {
         let url = "/api/cards/upgrade";
     if (typeof authData === "string") {
       url += `?_auth=${encodeURIComponent(authData)}`;
-    } else if (typeof authData === "number") {
-      url += `?user_id=${authData}`;
     }
 
         const response = await fetch(url, {
@@ -8127,8 +8106,6 @@ async function renamePreset(presetNumber, newName) {
     let url = "/api/deck/presets/rename";
     if (typeof authData === "string") {
       url += `?_auth=${encodeURIComponent(authData)}`;
-    } else if (typeof authData === "number") {
-      url += `?user_id=${authData}`;
     }
     
     const response = await fetch(url, {
@@ -8230,8 +8207,6 @@ async function saveCurrentDeck() {
     let url = "/api/deck/presets/save";
     if (typeof authData === "string") {
       url += `?_auth=${encodeURIComponent(authData)}`;
-    } else if (typeof authData === "number") {
-      url += `?user_id=${authData}`;
     }
 
     const response = await fetch(url, {
@@ -8298,8 +8273,6 @@ async function initCollection() {
     let url = "/api/deck/presets/create";
     if (typeof authData === "string") {
       url += `?_auth=${encodeURIComponent(authData)}`;
-    } else if (typeof authData === "number") {
-      url += `?user_id=${authData}`;
     }
 
     const response = await fetch(url, {
@@ -8351,8 +8324,6 @@ async function initCollection() {
         let url = "/api/admin/cards/get-all";
     if (typeof authData === "string") {
       url += `?_auth=${encodeURIComponent(authData)}`;
-    } else if (typeof authData === "number") {
-      url += `?user_id=${authData}`;
     }
 
     const response = await fetch(url, {
@@ -8393,8 +8364,6 @@ async function initCollection() {
         let url = "/api/admin/cards/delete-all";
     if (typeof authData === "string") {
       url += `?_auth=${encodeURIComponent(authData)}`;
-    } else if (typeof authData === "number") {
-      url += `?user_id=${authData}`;
     }
 
     const response = await fetch(url, {
@@ -9291,8 +9260,6 @@ async function loadDiceStatus() {
     let url = "/api/dice/status";
     if (typeof authData === "string") {
       url += `?_auth=${encodeURIComponent(authData)}`;
-    } else if (typeof authData === "number") {
-      url += `?user_id=${authData}`;
     }
 
     const response = await fetch(url);
@@ -9539,8 +9506,6 @@ async function checkDiceNotificationPrompt() {
     let url = "/api/dice/notification-prompt-status";
     if (typeof authData === "string") {
       url += `?_auth=${encodeURIComponent(authData)}`;
-    } else if (typeof authData === "number") {
-      url += `?user_id=${authData}`;
     }
     
     const response = await fetch(url);
@@ -9581,7 +9546,7 @@ function showDiceNotificationPrompt() {
         if (typeof authData === "string") {
           url += `?_auth=${encodeURIComponent(authData)}`;
         } else if (typeof authData === "number") {
-          url += `?user_id=${authData}`;
+          console.warn("auth: numeric userId unsupported, skipping auth param");
         }
         
         await fetch(url, { method: "POST" });
@@ -9604,7 +9569,7 @@ function showDiceNotificationPrompt() {
         if (typeof authData === "string") {
           url += `?_auth=${encodeURIComponent(authData)}`;
         } else if (typeof authData === "number") {
-          url += `?user_id=${authData}`;
+          console.warn("auth: numeric userId unsupported, skipping auth param");
         }
         
         await fetch(url, { method: "POST" });

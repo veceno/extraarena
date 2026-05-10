@@ -72,10 +72,8 @@ class Matchmaker:
         if trophies < MM_TROPHY_LIMIT_CLASSIC:
             # Логируем попадание в PvE-зону, чтобы отладить залипание "Поиск..."
             self._logger.info(
-                "PvE soft-start: user_id=%s trophies=%s avg_level=%s",
-                user_id,
-                trophies,
-                user_avg_level,
+                "PvE soft-start: user_id=%s trophies=%s avg_level=%s deck=%s",
+                user_id, trophies, user_avg_level, selected_deck_id,
             )
             try:
                 # Агрессивно логируем каждое действие перед вызовом фабрики ботов, чтобы поймать точку зависания.
@@ -109,7 +107,7 @@ class Matchmaker:
             # Мгновенно пытаемся найти соперника в уже существующей очереди
             opponent = self._find_candidate(seeker, SEARCH_WINDOWS[0])
             if opponent:
-                return await self._pair_players(seeker, opponent)
+                return await self._pair_players(seeker, opponent, game_mode=game_mode)
 
             # Никого не нашли - ставим в очередь и создаем статус ожидания
             self._queue.append(seeker)
@@ -186,7 +184,11 @@ class Matchmaker:
             self._queue = [entry for entry in self._queue if entry.match_id != seeker.match_id]
             self._tasks.pop(seeker.match_id, None)
 
-        bot_match = await self._create_bot_match(seeker.user_id, seeker.trophies, seeker.avg_level, game_mode=game_mode)
+        self._logger.info(
+            "_handle_bot_timeout: creating bot for user=%s deck=%s game_mode=%s",
+            seeker.user_id, seeker.selected_deck_id, game_mode,
+        )
+        bot_match = await self._create_bot_match(seeker.user_id, seeker.trophies, seeker.avg_level, selected_deck_id=seeker.selected_deck_id, game_mode=game_mode)
         async with self._lock:
             self._matches[seeker.match_id] = bot_match
 

@@ -13,11 +13,11 @@ try:  # pragma: no cover - ветка с отсутствием asyncpg пров
 except ModuleNotFoundError:  # pragma: no cover - альтернативный путь при локальных тестах
     asyncpg = None  # type: ignore
 
-from infrastructure.config import DECK_SIZE, DatabaseSettings, get_league_by_trophies_fn
+from infrastructure.config import DECK_SIZE, MAX_FREE_DECK_PRESETS, MAX_TOTAL_DECK_PRESETS, DatabaseSettings, get_league_by_trophies_fn, LEAGUE_CONFIG
 
 
 # Версию схемы повышаем при изменении структуры таблиц
-SCHEMA_VERSION = 23
+SCHEMA_VERSION = 24
 
 # Таблица ростов статов по редкости (урон/хп растут одинаково)
 RARITY_STATS: dict[str, float] = {
@@ -308,6 +308,8 @@ class Database:
         shop_sets_changed = await self._ensure_shop_sets_table()
         payments_changed = await self._ensure_payments_table()
         friend_invites_changed = await self._ensure_friend_invites_table()
+        friend_requests_changed = await self._ensure_friend_requests_table()
+        generator_changed = await self._ensure_generator_state_table()
 
         schema_changed = (
             (current_version != SCHEMA_VERSION)
@@ -332,6 +334,8 @@ class Database:
             or shop_sets_changed
             or payments_changed
             or friend_invites_changed
+            or friend_requests_changed
+            or generator_changed
         )
 
         # Обновляем референсные данные для новой боевой системы
@@ -1164,6 +1168,7 @@ class Database:
                     notif_events BOOLEAN NOT NULL DEFAULT true,
                     notif_news BOOLEAN NOT NULL DEFAULT true,
                     notif_dice BOOLEAN NOT NULL DEFAULT false,
+                    notif_generator BOOLEAN NOT NULL DEFAULT true,
                     ads_enabled BOOLEAN NOT NULL DEFAULT true,
                     sound_music BOOLEAN NOT NULL DEFAULT true,
                     sound_sfx BOOLEAN NOT NULL DEFAULT true,
@@ -1188,6 +1193,11 @@ class Database:
             changed |= await self._add_column_if_missing(
                 "user_settings", columns, 
                 "notif_dice BOOLEAN NOT NULL DEFAULT false"
+            )
+            # Добавляем колонку notif_generator, если её нет
+            changed |= await self._add_column_if_missing(
+                "user_settings", columns,
+                "notif_generator BOOLEAN NOT NULL DEFAULT true"
             )
             # Добавляем колонку welcome_shown, если её нет
             changed |= await self._add_column_if_missing(
@@ -1234,6 +1244,7 @@ class Database:
         valid_keys = {
             "notif_cases", "notif_daily_rewards", "notif_game_invites",
             "notif_friend_requests", "notif_events", "notif_news", "notif_dice",
+            "notif_generator",
             "ads_enabled", "sound_music", "sound_sfx", "social_block_friend_requests",
             "welcome_shown",
             "starter_pack_used", "particles_rotation_cards", "particles_rotation_date",
@@ -1413,13 +1424,37 @@ class Database:
         return {"gems": result["gems"] if result else 0}
 
     async def set_primary_deck(self, user_id: int, preset_number: int | None) -> dict[str, Any]:
-        """Установить основную колоду игрока."""
+        """Установить основную колоду игрока с проверкой валидности."""
         if not self._pool:
             raise RuntimeError("База данных не подключена.")
+
+        if preset_number is not None:
+            # H1: verify preset exists, belongs to user, and has at least one card
+            preset = await self.fetchrow(
+                """
+                SELECT card_slot_1, card_slot_2, card_slot_3, card_slot_4, card_slot_5,
+                       card_slot_6, card_slot_7, card_slot_8, card_slot_9
+                FROM deck_presets
+                WHERE user_id = $1 AND preset_number = $2
+                """,
+                user_id, preset_number,
+            )
+            if not preset:
+                return {"success": False, "error": "preset_not_found", "message": "Пресет не найден"}
+            has_cards = any(preset.get(f"card_slot_{i}") is not None for i in range(1, 10))
+            if not has_cards:
+                return {"success": False, "error": "empty_preset", "message": "Нельзя сделать пустой пресет основным"}
+
         await self.execute(
             "UPDATE users SET primary_deck = $1, updated_at = NOW() WHERE user_id = $2",
             preset_number, user_id
         )
+
+        # Patch 6: invalidate cache on mutation
+        deck_cache = getattr(self, "deck_presets_cache", None)
+        if isinstance(deck_cache, dict):
+            deck_cache.pop(user_id, None)
+
         return {"success": True, "primary_deck": preset_number}
 
     async def _ensure_news_table(self) -> bool:
@@ -1613,6 +1648,53 @@ class Database:
             }
             for r in rows
         ]
+
+    async def get_public_player_card(self, user_id: int) -> dict | None:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+
+        record = await self.fetchrow(
+            """
+            SELECT
+                u.user_id,
+                u.trophies,
+                u.max_trophies,
+                u.league,
+                u.first_name,
+                COALESCE(p.img, '') as img,
+                COALESCE(p.title, 'Игрок') as title,
+                COALESCE(p.custom_nickname, u.first_name, 'Игрок') as display_name,
+                (SELECT COUNT(*) FROM battle_results
+                 WHERE p1_id = u.user_id OR p2_id = u.user_id) as battle_count,
+                (SELECT COUNT(*) FROM battle_results
+                 WHERE (p1_id = u.user_id AND winner_id = u.user_id)
+                    OR (p2_id = u.user_id AND winner_id = u.user_id)) as win_count
+            FROM users u
+            LEFT JOIN profiles p ON p.user_id = u.user_id
+            WHERE u.user_id = $1
+            """,
+            user_id,
+        )
+        if not record:
+            return None
+
+        league = LEAGUE_CONFIG.get(record["league"], LEAGUE_CONFIG[1])
+
+        return {
+            "user_id": record["user_id"],
+            "display_name": record["display_name"],
+            "trophies": record["trophies"],
+            "max_trophies": record["max_trophies"],
+            "league": record["league"],
+            "league_name": league["name"],
+            "league_emoji": league["emoji"],
+            "league_color": league["color"],
+            "title": record["title"],
+            "battle_count": record["battle_count"],
+            "win_count": record["win_count"],
+            "first_name": record["first_name"],
+            "img": record["img"],
+        }
 
     async def _ensure_cooldowns_table(self) -> bool:
         """Создать универсальную таблицу кулдаунов."""
@@ -2657,6 +2739,36 @@ class Database:
 
         return changed
 
+    async def _ensure_generator_state_table(self) -> bool:
+        """Создать таблицу состояния генератора ключей."""
+        changed = False
+
+        table_exists = await self.fetchval("SELECT to_regclass('public.generator_state')")
+        if not table_exists:
+            await self.execute(
+                """
+                CREATE TABLE generator_state (
+                    user_id BIGINT PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
+                    level INTEGER NOT NULL DEFAULT 1,
+                    accumulated_keys INTEGER NOT NULL DEFAULT 0,
+                    last_tick_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    notified BOOLEAN NOT NULL DEFAULT FALSE,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            changed = True
+
+        columns = await self._get_columns("generator_state")
+        changed |= await self._add_column_if_missing("generator_state", columns, "user_id BIGINT NOT NULL DEFAULT 0")
+        changed |= await self._add_column_if_missing("generator_state", columns, "level INTEGER NOT NULL DEFAULT 1")
+        changed |= await self._add_column_if_missing("generator_state", columns, "accumulated_keys INTEGER NOT NULL DEFAULT 0")
+        changed |= await self._add_column_if_missing("generator_state", columns, "last_tick_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
+        changed |= await self._add_column_if_missing("generator_state", columns, "notified BOOLEAN NOT NULL DEFAULT FALSE")
+        changed |= await self._add_column_if_missing("generator_state", columns, "updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
+
+        return changed
+
     async def create_friend_invite(self, from_user_id: int, to_user_id: int) -> dict[str, Any]:
         if not self._pool:
             raise RuntimeError("База данных не подключена.")
@@ -2755,6 +2867,250 @@ class Database:
         )
         return result
 
+    # ========== Таблица friend_requests (постоянные заявки в друзья + список друзей) ==========
+
+    async def _ensure_friend_requests_table(self) -> bool:
+        changed = False
+
+        table_exists = await self.fetchval("SELECT to_regclass('public.friend_requests')")
+        if not table_exists:
+            await self.execute(
+                """
+                CREATE TABLE friend_requests (
+                    id SERIAL PRIMARY KEY,
+                    requester_id BIGINT NOT NULL REFERENCES users(user_id),
+                    addressee_id BIGINT NOT NULL REFERENCES users(user_id),
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    CONSTRAINT fr_no_self CHECK (requester_id <> addressee_id),
+                    CONSTRAINT fr_unique_pair UNIQUE (requester_id, addressee_id)
+                )
+                """
+            )
+            changed = True
+
+        columns = await self._get_columns("friend_requests")
+        for col, coldef in [
+            ("requester_id", "BIGINT NOT NULL DEFAULT 0"),
+            ("addressee_id", "BIGINT NOT NULL DEFAULT 0"),
+            ("status", "TEXT NOT NULL DEFAULT 'pending'"),
+            ("created_at", "TIMESTAMPTZ NOT NULL DEFAULT NOW()"),
+            ("updated_at", "TIMESTAMPTZ NOT NULL DEFAULT NOW()"),
+        ]:
+            changed |= await self._add_column_if_missing("friend_requests", columns, f"{col} {coldef}")
+
+        # Индексы
+        if not await self.fetchval(
+            "SELECT 1 FROM pg_indexes WHERE tablename = 'friend_requests' AND indexname = 'idx_fr_addressee_status'"
+        ):
+            await self.execute("CREATE INDEX idx_fr_addressee_status ON friend_requests(addressee_id, status)")
+            changed = True
+
+        if not await self.fetchval(
+            "SELECT 1 FROM pg_indexes WHERE tablename = 'friend_requests' AND indexname = 'idx_fr_requester_status'"
+        ):
+            await self.execute("CREATE INDEX idx_fr_requester_status ON friend_requests(requester_id, status)")
+            changed = True
+
+        return changed
+
+    async def has_pending_friend_request_pair(self, user_a: int, user_b: int) -> bool:
+        """Есть ли уже pending-запрос между двумя пользователями в любом направлении."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        val = await self.fetchval(
+            """
+            SELECT 1 FROM friend_requests
+            WHERE status = 'pending'
+              AND ((requester_id = $1 AND addressee_id = $2)
+                   OR (requester_id = $2 AND addressee_id = $1))
+            LIMIT 1
+            """,
+            user_a, user_b,
+        )
+        return bool(val)
+
+    async def create_friend_request(self, requester_id: int, addressee_id: int) -> dict[str, Any]:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        try:
+            row = await self.fetchrow(
+                """
+                INSERT INTO friend_requests (requester_id, addressee_id)
+                VALUES ($1, $2)
+                RETURNING id, created_at
+                """,
+                requester_id, addressee_id,
+            )
+            return {"success": True, "id": row["id"], "created_at": row["created_at"].isoformat()}
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error("create_friend_request error: %s", e, exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def get_friend_request_by_id(self, request_id: int) -> Optional[dict[str, Any]]:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        row = await self.fetchrow("SELECT * FROM friend_requests WHERE id = $1", request_id)
+        return dict(row) if row else None
+
+    async def update_friend_request_status(self, request_id: int, status: str) -> bool:
+        """Обновить статус заявки. Возвращает True если обновлено."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        result = await self.execute(
+            "UPDATE friend_requests SET status = $1, updated_at = NOW() WHERE id = $2",
+            status, request_id,
+        )
+        return bool(result)
+
+    async def get_incoming_friend_requests(self, user_id: int) -> list[dict[str, Any]]:
+        """Входящие заявки в друзья (адресат = user_id)."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        rows = await self.fetch(
+            """
+            SELECT fr.id, fr.requester_id, fr.status, fr.created_at,
+                   COALESCE(p.custom_nickname, u.first_name, u.username, 'Игрок') AS display_name,
+                   p.img AS avatar_url
+            FROM friend_requests fr
+            JOIN users u ON u.user_id = fr.requester_id
+            LEFT JOIN profiles p ON p.user_id = fr.requester_id
+            WHERE fr.addressee_id = $1 AND fr.status = 'pending'
+            ORDER BY fr.created_at DESC
+            """,
+            user_id,
+        )
+        return [
+            {
+                "id": r["id"],
+                "requester_id": r["requester_id"],
+                "display_name": r["display_name"],
+                "avatar_url": r["avatar_url"],
+                "status": r["status"],
+                "created_at": r["created_at"].isoformat(),
+            }
+            for r in rows
+        ]
+
+    async def get_outgoing_friend_requests(self, user_id: int) -> list[dict[str, Any]]:
+        """Исходящие заявки в друзья (requester = user_id)."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        rows = await self.fetch(
+            """
+            SELECT fr.id, fr.addressee_id, fr.status, fr.created_at,
+                   COALESCE(p.custom_nickname, u.first_name, u.username, 'Игрок') AS display_name,
+                   p.img AS avatar_url
+            FROM friend_requests fr
+            JOIN users u ON u.user_id = fr.addressee_id
+            LEFT JOIN profiles p ON p.user_id = fr.addressee_id
+            WHERE fr.requester_id = $1 AND fr.status = 'pending'
+            ORDER BY fr.created_at DESC
+            """,
+            user_id,
+        )
+        return [
+            {
+                "id": r["id"],
+                "addressee_id": r["addressee_id"],
+                "display_name": r["display_name"],
+                "avatar_url": r["avatar_url"],
+                "status": r["status"],
+                "created_at": r["created_at"].isoformat(),
+            }
+            for r in rows
+        ]
+
+    async def get_friend_list(self, user_id: int) -> list[dict[str, Any]]:
+        """Список подтверждённых друзей (accepted rows в любом направлении)."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        rows = await self.fetch(
+            """
+            SELECT friend_id, display_name, avatar_url FROM (
+                SELECT fr.addressee_id AS friend_id,
+                       COALESCE(p.custom_nickname, u.first_name, u.username, 'Игрок') AS display_name,
+                       p.img AS avatar_url
+                FROM friend_requests fr
+                JOIN users u ON u.user_id = fr.addressee_id
+                LEFT JOIN profiles p ON p.user_id = fr.addressee_id
+                WHERE fr.requester_id = $1 AND fr.status = 'accepted'
+                UNION
+                SELECT fr.requester_id AS friend_id,
+                       COALESCE(p.custom_nickname, u.first_name, u.username, 'Игрок') AS display_name,
+                       p.img AS avatar_url
+                FROM friend_requests fr
+                JOIN users u ON u.user_id = fr.requester_id
+                LEFT JOIN profiles p ON p.user_id = fr.requester_id
+                WHERE fr.addressee_id = $1 AND fr.status = 'accepted'
+            ) sub
+            ORDER BY display_name
+            """,
+            user_id,
+        )
+        return [
+            {
+                "user_id": r["friend_id"],
+                "display_name": r["display_name"],
+                "avatar_url": r["avatar_url"],
+            }
+            for r in rows
+        ]
+
+    async def get_friend_ids_set(self, user_id: int) -> set[int]:
+        """Быстрый lookup: множество ID друзей пользователя."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        rows = await self.fetch(
+            """
+            SELECT friend_id FROM (
+                SELECT addressee_id AS friend_id
+                FROM friend_requests
+                WHERE requester_id = $1 AND status = 'accepted'
+                UNION
+                SELECT requester_id AS friend_id
+                FROM friend_requests
+                WHERE addressee_id = $1 AND status = 'accepted'
+            ) sub
+            """,
+            user_id,
+        )
+        return {r["friend_id"] for r in rows}
+
+    async def remove_friendship(self, user_id: int, friend_id: int) -> bool:
+        """Удалить дружбу (статус accepted) между двумя пользователями.
+        Возвращает True если удалено."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        result = await self.execute(
+            """
+            DELETE FROM friend_requests
+            WHERE status = 'accepted'
+              AND ((requester_id = $1 AND addressee_id = $2)
+                   OR (requester_id = $2 AND addressee_id = $1))
+            """,
+            user_id, friend_id,
+        )
+        return bool(result)
+
+    async def are_friends(self, user_a: int, user_b: int) -> bool:
+        """Проверка: друзья ли два пользователя."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        val = await self.fetchval(
+            """
+            SELECT 1 FROM friend_requests
+            WHERE status = 'accepted'
+              AND ((requester_id = $1 AND addressee_id = $2)
+                   OR (requester_id = $2 AND addressee_id = $1))
+            LIMIT 1
+            """,
+            user_a, user_b,
+        )
+        return bool(val)
+
     async def get_recent_opponents(self, user_id: int, limit: int = 5) -> list[dict[str, Any]]:
         if not self._pool:
             raise RuntimeError("База данных не подключена.")
@@ -2776,7 +3132,12 @@ class Database:
                 LIMIT $2
             )
             SELECT r.opponent_id, p.custom_nickname, p.img AS avatar_url,
-                   COALESCE(p.custom_nickname, u.first_name, u.username, 'Игрок') AS display_name
+                   COALESCE(p.custom_nickname, u.first_name, u.username, 'Игрок') AS display_name,
+                   (SELECT 1 FROM friend_requests fr
+                    WHERE fr.status = 'accepted'
+                      AND ((fr.requester_id = $1 AND fr.addressee_id = r.opponent_id)
+                           OR (fr.requester_id = r.opponent_id AND fr.addressee_id = $1))
+                    LIMIT 1) IS NOT NULL AS is_friend
             FROM ranked r
             JOIN users u ON u.user_id = r.opponent_id
             LEFT JOIN profiles p ON p.user_id = r.opponent_id
@@ -2788,6 +3149,7 @@ class Database:
                 "user_id": r["opponent_id"],
                 "display_name": r["display_name"],
                 "avatar_url": r["avatar_url"],
+                "is_friend": bool(r["is_friend"]),
             }
             for r in rows
         ]
@@ -3108,7 +3470,7 @@ class Database:
                 if promocode["reward_extrapass"]:
                     await conn.execute(
                         "UPDATE users SET extra_pass = 'active' WHERE user_id = $1",
-                        user_id
+                        user_id,
                     )
 
                 # Если промокод персональный, удаляем его
@@ -3127,6 +3489,295 @@ class Database:
                 "extrapass": promocode["reward_extrapass"]
             }
         }
+
+    # ── Generator (Генератор ключей) ──────────────────────────────────────────
+
+    async def _ensure_generator_state(self, user_id: int) -> None:
+        """Гарантировать наличие записи генератора для пользователя."""
+        await self.execute(
+            """
+            INSERT INTO generator_state (user_id)
+            VALUES ($1)
+            ON CONFLICT (user_id) DO NOTHING
+            """,
+            user_id,
+        )
+
+    async def _compute_generator_accumulated(
+        self, row: Any
+    ) -> tuple[int, int, int, int]:
+        """
+        Вычислить накопленные ключи из raw DB row без записи в БД.
+        Возвращает (accumulated, new_keys, cap, interval_seconds).
+        Работает как с asyncpg.Record, так и с dict.
+        """
+        from infrastructure.generator_config import GENERATOR_LEVELS
+
+        level = row["level"]
+        extra_pass_raw = (row.get("extra_pass") or "inactive")
+        pass_tier = extra_pass_raw if extra_pass_raw in ("ultra", "active") else "f2p"
+        level_cfg = GENERATOR_LEVELS.get(level, GENERATOR_LEVELS[1])
+        tier_cfg = level_cfg.get(pass_tier, level_cfg["f2p"])
+        interval_seconds = tier_cfg["interval_hours"] * 3600
+        cap = tier_cfg["cap"]
+
+        now = datetime.now(timezone.utc)
+        last_tick = row["last_tick_at"]
+        if isinstance(last_tick, str):
+            last_tick = datetime.fromisoformat(last_tick.replace("Z", "+00:00"))
+
+        stored = row.get("accumulated_keys", 0)
+        elapsed = (now - last_tick).total_seconds()
+        new_keys = int(elapsed / interval_seconds) if elapsed > 0 else 0
+        accumulated = min(stored + new_keys, cap)
+
+        return accumulated, new_keys, cap, interval_seconds
+
+    async def get_generator_status(self, user_id: int) -> dict[str, Any]:
+        """Получить полный статус генератора с расчётом текущих накоплений."""
+        from infrastructure.generator_config import (
+            GENERATOR_UPGRADE_COST, GENERATOR_MAX_LEVEL,
+        )
+
+        await self._ensure_generator_state(user_id)
+
+        row = await self.fetchrow(
+            """
+            SELECT g.level, g.accumulated_keys, g.last_tick_at, g.notified,
+                   u.extra_pass, u.coins, u.gems, u.keys
+            FROM generator_state g
+            JOIN users u ON u.user_id = g.user_id
+            WHERE g.user_id = $1
+            """,
+            user_id,
+        )
+        if not row:
+            return {"error": "user_not_found"}
+
+        accumulated, new_keys, cap, interval_seconds = await self._compute_generator_accumulated(row)
+        interval_hours = interval_seconds // 3600
+        level = row["level"]
+
+        now = datetime.now(timezone.utc)
+        last_tick = row["last_tick_at"]
+        if isinstance(last_tick, str):
+            last_tick = datetime.fromisoformat(last_tick.replace("Z", "+00:00"))
+
+        ticks_used = new_keys * interval_seconds
+        next_key_at = last_tick.timestamp() + ticks_used + interval_seconds if accumulated < cap else None
+        next_key_seconds = max(0, next_key_at - now.timestamp()) if next_key_at else None
+
+        upgrade_cost = None
+        next_level = level + 1
+        if next_level in GENERATOR_UPGRADE_COST and next_level <= GENERATOR_MAX_LEVEL:
+            upgrade_cost = dict(GENERATOR_UPGRADE_COST[next_level])
+
+        if new_keys > 0:
+            await self.execute(
+                """
+                UPDATE generator_state
+                SET accumulated_keys = $2, last_tick_at = last_tick_at + ($3::int * INTERVAL '1 second'),
+                    updated_at = NOW()
+                WHERE user_id = $1
+                """,
+                user_id, accumulated, ticks_used,
+            )
+
+        return {
+            "level": level,
+            "max_level": GENERATOR_MAX_LEVEL,
+            "accumulated_keys": accumulated,
+            "cap": cap,
+            "interval_hours": interval_hours,
+            "interval_seconds": interval_seconds,
+            "can_claim": accumulated > 0,
+            "notified": row["notified"],
+            "next_key_seconds": round(next_key_seconds, 1) if next_key_seconds is not None else None,
+            "upgrade_cost": upgrade_cost,
+            "user_coins": row["coins"] or 0,
+            "user_gems": row["gems"] or 0,
+            "user_keys": row["keys"] or 0,
+        }
+
+    async def claim_generator_keys(self, user_id: int) -> dict[str, Any]:
+        """Забрать накопленные ключи из генератора в users.keys. Пересчитывает накопление под локом."""
+        await self._ensure_generator_state(user_id)
+
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    """
+                    SELECT g.level, g.accumulated_keys, g.last_tick_at, g.notified,
+                           u.extra_pass
+                    FROM generator_state g
+                    JOIN users u ON u.user_id = g.user_id
+                    WHERE g.user_id = $1
+                    FOR UPDATE
+                    """,
+                    user_id,
+                )
+                if not row:
+                    return {"success": False, "error": "no_generator_state"}
+
+                accumulated, new_keys, cap, interval_seconds = await self._compute_generator_accumulated(row)
+                if accumulated <= 0:
+                    return {"success": False, "error": "no_keys_accumulated"}
+
+                ticks_used = new_keys * interval_seconds
+
+                await conn.execute(
+                    """
+                    UPDATE generator_state
+                    SET accumulated_keys = 0,
+                        last_tick_at = CASE WHEN $2 > 0 THEN last_tick_at + ($2::int * INTERVAL '1 second') ELSE NOW() END,
+                        notified = FALSE, updated_at = NOW()
+                    WHERE user_id = $1
+                    """,
+                    user_id, ticks_used,
+                )
+                await conn.execute(
+                    "UPDATE users SET keys = COALESCE(keys, 0) + $2, updated_at = NOW() WHERE user_id = $1",
+                    user_id, accumulated,
+                )
+                await conn.execute(
+                    "UPDATE notifications SET sent = FALSE, sent_at = NULL WHERE user_id = $1 AND notification_type = 'generator'",
+                    user_id,
+                )
+                total_keys = await conn.fetchval(
+                    "SELECT keys FROM users WHERE user_id = $1", user_id
+                )
+
+        return {
+            "success": True,
+            "claimed": accumulated,
+            "total_keys": total_keys or accumulated,
+        }
+
+    async def upgrade_generator(self, user_id: int, currency: str) -> dict[str, Any]:
+        """Повысить уровень генератора за coins или gems. Транзакционно с FOR UPDATE."""
+        from infrastructure.generator_config import (
+            GENERATOR_LEVELS, GENERATOR_UPGRADE_COST, GENERATOR_MAX_LEVEL,
+        )
+
+        await self._ensure_generator_state(user_id)
+
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    """
+                    SELECT g.level, u.coins, u.gems
+                    FROM generator_state g
+                    JOIN users u ON u.user_id = g.user_id
+                    WHERE g.user_id = $1
+                    FOR UPDATE
+                    """,
+                    user_id,
+                )
+                if not row:
+                    return {"success": False, "error": "user_not_found"}
+
+                current_level = row["level"]
+                next_level = current_level + 1
+
+                if next_level > GENERATOR_MAX_LEVEL:
+                    return {"success": False, "error": "max_level_reached"}
+
+                costs = GENERATOR_UPGRADE_COST.get(next_level)
+                if not costs:
+                    return {"success": False, "error": "no_upgrade_available"}
+
+                if currency not in costs:
+                    return {"success": False, "error": "invalid_currency"}
+
+                price = costs[currency]
+
+                if currency == "coins":
+                    if (row["coins"] or 0) < price:
+                        return {"success": False, "error": "not_enough_coins", "required": price, "have": row["coins"] or 0}
+                    await conn.execute(
+                        "UPDATE users SET coins = GREATEST(0, coins - $2), updated_at = NOW() WHERE user_id = $1",
+                        user_id, price,
+                    )
+                elif currency == "gems":
+                    if (row["gems"] or 0) < price:
+                        return {"success": False, "error": "not_enough_gems", "required": price, "have": row["gems"] or 0}
+                    await conn.execute(
+                        "UPDATE users SET gems = GREATEST(0, gems - $2), updated_at = NOW() WHERE user_id = $1",
+                        user_id, price,
+                    )
+
+                await conn.execute(
+                    """
+                    UPDATE generator_state
+                    SET level = $2, accumulated_keys = 0, last_tick_at = NOW(),
+                        notified = FALSE, updated_at = NOW()
+                    WHERE user_id = $1
+                    """,
+                    user_id, next_level,
+                )
+                await conn.execute(
+                    "UPDATE notifications SET sent = FALSE, sent_at = NULL WHERE user_id = $1 AND notification_type = 'generator'",
+                    user_id,
+                )
+
+                coins_after = await conn.fetchval("SELECT coins FROM users WHERE user_id = $1", user_id)
+                gems_after = await conn.fetchval("SELECT gems FROM users WHERE user_id = $1", user_id)
+
+        return {
+            "success": True,
+            "new_level": next_level,
+            "currency_spent": currency,
+            "amount_spent": price,
+            "coins_remaining": coins_after or 0,
+            "gems_remaining": gems_after or 0,
+        }
+
+    async def check_generator_notifications(self) -> list[dict[str, Any]]:
+        """Найти пользователей, которым нужно отправить уведомление о готовых ключах.
+        Рассчитывает готовность из last_tick_at + конфиг, НЕ из stored accumulated_keys."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+
+        rows = await self.fetch(
+            """
+            SELECT g.user_id, g.level, g.accumulated_keys, g.last_tick_at, g.notified,
+                   u.extra_pass, u.status
+            FROM generator_state g
+            INNER JOIN users u ON u.user_id = g.user_id
+            LEFT JOIN notifications n ON n.user_id = g.user_id AND n.notification_type = 'generator'
+            LEFT JOIN user_settings us ON us.user_id = g.user_id
+            WHERE u.status = 'active'
+              AND (n.sent IS NULL OR n.sent = FALSE)
+              AND (us.notif_generator = TRUE OR us.notif_generator IS NULL)
+            """
+        )
+
+        result = []
+        for r in rows:
+            accumulated, new_keys, cap, interval_seconds = await self._compute_generator_accumulated(r)
+            if accumulated > 0:
+                result.append({"user_id": r["user_id"]})
+
+        return result
+
+    async def mark_generator_notification_sent(self, user_id: int) -> None:
+        """Отметить, что уведомление о генераторе отправлено."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        await self.execute(
+            """
+            INSERT INTO notifications (user_id, notification_type, sent, sent_at)
+            VALUES ($1, 'generator', TRUE, NOW())
+            ON CONFLICT (user_id, notification_type) DO UPDATE
+            SET sent = TRUE, sent_at = NOW()
+            """,
+            user_id,
+        )
+        await self.execute(
+            "UPDATE generator_state SET notified = TRUE, updated_at = NOW() WHERE user_id = $1",
+            user_id,
+        )
+
 
     async def get_promocodes_list(self, created_by: int | None = None) -> list[dict[str, Any]]:
         """Получить список промокодов."""
@@ -4346,7 +4997,7 @@ class Database:
         card_slots: list[int | None],
         used_by_bot: bool = False,
     ) -> dict[str, Any]:
-        """Сохранить пресет колоды (DECK_SIZE слотов)."""
+        """Сохранить пресет колоды (DECK_SIZE слотов) с полной валидацией."""
         if not self._pool:
             raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
 
@@ -4354,14 +5005,92 @@ class Database:
             return {"success": False, "error": "invalid_slots_count"}
 
         try:
-            # Проверяем, существует ли пресет
+            preset_name = (preset_name or "").strip()[:64]
+        except Exception:
+            preset_name = "Колода"
+
+        # Patch 2: reject out-of-range preset_number
+        if preset_number < 1 or preset_number > MAX_TOTAL_DECK_PRESETS:
+            return {"success": False, "error": "invalid_preset_number", "message": f"Номер пресета должен быть от 1 до {MAX_TOTAL_DECK_PRESETS}"}
+
+        # Patch 1 + H2: hero slot must be filled
+        if card_slots[0] is None:
+            return {"success": False, "error": "missing_hero", "message": "Выберите героя"}
+
+        non_null_ids = [cid for cid in card_slots if cid is not None]
+
+        # C2: no duplicate card ids
+        if len(non_null_ids) != len(set(non_null_ids)):
+            return {"success": False, "error": "duplicate_cards", "message": "Колода содержит одинаковые карты"}
+
+        # Patch 5: explicit card existence check (before type/slot validation)
+        if non_null_ids:
+            rows = await self.fetch(
+                "SELECT id, card_type FROM cards WHERE id = ANY($1::bigint[])",
+                non_null_ids,
+            )
+            found_ids = {int(row["id"]) for row in rows}
+            card_types = {int(row["id"]): (row["card_type"] or "warrior") for row in rows}
+            missing_card_ids = [cid for cid in non_null_ids if cid not in found_ids]
+            if missing_card_ids:
+                return {"success": False, "error": "invalid_card_ids", "message": f"Карты не найдены: {missing_card_ids}", "card_ids": missing_card_ids}
+        else:
+            card_types = {}
+
+        # C3: slot 0 must be hero; slots 1..8 must NOT be hero
+        hero_id = card_slots[0]
+        if card_types.get(hero_id) != "hero":
+            return {"success": False, "error": "slot_0_must_be_hero", "message": "Первый слот должен содержать героя"}
+        for idx in range(1, DECK_SIZE):
+            cid = card_slots[idx]
+            if cid is not None and card_types.get(cid) == "hero":
+                return {"success": False, "error": "hero_in_warrior_slot", "message": f"Герой не может быть в слоте {idx + 1}"}
+
+        # C1: verify card ownership (unless bot)
+        if not used_by_bot:
+            owned = await self.fetch(
+                "SELECT card_id FROM user_cards WHERE user_id = $1 AND card_id = ANY($2::bigint[])",
+                user_id, non_null_ids,
+            )
+            owned_set = {int(row["card_id"]) for row in owned}
+            missing = [cid for cid in non_null_ids if cid not in owned_set]
+            if missing:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "save_deck_preset: user %s tried to save unowned cards %s", user_id, missing
+                )
+                return {
+                    "success": False,
+                    "error": "unowned_cards",
+                    "message": "Колода содержит карты, которых нет у вас",
+                    "card_ids": missing,
+                }
+
+        try:
             existing = await self.fetchval(
                 "SELECT id FROM deck_presets WHERE user_id = $1 AND preset_number = $2",
                 user_id, preset_number
             )
-            
+
+            if not existing:
+                # Patch 2: creating a new preset — enforce same limits as create_deck_preset
+                current_count = await self.fetchval(
+                    "SELECT COUNT(*) FROM deck_presets WHERE user_id = $1",
+                    user_id,
+                )
+                if current_count >= MAX_TOTAL_DECK_PRESETS:
+                    return {"success": False, "error": "max_presets_reached", "message": "Достигнут максимум пресетов"}
+
+                extra_pass = await self.fetchval(
+                    "SELECT extra_pass FROM users WHERE user_id = $1", user_id
+                )
+                has_pass = (extra_pass or "") in ("active", "ultra")
+                if not has_pass and current_count >= MAX_FREE_DECK_PRESETS:
+                    return {"success": False, "error": "extra_pass_required", "message": "Требуется ExtraPass для большего числа колод"}
+                if not has_pass and preset_number > MAX_FREE_DECK_PRESETS:
+                    return {"success": False, "error": "extra_pass_required", "message": "Требуется ExtraPass для этого номера пресета"}
+
             if existing:
-                # Обновляем существующий пресет
                 await self.execute(
                     """
                     UPDATE deck_presets
@@ -4387,7 +5116,6 @@ class Database:
                     user_id, preset_number
                 )
             else:
-                # Создаем новый пресет
                 await self.execute(
                     """
                     INSERT INTO deck_presets (user_id, preset_name, preset_number, 
@@ -4401,6 +5129,12 @@ class Database:
                     card_slots[4], card_slots[5], card_slots[6], card_slots[7], card_slots[8],
                     used_by_bot
                 )
+
+            # Patch 6: invalidate cache on mutation
+            deck_cache = getattr(self, "deck_presets_cache", None)
+            if isinstance(deck_cache, dict):
+                deck_cache.pop(user_id, None)
+
             return {"success": True}
         except Exception as e:
             import logging
@@ -4412,16 +5146,42 @@ class Database:
         user_id: int,
         preset_name: str,
     ) -> dict[str, Any]:
-        """Создать новый пресет колоды. Возвращает номер созданного пресета."""
+        """Создать новый пресет колоды с проверкой лимитов. Возвращает номер созданного пресета."""
         if not self._pool:
             raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
 
-        # Находим следующий доступный номер пресета
-        max_preset = await self.fetchval(
-            "SELECT COALESCE(MAX(preset_number), 0) FROM deck_presets WHERE user_id = $1",
-            user_id
+        try:
+            preset_name = (preset_name or "").strip()[:64] or "Новая колода"
+        except Exception:
+            preset_name = "Новая колода"
+
+        # C6 + Patch 4: enforce preset count limits (ultra also counts as pass)
+        rows = await self.fetch(
+            "SELECT preset_number FROM deck_presets WHERE user_id = $1 ORDER BY preset_number",
+            user_id,
         )
-        new_preset_number = max_preset + 1
+        existing_numbers = {int(row["preset_number"]) for row in rows}
+        current_count = len(existing_numbers)
+
+        extra_pass = await self.fetchval(
+            "SELECT extra_pass FROM users WHERE user_id = $1", user_id
+        )
+        has_pass = (extra_pass or "") in ("active", "ultra")
+        effective_limit = MAX_TOTAL_DECK_PRESETS if has_pass else MAX_FREE_DECK_PRESETS
+
+        if current_count >= effective_limit:
+            if has_pass:
+                return {"success": False, "error": "max_presets_reached", "message": "Достигнут максимум пресетов"}
+            return {"success": False, "error": "extra_pass_required", "message": "Требуется ExtraPass для большего числа колод"}
+
+        # Patch 3: choose lowest free slot in 1..effective_limit
+        new_preset_number = None
+        for n in range(1, effective_limit + 1):
+            if n not in existing_numbers:
+                new_preset_number = n
+                break
+        if new_preset_number is None:
+            return {"success": False, "error": "max_presets_reached", "message": "Достигнут максимум пресетов"}
 
         try:
             await self.execute(
@@ -4431,6 +5191,12 @@ class Database:
                 """,
                 user_id, preset_name, new_preset_number
             )
+
+            # Patch 6: invalidate cache on mutation
+            deck_cache = getattr(self, "deck_presets_cache", None)
+            if isinstance(deck_cache, dict):
+                deck_cache.pop(user_id, None)
+
             return {"success": True, "preset_number": new_preset_number}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -4449,15 +5215,33 @@ class Database:
             "SELECT COUNT(*) FROM deck_presets WHERE user_id = $1",
             user_id
         )
-        
+
         if preset_count <= 1:
             return {"success": False, "error": "min_presets_required", "message": "Нельзя удалить пресет. Минимум 1 пресет должно остаться."}
 
         try:
-            await self.execute(
-                "DELETE FROM deck_presets WHERE user_id = $1 AND preset_number = $2",
+            deleted = await self.fetchrow(
+                "DELETE FROM deck_presets WHERE user_id = $1 AND preset_number = $2 RETURNING id",
                 user_id, preset_number
             )
+            if not deleted:
+                return {"success": False, "error": "preset_not_found", "message": "Пресет не найден"}
+
+            # Fix 2: if deleting the current primary, clear it
+            primary = await self.fetchval(
+                "SELECT primary_deck FROM users WHERE user_id = $1", user_id
+            )
+            if primary == preset_number:
+                await self.execute(
+                    "UPDATE users SET primary_deck = NULL, updated_at = NOW() WHERE user_id = $1",
+                    user_id,
+                )
+
+            # Patch 6: invalidate cache on mutation
+            deck_cache = getattr(self, "deck_presets_cache", None)
+            if isinstance(deck_cache, dict):
+                deck_cache.pop(user_id, None)
+
             return {"success": True}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -4472,18 +5256,28 @@ class Database:
         if not self._pool:
             raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
 
-        if not new_name or not new_name.strip():
+        new_name = (new_name or "").strip()[:64]
+        if not new_name:
             return {"success": False, "error": "empty_name"}
 
         try:
-            await self.execute(
+            updated = await self.fetchrow(
                 """
                 UPDATE deck_presets
                 SET preset_name = $1, updated_at = NOW()
                 WHERE user_id = $2 AND preset_number = $3
+                RETURNING id
                 """,
-                new_name.strip(), user_id, preset_number
+                new_name, user_id, preset_number
             )
+            if not updated:
+                return {"success": False, "error": "preset_not_found", "message": "Пресет не найден"}
+
+            # Patch 6: invalidate cache on mutation
+            deck_cache = getattr(self, "deck_presets_cache", None)
+            if isinstance(deck_cache, dict):
+                deck_cache.pop(user_id, None)
+
             return {"success": True}
         except Exception as e:
             return {"success": False, "error": str(e)}

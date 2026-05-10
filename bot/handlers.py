@@ -60,7 +60,7 @@ def register_basic_handlers(dp: Dispatcher, webapp_url: str, db: Database | None
                 [KeyboardButton(text="🔥 ExtraCards Season 0 🏟️", web_app=webapp_info)],
                 [
                     KeyboardButton(text="🙋‍♂️ Профиль"),
-                    KeyboardButton(text="📊 Аналитика"),
+                    KeyboardButton(text="🔑 Генератор"),
                 ],
                 [
                     KeyboardButton(text="📰 Новости"),
@@ -79,6 +79,10 @@ def register_basic_handlers(dp: Dispatcher, webapp_url: str, db: Database | None
         # Проверяем готовность кубика
         if db and message.from_user:
             await _check_and_notify_dice_ready(message.from_user.id, bot)
+
+        # Проверяем готовность ключей генератора
+        if db and message.from_user:
+            await _check_and_notify_generator_ready(message.from_user.id, bot)
 
     @router.message(Command("id"))
     async def handle_id(message: Message) -> None:
@@ -377,6 +381,24 @@ def register_basic_handlers(dp: Dispatcher, webapp_url: str, db: Database | None
             import logging
             logging.getLogger(__name__).error(f"Ошибка проверки кубика: {e}", exc_info=True)
 
+    async def _check_and_notify_generator_ready(user_id: int, bot: Bot) -> None:
+        """Проверить, готовы ли ключи генератора, и отправить уведомление."""
+        if not db:
+            return
+
+        try:
+            status = await db.get_generator_status(user_id)
+            if status.get("can_claim") and not status.get("notified"):
+                key_count = status.get("accumulated_keys", 0)
+                await bot.send_message(
+                    chat_id=user_id,
+                    text=f"🔑 Генератор накопил {key_count} ключ(ей)! Забери их в разделе «Генератор».",
+                )
+                await db.mark_generator_notification_sent(user_id)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Ошибка проверки генератора: {e}", exc_info=True)
+
     @router.message(lambda msg: msg.text == "🙋‍♂️ Профиль")
     async def handle_profile(message: Message, bot: Bot) -> None:
         await _remember_user(message)
@@ -389,6 +411,9 @@ def register_basic_handlers(dp: Dispatcher, webapp_url: str, db: Database | None
         
         # Проверяем готовность кубика
         await _check_and_notify_dice_ready(message.from_user.id, bot)
+
+        # Проверяем готовность ключей генератора
+        await _check_and_notify_generator_ready(message.from_user.id, bot)
 
         profile = await db.get_user_profile(message.from_user.id)
         if not profile:
@@ -416,6 +441,42 @@ def register_basic_handlers(dp: Dispatcher, webapp_url: str, db: Database | None
             f"{status_badge} Статус: {profile['status']}\n"
             f"📅 С нами с: {reg_str}"
         )
+        await message.answer(text)
+
+    @router.message(lambda msg: msg.text == "🔑 Генератор")
+    async def handle_generator(message: Message, bot: Bot) -> None:
+        await _remember_user(message)
+        if not message.from_user:
+            return
+
+        if db:
+            await _check_and_notify_generator_ready(message.from_user.id, bot)
+
+            try:
+                status = await db.get_generator_status(message.from_user.id)
+                acc = status.get("accumulated_keys", 0)
+                cap = status.get("cap", "?")
+                level = status.get("level", 1)
+                interval_h = status.get("interval_hours", "?")
+                next_sec = status.get("next_key_seconds")
+                timer_str = f"{int(next_sec // 3600)}ч {int((next_sec % 3600) // 60)}м" if next_sec else "—"
+
+                text = (
+                    "<b>🔑 Генератор ключей</b>\n\n"
+                    f"Уровень: <b>{level}</b>\n"
+                    f"Ключей накоплено: <b>{acc} / {cap}</b>\n"
+                    f"Интервал: <b>{interval_h}ч</b>\n"
+                    f"До следующего: <b>{timer_str}</b>\n\n"
+                    "<i>Открой WebApp, чтобы забрать ключи или улучшить генератор.</i>"
+                )
+            except Exception:
+                text = (
+                    "<b>🔑 Генератор ключей</b>\n\n"
+                    "<i>Открой WebApp, чтобы посмотреть состояние и забрать ключи.</i>"
+                )
+        else:
+            text = "<i>Открой WebApp, чтобы использовать генератор ключей.</i>"
+
         await message.answer(text)
 
     @router.message(lambda msg: msg.text == "📰 Новости")

@@ -7,3 +7,4 @@ aiohttp
 python-socketio
 asyncpg
 numpy
+pillow>=10.0
