@@ -302,9 +302,14 @@ class ArenaEnvironment:
         else:
             return False, "unknown_action"
 
-        # Проверка состояния после действия
-        self._cleanup_dead_units(player)
-        self._cleanup_dead_units(opponent)
+        # Проверка состояния после действия (каскадная очистка deathrattle)
+        while True:
+            prev_p1_board = len(player.board)
+            prev_p2_board = len(opponent.board)
+            self._cleanup_dead_units(player)
+            self._cleanup_dead_units(opponent)
+            if len(player.board) == prev_p1_board and len(opponent.board) == prev_p2_board:
+                break
         self._check_game_over()
 
         # Запись в историю
@@ -433,22 +438,25 @@ class ArenaEnvironment:
         if not attacker.is_ready:
             return False, "unit_not_ready"
 
+        # Вычисляем эффективную атаку с учетом аур
+        effective_attack = self._apply_aura_bonuses(attacker, player.board)
+
         # Проверка атаки
-        if attacker.attack <= 0:
+        if effective_attack <= 0:
             return False, "no_attack"
 
         # Проверка Taunt (только если у атакующего нет bypass_taunt)
         has_bypass = "bypass_taunt" in attacker.mechanics
-        
+
         if not has_bypass and has_taunt(opponent.board):
             taunt_units = get_taunt_targets(opponent.board)
-            
+
             if action.target_is_hero:
                 logger.debug(
                     "[CORE] Атака героя заблокирована: на доске есть Taunt юниты"
                 )
                 return False, "must_attack_taunt"
-            
+
             # Проверяем, что цель - это Taunt существо
             target_is_taunt = False
             if action.target_id:
@@ -456,15 +464,12 @@ class ArenaEnvironment:
                     if str(taunt_unit.instance_id) == action.target_id:
                         target_is_taunt = True
                         break
-            
+
             if not target_is_taunt:
                 logger.debug(
                     "[CORE] Атака заблокирована: цель не является Taunt юнитом"
                 )
                 return False, "must_attack_taunt"
-
-        # Вычисляем эффективную атаку с учетом аур
-        effective_attack = self._apply_aura_bonuses(attacker, player.board)
         
         # Обработка атаки
         if action.target_is_hero:
@@ -652,9 +657,13 @@ class ArenaEnvironment:
 
     def _check_game_over(self) -> None:
         """Проверить условие окончания игры."""
-        if self.state.p1.hero.hp <= 0:
+        p1_dead = self.state.p1.hero.hp <= 0
+        p2_dead = self.state.p2.hero.hp <= 0
+        if p1_dead and p2_dead:
+            self.state.status = GameStatus.DRAW
+        elif p1_dead:
             self.state.status = GameStatus.P2_WIN
-        elif self.state.p2.hero.hp <= 0:
+        elif p2_dead:
             self.state.status = GameStatus.P1_WIN
     
     def apply_start_game_effects(self) -> None:
@@ -933,7 +942,11 @@ class ArenaEnvironment:
         # 2. Действия атаки существами
         for unit in player.board:
             # Проверка готовности
-            if not unit.is_ready or unit.attack <= 0:
+            if not unit.is_ready:
+                continue
+
+            effective_attack = self._apply_aura_bonuses(unit, player.board)
+            if effective_attack <= 0:
                 continue
 
             # Проверка bypass_taunt

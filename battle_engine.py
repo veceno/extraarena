@@ -749,7 +749,7 @@ class BattleEngine:
         return result
     
     def _get_winner_id(self) -> Optional[int]:
-        """Определить победителя."""
+        """Определить победителя. Возвращает None при ничьей."""
         if not self._arena:
             return None
         status = self._arena.state.status

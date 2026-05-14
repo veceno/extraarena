@@ -24,6 +24,7 @@ class QueueEntry:
     selected_deck_id: int | None = None
     match_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     matched: bool = False
+    game_mode: str = "classic"
 
 
 class Matchmaker:
@@ -99,6 +100,7 @@ class Matchmaker:
             avg_level=user_avg_level,
             enqueued_at=time.monotonic(),
             selected_deck_id=selected_deck_id,
+            game_mode=game_mode,
         )
 
         async with self._lock:
@@ -156,11 +158,11 @@ class Matchmaker:
         - Между проверками спим по QUEUE_POLL_INTERVAL.
         - По истечении MM_BOT_TIMEOUT выдаем бота.
         """
-        start = seeker.enqueued_at
+        per_window_timeout = MM_BOT_TIMEOUT / len(SEARCH_WINDOWS)
 
         for window in SEARCH_WINDOWS:
-            # Цикл опроса для текущего окна
-            while time.monotonic() - start < MM_BOT_TIMEOUT:
+            window_start = time.monotonic()
+            while time.monotonic() - window_start < per_window_timeout:
                 async with self._lock:
                     if seeker.matched:
                         return  # Уже подобран другим запросом
@@ -196,6 +198,8 @@ class Matchmaker:
         """Поиск соперника в очереди по допуску по трофеям."""
         for entry in self._queue:
             if entry.user_id == seeker.user_id or entry.matched:
+                continue
+            if entry.game_mode != seeker.game_mode:
                 continue
             if abs(entry.trophies - seeker.trophies) <= window:
                 return entry

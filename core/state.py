@@ -57,6 +57,7 @@ class GameStatus(Enum):
     ONGOING = "ongoing"
     P1_WIN = "p1_win"
     P2_WIN = "p2_win"
+    DRAW = "draw"
 
 
 class ReplacementStatus(Enum):
@@ -171,6 +172,7 @@ class GameState:
                 GameStatus.ONGOING: 0,
                 GameStatus.P1_WIN: 1,
                 GameStatus.P2_WIN: 2,
+                GameStatus.DRAW: 3,
             }[self.status],
         }
         obs.update(self._player_features(self.p1, "p1"))
