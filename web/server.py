@@ -514,6 +514,8 @@ async def _process_battle_end(
                             user_id=winner_id_int, sender="Система",
                             subject="🏆 Повышение лиги!",
                             text="Ты достиг лиги {} {}! Продолжай в том же духе.".format(league_data["emoji"], league_data["name"]),
+                            category="rewards",
+                            icon="🏆",
                         )
                         if not hasattr(engine, "_league_up"):
                             engine._league_up = {}
@@ -572,6 +574,8 @@ async def _process_battle_end(
                             text="Ты покинул лигу {} {}. Набери {} трофеев чтобы вернуться.".format(
                                 old_league_data["emoji"], old_league_data["name"], next_min
                             ),
+                            category="system",
+                            icon="📉",
                         )
                         logger.info("📉 League DOWN: user=%s → %s", loser_id, new_loser_league)
             except Exception as exc:

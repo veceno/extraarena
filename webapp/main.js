@@ -4423,7 +4423,7 @@ async function handleSuccessfulPayment(authData) {
   // Если награды все еще не найдены, но есть письмо, показываем общее сообщение
   if (rewards.length === 0 && purchaseMail) {
     // Пытаемся извлечь награды из текста письма
-    const mailContent = purchaseMail.content || "";
+    const mailContent = purchaseMail.content || purchaseMail.text || "";
     if (mailContent.includes("ExtraPass")) {
       rewards.push({ type: "extrapass", amount: 1, icon: "⭐", label: "ExtraPass" });
     }
@@ -5342,7 +5342,7 @@ function renderMail(mailList) {
     const unreadClass = mail.is_read === false ? "unread" : "";
     const timeAgo = mail.created_at ? formatTimeAgo(new Date(mail.created_at)) : "";
     const mailId = mail.id || mail.mail_id; // Поддержка обоих вариантов
-    const mailContent = mail.content || mail.body || ""; // Поддержка обоих вариантов
+    const mailContent = mail.content || mail.body || mail.text || ""; // Поддержка обоих вариантов
     
     // Форматируем attachments для отображения
     let attachmentsHtml = "";
