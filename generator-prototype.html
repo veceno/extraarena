@@ -1,0 +1,737 @@
+
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Extra Arena - Генератор ключей</title>
+  <style>
+    @font-face {
+      font-family: "FuturaPT";
+      src: url("DesignAssets/Font/FuturaPT-Medium.ttf") format("truetype");
+      font-weight: 500;
+      font-style: normal;
+    }
+
+    @font-face {
+      font-family: "FuturaPT";
+      src: url("DesignAssets/Font/FuturaPT-Bold.ttf") format("truetype");
+      font-weight: 700;
+      font-style: normal;
+    }
+
+    :root {
+      --canvas: #0f0a1a;
+      --canvas-deep: #07040f;
+      --surface: #1a1030;
+      --surface-2: #2d1f52;
+      --border: #4a3d6a;
+      --border-soft: rgba(122, 111, 160, 0.38);
+      --text: #f0ecff;
+      --text-2: #c4b8e8;
+      --muted: #7a6fa0;
+      --orange: #f5921e;
+      --orange-2: #ffb347;
+      --gold: #fbbf24;
+      --pink: #f472b6;
+      --teal: #2dd4bf;
+      --green: #4ade80;
+      --danger: #ef4444;
+      --radius: 22px;
+      --font-head: "FuturaPT", system-ui, sans-serif;
+      --font-body: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --font-game: "FuturaPT", system-ui, sans-serif;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      min-height: 100%;
+      background: var(--canvas-deep);
+      color: var(--text);
+      font-family: var(--font-body);
+      overflow-x: hidden;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    body {
+      display: grid;
+      place-items: center;
+      padding: 16px;
+      background:
+        radial-gradient(circle at 52% 18%, rgba(124, 92, 191, 0.32), transparent 34%),
+        radial-gradient(circle at 86% 78%, rgba(245, 146, 30, 0.17), transparent 30%),
+        linear-gradient(180deg, #090612 0%, #130d26 58%, #090612 100%);
+    }
+
+    .phone {
+      width: min(100%, 430px);
+      min-height: min(900px, calc(100vh - 32px));
+      border: 1px solid rgba(122, 111, 160, 0.45);
+      border-radius: 34px;
+      background: linear-gradient(180deg, rgba(26, 16, 48, 0.95), rgba(9, 6, 18, 0.98)), var(--canvas);
+      box-shadow: 0 28px 90px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255,255,255,.08);
+      overflow: hidden;
+      position: relative;
+    }
+
+    .phone::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background:
+        linear-gradient(90deg, rgba(255,255,255,.03) 1px, transparent 1px),
+        linear-gradient(180deg, rgba(255,255,255,.025) 1px, transparent 1px);
+      background-size: 28px 28px;
+      mask-image: linear-gradient(to bottom, rgba(0,0,0,.8), transparent 64%);
+    }
+
+    .app {
+      height: min(900px, calc(100vh - 32px));
+      min-height: 720px;
+      display: flex;
+      flex-direction: column;
+      position: relative;
+      isolation: isolate;
+    }
+
+    .app::after {
+      content: "";
+      position: absolute;
+      width: 260px;
+      height: 260px;
+      left: 50%;
+      top: 112px;
+      transform: translateX(-50%);
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(245,146,30,.19), rgba(124,92,191,.13) 42%, transparent 70%);
+      filter: blur(18px);
+      z-index: -1;
+      animation: aura 4.8s ease-in-out infinite;
+    }
+
+    @keyframes aura {
+      0%, 100% { opacity: .72; transform: translateX(-50%) scale(.96); }
+      50% { opacity: 1; transform: translateX(-50%) scale(1.08); }
+    }
+
+    .topbar {
+      height: 66px;
+      padding: 12px 16px 8px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid rgba(74,61,106,.34);
+      background: rgba(15,10,26,.78);
+      backdrop-filter: blur(18px);
+      position: sticky;
+      top: 0;
+      z-index: 4;
+    }
+
+    .icon-btn {
+      width: 42px;
+      height: 42px;
+      border: 1px solid rgba(122,111,160,.45);
+      border-radius: 15px;
+      display: grid;
+      place-items: center;
+      background: rgba(45,31,82,.66);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.08);
+    }
+
+    .chevron {
+      width: 12px;
+      height: 12px;
+      border-left: 3px solid var(--text);
+      border-bottom: 3px solid var(--text);
+      transform: rotate(45deg);
+      margin-left: 4px;
+    }
+
+    .title {
+      text-align: center;
+      font-family: var(--font-head);
+      font-weight: 900;
+      line-height: 1;
+      letter-spacing: 0;
+      color: var(--orange-2);
+      text-shadow: 0 0 20px rgba(245,146,30,.28);
+    }
+
+    .title span {
+      display: block;
+      font: 700 10px/1 var(--font-body);
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 4px;
+    }
+
+    .wallet { display: flex; gap: 7px; }
+
+    .pill {
+      height: 32px;
+      min-width: 54px;
+      border-radius: 999px;
+      padding: 0 9px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      background: rgba(45,31,82,.7);
+      border: 1px solid rgba(122,111,160,.38);
+      font: 800 12px/1 var(--font-game);
+      color: var(--text);
+    }
+
+    .coin, .gem, .key-mini {
+      width: 15px;
+      height: 15px;
+      border-radius: 50%;
+      flex: none;
+      box-shadow: 0 0 9px currentColor;
+    }
+
+    .coin { color: var(--gold); background: radial-gradient(circle at 35% 30%, #fff5b2, var(--gold) 55%, #9b5c0b); }
+    .gem { color: var(--teal); background: linear-gradient(135deg, #bffef5, var(--teal), #16756d); transform: rotate(45deg); border-radius: 4px; }
+    .key-mini { color: var(--orange); background: linear-gradient(135deg, #ffe3a5, var(--orange)); border-radius: 4px 999px 999px 4px; }
+
+    .content {
+      flex: 1;
+      padding: 18px 16px 166px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      overflow-y: auto;
+      scrollbar-width: none;
+    }
+
+    .content::-webkit-scrollbar { display: none; }
+
+    .hero {
+      display: grid;
+      gap: 14px;
+      align-items: center;
+      justify-items: center;
+      text-align: center;
+    }
+
+    .level-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      background: linear-gradient(135deg, rgba(45,31,82,.92), rgba(26,16,48,.72));
+      border: 1px solid rgba(245,146,30,.34);
+      color: var(--orange-2);
+      font: 800 12px/1 var(--font-body);
+      text-transform: uppercase;
+      box-shadow: 0 0 26px rgba(245,146,30,.12);
+    }
+
+    .level-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 12px var(--green);
+    }
+
+    .art-card {
+      width: min(100%, 318px);
+      aspect-ratio: 1;
+      border-radius: 30px;
+      padding: 10px;
+      position: relative;
+      background: linear-gradient(135deg, rgba(255,179,71,.55), rgba(192,132,252,.24) 42%, rgba(45,31,82,.9)), rgba(45,31,82,.96);
+      box-shadow: 0 18px 48px rgba(0,0,0,.46), 0 0 90px rgba(245,146,30,.22), inset 0 1px 0 rgba(255,255,255,.18);
+      overflow: hidden;
+    }
+
+    .art-card::before, .art-card::after {
+      content: "";
+      position: absolute;
+      border-radius: 50%;
+      pointer-events: none;
+    }
+
+    .art-card::before {
+      width: 190px;
+      height: 190px;
+      left: -54px;
+      top: -44px;
+      background: radial-gradient(circle, rgba(251,191,36,.38), transparent 66%);
+    }
+
+    .art-card::after {
+      width: 220px;
+      height: 220px;
+      right: -78px;
+      bottom: -80px;
+      background: radial-gradient(circle, rgba(244,114,182,.26), transparent 66%);
+    }
+
+    .art-inner {
+      width: 100%;
+      height: 100%;
+      border-radius: 23px;
+      border: 1px solid rgba(255,255,255,.16);
+      background: linear-gradient(180deg, rgba(7,4,15,0) 46%, rgba(7,4,15,.84) 100%), url("DesignAssets/CaseKey.jpg") center / cover;
+      position: relative;
+      overflow: hidden;
+      display: flex;
+      align-items: flex-end;
+      justify-content: center;
+      padding: 18px;
+    }
+
+    .art-inner::before {
+      content: "";
+      position: absolute;
+      inset: -40%;
+      background: conic-gradient(from 0deg, transparent, rgba(255,255,255,.14), transparent 18%);
+      animation: sweep 7s linear infinite;
+      opacity: .55;
+    }
+
+    @keyframes sweep { to { transform: rotate(360deg); } }
+
+    .art-label {
+      position: relative;
+      z-index: 1;
+      width: 100%;
+      border-radius: 16px;
+      padding: 12px;
+      background: rgba(15,10,26,.74);
+      border: 1px solid rgba(255,179,71,.34);
+      backdrop-filter: blur(12px);
+      text-align: left;
+    }
+
+    .art-label strong {
+      display: block;
+      font: 900 20px/1.05 var(--font-head);
+      color: var(--text);
+      margin-bottom: 4px;
+    }
+
+    .art-label small {
+      display: block;
+      font: 600 12px/1.35 var(--font-body);
+      color: var(--text-2);
+    }
+
+    .progress-card {
+      border: 1px solid var(--border-soft);
+      border-radius: var(--radius);
+      padding: 14px;
+      background: linear-gradient(145deg, rgba(26,16,48,.92), rgba(45,31,82,.74));
+      box-shadow: 0 10px 28px rgba(0,0,0,.28), inset 0 1px 0 rgba(255,255,255,.07);
+      display: grid;
+      grid-template-columns: 96px 1fr;
+      gap: 14px;
+      align-items: center;
+    }
+
+    .ring {
+      width: 96px;
+      height: 96px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      background: conic-gradient(var(--orange) 0 66%, rgba(122,111,160,.2) 66% 100%);
+      position: relative;
+      box-shadow: 0 0 28px rgba(245,146,30,.22);
+    }
+
+    .ring::before {
+      content: "";
+      position: absolute;
+      inset: 8px;
+      border-radius: 50%;
+      background: linear-gradient(180deg, #1a1030, #0f0a1a);
+      border: 1px solid rgba(255,255,255,.07);
+    }
+
+    .ring-value { position: relative; text-align: center; }
+    .ring-value b { display: block; font: 900 25px/1 var(--font-head); color: var(--text); }
+
+    .ring-value span {
+      display: block;
+      margin-top: 4px;
+      font: 800 10px/1 var(--font-body);
+      color: var(--muted);
+      text-transform: uppercase;
+    }
+
+    .status h2 {
+      font: 900 22px/1.05 var(--font-head);
+      letter-spacing: 0;
+      color: var(--text);
+      margin-bottom: 7px;
+      text-wrap: balance;
+    }
+
+    .status p {
+      color: var(--text-2);
+      font-size: 13px;
+      line-height: 1.42;
+      margin-bottom: 12px;
+    }
+
+    .timer-line {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      font: 800 12px/1 var(--font-body);
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+
+    .timer-line strong {
+      color: var(--orange-2);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .bar {
+      height: 9px;
+      border-radius: 999px;
+      background: rgba(122,111,160,.22);
+      overflow: hidden;
+      border: 1px solid rgba(255,255,255,.06);
+    }
+
+    .bar span {
+      display: block;
+      width: 66%;
+      height: 100%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, var(--orange), var(--gold));
+      box-shadow: 0 0 18px rgba(245,146,30,.48);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .bar span::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(90deg, transparent, rgba(255,255,255,.38), transparent);
+      animation: shine 2.2s ease-in-out infinite;
+    }
+
+    @keyframes shine {
+      from { transform: translateX(-100%); }
+      to { transform: translateX(100%); }
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 9px;
+    }
+
+    .stat {
+      min-height: 83px;
+      border-radius: 18px;
+      border: 1px solid rgba(122,111,160,.32);
+      background: rgba(15,10,26,.48);
+      padding: 12px 10px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .stat::after {
+      content: "";
+      position: absolute;
+      inset: auto -28px -42px auto;
+      width: 82px;
+      height: 82px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(124,92,191,.3), transparent 68%);
+    }
+
+    .stat small {
+      font: 800 10px/1.2 var(--font-body);
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    .stat b {
+      font: 900 20px/1 var(--font-head);
+      color: var(--text);
+      font-variant-numeric: tabular-nums;
+      position: relative;
+      z-index: 1;
+    }
+
+    .stat.accent b { color: var(--orange-2); }
+    .stat.ready b { color: var(--green); }
+
+    .upgrade {
+      border-radius: var(--radius);
+      border: 1px solid rgba(74,222,128,.24);
+      background: linear-gradient(135deg, rgba(74,222,128,.12), transparent 48%), rgba(26,16,48,.72);
+      padding: 14px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .upgrade-icon {
+      width: 48px;
+      height: 48px;
+      border-radius: 16px;
+      background: rgba(74,222,128,.13);
+      border: 1px solid rgba(74,222,128,.32);
+      display: grid;
+      place-items: center;
+      flex: none;
+      position: relative;
+    }
+
+    .upgrade-icon::before, .upgrade-icon::after {
+      content: "";
+      position: absolute;
+      background: var(--green);
+      border-radius: 999px;
+      box-shadow: 0 0 12px rgba(74,222,128,.65);
+    }
+
+    .upgrade-icon::before {
+      width: 24px;
+      height: 5px;
+      transform: rotate(-36deg);
+    }
+
+    .upgrade-icon::after {
+      width: 12px;
+      height: 5px;
+      transform: translate(7px, -7px) rotate(36deg);
+    }
+
+    .upgrade-text { min-width: 0; flex: 1; }
+
+    .upgrade-text b {
+      display: block;
+      font: 900 15px/1.2 var(--font-head);
+      color: var(--text);
+      margin-bottom: 3px;
+    }
+
+    .upgrade-text span {
+      display: block;
+      font: 600 12px/1.35 var(--font-body);
+      color: var(--text-2);
+    }
+
+    .cost {
+      flex: none;
+      font: 900 12px/1 var(--font-game);
+      color: var(--gold);
+      padding: 8px 9px;
+      border-radius: 999px;
+      border: 1px solid rgba(251,191,36,.28);
+      background: rgba(251,191,36,.09);
+    }
+
+    .bottom {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      z-index: 5;
+      padding: 13px 16px calc(13px + env(safe-area-inset-bottom));
+      background: linear-gradient(180deg, rgba(15,10,26,0), rgba(15,10,26,.92) 20%, rgba(15,10,26,.98));
+      backdrop-filter: blur(12px);
+    }
+
+    .claim {
+      width: 100%;
+      min-height: 56px;
+      border: 0;
+      border-radius: 18px;
+      color: #1b1004;
+      background: linear-gradient(180deg, #ffd36f, var(--orange) 72%, #d97510);
+      box-shadow: 0 10px 28px rgba(245,146,30,.32), inset 0 1px 0 rgba(255,255,255,.44);
+      font: 900 17px/1 var(--font-head);
+      text-transform: uppercase;
+      letter-spacing: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+    }
+
+    .claim-key {
+      width: 21px;
+      height: 21px;
+      border-radius: 5px 999px 999px 5px;
+      background: #2a1706;
+      box-shadow: inset -5px 0 0 rgba(255,255,255,.12);
+      position: relative;
+    }
+
+    .claim-key::before, .claim-key::after {
+      content: "";
+      position: absolute;
+      right: -8px;
+      background: #2a1706;
+      width: 10px;
+      height: 4px;
+      border-radius: 0 2px 2px 0;
+    }
+
+    .claim-key::before { top: 5px; }
+    .claim-key::after { bottom: 5px; }
+
+    .nav {
+      height: 58px;
+      margin-top: 10px;
+      border: 1px solid rgba(122,111,160,.3);
+      border-radius: 19px;
+      background: rgba(26,16,48,.86);
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      align-items: center;
+      padding: 5px;
+    }
+
+    .nav-item {
+      height: 46px;
+      border-radius: 15px;
+      display: grid;
+      place-items: center;
+      position: relative;
+      opacity: .6;
+    }
+
+    .nav-item.active {
+      opacity: 1;
+      background: rgba(245,146,30,.14);
+      border: 1px solid rgba(245,146,30,.22);
+    }
+
+    .nav-item img {
+      width: 25px;
+      height: 25px;
+      object-fit: contain;
+      filter: drop-shadow(0 0 8px rgba(245,146,30,.28));
+    }
+
+    .nav-key {
+      width: 26px;
+      height: 26px;
+      border-radius: 8px 999px 999px 8px;
+      background: linear-gradient(135deg, #ffe3a5, var(--orange));
+      box-shadow: 0 0 14px rgba(245,146,30,.45);
+      position: relative;
+    }
+
+    .nav-key::before, .nav-key::after {
+      content: "";
+      position: absolute;
+      right: -9px;
+      width: 12px;
+      height: 5px;
+      border-radius: 0 3px 3px 0;
+      background: var(--orange);
+    }
+
+    .nav-key::before { top: 6px; }
+    .nav-key::after { bottom: 6px; }
+
+    @media (max-width: 390px) {
+      body { padding: 0; }
+      .phone {
+        height: 100vh;
+        min-height: 100vh;
+        border-radius: 0;
+        border: 0;
+      }
+      .app {
+        height: 100vh;
+        min-height: 100vh;
+      }
+      .content { padding-inline: 12px; }
+      .art-card { width: min(100%, 292px); }
+      .progress-card { grid-template-columns: 86px 1fr; gap: 12px; }
+      .ring { width: 86px; height: 86px; }
+      .status h2 { font-size: 20px; }
+      .wallet .pill:first-child { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <main class="phone" aria-label="Прототип раздела Генератор">
+    <section class="app">
+      <header class="topbar">
+        <div class="icon-btn" aria-hidden="true"><div class="chevron"></div></div>
+        <h1 class="title"><span>Раздел</span>Генератор</h1>
+        <div class="wallet" aria-label="Ресурсы игрока">
+          <div class="pill"><i class="coin"></i> 2 450</div>
+          <div class="pill"><i class="gem"></i> 120</div>
+        </div>
+      </header>
+
+      <div class="content">
+        <section class="hero" aria-labelledby="generator-title">
+          <div class="level-chip"><i class="level-dot"></i> Генератор I уровня</div>
+          <div class="art-card">
+            <div class="art-inner">
+              <div class="art-label">
+                <strong id="generator-title">Ключевой реактор</strong>
+                <small>Собирает энергию арены и превращает её в ключи для кейсов.</small>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="progress-card" aria-label="Прогресс генерации ключей">
+          <div class="ring" aria-label="Накоплено 2 из 3 ключей">
+            <div class="ring-value"><b>2/3</b><span>ключа</span></div>
+          </div>
+          <div class="status">
+            <h2>Следующий ключ почти готов</h2>
+            <p>Реактор продолжает копить заряд. Когда хранилище заполнится, генерация остановится.</p>
+            <div class="timer-line"><span>До следующего ключа</span><strong>02:18:40</strong></div>
+            <div class="bar"><span></span></div>
+          </div>
+        </section>
+
+        <section class="stats" aria-label="Характеристики генератора">
+          <div class="stat ready"><small>Накоплено</small><b>2</b></div>
+          <div class="stat accent"><small>Интервал</small><b>8ч</b></div>
+          <div class="stat"><small>Лимит</small><b>3</b></div>
+        </section>
+
+        <section class="upgrade" aria-label="Улучшение генератора">
+          <div class="upgrade-icon"></div>
+          <div class="upgrade-text">
+            <b>Улучшить до II уровня</b>
+            <span>Лимит станет 4 ключа, интервал сократится до 7 часов.</span>
+          </div>
+          <div class="cost">2000</div>
+        </section>
+      </div>
+
+      <footer class="bottom">
+        <button class="claim" type="button"><span class="claim-key"></span>Забрать 2 ключа</button>
+        <nav class="nav" aria-label="Нижняя навигация">
+          <div class="nav-item"><img src="DesignAssets/MainMenu/Icons/NavBar/Arena.png" alt=""></div>
+          <div class="nav-item"><img src="DesignAssets/MainMenu/Icons/NavBar/Collection.png" alt=""></div>
+          <div class="nav-item active"><div class="nav-key"></div></div>
+          <div class="nav-item"><img src="DesignAssets/MainMenu/Icons/NavBar/GameShop.png" alt=""></div>
+          <div class="nav-item"><img src="DesignAssets/MainMenu/Icons/NavBar/Squad.png" alt=""></div>
+        </nav>
+      </footer>
+    </section>
+  </main>
+</body>
+</html>

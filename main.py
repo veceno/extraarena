@@ -41,8 +41,8 @@ async def main() -> None:
             logger.info("YooKassa платежный сервис инициализирован")
             logger.info(f"YooKassa shop_id: {settings.yookassa.shop_id}, test_mode: {settings.yookassa.test_mode}")
         except ImportError:
-            logger.warning("YooKassa SDK не установлен. Платежи будут недоступны.")
-            logger.warning("Установите: pip install yookassa")
+            logger.warning("Модуль YooKassa-платежей недоступен. Платежи будут недоступны.")
+            logger.warning("Проверьте зависимости HTTP-клиента: requests и curl для обхода VPN при необходимости.")
         except Exception as e:
             logger.error(f"Ошибка инициализации YooKassa: {e}", exc_info=True)
     else:
@@ -57,6 +57,7 @@ async def main() -> None:
         settings.bot_token,
         payment_service=payment_service,
         webapp_url=settings.webapp_url,
+        extra_shop_url=settings.extra_shop_url,
         stars_rate_rub=settings.stars_rate_rub,
         stars_markup=settings.stars_markup,
         stars_test_mode=settings.stars_test_mode,
@@ -124,6 +125,8 @@ async def main() -> None:
     asyncio.create_task(_generated_inline_cleanup_task())
 
     try:
+        await bot.delete_webhook(drop_pending_updates=True)
+        logger.info("Telegram webhook удалён перед запуском polling")
         await dp.start_polling(bot)
     finally:
         # Останавливаем мониторинг TPS

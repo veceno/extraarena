@@ -71,6 +71,15 @@ async def process_successful_payment(
         }
     )
 
+    if not reward_ctx.get("rewards_given"):
+        result["status"] = "no_rewards"
+        logger.error(
+            "Платеж %s не обработан: для item_type=%s награды не были выданы. rewards_processed не меняем.",
+            payment_id,
+            item_type,
+        )
+        return result
+
     mail_content = None
     if reward_ctx["rewards_text"]:
         mail_content = await _create_purchase_mail(
@@ -85,6 +94,16 @@ async def process_successful_payment(
             logger=logger,
         )
         result["mail_created"] = mail_content is not None
+
+    # Трекаем economy_events для каждой начисленной валюты
+    await _track_purchase_economy_events(
+        db=db,
+        user_id=payment_record["user_id"],
+        item_type=item_type,
+        attachments=reward_ctx["attachments"],
+        metadata=metadata,
+        logger=logger,
+    )
 
     # Помечаем платеж как обработанный (тот же подход, что и раньше в коде)
     try:
@@ -218,6 +237,24 @@ async def _grant_rewards_for_item(
         except (ValueError, IndexError):
             logger.error("Не удалось извлечь количество кейсов из item_type=%s", item_type)
 
+    elif item_type == "gems_package":
+        from infrastructure.shop_config import GEM_PACKAGES
+
+        package_type = metadata.get("package_type", "")
+        pkg = GEM_PACKAGES.get(package_type, {})
+        gems = int(pkg.get("gems") or metadata.get("package_gems") or 0)
+        if gems > 0:
+            await db.execute("UPDATE users SET gems = gems + $1 WHERE user_id = $2", gems, user_id)
+            _append_currency("gems", gems, "💎 гемов")
+            rewards_given = True
+        else:
+            logger.error("gems_package: не удалось определить количество гемов для package_type=%s", package_type)
+        if rewards_given and pkg.get("one_time") and not metadata.get("skip_starter_mark"):
+            await db.execute(
+                "UPDATE user_settings SET starter_pack_used = TRUE WHERE user_id = $1",
+                user_id,
+            )
+
     elif item_type and item_type.startswith("gems_"):
         try:
             gems_amount = int(item_type.split("_")[1])
@@ -264,15 +301,30 @@ async def _grant_rewards_for_item(
         if recipient_id <= 0:
             logger.error("extrapass_gift: recipient_id не указан или равен 0, отмена")
         else:
+            is_ultra = metadata.get("ultra") in {True, "true", "1"}
+
             expires_at = datetime.now() + timedelta(days=30)
             await db.execute(
                 "UPDATE users SET extra_pass = 'active', extra_pass_expires_at = $1 WHERE user_id = $2",
                 expires_at, recipient_id,
             )
+
+            if is_ultra:
+                await db.execute(
+                    "UPDATE users SET gems = gems + 500 WHERE user_id = $1",
+                    recipient_id,
+                )
+                attachments["extrapass_ultra"] = True
+                rewards_text.append(f"💫 ExtraPass Ultra (подарок для ID {recipient_id})")
+            else:
+                rewards_text.append(f"\u2b50 ExtraPass (подарок для ID {recipient_id})")
+
             attachments["extrapass_gift"] = True
             attachments["gift_recipient_id"] = recipient_id
-            rewards_text.append(f"⭐ ExtraPass (подарок для ID {recipient_id})")
-            logger.info("extrapass_gift: покупатель=%s получатель=%s", user_id, recipient_id)
+            logger.info(
+                "extrapass_gift: покупатель=%s получатель=%s ultra=%s",
+                user_id, recipient_id, is_ultra,
+            )
             rewards_given = True
 
     elif item_type == "starter_boost":
@@ -314,22 +366,6 @@ async def _grant_rewards_for_item(
             attachments["cases"] = granted_cases
         rewards_given = True
 
-    elif item_type == "gems_package":
-        from infrastructure.shop_config import GEM_PACKAGES
-
-        package_type = metadata.get("package_type", "")
-        pkg = GEM_PACKAGES.get(package_type, {})
-        gems = int(pkg.get("gems", 0))
-        if gems > 0:
-            await db.execute("UPDATE users SET gems = gems + $1 WHERE user_id = $2", gems, user_id)
-            _append_currency("gems", gems, "💎 гемов")
-            rewards_given = True
-        if pkg.get("one_time") and not metadata.get("skip_starter_mark"):
-            await db.execute(
-                "UPDATE user_settings SET starter_pack_used = TRUE WHERE user_id = $1",
-                user_id,
-            )
-
     elif item_type and item_type.startswith("shop_set_"):
         try:
             set_id = int(item_type.split("_")[-1])
@@ -362,6 +398,62 @@ async def _grant_rewards_for_item(
         "rewards_text": rewards_text,
         "attachments": attachments,
     }
+
+
+async def _track_purchase_economy_events(
+    db: "Database",
+    user_id: int,
+    item_type: Optional[str],
+    attachments: Dict[str, Any],
+    metadata: Dict[str, Any],
+    logger: logging.Logger,
+) -> None:
+    """Записывает economy_events для каждого начисленного ресурса при покупке."""
+    base_meta = {
+        "item_type": item_type,
+        "payment_id": metadata.get("payment_id"),
+        "item_name": metadata.get("item_name") or metadata.get("display_name"),
+        "package_type": metadata.get("package_type"),
+        "provider": metadata.get("provider"),
+    }
+
+    if attachments.get("gems"):
+        await db.track_economy_event(
+            user_id=user_id,
+            event_type="earn",
+            resource="gems",
+            amount=float(attachments["gems"]),
+            source="purchase",
+            metadata=base_meta,
+        )
+    if attachments.get("coins"):
+        await db.track_economy_event(
+            user_id=user_id,
+            event_type="earn",
+            resource="coins",
+            amount=float(attachments["coins"]),
+            source="purchase",
+            metadata=base_meta,
+        )
+    if attachments.get("keys"):
+        await db.track_economy_event(
+            user_id=user_id,
+            event_type="earn",
+            resource="keys",
+            amount=float(attachments["keys"]),
+            source="purchase",
+            metadata=base_meta,
+        )
+    if attachments.get("extrapass"):
+        await db.track_economy_event(
+            user_id=user_id,
+            event_type="earn",
+            resource="extrapass",
+            amount=1,
+            source="purchase",
+            metadata=base_meta,
+        )
+
 
 
 def _describe_shop_set_grants(granted: List[Dict[str, Any]]) -> List[str]:
@@ -430,5 +522,4 @@ async def _create_purchase_mail(
     except Exception as mail_err:  # pragma: no cover - страховка
         logger.error("Не удалось создать письмо о покупке пользователю %s: %s", user_id, mail_err, exc_info=True)
         return None
-
 

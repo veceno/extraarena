@@ -7,50 +7,28 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-BASE_DIR = Path(__file__).resolve().parent.parent  # Поднимаемся на уровень выше (корень проекта)
+BASE_DIR = Path(__file__).resolve().parent.parent
 ENV_FILE = BASE_DIR / ".env"
 DEFAULT_WEBAPP_URL = "https://digitally-upbeat-chow.cloudpub.ru/"
-DEFAULT_STARS_RATE_RUB = 1.5  # руб. за 1 Telegram Star
-DEFAULT_STARS_MARKUP = 1.2    # коэффициент наценки (20%)
+DEFAULT_EXTRA_SHOP_URL = "https://digitally-upbeat-chow.cloudpub.ru/"
+DEFAULT_STARS_RATE_RUB = 1.5
+DEFAULT_STARS_MARKUP = 1.2
 DEFAULT_STARS_TEST_MODE = False
 
-# Настройки матчмейкинга
-MM_TROPHY_LIMIT_CLASSIC = 300  # лимит трофеев для мгновенного PvE
-MM_BOT_TIMEOUT = 15  # таймаут поиска реального игрока (секунды)
-DECK_SIZE = 9  # размер колоды (1 герой + 8 обычных карт)
-MAX_FREE_DECK_PRESETS = 3   # максимум пресетов без ExtraPass
-MAX_TOTAL_DECK_PRESETS = 5  # максимум пресетов с ExtraPass
+MM_TROPHY_LIMIT_CLASSIC = 300
+MM_BOT_TIMEOUT = 15
+DECK_SIZE = 9
+MAX_FREE_DECK_PRESETS = 3
+MAX_TOTAL_DECK_PRESETS = 5
 
-# Профили сложности ботов с ONNX-моделями
 BOT_DIFFICULTY_PROFILES = {
-    "lite": {
-        "model_path": "ai/models/OnlyVersusRandomBiggest.onnx",
-        "obs_dim": 621,
-        "temperature_range": (1.2, 1.8),  # Высокая температура = случайность
-    },
-    "easy": {
-        "model_path": "ai/models/OnlyVersusRandomBiggest.onnx",
-        "obs_dim": 621,
-        "temperature_range": (1.2, 1.8),
-    },
-    "medium": {
-        "model_path": "ai/models/extra-lr-v3-medium.onnx",
-        "obs_dim": 997,
-        "temperature_range": (0.6, 0.6),  # Средняя температура
-    },
-    "hard": {
-        "model_path": "ai/models/extra-lr-v3-max.onnx",
-        "obs_dim": 997,
-        "temperature_range": (0.1, 0.1),  # Низкая температура = жадность
-    },
-    "max": {
-        "model_path": "ai/models/extra-lr-v3-max.onnx",
-        "obs_dim": 997,
-        "temperature_range": (0.1, 0.1),
-    },
+    "lite": {"model_path": "ai/models/OnlyVersusRandomBiggest.onnx", "obs_dim": 621, "temperature_range": (1.2, 1.8)},
+    "easy": {"model_path": "ai/models/OnlyVersusRandomBiggest.onnx", "obs_dim": 621, "temperature_range": (1.2, 1.8)},
+    "medium": {"model_path": "ai/models/extra-lr-v3-medium.onnx", "obs_dim": 997, "temperature_range": (0.6, 0.6)},
+    "hard": {"model_path": "ai/models/extra-lr-v3-max.onnx", "obs_dim": 997, "temperature_range": (0.1, 0.1)},
+    "max": {"model_path": "ai/models/extra-lr-v3-max.onnx", "obs_dim": 997, "temperature_range": (0.1, 0.1)},
 }
 
-# Конфигурация лиг (идентификатор 1–10, пороги трофеев)
 LEAGUE_CONFIG = {
     1:  {"name": "Novice",       "emoji": "\U0001f331", "color": "#2ECC71", "min_trophies": 0},
     2:  {"name": "Bronze",       "emoji": "\U0001f949", "color": "#E67E22", "min_trophies": 300},
@@ -74,47 +52,15 @@ def get_league_by_trophies_fn(trophies: int) -> int:
     return 1
 
 
-# Тиры прогрессии для динамического расчёта трофеев и монет
 TROPHY_TIERS = {
-    "novice": {
-        "range": range(0, 301),
-        "win": (25, 35),        # Награда за победу (трофеи)
-        "loss": (3, 7),         # Штраф за поражение (трофеи)
-        "coin_range": (10, 15), # Награда монетами
-    },
-    "student": {
-        "range": range(301, 701),
-        "win": (20, 30),
-        "loss": (5, 10),
-        "coin_range": (15, 25),
-    },
-    "advanced": {
-        "range": range(701, 2501),
-        "win": (20, 25),
-        "loss": (15, 25),
-        "coin_range": (25, 40),
-    },
-    "advanced_2": {
-        "range": range(2501, 5001),
-        "win": (15, 20),
-        "loss": (20, 25),
-        "coin_range": (40, 65),
-    },
-    "pro": {
-        "range": range(5001, 8001),
-        "win": (10, 18),
-        "loss": (25, 30),
-        "coin_range": (70, 100),
-    },
-    "master": {
-        "range": range(8001, 100000),
-        "win": (10, 15),
-        "loss": (27, 30),
-        "coin_range": (120, 180),
-    },
+    "novice":     {"range": range(0, 301),    "win": (25, 35), "loss": (3, 7),   "coin_range": (10, 15)},
+    "student":    {"range": range(301, 701),  "win": (20, 30), "loss": (5, 10),  "coin_range": (15, 25)},
+    "advanced":   {"range": range(701, 2501), "win": (20, 25), "loss": (15, 25), "coin_range": (25, 40)},
+    "advanced_2": {"range": range(2501, 5001),"win": (15, 20), "loss": (20, 25), "coin_range": (40, 65)},
+    "pro":        {"range": range(5001, 8001),"win": (10, 18), "loss": (25, 30), "coin_range": (70, 100)},
+    "master":     {"range": range(8001, 100000),"win": (10, 15),"loss": (27, 30), "coin_range": (120, 180)},
 }
 
-# Дефолтные настройки PostgreSQL для локальной БД
 DEFAULT_DB_HOST = "localhost"
 DEFAULT_DB_PORT = 5434
 DEFAULT_DB_USER = "laveqox"
@@ -145,6 +91,7 @@ class YooKassaSettings:
 class Settings:
     bot_token: str
     webapp_url: str
+    extra_shop_url: str
     environment: str = "development"
     database: DatabaseSettings | None = None
     web_host: str = "0.0.0.0"
@@ -163,8 +110,7 @@ def _load_env() -> None:
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     _load_env()
-    
-    # Используем значения из .env, если заданы, иначе дефолтные для локальной БД
+
     db_settings = DatabaseSettings(
         host=os.getenv("DB_HOST", DEFAULT_DB_HOST),
         port=int(os.getenv("DB_PORT", str(DEFAULT_DB_PORT))),
@@ -172,20 +118,19 @@ def get_settings() -> Settings:
         password=os.getenv("DB_PASSWORD", DEFAULT_DB_PASSWORD),
         database=os.getenv("DB_NAME", DEFAULT_DB_NAME),
     )
-    
-    # Настройки YooKassa
+
     yookassa_shop_id = os.getenv("YOOKASSA_SHOP_ID", "")
     yookassa_secret_key = os.getenv("YOOKASSA_SECRET_KEY", "")
     yookassa_test_mode = os.getenv("YOOKASSA_TEST_MODE", "true").lower() == "true"
-    
+
     yookassa_settings = None
     if yookassa_shop_id and yookassa_secret_key:
         yookassa_settings = YooKassaSettings(
             shop_id=yookassa_shop_id,
             secret_key=yookassa_secret_key,
-            test_mode=yookassa_test_mode
+            test_mode=yookassa_test_mode,
         )
-    
+
     stars_rate_rub = float(os.getenv("STARS_RATE_RUB", DEFAULT_STARS_RATE_RUB))
     stars_markup = float(os.getenv("STARS_MARKUP", DEFAULT_STARS_MARKUP))
     stars_test_mode = os.getenv("STARS_TEST_MODE", str(DEFAULT_STARS_TEST_MODE)).lower() in {"1", "true", "yes"}
@@ -196,6 +141,7 @@ def get_settings() -> Settings:
     return Settings(
         bot_token=bot_token,
         webapp_url=os.getenv("WEBAPP_URL", DEFAULT_WEBAPP_URL),
+        extra_shop_url=os.getenv("EXTRA_SHOP_URL", DEFAULT_EXTRA_SHOP_URL),
         environment=os.getenv("ENVIRONMENT", "development"),
         database=db_settings,
         web_host=os.getenv("WEBAPP_HOST", "0.0.0.0"),
@@ -205,5 +151,3 @@ def get_settings() -> Settings:
         stars_markup=stars_markup,
         stars_test_mode=stars_test_mode,
     )
-
-

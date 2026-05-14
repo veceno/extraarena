@@ -3231,6 +3231,9 @@ async function checkAndShowWelcome(authData) {
     
     const data = await response.json();
     if (data.should_show && data.start_card) {
+      if (window.__analytics) {
+        window.__analytics.onboarding('welcome_seen', false, null, { source: 'welcome_status' });
+      }
       // Показываем welcome модальное окно
       showWelcomeModal(data.start_card);
     }
@@ -3644,21 +3647,6 @@ async function buyWithGems(itemType, gemsAmount, itemName) {
 // Создание платежа
 async function createPayment(itemType, amount, description, metadata = {}) {
   try {
-    // Проверяем и преобразуем amount в число
-    let amountNum = amount;
-    if (typeof amountNum === "string") {
-      // Убираем пробелы и преобразуем в число
-      amountNum = parseFloat(amountNum.replace(/\s+/g, ""));
-    } else if (typeof amountNum !== "number") {
-      amountNum = parseFloat(amountNum) || 0;
-    }
-
-    if (!amountNum || amountNum <= 0 || isNaN(amountNum)) {
-      console.error("Некорректная сумма платежа:", amount);
-      showNotification("Ошибка: некорректная сумма платежа", "error");
-      return;
-    }
-
     const authData = resolveUserId();
     let authParam = null;
 
@@ -3674,31 +3662,26 @@ async function createPayment(itemType, amount, description, metadata = {}) {
       return;
     }
 
-    // Составляем метаданные, чтобы сервер точно знал тип и название товара
     const normalizedMetadata = { ...(metadata || {}) };
     normalizedMetadata.item_type = normalizedMetadata.item_type || itemType;
     normalizedMetadata.item_name = normalizedMetadata.item_name || (currentPaymentData.itemName || description);
-    normalizedMetadata.amount_rub = normalizedMetadata.amount_rub || amountNum;
+    normalizedMetadata.amount_rub = normalizedMetadata.amount_rub || amount;
 
-    console.log("Отправка запроса на создание платежа с authParam длиной:", authParam.length);
-    const response = await fetch(`/api/payments/create?_auth=${authParam}`, {
+    const response = await fetch(`/api/payments/checkout/start?_auth=${authParam}`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        amount: amountNum,
-        currency: "RUB",
-        description: description,
-        return_url: window.location.href,
-        metadata: normalizedMetadata
+        item_type: itemType || "",
+        package_type: metadata.package_type || "",
+        recipient_id: metadata.recipient_id || undefined,
+        ultra: metadata.ultra
       })
     });
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error("Ошибка HTTP при создании платежа:", response.status, errorText);
-      let errorMessage = "Ошибка создания платежа";
+      console.error("Ошибка HTTP при старте checkout:", response.status, errorText);
+      let errorMessage = "Ошибка создания заказа";
       try {
         const errorData = JSON.parse(errorText);
         errorMessage = errorData.message || errorData.error || errorMessage;
@@ -3706,43 +3689,41 @@ async function createPayment(itemType, amount, description, metadata = {}) {
         if (response.status === 401) {
           errorMessage = "Ошибка авторизации. Убедитесь, что вы открыли игру через Telegram.";
         } else if (response.status === 400) {
-          errorMessage = "Некорректные данные для создания платежа";
+          errorMessage = "Некорректные данные для создания заказа";
         } else if (response.status === 503) {
           errorMessage = "Платежный сервис недоступен. Пожалуйста, попробуйте позже.";
         }
       }
-      showNotification(`Ошибка создания платежа: ${errorMessage}`, "error");
+      showNotification(`Ошибка создания заказа: ${errorMessage}`, "error");
       return;
     }
 
     const result = await response.json();
 
     if (!result.success) {
-      showNotification(`Ошибка создания платежа: ${result.error || result.message || "неизвестная ошибка"}`, "error");
+      showNotification(`Ошибка создания заказа: ${result.error || result.message || "неизвестная ошибка"}`, "error");
       return;
     }
 
-    // Открываем страницу оплаты YooKassa
-    if (result.confirmation_url) {
-      // Сохраняем payment_id для проверки статуса после возврата
-      if (result.payment_id) {
-        sessionStorage.setItem('pending_payment_id', result.payment_id);
-        sessionStorage.setItem('pending_payment_item', itemType);
-        sessionStorage.setItem('pending_payment_timestamp', Date.now().toString());
-        sessionStorage.setItem('pending_payment_method', 'yookassa');
+    if (result.checkout_url) {
+      const checkoutFullUrl = result.checkout_url;
+      if (result.checkout_jti) {
+        sessionStorage.setItem("pending_checkout_jti", result.checkout_jti);
       }
-      
-      // Показываем страницу ожидания платежа
-      showPaymentWaitingModal(result.payment_id);
-      
-      // Открываем страницу оплаты в том же окне (чтобы вернуться в Telegram)
-      window.location.href = result.confirmation_url;
+      const link = document.createElement("a");
+      link.href = checkoutFullUrl;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      showNotification("Страница оплаты открыта. Баланс обновится после оплаты.", "success", 5000);
     } else {
       showNotification("Ошибка: не получен URL для оплаты", "error");
     }
   } catch (error) {
-    console.error("Ошибка создания платежа:", error);
-    showNotification("Ошибка при создании платежа. Попробуйте позже.", "error");
+    console.error("Ошибка создания заказа:", error);
+    showNotification("Ошибка при создании заказа. Попробуйте позже.", "error");
   }
 }
 
@@ -4316,7 +4297,8 @@ function showPaymentError(message) {
 async function handleSuccessfulPayment(authData) {
   console.log("Обработка успешного платежа...");
   
-  // Обновляем профиль для отображения новых ресурсов (сначала, чтобы получить актуальные данные)
+  const pendingPaymentId = sessionStorage.getItem('pending_payment_id');
+
   const oldProfile = currentProfile ? {...currentProfile} : null;
   await loadProfile(authData);
   const newProfile = currentProfile;
@@ -4503,6 +4485,21 @@ async function handleSuccessfulPayment(authData) {
   console.log("Показываем модальное окно с наградами:", rewards);
   showPurchaseSuccessModal(rewards, purchaseMail);
   
+  // Помечаем платёж: модалка показана
+  if (pendingPaymentId) {
+    try {
+      let markUrl = '/api/payments/modal-shown';
+      if (typeof authData === "string") {
+        markUrl += `?_auth=${encodeURIComponent(authData)}`;
+      }
+      await fetch(markUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ payment_id: pendingPaymentId }),
+      });
+    } catch(e) { console.error("Не удалось пометить модалку:", e); }
+  }
+
   // Еще раз обновляем профиль для отображения новых ресурсов
   setTimeout(async () => {
     await loadProfile(authData);
@@ -4511,9 +4508,41 @@ async function handleSuccessfulPayment(authData) {
 
 // Проверка статуса ожидающего платежа при загрузке страницы
 async function checkPendingPayment(authData) {
-  const pendingPaymentId = sessionStorage.getItem('pending_payment_id');
+  let pendingPaymentId = sessionStorage.getItem('pending_payment_id');
   if (!pendingPaymentId) {
-    // Проверяем непрочитанные письма о покупках
+    let jti = sessionStorage.getItem("pending_checkout_jti");
+    if (jti) {
+      try {
+        var jtiUrl = `/api/payments/checkout/session-status?jti=${encodeURIComponent(jti)}`;
+        if (typeof authData === "string") jtiUrl += `&_auth=${encodeURIComponent(authData)}`;
+        var jtiRes = await fetch(jtiUrl);
+        if (jtiRes.ok) {
+          var jtiData = await jtiRes.json();
+          if (jtiData.payment_id && jtiData.payment_status === "succeeded") {
+            pendingPaymentId = jtiData.payment_id;
+            sessionStorage.setItem("pending_payment_id", jtiData.payment_id);
+            sessionStorage.setItem("pending_payment_method", "yookassa");
+            sessionStorage.setItem("pending_payment_timestamp", String(Date.now()));
+          }
+        }
+      } catch(_) {}
+    }
+    if (!pendingPaymentId) {
+      try {
+        var succRes = await fetch("/api/payments/recent-success?" + (typeof authData === "string" ? "_auth=" + encodeURIComponent(authData) : ""));
+        if (succRes.ok) {
+          var succData = await succRes.json();
+          if (succData.payments && succData.payments.length > 0) {
+            pendingPaymentId = succData.payments[0].payment_id;
+            sessionStorage.setItem("pending_payment_id", pendingPaymentId);
+            sessionStorage.setItem("pending_payment_method", "yookassa");
+            sessionStorage.setItem("pending_payment_timestamp", String(Date.now()));
+          }
+        }
+      } catch(_) {}
+    }
+  }
+  if (!pendingPaymentId) {
     await checkUnreadPurchaseMails(authData);
     return;
   }
@@ -4550,12 +4579,13 @@ async function checkPendingPayment(authData) {
     
     if (result.status === "succeeded" && result.paid) {
       // Платеж успешен - обрабатываем
+      await handleSuccessfulPayment(authData);
+
       sessionStorage.removeItem('pending_payment_id');
       sessionStorage.removeItem('pending_payment_item');
       sessionStorage.removeItem('pending_payment_timestamp');
       sessionStorage.removeItem('pending_payment_method');
-      
-      await handleSuccessfulPayment(authData);
+      sessionStorage.removeItem('pending_checkout_jti');
     } else if (result.status === "pending" || result.status === "waiting_for_capture") {
       // Платеж еще обрабатывается - показываем модальное окно
       showPaymentWaitingModal(pendingPaymentId);
@@ -4565,7 +4595,7 @@ async function checkPendingPayment(authData) {
       sessionStorage.removeItem('pending_payment_item');
       sessionStorage.removeItem('pending_payment_timestamp');
       sessionStorage.removeItem('pending_payment_method');
-      // Проверяем непрочитанные письма на случай, если платеж уже обработан
+      sessionStorage.removeItem('pending_checkout_jti');
       await checkUnreadPurchaseMails(authData);
     }
   } catch (error) {
@@ -9601,3 +9631,116 @@ async function initDiceOnLoad() {
     console.error("Ошибка инициализации кубика:", error);
   }
 }
+
+// ═══ Фоновое обновление: профиль, почта, pending платежи ═══
+let _bgPollTimer = null;
+let _bgPollBusy = false;
+
+function startBackgroundPolling() {
+  if (_bgPollTimer) return;
+  _bgPollTimer = setInterval(() => {
+    if (_bgPollBusy) return;
+    const authData = resolveUserId();
+    if (!authData) return;
+    _backgroundPoll(authData);
+  }, 15000); // каждые 15 секунд
+}
+
+function stopBackgroundPolling() {
+  if (_bgPollTimer) {
+    clearInterval(_bgPollTimer);
+    _bgPollTimer = null;
+  }
+}
+
+async function _backgroundPoll(authData) {
+  if (_bgPollBusy) return;
+  _bgPollBusy = true;
+  try {
+    if (document.visibilityState !== "visible") return;
+
+    var jti = sessionStorage.getItem("pending_checkout_jti");
+    if (jti) {
+      try {
+        var jtiUrl = `/api/payments/checkout/session-status?jti=${encodeURIComponent(jti)}`;
+        if (typeof authData === "string") jtiUrl += `&_auth=${encodeURIComponent(authData)}`;
+        var jtiRes = await fetch(jtiUrl);
+        if (jtiRes.ok) {
+          var jtiData = await jtiRes.json();
+          if (jtiData.payment_status === "succeeded" && !jtiData.rewards_processed) {
+            sessionStorage.setItem("pending_payment_id", jtiData.payment_id || "");
+            sessionStorage.setItem("pending_payment_method", "yookassa");
+            sessionStorage.setItem("pending_payment_timestamp", String(Date.now()));
+            console.log("[BG-POLL] Сессия %s успешна, payment_id=%s", jti, jtiData.payment_id);
+            await handleSuccessfulPayment(authData);
+            sessionStorage.removeItem("pending_checkout_jti");
+          } else if (jtiData.payment_status === "canceled") {
+            sessionStorage.removeItem("pending_checkout_jti");
+          } else if (jtiData.payment_status === "succeeded" && jtiData.rewards_processed && !jtiData.modal_shown) {
+            sessionStorage.setItem("pending_payment_id", jtiData.payment_id || "");
+            sessionStorage.setItem("pending_payment_method", "yookassa");
+            sessionStorage.setItem("pending_payment_timestamp", String(Date.now()));
+            console.log("[BG-POLL] Платёж обработан, но модалка не показана");
+            await handleSuccessfulPayment(authData);
+            sessionStorage.removeItem("pending_checkout_jti");
+          }
+        }
+      } catch(_) {}
+    }
+
+    var pendingPaymentId = sessionStorage.getItem("pending_payment_id");
+    if (pendingPaymentId) {
+      try {
+        var payUrl = `/api/payments/status?payment_id=${pendingPaymentId}`;
+        if (typeof authData === "string") payUrl += `&_auth=${encodeURIComponent(authData)}`;
+        var payRes = await fetch(payUrl);
+        if (payRes.ok) {
+          var payData = await payRes.json();
+          if (payData.status === "succeeded" && payData.rewards_processed) {
+            sessionStorage.removeItem("pending_payment_id");
+            sessionStorage.removeItem("pending_payment_item");
+            sessionStorage.removeItem("pending_payment_timestamp");
+            sessionStorage.removeItem("pending_payment_method");
+            sessionStorage.removeItem("pending_checkout_jti");
+            await loadProfile(authData);
+          }
+        }
+      } catch(_) {}
+    }
+
+    try {
+      var succRes = await fetch("/api/payments/recent-success?" + (typeof authData === "string" ? "_auth=" + encodeURIComponent(authData) : ""));
+      if (succRes.ok) {
+        var succData = await succRes.json();
+        if (succData.payments && succData.payments.length > 0) {
+          var p = succData.payments[0];
+          if (!sessionStorage.getItem("pending_payment_id")) {
+            sessionStorage.setItem("pending_payment_id", p.payment_id);
+            sessionStorage.setItem("pending_payment_method", "yookassa");
+            sessionStorage.setItem("pending_payment_timestamp", String(Date.now()));
+            console.log("[BG-POLL] Найден неотмеченный succeeded платёж:", p.payment_id);
+            await handleSuccessfulPayment(authData);
+            sessionStorage.removeItem("pending_checkout_jti");
+          }
+        }
+      }
+    } catch(_) {}
+
+    try { await updateMailNotificationBadge(authData); } catch(_) {}
+    try { await loadProfile(authData); } catch(_) {}
+  } finally {
+    _bgPollBusy = false;
+  }
+}
+
+// Запуск polling при инициализации
+document.addEventListener("DOMContentLoaded", () => {
+  startBackgroundPolling();
+});
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") {
+    startBackgroundPolling();
+  } else {
+    stopBackgroundPolling();
+  }
+});

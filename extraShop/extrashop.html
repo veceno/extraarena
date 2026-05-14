@@ -1,0 +1,1307 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ExtraShop</title>
+  <style>
+    :root {
+      --bg: #0f0a1a;
+      --bg-2: #130d26;
+      --panel: #1a1030;
+      --panel-2: #2d1f52;
+      --border: #4a3d6a;
+      --active: #7c5cbf;
+      --cta: #f5921e;
+      --cta-hover: #ffb347;
+      --cta-press: #d97510;
+      --gold: #fbbf24;
+      --gold-2: #ffd700;
+      --gem: #a78bfa;
+      --info: #60a5fa;
+      --success: #4ade80;
+      --danger: #ef4444;
+      --ultra-amethyst: #a78bfa;
+      --ultra-sky: #60a5fa;
+      --ultra-rose: #f472b6;
+      --text: #f0ecff;
+      --sub: #c4b8e8;
+      --muted: #7a6fa0;
+      --shadow: 0 8px 22px rgba(0,0,0,.22);
+      --font-display: "Exo 2", system-ui, sans-serif;
+      --font-body: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--text);
+      font-family: var(--font-body);
+      background:
+        radial-gradient(circle at 50% -10%, rgba(167,139,250,.18), transparent 30rem),
+        linear-gradient(180deg, var(--bg-2), var(--bg) 34%, #090611);
+      font-size: 15px;
+      line-height: 1.45;
+    }
+
+    a { color: inherit; text-decoration: none; }
+    button, input { font: inherit; }
+    .shell {
+      width: min(100%, 1120px);
+      margin: 0 auto;
+      padding: 12px 12px 92px;
+      display: grid;
+      gap: 10px;
+    }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      margin: -12px -12px 0;
+      padding: 12px;
+      background: linear-gradient(180deg, rgba(15,10,26,.97), rgba(15,10,26,.82));
+      backdrop-filter: blur(18px);
+      border-bottom: 1px solid rgba(124,92,191,.28);
+    }
+
+    .topbar-inner {
+      width: min(100%, 1120px);
+      margin: 0 auto;
+      display: grid;
+      gap: 10px;
+    }
+
+    .brand-row, .user-row, .actions-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .brand-row { justify-content: space-between; }
+    .user-row { justify-content: space-between; }
+    .actions-row { overflow-x: auto; padding-bottom: 2px; }
+    .actions-row::-webkit-scrollbar, .tabs::-webkit-scrollbar { display: none; }
+
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      font-family: var(--font-display);
+      font-weight: 900;
+      letter-spacing: .01em;
+      font-size: 20px;
+    }
+    .logo-mark {
+      width: 36px;
+      height: 36px;
+      display: grid;
+      place-items: center;
+      border-radius: 10px;
+      color: #1a1030;
+      background: linear-gradient(135deg, var(--gold-2), var(--cta));
+      box-shadow: 0 0 18px rgba(245,146,30,.28);
+    }
+
+    .status, .pill, .tag {
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 6px 9px;
+      color: var(--sub);
+      background: rgba(45,31,82,.65);
+      white-space: nowrap;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .status.ok { border-color: rgba(74,222,128,.42); color: var(--success); }
+    .tag.hot { color: #211100; background: linear-gradient(135deg, var(--gold-2), var(--cta-hover)); border-color: transparent; }
+    .tag.sub { color: var(--text); border-color: rgba(167,139,250,.62); background: rgba(167,139,250,.18); }
+    .tag.once { color: var(--gold-2); border-color: rgba(251,191,36,.5); }
+    .tag.sale { color: var(--success); border-color: rgba(74,222,128,.5); }
+    .badge-stack {
+      position: absolute;
+      z-index: 2;
+      top: 8px;
+      right: 8px;
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 4px;
+      pointer-events: none;
+    }
+    .badge-stack .tag {
+      padding: 4px 7px;
+      font-size: 10px;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+      box-shadow: 0 6px 14px rgba(0,0,0,.22);
+    }
+
+    .mini-user {
+      min-width: 0;
+      display: grid;
+      gap: 1px;
+    }
+    .mini-user strong, .side-user strong { font-size: 14px; }
+    .mini-user span, .side-user span { color: var(--muted); font-size: 12px; }
+    .nav-btn, .ghost-btn, .cta, .secondary-btn {
+      min-height: 38px;
+      border: 0;
+      border-radius: 10px;
+      cursor: pointer;
+      transition: transform .18s ease, border-color .18s ease, background .18s ease, box-shadow .18s ease;
+    }
+    .nav-btn {
+      padding: 8px 10px;
+      color: var(--sub);
+      background: rgba(26,16,48,.75);
+      border: 1px solid rgba(74,61,106,.8);
+      font-weight: 800;
+      white-space: nowrap;
+    }
+    .nav-btn[aria-current="page"], .nav-btn:hover {
+      color: var(--text);
+      border-color: var(--active);
+      box-shadow: 0 0 10px rgba(124,92,191,.14);
+    }
+    .cta {
+      width: 100%;
+      padding: 12px 14px;
+      color: #221100;
+      background: linear-gradient(180deg, var(--cta-hover), var(--cta));
+      font-weight: 900;
+      box-shadow: 0 6px 14px rgba(245,146,30,.18);
+    }
+    .cta:hover { transform: translateY(-1px); box-shadow: 0 8px 18px rgba(245,146,30,.24); }
+    .cta:active { transform: translateY(1px) scale(.99); background: var(--cta-press); }
+    .secondary-btn, .ghost-btn {
+      padding: 10px 12px;
+      color: var(--text);
+      background: rgba(45,31,82,.75);
+      border: 1px solid var(--border);
+      font-weight: 800;
+    }
+    .ghost-btn { background: transparent; color: var(--sub); }
+
+    .main-grid { display: grid; gap: 10px; }
+    .page { display: none; gap: 10px; }
+    .page.active { display: grid; animation: pop .24s ease both; }
+    @keyframes pop {
+      from { opacity: 0; transform: translateY(8px) scale(.992); }
+      to { opacity: 1; transform: none; }
+    }
+
+    .panel {
+      border: 1px solid rgba(74,61,106,.86);
+      border-radius: 12px;
+      background: linear-gradient(180deg, rgba(45,31,82,.92), rgba(26,16,48,.94));
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+    .panel-body { padding: 12px; }
+    .panel-head {
+      padding: 12px;
+      border-bottom: 1px solid rgba(74,61,106,.65);
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: start;
+    }
+    h1, h2, h3 {
+      margin: 0;
+      font-family: var(--font-display);
+      letter-spacing: -.02em;
+      line-height: 1.05;
+    }
+    h1 { font-size: clamp(24px, 6vw, 34px); }
+    h2 { font-size: 20px; }
+    h3 { font-size: 16px; }
+    p { margin: 0; color: var(--sub); }
+    .eyebrow {
+      color: var(--gold-2);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      font-weight: 900;
+    }
+
+    .selected {
+      position: relative;
+      isolation: isolate;
+      border-color: rgba(245,146,30,.72);
+    }
+    .selected::before {
+      content: "";
+      position: absolute;
+      inset: -1px;
+      z-index: -1;
+      background: radial-gradient(circle at 85% 0%, rgba(245,146,30,.10), transparent 11rem);
+      pointer-events: none;
+    }
+    .picked-line {
+      display: grid;
+      grid-template-columns: 52px 1fr auto;
+      gap: 10px;
+      align-items: center;
+      margin-top: 12px;
+    }
+    .art {
+      width: 52px;
+      height: 52px;
+      border-radius: 12px;
+      display: grid;
+      place-items: center;
+      background: linear-gradient(135deg, rgba(167,139,250,.35), rgba(245,146,30,.22));
+      border: 1px solid rgba(167,139,250,.4);
+      font-size: 26px;
+      box-shadow: inset 0 0 14px rgba(255,255,255,.06);
+    }
+    .price {
+      font-family: var(--font-display);
+      font-size: 20px;
+      font-weight: 900;
+      color: var(--gold-2);
+      white-space: nowrap;
+    }
+    .quick-catalog {
+      display: grid;
+      gap: 8px;
+    }
+    .quick-item {
+      display: grid;
+      grid-template-columns: 40px 1fr auto;
+      gap: 9px;
+      align-items: center;
+      padding: 9px;
+      border-radius: 10px;
+      border: 1px solid rgba(74,61,106,.72);
+      background: rgba(15,10,26,.32);
+    }
+    .quick-item.is-selected {
+      border-color: rgba(245,146,30,.72);
+      box-shadow: inset 0 0 14px rgba(245,146,30,.06);
+    }
+    .quick-art {
+      width: 40px;
+      height: 40px;
+      border-radius: 10px;
+      display: grid;
+      place-items: center;
+      background: linear-gradient(135deg, rgba(167,139,250,.35), rgba(251,191,36,.22));
+      border: 1px solid rgba(167,139,250,.36);
+    }
+    .quick-item strong { display: block; font-size: 14px; }
+    .quick-item span { color: var(--muted); font-size: 12px; }
+
+    .tabs {
+      display: flex;
+      gap: 8px;
+      overflow-x: auto;
+      padding: 2px 0 8px;
+    }
+    .tab {
+      flex: 0 0 auto;
+      padding: 9px 11px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      color: var(--sub);
+      background: rgba(26,16,48,.68);
+      font-size: 13px;
+      font-weight: 800;
+    }
+    .tab.active {
+      color: var(--text);
+      border-color: var(--cta);
+      background: rgba(245,146,30,.12);
+    }
+
+    .catalog-grid { display: grid; gap: 7px; }
+    .category-head {
+      margin-top: 8px;
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: end;
+      padding: 2px 2px 0;
+    }
+    .category-head h2 { font-size: 18px; }
+    .category-head p {
+      max-width: 28ch;
+      font-size: 12px;
+      color: var(--muted);
+      text-align: end;
+    }
+    .product {
+      position: relative;
+      display: grid;
+      gap: 7px;
+      padding: 9px;
+      border-radius: 10px;
+      border: 1px solid rgba(74,61,106,.82);
+      background: linear-gradient(180deg, rgba(45,31,82,.72), rgba(26,16,48,.86));
+      overflow: hidden;
+      transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease;
+    }
+    .product:hover { transform: translateY(-1px); border-color: var(--active); box-shadow: 0 0 10px rgba(124,92,191,.12); }
+    .product.selected-card { border-color: var(--cta); box-shadow: 0 0 12px rgba(245,146,30,.12); }
+    .product-top {
+      display: grid;
+      grid-template-columns: 42px 1fr auto;
+      gap: 9px;
+      align-items: start;
+    }
+    .product h3 { margin-bottom: 4px; }
+    .product p { font-size: 13px; line-height: 1.35; }
+    .product .art {
+      width: 42px;
+      height: 42px;
+      border-radius: 10px;
+      font-size: 21px;
+    }
+    .product .price { font-size: 18px; }
+    .product.bundle-card {
+      grid-template-columns: minmax(138px, 46%) 1fr;
+      align-items: stretch;
+      gap: 9px;
+      padding: 8px;
+    }
+    .bundle-card .badge-stack {
+      top: 12px;
+      left: 12px;
+      right: auto;
+      justify-content: flex-start;
+    }
+    .bundle-art {
+      width: 100%;
+      aspect-ratio: 1 / 1;
+      border-radius: 12px;
+      border: 1px solid rgba(167,139,250,.35);
+      background:
+        linear-gradient(145deg, rgba(255,211,112,.18), rgba(167,139,250,.22)),
+        radial-gradient(circle at 70% 20%, rgba(255,179,71,.38), transparent 38%),
+        #21123e;
+      display: grid;
+      place-items: center;
+      color: var(--gold-2);
+      font-family: var(--font-display);
+      font-size: 30px;
+      font-weight: 900;
+      overflow: hidden;
+    }
+    .bundle-art img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+    .bundle-content {
+      min-width: 0;
+      display: grid;
+      gap: 7px;
+      align-content: space-between;
+    }
+    .bundle-content .product-top {
+      grid-template-columns: 1fr auto;
+    }
+    .rewards {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .pass-block {
+      gap: 0;
+      padding: 0;
+    }
+    .pass-block:has(#pass-ultra:checked) {
+      border-color: rgba(167,139,250,.7);
+      background:
+        radial-gradient(circle at 16% 18%, rgba(167,139,250,.22), transparent 9rem),
+        radial-gradient(circle at 88% 14%, rgba(96,165,250,.16), transparent 8rem),
+        linear-gradient(180deg, rgba(45,31,82,.72), rgba(26,16,48,.88));
+    }
+    .pass-tabs {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      padding: 8px;
+      gap: 6px;
+      border-bottom: 1px solid rgba(74,61,106,.55);
+    }
+    .pass-tabs input { position: absolute; opacity: 0; pointer-events: none; }
+    .pass-tab {
+      min-height: 38px;
+      display: grid;
+      place-items: center;
+      border: 1px solid rgba(74,61,106,.8);
+      border-radius: 10px;
+      color: var(--sub);
+      background: rgba(15,10,26,.35);
+      font-weight: 900;
+      cursor: pointer;
+    }
+    #pass-basic:checked ~ label[for="pass-basic"],
+    #pass-ultra:checked ~ label[for="pass-ultra"] {
+      color: #211100;
+      border-color: transparent;
+      background: linear-gradient(180deg, var(--cta-hover), var(--cta));
+    }
+    #pass-ultra:checked ~ label[for="pass-ultra"] {
+      color: #12091f;
+      background: linear-gradient(135deg, var(--ultra-amethyst), var(--ultra-sky) 52%, var(--ultra-rose));
+      box-shadow: 0 0 18px rgba(167,139,250,.22);
+    }
+    .pass-plan { grid-column: 1 / -1; display: none; position: relative; padding: 32px 10px 10px; gap: 8px; }
+    .pass-plan .badge-stack {
+      top: 9px;
+      left: 10px;
+      right: auto;
+      justify-content: flex-start;
+    }
+    #pass-basic:checked ~ .pass-basic,
+    #pass-ultra:checked ~ .pass-ultra { display: grid; }
+    .pass-ultra {
+      position: relative;
+      background: linear-gradient(145deg, rgba(167,139,250,.08), rgba(96,165,250,.06) 48%, rgba(244,114,182,.08));
+    }
+    .pass-ultra .art {
+      border-color: rgba(244,114,182,.42);
+      background:
+        radial-gradient(circle at 70% 22%, rgba(244,114,182,.42), transparent 34%),
+        linear-gradient(135deg, rgba(167,139,250,.52), rgba(96,165,250,.34));
+      box-shadow: inset 0 0 16px rgba(255,255,255,.10), 0 0 20px rgba(167,139,250,.20);
+    }
+    .gems-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 7px;
+    }
+    .gem-card {
+      position: relative;
+      display: grid;
+      gap: 7px;
+      min-height: 116px;
+      padding: 26px 8px 8px;
+      border-radius: 10px;
+      border: 1px solid rgba(74,61,106,.82);
+      background: linear-gradient(180deg, rgba(45,31,82,.68), rgba(26,16,48,.86));
+    }
+    .gem-card .badge-stack {
+      top: 6px;
+      right: 6px;
+    }
+    .gem-card.featured { grid-column: auto; }
+    .gem-card .art {
+      width: 38px;
+      height: 38px;
+      font-size: 20px;
+    }
+    .gem-card h3 { font-size: 15px; }
+    .gem-card p { display: none; }
+    .gem-card .price { font-size: 17px; }
+    .gem-main {
+      display: grid;
+      grid-template-columns: 38px 1fr;
+      gap: 8px;
+      align-items: center;
+    }
+    .gem-card.featured .gem-main {
+      grid-template-columns: 44px 1fr;
+    }
+    .gem-card.featured .art {
+      width: 44px;
+      height: 44px;
+      font-size: 23px;
+    }
+    .reward {
+      padding: 4px 7px;
+      border-radius: 8px;
+      color: var(--sub);
+      border: 1px solid rgba(74,61,106,.75);
+      background: rgba(15,10,26,.35);
+      font-size: 12px;
+      font-weight: 800;
+    }
+    .benefit-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 6px;
+    }
+    .benefit {
+      min-height: 34px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 8px;
+      border-radius: 9px;
+      color: var(--sub);
+      border: 1px solid rgba(74,61,106,.64);
+      background: rgba(15,10,26,.28);
+      font-size: 12px;
+      font-weight: 800;
+      line-height: 1.18;
+    }
+    .benefit::before {
+      content: "";
+      width: 6px;
+      height: 6px;
+      flex: 0 0 6px;
+      border-radius: 50%;
+      background: var(--cta);
+      box-shadow: 0 0 8px rgba(245,146,30,.32);
+    }
+    .pass-ultra .benefit::before {
+      background: linear-gradient(135deg, var(--ultra-amethyst), var(--ultra-sky) 48%, var(--ultra-rose));
+      box-shadow: 0 0 9px rgba(167,139,250,.34);
+    }
+    .notice {
+      padding: 9px;
+      border-radius: 10px;
+      border: 1px solid rgba(96,165,250,.35);
+      background: rgba(96,165,250,.10);
+      color: var(--sub);
+      font-size: 13px;
+    }
+    .product-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .purchase-modes {
+      display: grid;
+      gap: 6px;
+      padding: 8px;
+      border-radius: 10px;
+      border: 1px solid rgba(74,61,106,.58);
+      background: rgba(15,10,26,.26);
+    }
+    .purchase-modes strong { font-size: 13px; }
+    .purchase-modes span { color: var(--muted); font-size: 12px; }
+    .purchase-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+
+    .checkout-grid, .form-grid { display: grid; gap: 10px; }
+    .field {
+      display: grid;
+      gap: 6px;
+    }
+    label {
+      color: var(--sub);
+      font-size: 12px;
+      font-weight: 800;
+    }
+    input, .select-like {
+      width: 100%;
+      min-height: 44px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 11px 12px;
+      color: var(--text);
+      background: rgba(15,10,26,.58);
+      outline: none;
+    }
+    input:focus { border-color: var(--active); box-shadow: 0 0 0 3px rgba(124,92,191,.15); }
+    .choice-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .choice {
+      padding: 11px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: rgba(15,10,26,.42);
+      color: var(--sub);
+      font-weight: 900;
+      text-align: center;
+    }
+    .choice.active { color: var(--text); border-color: var(--cta); background: rgba(245,146,30,.12); }
+    .summary-row, .order-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 9px 0;
+      border-bottom: 1px solid rgba(74,61,106,.45);
+    }
+    .summary-row:last-child, .order-row:last-child { border-bottom: 0; }
+    .summary-row span, .order-row span { color: var(--sub); }
+    .checkline {
+      display: grid;
+      grid-template-columns: 20px 1fr;
+      gap: 9px;
+      align-items: start;
+      color: var(--sub);
+      font-size: 13px;
+    }
+    .checkline input { width: 18px; min-height: 18px; accent-color: var(--cta); margin-top: 2px; }
+
+    .friend-list, .orders, .benefits, .legal-list { display: grid; gap: 8px; }
+    .friend, .order, .benefit, .legal-link {
+      padding: 11px;
+      border: 1px solid rgba(74,61,106,.75);
+      border-radius: 14px;
+      background: rgba(15,10,26,.36);
+      display: grid;
+      gap: 4px;
+    }
+    .friend {
+      grid-template-columns: 40px 1fr auto;
+      align-items: center;
+    }
+    .avatar {
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      color: #1a1030;
+      background: linear-gradient(135deg, var(--gem), var(--gold));
+      font-weight: 900;
+    }
+    .order-top {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: start;
+    }
+    .status-chip {
+      width: fit-content;
+      padding: 5px 7px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 900;
+      border: 1px solid rgba(74,61,106,.7);
+    }
+    .paid { color: var(--success); border-color: rgba(74,222,128,.45); }
+    .wait { color: var(--gold); border-color: rgba(251,191,36,.45); }
+    .cancel { color: var(--danger); border-color: rgba(239,68,68,.42); }
+    .returned { color: var(--info); border-color: rgba(96,165,250,.42); }
+
+    .compare {
+      width: 100%;
+      border-collapse: collapse;
+      overflow: hidden;
+      border-radius: 14px;
+      font-size: 12px;
+    }
+    .compare th, .compare td {
+      padding: 10px 8px;
+      border: 1px solid rgba(74,61,106,.65);
+      text-align: start;
+    }
+    .compare th { color: var(--gold-2); background: rgba(15,10,26,.42); }
+    .compare td { color: var(--sub); }
+
+    .side {
+      display: none;
+      position: sticky;
+      top: 112px;
+      align-self: start;
+      gap: 10px;
+    }
+    .side-card {
+      border: 1px solid rgba(74,61,106,.75);
+      border-radius: 12px;
+      padding: 12px;
+      background: linear-gradient(180deg, rgba(45,31,82,.82), rgba(26,16,48,.92));
+      box-shadow: var(--shadow);
+    }
+    .side-user {
+      display: grid;
+      grid-template-columns: 44px 1fr;
+      gap: 10px;
+      align-items: center;
+    }
+    .bottom-nav {
+      position: fixed;
+      left: 50%;
+      bottom: 10px;
+      transform: translateX(-50%);
+      z-index: 20;
+      width: min(calc(100% - 20px), 520px);
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 6px;
+      padding: 7px;
+      border-radius: 18px;
+      border: 1px solid rgba(124,92,191,.35);
+      background: rgba(15,10,26,.88);
+      backdrop-filter: blur(18px);
+      box-shadow: 0 18px 50px rgba(0,0,0,.45);
+    }
+    .bottom-nav a {
+      min-height: 46px;
+      display: grid;
+      place-items: center;
+      gap: 1px;
+      color: var(--muted);
+      border-radius: 13px;
+      font-size: 11px;
+      font-weight: 900;
+    }
+    .bottom-nav a.active { color: var(--text); background: rgba(124,92,191,.20); }
+    .bottom-nav b { display: block; font-size: 17px; line-height: 1; }
+
+    footer {
+      padding: 20px 4px 0;
+      display: grid;
+      gap: 10px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .footer-links { display: flex; flex-wrap: wrap; gap: 8px 12px; }
+    .footer-links a { color: var(--sub); text-decoration: underline; text-underline-offset: 3px; }
+
+    @media (min-width: 860px) {
+      .shell { grid-template-columns: minmax(480px, 560px) 320px; align-items: start; padding-bottom: 30px; }
+      .main-grid { grid-column: 1; }
+      .side { display: grid; grid-column: 2; }
+      .bottom-nav { display: none; }
+      .topbar { margin: -12px 0 0; border-radius: 0 0 22px 22px; }
+      .actions-row { justify-content: flex-start; }
+      .product-actions { grid-template-columns: 1fr auto; }
+    }
+    @media (max-width: 380px) {
+      .product.bundle-card {
+        grid-template-columns: 128px 1fr;
+      }
+      .bundle-art { font-size: 25px; }
+      .gem-card h3 { font-size: 14px; }
+      .gem-card .price { font-size: 16px; }
+    }
+    .direct-paybar {
+      position: sticky;
+      bottom: 8px;
+      z-index: 12;
+      padding: 8px;
+      border: 1px solid rgba(245,146,30,.45);
+      border-radius: 16px;
+      background: rgba(15,10,26,.9);
+      backdrop-filter: blur(18px);
+      box-shadow: 0 14px 36px rgba(0,0,0,.42);
+    }
+    body.direct-mode .direct-paybar {
+      position: fixed;
+      left: 50%;
+      bottom: 10px;
+      transform: translateX(-50%);
+      width: min(calc(100% - 20px), 520px);
+    }
+    body.direct-mode .bottom-nav { display: none; }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand-row">
+        <a class="logo" href="#catalog" data-route="catalog" aria-label="ExtraShop">
+          <span class="logo-mark">ES</span>
+          <span>ExtraShop</span>
+        </a>
+        <span class="status ok">Telegram подключен</span>
+      </div>
+      <div class="user-row">
+        <div class="mini-user">
+          <strong>@Laveqox · ID 872441</strong>
+          <span>Telegram аккаунт</span>
+        </div>
+      </div>
+      <nav class="actions-row" aria-label="Основные разделы">
+        <a class="nav-btn" href="#catalog" data-route="catalog">Каталог</a>
+        <a class="nav-btn" href="#checkout" data-route="checkout">Оплата</a>
+        <a class="nav-btn" href="#subscription" data-route="subscription">Управлять подпиской</a>
+        <a class="nav-btn" href="#gifts" data-route="gifts">Подарки</a>
+        <a class="nav-btn" href="#history" data-route="history">История</a>
+      </nav>
+    </div>
+  </header>
+
+  <div class="shell">
+    <main class="main-grid">
+      <section class="page" id="direct" data-title="Товар из Telegram">
+        <article class="panel selected">
+          <div class="panel-head">
+            <div>
+              <div class="eyebrow">Переход из Telegram</div>
+              <h1>Оплата одного товара</h1>
+            </div>
+            <span class="status ok">оплата</span>
+          </div>
+          <div class="panel-body checkout-grid">
+            <div class="picked-line">
+              <div class="art">👑</div>
+              <div>
+                <strong>ExtraPass Ultra на 1 месяц</strong>
+                <p>Всё из ExtraPass: золотой ник, повышенные шансы, реролл кейсов, расширенная статистика, уникальные позиции Battle Pass и подарок соклановцам.</p>
+              </div>
+              <div class="price">349 ₽</div>
+            </div>
+            <div class="notice">Эта страница открыта по ссылке на конкретный товар. Полный каталог скрыт, чтобы игрок сразу видел товар, условия покупки и оплату.</div>
+          </div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <div><div class="eyebrow">Получатель</div><h2>Куда зачислить</h2></div>
+          </div>
+          <div class="panel-body checkout-grid">
+            <div class="choice-row" role="tablist" aria-label="Получатель">
+              <button class="choice active" type="button">Себе</button>
+              <a class="choice" href="#gifts" data-route="gifts">Подарок</a>
+            </div>
+            <div class="field">
+              <label for="directRecipient">Аккаунт ExtraArena</label>
+              <input id="directRecipient" value="@Laveqox · Telegram ID 872441">
+            </div>
+            <div class="summary-row"><span>Тип покупки</span><strong>Разово на 30 дней</strong></div>
+            <div class="summary-row"><span>Способ оплаты</span><strong>ЮKassa · карта / СБП</strong></div>
+            <div class="summary-row"><span>Итого</span><strong class="price">349 ₽</strong></div>
+            <label class="checkline">
+              <input type="checkbox" checked>
+              <span>Согласен с офертой, политикой конфиденциальности, правилами возврата и зачисления цифровых товаров.</span>
+            </label>
+            <button class="cta" type="button">Оплатить</button>
+          </div>
+        </article>
+
+        <div class="direct-paybar">
+          <button class="cta" type="button">Оплатить 349 ₽</button>
+        </div>
+
+        <article class="panel">
+          <div class="panel-head">
+            <div><div class="eyebrow">Условия</div><h2>Условия покупки</h2></div>
+          </div>
+          <div class="panel-body legal-list">
+            <div class="legal-link"><strong>Получение цифрового товара</strong><p>Зачисление идёт автоматически на аккаунт ExtraArena через Telegram после успешной оплаты, обычно мгновенно, в редких случаях до 24 часов.</p></div>
+            <div class="legal-link"><strong>Возвраты</strong><p>Возврат рассматривается поддержкой, если товар не был зачислен или произошла техническая ошибка оплаты.</p></div>
+            <div class="legal-link"><strong>Контакты поддержки</strong><p>personal@laveqox.ru · Telegram @lqsup</p></div>
+          </div>
+        </article>
+      </section>
+
+      <section class="page" id="checkout" data-title="Checkout">
+        <article class="panel selected">
+          <div class="panel-head">
+            <div>
+              <div class="eyebrow">Выбранный товар из Telegram</div>
+              <h1>ExtraPass Ultra</h1>
+            </div>
+          </div>
+          <div class="panel-body">
+            <p>Покупка оформляется прямо на сайте магазина через ЮKassa. Возврат в Telegram-бот для оплаты не нужен.</p>
+            <div class="picked-line">
+              <div class="art">👑</div>
+              <div>
+                <strong>ExtraPass Ultra на 1 месяц</strong>
+                <p>Всё из ExtraPass: золотой ник, повышенные шансы, реролл кейсов, расширенная статистика, уникальные позиции Battle Pass и подарок соклановцам.</p>
+              </div>
+              <div class="price">349 ₽</div>
+            </div>
+          </div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <div>
+              <div class="eyebrow">Оформление</div>
+              <h2>Получатель и оплата</h2>
+            </div>
+            <span class="status ok">оплата</span>
+          </div>
+          <div class="panel-body checkout-grid">
+            <div class="choice-row" role="tablist" aria-label="Получатель">
+              <button class="choice active" type="button">Себе</button>
+              <a class="choice" href="#gifts" data-route="gifts">Подарок</a>
+            </div>
+            <div class="field">
+              <label for="recipient">Аккаунт зачисления</label>
+              <input id="recipient" value="@Laveqox · Telegram ID 872441">
+            </div>
+            <div class="notice">Зачисление автоматически на аккаунт ExtraArena после успешной оплаты. Обычно мгновенно, в редких случаях до 24 часов.</div>
+            <div class="panel" style="box-shadow:none;background:rgba(15,10,26,.28)">
+              <div class="panel-body">
+                <div class="summary-row"><span>Товар</span><strong>ExtraPass Ultra</strong></div>
+                <div class="summary-row"><span>Тип покупки</span><strong>Разово на 30 дней</strong></div>
+                <div class="summary-row"><span>Способ оплаты</span><strong>ЮKassa · карта / СБП</strong></div>
+                <div class="summary-row"><span>Итого</span><strong class="price">349 ₽</strong></div>
+              </div>
+            </div>
+            <label class="checkline">
+              <input type="checkbox" checked>
+              <span>Согласен с пользовательским соглашением, политикой конфиденциальности, правилами возврата и зачисления цифровых товаров.</span>
+            </label>
+            <button class="cta" type="button">Оплатить</button>
+          </div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <div>
+              <div class="eyebrow">После оплаты</div>
+              <h2>Статус заказа</h2>
+            </div>
+            <span class="status-chip paid">зачислено</span>
+          </div>
+          <div class="panel-body">
+            <div class="order-row"><span>Номер заказа</span><strong>EA-260511-8842</strong></div>
+            <div class="order-row"><span>Состав</span><strong>ExtraPass Ultra · 30 дней</strong></div>
+            <div class="order-row"><span>Получатель</span><strong>@Laveqox · 872441</strong></div>
+            <div class="order-row"><span>Время зачисления</span><strong>11.05.2026 · 17:52</strong></div>
+          </div>
+        </article>
+      </section>
+
+      <section class="page active" id="catalog" data-title="Каталог">
+        <article class="panel">
+          <div class="panel-head">
+            <div>
+              <div class="eyebrow">Каталог</div>
+              <h1>Все товары ExtraShop</h1>
+            </div>
+            <span class="status ok">цены в ₽</span>
+          </div>
+          <div class="panel-body">
+            <div class="tabs" aria-label="Категории каталога">
+              <a class="tab active" href="#bundles" data-anchor="bundles">Наборы</a>
+              <a class="tab" href="#pass" data-anchor="pass">Подписки</a>
+              <a class="tab" href="#gems" data-anchor="gems">Гемы</a>
+              <a class="tab" href="#gifts" data-route="gifts">Подарки</a>
+            </div>
+            <div class="notice">Все товары оплачиваются в ₽ через ЮKassa и автоматически зачисляются на аккаунт игрока в Telegram. Внутриигровые ресурсы не продаются за гемы или монеты.</div>
+            <div class="notice">Иностранные платежи принимаются через поддержку ExtraArena: Telegram @lqsup.</div>
+          </div>
+        </article>
+
+        <div class="catalog-grid">
+          <div class="category-head">
+            <h2>Наборы</h2>
+            <p>Крупные покупки с гемами, ключами и монетами внутри.</p>
+          </div>
+          <article class="product bundle-card" id="bundles">
+            <div class="badge-stack"><span class="tag hot">популярно</span></div>
+            <div class="bundle-art" aria-label="Квадратный арт набора">BS</div>
+            <div class="bundle-content">
+              <div class="product-top"><div><h3>Боевой старт</h3><p>100 гемов и 3 ключа для первых открытий.</p></div><div class="price">149 ₽</div></div>
+              <div class="rewards"><span class="reward">💎 100 гемов</span><span class="reward">🔑 3 ключа</span></div>
+              <div class="product-actions"><a class="cta" href="#checkout" data-route="checkout">Купить</a><a class="secondary-btn" href="#gifts" data-route="gifts">Подарить</a></div>
+            </div>
+          </article>
+          <article class="product bundle-card">
+            <div class="bundle-art" aria-label="Квадратный арт набора">AP</div>
+            <div class="bundle-content">
+              <div class="product-top"><div><h3>Арена-пак</h3><p>Набор для активного вечернего захода.</p></div><div class="price">299 ₽</div></div>
+              <div class="rewards"><span class="reward">💎 250 гемов</span><span class="reward">🔑 10 ключей</span><span class="reward">🪙 2000 монет</span></div>
+              <div class="product-actions"><a class="cta" href="#checkout" data-route="checkout">Купить</a><a class="secondary-btn" href="#gifts" data-route="gifts">Подарить</a></div>
+            </div>
+          </article>
+          <article class="product bundle-card">
+            <div class="badge-stack"><span class="tag hot">выгодно</span></div>
+            <div class="bundle-art" aria-label="Квадратный арт набора">LZ</div>
+            <div class="bundle-content">
+              <div class="product-top"><div><h3>Легендарный запас</h3><p>Для серии кейсов и прокачки нескольких колод.</p></div><div class="price">699 ₽</div></div>
+              <div class="rewards"><span class="reward">💎 600 гемов</span><span class="reward">🔑 25 ключей</span><span class="reward">🪙 5000 монет</span></div>
+              <div class="product-actions"><a class="cta" href="#checkout" data-route="checkout">Купить</a><a class="secondary-btn" href="#gifts" data-route="gifts">Подарить</a></div>
+            </div>
+          </article>
+          <article class="product bundle-card">
+            <div class="badge-stack"><span class="tag sale">крупный набор</span></div>
+            <div class="bundle-art" aria-label="Квадратный арт набора">EX</div>
+            <div class="bundle-content">
+              <div class="product-top"><div><h3>Extra-набор</h3><p>Большой сезонный запас валюты и ключей.</p></div><div class="price">1299 ₽</div></div>
+              <div class="rewards"><span class="reward">💎 1300 гемов</span><span class="reward">🔑 50 ключей</span><span class="reward">🪙 15000 монет</span></div>
+              <div class="product-actions"><a class="cta" href="#checkout" data-route="checkout">Купить</a><a class="secondary-btn" href="#gifts" data-route="gifts">Подарить</a></div>
+            </div>
+          </article>
+
+          <div class="category-head">
+            <h2>Подписки</h2>
+            <p>Один блок, два тарифа, управление отдельно.</p>
+          </div>
+          <article class="product pass-block selected-card" id="pass">
+            <div class="pass-tabs">
+              <input id="pass-basic" name="pass-plan" type="radio">
+              <input id="pass-ultra" name="pass-plan" type="radio" checked>
+              <label class="pass-tab" for="pass-basic">ExtraPass</label>
+              <label class="pass-tab" for="pass-ultra">Ultra</label>
+              <div class="pass-plan pass-basic">
+                <div class="badge-stack"><span class="tag sub">подписка</span></div>
+                <div class="product-top">
+                  <div class="art">🎟️</div>
+                  <div>
+                    <h3>ExtraPass</h3>
+                    <p>Без рекламы, премиальная дорожка Battle Pass, +2 пресета колод, x1.2 монет в боях, оформление профиля, кланы, история боёв и приоритетная поддержка.</p>
+                  </div>
+                  <div class="price">179 ₽</div>
+                </div>
+                <div class="benefit-grid" aria-label="Преимущества ExtraPass">
+                  <span class="benefit">Без рекламы</span>
+                  <span class="benefit">Премиальная дорожка Battle Pass</span>
+                  <span class="benefit">+2 пресета колод</span>
+                  <span class="benefit">x1.2 монет в боях</span>
+                  <span class="benefit">Оформление профиля</span>
+                  <span class="benefit">Создание кланов</span>
+                  <span class="benefit">История боёв</span>
+                  <span class="benefit">Приоритетная поддержка</span>
+                </div>
+                <div class="purchase-modes">
+                  <strong>Можно разово или с автопродлением</strong>
+                  <span>Разовая покупка даёт 30 дней Pass. Подписка продлевается ежемесячно.</span>
+                  <div class="purchase-actions"><a class="cta" href="#checkout" data-route="checkout">Купить 30 дней</a><a class="secondary-btn" href="#subscription" data-route="subscription">Оформить подписку</a></div>
+                </div>
+              </div>
+              <div class="pass-plan pass-ultra">
+                <div class="badge-stack"><span class="tag sub">подписка</span><span class="tag hot">популярно</span></div>
+                <div class="product-top">
+                  <div class="art">👑</div>
+                  <div>
+                    <h3>ExtraPass Ultra</h3>
+                    <p>Всё из ExtraPass, золотой ник, повышенные шансы, реролл кейсов, расширенная статистика, уникальные позиции Battle Pass и подарок соклановцам.</p>
+                  </div>
+                  <div class="price">349 ₽</div>
+                </div>
+                <div class="benefit-grid" aria-label="Преимущества ExtraPass Ultra">
+                  <span class="benefit">Всё из ExtraPass</span>
+                  <span class="benefit">Золотой ник</span>
+                  <span class="benefit">Повышенные шансы</span>
+                  <span class="benefit">Реролл кейсов</span>
+                  <span class="benefit">Расширенная статистика</span>
+                  <span class="benefit">Уникальные позиции Battle Pass</span>
+                  <span class="benefit">Подарок соклановцам</span>
+                </div>
+                <div class="purchase-modes">
+                  <strong>Можно разово или с автопродлением</strong>
+                  <span>Разовая покупка даёт 30 дней Ultra. Подписка продлевается ежемесячно.</span>
+                  <div class="purchase-actions"><a class="cta" href="#checkout" data-route="checkout">Купить 30 дней</a><a class="secondary-btn" href="#subscription" data-route="subscription">Оформить подписку</a></div>
+                </div>
+              </div>
+            </div>
+          </article>
+
+          <div class="category-head">
+            <h2>Гемы</h2>
+            <p>6 позиций: акция и стандартные пополнения.</p>
+          </div>
+          <div class="gems-grid" id="gems">
+            <article class="gem-card">
+              <div class="badge-stack"><span class="tag once">1 раз</span></div>
+              <div class="gem-main"><div class="art">💎</div><div><h3>50 гемов</h3></div></div>
+              <div class="price">49 ₽</div>
+              <a class="cta" href="#checkout" data-route="checkout">Купить</a>
+            </article>
+            <article class="gem-card">
+              <div class="gem-main"><div class="art">💎</div><div><h3>100 гемов</h3></div></div>
+              <div class="price">99 ₽</div>
+              <a class="cta" href="#checkout" data-route="checkout">Купить</a>
+            </article>
+            <article class="gem-card">
+              <div class="badge-stack"><span class="tag sale">-7%</span></div>
+              <div class="gem-main"><div class="art">💎</div><div><h3>250 гемов</h3></div></div>
+              <div class="price">229 ₽</div>
+              <a class="cta" href="#checkout" data-route="checkout">Купить</a>
+            </article>
+            <article class="gem-card">
+              <div class="badge-stack"><span class="tag sale">-16%</span></div>
+              <div class="gem-main"><div class="art">💎</div><div><h3>600 гемов</h3></div></div>
+              <div class="price">499 ₽</div>
+              <a class="cta" href="#checkout" data-route="checkout">Купить</a>
+            </article>
+            <article class="gem-card featured">
+              <div class="badge-stack"><span class="tag sale">-22%</span></div>
+              <div class="gem-main"><div class="art">💎</div><div><h3>1300 гемов</h3></div></div>
+              <div class="price">999 ₽</div>
+              <a class="cta" href="#checkout" data-route="checkout">Купить</a>
+            </article>
+            <article class="gem-card featured">
+              <div class="badge-stack"><span class="tag sale">-33%</span><span class="tag hot">выгодно</span></div>
+              <div class="gem-main"><div class="art">💎</div><div><h3>2500 гемов</h3></div></div>
+              <div class="price">1499 ₽</div>
+              <a class="cta" href="#checkout" data-route="checkout">Купить</a>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="page" id="gifts" data-title="Подарки">
+        <article class="panel">
+          <div class="panel-head">
+            <div><div class="eyebrow">Подарки</div><h1>Подарить товар игроку</h1></div>
+          </div>
+          <div class="panel-body form-grid">
+            <div class="choice-row">
+              <button class="choice" type="button">Себе</button>
+              <button class="choice active" type="button">Игроку</button>
+            </div>
+            <div class="field"><label for="giftId">ID игрока</label><input id="giftId" placeholder="Например, 913552" value="913552"></div>
+            <div class="field"><label for="friendSearch">Поиск друга</label><input id="friendSearch" placeholder="Ник или Telegram ID"></div>
+            <div class="friend-list">
+              <div class="friend"><div class="avatar">MK</div><div><strong>MikaFox</strong><p>ID 913552 · Platinum I</p></div><span class="status-chip paid">выбран</span></div>
+              <div class="friend"><div class="avatar">AR</div><div><strong>ArenaRift</strong><p>ID 771204 · Gold III</p></div><a class="ghost-btn" href="#gifts">Выбрать</a></div>
+              <div class="friend"><div class="avatar">VX</div><div><strong>Vexel</strong><p>Telegram ID 558013</p></div><a class="ghost-btn" href="#gifts">Выбрать</a></div>
+            </div>
+          </div>
+        </article>
+
+        <article class="panel selected">
+          <div class="panel-head"><div><div class="eyebrow">Подтверждение</div><h2>Перед оплатой подарка</h2></div><div class="price">349 ₽</div></div>
+          <div class="panel-body checkout-grid">
+            <div class="summary-row"><span>Получатель</span><strong>MikaFox · ID 913552</strong></div>
+            <div class="summary-row"><span>Товар</span><strong>ExtraPass Ultra</strong></div>
+            <div class="summary-row"><span>Предупреждение</span><strong>Подарок нельзя перенести после зачисления</strong></div>
+            <a class="cta" href="#checkout" data-route="checkout">Перейти к оплате</a>
+          </div>
+        </article>
+      </section>
+
+      <section class="page" id="history" data-title="История">
+        <article class="panel">
+          <div class="panel-head"><div><div class="eyebrow">История</div><h1>Покупки и чеки</h1></div><span class="status">4 заказа</span></div>
+          <div class="panel-body orders">
+            <div class="order">
+              <div class="order-top"><div><strong>EA-260511-8842 · ExtraPass Ultra</strong><p>11.05.2026 · 349 ₽ · ЮKassa · себе</p></div><span class="status-chip paid">оплачено</span></div>
+              <div class="order-row"><span>Платёж</span><strong>YK-9258-1105</strong></div><div class="order-row"><span>Зачисление</span><strong>11.05.2026 · 17:52</strong></div><a class="ghost-btn" href="#legal" data-route="legal">Детали и поддержка</a>
+            </div>
+            <div class="order"><div class="order-top"><div><strong>EA-260430-4471 · Легендарный запас</strong><p>30.04.2026 · 699 ₽ · ЮKassa · ID 913552</p></div><span class="status-chip paid">оплачено</span></div><div class="order-row"><span>Состав</span><strong>600 гемов · 25 ключей · 5000 монет</strong></div></div>
+            <div class="order"><div class="order-top"><div><strong>EA-260426-1130 · 250 гемов</strong><p>26.04.2026 · 229 ₽ · ЮKassa · себе</p></div><span class="status-chip wait">ожидает</span></div><div class="order-row"><span>Статус</span><strong>ожидает подтверждения банка</strong></div></div>
+            <div class="order"><div class="order-top"><div><strong>EA-260414-5528 · ExtraPass</strong><p>14.04.2026 · 179 ₽ · ЮKassa · себе</p></div><span class="status-chip returned">возвращено</span></div><div class="order-row"><span>Чек</span><strong>YK-1187-1404</strong></div></div>
+            <div class="order"><div class="order-top"><div><strong>EA-260401-0042 · 100 гемов</strong><p>01.04.2026 · 99 ₽ · ЮKassa · себе</p></div><span class="status-chip cancel">отменено</span></div></div>
+          </div>
+        </article>
+      </section>
+
+      <section class="page" id="subscription" data-title="Управлять подпиской">
+        <article class="panel selected">
+          <div class="panel-head"><div><div class="eyebrow">Моя подписка</div><h1>ExtraPass Ultra</h1></div><span class="status-chip paid">активна</span></div>
+          <div class="panel-body checkout-grid">
+            <div class="summary-row"><span>Окончание периода</span><strong>11.06.2026</strong></div>
+            <div class="summary-row"><span>Автопродление</span><strong>включено</strong></div>
+            <div class="choice-row"><button class="cta" type="button">Продлить</button><button class="secondary-btn" type="button">Сменить тариф</button></div>
+            <button class="ghost-btn" type="button">Отменить автопродление</button>
+          </div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head"><div><div class="eyebrow">Сравнение</div><h2>Тарифы ExtraPass</h2></div></div>
+          <div class="panel-body" style="overflow-x:auto">
+            <table class="compare">
+              <tr><th>Возможность</th><th>Нет</th><th>Pass</th><th>Ultra</th></tr>
+              <tr><td>Без рекламы</td><td>—</td><td>✓</td><td>✓</td></tr>
+              <tr><td>Премиальная дорожка Battle Pass</td><td>—</td><td>✓</td><td>✓ + уникальные позиции</td></tr>
+              <tr><td>Пресеты колод</td><td>2</td><td>4</td><td>4</td></tr>
+              <tr><td>Бонус монет в боях</td><td>—</td><td>x1.2</td><td>x1.2</td></tr>
+              <tr><td>Оформление профиля</td><td>базовое</td><td>премиум</td><td>премиум + золотой ник</td></tr>
+              <tr><td>Создание кланов</td><td>—</td><td>✓</td><td>✓</td></tr>
+              <tr><td>История боёв</td><td>—</td><td>✓</td><td>✓ + расширенная статистика</td></tr>
+              <tr><td>Поддержка</td><td>обычная</td><td>приоритетная</td><td>приоритетная</td></tr>
+              <tr><td>Повышенные шансы</td><td>—</td><td>—</td><td>✓</td></tr>
+              <tr><td>Реролл кейсов</td><td>—</td><td>—</td><td>✓</td></tr>
+              <tr><td>Подарок соклановцам</td><td>—</td><td>—</td><td>✓</td></tr>
+            </table>
+          </div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head"><div><div class="eyebrow">Списания</div><h2>История подписки</h2></div></div>
+          <div class="panel-body orders">
+            <div class="order"><div class="order-top"><div><strong>11.05.2026 · ExtraPass Ultra</strong><p>349 ₽ · ЮKassa · автопродление</p></div><span class="status-chip paid">оплачено</span></div></div>
+            <div class="order"><div class="order-top"><div><strong>11.04.2026 · ExtraPass</strong><p>179 ₽ · ЮKassa · ручное продление</p></div><span class="status-chip paid">оплачено</span></div></div>
+          </div>
+        </article>
+      </section>
+
+      <section class="page" id="legal" data-title="Юридическая информация">
+        <article class="panel">
+          <div class="panel-head"><div><div class="eyebrow">Информация</div><h1>Документы и контакты</h1></div></div>
+          <div class="panel-body legal-list">
+            <a class="legal-link" href="#catalog" data-route="catalog"><strong>Каталог</strong><p>Все рублёвые цифровые товары ExtraArena.</p></a>
+            <a class="legal-link" href="#subscription" data-route="subscription"><strong>Тарифы</strong><p>ExtraPass и ExtraPass Ultra, условия автопродления.</p></a>
+            <div class="legal-link"><strong>Пользовательское соглашение / оферта</strong><p>Оплата цифровых товаров означает согласие с условиями магазина ExtraShop и правилами зачисления на аккаунт Telegram.</p></div>
+            <div class="legal-link"><strong>Политика конфиденциальности</strong><p>Для оплаты и поддержки используются Telegram, email, номер заказа и данные платежа ЮKassa.</p></div>
+            <div class="legal-link"><strong>Правила получения цифровых товаров</strong><p>Товары доставляются автоматически на аккаунт ExtraArena через Telegram после успешной оплаты, обычно мгновенно, но в редких случаях до 24 часов.</p></div>
+            <div class="legal-link"><strong>Возвраты</strong><p>Возврат рассматривается поддержкой, если цифровой товар не был зачислен или произошла техническая ошибка при оплате.</p></div>
+            <div class="legal-link"><strong>Контакты</strong><p>personal@laveqox.ru · Telegram @lqsup</p></div>
+            <div class="legal-link"><strong>Реквизиты</strong><p>Самозанятый Корпусов Дмитрий Дмитриевич · ИНН 781301929373</p></div>
+          </div>
+        </article>
+      </section>
+
+      <footer>
+        <div class="footer-links">
+          <a href="#catalog" data-route="catalog">Каталог</a>
+          <a href="#subscription" data-route="subscription">Тарифы</a>
+          <a href="#legal" data-route="legal">Оферта</a>
+          <a href="#legal" data-route="legal">Конфиденциальность</a>
+          <a href="#legal" data-route="legal">Получение цифровых товаров</a>
+          <a href="#legal" data-route="legal">Возвраты</a>
+          <a href="#legal" data-route="legal">Контакты</a>
+          <a href="#legal" data-route="legal">Реквизиты</a>
+        </div>
+        <p>Самозанятый Корпусов Дмитрий Дмитриевич · ИНН 781301929373</p>
+        <p>ExtraShop · цифровые товары зачисляются на аккаунт ExtraArena после успешной оплаты через ЮKassa.</p>
+      </footer>
+    </main>
+
+    <aside class="side" aria-label="Профиль и корзина">
+      <div class="side-card side-user">
+        <div class="avatar">LQ</div>
+        <div><strong>@Laveqox</strong><span>Telegram ID 872441</span></div>
+      </div>
+      <div class="side-card">
+        <div class="eyebrow">Текущий заказ</div>
+        <h2>ExtraPass Ultra</h2>
+        <div class="picked-line" style="grid-template-columns:44px 1fr auto">
+          <div class="art" style="width:44px;height:44px;font-size:22px">👑</div>
+          <p>1 месяц · себе</p>
+          <strong class="price">349 ₽</strong>
+        </div>
+        <br>
+        <a class="cta" href="#checkout" data-route="checkout">Открыть checkout</a>
+      </div>
+    </aside>
+  </div>
+
+  <nav class="bottom-nav" aria-label="Нижняя навигация">
+    <a href="#catalog" data-route="catalog"><b>▦</b>Каталог</a>
+    <a href="#gifts" data-route="gifts"><b>◇</b>Подарки</a>
+    <a href="#checkout" data-route="checkout" class="active"><b>₽</b>Оплата</a>
+    <a href="#subscription" data-route="subscription"><b>★</b>Управлять</a>
+  </nav>
+
+  <script>
+    const routes = ["direct", "checkout", "catalog", "gifts", "history", "subscription", "legal"];
+    function setRoute(name) {
+      const route = routes.includes(name) ? name : "catalog";
+      document.body.classList.toggle("direct-mode", route === "direct");
+      document.querySelectorAll(".page").forEach(page => page.classList.toggle("active", page.id === route));
+      document.querySelectorAll("[data-route]").forEach(link => {
+        const active = link.dataset.route === route;
+        link.classList.toggle("active", active);
+        if (link.classList.contains("nav-btn")) link.setAttribute("aria-current", active ? "page" : "false");
+      });
+    }
+    function moveToAnchor(id) {
+      setRoute("catalog");
+      const target = document.getElementById(id);
+      if (!target) return;
+      const top = target.getBoundingClientRect().top + window.pageYOffset - 132;
+      window.scrollTo({ top, behavior: "smooth" });
+    }
+    window.addEventListener("hashchange", () => {
+      const hash = location.hash.replace("#", "");
+      if (routes.includes(hash)) setRoute(hash);
+      else if (hash) moveToAnchor(hash);
+    });
+    document.addEventListener("click", event => {
+      const anchor = event.target.closest("[data-anchor]");
+      if (anchor) {
+        event.preventDefault();
+        document.querySelectorAll(".tab").forEach(tab => tab.classList.toggle("active", tab === anchor));
+        history.replaceState(null, "", `#${anchor.dataset.anchor}`);
+        moveToAnchor(anchor.dataset.anchor);
+        return;
+      }
+      const link = event.target.closest("[data-route]");
+      if (!link) return;
+      const route = link.dataset.route;
+      if (routes.includes(route)) setRoute(route);
+    });
+    const initial = location.hash.replace("#", "");
+    const params = new URLSearchParams(location.search);
+    const cameFromTelegram = params.has("product") || params.has("tg_product") || params.get("source") === "telegram";
+    if (cameFromTelegram) setRoute("direct");
+    else if (routes.includes(initial)) setRoute(initial);
+    else if (initial) moveToAnchor(initial);
+    else setRoute("catalog");
+  </script>
+</body>
+</html>

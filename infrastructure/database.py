@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+from decimal import Decimal
 from typing import Any, Optional, Dict, TYPE_CHECKING
 
 # asyncpg требуется только для реальной работы с БД.
@@ -17,7 +18,7 @@ from infrastructure.config import DECK_SIZE, MAX_FREE_DECK_PRESETS, MAX_TOTAL_DE
 
 
 # Версию схемы повышаем при изменении структуры таблиц
-SCHEMA_VERSION = 24
+SCHEMA_VERSION = 25
 
 # Таблица ростов статов по редкости (урон/хп растут одинаково)
 RARITY_STATS: dict[str, float] = {
@@ -58,7 +59,19 @@ def _normalize_mechanics(raw: Any) -> list[str]:
             return data if isinstance(data, list) else []
         except json.JSONDecodeError:
             return []
-    return []
+
+
+def _json_safe(value: Any) -> Any:
+    """Convert DB scalar/container values into JSON-serializable values."""
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+    return value
 
 
 def calculate_card_stats(card_obj: Any, level: int) -> dict[str, Any]:
@@ -306,10 +319,18 @@ class Database:
         claimed_rewards_changed = await self._ensure_claimed_rewards_table()
         seasons_changed = await self._ensure_seasons_table()
         shop_sets_changed = await self._ensure_shop_sets_table()
+        ruble_products_changed = await self._ensure_ruble_products_table()
         payments_changed = await self._ensure_payments_table()
+        checkout_sessions_changed = await self._ensure_payment_checkout_sessions_table()
         friend_invites_changed = await self._ensure_friend_invites_table()
         friend_requests_changed = await self._ensure_friend_requests_table()
         generator_changed = await self._ensure_generator_state_table()
+        economy_events_changed = await self._ensure_economy_events_table()
+        user_sessions_changed = await self._ensure_user_sessions_table()
+        onboarding_events_changed = await self._ensure_onboarding_events_table()
+        battle_summary_changed = await self._ensure_battle_summary_table()
+        battle_actions_changed = await self._ensure_battle_actions_table()
+        admin_actions_changed = await self._ensure_admin_account_actions_table()
 
         schema_changed = (
             (current_version != SCHEMA_VERSION)
@@ -332,10 +353,18 @@ class Database:
             or claimed_rewards_changed
             or seasons_changed
             or shop_sets_changed
+            or ruble_products_changed
             or payments_changed
+            or checkout_sessions_changed
             or friend_invites_changed
             or friend_requests_changed
             or generator_changed
+            or economy_events_changed
+            or user_sessions_changed
+            or onboarding_events_changed
+            or battle_summary_changed
+            or battle_actions_changed
+            or admin_actions_changed
         )
 
         # Обновляем референсные данные для новой боевой системы
@@ -1070,6 +1099,18 @@ class Database:
         )
         changed |= await self._add_column_if_missing(
             "users", columns, "extra_pass_expires_at TIMESTAMPTZ"
+        )
+        changed |= await self._add_column_if_missing(
+            "users", columns, "is_banned BOOLEAN NOT NULL DEFAULT FALSE"
+        )
+        changed |= await self._add_column_if_missing(
+            "users", columns, "ban_reason TEXT"
+        )
+        changed |= await self._add_column_if_missing(
+            "users", columns, "banned_until TIMESTAMPTZ"
+        )
+        changed |= await self._add_column_if_missing(
+            "users", columns, "warnings_count INTEGER NOT NULL DEFAULT 0"
         )
 
         if not await self._constraint_exists("users", "users_status_check"):
@@ -1941,6 +1982,8 @@ class Database:
                     text TEXT NOT NULL DEFAULT '',
                     is_read BOOLEAN NOT NULL DEFAULT FALSE,
                     category TEXT,
+                    icon TEXT,
+                    attachments JSONB,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
                 """
@@ -1967,6 +2010,12 @@ class Database:
             "user_mail", columns, "category TEXT"
         )
         changed |= await self._add_column_if_missing(
+            "user_mail", columns, "icon TEXT"
+        )
+        changed |= await self._add_column_if_missing(
+            "user_mail", columns, "attachments JSONB"
+        )
+        changed |= await self._add_column_if_missing(
             "user_mail", columns, "created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()"
         )
 
@@ -1989,22 +2038,33 @@ class Database:
         user_id: int,
         sender: str = "Система",
         subject: str,
-        text: str,
+        text: Optional[str] = None,
+        content: Optional[str] = None,
+        category: Optional[str] = None,
+        icon: Optional[str] = None,
+        attachments: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         """Создать письмо пользователю. Возвращает dict с результатом."""
         if not self._pool:
             raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
 
+        import json as _json
+
         try:
+            mail_text = text if text is not None else (content or "")
+            attachments_json = _json.dumps(attachments) if attachments else None
             await self.execute(
                 """
-                INSERT INTO user_mail (user_id, sender, subject, text)
-                VALUES ($1, $2, $3, $4)
+                INSERT INTO user_mail (user_id, sender, subject, text, category, icon, attachments)
+                VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
                 """,
                 user_id,
                 sender,
                 subject,
-                text,
+                mail_text,
+                category,
+                icon,
+                attachments_json,
             )
             return {"success": True}
         except Exception as e:
@@ -2022,7 +2082,7 @@ class Database:
             raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
 
         query = """
-            SELECT id, user_id, sender, subject, text, is_read, category, created_at
+            SELECT id, user_id, sender, subject, text, is_read, category, icon, attachments, created_at
             FROM user_mail
             WHERE user_id = $1
         """
@@ -2472,6 +2532,242 @@ class Database:
 
         return changed
 
+    async def _ensure_ruble_products_table(self) -> bool:
+        changed = False
+
+        table_exists = await self.fetchval("SELECT to_regclass('public.ruble_products')")
+        if not table_exists:
+            await self.execute(
+                """
+                CREATE TABLE ruble_products (
+                    id SERIAL PRIMARY KEY,
+                    code TEXT NOT NULL UNIQUE,
+                    item_type TEXT NOT NULL,
+                    package_type TEXT,
+                    shop_set_id INTEGER REFERENCES shop_sets(id),
+                    name TEXT NOT NULL,
+                    description TEXT,
+                    price DECIMAL(10,2) NOT NULL,
+                    currency TEXT NOT NULL DEFAULT 'rubles' CHECK (currency IN ('rubles','gems','coins')),
+                    image_url TEXT,
+                    badge TEXT,
+                    sort_order INTEGER NOT NULL DEFAULT 100,
+                    show_in_game BOOLEAN NOT NULL DEFAULT TRUE,
+                    show_in_shop BOOLEAN NOT NULL DEFAULT TRUE,
+                    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                    is_system BOOLEAN NOT NULL DEFAULT FALSE,
+                    metadata JSONB NOT NULL DEFAULT '{}',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            changed = True
+
+        columns = await self._get_columns("ruble_products")
+        changed |= await self._add_column_if_missing(
+            "ruble_products", columns, "code TEXT NOT NULL UNIQUE"
+        )
+        changed |= await self._add_column_if_missing(
+            "ruble_products", columns, "item_type TEXT NOT NULL"
+        )
+        changed |= await self._add_column_if_missing(
+            "ruble_products", columns, "package_type TEXT"
+        )
+        changed |= await self._add_column_if_missing(
+            "ruble_products", columns, "shop_set_id INTEGER REFERENCES shop_sets(id)"
+        )
+        changed |= await self._add_column_if_missing(
+            "ruble_products", columns, "name TEXT NOT NULL"
+        )
+        changed |= await self._add_column_if_missing(
+            "ruble_products", columns, "description TEXT"
+        )
+        changed |= await self._add_column_if_missing(
+            "ruble_products", columns, "price DECIMAL(10,2) NOT NULL"
+        )
+        changed |= await self._add_column_if_missing(
+            "ruble_products", columns, "currency TEXT NOT NULL DEFAULT 'rubles'"
+        )
+        changed |= await self._add_column_if_missing(
+            "ruble_products", columns, "image_url TEXT"
+        )
+        changed |= await self._add_column_if_missing(
+            "ruble_products", columns, "badge TEXT"
+        )
+        changed |= await self._add_column_if_missing(
+            "ruble_products", columns, "sort_order INTEGER NOT NULL DEFAULT 100"
+        )
+        changed |= await self._add_column_if_missing(
+            "ruble_products", columns, "show_in_game BOOLEAN NOT NULL DEFAULT TRUE"
+        )
+        changed |= await self._add_column_if_missing(
+            "ruble_products", columns, "show_in_shop BOOLEAN NOT NULL DEFAULT TRUE"
+        )
+        changed |= await self._add_column_if_missing(
+            "ruble_products", columns, "is_active BOOLEAN NOT NULL DEFAULT TRUE"
+        )
+        changed |= await self._add_column_if_missing(
+            "ruble_products", columns, "is_system BOOLEAN NOT NULL DEFAULT FALSE"
+        )
+        changed |= await self._add_column_if_missing(
+            "ruble_products", columns, "metadata JSONB NOT NULL DEFAULT '{}'"
+        )
+        changed |= await self._add_column_if_missing(
+            "ruble_products", columns, "created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()"
+        )
+        changed |= await self._add_column_if_missing(
+            "ruble_products", columns, "updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()"
+        )
+
+        await self._seed_ruble_products()
+        return changed
+
+    async def _seed_ruble_products(self):
+        system_products = [
+            {"code": "extrapass",        "item_type": "extrapass",        "package_type": None,      "name": "ExtraPass",                "price": 179,  "badge": None,            "sort_order": 10,  "show_in_game": True,  "show_in_shop": True,  "description": "Без рекламы, премиальная дорожка Battle Pass, +2 пресета колод, x1.2 монет в боях."},
+            {"code": "extrapass_ultra",  "item_type": "extrapass_ultra",  "package_type": None,      "name": "ExtraPass Ultra",          "price": 349,  "badge": "popular",       "sort_order": 20,  "show_in_game": True,  "show_in_shop": True,  "description": "Всё из ExtraPass + золотой ник, реролл кейсов, расширенная статистика."},
+            {"code": "starter_boost",    "item_type": "starter_boost",    "package_type": None,      "name": "Starter Boost",            "price": 499,  "badge": None,            "sort_order": 30,  "show_in_game": True,  "show_in_shop": True,  "description": "ExtraPass на 30 дней, гемы, монеты и кейсы."},
+            {"code": "gems_starter_once","item_type": "gems_package",     "package_type": "starter_once", "name": "50 гемов (стартовый)",  "price": 49,   "badge": "one-time",      "sort_order": 40,  "show_in_game": False, "show_in_shop": True,  "description": "Стартовый пакет гемов, доступен 1 раз."},
+            {"code": "gems_100",         "item_type": "gems_package",     "package_type": "gems_100",     "name": "100 гемов",           "price": 99,   "badge": None,            "sort_order": 50,  "show_in_game": False, "show_in_shop": True,  "description": None},
+            {"code": "gems_250",         "item_type": "gems_package",     "package_type": "gems_250",     "name": "250 гемов",           "price": 229,  "badge": "discount",      "sort_order": 60,  "show_in_game": False, "show_in_shop": True,  "description": None},
+            {"code": "gems_600",         "item_type": "gems_package",     "package_type": "gems_600",     "name": "600 гемов",           "price": 499,  "badge": "discount",      "sort_order": 70,  "show_in_game": False, "show_in_shop": True,  "description": None},
+            {"code": "gems_1300",        "item_type": "gems_package",     "package_type": "gems_1300",    "name": "1300 гемов",          "price": 999,  "badge": "discount",      "sort_order": 80,  "show_in_game": False, "show_in_shop": True,  "description": None},
+            {"code": "gems_2500",        "item_type": "gems_package",     "package_type": "gems_2500",    "name": "2500 гемов",          "price": 1499, "badge": "best-value",    "sort_order": 90,  "show_in_game": False, "show_in_shop": True,  "description": None},
+        ]
+        for p in system_products:
+            row = await self.fetchrow("SELECT id FROM ruble_products WHERE code = $1", p["code"])
+            if not row:
+                await self.execute(
+                    """
+                    INSERT INTO ruble_products (code, item_type, package_type, name, description, price, currency, badge, sort_order, show_in_game, show_in_shop, is_active, is_system)
+                    VALUES ($1, $2, $3, $4, $5, $6, 'rubles', $7, $8, $9, $10, TRUE, TRUE)
+                    """,
+                    p["code"], p["item_type"], p["package_type"], p["name"], p["description"],
+                    p["price"], p["badge"], p["sort_order"], p["show_in_game"], p["show_in_shop"],
+                )
+
+    # ── CRUD: ruble_products ──
+
+    async def get_ruble_products(
+        self,
+        active_only: bool = False,
+        surface: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        conditions = []
+        params = []
+        pid = 1
+        if active_only:
+            conditions.append(f"is_active = TRUE")
+        if surface == "shop":
+            conditions.append(f"show_in_shop = TRUE")
+        elif surface == "game":
+            conditions.append(f"show_in_game = TRUE")
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        query = f"SELECT * FROM ruble_products {where} ORDER BY sort_order, id"
+        rows = await self.fetch(query)
+        return [_json_safe(dict(r)) for r in rows]
+
+    async def get_ruble_product(self, code: str) -> Optional[dict[str, Any]]:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        row = await self.fetchrow(
+            "SELECT * FROM ruble_products WHERE code = $1", code
+        )
+        return _json_safe(dict(row)) if row else None
+
+    async def create_ruble_product(self, **kwargs) -> dict[str, Any]:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        import json as _json
+        code = kwargs.get("code", "").strip()
+        item_type = kwargs.get("item_type", "").strip()
+        name = kwargs.get("name", "").strip()
+        if not code or not item_type or not name:
+            return {"success": False, "error": "code, item_type and name are required"}
+        try:
+            record = await self.fetchrow(
+                """
+                INSERT INTO ruble_products (code, item_type, package_type, shop_set_id, name, description, price, currency, image_url, badge, sort_order, show_in_game, show_in_shop, is_active, metadata)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::jsonb)
+                RETURNING id
+                """,
+                code,
+                item_type,
+                kwargs.get("package_type"),
+                kwargs.get("shop_set_id"),
+                name,
+                kwargs.get("description"),
+                float(kwargs.get("price", 0)),
+                kwargs.get("currency", "rubles"),
+                kwargs.get("image_url"),
+                kwargs.get("badge"),
+                int(kwargs.get("sort_order", 100)),
+                bool(kwargs.get("show_in_game", True)),
+                bool(kwargs.get("show_in_shop", True)),
+                bool(kwargs.get("is_active", True)),
+                _json.dumps(kwargs.get("metadata", {})),
+            )
+            return {"success": True, "product_id": record["id"]}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def update_ruble_product(self, code_or_id: str | int, **kwargs) -> dict[str, Any]:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        import json as _json
+        valid_keys = {
+            "code", "item_type", "package_type", "shop_set_id",
+            "name", "description", "price", "currency", "image_url", "badge",
+            "sort_order", "show_in_game", "show_in_shop", "is_active", "is_system",
+            "metadata",
+        }
+        updates = []
+        values = []
+        for key, value in kwargs.items():
+            if key in valid_keys:
+                if key == "metadata" and not isinstance(value, str):
+                    value = _json.dumps(value)
+                    updates.append(f"{key} = ${len(values) + 1}::jsonb")
+                else:
+                    updates.append(f"{key} = ${len(values) + 1}")
+                values.append(value)
+        if not updates:
+            return {"success": False, "error": "no_valid_fields"}
+        updates.append("updated_at = NOW()")
+        if isinstance(code_or_id, int) or code_or_id.isdigit():
+            values.append(int(code_or_id))
+            where = f"id = ${len(values)}"
+        else:
+            values.append(str(code_or_id))
+            where = f"code = ${len(values)}"
+        query = f"UPDATE ruble_products SET {', '.join(updates)} WHERE {where}"
+        try:
+            await self.execute(query, *values)
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def delete_ruble_product(self, code_or_id: str | int) -> dict[str, Any]:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        try:
+            if isinstance(code_or_id, int) or str(code_or_id).isdigit():
+                await self.execute(
+                    "UPDATE ruble_products SET is_active = FALSE, updated_at = NOW() WHERE id = $1",
+                    int(code_or_id),
+                )
+            else:
+                await self.execute(
+                    "UPDATE ruble_products SET is_active = FALSE, updated_at = NOW() WHERE code = $1",
+                    str(code_or_id),
+                )
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
     async def get_shop_sets(self, active_only: bool = True) -> list[dict[str, Any]]:
         if not self._pool:
             raise RuntimeError("База данных не подключена.")
@@ -2530,9 +2826,12 @@ class Database:
         values = []
         for key, value in kwargs.items():
             if key in valid_keys:
-                if key == "rewards" and not isinstance(value, str):
-                    value = _json.dumps(value)
-                updates.append(f"{key} = ${len(values) + 1}")
+                if key == "rewards":
+                    if not isinstance(value, str):
+                        value = _json.dumps(value)
+                    updates.append(f"{key} = ${len(values) + 1}::jsonb")
+                else:
+                    updates.append(f"{key} = ${len(values) + 1}")
                 values.append(value)
         if not updates:
             return {"success": False, "error": "no_valid_fields"}
@@ -2590,6 +2889,11 @@ class Database:
                     amount, user_id,
                 )
                 granted.append({"type": "gems", "amount": amount})
+                await self.track_economy_event(
+                    user_id=user_id, event_type="earn", resource="gems",
+                    amount=amount, source="shop_set",
+                    metadata={"set_id": set_id},
+                )
 
             elif r_type == "coins" and amount > 0:
                 await self.execute(
@@ -2597,10 +2901,20 @@ class Database:
                     amount, user_id,
                 )
                 granted.append({"type": "coins", "amount": amount})
+                await self.track_economy_event(
+                    user_id=user_id, event_type="earn", resource="coins",
+                    amount=amount, source="shop_set",
+                    metadata={"set_id": set_id},
+                )
 
             elif r_type == "keys" and amount > 0:
                 await self.increment_user_keys(user_id, amount)
                 granted.append({"type": "keys", "amount": amount})
+                await self.track_economy_event(
+                    user_id=user_id, event_type="earn", resource="keys",
+                    amount=amount, source="shop_set",
+                    metadata={"set_id": set_id},
+                )
 
             elif r_type == "case":
                 count = max(1, amount)
@@ -2701,6 +3015,120 @@ class Database:
 
         return changed
 
+    async def _ensure_payment_checkout_sessions_table(self) -> bool:
+        changed = False
+
+        table_exists = await self.fetchval("SELECT to_regclass('public.payment_checkout_sessions')")
+        if not table_exists:
+            await self.execute(
+                """
+                CREATE TABLE payment_checkout_sessions (
+                    id SERIAL PRIMARY KEY,
+                    checkout_jti TEXT NOT NULL UNIQUE,
+                    user_id BIGINT NOT NULL,
+                    item_type TEXT NOT NULL,
+                    amount DECIMAL(12,2) NOT NULL,
+                    metadata JSONB NOT NULL DEFAULT '{}',
+                    payment_id TEXT,
+                    confirmation_url TEXT,
+                    status TEXT NOT NULL DEFAULT 'created',
+                    expires_at TIMESTAMPTZ NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            changed = True
+
+        columns = await self._get_columns("payment_checkout_sessions")
+        changed |= await self._add_column_if_missing("payment_checkout_sessions", columns, "checkout_jti TEXT NOT NULL")
+        changed |= await self._add_column_if_missing("payment_checkout_sessions", columns, "user_id BIGINT NOT NULL")
+        changed |= await self._add_column_if_missing("payment_checkout_sessions", columns, "item_type TEXT NOT NULL")
+        changed |= await self._add_column_if_missing("payment_checkout_sessions", columns, "amount DECIMAL(12,2) NOT NULL")
+        changed |= await self._add_column_if_missing("payment_checkout_sessions", columns, "metadata JSONB NOT NULL DEFAULT '{}'")
+        changed |= await self._add_column_if_missing("payment_checkout_sessions", columns, "payment_id TEXT")
+        changed |= await self._add_column_if_missing("payment_checkout_sessions", columns, "confirmation_url TEXT")
+        changed |= await self._add_column_if_missing("payment_checkout_sessions", columns, "status TEXT NOT NULL DEFAULT 'created'")
+        changed |= await self._add_column_if_missing("payment_checkout_sessions", columns, "expires_at TIMESTAMPTZ NOT NULL")
+        changed |= await self._add_column_if_missing("payment_checkout_sessions", columns, "created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
+        changed |= await self._add_column_if_missing("payment_checkout_sessions", columns, "updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
+
+        if not await self._constraint_exists("payment_checkout_sessions", "payment_checkout_sessions_checkout_jti_key"):
+            try:
+                await self.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_checkout_sessions_jti ON payment_checkout_sessions(checkout_jti)"
+                )
+            except Exception:
+                pass
+
+        return changed
+
+    async def create_checkout_session(
+        self,
+        *,
+        checkout_jti: str,
+        user_id: int,
+        item_type: str,
+        amount: float,
+        metadata: dict[str, Any],
+        expires_at,
+    ) -> dict[str, Any]:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        import json as _json
+        try:
+            await self.execute(
+                """
+                INSERT INTO payment_checkout_sessions (checkout_jti, user_id, item_type, amount, metadata, expires_at)
+                VALUES ($1, $2, $3, $4, $5::jsonb, $6)
+                ON CONFLICT (checkout_jti) DO NOTHING
+                """,
+                checkout_jti, user_id, item_type, amount, _json.dumps(metadata or {}), expires_at,
+            )
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def get_checkout_session(self, checkout_jti: str) -> Optional[dict[str, Any]]:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        row = await self.fetchrow(
+            "SELECT * FROM payment_checkout_sessions WHERE checkout_jti = $1",
+            checkout_jti,
+        )
+        return dict(row) if row else None
+
+    async def attach_checkout_payment(
+        self,
+        checkout_jti: str,
+        payment_id: str,
+        confirmation_url: str,
+    ) -> dict[str, Any]:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        try:
+            result = await self.fetchrow(
+                """
+                UPDATE payment_checkout_sessions
+                SET payment_id = $2,
+                    confirmation_url = $3,
+                    status = 'payment_created',
+                    updated_at = NOW()
+                WHERE checkout_jti = $1
+                  AND payment_id IS NULL
+                RETURNING payment_id, confirmation_url
+                """,
+                checkout_jti, payment_id, confirmation_url,
+            )
+            if result:
+                return {"success": True, "payment_id": result["payment_id"], "confirmation_url": result["confirmation_url"]}
+            existing = await self.get_checkout_session(checkout_jti)
+            if existing and existing.get("payment_id"):
+                return {"success": True, "payment_id": existing["payment_id"], "confirmation_url": existing.get("confirmation_url")}
+            return {"success": False, "error": "session_not_found"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
     async def _ensure_friend_invites_table(self) -> bool:
         """Создать таблицу friend_invites для дружеских матчей."""
         changed = False
@@ -2766,6 +3194,217 @@ class Database:
         changed |= await self._add_column_if_missing("generator_state", columns, "last_tick_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
         changed |= await self._add_column_if_missing("generator_state", columns, "notified BOOLEAN NOT NULL DEFAULT FALSE")
         changed |= await self._add_column_if_missing("generator_state", columns, "updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
+
+        return changed
+
+    async def _ensure_economy_events_table(self) -> bool:
+        changed = False
+
+        table_exists = await self.fetchval("SELECT to_regclass('public.economy_events')")
+        if not table_exists:
+            await self.execute(
+                """
+                CREATE TABLE economy_events (
+                    id BIGSERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    resource TEXT NOT NULL,
+                    amount NUMERIC(12,2) NOT NULL DEFAULT 0,
+                    source TEXT,
+                    metadata JSONB NOT NULL DEFAULT '{}',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            changed = True
+
+        columns = await self._get_columns("economy_events")
+        changed |= await self._add_column_if_missing("economy_events", columns, "user_id BIGINT NOT NULL")
+        changed |= await self._add_column_if_missing("economy_events", columns, "event_type TEXT NOT NULL")
+        changed |= await self._add_column_if_missing("economy_events", columns, "resource TEXT NOT NULL")
+        changed |= await self._add_column_if_missing("economy_events", columns, "amount NUMERIC(12,2) NOT NULL DEFAULT 0")
+        changed |= await self._add_column_if_missing("economy_events", columns, "source TEXT")
+        changed |= await self._add_column_if_missing("economy_events", columns, "metadata JSONB NOT NULL DEFAULT '{}'")
+        changed |= await self._add_column_if_missing("economy_events", columns, "created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
+
+        if not await self._constraint_exists("economy_events", "economy_events_user_id_fkey"):
+            try:
+                await self.execute(
+                    "ALTER TABLE economy_events ADD CONSTRAINT economy_events_user_id_fkey FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE"
+                )
+            except Exception:
+                pass
+
+        return changed
+
+    async def _ensure_user_sessions_table(self) -> bool:
+        changed = False
+
+        table_exists = await self.fetchval("SELECT to_regclass('public.user_sessions')")
+        if not table_exists:
+            await self.execute(
+                """
+                CREATE TABLE user_sessions (
+                    id BIGSERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    session_id TEXT NOT NULL UNIQUE,
+                    source TEXT NOT NULL DEFAULT 'webapp',
+                    started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    ended_at TIMESTAMPTZ,
+                    duration_seconds INTEGER,
+                    screens_visited JSONB NOT NULL DEFAULT '[]',
+                    battles_played INTEGER NOT NULL DEFAULT 0,
+                    cases_opened INTEGER NOT NULL DEFAULT 0
+                )
+                """
+            )
+            changed = True
+
+        columns = await self._get_columns("user_sessions")
+        changed |= await self._add_column_if_missing("user_sessions", columns, "user_id BIGINT NOT NULL")
+        changed |= await self._add_column_if_missing("user_sessions", columns, "session_id TEXT NOT NULL")
+        changed |= await self._add_column_if_missing("user_sessions", columns, "source TEXT NOT NULL DEFAULT 'webapp'")
+        changed |= await self._add_column_if_missing("user_sessions", columns, "started_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
+        changed |= await self._add_column_if_missing("user_sessions", columns, "ended_at TIMESTAMPTZ")
+        changed |= await self._add_column_if_missing("user_sessions", columns, "duration_seconds INTEGER")
+        changed |= await self._add_column_if_missing("user_sessions", columns, "screens_visited JSONB NOT NULL DEFAULT '[]'")
+        changed |= await self._add_column_if_missing("user_sessions", columns, "battles_played INTEGER NOT NULL DEFAULT 0")
+        changed |= await self._add_column_if_missing("user_sessions", columns, "cases_opened INTEGER NOT NULL DEFAULT 0")
+        changed |= await self._add_column_if_missing("user_sessions", columns, "updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
+
+        return changed
+
+    async def _ensure_onboarding_events_table(self) -> bool:
+        changed = False
+
+        table_exists = await self.fetchval("SELECT to_regclass('public.onboarding_events')")
+        if not table_exists:
+            await self.execute(
+                """
+                CREATE TABLE onboarding_events (
+                    id BIGSERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    step TEXT NOT NULL,
+                    completed BOOLEAN NOT NULL DEFAULT FALSE,
+                    time_spent_seconds NUMERIC(8,1),
+                    metadata JSONB NOT NULL DEFAULT '{}',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            changed = True
+
+        columns = await self._get_columns("onboarding_events")
+        changed |= await self._add_column_if_missing("onboarding_events", columns, "user_id BIGINT NOT NULL")
+        changed |= await self._add_column_if_missing("onboarding_events", columns, "step TEXT NOT NULL")
+        changed |= await self._add_column_if_missing("onboarding_events", columns, "completed BOOLEAN NOT NULL DEFAULT FALSE")
+        changed |= await self._add_column_if_missing("onboarding_events", columns, "time_spent_seconds NUMERIC(8,1)")
+        changed |= await self._add_column_if_missing("onboarding_events", columns, "metadata JSONB NOT NULL DEFAULT '{}'")
+        changed |= await self._add_column_if_missing("onboarding_events", columns, "created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
+
+        return changed
+
+    async def _ensure_battle_summary_table(self) -> bool:
+        changed = False
+
+        table_exists = await self.fetchval("SELECT to_regclass('public.battle_summary')")
+        if not table_exists:
+            await self.execute(
+                """
+                CREATE TABLE battle_summary (
+                    id BIGSERIAL PRIMARY KEY,
+                    match_id TEXT NOT NULL UNIQUE,
+                    p1_user_id BIGINT NOT NULL,
+                    p2_user_id BIGINT NOT NULL,
+                    winner_user_id BIGINT,
+                    loser_user_id BIGINT,
+                    p1_hero_id INTEGER,
+                    p2_hero_id INTEGER,
+                    p1_deck JSONB NOT NULL DEFAULT '[]',
+                    p2_deck JSONB NOT NULL DEFAULT '[]',
+                    surrender BOOLEAN NOT NULL DEFAULT FALSE,
+                    afk BOOLEAN NOT NULL DEFAULT FALSE,
+                    match_type TEXT NOT NULL DEFAULT 'pvp',
+                    game_mode TEXT,
+                    duration_seconds INTEGER NOT NULL DEFAULT 0,
+                    turns_count INTEGER NOT NULL DEFAULT 0,
+                    p1_trophy_change INTEGER NOT NULL DEFAULT 0,
+                    p2_trophy_change INTEGER NOT NULL DEFAULT 0,
+                    p1_coins_earned INTEGER NOT NULL DEFAULT 0,
+                    p2_coins_earned INTEGER NOT NULL DEFAULT 0,
+                    p1_cards_played INTEGER NOT NULL DEFAULT 0,
+                    p2_cards_played INTEGER NOT NULL DEFAULT 0,
+                    metadata JSONB NOT NULL DEFAULT '{}',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            changed = True
+
+        columns = await self._get_columns("battle_summary")
+        changed |= await self._add_column_if_missing("battle_summary", columns, "match_id TEXT NOT NULL")
+        changed |= await self._add_column_if_missing("battle_summary", columns, "p1_user_id BIGINT NOT NULL")
+        changed |= await self._add_column_if_missing("battle_summary", columns, "p2_user_id BIGINT NOT NULL")
+        changed |= await self._add_column_if_missing("battle_summary", columns, "winner_user_id BIGINT")
+        changed |= await self._add_column_if_missing("battle_summary", columns, "loser_user_id BIGINT")
+        changed |= await self._add_column_if_missing("battle_summary", columns, "p1_hero_id INTEGER")
+        changed |= await self._add_column_if_missing("battle_summary", columns, "p2_hero_id INTEGER")
+        changed |= await self._add_column_if_missing("battle_summary", columns, "p1_deck JSONB NOT NULL DEFAULT '[]'")
+        changed |= await self._add_column_if_missing("battle_summary", columns, "p2_deck JSONB NOT NULL DEFAULT '[]'")
+        changed |= await self._add_column_if_missing("battle_summary", columns, "surrender BOOLEAN NOT NULL DEFAULT FALSE")
+        changed |= await self._add_column_if_missing("battle_summary", columns, "afk BOOLEAN NOT NULL DEFAULT FALSE")
+        changed |= await self._add_column_if_missing("battle_summary", columns, "match_type TEXT NOT NULL DEFAULT 'pvp'")
+        changed |= await self._add_column_if_missing("battle_summary", columns, "game_mode TEXT")
+        changed |= await self._add_column_if_missing("battle_summary", columns, "duration_seconds INTEGER NOT NULL DEFAULT 0")
+        changed |= await self._add_column_if_missing("battle_summary", columns, "turns_count INTEGER NOT NULL DEFAULT 0")
+        changed |= await self._add_column_if_missing("battle_summary", columns, "p1_trophy_change INTEGER NOT NULL DEFAULT 0")
+        changed |= await self._add_column_if_missing("battle_summary", columns, "p2_trophy_change INTEGER NOT NULL DEFAULT 0")
+        changed |= await self._add_column_if_missing("battle_summary", columns, "p1_coins_earned INTEGER NOT NULL DEFAULT 0")
+        changed |= await self._add_column_if_missing("battle_summary", columns, "p2_coins_earned INTEGER NOT NULL DEFAULT 0")
+        changed |= await self._add_column_if_missing("battle_summary", columns, "p1_cards_played INTEGER NOT NULL DEFAULT 0")
+        changed |= await self._add_column_if_missing("battle_summary", columns, "p2_cards_played INTEGER NOT NULL DEFAULT 0")
+        changed |= await self._add_column_if_missing("battle_summary", columns, "metadata JSONB NOT NULL DEFAULT '{}'")
+        changed |= await self._add_column_if_missing("battle_summary", columns, "created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
+
+        return changed
+
+    async def _ensure_battle_actions_table(self) -> bool:
+        changed = False
+
+        table_exists = await self.fetchval("SELECT to_regclass('public.battle_actions')")
+        if not table_exists:
+            await self.execute(
+                """
+                CREATE TABLE battle_actions (
+                    id BIGSERIAL PRIMARY KEY,
+                    battle_id TEXT NOT NULL,
+                    turn_number INTEGER NOT NULL DEFAULT 0,
+                    acting_player INTEGER,
+                    acting_user_id BIGINT,
+                    is_bot BOOLEAN NOT NULL DEFAULT FALSE,
+                    state_json JSONB NOT NULL DEFAULT '{}',
+                    action_json JSONB NOT NULL DEFAULT '{}',
+                    quality_score DOUBLE PRECISION,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            changed = True
+
+        columns = await self._get_columns("battle_actions")
+        changed |= await self._add_column_if_missing("battle_actions", columns, "battle_id TEXT NOT NULL")
+        changed |= await self._add_column_if_missing("battle_actions", columns, "turn_number INTEGER NOT NULL DEFAULT 0")
+        changed |= await self._add_column_if_missing("battle_actions", columns, "acting_player INTEGER")
+        changed |= await self._add_column_if_missing("battle_actions", columns, "acting_user_id BIGINT")
+        changed |= await self._add_column_if_missing("battle_actions", columns, "is_bot BOOLEAN NOT NULL DEFAULT FALSE")
+        changed |= await self._add_column_if_missing("battle_actions", columns, "state_json JSONB NOT NULL DEFAULT '{}'")
+        changed |= await self._add_column_if_missing("battle_actions", columns, "action_json JSONB NOT NULL DEFAULT '{}'")
+        changed |= await self._add_column_if_missing("battle_actions", columns, "quality_score DOUBLE PRECISION")
+        changed |= await self._add_column_if_missing("battle_actions", columns, "created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
+
+        await self.execute("CREATE INDEX IF NOT EXISTS idx_battle_actions_battle_id ON battle_actions(battle_id)")
+        await self.execute("CREATE INDEX IF NOT EXISTS idx_battle_actions_acting_user_id ON battle_actions(acting_user_id)")
+        await self.execute("CREATE INDEX IF NOT EXISTS idx_battle_actions_created_at ON battle_actions(created_at)")
 
         return changed
 
@@ -3209,6 +3848,50 @@ class Database:
             "UPDATE payments SET status = $1, updated_at = NOW() WHERE payment_id = $2",
             status, payment_id,
         )
+
+    async def get_user_payment_history(
+        self, user_id: int, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        rows = await self.fetch(
+            """
+            SELECT payment_id, user_id, amount, currency, description, metadata,
+                   status, rewards_processed, created_at, updated_at
+            FROM payments
+            WHERE user_id = $1
+            ORDER BY created_at DESC
+            LIMIT $2
+            """,
+            user_id, limit,
+        )
+        return [dict(row) for row in rows]
+
+    async def mark_payment_modal_shown(self, payment_id: str, user_id: int) -> bool:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        updated = await self.fetchval(
+            """
+            UPDATE payments
+            SET metadata = metadata || '{"modal_shown": true}'::jsonb
+            WHERE payment_id = $1
+              AND user_id = $2
+              AND (metadata->>'modal_shown') IS DISTINCT FROM 'true'
+            RETURNING 1
+            """,
+            payment_id,
+            user_id,
+        )
+        return bool(updated)
+
+    async def has_any_purchase(self, user_id: int) -> bool:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        row = await self.fetchrow(
+            "SELECT 1 FROM payments WHERE user_id = $1 AND status = 'succeeded' LIMIT 1",
+            user_id,
+        )
+        return bool(row)
 
     async def create_community_post(
         self,
@@ -4934,6 +5617,50 @@ class Database:
                 user_id
             )
 
+    async def _ensure_admin_account_actions_table(self) -> bool:
+        """Ensure admin_account_actions table exists."""
+        changed = False
+        table_exists = await self.fetchval(
+            "SELECT to_regclass('public.admin_account_actions')"
+        )
+        if not table_exists:
+            await self.execute(
+                """
+                CREATE TABLE admin_account_actions (
+                    id BIGSERIAL PRIMARY KEY,
+                    admin_user_id BIGINT NOT NULL,
+                    target_user_id BIGINT NOT NULL,
+                    action_type TEXT NOT NULL,
+                    reason TEXT,
+                    payload JSONB NOT NULL DEFAULT '{}',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            changed = True
+
+        existing = await self._get_columns("admin_account_actions")
+
+        # Note: We already created all columns above, but ensure indices exist
+        idx_prefix = "admin_account_actions"
+        for col, suffix in [
+            ("target_user_id", "target"),
+            ("admin_user_id", "admin"),
+            ("action_type", "type"),
+            ("created_at", "created"),
+        ]:
+            idx_name = f"idx_{idx_prefix}_{suffix}"
+            exists_idx = await self.fetchval(
+                "SELECT 1 FROM pg_indexes WHERE indexname = $1", idx_name
+            )
+            if not exists_idx:
+                await self.execute(
+                    f"CREATE INDEX {idx_name} ON admin_account_actions ({col})"
+                )
+                changed = True
+
+        return changed
+
     async def get_user_deck_presets(self, user_id: int) -> list[dict[str, Any]]:
         """Получить все пресеты колод пользователя."""
         if not self._pool:
@@ -5321,6 +6048,1487 @@ class Database:
 
 
 
+
+    # ── Analytics: write methods ──
+
+    async def track_economy_event(
+        self,
+        user_id: int,
+        event_type: str,
+        resource: str,
+        amount: Any,
+        source: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        if not self._pool:
+            return
+        try:
+            safe_amount = float(amount) if amount is not None else 0.0
+            safe_meta = _json_safe(metadata) if metadata else {}
+            await self.execute(
+                """
+                INSERT INTO economy_events (user_id, event_type, resource, amount, source, metadata)
+                VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+                """,
+                user_id,
+                event_type,
+                resource,
+                safe_amount,
+                source,
+                json.dumps(safe_meta, ensure_ascii=False),
+            )
+        except Exception:
+            import logging
+            logging.getLogger(__name__).error(
+                "track_economy_event failed: user_id=%s event_type=%s resource=%s",
+                user_id, event_type, resource, exc_info=True,
+            )
+
+    async def start_user_session(
+        self,
+        user_id: int,
+        session_id: str,
+        source: str = "webapp",
+    ) -> None:
+        if not self._pool:
+            return
+        try:
+            await self.execute(
+                """
+                INSERT INTO user_sessions (user_id, session_id, source)
+                VALUES ($1, $2, $3)
+                ON CONFLICT DO NOTHING
+                """,
+                user_id, session_id, source,
+            )
+        except Exception:
+            import logging
+            logging.getLogger(__name__).error(
+                "start_user_session failed: user_id=%s session_id=%s",
+                user_id, session_id, exc_info=True,
+            )
+
+    async def finish_user_session(
+        self,
+        session_id: str,
+        screens_visited: Optional[list] = None,
+        battles_played: int = 0,
+        cases_opened: int = 0,
+    ) -> None:
+        if not self._pool:
+            return
+        try:
+            await self.execute(
+                """
+                UPDATE user_sessions
+                SET ended_at = NOW(),
+                    duration_seconds = EXTRACT(EPOCH FROM (NOW() - started_at))::INT,
+                    screens_visited = $1::jsonb,
+                    battles_played = $2,
+                    cases_opened = $3,
+                    updated_at = NOW()
+                WHERE session_id = $4
+                  AND ended_at IS NULL
+                """,
+                json.dumps(screens_visited or [], ensure_ascii=False),
+                battles_played,
+                cases_opened,
+                session_id,
+            )
+        except Exception:
+            import logging
+            logging.getLogger(__name__).error(
+                "finish_user_session failed: session_id=%s", session_id, exc_info=True,
+            )
+
+    async def update_user_session(
+        self,
+        session_id: str,
+        screens_visited: Optional[list] = None,
+        battles_played: int = 0,
+        cases_opened: int = 0,
+    ) -> None:
+        if not self._pool:
+            return
+        try:
+            await self.execute(
+                """
+                UPDATE user_sessions
+                SET screens_visited = $1::jsonb,
+                    battles_played = GREATEST(battles_played, $2),
+                    cases_opened = GREATEST(cases_opened, $3),
+                    duration_seconds = EXTRACT(EPOCH FROM (NOW() - started_at))::INT,
+                    updated_at = NOW()
+                WHERE session_id = $4
+                  AND ended_at IS NULL
+                """,
+                json.dumps(screens_visited or [], ensure_ascii=False),
+                battles_played,
+                cases_opened,
+                session_id,
+            )
+        except Exception:
+            import logging
+            logging.getLogger(__name__).error(
+                "update_user_session failed: session_id=%s", session_id, exc_info=True,
+            )
+
+    async def track_onboarding_event(
+        self,
+        user_id: int,
+        step: str,
+        completed: bool,
+        time_spent_seconds: Optional[float] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        if not self._pool:
+            return
+        try:
+            await self.execute(
+                """
+                INSERT INTO onboarding_events (user_id, step, completed, time_spent_seconds, metadata)
+                VALUES ($1, $2, $3, $4, $5::jsonb)
+                """,
+                user_id,
+                step,
+                completed,
+                time_spent_seconds,
+                json.dumps(metadata or {}, ensure_ascii=False),
+            )
+        except Exception:
+            import logging
+            logging.getLogger(__name__).error(
+                "track_onboarding_event failed: user_id=%s step=%s",
+                user_id, step, exc_info=True,
+            )
+
+    async def record_battle_summary(
+        self,
+        *,
+        match_id: str,
+        p1_user_id: int,
+        p2_user_id: int,
+        winner_user_id: Optional[int] = None,
+        loser_user_id: Optional[int] = None,
+        p1_hero_id: Optional[int] = None,
+        p2_hero_id: Optional[int] = None,
+        p1_deck: Optional[list[int]] = None,
+        p2_deck: Optional[list[int]] = None,
+        surrender: bool = False,
+        afk: bool = False,
+        match_type: str = "pvp",
+        game_mode: Optional[str] = None,
+        duration_seconds: int = 0,
+        turns_count: int = 0,
+        p1_trophy_change: int = 0,
+        p2_trophy_change: int = 0,
+        p1_coins_earned: int = 0,
+        p2_coins_earned: int = 0,
+        p1_cards_played: int = 0,
+        p2_cards_played: int = 0,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        if not self._pool:
+            return
+        try:
+            await self.execute(
+                """
+                INSERT INTO battle_summary (
+                    match_id, p1_user_id, p2_user_id,
+                    winner_user_id, loser_user_id,
+                    p1_hero_id, p2_hero_id, p1_deck, p2_deck,
+                    surrender, afk, match_type, game_mode,
+                    duration_seconds, turns_count,
+                    p1_trophy_change, p2_trophy_change,
+                    p1_coins_earned, p2_coins_earned,
+                    p1_cards_played, p2_cards_played,
+                    metadata
+                ) VALUES (
+                    $1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22
+                )
+                ON CONFLICT (match_id) DO NOTHING
+                """,
+                match_id, p1_user_id, p2_user_id,
+                winner_user_id, loser_user_id,
+                p1_hero_id, p2_hero_id,
+                json.dumps(p1_deck or [], ensure_ascii=False),
+                json.dumps(p2_deck or [], ensure_ascii=False),
+                surrender, afk, match_type, game_mode,
+                duration_seconds, turns_count,
+                p1_trophy_change, p2_trophy_change,
+                p1_coins_earned, p2_coins_earned,
+                p1_cards_played, p2_cards_played,
+                json.dumps(metadata or {}, ensure_ascii=False),
+            )
+        except Exception:
+            import logging
+            logging.getLogger(__name__).error(
+                "record_battle_summary failed: match_id=%s", match_id, exc_info=True,
+            )
+
+    async def record_battle_actions(
+        self,
+        battle_id: str,
+        actions: list[Dict[str, Any]],
+    ) -> int:
+        if not self._pool or not actions:
+            return 0
+        inserted = 0
+        for item in actions:
+            try:
+                await self.execute(
+                    """
+                    INSERT INTO battle_actions (
+                        battle_id, turn_number, acting_player, acting_user_id,
+                        is_bot, state_json, action_json, quality_score
+                    )
+                    VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8)
+                    """,
+                    battle_id,
+                    int(item.get("turn_number") or 0),
+                    item.get("acting_player"),
+                    item.get("acting_user_id"),
+                    bool(item.get("is_bot", False)),
+                    json.dumps(item.get("state_json") or {}, ensure_ascii=False),
+                    json.dumps(item.get("action_json") or {}, ensure_ascii=False),
+                    item.get("quality_score"),
+                )
+                inserted += 1
+            except Exception:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "record_battle_actions single row failed: battle_id=%s turn=%s",
+                    battle_id, item.get("turn_number"), exc_info=True,
+                )
+        return inserted
+
+    # ── Analytics: admin queries ──
+
+    async def get_admin_analytics_overview(self, days: int = 7) -> Dict[str, Any]:
+        if not self._pool:
+            return {}
+
+        days = max(int(days or 7), 1)
+
+        total_users = await self.fetchval("SELECT COUNT(*) FROM users")
+        new_users_today = await self.fetchval(
+            "SELECT COUNT(*) FROM users WHERE created_at >= CURRENT_DATE"
+        )
+        new_users_7d = await self.fetchval(
+            "SELECT COUNT(*) FROM users WHERE created_at >= NOW() - make_interval(days => $1::int)", days
+        )
+        active_users_24h = await self.fetchval(
+            "SELECT COUNT(DISTINCT user_id) FROM user_sessions WHERE started_at >= NOW() - INTERVAL '24 hours'"
+        )
+
+        total_revenue = await self.fetchval(
+            "SELECT COALESCE(SUM(amount), 0) FROM payments WHERE status = 'succeeded'"
+        )
+        revenue_today = await self.fetchval(
+            "SELECT COALESCE(SUM(amount), 0) FROM payments WHERE status = 'succeeded' AND created_at >= CURRENT_DATE"
+        )
+        revenue_7d = await self.fetchval(
+            "SELECT COALESCE(SUM(amount), 0) FROM payments WHERE status = 'succeeded' AND created_at >= NOW() - make_interval(days => $1::int)",
+            days,
+        )
+        purchases_today = await self.fetchval(
+            "SELECT COUNT(*) FROM payments WHERE status = 'succeeded' AND created_at >= CURRENT_DATE"
+        )
+        paying_users_total = await self.fetchval(
+            "SELECT COUNT(DISTINCT user_id) FROM payments WHERE status = 'succeeded'"
+        )
+
+        battles_today = await self.fetchval(
+            "SELECT COUNT(*) FROM battle_results WHERE created_at >= CURRENT_DATE"
+        )
+        battles_7d = await self.fetchval(
+            "SELECT COUNT(*) FROM battle_results WHERE created_at >= NOW() - make_interval(days => $1::int)", days
+        )
+        avg_duration = await self.fetchval(
+            "SELECT AVG(match_duration) FROM battle_results WHERE match_duration > 0 AND created_at >= NOW() - make_interval(days => $1::int)",
+            days,
+        )
+
+        top_products = []
+        try:
+            tp_rows = await self.fetch(
+                """
+                SELECT description AS item_name, COUNT(*) AS cnt, SUM(amount) AS total_revenue
+                FROM payments
+                WHERE status = 'succeeded' AND description IS NOT NULL
+                GROUP BY description
+                ORDER BY cnt DESC
+                LIMIT 5
+                """
+            )
+            top_products = [
+                {"name": r["item_name"] or "—", "count": r["cnt"], "revenue": float(r["total_revenue"] or 0)}
+                for r in tp_rows
+            ]
+        except Exception:
+            pass
+
+        return {
+            "total_users": int(total_users or 0),
+            "new_users_today": int(new_users_today or 0),
+            "new_users_7d": int(new_users_7d or 0),
+            "active_users_24h": int(active_users_24h or 0),
+            "total_revenue": float(total_revenue or 0),
+            "revenue_today": float(revenue_today or 0),
+            "revenue_7d": float(revenue_7d or 0),
+            "purchases_today": int(purchases_today or 0),
+            "paying_users_total": int(paying_users_total or 0),
+            "battles_today": int(battles_today or 0),
+            "battles_7d": int(battles_7d or 0),
+            "avg_battle_duration": float(round(avg_duration or 0, 1)),
+            "top_products": top_products,
+        }
+
+    async def get_admin_revenue_analytics(self, days: int = 30) -> Dict[str, Any]:
+        if not self._pool:
+            return {"revenue_by_day": [], "total": 0}
+
+        days = max(int(days or 30), 1)
+        rows = await self.fetch(
+            """
+            SELECT DATE(created_at) AS day,
+                   COUNT(*) AS purchases,
+                   COALESCE(SUM(amount), 0) AS revenue
+            FROM payments
+            WHERE status = 'succeeded' AND created_at >= NOW() - make_interval(days => $1::int)
+            GROUP BY day ORDER BY day ASC
+            """,
+            days,
+        )
+        revenue_by_day = [
+            {"day": str(r["day"]), "purchases": r["purchases"], "revenue": float(r["revenue"])}
+            for r in rows
+        ]
+        total = sum(r["revenue"] for r in revenue_by_day)
+        return {"revenue_by_day": revenue_by_day, "total": float(total)}
+
+    async def get_admin_players_analytics(self, days: int = 30) -> Dict[str, Any]:
+        if not self._pool:
+            return {"new_users_by_day": [], "active_users_by_day": [], "total_new": 0}
+
+        days = max(int(days or 30), 1)
+        rows = await self.fetch(
+            """
+            SELECT DATE(created_at) AS day, COUNT(*) AS cnt
+            FROM users
+            WHERE created_at >= NOW() - make_interval(days => $1::int)
+            GROUP BY day ORDER BY day ASC
+            """,
+            days,
+        )
+        new_users_by_day = [
+            {"day": str(r["day"]), "count": r["cnt"]}
+            for r in rows
+        ]
+        total_new = sum(r["count"] for r in new_users_by_day)
+
+        active_rows = await self.fetch(
+            """
+            SELECT DATE(started_at) AS day, COUNT(DISTINCT user_id) AS cnt
+            FROM user_sessions
+            WHERE started_at >= NOW() - make_interval(days => $1::int)
+            GROUP BY day ORDER BY day ASC
+            """,
+            days,
+        )
+        active_by_day = [
+            {"day": str(r["day"]), "count": r["cnt"]}
+            for r in active_rows
+        ]
+        return {
+            "new_users_by_day": new_users_by_day,
+            "active_users_by_day": active_by_day,
+            "total_new": total_new,
+        }
+
+    async def get_admin_battle_analytics(self, days: int = 30) -> Dict[str, Any]:
+        if not self._pool:
+            return {"battles_by_day": [], "total": 0}
+
+        days = max(int(days or 30), 1)
+        rows = await self.fetch(
+            """
+            SELECT DATE(created_at) AS day, COUNT(*) AS cnt,
+                   AVG(match_duration) AS avg_duration,
+                   AVG(turns_count) AS avg_turns
+            FROM battle_results
+            WHERE created_at >= NOW() - make_interval(days => $1::int)
+            GROUP BY day ORDER BY day ASC
+            """,
+            days,
+        )
+        battles_by_day = [
+            {
+                "day": str(r["day"]),
+                "count": r["cnt"],
+                "avg_duration": float(round(r["avg_duration"] or 0, 1)),
+                "avg_turns": float(round(r["avg_turns"] or 0, 1)),
+            }
+            for r in rows
+        ]
+        total = sum(r["count"] for r in battles_by_day)
+        return {"battles_by_day": battles_by_day, "total": total}
+
+
+    async def get_admin_cards_analytics(self, days: int = 30) -> Dict[str, Any]:
+        if not self._pool:
+            return {"popular_cards": [], "winner_cards": [], "never_used_cards": []}
+
+        days = max(int(days or 30), 1)
+        since = datetime.now(timezone.utc) - timedelta(days=days)
+
+        popular: list[dict] = []
+        winner_deck: list[dict] = []
+        never_used: list[dict] = []
+
+        try:
+            cte_rows = await self.fetch(
+                """
+                WITH deck_cards AS (
+                    SELECT jsonb_array_elements_text(p1_deck)::INT AS card_id, winner_user_id = p1_user_id AS won
+                    FROM battle_summary
+                    WHERE created_at >= $1 AND p1_deck IS NOT NULL AND jsonb_array_length(p1_deck) > 0
+                    UNION ALL
+                    SELECT jsonb_array_elements_text(p2_deck)::INT AS card_id, winner_user_id = p2_user_id AS won
+                    FROM battle_summary
+                    WHERE created_at >= $1 AND p2_deck IS NOT NULL AND jsonb_array_length(p2_deck) > 0
+                ),
+                agg AS (
+                    SELECT card_id, COUNT(*) AS appearances, COUNT(*) FILTER (WHERE won) AS wins
+                    FROM deck_cards
+                    GROUP BY card_id
+                )
+                SELECT a.card_id, a.appearances, a.wins,
+                       COALESCE(c.name, 'Card #' || a.card_id) AS name,
+                       COALESCE(c.rarity, 'unknown') AS rarity,
+                       CASE WHEN a.appearances > 0 THEN a.wins::FLOAT / a.appearances ELSE 0 END AS winrate
+                FROM agg a
+                LEFT JOIN cards c ON c.id = a.card_id
+                ORDER BY a.appearances DESC
+                LIMIT 20
+                """,
+                since,
+            )
+            popular = [
+                {"card_id": r["card_id"], "name": r["name"], "appearances": r["appearances"],
+                 "wins": r["wins"], "winrate": round(float(r["winrate"]), 3)}
+                for r in cte_rows
+            ]
+        except Exception:
+            pass
+
+        try:
+            win_rows = await self.fetch(
+                """
+                WITH deck_cards AS (
+                    SELECT jsonb_array_elements_text(p1_deck)::INT AS card_id
+                    FROM battle_summary
+                    WHERE created_at >= $1 AND winner_user_id = p1_user_id AND p1_deck IS NOT NULL AND jsonb_array_length(p1_deck) > 0
+                    UNION ALL
+                    SELECT jsonb_array_elements_text(p2_deck)::INT AS card_id
+                    FROM battle_summary
+                    WHERE created_at >= $1 AND winner_user_id = p2_user_id AND p2_deck IS NOT NULL AND jsonb_array_length(p2_deck) > 0
+                )
+                SELECT card_id, COUNT(*) AS appearances
+                FROM deck_cards
+                GROUP BY card_id
+                ORDER BY appearances DESC
+                LIMIT 20
+                """,
+                since,
+            )
+            winner_deck = [
+                {"card_id": r["card_id"], "appearances": r["appearances"]}
+                for r in win_rows
+            ]
+        except Exception:
+            pass
+
+        try:
+            all_card_ids = await self.fetch("SELECT id FROM cards")
+            all_ids = {r["id"] for r in all_card_ids}
+            used_rows = await self.fetch(
+                """
+                SELECT DISTINCT jsonb_array_elements_text(p1_deck)::INT AS card_id FROM battle_summary
+                WHERE p1_deck IS NOT NULL AND jsonb_array_length(p1_deck) > 0 AND created_at >= $1
+                UNION
+                SELECT DISTINCT jsonb_array_elements_text(p2_deck)::INT AS card_id FROM battle_summary
+                WHERE p2_deck IS NOT NULL AND jsonb_array_length(p2_deck) > 0 AND created_at >= $1
+                """,
+                since,
+            )
+            used_ids = {r["card_id"] for r in used_rows}
+            never_ids = all_ids - used_ids
+            if never_ids:
+                never_rows = await self.fetch(
+                    "SELECT id, name, rarity FROM cards WHERE id = ANY($1::int[]) ORDER BY id LIMIT 50",
+                    list(never_ids),
+                )
+                never_used = [
+                    {"card_id": r["id"], "name": r["name"] or f"Card #{r['id']}", "rarity": r["rarity"] or "unknown"}
+                    for r in never_rows
+                ]
+        except Exception:
+            pass
+
+        return {"popular_cards": popular, "winner_cards": winner_deck, "never_used_cards": never_used}
+
+    async def get_admin_heroes_analytics(self, days: int = 30) -> Dict[str, Any]:
+        if not self._pool:
+            return {"heroes": []}
+
+        days = max(int(days or 30), 1)
+        since = datetime.now(timezone.utc) - timedelta(days=days)
+
+        try:
+            rows = await self.fetch(
+                """
+                WITH hero_games AS (
+                    SELECT p1_hero_id AS hero_id, winner_user_id = p1_user_id AS won
+                    FROM battle_summary
+                    WHERE created_at >= $1 AND p1_hero_id IS NOT NULL
+                    UNION ALL
+                    SELECT p2_hero_id AS hero_id, winner_user_id = p2_user_id AS won
+                    FROM battle_summary
+                    WHERE created_at >= $1 AND p2_hero_id IS NOT NULL
+                )
+                SELECT h.hero_id, COUNT(*) AS games, COUNT(*) FILTER (WHERE won) AS wins,
+                       CASE WHEN COUNT(*) > 0 THEN COUNT(*) FILTER (WHERE won)::FLOAT / COUNT(*) ELSE 0 END AS winrate
+                FROM hero_games h
+                GROUP BY h.hero_id
+                ORDER BY games DESC
+                """
+            )
+            hero_ids = [r["hero_id"] for r in rows]
+            names = {}
+            if hero_ids:
+                name_rows = await self.fetch(
+                    "SELECT id, name FROM cards WHERE id = ANY($1::int[])",
+                    hero_ids,
+                )
+                names = {r["id"]: r["name"] or f"Hero #{r['id']}" for r in name_rows}
+            heroes = [
+                {"hero_id": r["hero_id"], "name": names.get(r["hero_id"], f"Hero #{r['hero_id']}"),
+                 "games": r["games"], "wins": r["wins"], "winrate": round(float(r["winrate"]), 3)}
+                for r in rows
+            ]
+        except Exception:
+            heroes = []
+
+        return {"heroes": heroes}
+
+    async def get_admin_retention_analytics(self, days: int = 30) -> Dict[str, Any]:
+        if not self._pool:
+            return {"sessions_by_day": [], "avg_session_duration": 0, "avg_screens_per_session": 0,
+                    "returning_users_by_day": [], "top_screens": []}
+
+        days = max(int(days or 30), 1)
+        since = datetime.now(timezone.utc) - timedelta(days=days)
+
+        sessions_by_day: list[dict] = []
+        avg_duration = 0.0
+        avg_screens = 0.0
+        returning_by_day: list[dict] = []
+        top_screens: list[dict] = []
+
+        try:
+            s_rows = await self.fetch(
+                "SELECT DATE(started_at) AS day, COUNT(*) AS sessions, COUNT(DISTINCT user_id) AS users "
+                "FROM user_sessions WHERE started_at >= $1 GROUP BY day ORDER BY day ASC",
+                since,
+            )
+            sessions_by_day = [{"day": str(r["day"]), "sessions": r["sessions"], "users": r["users"]} for r in s_rows]
+        except Exception:
+            pass
+
+        try:
+            avg_duration = await self.fetchval(
+                "SELECT AVG(duration_seconds) FROM user_sessions WHERE duration_seconds IS NOT NULL AND started_at >= $1",
+                since,
+            ) or 0.0
+        except Exception:
+            pass
+
+        try:
+            avg_screens_raw = await self.fetchval(
+                "SELECT AVG(jsonb_array_length(screens_visited)) FROM user_sessions WHERE screens_visited IS NOT NULL AND started_at >= $1 AND jsonb_array_length(screens_visited) > 0",
+                since,
+            ) or 0.0
+            avg_screens = round(float(avg_screens_raw), 1)
+        except Exception:
+            pass
+
+        try:
+            ret_rows = await self.fetch(
+                "SELECT DATE(started_at) AS day, COUNT(DISTINCT user_id) AS users FROM user_sessions "
+                "WHERE started_at >= $1 GROUP BY day HAVING COUNT(*) > 1 ORDER BY day ASC",
+                since,
+            )
+            returning_by_day = [{"day": str(r["day"]), "users": r["users"]} for r in ret_rows]
+        except Exception:
+            pass
+
+        try:
+            screen_items = await self.fetch(
+                "SELECT screens_visited FROM user_sessions WHERE screens_visited IS NOT NULL AND started_at >= $1 AND jsonb_array_length(screens_visited) > 0",
+                since,
+            )
+            screen_counts: dict[str, int] = {}
+            for row in screen_items:
+                items = row["screens_visited"]
+                if isinstance(items, str):
+                    try:
+                        items = json.loads(items)
+                    except Exception:
+                        items = []
+                if isinstance(items, list):
+                    for item in items:
+                        s = item if isinstance(item, str) else (item.get("screen") if isinstance(item, dict) else None)
+                        if s:
+                            screen_counts[s] = screen_counts.get(s, 0) + 1
+            top_screens = sorted(
+                [{"screen": k, "visits": v} for k, v in screen_counts.items()],
+                key=lambda x: x["visits"], reverse=True
+            )[:20]
+        except Exception:
+            pass
+
+        return {
+            "sessions_by_day": sessions_by_day,
+            "avg_session_duration": round(float(avg_duration), 1),
+            "avg_screens_per_session": float(avg_screens),
+            "returning_users_by_day": returning_by_day,
+            "top_screens": top_screens,
+        }
+
+    async def get_admin_onboarding_analytics(self, days: int = 30) -> Dict[str, Any]:
+        if not self._pool:
+            return {"steps": [], "raw": []}
+
+        days = max(int(days or 30), 1)
+        since = datetime.now(timezone.utc) - timedelta(days=days)
+
+        raw: list[dict] = []
+        steps: list[dict] = []
+
+        try:
+            raw_rows = await self.fetch(
+                "SELECT step, completed, COUNT(*) AS cnt FROM onboarding_events "
+                "WHERE created_at >= $1 GROUP BY step, completed ORDER BY step, completed",
+                since,
+            )
+            raw = [{"step": r["step"], "completed": r["completed"], "count": r["cnt"]} for r in raw_rows]
+
+            by_step: dict[str, dict] = {}
+            for r in raw_rows:
+                entry = by_step.setdefault(r["step"], {"step": r["step"], "started": 0, "completed": 0, "total": 0})
+                entry["total"] += r["cnt"]
+                if r["completed"]:
+                    entry["completed"] = r["cnt"]
+                else:
+                    entry["started"] = r["cnt"]
+            steps = list(by_step.values())
+        except Exception:
+            pass
+
+        return {"steps": steps, "raw": raw}
+
+    async def get_admin_battle_actions_analytics(self, days: int = 7) -> Dict[str, Any]:
+        if not self._pool:
+            return {"total_actions": 0, "actions_by_type": [], "bot_player_split": {},
+                    "avg_actions_per_battle": 0, "quality_labeled": 0}
+
+        days = max(int(days or 7), 1)
+        since = datetime.now(timezone.utc) - timedelta(days=days)
+
+        total_actions = 0
+        actions_by_type: list[dict] = []
+        bot_split: dict = {"bot": 0, "player": 0}
+        avg_per_battle = 0.0
+        quality_labeled = 0
+
+        try:
+            total_actions = await self.fetchval(
+                "SELECT COUNT(*) FROM battle_actions WHERE created_at >= $1", since
+            ) or 0
+        except Exception:
+            pass
+
+        try:
+            type_rows = await self.fetch(
+                "SELECT COALESCE(action_json->>'type', 'unknown') AS atype, COUNT(*) AS cnt "
+                "FROM battle_actions WHERE created_at >= $1 GROUP BY atype ORDER BY cnt DESC",
+                since,
+            )
+            actions_by_type = [{"type": r["atype"], "count": r["cnt"]} for r in type_rows]
+        except Exception:
+            pass
+
+        try:
+            bot_count = await self.fetchval(
+                "SELECT COUNT(*) FROM battle_actions WHERE created_at >= $1 AND is_bot = TRUE", since
+            ) or 0
+            bot_split = {"bot": bot_count, "player": (total_actions or 0) - bot_count}
+        except Exception:
+            pass
+
+        try:
+            avg_raw = await self.fetchval(
+                "SELECT CASE WHEN COUNT(DISTINCT battle_id) > 0 THEN COUNT(*)::FLOAT / COUNT(DISTINCT battle_id) ELSE 0 END FROM battle_actions WHERE created_at >= $1",
+                since,
+            ) or 0.0
+            avg_per_battle = round(float(avg_raw), 1)
+        except Exception:
+            pass
+
+        try:
+            quality_labeled = await self.fetchval(
+                "SELECT COUNT(*) FROM battle_actions WHERE created_at >= $1 AND quality_score IS NOT NULL", since
+            ) or 0
+        except Exception:
+            pass
+
+        return {
+            "total_actions": int(total_actions or 0),
+            "actions_by_type": actions_by_type,
+            "bot_player_split": bot_split,
+            "avg_actions_per_battle": float(avg_per_battle),
+            "quality_labeled": int(quality_labeled or 0),
+        }
+
+
+    # ── Players Admin: audit ──
+
+    async def record_admin_account_action(
+        self,
+        admin_user_id: int,
+        target_user_id: int,
+        action_type: str,
+        reason: Optional[str] = None,
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+        try:
+            safe_payload = _json_safe(payload) if payload else {}
+            row = await self.fetchrow(
+                """
+                INSERT INTO admin_account_actions
+                    (admin_user_id, target_user_id, action_type, reason, payload)
+                VALUES ($1, $2, $3, $4, $5::jsonb)
+                RETURNING id, admin_user_id, target_user_id, action_type, reason,
+                          payload, created_at
+                """,
+                admin_user_id, target_user_id, action_type, reason,
+                json.dumps(safe_payload, ensure_ascii=False),
+            )
+            return dict(row) if row else {}
+        except Exception:
+            import logging
+            logging.getLogger(__name__).error(
+                "record_admin_account_action failed: admin=%s target=%s action=%s",
+                admin_user_id, target_user_id, action_type, exc_info=True,
+            )
+            return {"error": "audit_log_failed"}
+
+    # ── Players Admin: analytics ──
+
+    async def get_admin_players_overview(self, days: int = 30) -> Dict[str, Any]:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+        try:
+            now = datetime.utcnow()
+
+            total = await self.fetchval("SELECT COUNT(*) FROM users") or 0
+            active_24h = await self.fetchval(
+                "SELECT COUNT(DISTINCT user_id) FROM user_sessions WHERE started_at >= $1",
+                now - timedelta(hours=24),
+            ) or 0
+            active_7d = await self.fetchval(
+                "SELECT COUNT(DISTINCT user_id) FROM user_sessions WHERE started_at >= $1",
+                now - timedelta(days=7),
+            ) or 0
+            active_30d = await self.fetchval(
+                "SELECT COUNT(DISTINCT user_id) FROM user_sessions WHERE started_at >= $1",
+                now - timedelta(days=30),
+            ) or 0
+            new_today = await self.fetchval(
+                "SELECT COUNT(*) FROM users WHERE reg_date >= $1",
+                now.replace(hour=0, minute=0, second=0, microsecond=0),
+            ) or 0
+            new_7d = await self.fetchval(
+                "SELECT COUNT(*) FROM users WHERE reg_date >= $1",
+                now - timedelta(days=7),
+            ) or 0
+            banned_total = await self.fetchval(
+                "SELECT COUNT(*) FROM users WHERE is_banned = TRUE"
+            ) or 0
+            warned_total = await self.fetchval(
+                "SELECT COUNT(*) FROM users WHERE warnings_count > 0"
+            ) or 0
+            paying_users_total = await self.fetchval(
+                "SELECT COUNT(DISTINCT user_id) FROM payments WHERE status = 'succeeded'"
+            ) or 0
+
+            # Dormant users: no session in the last N days
+            dormant_7d = await self.fetchval(
+                """
+                SELECT COUNT(*) FROM users u
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM user_sessions s
+                    WHERE s.user_id = u.user_id AND s.started_at >= $1
+                )
+                """,
+                now - timedelta(days=7),
+            ) or 0
+            dormant_30d = await self.fetchval(
+                """
+                SELECT COUNT(*) FROM users u
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM user_sessions s
+                    WHERE s.user_id = u.user_id AND s.started_at >= $1
+                )
+                """,
+                now - timedelta(days=30),
+            ) or 0
+
+            return {
+                "total_users": int(total),
+                "active_24h": int(active_24h),
+                "active_7d": int(active_7d),
+                "active_30d": int(active_30d),
+                "new_today": int(new_today),
+                "new_7d": int(new_7d),
+                "banned_total": int(banned_total),
+                "warned_total": int(warned_total),
+                "paying_users_total": int(paying_users_total),
+                "dormant_7d": int(dormant_7d),
+                "dormant_30d": int(dormant_30d),
+            }
+        except Exception:
+            import logging
+            logging.getLogger(__name__).error("get_admin_players_overview failed", exc_info=True)
+            return {"error": "analytics_overview_failed"}
+
+    async def get_admin_players_leagues(self) -> Dict[str, Any]:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+        try:
+            rows = await self.fetch(
+                """
+                SELECT league, COUNT(*) as count, ROUND(AVG(trophies), 1) as avg_trophies
+                FROM users
+                GROUP BY league
+                ORDER BY league ASC
+                """
+            )
+            return {
+                "rows": [
+                    {
+                        "league": int(r["league"]),
+                        "count": int(r["count"]),
+                        "avg_trophies": float(r["avg_trophies"] or 0),
+                    }
+                    for r in rows
+                ]
+            }
+        except Exception:
+            import logging
+            logging.getLogger(__name__).error("get_admin_players_leagues failed", exc_info=True)
+            return {"error": "leagues_failed"}
+
+    async def get_admin_players_activity(self, days: int = 30) -> Dict[str, Any]:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+        try:
+            now = datetime.utcnow()
+            active_by_day = []
+            new_by_day = []
+            sessions_by_day = []
+            battles_by_day = []
+
+            for i in range(days - 1, -1, -1):
+                d_start = (now - timedelta(days=i)).replace(hour=0, minute=0, second=0, microsecond=0)
+                d_end = d_start + timedelta(days=1)
+                day_label = d_start.strftime("%Y-%m-%d")
+
+                active = await self.fetchval(
+                    "SELECT COUNT(DISTINCT user_id) FROM user_sessions WHERE started_at >= $1 AND started_at < $2",
+                    d_start, d_end,
+                ) or 0
+                active_by_day.append({"day": day_label, "count": int(active)})
+
+                newc = await self.fetchval(
+                    "SELECT COUNT(*) FROM users WHERE reg_date >= $1 AND reg_date < $2",
+                    d_start, d_end,
+                ) or 0
+                new_by_day.append({"day": day_label, "count": int(newc)})
+
+                sess = await self.fetchval(
+                    "SELECT COUNT(*) FROM user_sessions WHERE started_at >= $1 AND started_at < $2",
+                    d_start, d_end,
+                ) or 0
+                sessions_by_day.append({"day": day_label, "count": int(sess)})
+
+                batt = await self.fetchval(
+                    "SELECT COUNT(*) FROM battle_summary WHERE created_at >= $1 AND created_at < $2",
+                    d_start, d_end,
+                ) or 0
+                battles_by_day.append({"day": day_label, "count": int(batt)})
+
+            return {
+                "active_by_day": active_by_day,
+                "new_by_day": new_by_day,
+                "sessions_by_day": sessions_by_day,
+                "battles_by_day": battles_by_day,
+            }
+        except Exception:
+            import logging
+            logging.getLogger(__name__).error("get_admin_players_activity failed", exc_info=True)
+            return {"error": "activity_failed"}
+
+    async def search_admin_players(
+        self,
+        query: str = "",
+        status: str = "all",
+        league: Optional[int] = None,
+        activity: str = "all",
+        limit: int = 50,
+        offset: int = 0,
+    ) -> Dict[str, Any]:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+        try:
+            where_clauses = []
+            params: list[Any] = []
+            param_idx = 0
+
+            if query:
+                if query.isdigit():
+                    param_idx += 1
+                    where_clauses.append(f"(u.user_id = ${param_idx})")
+                    params.append(int(query))
+                else:
+                    param_idx += 1
+                    where_clauses.append(
+                        f"(LOWER(u.username) LIKE LOWER(${param_idx}) OR LOWER(u.first_name) LIKE LOWER(${param_idx}))"
+                    )
+                    params.append(f"%{query}%")
+
+            if status == "active":
+                where_clauses.append("(u.is_banned = FALSE AND u.status = 'active')")
+            elif status == "banned":
+                where_clauses.append("(u.is_banned = TRUE)")
+            elif status == "warned":
+                where_clauses.append("(u.warnings_count > 0)")
+
+            if league is not None:
+                param_idx += 1
+                where_clauses.append(f"(u.league = ${param_idx})")
+                params.append(league)
+
+            now = datetime.utcnow()
+            if activity == "active_24h":
+                where_clauses.append(
+                    "(EXISTS (SELECT 1 FROM user_sessions s WHERE s.user_id = u.user_id AND s.started_at >= $__now24h__))"
+                )
+            elif activity == "active_7d":
+                where_clauses.append(
+                    "(EXISTS (SELECT 1 FROM user_sessions s WHERE s.user_id = u.user_id AND s.started_at >= $__now7d__))"
+                )
+            elif activity == "dormant_7d":
+                where_clauses.append(
+                    "(NOT EXISTS (SELECT 1 FROM user_sessions s WHERE s.user_id = u.user_id AND s.started_at >= $__now7d__))"
+                )
+            elif activity == "dormant_30d":
+                where_clauses.append(
+                    "(NOT EXISTS (SELECT 1 FROM user_sessions s WHERE s.user_id = u.user_id AND s.started_at >= $__now30d__))"
+                )
+            elif activity == "paying":
+                where_clauses.append(
+                    "(EXISTS (SELECT 1 FROM payments p WHERE p.user_id = u.user_id AND p.status = 'succeeded'))"
+                )
+
+            # Resolve all named markers
+            now_24h = now - timedelta(hours=24)
+            now_7d = now - timedelta(days=7)
+            now_30d = now - timedelta(days=30)
+
+            def _resolve_markers(text: str, all_params: list[Any]) -> str:
+                while "$__sessions_since__" in text:
+                    all_params.append(now_30d)
+                    text = text.replace("$__sessions_since__", f"${len(all_params)}", 1)
+                while "$__now24h__" in text:
+                    all_params.append(now_24h)
+                    text = text.replace("$__now24h__", f"${len(all_params)}", 1)
+                while "$__now7d__" in text:
+                    all_params.append(now_7d)
+                    text = text.replace("$__now7d__", f"${len(all_params)}", 1)
+                while "$__now30d__" in text:
+                    all_params.append(now_30d)
+                    text = text.replace("$__now30d__", f"${len(all_params)}", 1)
+                return text
+
+            where_sql = ""
+            extra_params: list[Any] = []
+            if where_clauses:
+                resolved = []
+                resolved_params: list[Any] = []
+                for clause in where_clauses:
+                    clause = _resolve_markers(clause, resolved_params)
+                    resolved.append(clause)
+                where_sql = "WHERE " + " AND ".join(resolved)
+                params.extend(resolved_params)
+
+            count_sql = f"SELECT COUNT(*) FROM users u {where_sql}"
+            count_params = list(params)
+            count_sql = _resolve_markers(count_sql, count_params)
+            total = await self.fetchval(count_sql, *count_params) if where_sql else await self.fetchval("SELECT COUNT(*) FROM users")
+            total = int(total or 0)
+
+            limit_clause = f"LIMIT {int(limit)} OFFSET {int(offset)}"
+            data_sql = f"""
+                SELECT
+                    u.user_id,
+                    u.username,
+                    u.first_name,
+                    COALESCE(u.last_name, '') as last_name,
+                    u.extra_pass,
+                    u.trophies,
+                    u.league,
+                    u.gems,
+                    u.coins,
+                    u.keys,
+                    u.stars,
+                    u.is_banned,
+                    u.warnings_count,
+                    u.status,
+                    u.reg_date,
+                    u.updated_at as last_seen_raw,
+                    (SELECT COUNT(*) FROM user_sessions s WHERE s.user_id = u.user_id AND s.started_at >= $__sessions_since__) as sessions_30d,
+                    (SELECT COUNT(*) FROM payments p WHERE p.user_id = u.user_id AND p.status = 'succeeded') as purchases_total,
+                    (SELECT COALESCE(SUM(p.amount), 0) FROM payments p WHERE p.user_id = u.user_id AND p.status = 'succeeded') as revenue_total
+                FROM users u
+                {where_sql}
+                ORDER BY u.trophies DESC
+                {limit_clause}
+            """
+            # Note: data_sql is rebuilt here, we resolve markers on its final form
+            data_params = list(params)
+            data_sql = _resolve_markers(data_sql, data_params)
+            rows = await self.fetch(data_sql, *data_params)
+
+            players = []
+            for r in rows:
+                rd = dict(r)
+                if rd.get("reg_date") and isinstance(rd["reg_date"], datetime):
+                    rd["reg_date"] = rd["reg_date"].isoformat()
+                last_seen = rd.pop("last_seen_raw", None)
+                if last_seen and isinstance(last_seen, datetime):
+                    rd["last_seen"] = last_seen.isoformat()
+                else:
+                    rd["last_seen"] = last_seen.isoformat() if last_seen else None
+                rd["last_name"] = rd.get("last_name") or ""
+                rd["sessions_30d"] = int(rd.get("sessions_30d") or 0)
+                rd["purchases_total"] = int(rd.get("purchases_total") or 0)
+                rd["revenue_total"] = float(rd.get("revenue_total") or 0)
+                players.append(rd)
+
+            return {"players": players, "total": total}
+        except Exception:
+            import logging
+            logging.getLogger(__name__).error("search_admin_players failed", exc_info=True)
+            return {"error": "search_failed", "players": [], "total": 0}
+
+    async def get_admin_player_detail(self, user_id: int) -> Dict[str, Any]:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+        try:
+            profile = await self.fetchrow(
+                """
+                SELECT user_id, username, first_name, last_name,
+                       extra_pass, extra_pass_expires_at,
+                       trophies, max_trophies, league,
+                       gems, coins, keys, stars, energy,
+                       is_banned, ban_reason, banned_until,
+                       warnings_count, status,
+                       reg_date, created_at, updated_at
+                FROM users WHERE user_id = $1
+                """,
+                user_id,
+            )
+            if not profile:
+                return {"error": "user_not_found"}
+
+            prof = dict(profile)
+            for field in ("reg_date", "created_at", "updated_at", "extra_pass_expires_at", "banned_until"):
+                if prof.get(field) and isinstance(prof[field], datetime):
+                    prof[field] = prof[field].isoformat()
+
+            sessions = await self.fetch(
+                """
+                SELECT session_id, source, started_at, ended_at, duration_seconds,
+                       battles_played, cases_opened
+                FROM user_sessions
+                WHERE user_id = $1
+                ORDER BY started_at DESC
+                LIMIT 20
+                """,
+                user_id,
+            )
+            sessions_list = []
+            for s in sessions:
+                sd = dict(s)
+                for f in ("started_at", "ended_at"):
+                    if sd.get(f) and isinstance(sd[f], datetime):
+                        sd[f] = sd[f].isoformat()
+                sessions_list.append(sd)
+
+            payments = await self.fetch(
+                """
+                SELECT id, payment_id, amount, currency, description,
+                       status, created_at
+                FROM payments
+                WHERE user_id = $1
+                ORDER BY created_at DESC
+                LIMIT 20
+                """,
+                user_id,
+            )
+            payments_list = []
+            for p in payments:
+                pd = dict(p)
+                if pd.get("created_at") and isinstance(pd["created_at"], datetime):
+                    pd["created_at"] = pd["created_at"].isoformat()
+                payments_list.append(pd)
+
+            econ_events = await self.fetch(
+                """
+                SELECT id, event_type, resource, amount, source, metadata, created_at
+                FROM economy_events
+                WHERE user_id = $1
+                ORDER BY created_at DESC
+                LIMIT 50
+                """,
+                user_id,
+            )
+            econ_list = []
+            for e in econ_events:
+                ed = dict(e)
+                if ed.get("created_at") and isinstance(ed["created_at"], datetime):
+                    ed["created_at"] = ed["created_at"].isoformat()
+                if ed.get("metadata") and isinstance(ed.get("metadata"), str):
+                    try:
+                        ed["metadata"] = json.loads(ed["metadata"])
+                    except Exception:
+                        pass
+                econ_list.append(ed)
+
+            battles = await self.fetch(
+                """
+                SELECT id, match_id, winner_user_id, loser_user_id,
+                       p1_trophy_change, p2_trophy_change,
+                       duration_seconds, turns_count, created_at
+                FROM battle_summary
+                WHERE p1_user_id = $1 OR p2_user_id = $1
+                ORDER BY created_at DESC
+                LIMIT 20
+                """,
+                user_id,
+            )
+            battles_list = []
+            for b in battles:
+                bd = dict(b)
+                if bd.get("created_at") and isinstance(bd["created_at"], datetime):
+                    bd["created_at"] = bd["created_at"].isoformat()
+                battles_list.append(bd)
+
+            admin_actions = await self.fetch(
+                """
+                SELECT id, admin_user_id, target_user_id, action_type,
+                       reason, payload, created_at
+                FROM admin_account_actions
+                WHERE target_user_id = $1
+                ORDER BY created_at DESC
+                LIMIT 50
+                """,
+                user_id,
+            )
+            admin_actions_list = []
+            for a in admin_actions:
+                ad = dict(a)
+                if ad.get("created_at") and isinstance(ad["created_at"], datetime):
+                    ad["created_at"] = ad["created_at"].isoformat()
+                if ad.get("payload") and isinstance(ad.get("payload"), str):
+                    try:
+                        ad["payload"] = json.loads(ad["payload"])
+                    except Exception:
+                        pass
+                admin_actions_list.append(ad)
+
+            return _json_safe({
+                "profile": prof,
+                "balances": {
+                    "gems": int(prof.get("gems") or 0),
+                    "coins": int(prof.get("coins") or 0),
+                    "keys": int(prof.get("keys") or 0),
+                    "stars": int(prof.get("stars") or 0),
+                    "energy": int(prof.get("energy") or 0),
+                },
+                "sessions": sessions_list,
+                "payments": payments_list,
+                "economy_events": econ_list,
+                "battles": battles_list,
+                "admin_actions": admin_actions_list,
+            })
+        except Exception:
+            import logging
+            logging.getLogger(__name__).error("get_admin_player_detail failed", exc_info=True)
+            return {"error": "detail_failed"}
+
+    # ── Players Admin: actions ──
+
+    async def admin_ban_user(
+        self,
+        admin_user_id: int,
+        target_user_id: int,
+        reason: Optional[str] = None,
+        until: Optional[datetime] = None,
+    ) -> Dict[str, Any]:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+        try:
+            exists = await self.fetchval("SELECT 1 FROM users WHERE user_id = $1", target_user_id)
+            if not exists:
+                return {"error": "user_not_found"}
+
+            await self.execute(
+                "UPDATE users SET is_banned = TRUE, ban_reason = $2, banned_until = $3, status = 'banned' WHERE user_id = $1",
+                target_user_id, reason, until,
+            )
+
+            await self.record_admin_account_action(
+                admin_user_id=admin_user_id,
+                target_user_id=target_user_id,
+                action_type="ban",
+                reason=reason,
+                payload={"until": until.isoformat() if until else None},
+            )
+            return {"status": "ok", "action": "ban"}
+        except Exception:
+            import logging
+            logging.getLogger(__name__).error("admin_ban_user failed", exc_info=True)
+            return {"error": "ban_failed"}
+
+    async def admin_unban_user(
+        self,
+        admin_user_id: int,
+        target_user_id: int,
+        reason: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+        try:
+            exists = await self.fetchval("SELECT 1 FROM users WHERE user_id = $1", target_user_id)
+            if not exists:
+                return {"error": "user_not_found"}
+
+            await self.execute(
+                "UPDATE users SET is_banned = FALSE, ban_reason = NULL, banned_until = NULL, status = 'active' WHERE user_id = $1",
+                target_user_id,
+            )
+
+            await self.record_admin_account_action(
+                admin_user_id=admin_user_id,
+                target_user_id=target_user_id,
+                action_type="unban",
+                reason=reason,
+            )
+            return {"status": "ok", "action": "unban"}
+        except Exception:
+            import logging
+            logging.getLogger(__name__).error("admin_unban_user failed", exc_info=True)
+            return {"error": "unban_failed"}
+
+    async def admin_warn_user(
+        self,
+        admin_user_id: int,
+        target_user_id: int,
+        reason: str,
+    ) -> Dict[str, Any]:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+        try:
+            exists = await self.fetchval("SELECT 1 FROM users WHERE user_id = $1", target_user_id)
+            if not exists:
+                return {"error": "user_not_found"}
+
+            await self.execute(
+                "UPDATE users SET warnings_count = warnings_count + 1 WHERE user_id = $1",
+                target_user_id,
+            )
+
+            await self.record_admin_account_action(
+                admin_user_id=admin_user_id,
+                target_user_id=target_user_id,
+                action_type="warn",
+                reason=reason,
+            )
+            return {"status": "ok", "action": "warn"}
+        except Exception:
+            import logging
+            logging.getLogger(__name__).error("admin_warn_user failed", exc_info=True)
+            return {"error": "warn_failed"}
+
+    async def admin_note_user(
+        self,
+        admin_user_id: int,
+        target_user_id: int,
+        note: str,
+    ) -> Dict[str, Any]:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+        try:
+            exists = await self.fetchval("SELECT 1 FROM users WHERE user_id = $1", target_user_id)
+            if not exists:
+                return {"error": "user_not_found"}
+
+            await self.record_admin_account_action(
+                admin_user_id=admin_user_id,
+                target_user_id=target_user_id,
+                action_type="note",
+                reason=note,
+            )
+            return {"status": "ok", "action": "note"}
+        except Exception:
+            import logging
+            logging.getLogger(__name__).error("admin_note_user failed", exc_info=True)
+            return {"error": "note_failed"}
+
+    async def admin_adjust_resource(
+        self,
+        admin_user_id: int,
+        target_user_id: int,
+        resource: str,
+        amount: float,
+        reason: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+        try:
+            allowed = {"gems", "coins", "keys", "stars"}
+            if resource not in allowed:
+                return {"error": f"invalid_resource, allowed: {', '.join(sorted(allowed))}"}
+
+            exists = await self.fetchval("SELECT 1 FROM users WHERE user_id = $1", target_user_id)
+            if not exists:
+                return {"error": "user_not_found"}
+
+            amount = float(amount)
+            if amount == 0:
+                return {"error": "amount_cannot_be_zero"}
+
+            if amount > 0:
+                action = "grant"
+                event_type = "earn"
+                sign = "+"
+            else:
+                action = "deduct"
+                event_type = "spend"
+                sign = "-"
+
+            # Prevent balance going below 0
+            if amount < 0:
+                current = await self.fetchval(
+                    f"SELECT {resource} FROM users WHERE user_id = $1",
+                    target_user_id,
+                ) or 0
+                if current + amount < 0:
+                    return {"error": f"insufficient_{resource}", "current": int(current), "requested": abs(int(amount))}
+
+            await self.execute(
+                f"UPDATE users SET {resource} = GREATEST(0, {resource} + $1) WHERE user_id = $2",
+                amount, target_user_id,
+            )
+
+            await self.track_economy_event(
+                user_id=target_user_id,
+                event_type=event_type,
+                resource=resource,
+                amount=abs(amount),
+                source="admin_action",
+                metadata={
+                    "admin_user_id": admin_user_id,
+                    "reason": reason or "",
+                },
+            )
+
+            await self.record_admin_account_action(
+                admin_user_id=admin_user_id,
+                target_user_id=target_user_id,
+                action_type=action,
+                reason=reason,
+                payload={"resource": resource, "amount": amount},
+            )
+            return {"status": "ok", "action": action, "resource": resource, "amount": amount}
+        except Exception:
+            import logging
+            logging.getLogger(__name__).error("admin_adjust_resource failed", exc_info=True)
+            return {"error": "adjust_resource_failed"}
+
+    async def admin_set_extra_pass(
+        self,
+        admin_user_id: int,
+        target_user_id: int,
+        mode: str,
+        days: Optional[int] = None,
+        reason: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+        try:
+            if mode not in ("inactive", "active", "ultra"):
+                return {"error": "invalid_mode, allowed: inactive, active, ultra"}
+
+            exists = await self.fetchval("SELECT 1 FROM users WHERE user_id = $1", target_user_id)
+            if not exists:
+                return {"error": "user_not_found"}
+
+            if mode == "inactive":
+                await self.execute(
+                    "UPDATE users SET extra_pass = 'inactive', extra_pass_expires_at = NULL WHERE user_id = $1",
+                    target_user_id,
+                )
+                payload = {"mode": "inactive"}
+            else:
+                if not days or days < 1:
+                    return {"error": "days_required_for_active_mode"}
+                expires = datetime.utcnow() + timedelta(days=int(days))
+                await self.execute(
+                    "UPDATE users SET extra_pass = $2, extra_pass_expires_at = $3 WHERE user_id = $1",
+                    target_user_id, mode, expires,
+                )
+                payload = {"mode": mode, "days": days, "expires_at": expires.isoformat()}
+
+            await self.record_admin_account_action(
+                admin_user_id=admin_user_id,
+                target_user_id=target_user_id,
+                action_type="set_extra_pass",
+                reason=reason,
+                payload=payload,
+            )
+            return {"status": "ok", "action": "set_extra_pass", "mode": mode}
+        except Exception:
+            import logging
+            logging.getLogger(__name__).error("admin_set_extra_pass failed", exc_info=True)
+            return {"error": "extra_pass_failed"}
+
+
     async def get_welcome_status(self, user_id: int) -> dict[str, Any]:
         """Получить статус приветствия для пользователя."""
         if not self._pool:
@@ -5358,4 +7566,3 @@ class Database:
             """,
             user_id
         )
-

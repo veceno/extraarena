@@ -1,0 +1,1847 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ExtraShop</title>
+  <style>
+    :root {
+      --bg: #0f0a1a;
+      --bg-2: #130d26;
+      --panel: #1a1030;
+      --panel-2: #2d1f52;
+      --border: #4a3d6a;
+      --active: #7c5cbf;
+      --cta: #f5921e;
+      --cta-hover: #ffb347;
+      --cta-press: #d97510;
+      --gold: #fbbf24;
+      --gold-2: #ffd700;
+      --gem: #a78bfa;
+      --info: #60a5fa;
+      --success: #4ade80;
+      --danger: #ef4444;
+      --ultra-amethyst: #a78bfa;
+      --ultra-sky: #60a5fa;
+      --ultra-rose: #f472b6;
+      --text: #f0ecff;
+      --sub: #c4b8e8;
+      --muted: #7a6fa0;
+      --shadow: 0 8px 22px rgba(0,0,0,.22);
+      --font-display: "Exo 2", system-ui, sans-serif;
+      --font-body: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--text);
+      font-family: var(--font-body);
+      background:
+        radial-gradient(circle at 50% -10%, rgba(167,139,250,.18), transparent 30rem),
+        linear-gradient(180deg, var(--bg-2), var(--bg) 34%, #090611);
+      font-size: 15px;
+      line-height: 1.45;
+    }
+
+    a { color: inherit; text-decoration: none; }
+    button, input { font: inherit; }
+    .shell {
+      width: min(100%, 1120px);
+      margin: 0 auto;
+      padding: 12px 12px 92px;
+      display: grid;
+      gap: 10px;
+    }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      margin: -12px -12px 0;
+      padding: 12px;
+      background: linear-gradient(180deg, rgba(15,10,26,.97), rgba(15,10,26,.82));
+      backdrop-filter: blur(18px);
+      border-bottom: 1px solid rgba(124,92,191,.28);
+    }
+
+    .topbar-inner {
+      width: min(100%, 1120px);
+      margin: 0 auto;
+      display: grid;
+      gap: 10px;
+    }
+
+    .brand-row, .user-row, .actions-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .brand-row { justify-content: space-between; }
+    .user-row { justify-content: space-between; }
+    .actions-row { overflow-x: auto; padding-bottom: 2px; }
+    .actions-row::-webkit-scrollbar, .tabs::-webkit-scrollbar { display: none; }
+
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      font-family: var(--font-display);
+      font-weight: 900;
+      letter-spacing: .01em;
+      font-size: 20px;
+    }
+    .logo-mark {
+      width: 36px;
+      height: 36px;
+      display: grid;
+      place-items: center;
+      border-radius: 10px;
+      color: #1a1030;
+      background: linear-gradient(135deg, var(--gold-2), var(--cta));
+      box-shadow: 0 0 18px rgba(245,146,30,.28);
+    }
+
+    .status, .pill, .tag {
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 6px 9px;
+      color: var(--sub);
+      background: rgba(45,31,82,.65);
+      white-space: nowrap;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .status.ok { border-color: rgba(74,222,128,.42); color: var(--success); }
+    .tag.hot { color: #211100; background: linear-gradient(135deg, var(--gold-2), var(--cta-hover)); border-color: transparent; }
+    .tag.sub { color: var(--text); border-color: rgba(167,139,250,.62); background: rgba(167,139,250,.18); }
+    .tag.once { color: var(--gold-2); border-color: rgba(251,191,36,.5); }
+    .tag.sale { color: var(--success); border-color: rgba(74,222,128,.5); }
+    .badge-stack {
+      position: absolute;
+      z-index: 2;
+      top: 8px;
+      right: 8px;
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 4px;
+      pointer-events: none;
+    }
+    .badge-stack .tag {
+      padding: 4px 7px;
+      font-size: 10px;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+      box-shadow: 0 6px 14px rgba(0,0,0,.22);
+    }
+
+    .mini-user {
+      min-width: 0;
+      display: grid;
+      gap: 1px;
+    }
+    .mini-user strong, .side-user strong { font-size: 14px; }
+    .mini-user span, .side-user span { color: var(--muted); font-size: 12px; }
+    .nav-btn, .ghost-btn, .cta, .secondary-btn {
+      min-height: 38px;
+      border: 0;
+      border-radius: 10px;
+      cursor: pointer;
+      transition: transform .18s ease, border-color .18s ease, background .18s ease, box-shadow .18s ease;
+    }
+    .nav-btn {
+      padding: 8px 10px;
+      color: var(--sub);
+      background: rgba(26,16,48,.75);
+      border: 1px solid rgba(74,61,106,.8);
+      font-weight: 800;
+      white-space: nowrap;
+    }
+    .nav-btn[aria-current="page"], .nav-btn:hover {
+      color: var(--text);
+      border-color: var(--active);
+      box-shadow: 0 0 10px rgba(124,92,191,.14);
+    }
+    .cta {
+      width: 100%;
+      padding: 12px 14px;
+      color: #221100;
+      background: linear-gradient(180deg, var(--cta-hover), var(--cta));
+      font-weight: 900;
+      box-shadow: 0 6px 14px rgba(245,146,30,.18);
+    }
+    .cta:hover { transform: translateY(-1px); box-shadow: 0 8px 18px rgba(245,146,30,.24); }
+    .cta:active { transform: translateY(1px) scale(.99); background: var(--cta-press); }
+    .cta:disabled { opacity: .5; cursor: not-allowed; transform: none; }
+    .secondary-btn, .ghost-btn {
+      padding: 10px 12px;
+      color: var(--text);
+      background: rgba(45,31,82,.75);
+      border: 1px solid var(--border);
+      font-weight: 800;
+    }
+    .ghost-btn { background: transparent; color: var(--sub); }
+
+    .main-grid { display: grid; gap: 10px; }
+    .page { display: none; gap: 10px; }
+    .page.active { display: grid; animation: pop .24s ease both; }
+    @keyframes pop {
+      from { opacity: 0; transform: translateY(8px) scale(.992); }
+      to { opacity: 1; transform: none; }
+    }
+
+    .panel {
+      border: 1px solid rgba(74,61,106,.86);
+      border-radius: 12px;
+      background: linear-gradient(180deg, rgba(45,31,82,.92), rgba(26,16,48,.94));
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+    .panel-body { padding: 12px; }
+    .panel-head {
+      padding: 12px;
+      border-bottom: 1px solid rgba(74,61,106,.65);
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: start;
+    }
+    h1, h2, h3 {
+      margin: 0;
+      font-family: var(--font-display);
+      letter-spacing: -.02em;
+      line-height: 1.05;
+    }
+    h1 { font-size: clamp(24px, 6vw, 34px); }
+    h2 { font-size: 20px; }
+    h3 { font-size: 16px; }
+    p { margin: 0; color: var(--sub); }
+    .eyebrow {
+      color: var(--gold-2);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      font-weight: 900;
+    }
+
+    .selected {
+      position: relative;
+      isolation: isolate;
+      border-color: rgba(245,146,30,.72);
+    }
+    .selected::before {
+      content: "";
+      position: absolute;
+      inset: -1px;
+      z-index: -1;
+      background: radial-gradient(circle at 85% 0%, rgba(245,146,30,.10), transparent 11rem);
+      pointer-events: none;
+    }
+    .picked-line {
+      display: grid;
+      grid-template-columns: 52px 1fr auto;
+      gap: 10px;
+      align-items: center;
+      margin-top: 12px;
+    }
+    .art {
+      width: 52px;
+      height: 52px;
+      border-radius: 12px;
+      display: grid;
+      place-items: center;
+      background: linear-gradient(135deg, rgba(167,139,250,.35), rgba(245,146,30,.22));
+      border: 1px solid rgba(167,139,250,.4);
+      font-size: 26px;
+      box-shadow: inset 0 0 14px rgba(255,255,255,.06);
+    }
+    .price {
+      font-family: var(--font-display);
+      font-size: 20px;
+      font-weight: 900;
+      color: var(--gold-2);
+      white-space: nowrap;
+    }
+    .quick-catalog {
+      display: grid;
+      gap: 8px;
+    }
+    .quick-item {
+      display: grid;
+      grid-template-columns: 40px 1fr auto;
+      gap: 9px;
+      align-items: center;
+      padding: 9px;
+      border-radius: 10px;
+      border: 1px solid rgba(74,61,106,.72);
+      background: rgba(15,10,26,.32);
+    }
+    .quick-item.is-selected {
+      border-color: rgba(245,146,30,.72);
+      box-shadow: inset 0 0 14px rgba(245,146,30,.06);
+    }
+    .quick-art {
+      width: 40px;
+      height: 40px;
+      border-radius: 10px;
+      display: grid;
+      place-items: center;
+      background: linear-gradient(135deg, rgba(167,139,250,.35), rgba(251,191,36,.22));
+      border: 1px solid rgba(167,139,250,.36);
+    }
+    .quick-item strong { display: block; font-size: 14px; }
+    .quick-item span { color: var(--muted); font-size: 12px; }
+
+    .tabs {
+      display: flex;
+      gap: 8px;
+      overflow-x: auto;
+      padding: 2px 0 8px;
+    }
+    .tab {
+      flex: 0 0 auto;
+      padding: 9px 11px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      color: var(--sub);
+      background: rgba(26,16,48,.68);
+      font-size: 13px;
+      font-weight: 800;
+      cursor: pointer;
+    }
+    .tab.active {
+      color: var(--text);
+      border-color: var(--cta);
+      background: rgba(245,146,30,.12);
+    }
+
+    .catalog-grid { display: grid; gap: 7px; }
+    .category-head {
+      margin-top: 8px;
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: end;
+      padding: 2px 2px 0;
+    }
+    .category-head h2 { font-size: 18px; }
+    .category-head p {
+      max-width: 28ch;
+      font-size: 12px;
+      color: var(--muted);
+      text-align: end;
+    }
+    .product {
+      position: relative;
+      display: grid;
+      gap: 7px;
+      padding: 9px;
+      border-radius: 10px;
+      border: 1px solid rgba(74,61,106,.82);
+      background: linear-gradient(180deg, rgba(45,31,82,.72), rgba(26,16,48,.86));
+      overflow: hidden;
+      transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease;
+    }
+    .product:hover { transform: translateY(-1px); border-color: var(--active); box-shadow: 0 0 10px rgba(124,92,191,.12); }
+    .product.selected-card { border-color: var(--cta); box-shadow: 0 0 12px rgba(245,146,30,.12); }
+    .product-top {
+      display: grid;
+      grid-template-columns: 42px 1fr auto;
+      gap: 9px;
+      align-items: start;
+    }
+    .product h3 { margin-bottom: 4px; }
+    .product p { font-size: 13px; line-height: 1.35; }
+    .product .art {
+      width: 42px;
+      height: 42px;
+      border-radius: 10px;
+      font-size: 21px;
+    }
+    .product .price { font-size: 18px; }
+    .product.bundle-card {
+      grid-template-columns: minmax(138px, 46%) 1fr;
+      align-items: stretch;
+      gap: 9px;
+      padding: 8px;
+    }
+    .bundle-card .badge-stack {
+      top: 12px;
+      left: 12px;
+      right: auto;
+      justify-content: flex-start;
+    }
+    .bundle-art {
+      width: 100%;
+      aspect-ratio: 1 / 1;
+      border-radius: 12px;
+      border: 1px solid rgba(167,139,250,.35);
+      background:
+        linear-gradient(145deg, rgba(255,211,112,.18), rgba(167,139,250,.22)),
+        radial-gradient(circle at 70% 20%, rgba(255,179,71,.38), transparent 38%),
+        #21123e;
+      display: grid;
+      place-items: center;
+      color: var(--gold-2);
+      font-family: var(--font-display);
+      font-size: 30px;
+      font-weight: 900;
+      overflow: hidden;
+    }
+    .bundle-content {
+      min-width: 0;
+      display: grid;
+      gap: 7px;
+      align-content: space-between;
+    }
+    .bundle-content .product-top {
+      grid-template-columns: 1fr auto;
+    }
+    .rewards {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .pass-block {
+      gap: 0;
+      padding: 0;
+    }
+    .pass-block:has(#pass-ultra:checked) {
+      border-color: rgba(167,139,250,.7);
+      background:
+        radial-gradient(circle at 16% 18%, rgba(167,139,250,.22), transparent 9rem),
+        radial-gradient(circle at 88% 14%, rgba(96,165,250,.16), transparent 8rem),
+        linear-gradient(180deg, rgba(45,31,82,.72), rgba(26,16,48,.88));
+    }
+    .pass-tabs {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      padding: 8px;
+      gap: 6px;
+      border-bottom: 1px solid rgba(74,61,106,.55);
+    }
+    .pass-tabs input { position: absolute; opacity: 0; pointer-events: none; }
+    .pass-tab {
+      min-height: 38px;
+      display: grid;
+      place-items: center;
+      border: 1px solid rgba(74,61,106,.8);
+      border-radius: 10px;
+      color: var(--sub);
+      background: rgba(15,10,26,.35);
+      font-weight: 900;
+      cursor: pointer;
+    }
+    #pass-basic:checked ~ label[for="pass-basic"],
+    #pass-ultra:checked ~ label[for="pass-ultra"] {
+      color: #211100;
+      border-color: transparent;
+      background: linear-gradient(180deg, var(--cta-hover), var(--cta));
+    }
+    #pass-ultra:checked ~ label[for="pass-ultra"] {
+      color: #12091f;
+      background: linear-gradient(135deg, var(--ultra-amethyst), var(--ultra-sky) 52%, var(--ultra-rose));
+      box-shadow: 0 0 18px rgba(167,139,250,.22);
+    }
+    .pass-plan { grid-column: 1 / -1; display: none; position: relative; padding: 32px 10px 10px; gap: 8px; }
+    .pass-plan .badge-stack {
+      top: 9px;
+      left: 10px;
+      right: auto;
+      justify-content: flex-start;
+    }
+    #pass-basic:checked ~ .pass-basic,
+    #pass-ultra:checked ~ .pass-ultra { display: grid; }
+    .pass-ultra {
+      position: relative;
+      background: linear-gradient(145deg, rgba(167,139,250,.08), rgba(96,165,250,.06) 48%, rgba(244,114,182,.08));
+    }
+    .pass-ultra .art {
+      border-color: rgba(244,114,182,.42);
+      background:
+        radial-gradient(circle at 70% 22%, rgba(244,114,182,.42), transparent 34%),
+        linear-gradient(135deg, rgba(167,139,250,.52), rgba(96,165,250,.34));
+      box-shadow: inset 0 0 16px rgba(255,255,255,.10), 0 0 20px rgba(167,139,250,.20);
+    }
+    .gems-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 7px;
+    }
+    .gem-card {
+      position: relative;
+      display: grid;
+      gap: 7px;
+      min-height: 116px;
+      padding: 26px 8px 8px;
+      border-radius: 10px;
+      border: 1px solid rgba(74,61,106,.82);
+      background: linear-gradient(180deg, rgba(45,31,82,.68), rgba(26,16,48,.86));
+      cursor: pointer;
+      transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease;
+    }
+    .gem-card:hover { transform: translateY(-1px); border-color: var(--active); }
+    .gem-card.selected-card { border-color: var(--cta); box-shadow: 0 0 12px rgba(245,146,30,.12); }
+    .gem-card .badge-stack {
+      top: 6px;
+      right: 6px;
+    }
+    .gem-card .art {
+      width: 38px;
+      height: 38px;
+      font-size: 20px;
+    }
+    .gem-card h3 { font-size: 15px; }
+    .gem-card p { display: none; }
+    .gem-card .price { font-size: 17px; }
+    .gem-main {
+      display: grid;
+      grid-template-columns: 38px 1fr;
+      gap: 8px;
+      align-items: center;
+    }
+    .gem-card.featured .gem-main {
+      grid-template-columns: 44px 1fr;
+    }
+    .gem-card.featured .art {
+      width: 44px;
+      height: 44px;
+      font-size: 23px;
+    }
+    .reward {
+      padding: 4px 7px;
+      border-radius: 8px;
+      color: var(--sub);
+      border: 1px solid rgba(74,61,106,.75);
+      background: rgba(15,10,26,.35);
+      font-size: 12px;
+      font-weight: 800;
+    }
+    .benefit-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 6px;
+    }
+    .benefit {
+      min-height: 34px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 8px;
+      border-radius: 9px;
+      color: var(--sub);
+      border: 1px solid rgba(74,61,106,.64);
+      background: rgba(15,10,26,.28);
+      font-size: 12px;
+      font-weight: 800;
+      line-height: 1.18;
+    }
+    .benefit::before {
+      content: "";
+      width: 6px;
+      height: 6px;
+      flex: 0 0 6px;
+      border-radius: 50%;
+      background: var(--cta);
+      box-shadow: 0 0 8px rgba(245,146,30,.32);
+    }
+    .pass-ultra .benefit::before {
+      background: linear-gradient(135deg, var(--ultra-amethyst), var(--ultra-sky) 48%, var(--ultra-rose));
+      box-shadow: 0 0 9px rgba(167,139,250,.34);
+    }
+    .notice {
+      padding: 9px;
+      border-radius: 10px;
+      border: 1px solid rgba(96,165,250,.35);
+      background: rgba(96,165,250,.10);
+      color: var(--sub);
+      font-size: 13px;
+    }
+    .product-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .purchase-modes {
+      display: grid;
+      gap: 6px;
+      padding: 8px;
+      border-radius: 10px;
+      border: 1px solid rgba(74,61,106,.58);
+      background: rgba(15,10,26,.26);
+    }
+    .purchase-modes strong { font-size: 13px; }
+    .purchase-modes span { color: var(--muted); font-size: 12px; }
+    .purchase-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+
+    .checkout-grid, .form-grid { display: grid; gap: 10px; }
+    .field {
+      display: grid;
+      gap: 6px;
+    }
+    label {
+      color: var(--sub);
+      font-size: 12px;
+      font-weight: 800;
+    }
+    input, .select-like {
+      width: 100%;
+      min-height: 44px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 11px 12px;
+      color: var(--text);
+      background: rgba(15,10,26,.58);
+      outline: none;
+    }
+    input:focus { border-color: var(--active); box-shadow: 0 0 0 3px rgba(124,92,191,.15); }
+    .choice-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .choice {
+      padding: 11px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: rgba(15,10,26,.42);
+      color: var(--sub);
+      font-weight: 900;
+      text-align: center;
+    }
+    .choice.active { color: var(--text); border-color: var(--cta); background: rgba(245,146,30,.12); }
+    .summary-row, .order-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 9px 0;
+      border-bottom: 1px solid rgba(74,61,106,.45);
+    }
+    .summary-row:last-child, .order-row:last-child { border-bottom: 0; }
+    .summary-row span, .order-row span { color: var(--sub); }
+    .checkline {
+      display: grid;
+      grid-template-columns: 20px 1fr;
+      gap: 9px;
+      align-items: start;
+      color: var(--sub);
+      font-size: 13px;
+    }
+    .checkline input { width: 18px; min-height: 18px; accent-color: var(--cta); margin-top: 2px; }
+
+    .friend-list, .orders, .benefits, .legal-list { display: grid; gap: 8px; }
+    .friend, .order, .benefit, .legal-link {
+      padding: 11px;
+      border: 1px solid rgba(74,61,106,.75);
+      border-radius: 14px;
+      background: rgba(15,10,26,.36);
+      display: grid;
+      gap: 4px;
+    }
+    .friend {
+      grid-template-columns: 40px 1fr auto;
+      align-items: center;
+    }
+    .avatar {
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      color: #1a1030;
+      background: linear-gradient(135deg, var(--gem), var(--gold));
+      font-weight: 900;
+    }
+    .order-top {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: start;
+    }
+    .status-chip {
+      width: fit-content;
+      padding: 5px 7px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 900;
+      border: 1px solid rgba(74,61,106,.7);
+    }
+    .paid { color: var(--success); border-color: rgba(74,222,128,.45); }
+    .wait { color: var(--gold); border-color: rgba(251,191,36,.45); }
+    .cancel { color: var(--danger); border-color: rgba(239,68,68,.42); }
+    .returned { color: var(--info); border-color: rgba(96,165,250,.42); }
+
+    .compare {
+      width: 100%;
+      border-collapse: collapse;
+      overflow: hidden;
+      border-radius: 14px;
+      font-size: 12px;
+    }
+    .compare th, .compare td {
+      padding: 10px 8px;
+      border: 1px solid rgba(74,61,106,.65);
+      text-align: start;
+    }
+    .compare th { color: var(--gold-2); background: rgba(15,10,26,.42); }
+    .compare td { color: var(--sub); }
+
+    .side {
+      display: none;
+      position: sticky;
+      top: 112px;
+      align-self: start;
+      gap: 10px;
+    }
+    .side-card {
+      border: 1px solid rgba(74,61,106,.75);
+      border-radius: 12px;
+      padding: 12px;
+      background: linear-gradient(180deg, rgba(45,31,82,.82), rgba(26,16,48,.92));
+      box-shadow: var(--shadow);
+    }
+    .side-user {
+      display: grid;
+      grid-template-columns: 44px 1fr;
+      gap: 10px;
+      align-items: center;
+    }
+    .bottom-nav {
+      position: fixed;
+      left: 50%;
+      bottom: 10px;
+      transform: translateX(-50%);
+      z-index: 20;
+      width: min(calc(100% - 20px), 520px);
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 6px;
+      padding: 7px;
+      border-radius: 18px;
+      border: 1px solid rgba(124,92,191,.35);
+      background: rgba(15,10,26,.88);
+      backdrop-filter: blur(18px);
+      box-shadow: 0 18px 50px rgba(0,0,0,.45);
+    }
+    .bottom-nav a {
+      min-height: 46px;
+      display: grid;
+      place-items: center;
+      gap: 1px;
+      color: var(--muted);
+      border-radius: 13px;
+      font-size: 11px;
+      font-weight: 900;
+    }
+    .bottom-nav a.active { color: var(--text); background: rgba(124,92,191,.20); }
+    .bottom-nav b { display: block; font-size: 17px; line-height: 1; }
+
+    footer {
+      padding: 20px 4px 0;
+      display: grid;
+      gap: 10px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .footer-links { display: flex; flex-wrap: wrap; gap: 8px 12px; }
+    .footer-links a { color: var(--sub); text-decoration: underline; text-underline-offset: 3px; }
+
+    .error-msg {
+      padding: 14px;
+      border-radius: 12px;
+      border: 1px solid rgba(239,68,68,.35);
+      background: rgba(239,68,68,.10);
+      color: var(--danger);
+      font-size: 14px;
+      font-weight: 700;
+      text-align: center;
+    }
+
+    @media (min-width: 860px) {
+      .shell { grid-template-columns: minmax(480px, 560px) 320px; align-items: start; padding-bottom: 30px; }
+      .main-grid { grid-column: 1; }
+      .side { display: grid; grid-column: 2; }
+      .bottom-nav { display: none; }
+      .topbar { margin: -12px 0 0; border-radius: 0 0 22px 22px; }
+      .actions-row { justify-content: flex-start; }
+      .product-actions { grid-template-columns: 1fr auto; }
+    }
+    @media (max-width: 380px) {
+      .product.bundle-card {
+        grid-template-columns: 128px 1fr;
+      }
+      .bundle-art { font-size: 25px; }
+      .gem-card h3 { font-size: 14px; }
+      .gem-card .price { font-size: 16px; }
+    }
+
+    /* ===== Checkout modal overlay for ?checkout=TOKEN ===== */
+    body.checkout-overlay-mode .shell,
+    body.checkout-overlay-mode .topbar,
+    body.checkout-overlay-mode .bottom-nav { display: none; }
+
+    body.checkout-overlay-mode {
+      display: grid;
+      place-items: center;
+      padding: 20px;
+    }
+
+    .checkout-overlay {
+      display: none;
+      width: min(100%, 460px);
+      gap: 18px;
+      padding: 28px 24px;
+      border: 1px solid rgba(74,61,106,.86);
+      border-radius: 16px;
+      background: linear-gradient(180deg, rgba(45,31,82,.94), rgba(26,16,48,.96));
+      box-shadow: 0 12px 40px rgba(0,0,0,.35);
+    }
+    body.checkout-overlay-mode .checkout-overlay { display: grid; }
+
+    .checkout-overlay .divider { height: 1px; background: rgba(74,61,106,.45); }
+    .checkout-overlay .header {
+      display: grid;
+      gap: 4px;
+      text-align: center;
+    }
+    .checkout-overlay .header .logo { justify-content: center; }
+    .checkout-overlay .picked-line .art { width: 52px; height: 52px; font-size: 26px; }
+    .checkout-overlay .steps {
+      display: grid;
+      gap: 6px;
+      padding: 12px;
+      border: 1px solid rgba(245,146,30,.3);
+      border-radius: 10px;
+      background: rgba(245,146,30,.06);
+      color: var(--sub);
+      font-size: 13px;
+    }
+    .checkout-overlay .steps strong { color: var(--gold-2); }
+    .checkout-overlay .loading-spin {
+      width: 24px; height: 24px;
+      border: 2px solid rgba(124,92,191,.3);
+      border-top-color: var(--cta);
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      margin: 0 auto;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .checkout-overlay .status-row {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      color: var(--sub);
+      font-size: 14px;
+    }
+    .checkout-overlay .copy-btn {
+      min-height: 38px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      cursor: pointer;
+      padding: 10px;
+      color: var(--sub);
+      background: rgba(26,16,48,.5);
+      font-weight: 800;
+      font-size: 14px;
+      transition: border-color .18s ease, background .18s ease;
+    }
+    .checkout-overlay .copy-btn:hover { border-color: var(--active); background: rgba(45,31,82,.65); }
+    .checkout-overlay .copy-btn.copied { border-color: var(--success); color: var(--success); }
+    .checkout-overlay .payment-link-wrap { display: grid; gap: 6px; }
+    .checkout-overlay .payment-link-wrap label { color: var(--muted); font-size: 12px; font-weight: 700; }
+    .checkout-overlay .payment-link {
+      width: 100%;
+      min-height: 42px;
+      border: 1px solid rgba(74,61,106,.86);
+      border-radius: 10px;
+      padding: 10px 12px;
+      color: var(--text);
+      background: rgba(9,6,17,.58);
+      font-size: 12px;
+      outline: none;
+    }
+    .checkout-overlay .retry-btn {
+      width: 100%;
+      min-height: 38px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      cursor: pointer;
+      padding: 10px;
+      color: var(--sub);
+      background: rgba(26,16,48,.5);
+      font-weight: 800;
+      font-size: 14px;
+      transition: border-color .18s ease, background .18s ease;
+    }
+    .checkout-overlay .retry-btn:hover { border-color: var(--active); background: rgba(45,31,82,.65); }
+  </style>
+</head>
+<body>
+
+<div class="checkout-overlay" id="checkout-overlay"></div>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="brand-row">
+      <a class="logo" href="#catalog" data-route="catalog" aria-label="ExtraShop">
+        <span class="logo-mark">ES</span>
+        <span>ExtraShop</span>
+      </a>
+      <span class="status ok">цены в ₽</span>
+    </div>
+    <nav class="actions-row" aria-label="Основные разделы">
+      <a class="nav-btn" href="#catalog" data-route="catalog">Каталог</a>
+      <a class="nav-btn" href="#checkout" data-route="checkout">Оплата</a>
+      <a class="nav-btn" href="#subscription" data-route="subscription">Тарифы</a>
+      <a class="nav-btn" href="#gifts" data-route="gifts">Подарки</a>
+      <a class="nav-btn" href="#history" data-route="history">История</a>
+    </nav>
+  </div>
+</header>
+
+<div class="shell">
+  <main class="main-grid">
+
+    <!-- ==================== CHECKOUT PAGE ==================== -->
+    <section class="page" id="checkout" data-title="Оплата">
+      <article class="panel selected">
+        <div class="panel-head">
+          <div>
+            <div class="eyebrow">Выбранный товар</div>
+            <h1 id="checkout-title">Товар не выбран</h1>
+          </div>
+        </div>
+        <div class="panel-body">
+          <p>Покупка оформляется на сайте магазина через ЮKassa.</p>
+          <div class="picked-line" id="checkout-picked" style="display:none">
+            <div class="art" id="checkout-emoji">💎</div>
+            <div>
+              <strong id="checkout-name"></strong>
+              <p id="checkout-desc" style="color:var(--muted);font-size:13px">Зачисление на аккаунт ExtraArena</p>
+            </div>
+            <div class="price" id="checkout-price">0 ₽</div>
+          </div>
+        </div>
+      </article>
+
+      <article class="panel">
+        <div class="panel-head">
+          <div>
+            <div class="eyebrow">Оформление</div>
+            <h2>Telegram ID и оплата</h2>
+          </div>
+          <span class="status ok">оплата</span>
+        </div>
+        <div class="panel-body checkout-grid">
+          <div class="field">
+            <label for="checkout-tg-id">Telegram ID для зачисления</label>
+            <input id="checkout-tg-id" type="text" inputmode="numeric" placeholder="Например, 6803854304">
+          </div>
+          <div class="notice">Зачисление автоматически на аккаунт ExtraArena после успешной оплаты. Обычно мгновенно, в редких случаях до 24 часов.</div>
+          <div class="panel" style="box-shadow:none;background:rgba(15,10,26,.28)">
+            <div class="panel-body" id="checkout-summary">
+              <p style="text-align:center">Выберите товар в каталоге</p>
+            </div>
+          </div>
+          <div id="checkout-error" style="display:none"></div>
+          <label class="checkline">
+            <input type="checkbox" id="checkout-agree" checked>
+            <span>Согласен с <a href="/extraShop/oferta" target="_blank" rel="noopener noreferrer">офертой</a>, <a href="/extraShop/privacy" target="_blank" rel="noopener noreferrer">политикой конфиденциальности</a>, <a href="/extraShop/refund" target="_blank" rel="noopener noreferrer">правилами возврата</a> и зачисления цифровых товаров.</span>
+          </label>
+          <button class="cta" id="checkout-pay-btn" type="button" disabled>Выберите товар</button>
+        </div>
+      </article>
+    </section>
+
+    <!-- ==================== CATALOG PAGE ==================== -->
+    <section class="page active" id="catalog" data-title="Каталог">
+      <article class="panel">
+        <div class="panel-head">
+          <div>
+            <div class="eyebrow">Каталог</div>
+            <h1>Все товары ExtraShop</h1>
+          </div>
+          <span class="status ok">цены в ₽</span>
+        </div>
+        <div class="panel-body">
+          <div class="tabs" aria-label="Категории каталога">
+            <a class="tab active" href="#bundles" data-anchor="bundles">Наборы</a>
+            <a class="tab" href="#pass" data-anchor="pass">Подписки</a>
+            <a class="tab" href="#gems" data-anchor="gems">Гемы</a>
+            <a class="tab" href="#gifts" data-route="gifts">Подарки</a>
+          </div>
+          <div class="notice">Все товары оплачиваются в ₽ через ЮKassa и автоматически зачисляются на аккаунт игрока в Telegram.</div>
+        </div>
+      </article>
+
+      <div class="catalog-grid">
+        <div class="category-head" id="bundles">
+          <h2>Наборы</h2>
+          <p>Пассы, бусты и стартовые предложения.</p>
+        </div>
+
+        <article class="product bundle-card" data-item="extrapass" data-item-type="extrapass" data-item-name="ExtraPass" data-item-price="179" data-item-emoji="🎟️" data-item-desc="Без рекламы, премиальная дорожка Battle Pass, +2 пресета колод, x1.2 монет, оформление профиля, кланы, история боёв.">
+          <div class="bundle-art">EP</div>
+          <div class="bundle-content">
+            <div class="product-top"><div><h3>ExtraPass</h3><p>Без рекламы и премиум-возможности на 30 дней.</p></div><div class="price">179 ₽</div></div>
+            <div class="rewards"><span class="reward">⭐ ExtraPass · 30 дней</span></div>
+            <div class="product-actions">
+              <button class="cta buy-btn" type="button">Купить</button>
+              <button class="secondary-btn gift-btn" type="button">Подарить</button>
+            </div>
+          </div>
+        </article>
+
+        <article class="product bundle-card" data-item="extrapass_ultra" data-item-type="extrapass_ultra" data-item-name="ExtraPass Ultra" data-item-price="349" data-item-emoji="👑" data-item-desc="Всё из ExtraPass, золотой ник, повышенные шансы, реролл кейсов, расширенная статистика, уникальные позиции Battle Pass, подарок соклановцам.">
+          <div class="badge-stack"><span class="tag hot">популярно</span></div>
+          <div class="bundle-art">UL</div>
+          <div class="bundle-content">
+            <div class="product-top"><div><h3>ExtraPass Ultra</h3><p>Максимальный премиум на 30 дней.</p></div><div class="price">349 ₽</div></div>
+            <div class="rewards"><span class="reward">💫 ExtraPass Ultra · 30 дней</span></div>
+            <div class="product-actions">
+              <button class="cta buy-btn" type="button">Купить</button>
+              <button class="secondary-btn gift-btn" type="button">Подарить</button>
+            </div>
+          </div>
+        </article>
+
+        <article class="product bundle-card" data-item="starter_boost" data-item-type="starter_boost" data-item-name="Starter Boost" data-item-price="499" data-item-emoji="🚀" data-item-desc="ExtraPass на 30 дней, гемы, монеты и кейсы T2/T3. С активным ExtraPass — больше гемов.">
+          <div class="badge-stack"><span class="tag sale">набор</span></div>
+          <div class="bundle-art">SB</div>
+          <div class="bundle-content">
+            <div class="product-top"><div><h3>Starter Boost</h3><p>ExtraPass + гемы + кейсы — максимальный старт.</p></div><div class="price">499 ₽</div></div>
+            <div class="rewards"><span class="reward">⭐ ExtraPass · 30 дней</span><span class="reward">💎 500–1200 гемов</span><span class="reward">📦 T2 + T3 кейсы</span></div>
+            <div class="product-actions">
+              <button class="cta buy-btn" type="button">Купить</button>
+              <button class="secondary-btn gift-btn" type="button">Подарить</button>
+            </div>
+          </div>
+        </article>
+
+        <div class="category-head" id="pass">
+          <h2>Подписки</h2>
+          <p>Один блок, два тарифа. Покупается разово на 30 дней.</p>
+        </div>
+        <article class="product pass-block selected-card">
+          <div class="pass-tabs">
+            <input id="pass-basic" name="pass-plan" type="radio">
+            <input id="pass-ultra" name="pass-plan" type="radio" checked>
+            <label class="pass-tab" for="pass-basic">ExtraPass</label>
+            <label class="pass-tab" for="pass-ultra">Ultra</label>
+            <div class="pass-plan pass-basic">
+              <div class="badge-stack"><span class="tag sub">подписка</span></div>
+              <div class="product-top">
+                <div class="art">🎟️</div>
+                <div>
+                  <h3>ExtraPass</h3>
+                  <p>Без рекламы, премиальная дорожка Battle Pass, +2 пресета колод, x1.2 монет в боях, оформление профиля, кланы, история боёв и приоритетная поддержка.</p>
+                </div>
+                <div class="price">179 ₽</div>
+              </div>
+              <div class="benefit-grid" aria-label="Преимущества ExtraPass">
+                <span class="benefit">Без рекламы</span>
+                <span class="benefit">Премиальная дорожка Battle Pass</span>
+                <span class="benefit">+2 пресета колод</span>
+                <span class="benefit">x1.2 монет в боях</span>
+                <span class="benefit">Оформление профиля</span>
+                <span class="benefit">Создание кланов</span>
+                <span class="benefit">История боёв</span>
+                <span class="benefit">Приоритетная поддержка</span>
+              </div>
+              <div class="purchase-modes">
+                <strong>Покупка на 30 дней</strong>
+                <span>Разовая покупка даёт 30 дней ExtraPass. Автопродление — в будущем.</span>
+                <div class="purchase-actions">
+                  <button class="cta buy-btn" type="button" data-item="extrapass">Купить 30 дней</button>
+                  <button class="secondary-btn gift-btn" type="button" data-item="extrapass">Подарить</button>
+                </div>
+              </div>
+            </div>
+            <div class="pass-plan pass-ultra">
+              <div class="badge-stack"><span class="tag sub">подписка</span><span class="tag hot">популярно</span></div>
+              <div class="product-top">
+                <div class="art">👑</div>
+                <div>
+                  <h3>ExtraPass Ultra</h3>
+                  <p>Всё из ExtraPass, золотой ник, повышенные шансы, реролл кейсов, расширенная статистика, уникальные позиции Battle Pass и подарок соклановцам.</p>
+                </div>
+                <div class="price">349 ₽</div>
+              </div>
+              <div class="benefit-grid" aria-label="Преимущества ExtraPass Ultra">
+                <span class="benefit">Всё из ExtraPass</span>
+                <span class="benefit">Золотой ник</span>
+                <span class="benefit">Повышенные шансы</span>
+                <span class="benefit">Реролл кейсов</span>
+                <span class="benefit">Расширенная статистика</span>
+                <span class="benefit">Уникальные позиции Battle Pass</span>
+                <span class="benefit">Подарок соклановцам</span>
+              </div>
+              <div class="purchase-modes">
+                <strong>Покупка на 30 дней</strong>
+                <span>Разовая покупка даёт 30 дней Ultra. Автопродление — в будущем.</span>
+                <div class="purchase-actions">
+                  <button class="cta buy-btn" type="button" data-item="extrapass_ultra">Купить 30 дней</button>
+                  <button class="secondary-btn gift-btn" type="button" data-item="extrapass_ultra">Подарить</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <div class="category-head" id="gems">
+          <h2>Гемы</h2>
+          <p>6 позиций: стартовый и стандартные пополнения.</p>
+        </div>
+        <div class="gems-grid">
+          <article class="gem-card selected-card" data-item="gems_package:starter_once" data-item-type="gems_package" data-item-package="starter_once" data-item-name="50 гемов (стартовый)" data-item-price="49" data-item-emoji="💎">
+            <div class="badge-stack"><span class="tag once">1 раз</span></div>
+            <div class="gem-main"><div class="art">💎</div><div><h3>50 гемов</h3></div></div>
+            <div class="price">49 ₽</div>
+          </article>
+          <article class="gem-card" data-item="gems_package:gems_100" data-item-type="gems_package" data-item-package="gems_100" data-item-name="100 гемов" data-item-price="99" data-item-emoji="💎">
+            <div class="gem-main"><div class="art">💎</div><div><h3>100 гемов</h3></div></div>
+            <div class="price">99 ₽</div>
+          </article>
+          <article class="gem-card" data-item="gems_package:gems_250" data-item-type="gems_package" data-item-package="gems_250" data-item-name="250 гемов" data-item-price="229" data-item-emoji="💎">
+            <div class="badge-stack"><span class="tag sale">-7%</span></div>
+            <div class="gem-main"><div class="art">💎</div><div><h3>250 гемов</h3></div></div>
+            <div class="price">229 ₽</div>
+          </article>
+          <article class="gem-card" data-item="gems_package:gems_600" data-item-type="gems_package" data-item-package="gems_600" data-item-name="600 гемов" data-item-price="499" data-item-emoji="💎">
+            <div class="badge-stack"><span class="tag sale">-16%</span></div>
+            <div class="gem-main"><div class="art">💎</div><div><h3>600 гемов</h3></div></div>
+            <div class="price">499 ₽</div>
+          </article>
+          <article class="gem-card featured" data-item="gems_package:gems_1300" data-item-type="gems_package" data-item-package="gems_1300" data-item-name="1300 гемов" data-item-price="999" data-item-emoji="💎">
+            <div class="badge-stack"><span class="tag sale">-22%</span></div>
+            <div class="gem-main"><div class="art">💎</div><div><h3>1300 гемов</h3></div></div>
+            <div class="price">999 ₽</div>
+          </article>
+          <article class="gem-card featured" data-item="gems_package:gems_2500" data-item-type="gems_package" data-item-package="gems_2500" data-item-name="2500 гемов" data-item-price="1499" data-item-emoji="💎">
+            <div class="badge-stack"><span class="tag sale">-33%</span><span class="tag hot">выгодно</span></div>
+            <div class="gem-main"><div class="art">💎</div><div><h3>2500 гемов</h3></div></div>
+            <div class="price">1499 ₽</div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== GIFTS PAGE ==================== -->
+    <section class="page" id="gifts" data-title="Подарки">
+      <article class="panel">
+        <div class="panel-head">
+          <div><div class="eyebrow">Подарки</div><h1>Подарить товар игроку</h1></div>
+        </div>
+        <div class="panel-body checkout-grid">
+          <div class="field"><label for="giftId">Telegram ID получателя</label><input id="giftId" type="text" inputmode="numeric" placeholder="Например, 913552"></div>
+          <div class="notice">Подарки доступны для ExtraPass и ExtraPass Ultra. Выберите товар в каталоге и укажите получателя.</div>
+          <div class="notice">Поддержка подарков для других товаров появится позже.</div>
+          <a class="cta" href="#catalog" data-route="catalog" style="display:inline-grid;place-items:center">Перейти в каталог</a>
+        </div>
+      </article>
+    </section>
+
+    <!-- ==================== HISTORY PAGE ==================== -->
+    <section class="page" id="history" data-title="История">
+      <article class="panel">
+        <div class="panel-head"><div><div class="eyebrow">История</div><h1>Покупки и чеки</h1></div></div>
+        <div class="panel-body">
+          <div class="notice">История покупок доступна из игры после совершения первой покупки. Откройте ExtraArena в Telegram, чтобы увидеть полную историю.</div>
+        </div>
+      </article>
+    </section>
+
+    <!-- ==================== SUBSCRIPTION PAGE ==================== -->
+    <section class="page" id="subscription" data-title="Тарифы">
+      <article class="panel">
+        <div class="panel-head"><div><div class="eyebrow">Тарифы</div><h1>Сравнение ExtraPass</h1></div></div>
+        <div class="panel-body" style="overflow-x:auto">
+          <table class="compare">
+            <tr><th>Возможность</th><th>Нет</th><th>Pass</th><th>Ultra</th></tr>
+            <tr><td>Без рекламы</td><td>—</td><td>✓</td><td>✓</td></tr>
+            <tr><td>Премиальная дорожка Battle Pass</td><td>—</td><td>✓</td><td>✓ + уникальные позиции</td></tr>
+            <tr><td>Пресеты колод</td><td>2</td><td>4</td><td>4</td></tr>
+            <tr><td>Бонус монет в боях</td><td>—</td><td>x1.2</td><td>x1.2</td></tr>
+            <tr><td>Оформление профиля</td><td>базовое</td><td>премиум</td><td>премиум + золотой ник</td></tr>
+            <tr><td>Создание кланов</td><td>—</td><td>✓</td><td>✓</td></tr>
+            <tr><td>История боёв</td><td>—</td><td>✓</td><td>✓ + расширенная статистика</td></tr>
+            <tr><td>Поддержка</td><td>обычная</td><td>приоритетная</td><td>приоритетная</td></tr>
+            <tr><td>Повышенные шансы</td><td>—</td><td>—</td><td>✓</td></tr>
+            <tr><td>Реролл кейсов</td><td>—</td><td>—</td><td>✓</td></tr>
+            <tr><td>Подарок соклановцам</td><td>—</td><td>—</td><td>✓</td></tr>
+          </table>
+        </div>
+      </article>
+
+      <article class="panel">
+        <div class="panel-head"><div><div class="eyebrow">Купить</div><h2>Выберите тариф</h2></div></div>
+        <div class="panel-body checkout-grid">
+          <div class="notice">Покупка даёт 30 дней выбранного тарифа. Автопродление будет добавлено позже.</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+            <button class="cta buy-btn" type="button" data-item="extrapass" style="font-size:14px">ExtraPass<br><span style="font-size:12px;color:var(--sub);font-weight:400">179 ₽ / 30 дней</span></button>
+            <button class="cta buy-btn" type="button" data-item="extrapass_ultra" style="font-size:14px;background:linear-gradient(135deg,var(--ultra-amethyst),var(--ultra-sky)52%,var(--ultra-rose));color:#12091f">Ultra<br><span style="font-size:12px;color:var(--sub);font-weight:400">349 ₽ / 30 дней</span></button>
+          </div>
+        </div>
+      </article>
+    </section>
+
+    <!-- ==================== LEGAL PAGE ==================== -->
+    <section class="page" id="legal" data-title="Документы">
+      <article class="panel">
+        <div class="panel-head"><div><div class="eyebrow">Информация</div><h1>Документы и контакты</h1></div></div>
+        <div class="panel-body legal-list">
+          <a class="legal-link" href="/extraShop/oferta" target="_blank" rel="noopener noreferrer"><strong>Публичная оферта</strong><p>Условия продажи цифровых товаров ExtraShop.</p></a>
+          <a class="legal-link" href="/extraShop/privacy" target="_blank" rel="noopener noreferrer"><strong>Политика конфиденциальности</strong><p>Как используются данные при оплате.</p></a>
+          <a class="legal-link" href="/extraShop/refund" target="_blank" rel="noopener noreferrer"><strong>Политика возврата</strong><p>Условия возврата цифровых товаров.</p></a>
+          <div class="legal-link"><strong>Получение цифрового товара</strong><p>Зачисление идёт автоматически на аккаунт ExtraArena через Telegram после успешной оплаты, обычно мгновенно, в редких случаях до 24 часов.</p></div>
+          <div class="legal-link"><strong>Контакты поддержки</strong><p>personal@laveqox.ru · Telegram @lqsup</p></div>
+          <div class="legal-link"><strong>Реквизиты</strong><p>Самозанятый Корпусов Дмитрий Дмитриевич · ИНН 781301929373</p></div>
+        </div>
+      </article>
+    </section>
+
+    <footer>
+      <div class="footer-links">
+        <a href="/extraShop/oferta" target="_blank" rel="noopener noreferrer">Оферта</a>
+        <a href="/extraShop/privacy" target="_blank" rel="noopener noreferrer">Конфиденциальность</a>
+        <a href="/extraShop/refund" target="_blank" rel="noopener noreferrer">Возвраты</a>
+      </div>
+      <p>Самозанятый Корпусов Дмитрий Дмитриевич · ИНН 781301929373</p>
+      <p>ExtraShop · цифровые товары зачисляются на аккаунт ExtraArena после успешной оплаты через ЮKassa.</p>
+    </footer>
+  </main>
+
+  <aside class="side" aria-label="Корзина">
+    <div class="side-card" id="side-cart">
+      <div class="eyebrow">Текущий заказ</div>
+      <h2 id="side-title">Не выбран</h2>
+      <div class="picked-line" style="grid-template-columns:44px 1fr auto;display:none" id="side-picked">
+        <div class="art" style="width:44px;height:44px;font-size:22px" id="side-emoji">💎</div>
+        <p id="side-name"></p>
+        <strong class="price" id="side-price">0 ₽</strong>
+      </div>
+      <p style="text-align:center;font-size:13px" id="side-empty">Выберите товар в каталоге</p>
+      <br>
+      <a class="cta" href="#checkout" data-route="checkout" id="side-checkout-btn" style="display:inline-grid;place-items:center">Перейти к оплате</a>
+    </div>
+  </aside>
+</div>
+
+<nav class="bottom-nav" aria-label="Нижняя навигация">
+  <a href="#catalog" data-route="catalog"><b>▦</b>Каталог</a>
+  <a href="#gifts" data-route="gifts"><b>◇</b>Подарки</a>
+  <a href="#checkout" data-route="checkout"><b>₽</b>Оплата</a>
+  <a href="#subscription" data-route="subscription"><b>★</b>Тарифы</a>
+</nav>
+
+<script>
+(function() {
+  var params = new URLSearchParams(location.search);
+  var token = params.get('checkout');
+
+  // ==================== CHECKOUT OVERLAY (has ?checkout=) ====================
+  if (token) {
+    document.body.className = 'checkout-overlay-mode';
+    var overlay = document.getElementById('checkout-overlay');
+
+    function dec(b64) {
+      try {
+        var pad = b64 + '='.repeat((4 - b64.length % 4) % 4);
+        var raw = atob(pad.replace(/-/g,'+').replace(/_/g,'/'));
+        var bytes = Uint8Array.from(raw, function(c){ return c.charCodeAt(0); });
+        return JSON.parse(new TextDecoder('utf-8').decode(bytes));
+      } catch(e) { return null; }
+    }
+
+    function esc(s) {
+      var d = document.createElement('div');
+      d.appendChild(document.createTextNode(s));
+      return d.innerHTML;
+    }
+
+    function escAttr(s) {
+      return String(s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    var payload = null;
+    var error = null;
+
+    var parts = token.split('.');
+    if (parts.length !== 2) {
+      error = 'Некорректный токен оплаты.';
+    } else {
+      payload = dec(parts[0]);
+      if (!payload) {
+        error = 'Не удалось прочитать данные токена.';
+      } else if (Date.now() / 1000 > (payload.exp || 0)) {
+        payload = null;
+        error = 'Время сессии истекло. Пожалуйста, выберите товар заново.';
+      }
+    }
+
+    if (error) {
+      overlay.innerHTML =
+        '<div class="header">' +
+          '<div class="logo"><span class="logo-mark">ES</span>ExtraShop</div>' +
+          '<p class="eyebrow">Ошибка</p>' +
+        '</div>' +
+        '<div class="error-msg">' + esc(error) + '</div>' +
+        '<div class="notice">Вернитесь в игру и выберите товар заново — платёж не был создан.</div>';
+      return;
+    }
+
+    var itemName = payload.item_name || payload.item_type || 'Товар';
+    var amountRub = (payload.amount_rub || 0).toFixed(2);
+    var emoji = '💎';
+    if (payload.item_type === 'extrapass') emoji = '🎟️';
+    else if (payload.item_type === 'extrapass_ultra') emoji = '👑';
+    else if (payload.item_type === 'extrapass_gift') emoji = '🎁';
+    else if (payload.item_type === 'starter_boost') emoji = '🚀';
+    else if (payload.item_type && payload.item_type.indexOf('shop_set_') === 0) emoji = '📦';
+
+    function renderLoading() {
+      overlay.innerHTML =
+        '<div class="header">' +
+          '<div class="logo"><span class="logo-mark">ES</span>ExtraShop</div>' +
+          '<p class="eyebrow">Оплата через ЮKassa</p>' +
+        '</div>' +
+        '<div class="divider"></div>' +
+        '<div class="picked-line">' +
+          '<div class="art">' + emoji + '</div>' +
+          '<div>' +
+            '<strong style="font-size:15px">' + esc(itemName) + '</strong>' +
+            '<p style="color:var(--muted);font-size:13px">Зачисление на аккаунт ExtraArena</p>' +
+          '</div>' +
+          '<div class="price">' + amountRub + ' ₽</div>' +
+        '</div>' +
+        '<div class="divider"></div>' +
+        '<div class="summary-row"><span>Способ оплаты</span><strong>Карта / СБП</strong></div>' +
+        '<div class="summary-row"><span>Итого</span><strong class="price" style="font-size:20px">' + amountRub + ' ₽</strong></div>' +
+        '<div class="status-row"><span class="loading-spin"></span><span>Готовим ссылку на оплату…</span></div>';
+    }
+
+    function renderVpnStep() {
+      overlay.innerHTML =
+        '<div class="header">' +
+          '<div class="logo"><span class="logo-mark">ES</span>ExtraShop</div>' +
+          '<p class="eyebrow">Перед оплатой</p>' +
+        '</div>' +
+        '<div class="divider"></div>' +
+        '<div class="picked-line">' +
+          '<div class="art">' + emoji + '</div>' +
+          '<div>' +
+            '<strong style="font-size:15px">' + esc(itemName) + '</strong>' +
+            '<p style="color:var(--muted);font-size:13px">Зачисление на аккаунт ExtraArena</p>' +
+          '</div>' +
+          '<div class="price">' + amountRub + ' ₽</div>' +
+        '</div>' +
+        '<div class="divider"></div>' +
+        '<div class="steps">' +
+          '<strong>Откройте эту страницу во внешнем браузере.</strong>' +
+          '<span>1. В Telegram нажмите ⋯ в правом верхнем углу.</span>' +
+          '<span>2. Выберите «Открыть в…» и браузер: Safari, Chrome или Яндекс.</span>' +
+          '<span>3. Выключите VPN.</span>' +
+          '<span>4. Вернитесь на эту страницу и продолжите.</span>' +
+        '</div>' +
+        '<div class="notice" style="border-color:rgba(245,146,30,.3);background:rgba(245,146,30,.06)">Это не прихоть ExtraArena: ЮKassa и банки часто не принимают оплату через VPN и встроенный браузер Telegram.</div>' +
+        '<div class="steps">' +
+          '<strong>Когда VPN выключен:</strong>' +
+          '<span>1. Вернитесь на эту страницу.</span>' +
+          '<span>2. Нажмите кнопку ниже, чтобы подготовить ссылку ЮKassa.</span>' +
+        '</div>' +
+        '<button class="cta" id="vpn-ready-btn" type="button">VPN отключен, продолжить</button>' +
+        '<div class="notice">Ссылка ЮKassa создастся только после подтверждения. Если вы всё ещё внутри Telegram-браузера, сначала откройте внешний браузер через меню ⋯.</div>';
+
+      var btn = document.getElementById('vpn-ready-btn');
+      if (btn) btn.addEventListener('click', createPayment);
+    }
+
+    var paymentUrl = "";
+
+    function renderReady(confirmationUrl) {
+      paymentUrl = confirmationUrl || "";
+      overlay.innerHTML =
+        '<div class="header">' +
+          '<div class="logo"><span class="logo-mark">ES</span>ExtraShop</div>' +
+          '<p class="eyebrow">Ссылка на оплату готова</p>' +
+        '</div>' +
+        '<div class="divider"></div>' +
+        '<div class="picked-line">' +
+          '<div class="art">' + emoji + '</div>' +
+          '<div>' +
+            '<strong style="font-size:15px">' + esc(itemName) + '</strong>' +
+            '<p style="color:var(--muted);font-size:13px">Зачисление на аккаунт ExtraArena</p>' +
+          '</div>' +
+          '<div class="price">' + amountRub + ' ₽</div>' +
+        '</div>' +
+        '<div class="divider"></div>' +
+        '<div class="summary-row"><span>Способ оплаты</span><strong>Карта / СБП</strong></div>' +
+        '<div class="summary-row"><span>Итого</span><strong class="price" style="font-size:20px">' + amountRub + ' ₽</strong></div>' +
+        '<label class="checkline">' +
+          '<input type="checkbox" id="agree" checked onchange="document.querySelector(\'#open-pay-btn\').disabled=!this.checked">' +
+          '<span>Согласен с <a href=\"/extraShop/oferta\" target=\"_blank\" rel=\"noopener noreferrer\">офертой</a>, <a href=\"/extraShop/privacy\" target=\"_blank\" rel=\"noopener noreferrer\">политикой конфиденциальности</a>, <a href=\"/extraShop/refund\" target=\"_blank\" rel=\"noopener noreferrer\">правилами возврата</a>.</span>' +
+        '</label>' +
+        '<button class="cta" id="open-pay-btn" type="button">Открыть оплату во внешнем браузере</button>' +
+        '<button class="copy-btn" id="copy-pay-btn" type="button">Скопировать прямую ссылку ЮKassa</button>' +
+        '<div class="payment-link-wrap">' +
+          '<label for="payment-link">Прямая ссылка ЮKassa</label>' +
+          '<input class="payment-link" id="payment-link" type="text" readonly value="' + escAttr(confirmationUrl) + '">' +
+        '</div>' +
+        '<div class="steps"><strong>Дальше:</strong><span>1. Нажмите «Открыть оплату».</span><span>2. Оплатите на стороне ЮKassa.</span><span>3. Если браузер попросит VPN — он должен быть выключен.</span></div>' +
+        '<div class="notice">После оплаты вы будете перенаправлены обратно в игру. Награды зачисляются автоматически.</div>';
+
+      var openBtn = document.getElementById('open-pay-btn');
+      var copyBtn = document.getElementById('copy-pay-btn');
+      var linkInput = document.getElementById('payment-link');
+      if (openBtn) openBtn.addEventListener('click', function() { openExternalPayment(paymentUrl); });
+      if (copyBtn) copyBtn.addEventListener('click', function() { copyPaymentUrl(paymentUrl); });
+      if (linkInput) linkInput.addEventListener('click', function() { linkInput.select(); });
+    }
+
+    function renderError(msg, canRetry) {
+      overlay.innerHTML =
+        '<div class="header">' +
+          '<div class="logo"><span class="logo-mark">ES</span>ExtraShop</div>' +
+          '<p class="eyebrow">Оплата через ЮKassa</p>' +
+        '</div>' +
+        '<div class="divider"></div>' +
+        '<div class="picked-line">' +
+          '<div class="art">' + emoji + '</div>' +
+          '<div>' +
+            '<strong style="font-size:15px">' + esc(itemName) + '</strong>' +
+            '<p style="color:var(--muted);font-size:13px">Зачисление на аккаунт ExtraArena</p>' +
+          '</div>' +
+          '<div class="price">' + amountRub + ' ₽</div>' +
+        '</div>' +
+        '<div class="divider"></div>' +
+        '<div class="error-msg">' + esc(msg) + '</div>' +
+        (canRetry ? '<button class="retry-btn" id="retry-pay-btn" type="button">Повторить</button>' : '') +
+        '<div class="notice">Вернитесь в игру и выберите товар заново, если ошибка сохраняется.</div>';
+
+      var retryBtn = document.getElementById('retry-pay-btn');
+      if (retryBtn) retryBtn.addEventListener('click', createPayment);
+    }
+
+    function openExternalPayment(url) {
+      if (!url) return;
+      var link = document.createElement('a');
+      link.href = url;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      var opened = window.open(url, '_blank', 'noopener,noreferrer');
+      if (!opened) window.location.href = url;
+    }
+
+    function setCopyState(ok) {
+      var cb = document.getElementById('copy-pay-btn');
+      if (!cb) return;
+      cb.textContent = ok ? 'Ссылка ЮKassa скопирована' : 'Не удалось скопировать: выделите поле ниже';
+      cb.classList.toggle('copied', ok);
+      setTimeout(function() {
+        cb.textContent = 'Скопировать прямую ссылку ЮKassa';
+        cb.classList.remove('copied');
+      }, 2800);
+    }
+
+    function fallbackCopy(url) {
+      var input = document.getElementById('payment-link');
+      if (input) {
+        input.focus();
+        input.select();
+        try { if (document.execCommand('copy')) return true; } catch(e) {}
+      }
+      try {
+        var ta = document.createElement('textarea');
+        ta.value = url;
+        ta.style.position = 'fixed';
+        ta.style.left = '-9999px';
+        document.body.appendChild(ta);
+        ta.select();
+        var ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        return ok;
+      } catch(e) { return false; }
+    }
+
+    function copyPaymentUrl(url) {
+      if (!url) return;
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(url).then(function() {
+          setCopyState(true);
+        }).catch(function() {
+          setCopyState(fallbackCopy(url));
+        });
+      } else {
+        setCopyState(fallbackCopy(url));
+      }
+    }
+
+    function createPayment() {
+      renderLoading();
+      var controller = null;
+      var timeoutId = null;
+      var fetchOptions = {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: token })
+      };
+      if (window.AbortController) {
+        controller = new AbortController();
+        fetchOptions.signal = controller.signal;
+        timeoutId = setTimeout(function() { controller.abort(); }, 25000);
+      }
+      fetch('/api/payments/checkout/create', {
+        method: fetchOptions.method,
+        headers: fetchOptions.headers,
+        body: fetchOptions.body,
+        signal: fetchOptions.signal
+      })
+      .then(function(r) { return r.json().then(function(d) { return {ok:r.ok, data:d}; }); })
+      .then(function(result) {
+        if (timeoutId) clearTimeout(timeoutId);
+        if (result.data.success && result.data.confirmation_url) {
+          renderReady(result.data.confirmation_url);
+        } else {
+          var msg = result.data.message || result.data.error || 'Неизвестная ошибка';
+          var canRetry = !result.data.error || result.data.error === 'payment_service_not_configured' ? false : true;
+          if (result.data.error === 'token_expired') {
+            msg = 'Время сессии истекло. Вернитесь в игру и выберите товар заново.';
+            canRetry = false;
+          }
+          renderError(msg, canRetry);
+        }
+      })
+      .catch(function(err) {
+        if (timeoutId) clearTimeout(timeoutId);
+        if (err && err.name === 'AbortError') {
+          renderError('ЮKassa слишком долго отвечает. Проверьте, что VPN выключен, и попробуйте ещё раз.', true);
+        } else {
+          renderError('Ошибка сети. Проверьте соединение и попробуйте снова.', true);
+        }
+      });
+    }
+
+    renderVpnStep();
+    return;
+  }
+
+  // ==================== PUBLIC SHOP (no ?checkout) ====================
+  var routes = ["checkout", "catalog", "gifts", "history", "subscription", "legal"];
+
+  var selectedItemType = null;
+  var selectedPackageType = null;
+  var selectedItemName = null;
+  var selectedItemPrice = null;
+  var selectedItemEmoji = null;
+  var selectedItemDesc = null;
+  var selectedProductCode = null;
+
+  function setRoute(name) {
+    var route = routes.includes(name) ? name : "catalog";
+    document.querySelectorAll(".page").forEach(function(p) { p.classList.toggle("active", p.id === route); });
+    document.querySelectorAll("[data-route]").forEach(function(link) {
+      var active = link.getAttribute("data-route") === route || link.getAttribute("href") === "#" + route;
+      link.classList.toggle("active", active);
+      if (link.classList.contains("nav-btn")) link.setAttribute("aria-current", active ? "page" : "false");
+    });
+    if (route === 'catalog') updateCheckoutPage();
+  }
+
+  function moveToAnchor(id) {
+    setRoute("catalog");
+    var target = document.getElementById(id);
+    if (!target) return;
+    var top = target.getBoundingClientRect().top + window.pageYOffset - 132;
+    window.scrollTo({ top: top, behavior: "smooth" });
+  }
+
+  function selectProduct(itemType, pkgType, itemName, itemPrice, emoji, desc, productCode) {
+    selectedItemType = itemType;
+    selectedPackageType = pkgType || null;
+    selectedItemName = itemName;
+    selectedItemPrice = itemPrice;
+    selectedItemEmoji = emoji;
+    selectedItemDesc = desc || '';
+    selectedProductCode = productCode || null;
+
+    document.querySelectorAll('.product.selected-card, .gem-card.selected-card').forEach(function(el) { el.classList.remove('selected-card'); });
+    var sel = document.querySelector('[data-item="' + itemType + (pkgType ? ':' + pkgType : '') + '"]');
+    if (sel) sel.classList.add('selected-card');
+
+    updateSideCart();
+    updateCheckoutPage();
+  }
+
+  function updateSideCart() {
+    var sideTitle = document.getElementById('side-title');
+    var sidePicked = document.getElementById('side-picked');
+    var sideEmpty = document.getElementById('side-empty');
+    var sideEmoji = document.getElementById('side-emoji');
+    var sideName = document.getElementById('side-name');
+    var sidePrice = document.getElementById('side-price');
+
+    if (selectedItemType) {
+      if (sideTitle) sideTitle.textContent = selectedItemName;
+      if (sidePicked) sidePicked.style.display = 'grid';
+      if (sideEmpty) sideEmpty.style.display = 'none';
+      if (sideEmoji) sideEmoji.textContent = selectedItemEmoji;
+      if (sideName) sideName.textContent = selectedItemName;
+      if (sidePrice) sidePrice.textContent = selectedItemPrice + ' ₽';
+    } else {
+      if (sideTitle) sideTitle.textContent = 'Не выбран';
+      if (sidePicked) sidePicked.style.display = 'none';
+      if (sideEmpty) sideEmpty.style.display = '';
+    }
+  }
+
+  function updateCheckoutPage() {
+    var titleEl = document.getElementById('checkout-title');
+    var pickedEl = document.getElementById('checkout-picked');
+    var emojiEl = document.getElementById('checkout-emoji');
+    var nameEl = document.getElementById('checkout-name');
+    var priceEl = document.getElementById('checkout-price');
+    var summaryEl = document.getElementById('checkout-summary');
+    var payBtn = document.getElementById('checkout-pay-btn');
+
+    if (selectedItemType) {
+      if (titleEl) titleEl.textContent = selectedItemName;
+      if (pickedEl) pickedEl.style.display = 'grid';
+      if (emojiEl) emojiEl.textContent = selectedItemEmoji;
+      if (nameEl) nameEl.textContent = selectedItemName;
+      if (priceEl) priceEl.textContent = selectedItemPrice + ' ₽';
+      if (summaryEl) summaryEl.innerHTML =
+        '<div class="summary-row"><span>Товар</span><strong>' + esc(selectedItemName) + '</strong></div>' +
+        '<div class="summary-row"><span>Тип покупки</span><strong>Разово</strong></div>' +
+        '<div class="summary-row"><span>Способ оплаты</span><strong>ЮKassa · карта / СБП</strong></div>' +
+        '<div class="summary-row"><span>Итого</span><strong class="price">' + selectedItemPrice + ' ₽</strong></div>';
+      if (payBtn) { payBtn.disabled = false; payBtn.textContent = 'Оплатить ' + selectedItemPrice + ' ₽'; }
+    } else {
+      if (titleEl) titleEl.textContent = 'Товар не выбран';
+      if (pickedEl) pickedEl.style.display = 'none';
+      if (summaryEl) summaryEl.innerHTML = '<p style="text-align:center">Выберите товар в каталоге</p>';
+      if (payBtn) { payBtn.disabled = true; payBtn.textContent = 'Выберите товар'; }
+    }
+  }
+
+  function showCheckoutError(msg) {
+    var errEl = document.getElementById('checkout-error');
+    if (!errEl) return;
+    errEl.style.display = 'block';
+    errEl.innerHTML = '<div class="error-msg">' + esc(msg) + '</div>';
+  }
+
+  function clearCheckoutError() {
+    var errEl = document.getElementById('checkout-error');
+    if (errEl) errEl.style.display = 'none';
+  }
+
+  function esc(s) {
+    var d = document.createElement('div');
+    d.appendChild(document.createTextNode(s));
+    return d.innerHTML;
+  }
+
+  function productElementFor(dataItem, fallback) {
+    if (!dataItem) return fallback || null;
+    var el = document.querySelector('[data-item="' + dataItem + '"][data-item-name]');
+    return el || fallback || null;
+  }
+
+  function startPublicCheckout() {
+    clearCheckoutError();
+
+    var tgInput = document.getElementById('checkout-tg-id');
+    var tgIdRaw = (tgInput ? tgInput.value : '').trim();
+    if (!tgIdRaw) {
+      showCheckoutError('Введите Telegram ID для зачисления.');
+      return;
+    }
+    var tgId = parseInt(tgIdRaw, 10);
+    if (isNaN(tgId) || tgId <= 0) {
+      showCheckoutError('Telegram ID должен быть положительным числом.');
+      return;
+    }
+
+    if (!selectedItemType) {
+      showCheckoutError('Выберите товар в каталоге.');
+      return;
+    }
+
+    var agree = document.getElementById('checkout-agree');
+    if (agree && !agree.checked) {
+      showCheckoutError('Необходимо согласие с офертой и правилами.');
+      return;
+    }
+
+    var payBtn = document.getElementById('checkout-pay-btn');
+    if (payBtn) { payBtn.disabled = true; payBtn.textContent = 'Создаю сессию…'; }
+
+    var body = {
+      telegram_id: tgId,
+      item_type: selectedItemType,
+      recipient_id: tgId
+    };
+    if (selectedProductCode) body.product_code = selectedProductCode;
+    if (selectedPackageType) body.package_type = selectedPackageType;
+
+    fetch('/api/payments/checkout/public/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    })
+    .then(function(r) { return r.json().then(function(d) { return {ok:r.ok, data:d}; }); })
+    .then(function(result) {
+      if (payBtn) { payBtn.disabled = false; payBtn.textContent = 'Оплатить ' + selectedItemPrice + ' ₽'; }
+
+      if (result.data.success && result.data.checkout_url) {
+        window.location.href = result.data.checkout_url;
+      } else if (result.data.success && result.data.token) {
+        window.location.href = '/extraShop?checkout=' + encodeURIComponent(result.data.token);
+      } else {
+        showCheckoutError(result.data.message || result.data.error || 'Ошибка создания платежа');
+      }
+    })
+    .catch(function() {
+      if (payBtn) { payBtn.disabled = false; payBtn.textContent = 'Оплатить ' + selectedItemPrice + ' ₽'; }
+      showCheckoutError('Ошибка сети. Проверьте соединение и попробуйте снова.');
+    });
+  }
+
+  // Click handlers for "Купить" / "Подарить" buttons
+  document.addEventListener('click', function(event) {
+    var buyBtn = event.target.closest('.buy-btn');
+    if (buyBtn && !event.target.closest('[data-route]')) {
+      event.preventDefault();
+      var dataItem = buyBtn.getAttribute('data-item');
+      var container = buyBtn.closest('[data-item]') || buyBtn.closest('.gem-card');
+      if (!dataItem && container) dataItem = container.getAttribute('data-item');
+      if (!dataItem) return;
+
+      var parts = dataItem.split(':');
+      var it = parts[0];
+      var pt = parts[1] || null;
+
+      var el = productElementFor(dataItem, container);
+      var name = el ? (el.getAttribute('data-item-name') || '') : '';
+      var price = el ? (el.getAttribute('data-item-price') || '0') : '0';
+      var emoji = el ? (el.getAttribute('data-item-emoji') || '💎') : '💎';
+      var desc = el ? (el.getAttribute('data-item-desc') || '') : '';
+      var productCode = el ? (el.getAttribute('data-product-code') || '') : '';
+
+      selectProduct(it, pt, name, price, emoji, desc, productCode);
+      setRoute('checkout');
+      return;
+    }
+
+    var giftBtn = event.target.closest('.gift-btn');
+    if (giftBtn && !event.target.closest('[data-route]')) {
+      event.preventDefault();
+      // In the future, we can set the selected product as a gift target
+      setRoute('gifts');
+      return;
+    }
+
+    var gemCard = event.target.closest('.gem-card');
+    if (gemCard && !event.target.closest('.buy-btn') && !event.target.closest('.gift-btn') && !event.target.closest('[data-route]')) {
+      event.preventDefault();
+      var dataItem = gemCard.getAttribute('data-item');
+      if (!dataItem) return;
+      var parts = dataItem.split(':');
+      selectProduct(
+        gemCard.getAttribute('data-item-type'),
+        gemCard.getAttribute('data-item-package'),
+        gemCard.getAttribute('data-item-name'),
+        gemCard.getAttribute('data-item-price'),
+        gemCard.getAttribute('data-item-emoji'),
+        '',
+        gemCard.getAttribute('data-product-code') || ''
+      );
+      return;
+    }
+  });
+
+  document.getElementById('checkout-pay-btn').addEventListener('click', startPublicCheckout);
+
+  // Routing
+  window.addEventListener("hashchange", function() {
+    var hash = location.hash.replace("#", "");
+    if (routes.includes(hash)) setRoute(hash);
+    else if (hash) moveToAnchor(hash);
+  });
+
+  document.addEventListener("click", function(event) {
+    var anchor = event.target.closest("[data-anchor]");
+    if (anchor) {
+      event.preventDefault();
+      document.querySelectorAll(".tab").forEach(function(tab) { tab.classList.toggle("active", tab === anchor); });
+      history.replaceState(null, "", "#" + anchor.getAttribute("data-anchor"));
+      moveToAnchor(anchor.getAttribute("data-anchor"));
+      return;
+    }
+    var link = event.target.closest("[data-route]");
+    if (!link) return;
+    event.preventDefault();
+    var route = link.getAttribute("data-route");
+    if (routes.includes(route)) setRoute(route);
+  });
+
+  var initial = location.hash.replace("#", "");
+  if (routes.includes(initial)) setRoute(initial);
+  else if (initial) moveToAnchor(initial);
+  else setRoute("catalog");
+
+  // ── Dynamic ruble products loader ──
+  (function loadDynamicProducts() {
+    var catalogGrid = document.querySelector('.catalog-grid');
+    if (!catalogGrid) return;
+
+    fetch('/api/shop/ruble-products?surface=shop')
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        var products = data.products || [];
+        if (!products.length) return;
+
+        // Insert dynamic products section before existing content
+        var section = document.createElement('div');
+        section.innerHTML = '<div class="category-head" id="dynamic-products"><h2>Магазин</h2><p>Актуальные товары из базы данных.</p></div>';
+        var gemsGrid = document.createElement('div');
+        gemsGrid.className = 'gems-grid';
+
+        products.forEach(function(p) {
+          var card = document.createElement('article');
+          card.className = 'gem-card';
+          if (p.badge === 'popular') card.className += ' featured';
+          card.setAttribute('data-item', p.code);
+          card.setAttribute('data-product-code', p.code);
+          card.setAttribute('data-item-type', p.item_type);
+          if (p.package_type) card.setAttribute('data-item-package', p.package_type);
+          card.setAttribute('data-item-name', p.name);
+          card.setAttribute('data-item-price', String(p.price));
+          card.setAttribute('data-item-emoji', '💎');
+
+          var badgesHtml = '';
+          if (p.badge) badgesHtml += '<div class="badge-stack"><span class="tag sale">' + esc(p.badge) + '</span></div>';
+
+          var imageHtml = p.image_url
+            ? '<img src="' + esc(p.image_url) + '" style="width:48px;height:48px;border-radius:8px;object-fit:cover" alt="">'
+            : '<div class="art">💎</div>';
+
+          card.innerHTML = badgesHtml +
+            '<div class="gem-main">' + imageHtml + '<div><h3>' + esc(p.name) + '</h3>' + (p.description ? '<p style="font-size:11px;color:var(--sub);margin:2px 0 0">' + esc(p.description.substring(0, 80)) + '</p>' : '') + '</div></div>' +
+            '<div class="price">' + p.price + ' ₽</div>';
+
+          gemsGrid.appendChild(card);
+        });
+
+        // Prepend to catalog grid
+        var firstChild = catalogGrid.firstChild;
+        catalogGrid.insertBefore(section, firstChild);
+        catalogGrid.insertBefore(gemsGrid, firstChild);
+      })
+      .catch(function() {
+        // Fallback to static catalog — silently ignore
+      });
+  })();
+})();
+</script>
+</body>
+</html>

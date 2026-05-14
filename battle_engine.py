@@ -111,6 +111,12 @@ class BattleEngine:
         p2_id = player_ids[1] if player_ids and len(player_ids) > 1 else 2
         self._p1_id = p1_id
         self._p2_id = p2_id
+
+        # Analytics data collection
+        self._analytics_actions: list[dict[str, Any]] = []
+        self._analytics_flushed: bool = False
+        self._p1_initial_deck_ids: list[int] = []
+        self._p2_initial_deck_ids: list[int] = []
     
     # =========================================================================
     # СОЗДАНИЕ МАТЧА
@@ -177,6 +183,11 @@ class BattleEngine:
             # Создаем колоды CardInstance
             p1_deck = deck_from_card_ids(p1_data.get("deck_ids") or [], cards_data, p1_levels)
             p2_deck = deck_from_card_ids(p2_data.get("deck_ids") or [], cards_data, p2_levels)
+
+            # Store initial deck IDs for analytics
+            self._p1_initial_deck_ids = [int(c) for c in (p1_data.get("deck_ids") or [])]
+            self._p2_initial_deck_ids = [int(c) for c in (p2_data.get("deck_ids") or [])]
+
             self._logger.debug(
                 "[ADAPTER] match=%s: собраны колоды (p1=%d карт, p2=%d карт)",
                 self.match_id,
@@ -1004,6 +1015,62 @@ class BattleEngine:
             return {"error": f"unknown_action_type: {action_type}"}
         
         return self.execute_action(self.get_current_player_id(), action)
+
+    # ── Analytics helpers ──
+
+    @staticmethod
+    def _snapshot_card(card: CardInstance) -> dict:
+        return {
+            "id": card.card_id,
+            "mana": getattr(card, "mana_cost", 0),
+            "atk": card.attack,
+            "hp": card.hp,
+            "max_hp": card.max_hp,
+            "is_ready": card.is_ready,
+            "mechanics": list(card.mechanics or []),
+        }
+
+    def build_analytics_snapshot(self) -> Optional[dict]:
+        if not self._arena:
+            return None
+        st = self._arena.state
+        def _player(p):
+            return {
+                "hp": p.hero.hp,
+                "max_hp": p.hero.max_hp,
+                "mana": p.mana,
+                "max_mana": p.max_mana,
+                "hand": [self._snapshot_card(c) for c in p.hand],
+                "board": [self._snapshot_card(c) for c in p.board],
+                "hero": self._snapshot_card(p.hero),
+            }
+        return {
+            "turn": st.turn_number,
+            "current_player": st.current_turn_owner_id,
+            "p1": _player(st.p1),
+            "p2": _player(st.p2),
+        }
+
+    def record_analytics_action(
+        self,
+        user_id: int,
+        action_json: dict[str, Any],
+        quality_score: Optional[float] = None,
+    ) -> None:
+        if not self._arena or self._analytics_flushed:
+            return
+        st = self._arena.state
+        acting_player = 1 if user_id == st.p1.user_id else 2
+        snapshot = self.build_analytics_snapshot()
+        self._analytics_actions.append({
+            "turn_number": st.turn_number,
+            "acting_player": acting_player,
+            "acting_user_id": user_id,
+            "is_bot": self.is_bot(user_id),
+            "state_json": snapshot or {},
+            "action_json": action_json,
+            "quality_score": quality_score,
+        })
 
 
 class _LegacyPlayerStateWrapper:

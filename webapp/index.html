@@ -78,9 +78,254 @@ html, body {
 @keyframes countBounce { 0%{opacity:0;transform:scale(0.5) translateY(14px)} 55%{transform:scale(1.1) translateY(-3px)} 100%{opacity:1;transform:scale(1) translateY(0)} }
 @keyframes scaleIn { from{opacity:0;transform:scale(0.85) translateY(20px)} to{opacity:1;transform:scale(1) translateY(0)} }
 @keyframes bounce { 0%,100%{transform:translateY(0)} 40%{transform:translateY(-20px)} 60%{transform:translateY(-8px)} }
+@keyframes shimmer { 0%{background-position:-200% 0} 100%{background-position:200% 0} }
+@keyframes profileFadeIn { from{opacity:0;transform:scale(0.96)} to{opacity:1;transform:scale(1)} }
+@keyframes connectorPulse { 0%,100%{opacity:0.3} 50%{opacity:0.7} }
+
+/* Critical loading CSS lives inline because this page does not load webapp/styles.css. */
+#loading-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  grid-template-areas: "vlogo" "hero" "gamelogo" "bottom";
+  align-items: center;
+  justify-items: center;
+  width: 100vw;
+  min-height: 100vh;
+  min-height: 100dvh;
+  height: 100dvh;
+  padding: max(10px, env(safe-area-inset-top, 0px)) 16px max(10px, env(safe-area-inset-bottom, 0px));
+  overflow: hidden;
+  background: #0a0514;
+  box-sizing: border-box;
+  transition: opacity 0.5s ease;
+  pointer-events: all;
+}
+#loading-screen.loading-done { opacity: 0; pointer-events: none; }
+.loading-bg, .loading-stars, .loading-particles {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.loading-bg { z-index: 0; }
+.loading-bg-layer {
+  position: absolute;
+  width: 160%;
+  height: 160%;
+  top: -30%;
+  left: -30%;
+  filter: blur(42px);
+  opacity: 0.8;
+  animation: loadingBgDrift 18s ease-in-out infinite;
+}
+.loading-bg-layer:nth-child(1) { background: radial-gradient(circle at 42% 58%, rgba(148,80,240,.28), transparent 56%); }
+.loading-bg-layer:nth-child(2) { background: radial-gradient(circle at 58% 38%, rgba(100,150,255,.2), transparent 52%); animation-delay: -6s; }
+.loading-bg-layer:nth-child(3) { background: radial-gradient(circle at 48% 68%, rgba(230,130,200,.16), transparent 52%); animation-delay: -12s; }
+@keyframes loadingBgDrift {
+  0%,100% { transform: translate3d(0,0,0) rotate(0deg); }
+  50% { transform: translate3d(2%,-2%,0) rotate(3deg); }
+}
+.loading-stars, .loading-particles { z-index: 1; }
+.loading-stars .star {
+  position: absolute;
+  width: 2px;
+  height: 2px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 0 8px rgba(180,140,255,.85);
+  animation: starTwinkle 3s ease-in-out infinite;
+}
+.loading-stars .star:nth-child(1){top:8%;left:12%}.loading-stars .star:nth-child(2){top:18%;left:82%;animation-delay:.5s}.loading-stars .star:nth-child(3){top:28%;left:40%;animation-delay:1s}.loading-stars .star:nth-child(4){top:38%;left:18%;animation-delay:1.5s}.loading-stars .star:nth-child(5){top:48%;left:72%;animation-delay:2s}.loading-stars .star:nth-child(6){top:58%;left:30%;animation-delay:.3s}.loading-stars .star:nth-child(7){top:68%;left:88%;animation-delay:.8s}.loading-stars .star:nth-child(8){top:78%;left:50%;animation-delay:1.2s}.loading-stars .star:nth-child(9){top:14%;left:55%;animation-delay:1.8s}.loading-stars .star:nth-child(10){top:24%;left:25%;animation-delay:2.2s}.loading-stars .star:nth-child(11){top:34%;left:78%;animation-delay:.7s}.loading-stars .star:nth-child(12){top:44%;left:48%;animation-delay:1.3s}.loading-stars .star:nth-child(13){top:54%;left:15%;animation-delay:1.9s}.loading-stars .star:nth-child(14){top:64%;left:92%;animation-delay:.4s}.loading-stars .star:nth-child(15){top:74%;left:35%;animation-delay:2.5s}
+@keyframes starTwinkle { 0%,100%{opacity:.25;transform:scale(1)} 50%{opacity:1;transform:scale(1.5)} }
+.loading-particles .particle {
+  position: absolute;
+  left: var(--x, 50%);
+  bottom: -12px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(190,130,255,.9), rgba(100,150,255,.35));
+  box-shadow: 0 0 12px rgba(180,120,250,.65);
+  animation: particleFloat 10s ease-in-out infinite;
+}
+.loading-particles .particle:nth-child(1){--x:5%;animation-delay:0s}.loading-particles .particle:nth-child(2){--x:14%;animation-delay:.8s}.loading-particles .particle:nth-child(3){--x:23%;animation-delay:1.6s}.loading-particles .particle:nth-child(4){--x:32%;animation-delay:.4s}.loading-particles .particle:nth-child(5){--x:41%;animation-delay:1.2s}.loading-particles .particle:nth-child(6){--x:50%;animation-delay:2s}.loading-particles .particle:nth-child(7){--x:59%;animation-delay:.6s}.loading-particles .particle:nth-child(8){--x:68%;animation-delay:1.4s}.loading-particles .particle:nth-child(9){--x:77%;animation-delay:2.2s}.loading-particles .particle:nth-child(10){--x:86%;animation-delay:.3s}
+@keyframes particleFloat { 0%{transform:translateY(0) scale(.3);opacity:0} 20%{opacity:1} 100%{transform:translateY(-100dvh) translateX(18px) scale(.7);opacity:0} }
+.loading-v-logo, .loading-game-logo, .loading-hero, .loading-bottom {
+  position: relative;
+  z-index: 3;
+}
+.loading-v-logo { grid-area: vlogo; padding-top: 2px; }
+.loading-v-logo img {
+  display: block;
+  width: clamp(28px, 9vw, 52px);
+  max-width: 52px;
+  max-height: 8vh;
+  height: auto;
+  object-fit: contain;
+}
+.loading-hero {
+  grid-area: hero;
+  display: grid;
+  place-items: center;
+  width: clamp(105px, 38vw, 230px);
+  height: clamp(105px, 38vw, 230px);
+}
+.loading-hero-ring, .loading-hero-ring-outer {
+  position: absolute;
+  border-radius: 50%;
+  box-sizing: border-box;
+}
+.loading-hero-ring {
+  width: 78%;
+  height: 78%;
+  border: 2px solid rgba(160,120,240,.42);
+  box-shadow: 0 0 40px rgba(140,100,240,.3), inset 0 0 34px rgba(140,100,240,.12);
+  animation: heroRingPulse 3s ease-in-out infinite;
+}
+.loading-hero-ring-outer {
+  width: 100%;
+  height: 100%;
+  border: 1px solid rgba(160,120,240,.18);
+  box-shadow: 0 0 54px rgba(140,100,240,.13);
+}
+.loading-hero-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #c0a0ff;
+  box-shadow: 0 0 16px #9c7de0;
+  animation: heroDotOrbit 4s linear infinite;
+}
+@keyframes heroRingPulse { 0%,100%{transform:scale(1);opacity:.7} 50%{transform:scale(1.06);opacity:1} }
+@keyframes heroDotOrbit { from{transform:rotate(0deg) translateX(48px) rotate(0deg)} to{transform:rotate(360deg) translateX(48px) rotate(-360deg)} }
+.loading-game-logo { grid-area: gamelogo; display: flex; justify-content: center; width: 100%; }
+.loading-game-logo img {
+  display: block;
+  width: min(72vw, 280px);
+  max-width: 280px;
+  max-height: 18vh;
+  height: auto;
+  object-fit: contain;
+  filter: drop-shadow(0 0 18px rgba(160,120,250,.8)) drop-shadow(0 0 8px rgba(0,0,0,.8));
+}
+.loading-bottom {
+  grid-area: bottom;
+  width: min(100%, 560px);
+  max-width: 100%;
+  padding: 10px 10px 0;
+}
+.loading-status-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.loading-status-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: rgba(240,236,255,.88);
+  font: 700 clamp(13px, 3.7vw, 16px) 'Exo 2', sans-serif;
+}
+.loading-percentage {
+  color: #fff;
+  font: 900 clamp(36px, 12vw, 68px)/.9 'Exo 2', sans-serif;
+  text-shadow: 0 0 18px rgba(255,255,255,.45), 0 0 30px rgba(160,130,255,.5);
+}
+.loading-progress-track {
+  width: 100%;
+  height: clamp(8px, 2vh, 16px);
+  position: relative;
+  border-radius: 999px;
+  background: rgba(90,55,140,.4);
+  border: 1px solid rgba(160,120,240,.3);
+  overflow: visible;
+}
+.loading-progress-fill {
+  width: 0%;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #f5931e, #ffb347, #fbbf24);
+  box-shadow: 0 0 14px rgba(245,147,30,.65);
+  transition: width .45s ease;
+  position: relative;
+}
+.loading-progress-fill::after {
+  content: "";
+  position: absolute;
+  right: -7px;
+  top: 50%;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  transform: translateY(-50%);
+  background: #fff;
+  border: 2px solid #f5931e;
+  box-shadow: 0 0 14px rgba(255,255,255,.8);
+}
+.loading-progress-shimmer { display: none; }
+@media (max-height: 700px) {
+  #loading-screen { padding-top: max(6px, env(safe-area-inset-top, 0px)); padding-bottom: max(6px, env(safe-area-inset-bottom, 0px)); }
+  .loading-hero { width: clamp(80px, 30vw, 150px); height: clamp(80px, 30vw, 150px); }
+  .loading-game-logo img { width: min(62vw, 220px); max-height: 15vh; }
+  .loading-bottom { padding-top: 6px; }
+}
+@media (max-height: 560px) {
+  .loading-v-logo { display: none; }
+  .loading-hero { width: clamp(64px, 24vw, 110px); height: clamp(64px, 24vw, 110px); }
+  .loading-game-logo img { width: min(52vw, 180px); max-height: 12vh; }
+  .loading-percentage { font-size: clamp(28px, 10vw, 44px); }
+}
 </style>
 </head>
 <body>
+
+<!-- ── Loading Screen ── -->
+<div id="loading-screen">
+  <div class="loading-bg">
+    <div class="loading-bg-layer"></div>
+    <div class="loading-bg-layer"></div>
+    <div class="loading-bg-layer"></div>
+  </div>
+  <div class="loading-stars">
+    <div class="star"></div><div class="star"></div><div class="star"></div>
+    <div class="star"></div><div class="star"></div><div class="star"></div>
+    <div class="star"></div><div class="star"></div><div class="star"></div>
+    <div class="star"></div><div class="star"></div><div class="star"></div>
+    <div class="star"></div><div class="star"></div><div class="star"></div>
+  </div>
+  <div class="loading-particles">
+    <div class="particle"></div><div class="particle"></div><div class="particle"></div>
+    <div class="particle"></div>
+    <div class="particle"></div><div class="particle"></div><div class="particle"></div>
+    <div class="particle"></div><div class="particle"></div><div class="particle"></div>
+  </div>
+  <div class="loading-v-logo">
+    <img src="/DesignAssets/LoadingScreen/Copyright_V_logo_loading.png" alt="V" width="52" height="37" />
+  </div>
+  <div class="loading-hero">
+    <div class="loading-hero-ring-outer"></div>
+    <div class="loading-hero-ring"></div>
+    <div class="loading-hero-dot"></div>
+  </div>
+  <div class="loading-game-logo">
+    <img src="/DesignAssets/LoadingScreen/Logotype_loading.png" alt="ExtraArena" width="280" height="206" />
+  </div>
+  <div class="loading-bottom">
+    <div class="loading-status-row">
+      <span class="loading-status-text" id="loading-text">Загружаем арену…</span>
+      <span class="loading-percentage" id="loading-percentage">0%</span>
+    </div>
+    <div class="loading-progress-track">
+      <div class="loading-progress-fill" id="loading-progress-fill"></div>
+      <div class="loading-progress-shimmer"></div>
+    </div>
+  </div>
+</div>
 
 <!-- Matchmaking overlay -->
 <div id="searchOverlay" style="display:none;position:fixed;inset:0;z-index:20000;background:linear-gradient(180deg,rgba(7,4,15,0.94) 0%,rgba(15,10,26,0.92) 100%);backdrop-filter:blur(14px);align-items:center;justify-content:center;text-align:center;padding:24px;flex-direction:column;">
@@ -315,6 +560,60 @@ document.addEventListener('pointerdown', e => {
 }, {passive: true});
 // ────────────────────────────────────────────────────────
 
+// ── Loading Screen Controller ─────────────────────────
+(() => {
+  const DEBUG = new URLSearchParams(location.search).get('debug_loading') === '1';
+  const DONE_CLASS  = 'loading-done';
+  let _finished     = false;
+  let _currentPct   = 0;
+
+  const els = () => ({
+    screen:   document.getElementById('loading-screen'),
+    fill:     document.getElementById('loading-progress-fill'),
+    pct:      document.getElementById('loading-percentage'),
+    text:     document.getElementById('loading-text'),
+  });
+
+  function clamp(v) { return Math.max(0, Math.min(100, Math.round(v))); }
+
+  window.setLoadingProgress = function(percent, label) {
+    if (_finished) return;
+    _currentPct = clamp(percent);
+    const e = els();
+    if (e.fill) e.fill.style.width = _currentPct + '%';
+    if (e.pct)  e.pct.textContent  = _currentPct + '%';
+    if (label && e.text) e.text.textContent = label;
+  };
+
+  window.finishLoading = function() {
+    if (_finished) return;
+    if (DEBUG) { console.log('[debug_loading] finishLoading called – skipping hide for debug'); return; }
+    window.setLoadingProgress(100, 'Готово!');
+    _finished = true;
+    const e = els();
+    if (!e.screen) return;
+    e.screen.classList.add(DONE_CLASS);
+    setTimeout(() => {
+      if (e.screen && e.screen.parentNode) {
+        e.screen.style.display = 'none';
+      }
+    }, 550);
+  };
+
+  // Fallback: force hide after 10s if still visible
+  if (!DEBUG) {
+    setTimeout(() => {
+      if (!_finished) {
+        console.warn('Loading screen force-hidden after timeout');
+        window.finishLoading();
+      }
+    }, 10000);
+  } else {
+    console.log('[debug_loading] Debug mode – loading screen will not auto-hide');
+  }
+})();
+// ────────────────────────────────────────────────────────
+
 document.addEventListener('DOMContentLoaded', () => {
   const cancelBtn = document.getElementById('cancelSearchBtn');
   if (cancelBtn) cancelBtn.onclick = window.cancelSearch;
@@ -456,7 +755,7 @@ window.startVsBot = async function(difficulty, profile, deckId, mode) {
   }
 };
 
-window._openPreBattle = function(data) { window.__preBattleData = data; window.__rootSetPreBattle?.(true); };
+window._openPreBattle = function(data) { window.__preBattleData = data; window.__analytics?.battlePlayed(); window.__rootSetPreBattle?.(true); };
 window._rootSetPreBattle = null;
 
 window.saveNickname = async function(nick) {
@@ -587,6 +886,37 @@ const formatRewardLabel = (reward) => {
 };
 
 // ═══════════════════════════════════════════
+// COSMETIC DATA
+// ═══════════════════════════════════════════
+const COSMETIC_CLASS_META = {
+  starter:  {label:'Стартовый',      color:'#94a3b8', bg:'rgba(148,163,184,0.1)',  border:'rgba(148,163,184,0.3)'},
+  rare:     {label:'Редкий',         color:'#60a5fa', bg:'rgba(96,165,250,0.1)',  border:'rgba(96,165,250,0.3)'},
+  epic:     {label:'Эпический',      color:'#a78bfa', bg:'rgba(167,139,250,0.1)',  border:'rgba(167,139,250,0.3)'},
+  mythic:   {label:'Мифический',     color:'#f472b6', bg:'rgba(244,114,182,0.1)',  border:'rgba(244,114,182,0.3)'},
+  limited:  {label:'Лимитированный', color:'#fbbf24', bg:'rgba(251,191,36,0.1)',   border:'rgba(251,191,36,0.4)'},
+};
+
+const MOCK_COSMETICS = [
+  {id:'avatar_default',    type:'avatar',             class:'starter', name:'Базовый аватар',      owned:true},
+  {id:'avatar_rare',       type:'avatar',             class:'rare',    name:'Теневой капюшон',      owned:true},
+  {id:'avatar_epic_ram',   type:'avatar',             class:'epic',    name:'Шлем героя',           owned:true},
+  {id:'bg_default',        type:'profile_background', class:'starter', name:'Темная арена',         owned:true},
+  {id:'bg_epic_crystal',   type:'profile_background', class:'epic',    name:'Кристальные своды',   owned:true},
+  {id:'bg_limited_01',     type:'profile_background', class:'limited', name:'Разлом сезона',        owned:false, animated:true},
+  {id:'title_default',     type:'title',              class:'starter', name:'Новичок арены',        owned:true},
+  {id:'title_seven_seas',  type:'title',              class:'epic',    name:'Повелитель 7 морей',   owned:false},
+  {id:'title_mythic_flame',type:'title',              class:'mythic',  name:'Пламя чемпиона',       owned:true},
+  {id:'title_limited_god', type:'title',              class:'limited', name:'Избранный судьбой',    owned:false},
+];
+
+const getLeague = (trophies) => {
+  for (let i = LEAGUE_LIST.length-1; i >= 0; i--) {
+    if (trophies >= LEAGUE_LIST[i].min) return LEAGUE_LIST[i];
+  }
+  return LEAGUE_LIST[0];
+};
+
+// ═══════════════════════════════════════════
 // ICONS
 // ═══════════════════════════════════════════
 const IconCoin   = ({size=14}) => <svg width={size} height={size} viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="6" fill={T.orange}/><text x="7" y="10.5" textAnchor="middle" fontSize="7" fill="white" fontWeight="700" fontFamily="Exo 2">$</text></svg>;
@@ -662,7 +992,7 @@ const BottomNav = ({active, onChange}) => (
 // ═══════════════════════════════════════════
 // TOP BAR
 // ═══════════════════════════════════════════
-const TopBar = ({title, onBack, onMenu, showBack=false, extra=null, profile}) => {
+const TopBar = ({title, onBack, onMenu, showBack=false, extra=null, profile, onProfileClick}) => {
   const coins = profile ? (profile.coins ?? 0) : '—';
   const gems  = profile ? (profile.gems  ?? 0) : '—';
   const fmtNum = v => typeof v === 'number' ? v.toLocaleString('ru-RU') : v;
@@ -677,7 +1007,7 @@ const TopBar = ({title, onBack, onMenu, showBack=false, extra=null, profile}) =>
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 3L5 7L9 11" stroke={T.grey2} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg>
           </button>
         ) : (
-          <div style={{display:'flex',alignItems:'center',gap:'8px'}}>
+          <div onClick={onProfileClick} style={{display:'flex',alignItems:'center',gap:'8px',cursor:onProfileClick?'pointer':'default',minWidth:0}}>
             <div style={{width:'34px',height:'34px',borderRadius:'50%',background:`linear-gradient(135deg,${T.purple2},${T.purple3})`,border:`2px solid ${T.purpleHL}`,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,overflow:'hidden'}}>
               {photoUrl
                 ? <img src={photoUrl} alt="" style={{width:'100%',height:'100%',objectFit:'cover'}}/>
@@ -1084,8 +1414,17 @@ const ShopScreen = ({profile, onProfileUpdate}) => {
   const [starsStep,     setStarsStep]     = React.useState(false);
   const [showGift,      setShowGift]      = React.useState(false);
   const [giftRecipient, setGiftRecipient] = React.useState('');
+  const [historyUrl,    setHistoryUrl]    = React.useState(null);
 
   React.useEffect(() => { window.__openExtraPassModal = () => setShowPassModal(true); return () => { delete window.__openExtraPassModal; }; }, []);
+
+  React.useEffect(function(){
+    if (!profile || !profile.user_id) return;
+    fetch(_buildAuthUrl('/api/payments/history/start'), {method:'POST'})
+      .then(function(r){ return r.json(); })
+      .then(function(d){ setHistoryUrl(d.success && d.has_purchases ? d.history_url : null); })
+      .catch(function(){});
+  }, [profile]);
 
   var reloadProfile = function(){
     if (onProfileUpdate) {
@@ -1162,15 +1501,29 @@ const ShopScreen = ({profile, onProfileUpdate}) => {
       setPayModal(null); setStarsStep(false);
       setBuying(it || pk || 'yoo');
       try {
-        var url = pk ? _buildAuthUrl('/api/payments/gems/create') : _buildAuthUrl('/api/payments/create');
-        var body = pk
-          ? JSON.stringify({package_type: pk})
-          : JSON.stringify({amount: am, description: nm, item_name: nm, metadata: Object.assign({item_type: it, item_name: nm}, mt)});
-        var res = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body: body});
+        var meta = Object.assign({item_type: it, item_name: nm}, mt);
+        if (pk) meta.package_type = pk;
+        if (mt.recipient_id) meta.recipient_id = mt.recipient_id;
+        var body = {item_type: it || mt.item_type || '', package_type: pk || ''};
+        if (mt.recipient_id) body.recipient_id = mt.recipient_id;
+        if (mt.ultra !== undefined) body.ultra = mt.ultra;
+        var res = await fetch(_buildAuthUrl('/api/payments/checkout/start'), {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify(body)
+        });
         var d = await res.json();
-        if (d.success && d.confirmation_url) {
-          window.open(d.confirmation_url, '_blank');
-          window.showToast('Оплата открыта. Баланс обновится после оплаты.', 'success', 5000);
+        if (d.success && d.checkout_url) {
+          sessionStorage.setItem('pending_checkout_jti', d.checkout_jti || '');
+          sessionStorage.setItem('pending_payment_item', it || pk || 'yookassa_purchase');
+          sessionStorage.setItem('pending_payment_timestamp', String(Date.now()));
+          sessionStorage.setItem('pending_payment_method', 'yookassa');
+          var link = document.createElement('a');
+          link.href = d.checkout_url;
+          link.target = '_blank';
+          link.rel = 'noopener noreferrer';
+          document.body.appendChild(link);
+          link.click();
+          link.remove();
         } else {
           window.showToast(d.message || d.error || 'Ошибка', 'error');
         }
@@ -1477,7 +1830,7 @@ const ShopScreen = ({profile, onProfileUpdate}) => {
                     var rid = parseInt(giftRecipient);
                     if (!rid || rid <= 0) { window.showToast('Введите корректный ID', 'error'); return; }
                     var itemType = passTab === 'ultra' ? 'extrapass_ultra' : 'extrapass';
-                    openPaymentModal('extrapass_gift', (passTab==='ultra'?'Ultra ':'')+'ExtraPass (подарок)', passTab==='ultra'?349:179, {item_type:'extrapass_gift', recipient_id: rid, item_name:'ExtraPass (подарок)'}, null);
+                    openPaymentModal('extrapass_gift', (passTab==='ultra'?'Ultra ':'')+'ExtraPass (подарок)', passTab==='ultra'?349:179, {item_type:'extrapass_gift', recipient_id: rid, item_name:'ExtraPass (подарок)', ultra: passTab==='ultra'}, null);
                     setShowGift(false); setShowPassModal(false);
                   }}
                     style={{background:'linear-gradient(135deg,'+T.orange+','+T.orangeD+')',border:'none',borderRadius:'10px',padding:'10px',color:'white',fontSize:'13px',fontWeight:800,fontFamily:"'Exo 2',sans-serif",cursor:'pointer'}}>
@@ -1562,6 +1915,14 @@ const ShopScreen = ({profile, onProfileUpdate}) => {
         </div>
       )}
 
+      {historyUrl && (
+        <div style={{padding:'12px 16px',textAlign:'center'}}>
+          <a href={historyUrl} target="_blank" rel="noopener noreferrer" style={{display:'inline-block',background:'none',border:'1px solid '+T.purple1,borderRadius:'12px',padding:'10px 24px',color:T.white,fontSize:'13px',fontWeight:700,fontFamily:"'Exo 2',sans-serif",cursor:'pointer',textDecoration:'none'}}>
+            📋 История покупок
+          </a>
+        </div>
+      )}
+
     </div>
   );
 };
@@ -1606,7 +1967,7 @@ const CaseOpenScreen = ({onClose, onDone, profile}) => {
     try {
       const res = await fetch(apiUrl('/api/cases/open-from-keys'), {method:'POST', headers:{'Content-Type':'application/json'}});
       const d = await res.json();
-      if (d.success) { setResult(d); setPhase('reveal'); setTimeout(()=>window._playSfx('case-reward-sound'), 300); }
+      if (d.success) { setResult(d); setPhase('reveal'); window.__analytics?.caseOpened(); setTimeout(()=>window._playSfx('case-reward-sound'), 300); }
       else { setPhase('error'); setResult(d); }
     } catch(e) { setPhase('error'); setResult({error: 'Ошибка сети'}); }
   };
@@ -4608,6 +4969,388 @@ const BattleHistorySheet = ({onClose, profile}) => {
 // ═══════════════════════════════════════════
 // ROOT APP
 // ═══════════════════════════════════════════
+
+// ── Analytics Controller ──
+const AnalyticsController = (() => {
+  let _sessionId = null;
+  let _screens = [];
+  let _battlesPlayed = 0;
+  let _casesOpened = 0;
+  let _lastUpdate = 0;
+  let _updateTimer = null;
+  let _ended = false;
+
+  const _getSessionId = () => {
+    if (_sessionId) return _sessionId;
+    try { _sessionId = sessionStorage.getItem('ea_session_id'); } catch(e) {}
+    if (!_sessionId) {
+      _sessionId = (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : (Date.now() + '_' + Math.random().toString(36).slice(2, 10));
+      try { sessionStorage.setItem('ea_session_id', _sessionId); } catch(e) {}
+    }
+    return _sessionId;
+  };
+
+  const _apiUrl = (path) => {
+    const tg = window.Telegram?.WebApp;
+    if (tg?.initData) return path + '?_auth=' + encodeURIComponent(tg.initData);
+    const uid = window._getUserId?.() || (window.Telegram?.WebApp?.initDataUnsafe?.user?.id);
+    if (uid) return path + '?user_id=' + uid;
+    return path;
+  };
+
+  const _postJSON = (path, body) => {
+    const url = _apiUrl(path);
+    if (!url) return;
+    return fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), keepalive: true }).catch(() => {});
+  };
+
+  const _flushUpdate = () => {
+    if (_ended) return;
+    _lastUpdate = Date.now();
+    _postJSON('/api/analytics/session/update', {
+      session_id: _getSessionId(),
+      screens_visited: _screens.slice(-200),
+      battles_played: _battlesPlayed,
+      cases_opened: _casesOpened
+    });
+  };
+
+  const _scheduleUpdate = () => {
+    if (_ended) return;
+    const now = Date.now();
+    if (_updateTimer) clearTimeout(_updateTimer);
+    if (now - _lastUpdate > 25000) { _flushUpdate(); return; }
+    _updateTimer = setTimeout(_flushUpdate, 3000);
+  };
+
+  const _sendEnd = () => {
+    if (_ended) return;
+    _ended = true;
+    if (_updateTimer) clearTimeout(_updateTimer);
+    const body = JSON.stringify({
+      session_id: _getSessionId(),
+      screens_visited: _screens.slice(-200),
+      battles_played: _battlesPlayed,
+      cases_opened: _casesOpened
+    });
+    const url = _apiUrl('/api/analytics/session/end');
+    if (!url) return;
+    try {
+      const blob = new Blob([body], { type: 'application/json' });
+      navigator.sendBeacon(url, blob);
+    } catch(e) {
+      _postJSON('/api/analytics/session/end', body);
+    }
+  };
+
+  // lifecycle
+  if (typeof window !== 'undefined') {
+    window.addEventListener('pagehide', _sendEnd);
+    window.addEventListener('beforeunload', _sendEnd);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') _sendEnd();
+    });
+    setInterval(() => {
+      if (!_ended && document.visibilityState === 'visible' && Date.now() - _lastUpdate > 25000) _flushUpdate();
+    }, 30000);
+  }
+
+  return {
+    start: () => {
+      _postJSON('/api/analytics/session/start', { session_id: _getSessionId(), source: 'telegram_webapp' });
+    },
+
+    screen: (name) => {
+      if (!name || (_screens.length && _screens[_screens.length - 1].screen === name)) return;
+      _screens.push({ screen: name, ts: Date.now() });
+      if (_screens.length > 250) _screens = _screens.slice(-200);
+      _scheduleUpdate();
+    },
+
+    battlePlayed: () => { _battlesPlayed++; _scheduleUpdate(); },
+    caseOpened: () => { _casesOpened++; _scheduleUpdate(); },
+
+    onboarding: (step, completed, timeSpentSeconds, meta) => {
+      _postJSON('/api/analytics/onboarding', { step, completed, time_spent_seconds: timeSpentSeconds, metadata: meta || {} });
+    },
+
+    end: _sendEnd,
+  };
+})();
+
+window.__analytics = AnalyticsController;
+
+// ═══════════════════════════════════════════
+// COSMETIC PICKER DRAWER
+// ═══════════════════════════════════════════
+const CosmeticPickerSheet = ({type, ownedItems, selectedItem, onSelect, onClose}) => {
+  const typeLabel = type==='avatar'?'Аватар':type==='profile_background'?'Фон':'Титул';
+
+  return (
+    <div style={{position:'absolute',inset:0,background:'rgba(5,3,14,0.72)',backdropFilter:'blur(8px)',zIndex:40,display:'flex',flexDirection:'column',justifyContent:'flex-end'}} onClick={onClose}>
+      <div onClick={e=>e.stopPropagation()} className="safe-pad-bottom" style={{background:`linear-gradient(180deg,#1a1238 0%,#130d26 100%)`,borderRadius:'24px 24px 0 0',padding:'16px 18px 24px',animation:'slideUp 0.28s cubic-bezier(0.32,0.72,0,1)',border:`1px solid ${T.purple1}`,borderBottom:'none',boxShadow:'0 -16px 50px rgba(0,0,0,0.5)',maxHeight:'60vh',display:'flex',flexDirection:'column'}}>
+        <div style={{width:'36px',height:'4px',borderRadius:'2px',background:T.purple2,margin:'0 auto 16px'}}/>
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'14px',flexShrink:0}}>
+          <span style={{fontSize:'17px',fontWeight:'900',color:T.white,fontFamily:"'Exo 2',sans-serif"}}>{typeLabel}</span>
+          <button onClick={onClose} style={{width:'32px',height:'32px',borderRadius:'50%',background:T.bgCard,border:`1px solid ${T.purple1}`,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer'}}>
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 2L10 10M10 2L2 10" stroke={T.grey1} strokeWidth="1.8" strokeLinecap="round"/></svg>
+          </button>
+        </div>
+        <div style={{flex:1,overflowY:'auto',display:'flex',flexDirection:'column',gap:'8px'}}>
+          {ownedItems.map(item => {
+            const meta = COSMETIC_CLASS_META[item.class] || COSMETIC_CLASS_META.starter;
+            const isSelected = selectedItem === item.id;
+            const isLocked = !item.owned;
+            return (
+              <div key={item.id}
+                onClick={()=>{ if(!isLocked) onSelect(item); else window.showToast('Предмет пока не получен', 'error', 2000); }}
+                style={{
+                  background: isSelected?`${meta.bg}`:T.bgCard,
+                  border:`1px solid ${isSelected?meta.border:T.purple1}`,
+                  borderRadius:'14px',padding:'13px 15px',
+                  display:'flex',alignItems:'center',gap:'12px',
+                  cursor:isLocked?'default':'pointer',
+                  opacity:isLocked?0.45:1,
+                  transition:'all 0.15s',
+                  position:'relative',overflow:'hidden'
+                }}>
+                {item.class==='limited' && (
+                  <div style={{position:'absolute',inset:0,borderRadius:'14px',background:'linear-gradient(105deg,transparent 40%,rgba(251,191,36,0.12) 45%,rgba(251,191,36,0.25) 50%,rgba(251,191,36,0.12) 55%,transparent 60%)',backgroundSize:'200% 100%',animation:'shimmer 2.5s ease-in-out infinite',pointerEvents:'none'}}/>
+                )}
+                <div style={{width:'44px',height:'44px',borderRadius:'12px',background:meta.bg,border:`1px solid ${meta.border}`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'20px',flexShrink:0}}>
+                  {type==='avatar'?'👤':type==='profile_background'?'🎨':'🏷️'}
+                </div>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontSize:'13px',fontWeight:'700',color:T.white,fontFamily:"'Exo 2',sans-serif",overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{item.name}</div>
+                  <div style={{display:'flex',alignItems:'center',gap:'6px',marginTop:'4px'}}>
+                    <span style={{fontSize:'10px',color:meta.color,background:meta.bg,borderRadius:'5px',padding:'1px 7px',fontWeight:'600'}}>{meta.label}</span>
+                    {isLocked && <span style={{fontSize:'10px',color:T.grey3}}>🔒</span>}
+                    {item.animated && <span style={{fontSize:'10px',color:'#fbbf24',fontWeight:'600'}}>✨ аним.</span>}
+                  </div>
+                </div>
+                {isSelected && (
+                  <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="9" fill={meta.color} opacity="0.2"/><path d="M5 9l3 3 5-6" stroke={meta.color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ═══════════════════════════════════════════
+// PROFILE SCREEN – SlotChip helper
+// ═══════════════════════════════════════════
+const SlotChip = ({type, meta, onClick, hasAlternatives, style}) => {
+  const typeLabel = type==='avatar'?'Аватар':type==='profile_background'?'Фон':'Титул';
+  const typeIcon = type==='avatar'?'👤':type==='profile_background'?'🎨':'🏷️';
+  return (
+    <button onClick={onClick}
+      style={{
+        background:`linear-gradient(135deg,${T.bgCard},${meta.bg})`,
+        border:`1px solid ${meta.border}`,
+        borderRadius:'12px',padding:'8px 11px',
+        display:'flex',alignItems:'center',gap:'8px',
+        cursor:'pointer',position:'relative',
+        whiteSpace:'nowrap',
+        ...style
+      }}>
+      <div style={{width:'30px',height:'30px',borderRadius:'8px',background:meta.bg,border:`1px solid ${meta.border}`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'15px',flexShrink:0}}>
+        {typeIcon}
+      </div>
+      <div style={{minWidth:0,textAlign:'left'}}>
+        <div style={{fontSize:'9px',color:T.grey3,textTransform:'uppercase',letterSpacing:'0.3px'}}>{typeLabel}</div>
+        <div style={{fontSize:'11px',fontWeight:'700',color:T.white,fontFamily:"'Exo 2',sans-serif",overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',maxWidth:'120px'}}>{meta.name}</div>
+        <div style={{display:'flex',alignItems:'center',gap:'4px',marginTop:'3px'}}>
+          <span style={{width:'5px',height:'5px',borderRadius:'50%',background:meta.color,flexShrink:0,boxShadow:`0 0 4px ${meta.color}66`}}/>
+          <span style={{fontSize:'9px',color:meta.color,fontWeight:'600'}}>{meta.classLabel}</span>
+          {!hasAlternatives && <span style={{fontSize:'8px',color:T.grey3}}>🔒</span>}
+        </div>
+      </div>
+    </button>
+  );
+};
+
+// ═══════════════════════════════════════════
+// PROFILE SCREEN
+// ═══════════════════════════════════════════
+const ProfileScreen = ({profile, onClose}) => {
+  const [selectedAvatar,     setSelectedAvatar]     = React.useState('avatar_default');
+  const [selectedBackground, setSelectedBackground] = React.useState('bg_default');
+  const [selectedTitle,     setSelectedTitle]       = React.useState('title_default');
+  const [pickerType,         setPickerType]         = React.useState(null);
+
+  const trophies = profile?.trophies ?? 0;
+  const league = getLeague(trophies);
+  const displayName = profile?.custom_nickname || profile?.first_name || profile?.username || 'ExtraArena';
+  const photoUrl = profile?.photo_url || null;
+  const hasExtraPass = profile?.extra_pass === 'active';
+  const isUltra = profile?.extra_pass_ultra === true;
+
+  const itemsByType = (type) => MOCK_COSMETICS.filter(c => c.type === type);
+  const selectedItem = (type) => {
+    const id = type==='avatar'?selectedAvatar:type==='profile_background'?selectedBackground:selectedTitle;
+    return MOCK_COSMETICS.find(c => c.id === id) || null;
+  };
+
+  const handleSelect = (item) => {
+    if (item.type === 'avatar') setSelectedAvatar(item.id);
+    else if (item.type === 'profile_background') setSelectedBackground(item.id);
+    else setSelectedTitle(item.id);
+    setPickerType(null);
+    // TODO: integrate with backend /api/cosmetics/equip when available
+    if (item.owned) {
+      window.showToast(`Предмет "${item.name}" надет`, 'success', 2000);
+    }
+  };
+
+  const slotMeta = (type) => {
+    const sel = selectedItem(type);
+    const meta = sel ? COSMETIC_CLASS_META[sel.class] : COSMETIC_CLASS_META.starter;
+    return {name: sel?.name||'Базовый', classLabel: meta.label, color: meta.color, bg: meta.bg, border: meta.border};
+  };
+
+  const bgItem = MOCK_COSMETICS.find(c => c.id === selectedBackground);
+  const bgClass = bgItem ? COSMETIC_CLASS_META[bgItem.class] : COSMETIC_CLASS_META.starter;
+
+  return (
+    <div style={{position:'absolute',inset:0,background:'rgba(8,5,16,0.92)',backdropFilter:'blur(14px)',zIndex:30,display:'flex',flexDirection:'column',animation:'profileFadeIn 0.25s'}}>
+      {/* Header */}
+      <div style={{height:'52px',background:'rgba(15,10,26,0.98)',display:'flex',alignItems:'center',justifyContent:'space-between',padding:'0 14px',flexShrink:0,borderBottom:`1px solid ${T.purple1}`}}>
+        <div style={{display:'flex',alignItems:'center',gap:'9px'}}>
+          <button onClick={onClose} style={{width:'32px',height:'32px',borderRadius:'10px',background:T.bgCard,border:`1px solid ${T.purple1}`,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',flexShrink:0}}>
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 3L5 7L9 11" stroke={T.grey2} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg>
+          </button>
+          <span style={{fontSize:'16px',fontWeight:'800',color:T.white,fontFamily:"'Exo 2',sans-serif"}}>Профиль</span>
+        </div>
+        <div style={{display:'flex',alignItems:'center',gap:'8px'}}>
+          <span style={{fontSize:'11px',color:league.color,fontWeight:'700',fontFamily:"'Exo 2',sans-serif"}}>{league.emoji} {league.name}</span>
+        </div>
+      </div>
+
+      {/* Content */}
+      <div style={{flex:1,overflowY:'auto',padding:'8px 10px 20px',display:'flex',flexDirection:'column',alignItems:'center'}}>
+
+        {/* Editor wrapper — relative container for connected slots */}
+        <div style={{position:'relative',width:'100%',maxWidth:'380px',marginTop:'4px'}}>
+
+          {/* ── Avatar slot (left-top, outside card) ── */}
+          <div style={{position:'absolute',top:'6px',left:'0',zIndex:3,display:'flex',alignItems:'center',gap:'2px'}}>
+            <SlotChip
+              type="avatar"
+              meta={slotMeta('avatar')}
+              hasAlternatives={itemsByType('avatar').filter(c=>c.owned).length > 1}
+              onClick={()=>setPickerType('avatar')}
+              style={{maxWidth:'130px'}}
+            />
+            <div style={{display:'flex',alignItems:'center',flexShrink:0}}>
+              <div style={{width:'10px',height:'1px',background:slotMeta('avatar').color,opacity:0.5}}/>
+              <div style={{width:'5px',height:'5px',borderRadius:'50%',background:slotMeta('avatar').color,boxShadow:`0 0 5px ${slotMeta('avatar').color}66`}}/>
+            </div>
+          </div>
+
+          {/* ── Background slot (right-top, outside card) ── */}
+          <div style={{position:'absolute',top:'6px',right:'0',zIndex:3,display:'flex',alignItems:'center',gap:'2px'}}>
+            <div style={{display:'flex',alignItems:'center',flexShrink:0}}>
+              <div style={{width:'5px',height:'5px',borderRadius:'50%',background:slotMeta('profile_background').color,boxShadow:`0 0 5px ${slotMeta('profile_background').color}66`}}/>
+              <div style={{width:'10px',height:'1px',background:slotMeta('profile_background').color,opacity:0.5}}/>
+            </div>
+            <SlotChip
+              type="profile_background"
+              meta={slotMeta('profile_background')}
+              hasAlternatives={itemsByType('profile_background').filter(c=>c.owned).length > 1}
+              onClick={()=>setPickerType('profile_background')}
+              style={{maxWidth:'130px'}}
+            />
+          </div>
+
+          {/* ── Preview Card ── */}
+          <div id="profile-preview-card" style={{
+            width:'100%',position:'relative',zIndex:1,marginTop:'44px',
+            background: `linear-gradient(155deg,${bgClass.color}18,${T.bgCard})`,
+            border:`1px solid ${bgClass.border}`,
+            borderRadius:'22px',overflow:'hidden',
+            boxShadow:`0 0 40px ${bgClass.color}15, 0 12px 32px rgba(0,0,0,0.5)`,
+            padding:'24px 20px 20px'
+          }}>
+            {bgItem?.animated && (
+              <div style={{position:'absolute',inset:0,borderRadius:'22px',background:'linear-gradient(105deg,transparent 40%,rgba(251,191,36,0.06) 45%,rgba(251,191,36,0.14) 50%,rgba(251,191,36,0.06) 55%,transparent 60%)',backgroundSize:'200% 100%',animation:'shimmer 3s ease-in-out infinite',pointerEvents:'none'}}/>
+            )}
+
+            {/* ExtraPass badge */}
+            {(hasExtraPass || isUltra) && (
+              <div style={{position:'absolute',top:'12px',right:'12px',background:isUltra?'linear-gradient(135deg,#7c3aed,#4338ca)':`linear-gradient(135deg,${T.orange},${T.orangeD})`,borderRadius:'8px',padding:'3px 10px',fontSize:'10px',fontWeight:'800',color:'white',fontFamily:"'Exo 2',sans-serif",letterSpacing:'0.3px',zIndex:2}}>
+                {isUltra?'💫 Ultra':'⭐ ExtraPass'}
+              </div>
+            )}
+
+            <div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:'10px',position:'relative',zIndex:1}}>
+              {/* Avatar */}
+              <div id="profile-avatar-area" style={{width:'70px',height:'70px',borderRadius:'50%',background:`linear-gradient(135deg,${T.purple2},${T.purple3})`,border:`3px solid ${slotMeta('avatar').color}`,display:'flex',alignItems:'center',justifyContent:'center',overflow:'hidden',flexShrink:0,boxShadow:`0 0 20px ${slotMeta('avatar').color}44`,transition:'border-color 0.3s, box-shadow 0.3s'}}>
+                {photoUrl
+                  ? <img src={photoUrl} alt="" style={{width:'100%',height:'100%',objectFit:'cover'}}/>
+                  : <span style={{fontSize:'26px',fontWeight:'900',color:'white',fontFamily:"'Exo 2',sans-serif"}}>{displayName[0].toUpperCase()}</span>
+                }
+              </div>
+
+              <div style={{textAlign:'center'}}>
+                <div style={{fontSize:'18px',fontWeight:'900',color:T.white,fontFamily:"'Exo 2',sans-serif",overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{displayName}</div>
+
+                {/* Title */}
+                <div id="profile-title-area" style={{marginTop:'4px'}}>
+                  {(()=>{ const t = selectedItem('title'); const tm = t ? COSMETIC_CLASS_META[t.class] : COSMETIC_CLASS_META.starter; return <span style={{fontSize:'12px',color:tm.color,fontWeight:'600'}}>{t?.name||'Новичок арены'}</span>; })()}
+                </div>
+              </div>
+
+              {/* Stats row */}
+              <div style={{display:'flex',alignItems:'center',gap:'12px',marginTop:'2px',flexWrap:'wrap',justifyContent:'center'}}>
+                <div style={{display:'flex',alignItems:'center',gap:'4px',background:T.purple1,borderRadius:'8px',padding:'4px 8px'}}>
+                  <span style={{fontSize:'12px'}}>🏆</span>
+                  <span style={{fontSize:'11px',fontWeight:'800',color:T.orange,fontFamily:"'Exo 2',sans-serif"}}>{trophies.toLocaleString()}</span>
+                </div>
+                <div style={{display:'flex',alignItems:'center',gap:'4px',background:`${league.color}18`,borderRadius:'8px',padding:'4px 8px',border:`1px solid ${league.color}33`}}>
+                  <span style={{fontSize:'12px'}}>{league.emoji}</span>
+                  <span style={{fontSize:'11px',fontWeight:'700',color:league.color,fontFamily:"'Exo 2',sans-serif"}}>{league.name}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* ── Title slot (below card, connector above) ── */}
+          <div style={{display:'flex',flexDirection:'column',alignItems:'center',marginTop:'6px',zIndex:3,position:'relative'}}>
+            <div style={{width:'1px',height:'10px',background:slotMeta('title').color,opacity:0.4}}/>
+            <div style={{width:'4px',height:'4px',borderRadius:'50%',background:slotMeta('title').color,boxShadow:`0 0 4px ${slotMeta('title').color}66`}}/>
+            <SlotChip
+              type="title"
+              meta={slotMeta('title')}
+              hasAlternatives={itemsByType('title').filter(c=>c.owned).length > 1}
+              onClick={()=>setPickerType('title')}
+              style={{
+                display:'inline-flex',marginTop:'4px',
+                maxWidth:'280px'
+              }}
+            />
+          </div>
+
+        </div>
+      </div>
+
+      {/* Picker drawer */}
+      {pickerType && (
+        <CosmeticPickerSheet
+          type={pickerType}
+          ownedItems={itemsByType(pickerType)}
+          selectedItem={pickerType==='avatar'?selectedAvatar:pickerType==='profile_background'?selectedBackground:selectedTitle}
+          onSelect={handleSelect}
+          onClose={()=>setPickerType(null)}
+        />
+      )}
+    </div>
+  );
+};
+
 const App = () => {
   const [navTab,         setNavTab]         = React.useState(2);
   const [showMenu,       setShowMenu]       = React.useState(false);
@@ -4633,6 +5376,7 @@ const App = () => {
   const [showFriends,    setShowFriends]    = React.useState(false);
   const [frPendingCount, setFrPendingCount] = React.useState(0);
   const [inBattle,       setInBattle]       = React.useState(false);
+  const [showProfile,    setShowProfile]    = React.useState(false);
 
   window.showToast = (msg, type, ms) => {
     type = type || 'success'; ms = ms || 3000;
@@ -4641,7 +5385,7 @@ const App = () => {
     setTimeout(function(){ setToast(function(t){ return t && t.id === id ? null : t; }); }, ms);
   };
 
-  const hasOverlay = showAI || showGenerator || showMenu || showSettings || showBattlePick || showGameMode || showMail || showCaseOpen || showInfo || showGloryPath || showLeagueInfo || showBattlePass || showPreBattle || showSupport || showInvite || showBattles || showFriends;
+  const hasOverlay = showAI || showGenerator || showMenu || showSettings || showBattlePick || showGameMode || showMail || showCaseOpen || showInfo || showGloryPath || showLeagueInfo || showBattlePass || showPreBattle || showSupport || showInvite || showBattles || showFriends || showProfile;
 
   React.useEffect(()=>{ window.__rootSetPreBattle = setShowPreBattle; window.__updateProfile = setProfile; return ()=>window.__rootSetPreBattle=null; }, []);
 
@@ -4649,6 +5393,26 @@ const App = () => {
     const anyOpen = showAI || showGenerator || showMenu || showSettings || showBattlePick || showGameMode || showMail || showCaseOpen || showInfo || showGloryPath || showLeagueInfo || showBattlePass || showSupport || showBattles;
     if (anyOpen) window._playSfx('menu-open-sound');
   }, [showMenu, showSettings, showBattlePick, showGameMode, showMail, showCaseOpen, showInfo, showGloryPath, showLeagueInfo, showSupport, showBattles]);
+
+  // ── Analytics: screen tracking ──
+  React.useEffect(() => { window.__analytics?.screen(navTab===0?'shop':navTab===1?'collection':navTab===2?'arena':navTab===3?'squads':navTab===4?'community':'unknown'); }, [navTab]);
+  React.useEffect(() => { if(showMenu)       window.__analytics?.screen('menu'); }, [showMenu]);
+  React.useEffect(() => { if(showSettings)   window.__analytics?.screen('settings'); }, [showSettings]);
+  React.useEffect(() => { if(showMail)       window.__analytics?.screen('mail'); }, [showMail]);
+  React.useEffect(() => { if(showCaseOpen)   window.__analytics?.screen('case_open'); }, [showCaseOpen]);
+  React.useEffect(() => { if(showGloryPath)  window.__analytics?.screen('glory_path'); }, [showGloryPath]);
+  React.useEffect(() => { if(showLeagueInfo) window.__analytics?.screen('league_info'); }, [showLeagueInfo]);
+  React.useEffect(() => { if(showBattlePass) window.__analytics?.screen('battle_pass'); }, [showBattlePass]);
+  React.useEffect(() => { if(showBattles)    window.__analytics?.screen('battle_history'); }, [showBattles]);
+  React.useEffect(() => { if(showSupport)    window.__analytics?.screen('support'); }, [showSupport]);
+  React.useEffect(() => { if(showAI)         window.__analytics?.screen('ai'); }, [showAI]);
+  React.useEffect(() => { if(showGenerator)  window.__analytics?.screen('generator'); }, [showGenerator]);
+  React.useEffect(() => { if(showBattlePick) window.__analytics?.screen('battle_pick'); }, [showBattlePick]);
+  React.useEffect(() => { if(showGameMode)   window.__analytics?.screen('game_mode'); }, [showGameMode]);
+  React.useEffect(() => { if(showPreBattle)  window.__analytics?.screen('pre_battle'); }, [showPreBattle]);
+  React.useEffect(() => { if(showFriends)    window.__analytics?.screen('friends'); }, [showFriends]);
+  React.useEffect(() => { if(showInvite)    window.__analytics?.screen('invite'); }, [showInvite]);
+  React.useEffect(() => { if(showProfile)  window.__analytics?.screen('profile'); }, [showProfile]);
 
   const swipeRef = React.useRef(null);
   const swipeStartX = React.useRef(0);
@@ -4660,6 +5424,8 @@ const App = () => {
   };
 
   React.useEffect(()=>{
+    window.setLoadingProgress?.(10, 'Запускаем арену…');
+
     const tg = window.Telegram?.WebApp;
     if (tg) {
       tg.ready();
@@ -4667,16 +5433,28 @@ const App = () => {
       try { tg.setHeaderColor?.('#0f0a1a'); } catch(e){}
       try { tg.setBackgroundColor?.('#0f0a1a'); } catch(e){}
     }
-    // Запуск музыки (с автозапуском или по первому тапу)
+
+    window.setLoadingProgress?.(25, 'Синхронизируем профиль…');
     window.startBgMusic();
+
     window.loadProfile().then(data => {
       if (data) {
+        window.__analytics?.start();
+        window.setLoadingProgress?.(70, 'Готовим карты…');
         setProfile(data);
         const musicOn = data?.settings?.sound_music ?? true;
         window._musicEnabled = musicOn;
         if (musicOn) window.startBgMusic(); else window.stopBgMusic();
+        window.setLoadingProgress?.(90, 'Почти готово…');
+      } else {
+        window.setLoadingProgress?.(80, 'Загружаем кейсы…');
       }
+      setTimeout(() => window.finishLoading?.(), 300);
+    }).catch(() => {
+      window.setLoadingProgress?.(90, 'Запускаем арену…');
+      setTimeout(() => window.finishLoading?.(), 400);
     });
+
     // Проверка league_up из arena
     const stored = sessionStorage.getItem('arena_league_up');
     if (stored) {
@@ -4722,6 +5500,7 @@ const App = () => {
         onBack={()=>{setShowAI(false);setShowGenerator(false);}}
         onMenu={!showAI && !showGenerator ? ()=>setShowMenu(true) : null}
         profile={profile}
+        onProfileClick={!showAI && !showGenerator ? ()=>setShowProfile(true) : null}
         extra={showAI ? (
           <div style={{width:'28px',height:'28px',borderRadius:'8px',background:T.aiBg,border:`1px solid ${T.aiBorder}`,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="2.5" fill={T.ai}/><path d="M7 1v2M7 11v2M1 7h2M11 7h2" stroke={T.ai} strokeWidth="1.2" strokeLinecap="round"/></svg>
@@ -4781,6 +5560,7 @@ const App = () => {
       {showBattles   && <BattleHistorySheet onClose={()=>setShowBattles(false)} profile={profile}/>}
       {showInvite   && incomingInvite && <IncomingInviteModal invite={incomingInvite} profile={profile} onClose={()=>{setShowInvite(false);setIncomingInvite(null);}} onStart={()=>setInBattle(true)}/>}
       {showFriends && <FriendsScreen onClose={()=>{setShowFriends(false);setTimeout(async()=>{try{const r=await fetch(_buildAuthUrl('/api/friends/requests'));const d=await r.json();setFrPendingCount((d.incoming||[]).length+(d.outgoing||[]).length);}catch(e){}},300);}} profile={profile}/>}
+      {showProfile && <ProfileScreen profile={profile} onClose={()=>setShowProfile(false)}/>}
 
       {/* League Up Modal */}
       {leagueUp && (()=>{
@@ -5304,4 +6084,3 @@ ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
 </script>
 </body>
 </html>
-

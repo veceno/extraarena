@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import hmac
+import json as _stdlib_json
 import math
 import logging
 import os
 import random
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import parse_qsl
@@ -31,6 +33,7 @@ from infrastructure.shop_config import SHOP_PRICES, GEM_PACKAGES, PARTICLES_COST
 
 WEBAPP_DIR = Path(__file__).resolve().parents[1] / "webapp"
 DESIGN_ASSETS_DIR = Path(__file__).resolve().parents[1] / "DesignAssets"
+EXTRA_SHOP_DIR = Path(__file__).resolve().parents[1] / "extraShop"
 # Единый URL-путь к изображениям карт, чтобы фронт и боевая логика не зависели
 # от устаревших image_file_id.
 CARD_IMAGE_URL_PREFIX = "/DesignAssets/Cards"
@@ -364,12 +367,8 @@ async def _process_battle_end(
 ) -> None:
     """
     Обработка завершения боя: начисление трофеев и сохранение результата.
-    
-    Args:
-        app: Приложение aiohttp (для доступа к DB)
-        match_id: ID матча
-        engine: Экземпляр BattleEngine
-        winner_id: ID победителя (None при ничье)
+
+    Also flushes analytics: battle_actions → DB, battle_summary → DB.
     """
     logger = logging.getLogger(__name__)
     db = app.get("db")
@@ -426,6 +425,7 @@ async def _process_battle_end(
     # ── Трофейные дельты (будут переопределены ниже для PvP с экономикой) ──
     winner_trophy_delta = 0
     loser_trophy_delta = 0
+    winner_coins_delta = 0
 
     if not is_training_or_friendly and winner_id_int is not None:
         # ═══════════ PvP / classic с экономикой ═══════════
@@ -630,6 +630,48 @@ async def _process_battle_end(
     engine.rewards_granted = True
     logger.info("✅ Battle end flags set for match %s", match_id)
 
+    # ═══════════ Economy tracking: battle rewards ═══════════
+    eco_meta = {
+        "match_id": match_id,
+        "game_mode": game_mode,
+        "p1_user_id": p1_id_int,
+        "p2_user_id": p2_id_int,
+        "is_bot_match": is_bot_match,
+    }
+    if not is_training_or_friendly:
+        if winner_id_int is not None:
+            eco_meta["result"] = "win" if not loser_is_bot else None
+            if not winner_is_bot:
+                if winner_trophy_delta > 0:
+                    await _track_economy_safe(db, user_id=winner_id_int, event_type="earn",
+                        resource="trophies", amount=winner_trophy_delta, source="battle",
+                        metadata=eco_meta)
+                if winner_coins_delta > 0:
+                    await _track_economy_safe(db, user_id=winner_id_int, event_type="earn",
+                        resource="coins", amount=winner_coins_delta, source="battle",
+                        metadata=eco_meta)
+            if not loser_is_bot and loser_trophy_delta < 0:
+                await _track_economy_safe(db, user_id=loser_id, event_type="spend",
+                    resource="trophies", amount=abs(loser_trophy_delta), source="battle",
+                    metadata=eco_meta)
+        # Stars: always real players
+        try:
+            if not winner_is_bot:
+                await _track_economy_safe(db, user_id=winner_id_int, event_type="earn",
+                    resource="stars", amount=3, source="battle", metadata=eco_meta)
+            if not loser_is_bot:
+                await _track_economy_safe(db, user_id=loser_id, event_type="earn",
+                    resource="stars", amount=1, source="battle", metadata=eco_meta)
+        except Exception:
+            pass
+        # Case/key from win counter
+        try:
+            if not winner_is_bot and hasattr(engine, "_keys_changes") and winner_id_int in (engine._keys_changes or {}):
+                await _track_economy_safe(db, user_id=winner_id_int, event_type="earn",
+                    resource="keys", amount=1, source="battle", metadata=eco_meta)
+        except Exception:
+            pass
+
     try:
         if winner_id_int is not None:
             if winner_id_int == p1_id_int:
@@ -662,6 +704,78 @@ async def _process_battle_end(
                      match_id, game_mode, winner_id is None, is_bot_match)
     except Exception as exc:
         logger.error("❌ Error saving battle result: %s", exc, exc_info=True)
+
+    # ═══════════ Analytics: flush battle_actions + battle_summary ═══════════
+    try:
+        # Determine hero ids
+        p1_hero_id = None
+        p2_hero_id = None
+        try:
+            if hasattr(engine, "_arena") and engine._arena:
+                p1_hero_id = getattr(engine._arena.state.p1.hero, "card_id", None)
+                p2_hero_id = getattr(engine._arena.state.p2.hero, "card_id", None)
+        except Exception:
+            pass
+
+        # Cards played per player from analytics actions
+        p1_cards_played = 0
+        p2_cards_played = 0
+        for a in getattr(engine, "_analytics_actions", []) or []:
+            if a.get("action_json", {}).get("type") == "play_card":
+                if a.get("acting_player") == 1:
+                    p1_cards_played += 1
+                elif a.get("acting_player") == 2:
+                    p2_cards_played += 1
+
+        # Surrender / AFK flags
+        from core.state import ReplacementStatus
+        p1_status = getattr(engine.p1_state, "replacement_status", ReplacementStatus.ACTIVE)
+        p2_status = getattr(engine.p2_state, "replacement_status", ReplacementStatus.ACTIVE)
+        did_surrender = p1_status == ReplacementStatus.SURRENDERED or p2_status == ReplacementStatus.SURRENDERED
+        did_afk = p1_status == ReplacementStatus.AFK or p2_status == ReplacementStatus.AFK
+
+        match_duration_seconds = int(time.time() - engine.match_start_time) if hasattr(engine, 'match_start_time') and engine.match_start_time else 0
+        turns = getattr(engine, "turn", 0)
+
+        await db.record_battle_summary(
+            match_id=match_id,
+            p1_user_id=p1_id_int,
+            p2_user_id=p2_id_int,
+            winner_user_id=winner_id_int if winner_id is not None else None,
+            loser_user_id=loser_id,
+            p1_hero_id=p1_hero_id,
+            p2_hero_id=p2_hero_id,
+            p1_deck=getattr(engine, "_p1_initial_deck_ids", []) or [],
+            p2_deck=getattr(engine, "_p2_initial_deck_ids", []) or [],
+            surrender=did_surrender,
+            afk=did_afk,
+            match_type=game_mode,
+            game_mode=game_mode,
+            duration_seconds=match_duration_seconds,
+            turns_count=turns,
+            p1_trophy_change=p1_trophy_change,
+            p2_trophy_change=p2_trophy_change,
+            p1_coins_earned=winner_coins_delta if winner_id_int == p1_id_int else 0,
+            p2_coins_earned=winner_coins_delta if winner_id_int == p2_id_int else 0,
+            p1_cards_played=p1_cards_played,
+            p2_cards_played=p2_cards_played,
+            metadata={
+                "is_bot_match": is_bot_match,
+                "p1_is_bot": p1_is_bot,
+                "p2_is_bot": p2_is_bot,
+            },
+        )
+        logger.info("✅ Battle summary recorded for match %s", match_id)
+
+        # Flush battle_actions
+        if not getattr(engine, "_analytics_flushed", False):
+            actions = getattr(engine, "_analytics_actions", []) or []
+            if actions:
+                count = await db.record_battle_actions(match_id, actions)
+                logger.info("✅ Flushed %d battle_actions for match %s", count, match_id)
+            engine._analytics_flushed = True
+    except Exception as exc:
+        logger.error("❌ Analytics flush failed for match %s: %s", match_id, exc, exc_info=True)
 
 
 @sio.event
@@ -1315,7 +1429,7 @@ async def check_and_run_bot(match_id: str, active_matches: dict[str, BattleEngin
 async def run_bot_routine(engine: BattleEngine, bot_id: int | str) -> None:
     """
     Асинхронный сценарий хода бота:
-    - короткая «задержка обдумывания»,
+    - короткая \"задержка обдумывания\",
     - принятие решения через BotAI,
     - последовательное выполнение всех действий,
     - завершение хода.
@@ -1430,6 +1544,12 @@ async def run_bot_routine(engine: BattleEngine, bot_id: int | str) -> None:
                     logger.info("[SERVER] Нет легальных действий, завершаем ход")
                     print(f"!!! [SERVER] Нет легальных действий, принудительный end_turn")
                     if engine.current_player_id == bot_id:
+                        try:
+                            engine.record_analytics_action(bot_id, {
+                                "type": "end_turn", "forced": True, "reason": "no_legal_actions"
+                            })
+                        except Exception:
+                            pass
                         engine.end_turn(bot_id)
                         
                         # Отправляем обновленное состояние (для нового текущего игрока)
@@ -1479,6 +1599,12 @@ async def run_bot_routine(engine: BattleEngine, bot_id: int | str) -> None:
                 if action_id < 0 or action_id >= len(legal_actions_dict):
                     logger.warning("[SERVER] Невалидный action_id=%d, принудительный end_turn", action_id)
                     if engine.current_player_id == bot_id:
+                        try:
+                            engine.record_analytics_action(bot_id, {
+                                "type": "end_turn", "forced": True, "reason": "invalid_action_id"
+                            })
+                        except Exception:
+                            pass
                         engine.end_turn(bot_id)
                         
                         # Отправляем обновленное состояние (для нового текущего игрока)
@@ -1500,7 +1626,12 @@ async def run_bot_routine(engine: BattleEngine, bot_id: int | str) -> None:
                 
                 print(f"!!! [SERVER] Шаг {step}: {action_type} -> {action_dict}")
                 logger.info("[SERVER] Executing action: %s", action_dict)
-                
+
+                try:
+                    engine.record_analytics_action(bot_id, action_dict)
+                except Exception:
+                    pass
+
                 # Выполнение действия через execute_bot_action
                 result = engine.execute_bot_action(action_dict)
                 action_count += 1
@@ -1522,6 +1653,12 @@ async def run_bot_routine(engine: BattleEngine, bot_id: int | str) -> None:
                     logger.warning("[SERVER] Действие не выполнено: %s", result.get("error"))
                     # Пытаемся завершить ход
                     if engine.current_player_id == bot_id:
+                        try:
+                            engine.record_analytics_action(bot_id, {
+                                "type": "end_turn", "forced": True, "reason": "invalid_action"
+                            })
+                        except Exception:
+                            pass
                         engine.end_turn(bot_id)
                         
                         # Отправляем обновленное состояние (для нового текущего игрока)
@@ -1566,9 +1703,14 @@ async def run_bot_routine(engine: BattleEngine, bot_id: int | str) -> None:
                 
             except Exception as exc:
                 logger.error("[SERVER] Ошибка на шаге %d: %s", step, exc, exc_info=True)
-                # Попытка завершить ход
                 try:
                     if engine.current_player_id == bot_id:
+                        try:
+                            engine.record_analytics_action(bot_id, {
+                                "type": "end_turn", "forced": True, "reason": "exception"
+                            })
+                        except Exception:
+                            pass
                         engine.end_turn(bot_id)
                         
                         # Отправляем обновленное состояние (для нового текущего игрока)
@@ -1604,6 +1746,12 @@ async def run_bot_routine(engine: BattleEngine, bot_id: int | str) -> None:
             logger.warning("[SERVER] Бот не завершил ход явно, принудительный end_turn")
             print(f"!!! [SERVER] Принудительное завершение хода бота")
             try:
+                try:
+                    engine.record_analytics_action(bot_id, {
+                        "type": "end_turn", "forced": True, "reason": "max_actions_or_fallback"
+                    })
+                except Exception:
+                    pass
                 engine.end_turn(bot_id)
                 
                 # КРИТИЧНО: Отправляем обновленное состояние после принудительного end_turn (для нового текущего игрока)
@@ -1670,12 +1818,12 @@ def create_web_app(
     bot_token: str,
     payment_service=None,
     webapp_url: str | None = None,
+    extra_shop_url: str | None = None,
     stars_rate_rub: float = 1.5,
     stars_markup: float = 1.2,
     stars_test_mode: bool = False,
     battle_engine=None,
 ) -> web.Application:
-    # Подавляем лишние логи доступа aiohttp и системные пинги сокетов
     logging.getLogger('aiohttp.access').setLevel(logging.WARNING)
     logging.getLogger('engineio').setLevel(logging.WARNING)
     logging.getLogger('socketio').setLevel(logging.WARNING)
@@ -1685,6 +1833,7 @@ def create_web_app(
     app["bot_token"] = bot_token
     app["payment_service"] = payment_service
     app["webapp_url"] = webapp_url or "https://t.me/your_bot"
+    app["extra_shop_url"] = extra_shop_url or webapp_url or "https://t.me/your_bot"
     app["stars_rate_rub"] = stars_rate_rub
     app["stars_markup"] = stars_markup
     app["stars_test_mode"] = stars_test_mode
@@ -3530,6 +3679,9 @@ def create_web_app(
             if not result.get("success"):
                 return web.json_response(result, status=400)
 
+            # Economy tracking for case open rewards
+            _track_case_rewards(db, user_id, result.get("rewards") or {}, result)
+
             return web.json_response(result)
         except Exception as e:
             import logging
@@ -3574,6 +3726,8 @@ def create_web_app(
             
             if not result.get("success"):
                 return web.json_response(result, status=400)
+
+            _track_case_rewards(db, user_id, result.get("rewards") or {}, result)
 
             return web.json_response(result)
         except Exception as e:
@@ -3621,6 +3775,12 @@ def create_web_app(
             # Снимаем ключ
             await db.execute("UPDATE users SET keys = GREATEST(0, keys-1) WHERE user_id=$1", user_id)
             new_keys = await db.fetchval("SELECT COALESCE(keys,0) FROM users WHERE user_id=$1", user_id)
+
+            await _track_economy_safe(db, user_id=user_id, event_type="spend",
+                resource="keys", amount=1, source="case_open",
+                metadata={"final_tier": final_tier})
+
+            _track_case_rewards(db, user_id, rewards, {"final_tier": final_tier, "tap_results": tap_results})
 
             return web.json_response({
                 "success": True,
@@ -4230,11 +4390,69 @@ def create_web_app(
         return web.json_response(result)
 
     def _get_match_engine(match_id: str) -> BattleEngine | None:
-        """
-        Безопасно достаем движок боя из глобального кеша.
-        Держим функцию рядом с хендлерами, чтобы не плодить дубли.
-        """
         return ACTIVE_MATCHES.get(match_id)
+
+
+    async def _track_economy_safe(
+        db: Database,
+        *,
+        user_id: int,
+        event_type: str,
+        resource: str,
+        amount: Any,
+        source: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        try:
+            await db.track_economy_event(
+                user_id=user_id,
+                event_type=event_type,
+                resource=resource,
+                amount=amount,
+                source=source,
+                metadata=metadata,
+            )
+        except Exception:
+            logging.getLogger(__name__).warning(
+                "_track_economy_safe failed: user=%s type=%s resource=%s",
+                user_id, event_type, resource, exc_info=True,
+            )
+    
+    
+    def _track_case_rewards(
+        db: Database,
+        user_id: int,
+        rewards: Dict[str, Any],
+        extra_meta: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        meta = dict(extra_meta or {})
+        import asyncio as _asyncio
+        try:
+            loop = _asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        if rewards.get("coins", 0) > 0:
+            loop.create_task(
+                _track_economy_safe(db, user_id=user_id, event_type="earn",
+                    resource="coins", amount=rewards["coins"],
+                    source="case_open", metadata=meta))
+        if rewards.get("gems", 0) > 0:
+            loop.create_task(
+                _track_economy_safe(db, user_id=user_id, event_type="earn",
+                    resource="gems", amount=rewards["gems"],
+                    source="case_open", metadata=meta))
+        for c in rewards.get("cards", []):
+            loop.create_task(
+                _track_economy_safe(db, user_id=user_id, event_type="earn",
+                    resource="card", amount=1,
+                    source="case_open",
+                    metadata={**meta, "card_id": c.get("card_id"), "card_name": c.get("card_name"), "rarity": c.get("rarity")}))
+        for p in rewards.get("particles", []):
+            loop.create_task(
+                _track_economy_safe(db, user_id=user_id, event_type="earn",
+                    resource="particles", amount=p.get("particles", 0),
+                    source="case_open",
+                    metadata={**meta, "card_id": p.get("card_id"), "rarity": p.get("rarity")}))
 
     def _extract_engine_state(engine: BattleEngine) -> Any:
         """
@@ -4545,6 +4763,17 @@ def create_web_app(
         lock = _get_match_lock(match_id)
         async with lock:
             try:
+                try:
+                    engine.record_analytics_action(user_id_int, {
+                        "type": "play_card",
+                        "card_ref": raw_card_id,
+                        "board_position": board_position,
+                        "target_id": target_id,
+                        "target_is_hero": target_is_hero,
+                    })
+                except Exception:
+                    pass
+
                 result = engine.play_card(
                     user_id_int, 
                     raw_card_id, 
@@ -4647,6 +4876,16 @@ def create_web_app(
         lock = _get_match_lock(match_id)
         async with lock:
             try:
+                try:
+                    engine.record_analytics_action(user_id_int, {
+                        "type": "attack",
+                        "attacker_id": attacker_id,
+                        "target_id": target_id,
+                        "target_is_hero": target_is_hero,
+                    })
+                except Exception:
+                    pass
+
                 result = engine.attack_target(
                     user_id_int,
                     attacker_id,
@@ -4873,6 +5112,13 @@ def create_web_app(
         lock = _get_match_lock(match_id)
         async with lock:
             try:
+                try:
+                    engine.record_analytics_action(user_id_int, {
+                        "type": "end_turn",
+                    })
+                except Exception:
+                    pass
+
                 result = engine.end_turn(user_id_int)
                 logger.info("turn_end_handler: success, current_player=%s", engine.get_current_player_id())
             except Exception as exc:
@@ -5033,7 +5279,443 @@ def create_web_app(
     app.router.add_get("/api/admin/players", admin_players_handler)
     app.router.add_post("/api/admin/players", admin_players_handler)
     app.router.add_get("/api/admin/stats", admin_stats_handler)
-    
+
+    # ── Analytics endpoints (public: session + onboarding tracking) ──
+
+    def _analytics_json_safe(value: Any) -> Any:
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            return value
+        if isinstance(value, datetime):
+            return value.isoformat()
+        if isinstance(value, dict):
+            return {
+                str(k): _analytics_json_safe(v)
+                for k, v in value.items()
+                if str(k) not in {"_auth", "initData", "hash", "signature"}
+            }
+        if isinstance(value, list):
+            return [_analytics_json_safe(v) for v in value]
+        return str(value)
+
+    def _safe_json_list(value: Any, max_items: int = 200) -> list:
+        if not isinstance(value, list):
+            return []
+        return [_analytics_json_safe(v) for v in value[:max_items]]
+
+    def _safe_json_dict(value: Any) -> dict:
+        if not isinstance(value, dict):
+            return {}
+        return _analytics_json_safe(value)
+
+    async def analytics_session_start_handler(request: web.Request) -> web.Response:
+        user_id = await require_user_id(request)
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid_json"}, status=400)
+        session_id = str(data.get("session_id", "")).strip()
+        if not session_id or len(session_id) > 128:
+            return web.json_response({"error": "invalid_session_id"}, status=400)
+        source = str(data.get("source", "telegram_webapp"))
+        await db.start_user_session(user_id, session_id, source)
+        return web.json_response({"success": True})
+
+    async def analytics_session_update_handler(request: web.Request) -> web.Response:
+        user_id = await require_user_id(request)
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid_json"}, status=400)
+        session_id = str(data.get("session_id", "")).strip()
+        if not session_id:
+            return web.json_response({"error": "invalid_session_id"}, status=400)
+        screens = _safe_json_list(data.get("screens_visited"), max_items=200)
+        battles = int(data.get("battles_played") or 0)
+        cases = int(data.get("cases_opened") or 0)
+        await db.update_user_session(session_id, screens_visited=screens, battles_played=battles, cases_opened=cases)
+        return web.json_response({"success": True})
+
+    async def analytics_session_end_handler(request: web.Request) -> web.Response:
+        user_id = await require_user_id(request)
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid_json"}, status=400)
+        session_id = str(data.get("session_id", "")).strip()
+        if not session_id:
+            return web.json_response({"error": "invalid_session_id"}, status=400)
+        screens = _safe_json_list(data.get("screens_visited"), max_items=200)
+        battles = int(data.get("battles_played") or 0)
+        cases = int(data.get("cases_opened") or 0)
+        await db.finish_user_session(session_id, screens_visited=screens, battles_played=battles, cases_opened=cases)
+        return web.json_response({"success": True})
+
+    async def analytics_onboarding_handler(request: web.Request) -> web.Response:
+        user_id = await require_user_id(request)
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid_json"}, status=400)
+        step = str(data.get("step", "")).strip()
+        if not step or len(step) > 64:
+            return web.json_response({"error": "invalid_step"}, status=400)
+        completed = bool(data.get("completed", False))
+        time_spent = data.get("time_spent_seconds")
+        if time_spent is not None:
+            try:
+                time_spent = float(time_spent)
+            except (ValueError, TypeError):
+                time_spent = None
+        meta = _safe_json_dict(data.get("metadata"))
+        await db.track_onboarding_event(user_id, step, completed, time_spent, meta)
+        return web.json_response({"success": True})
+
+    app.router.add_post("/api/analytics/session/start", analytics_session_start_handler)
+    app.router.add_post("/api/analytics/session/update", analytics_session_update_handler)
+    app.router.add_post("/api/analytics/session/end", analytics_session_end_handler)
+    app.router.add_post("/api/analytics/onboarding", analytics_onboarding_handler)
+
+    # ── Analytics endpoints (admin only) ──
+
+    async def admin_analytics_overview_handler(request: web.Request) -> web.Response:
+        user_id = await require_user_id(request)
+        if user_id != ADMIN_ID:
+            return web.json_response({"error": "admin_access_required"}, status=403)
+        try:
+            days = int(request.rel_url.query.get("days", "7"))
+            data = await db.get_admin_analytics_overview(days=days)
+            return web.json_response({"status": "ok", "data": data})
+        except Exception as e:
+            logging.getLogger(__name__).error("analytics_overview error: %s", e, exc_info=True)
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def admin_analytics_revenue_handler(request: web.Request) -> web.Response:
+        user_id = await require_user_id(request)
+        if user_id != ADMIN_ID:
+            return web.json_response({"error": "admin_access_required"}, status=403)
+        try:
+            days = int(request.rel_url.query.get("days", "30"))
+            data = await db.get_admin_revenue_analytics(days=days)
+            return web.json_response({"status": "ok", "data": data})
+        except Exception as e:
+            logging.getLogger(__name__).error("analytics_revenue error: %s", e, exc_info=True)
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def admin_analytics_players_handler(request: web.Request) -> web.Response:
+        user_id = await require_user_id(request)
+        if user_id != ADMIN_ID:
+            return web.json_response({"error": "admin_access_required"}, status=403)
+        try:
+            days = int(request.rel_url.query.get("days", "30"))
+            data = await db.get_admin_players_analytics(days=days)
+            return web.json_response({"status": "ok", "data": data})
+        except Exception as e:
+            logging.getLogger(__name__).error("analytics_players error: %s", e, exc_info=True)
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def admin_analytics_battles_handler(request: web.Request) -> web.Response:
+        user_id = await require_user_id(request)
+        if user_id != ADMIN_ID:
+            return web.json_response({"error": "admin_access_required"}, status=403)
+        try:
+            days = int(request.rel_url.query.get("days", "30"))
+            data = await db.get_admin_battle_analytics(days=days)
+            return web.json_response({"status": "ok", "data": data})
+        except Exception as e:
+            logging.getLogger(__name__).error("analytics_battles error: %s", e, exc_info=True)
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def admin_analytics_economy_handler(request: web.Request) -> web.Response:
+        user_id = await require_user_id(request)
+        if user_id != ADMIN_ID:
+            return web.json_response({"error": "admin_access_required"}, status=403)
+        try:
+            days = int(request.rel_url.query.get("days", "30"))
+            rows = await db.fetch(
+                """
+                SELECT event_type, resource, COUNT(*) AS cnt, COALESCE(SUM(amount), 0) AS total_amount
+                FROM economy_events
+                WHERE created_at >= NOW() - make_interval(days => $1::int)
+                GROUP BY event_type, resource
+                ORDER BY cnt DESC
+                """,
+                max(days, 1),
+            )
+            events = [{"event_type": r["event_type"], "resource": r["resource"], "count": r["cnt"], "total_amount": float(r["total_amount"])} for r in rows]
+            return web.json_response({"status": "ok", "data": {"events": events, "total_events": sum(e["count"] for e in events)}})
+        except Exception as e:
+            logging.getLogger(__name__).error("analytics_economy error: %s", e, exc_info=True)
+            return web.json_response({"error": str(e)}, status=500)
+
+    app.router.add_get("/api/admin/analytics/overview", admin_analytics_overview_handler)
+    app.router.add_get("/api/admin/analytics/revenue", admin_analytics_revenue_handler)
+    app.router.add_get("/api/admin/analytics/players", admin_analytics_players_handler)
+    app.router.add_get("/api/admin/analytics/battles", admin_analytics_battles_handler)
+    app.router.add_get("/api/admin/analytics/economy", admin_analytics_economy_handler)
+
+    # ── Analytics: cards / heroes / retention / onboarding / battle-actions ──
+
+    async def admin_analytics_cards_handler(request: web.Request) -> web.Response:
+        user_id = await require_user_id(request)
+        if user_id != ADMIN_ID:
+            return web.json_response({"error": "admin_access_required"}, status=403)
+        try:
+            days = int(request.rel_url.query.get("days", "30"))
+            data = await db.get_admin_cards_analytics(days=days)
+            return web.json_response({"status": "ok", "data": data})
+        except Exception as e:
+            logging.getLogger(__name__).error("analytics_cards error: %s", e, exc_info=True)
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def admin_analytics_heroes_handler(request: web.Request) -> web.Response:
+        user_id = await require_user_id(request)
+        if user_id != ADMIN_ID:
+            return web.json_response({"error": "admin_access_required"}, status=403)
+        try:
+            days = int(request.rel_url.query.get("days", "30"))
+            data = await db.get_admin_heroes_analytics(days=days)
+            return web.json_response({"status": "ok", "data": data})
+        except Exception as e:
+            logging.getLogger(__name__).error("analytics_heroes error: %s", e, exc_info=True)
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def admin_analytics_retention_handler(request: web.Request) -> web.Response:
+        user_id = await require_user_id(request)
+        if user_id != ADMIN_ID:
+            return web.json_response({"error": "admin_access_required"}, status=403)
+        try:
+            days = int(request.rel_url.query.get("days", "30"))
+            data = await db.get_admin_retention_analytics(days=days)
+            return web.json_response({"status": "ok", "data": data})
+        except Exception as e:
+            logging.getLogger(__name__).error("analytics_retention error: %s", e, exc_info=True)
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def admin_analytics_onboarding_handler(request: web.Request) -> web.Response:
+        user_id = await require_user_id(request)
+        if user_id != ADMIN_ID:
+            return web.json_response({"error": "admin_access_required"}, status=403)
+        try:
+            days = int(request.rel_url.query.get("days", "30"))
+            data = await db.get_admin_onboarding_analytics(days=days)
+            return web.json_response({"status": "ok", "data": data})
+        except Exception as e:
+            logging.getLogger(__name__).error("analytics_onboarding error: %s", e, exc_info=True)
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def admin_analytics_battle_actions_handler(request: web.Request) -> web.Response:
+        user_id = await require_user_id(request)
+        if user_id != ADMIN_ID:
+            return web.json_response({"error": "admin_access_required"}, status=403)
+        try:
+            days = int(request.rel_url.query.get("days", "7"))
+            data = await db.get_admin_battle_actions_analytics(days=days)
+            return web.json_response({"status": "ok", "data": data})
+        except Exception as e:
+            logging.getLogger(__name__).error("analytics_battle_actions error: %s", e, exc_info=True)
+            return web.json_response({"error": str(e)}, status=500)
+
+    app.router.add_get("/api/admin/analytics/cards", admin_analytics_cards_handler)
+    app.router.add_get("/api/admin/analytics/heroes", admin_analytics_heroes_handler)
+    app.router.add_get("/api/admin/analytics/retention", admin_analytics_retention_handler)
+    app.router.add_get("/api/admin/analytics/onboarding", admin_analytics_onboarding_handler)
+    app.router.add_get("/api/admin/analytics/battle-actions", admin_analytics_battle_actions_handler)
+
+    # ── Players Admin: analytics ──
+
+    async def admin_players_overview_handler(request: web.Request) -> web.Response:
+        user_id = await require_user_id(request)
+        if user_id != ADMIN_ID:
+            return web.json_response({"error": "admin_access_required"}, status=403)
+        try:
+            days = int(request.rel_url.query.get("days", "30"))
+            data = await db.get_admin_players_overview(days=days)
+            return web.json_response({"status": "ok", "data": data})
+        except Exception as e:
+            logging.getLogger(__name__).error("admin_players_overview_handler error: %s", e, exc_info=True)
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def admin_players_leagues_handler(request: web.Request) -> web.Response:
+        user_id = await require_user_id(request)
+        if user_id != ADMIN_ID:
+            return web.json_response({"error": "admin_access_required"}, status=403)
+        try:
+            data = await db.get_admin_players_leagues()
+            return web.json_response({"status": "ok", "data": data})
+        except Exception as e:
+            logging.getLogger(__name__).error("admin_players_leagues_handler error: %s", e, exc_info=True)
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def admin_players_activity_handler(request: web.Request) -> web.Response:
+        user_id = await require_user_id(request)
+        if user_id != ADMIN_ID:
+            return web.json_response({"error": "admin_access_required"}, status=403)
+        try:
+            days = int(request.rel_url.query.get("days", "30"))
+            data = await db.get_admin_players_activity(days=days)
+            return web.json_response({"status": "ok", "data": data})
+        except Exception as e:
+            logging.getLogger(__name__).error("admin_players_activity_handler error: %s", e, exc_info=True)
+            return web.json_response({"error": str(e)}, status=500)
+
+    # ── Players Admin: list / detail ──
+
+    async def admin_players_list_handler(request: web.Request) -> web.Response:
+        user_id = await require_user_id(request)
+        if user_id != ADMIN_ID:
+            return web.json_response({"error": "admin_access_required"}, status=403)
+        try:
+            q = request.rel_url.query.get("q", "")
+            status = request.rel_url.query.get("status", "all")
+            league_raw = request.rel_url.query.get("league")
+            league = int(league_raw) if league_raw and league_raw.isdigit() else None
+            activity = request.rel_url.query.get("activity", "all")
+            limit = min(int(request.rel_url.query.get("limit", "50")), 200)
+            offset = max(int(request.rel_url.query.get("offset", "0")), 0)
+            data = await db.search_admin_players(
+                query=q, status=status, league=league, activity=activity,
+                limit=limit, offset=offset,
+            )
+            return web.json_response({"status": "ok", "data": data})
+        except Exception as e:
+            logging.getLogger(__name__).error("admin_players_list_handler error: %s", e, exc_info=True)
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def admin_player_detail_handler(request: web.Request) -> web.Response:
+        user_id = await require_user_id(request)
+        if user_id != ADMIN_ID:
+            return web.json_response({"error": "admin_access_required"}, status=403)
+        try:
+            target_user_id = int(request.match_info["user_id"])
+            data = await db.get_admin_player_detail(target_user_id)
+            return web.json_response({"status": "ok", "data": data})
+        except Exception as e:
+            logging.getLogger(__name__).error("admin_player_detail_handler error: %s", e, exc_info=True)
+            return web.json_response({"error": str(e)}, status=500)
+
+    # ── Players Admin: actions ──
+
+    async def admin_player_ban_handler(request: web.Request) -> web.Response:
+        admin_id = await require_user_id(request)
+        if admin_id != ADMIN_ID:
+            return web.json_response({"error": "admin_access_required"}, status=403)
+        try:
+            target_user_id = int(request.match_info["user_id"])
+            body = await request.json()
+            if target_user_id == admin_id:
+                if not body.get("confirm_self"):
+                    return web.json_response(
+                        {"error": "self_ban_requires_confirm", "message": "Set confirm_self=true to ban yourself"},
+                        status=400,
+                    )
+            reason = body.get("reason")
+            until_raw = body.get("until")
+            until = None
+            if until_raw:
+                try:
+                    until = datetime.fromisoformat(until_raw)
+                except Exception:
+                    return web.json_response({"error": "invalid_until_date"}, status=400)
+            result = await db.admin_ban_user(admin_id, target_user_id, reason=reason, until=until)
+            return web.json_response({"status": "ok", "data": result})
+        except Exception as e:
+            logging.getLogger(__name__).error("admin_player_ban_handler error: %s", e, exc_info=True)
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def admin_player_unban_handler(request: web.Request) -> web.Response:
+        admin_id = await require_user_id(request)
+        if admin_id != ADMIN_ID:
+            return web.json_response({"error": "admin_access_required"}, status=403)
+        try:
+            target_user_id = int(request.match_info["user_id"])
+            try:
+                body = await request.json()
+            except Exception:
+                body = {}
+            reason = body.get("reason")
+            result = await db.admin_unban_user(admin_id, target_user_id, reason=reason)
+            return web.json_response({"status": "ok", "data": result})
+        except Exception as e:
+            logging.getLogger(__name__).error("admin_player_unban_handler error: %s", e, exc_info=True)
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def admin_player_warn_handler(request: web.Request) -> web.Response:
+        admin_id = await require_user_id(request)
+        if admin_id != ADMIN_ID:
+            return web.json_response({"error": "admin_access_required"}, status=403)
+        try:
+            target_user_id = int(request.match_info["user_id"])
+            body = await request.json()
+            reason = body.get("reason", "")
+            result = await db.admin_warn_user(admin_id, target_user_id, reason=str(reason))
+            return web.json_response({"status": "ok", "data": result})
+        except Exception as e:
+            logging.getLogger(__name__).error("admin_player_warn_handler error: %s", e, exc_info=True)
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def admin_player_note_handler(request: web.Request) -> web.Response:
+        admin_id = await require_user_id(request)
+        if admin_id != ADMIN_ID:
+            return web.json_response({"error": "admin_access_required"}, status=403)
+        try:
+            target_user_id = int(request.match_info["user_id"])
+            body = await request.json()
+            note = body.get("note", "")
+            result = await db.admin_note_user(admin_id, target_user_id, note=str(note))
+            return web.json_response({"status": "ok", "data": result})
+        except Exception as e:
+            logging.getLogger(__name__).error("admin_player_note_handler error: %s", e, exc_info=True)
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def admin_player_resource_handler(request: web.Request) -> web.Response:
+        admin_id = await require_user_id(request)
+        if admin_id != ADMIN_ID:
+            return web.json_response({"error": "admin_access_required"}, status=403)
+        try:
+            target_user_id = int(request.match_info["user_id"])
+            body = await request.json()
+            resource = str(body.get("resource", ""))
+            amount = float(body.get("amount", 0))
+            reason = body.get("reason")
+            result = await db.admin_adjust_resource(
+                admin_id, target_user_id, resource, amount, reason=reason,
+            )
+            return web.json_response({"status": "ok", "data": result})
+        except Exception as e:
+            logging.getLogger(__name__).error("admin_player_resource_handler error: %s", e, exc_info=True)
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def admin_player_extra_pass_handler(request: web.Request) -> web.Response:
+        admin_id = await require_user_id(request)
+        if admin_id != ADMIN_ID:
+            return web.json_response({"error": "admin_access_required"}, status=403)
+        try:
+            target_user_id = int(request.match_info["user_id"])
+            body = await request.json()
+            mode = str(body.get("mode", ""))
+            days_raw = body.get("days")
+            days = int(days_raw) if days_raw is not None else None
+            reason = body.get("reason")
+            result = await db.admin_set_extra_pass(
+                admin_id, target_user_id, mode, days=days, reason=reason,
+            )
+            return web.json_response({"status": "ok", "data": result})
+        except Exception as e:
+            logging.getLogger(__name__).error("admin_player_extra_pass_handler error: %s", e, exc_info=True)
+            return web.json_response({"error": str(e)}, status=500)
+
+    app.router.add_get("/api/admin/players/overview", admin_players_overview_handler)
+    app.router.add_get("/api/admin/players/leagues", admin_players_leagues_handler)
+    app.router.add_get("/api/admin/players/activity", admin_players_activity_handler)
+    app.router.add_get("/api/admin/players/list", admin_players_list_handler)
+    app.router.add_get("/api/admin/players/{user_id}", admin_player_detail_handler)
+    app.router.add_post("/api/admin/players/{user_id}/ban", admin_player_ban_handler)
+    app.router.add_post("/api/admin/players/{user_id}/unban", admin_player_unban_handler)
+    app.router.add_post("/api/admin/players/{user_id}/warn", admin_player_warn_handler)
+    app.router.add_post("/api/admin/players/{user_id}/note", admin_player_note_handler)
+    app.router.add_post("/api/admin/players/{user_id}/resource", admin_player_resource_handler)
+    app.router.add_post("/api/admin/players/{user_id}/extra-pass", admin_player_extra_pass_handler)
+
     async def admin_tps_handler(request: web.Request) -> web.Response:
         """Обработчик получения TPS статистики (только для админа)."""
         user_id = await require_user_id(request)
@@ -5380,14 +6062,23 @@ def create_web_app(
                 if rtype == "coins":
                     await db.update_user_coins(user_id, ramount)
                     granted.append({"reward_type": "coins", "reward_amount": ramount})
+                    await _track_economy_safe(db, user_id=user_id, event_type="earn",
+                        resource="coins", amount=ramount, source="reward_track",
+                        metadata={"track_type": track_type, "position": position})
 
                 elif rtype == "gems":
                     await db.add_gems(user_id, ramount)
                     granted.append({"reward_type": "gems", "reward_amount": ramount})
+                    await _track_economy_safe(db, user_id=user_id, event_type="earn",
+                        resource="gems", amount=ramount, source="reward_track",
+                        metadata={"track_type": track_type, "position": position})
 
                 elif rtype == "keys":
                     await db.increment_user_keys(user_id, ramount)
                     granted.append({"reward_type": "keys", "reward_amount": ramount})
+                    await _track_economy_safe(db, user_id=user_id, event_type="earn",
+                        resource="keys", amount=ramount, source="reward_track",
+                        metadata={"track_type": track_type, "position": position})
 
                 elif rtype == "card":
                     rarities = ["common", "rare"]
@@ -5404,8 +6095,11 @@ def create_web_app(
                             "card_id": card["id"],
                             "card_name": card.get("name", ""),
                         })
+                        await _track_economy_safe(db, user_id=user_id, event_type="earn",
+                            resource="card", amount=1, source="reward_track",
+                            metadata={"track_type": track_type, "position": position,
+                                      "card_id": card["id"], "card_name": card.get("name")})
                     else:
-                        # fallback: coins вместо карты
                         fallback_coins = 100
                         await db.update_user_coins(user_id, fallback_coins)
                         granted.append({
@@ -5413,6 +6107,9 @@ def create_web_app(
                             "reward_amount": fallback_coins,
                             "fallback_for": "card",
                         })
+                        await _track_economy_safe(db, user_id=user_id, event_type="earn",
+                            resource="coins", amount=fallback_coins, source="reward_track",
+                            metadata={"track_type": track_type, "position": position, "fallback_for": "card"})
 
             logging.getLogger(__name__).info(
                 "Reward claimed: user=%s track=%s pos=%s granted=%s",
@@ -5434,87 +6131,110 @@ def create_web_app(
 
     async def yookassa_webhook_handler(request: web.Request) -> web.Response:
         """Обработчик вебхуков от YooKassa."""
+        import json
         import logging
         webhook_logger = logging.getLogger(__name__)
-        
+
         try:
-            # Получаем сырые данные для логирования
             raw_data = await request.read()
             data = await request.json() if raw_data else {}
-            
-            webhook_logger.info(f"Получен вебхук от YooKassa: {data.get('event', 'unknown')}")
-            
+
+            webhook_logger.info("WEBHOOK raw event=%s", data.get("event", "unknown"))
+
             payment_service = request.app.get("payment_service")
-            
+
             if not payment_service:
                 webhook_logger.error("Payment service не настроен")
                 return web.json_response(
-                    {
-                        "error": "payment_service_not_configured",
-                        "message": "Платежный сервис не настроен. Проверьте настройки YooKassa."
-                    }, 
-                    status=503
+                    {"error": "payment_service_not_configured",
+                     "message": "Платежный сервис не настроен. Проверьте настройки YooKassa."},
+                    status=503,
                 )
-            
-            # Парсим уведомление от YooKassa (SDK автоматически проверяет подпись)
+
             webhook_data = payment_service.parse_webhook(data)
-            
+
             if not webhook_data:
-                webhook_logger.warning(f"Не удалось распарсить вебхук: {data}")
+                webhook_logger.warning("Не удалось распарсить вебхук: %s",
+                                       json.dumps(data, ensure_ascii=False, default=str)[:500])
                 return web.json_response(
                     {"error": "invalid_webhook"}, status=400
                 )
-            
+
             event = webhook_data.get("event")
             payment_id = webhook_data.get("payment_id")
             status = webhook_data.get("status")
-            
+            paid = webhook_data.get("paid")
+            metadata = webhook_data.get("metadata", {})
+
             webhook_logger.info(
-                f"Вебхук обработан: event={event}, payment_id={payment_id}, status={status}"
+                "WEBHOOK parsed: event=%s payment_id=%s status=%s paid=%s metadata_keys=%s",
+                event, payment_id, status, paid, list(metadata.keys())[:10],
             )
-            
+
             if not payment_id or not status:
-                webhook_logger.warning(f"Отсутствуют обязательные данные в вебхуке: {webhook_data}")
+                webhook_logger.warning("Отсутствуют обязательные данные в вебхуке: %s", webhook_data)
                 return web.json_response(
                     {"error": "missing_payment_data"}, status=400
                 )
-            
-            # Получаем или создаем запись о платеже
+
             payment_record = await db.get_payment_by_id(payment_id)
-            
+            record_found = bool(payment_record)
+
             if not payment_record:
-                # Если платежа нет в БД, возможно это первый вебхук
-                # Создаем запись с данными из вебхука
-                webhook_logger.warning(f"Платеж {payment_id} не найден в БД, создаем запись")
-                metadata = webhook_data.get("metadata", {})
+                webhook_logger.warning("Платеж %s не найден в БД, создаем запись из webhook", payment_id)
                 user_id = metadata.get("user_id")
-                
                 if user_id:
                     await db.create_payment(
                         user_id=int(user_id),
                         payment_id=payment_id,
                         amount=float(webhook_data.get("amount", 0)),
                         currency=webhook_data.get("currency", "RUB"),
-                        description=f"Платеж {payment_id}",
-                        metadata=metadata
+                        description=metadata.get("item_name") or metadata.get("item_type") or "Платеж {}".format(payment_id),
+                        metadata=metadata,
                     )
                     payment_record = await db.get_payment_by_id(payment_id)
-            
-            # Обновляем статус платежа в БД
-            await db.update_payment_status(
-                payment_id=payment_id,
-                status=status
+                    record_found = bool(payment_record)
+                else:
+                    webhook_logger.error("Платеж %s не содержит user_id в metadata, не можем создать запись", payment_id)
+
+            webhook_logger.info(
+                "WEBHOOK record: found=%s rewards_processed=%s",
+                record_found,
+                payment_record.get("rewards_processed") if payment_record else "N/A",
             )
-            
-            # Получаем обновленную запись после изменения статуса
+
+            await db.update_payment_status(payment_id=payment_id, status=status)
+
             payment_record = await db.get_payment_by_id(payment_id)
-            
-            # Обрабатываем разные события
-            if event == "payment.succeeded" and status == "succeeded" and webhook_data.get("paid"):
+
+            if event == "payment.succeeded" and status == "succeeded":
                 if not payment_record:
                     webhook_logger.error("Платеж %s отсутствует в БД даже после попытки создания", payment_id)
+                elif not paid:
+                    webhook_logger.warning(
+                        "Платеж %s: event=succeeded, status=succeeded, но paid=%s — всё равно выдаём награду",
+                        payment_id, paid,
+                    )
+                    processing_result = await process_successful_payment(
+                        db=db,
+                        payment_id=payment_id,
+                        payment_record=payment_record,
+                        source="yookassa_webhook",
+                        logger=webhook_logger,
+                    )
+                    if processing_result["status"] == "already_processed":
+                        webhook_logger.info("Платеж %s уже был обработан ранее, повтор не требуется", payment_id)
+                    elif processing_result["status"] == "missing_payment":
+                        webhook_logger.error("Платеж %s пропал во время обработки", payment_id)
+                    elif processing_result.get("rewards_text"):
+                        webhook_logger.info(
+                            "Платеж %s обработан, награды: %s",
+                            payment_id,
+                            processing_result["rewards_text"],
+                        )
+                    else:
+                        webhook_logger.info("Платеж %s обработан без дополнительных наград", payment_id)
                 else:
-                    # Унифицированная выдача наград и писем (общая для Stars и YooKassa)
                     processing_result = await process_successful_payment(
                         db=db,
                         payment_id=payment_id,
@@ -5535,19 +6255,66 @@ def create_web_app(
                     else:
                         webhook_logger.info("Платеж %s обработан без дополнительных наград", payment_id)
             elif event == "payment.canceled" and status == "canceled":
-                webhook_logger.info(f"❌ Платеж {payment_id} отменен")
-                
+                webhook_logger.info("Платеж %s отменён", payment_id)
+
             elif event == "payment.waiting_for_capture":
-                webhook_logger.info(f"⏳ Платеж {payment_id} ожидает подтверждения")
-            
+                webhook_logger.info("Платеж %s ожидает подтверждения", payment_id)
+
             return web.json_response({"status": "ok"})
         except Exception as e:
             webhook_logger.error(
-                f"Ошибка обработки вебхука YooKassa: {e}", exc_info=True
+                "Ошибка обработки вебхука YooKassa: %s", e, exc_info=True
             )
             return web.json_response(
                 {"error": "internal_server_error", "message": str(e)}, status=500
             )
+
+    async def webhook_test_handler(request: web.Request) -> web.Response:
+        """GET /api/payments/webhook/test — проверка доступности webhook URL."""
+        payment_service = request.app.get("payment_service")
+        return web.json_response({
+            "ok": True,
+            "service": "yookassa-webhook",
+            "payment_service_configured": payment_service is not None,
+            "webapp_url": request.app.get("webapp_url", ""),
+        })
+
+    async def webhook_debug_handler(request: web.Request) -> web.Response:
+        """POST /api/payments/webhook/debug — диагностический webhook (не выдаёт награды)."""
+        import json
+        import logging
+        debug_logger = logging.getLogger(__name__)
+        try:
+            raw_data = await request.read()
+            try:
+                data = await request.json() if raw_data else {}
+            except Exception:
+                data = {"raw": raw_data[:500].decode(errors="replace") if raw_data else ""}
+
+            debug_logger.info("WEBHOOK_DEBUG: method=%s headers=%s body=%s",
+                              request.method,
+                              dict(request.headers),
+                              json.dumps(data, ensure_ascii=False, default=str)[:2000])
+
+            payment_service = request.app.get("payment_service")
+            parsed = None
+            if payment_service and isinstance(data, dict):
+                parsed = payment_service.parse_webhook(data)
+
+            return web.json_response({
+                "ok": True,
+                "received_method": request.method,
+                "received_event": data.get("event") if isinstance(data, dict) else "N/A",
+                "parsed": parsed is not None,
+                "parsed_event": parsed.get("event") if parsed else None,
+                "parsed_payment_id": parsed.get("payment_id") if parsed else None,
+                "parsed_status": parsed.get("status") if parsed else None,
+                "parsed_paid": parsed.get("paid") if parsed else None,
+                "payment_service_configured": payment_service is not None,
+            })
+        except Exception as e:
+            debug_logger.error("WEBHOOK_DEBUG error: %s", e, exc_info=True)
+            return web.json_response({"ok": False, "error": str(e)}, status=500)
 
     async def create_payment_handler(request: web.Request) -> web.Response:
         """Обработчик создания платежа."""
@@ -5589,12 +6356,13 @@ def create_web_app(
             
             # Создаем платеж в YooKassa
             logger.info(f"Создание платежа: amount={amount}, currency={data.get('currency', 'RUB')}, description={description}")
-            payment_result = payment_service.create_payment(
+            payment_result = await asyncio.to_thread(
+                payment_service.create_payment,
                 amount=amount,
                 currency=data.get("currency", "RUB"),
                 description=description,
                 return_url=return_url,
-                metadata=metadata
+                metadata=metadata,
             )
             
             logger.info(f"Результат создания платежа: success={payment_result.get('success')}, error={payment_result.get('error')}")
@@ -5640,7 +6408,10 @@ def create_web_app(
             )
 
     async def get_payment_status_handler(request: web.Request) -> web.Response:
-        """Обработчик получения статуса платежа."""
+        """Обработчик получения статуса платежа с fallback-выдачей наград."""
+        import logging
+        status_logger = logging.getLogger(__name__)
+
         user_id = await require_user_id(request)
 
         payment_id = request.rel_url.query.get("payment_id")
@@ -5648,15 +6419,13 @@ def create_web_app(
             return web.json_response({"error": "payment_id_required"}, status=400)
 
         try:
-            # Проверяем, что платеж принадлежит пользователю
             payment_record = await db.get_payment_by_id(payment_id)
             if not payment_record:
                 return web.json_response({"error": "payment_not_found"}, status=404)
-            
+
             if payment_record["user_id"] != user_id:
                 return web.json_response({"error": "access_denied"}, status=403)
-            
-            # Для платежей звездами (начинаются с "stars_") возвращаем статус из БД
+
             if payment_id.startswith("stars_"):
                 return web.json_response({
                     "payment_id": payment_id,
@@ -5666,11 +6435,9 @@ def create_web_app(
                     "rewards_processed": payment_record.get("rewards_processed", False),
                     "paid": payment_record["status"] == "succeeded",
                 })
-            
-            # Для платежей YooKassa используем payment_service
+
             payment_service = request.app.get("payment_service")
             if not payment_service:
-                # Если payment_service не настроен, возвращаем статус из БД
                 return web.json_response({
                     "payment_id": payment_id,
                     "status": payment_record["status"],
@@ -5678,12 +6445,18 @@ def create_web_app(
                     "currency": payment_record["currency"],
                     "rewards_processed": payment_record.get("rewards_processed", False),
                 })
-            
-            # Получаем актуальный статус из YooKassa
-            status_result = payment_service.get_payment_status(payment_id)
-            
+
+            status_logger.info(
+                "STATUS_CHECK: payment_id=%s db_status=%s rewards_processed=%s",
+                payment_id, payment_record["status"], payment_record.get("rewards_processed"),
+            )
+
+            status_result = await asyncio.to_thread(
+                payment_service.get_payment_status, payment_id
+            )
+
             if not status_result.get("success"):
-                # Если не удалось получить из YooKassa, возвращаем из БД
+                status_logger.warning("STATUS_CHECK: не удалось получить статус из YooKassa для %s", payment_id)
                 return web.json_response({
                     "payment_id": payment_id,
                     "status": payment_record["status"],
@@ -5691,23 +6464,52 @@ def create_web_app(
                     "currency": payment_record["currency"],
                     "rewards_processed": payment_record.get("rewards_processed", False),
                 })
-            
-            # Обновляем статус в БД, если изменился
-            if status_result.get("status") != payment_record["status"]:
-                await db.update_payment_status(
-                    payment_id=payment_id,
-                    status=status_result["status"]
-                )
-                # Получаем обновленную запись
+
+            yookassa_status = status_result.get("status")
+            yookassa_paid = status_result.get("paid")
+
+            status_logger.info(
+                "STATUS_CHECK: yookassa_status=%s yookassa_paid=%s for %s",
+                yookassa_status, yookassa_paid, payment_id,
+            )
+
+            if yookassa_status and yookassa_status != payment_record["status"]:
+                await db.update_payment_status(payment_id=payment_id, status=yookassa_status)
                 payment_record = await db.get_payment_by_id(payment_id)
-            
-            # Добавляем информацию о rewards_processed в ответ
-            status_result["rewards_processed"] = payment_record.get("rewards_processed", False)
-            
-            return web.json_response(status_result)
+
+            rewards_processed = payment_record.get("rewards_processed", False)
+
+            if not rewards_processed and (yookassa_status == "succeeded" or yookassa_paid):
+                status_logger.info(
+                    "STATUS_CHECK: payment %s succeeded in YooKassa but not processed — выдаём награду",
+                    payment_id,
+                )
+                processing_result = await process_successful_payment(
+                    db=db,
+                    payment_id=payment_id,
+                    payment_record=payment_record,
+                    source="yookassa_status_check",
+                    logger=status_logger,
+                )
+                rewards_processed = processing_result["status"] not in ("missing_payment",)
+                if processing_result.get("rewards_text"):
+                    status_logger.info(
+                        "STATUS_CHECK: награды выданы для %s: %s",
+                        payment_id, processing_result["rewards_text"],
+                    )
+
+            result = {
+                "payment_id": payment_id,
+                "status": yookassa_status or payment_record["status"],
+                "paid": yookassa_paid,
+                "amount": status_result.get("amount") or float(payment_record["amount"]),
+                "currency": status_result.get("currency") or payment_record["currency"],
+                "rewards_processed": rewards_processed,
+            }
+            return web.json_response(result)
+
         except Exception as e:
-            import logging
-            logging.getLogger(__name__).error(
+            status_logger.error(
                 "Ошибка получения статуса платежа %s: %s", payment_id, e, exc_info=True
             )
             return web.json_response(
@@ -5983,13 +6785,213 @@ def create_web_app(
             return web.json_response(
                 {"error": "internal_server_error", "message": str(e)}, status=500
             )
-    
+
+    async def payment_history_start_handler(request: web.Request) -> web.Response:
+        """POST /api/payments/history/start — возвращает подписанный history_url."""
+        user_id = await require_user_id(request)
+
+        try:
+            if not await db.has_any_purchase(user_id):
+                return web.json_response({
+                    "success": True,
+                    "has_purchases": False,
+                    "history_url": None,
+                })
+
+            secret = request.app["bot_token"]
+            webapp_url = request.app.get("webapp_url", "https://t.me/your_bot")
+
+            payload = {
+                "user_id": user_id,
+                "exp": int((datetime.now(timezone.utc) + timedelta(hours=1)).timestamp()),
+                "iat": int(datetime.now(timezone.utc).timestamp()),
+                "jti": str(uuid.uuid4()),
+            }
+
+            payload_json = _stdlib_json.dumps(payload, separators=(",", ":"), ensure_ascii=True, sort_keys=True)
+            payload_b64 = base64.urlsafe_b64encode(payload_json.encode()).rstrip(b"=").decode()
+            signature = hmac.new(secret.encode(), payload_b64.encode(), "sha256").hexdigest()
+            token = f"{payload_b64}.{signature}"
+
+            extra_shop_url = request.app.get("extra_shop_url", request.app.get("webapp_url", ""))
+            history_url = f"{extra_shop_url.rstrip('/')}/extraShop?history={token}"
+
+            return web.json_response({
+                "success": True,
+                "has_purchases": True,
+                "history_url": history_url,
+            })
+        except Exception as e:
+            return web.json_response(
+                {"error": "internal_server_error", "message": str(e)}, status=500
+            )
+
+    async def payment_history_handler(request: web.Request) -> web.Response:
+        """GET /api/payments/history?token=... — возвращает историю покупок пользователя."""
+        try:
+            token = request.rel_url.query.get("token", "")
+            if not token:
+                return web.json_response({"error": "missing_token"}, status=400)
+
+            secret = request.app["bot_token"]
+            parts = token.rsplit(".", 1)
+            if len(parts) != 2:
+                return web.json_response({"error": "invalid_token_format"}, status=400)
+
+            payload_b64, provided_sig = parts
+            expected_sig = hmac.new(secret.encode(), payload_b64.encode(), "sha256").hexdigest()
+            if not hmac.compare_digest(expected_sig, provided_sig):
+                return web.json_response({"error": "invalid_signature"}, status=400)
+
+            try:
+                padded = payload_b64 + "=" * ((4 - len(payload_b64) % 4) % 4)
+                payload_json = base64.urlsafe_b64decode(padded).decode()
+                payload = _stdlib_json.loads(payload_json)
+            except Exception:
+                return web.json_response({"error": "invalid_token_payload"}, status=400)
+
+            exp = int(payload.get("exp", 0))
+            if time.time() > exp:
+                return web.json_response({"error": "token_expired"}, status=400)
+
+            user_id = int(payload.get("user_id", 0))
+            if not user_id:
+                return web.json_response({"error": "missing_user_id"}, status=400)
+
+            history = await db.get_user_payment_history(user_id, limit=50)
+
+            result = []
+            for p in history:
+                result.append({
+                    "payment_id": p["payment_id"],
+                    "amount": float(p["amount"]),
+                    "currency": p["currency"],
+                    "description": p["description"],
+                    "metadata": p["metadata"] if isinstance(p["metadata"], dict) else
+                                (_stdlib_json.loads(p["metadata"]) if isinstance(p["metadata"], str) else {}),
+                    "status": p["status"],
+                    "rewards_processed": p["rewards_processed"],
+                    "created_at": p["created_at"].isoformat() if hasattr(p["created_at"], "isoformat") else str(p["created_at"]),
+                })
+
+            return web.json_response({"success": True, "history": result})
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error("Ошибка получения истории покупок: %s", e, exc_info=True)
+            return web.json_response(
+                {"error": "internal_server_error", "message": str(e)}, status=500
+            )
+
+    async def payment_modal_shown_handler(request: web.Request) -> web.Response:
+        """POST /api/payments/modal-shown — помечает, что модалка показана в UI."""
+        user_id = await require_user_id(request)
+
+        try:
+            data = await request.json()
+            payment_id = str(data.get("payment_id", ""))
+            if not payment_id:
+                return web.json_response({"error": "missing_payment_id"}, status=400)
+
+            marked = await db.mark_payment_modal_shown(payment_id, user_id)
+            return web.json_response({"success": True, "marked": marked})
+        except Exception as e:
+            return web.json_response(
+                {"error": "internal_server_error", "message": str(e)}, status=500
+            )
+
+    async def checkout_session_status_handler(request: web.Request) -> web.Response:
+        """GET /api/payments/checkout/session-status?jti=... — статус сессии и платежа."""
+        user_id = await require_user_id(request)
+
+        jti = request.rel_url.query.get("jti", "")
+        if not jti:
+            return web.json_response({"error": "missing_jti"}, status=400)
+
+        try:
+            session = await db.get_checkout_session(jti)
+            if not session:
+                return web.json_response({"error": "session_not_found"}, status=404)
+
+            if int(session.get("user_id", 0)) != user_id:
+                return web.json_response({"error": "access_denied"}, status=403)
+
+            payment_id = session.get("payment_id")
+            result: dict[str, Any] = {
+                "success": True,
+                "jti": jti,
+                "session_status": session.get("status"),
+                "payment_id": payment_id,
+                "confirmation_url": session.get("confirmation_url"),
+                "rewards_processed": False,
+                "modal_shown": False,
+                "payment_status": None,
+            }
+
+            if payment_id:
+                payment_record = await db.get_payment_by_id(payment_id)
+                if payment_record:
+                    result["payment_status"] = payment_record.get("status")
+                    result["rewards_processed"] = payment_record.get("rewards_processed", False)
+                    if isinstance(payment_record.get("metadata"), dict):
+                        result["modal_shown"] = payment_record["metadata"].get("modal_shown", False)
+
+            return web.json_response(result)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error("Ошибка session-status: %s", e, exc_info=True)
+            return web.json_response(
+                {"error": "internal_server_error", "message": str(e)}, status=500
+            )
+
+    async def recent_success_payments_handler(request: web.Request) -> web.Response:
+        """GET /api/payments/recent-success — последние succeeded платежи без modal_shown."""
+        user_id = await require_user_id(request)
+
+        try:
+            history = await db.get_user_payment_history(user_id, limit=20)
+            result = []
+            for p in history:
+                if p["status"] != "succeeded":
+                    continue
+                meta = p.get("metadata") or {}
+                if isinstance(meta, str):
+                    try:
+                        meta = _stdlib_json.loads(meta)
+                    except Exception:
+                        meta = {}
+                if meta.get("modal_shown"):
+                    continue
+                result.append({
+                    "payment_id": p["payment_id"],
+                    "amount": float(p["amount"]),
+                    "currency": p["currency"],
+                    "description": p["description"],
+                    "metadata": meta,
+                    "rewards_processed": p["rewards_processed"],
+                    "created_at": p["created_at"].isoformat() if hasattr(p["created_at"], "isoformat") else str(p["created_at"]),
+                })
+
+            return web.json_response({"success": True, "payments": result})
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error("Ошибка recent-success: %s", e, exc_info=True)
+            return web.json_response(
+                {"error": "internal_server_error", "message": str(e)}, status=500
+            )
+
     app.router.add_post("/api/payments/create", create_payment_handler)
     app.router.add_get("/api/payments/status", get_payment_status_handler)
     app.router.add_get("/api/payments/config", payment_config_handler)
     app.router.add_post("/api/payments/webhook", yookassa_webhook_handler)
-    app.router.add_post("/api/payments/webhook/", yookassa_webhook_handler)  # С поддержкой слэша в конце
+    app.router.add_post("/api/payments/webhook/", yookassa_webhook_handler)
+    app.router.add_get("/api/payments/webhook/test", webhook_test_handler)
+    app.router.add_post("/api/payments/webhook/debug", webhook_debug_handler)
     app.router.add_post("/api/payments/stars/create", create_stars_invoice_handler)
+    app.router.add_post("/api/payments/history/start", payment_history_start_handler)
+    app.router.add_get("/api/payments/history", payment_history_handler)
+    app.router.add_post("/api/payments/modal-shown", payment_modal_shown_handler)
+    app.router.add_get("/api/payments/checkout/session-status", checkout_session_status_handler)
+    app.router.add_get("/api/payments/recent-success", recent_success_payments_handler)
     app.router.add_get("/api/mail", user_mail_handler)
     app.router.add_post("/api/mail/read", mark_mail_read_handler)
     app.router.add_get("/api/mail/unread-count", get_unread_mail_count_handler)
@@ -6058,6 +7060,11 @@ def create_web_app(
                     "UPDATE users SET gems = gems - $1 WHERE user_id = $2",
                     gems_amount, user_id
                 )
+                await _track_economy_safe(
+                    db, user_id=user_id, event_type="spend", resource="gems",
+                    amount=gems_amount, source="admin_debug_shop",
+                    metadata={"item_type": item_type, "admin_case_tier": admin_case_tier},
+                )
             elif item_type.startswith("shop_set_"):
                 # Цена и валюта определяются из БД в ветке shop_set_ ниже
                 pass
@@ -6111,6 +7118,11 @@ def create_web_app(
             if item_type == "case":
                 await db.increment_user_keys(user_id, 1)
                 await db.sync_user_key_cases(user_id)
+                await db.track_economy_event(
+                    user_id=user_id, event_type="earn", resource="keys",
+                    amount=1, source="shop",
+                    metadata={"item_type": item_type, "cost_gems": gems_amount},
+                )
                 import logging
                 logging.getLogger(__name__).info(
                     f"Пользователь {user_id} купил кейс за {gems_amount} гемов. Keys увеличены на 1."
@@ -6153,7 +7165,13 @@ def create_web_app(
                             "error": "case_creation_failed",
                             "message": result.get("error", "Ошибка создания кейса")
                         }, status=500)
-                    
+
+                    await db.track_economy_event(
+                        user_id=user_id, event_type="earn", resource="case",
+                        amount=1, source="shop",
+                        metadata={"item_type": item_type, "case_tier": case_tier, "cost_gems": gems_amount},
+                    )
+
                     import logging
                     logging.getLogger(__name__).info(
                         f"Пользователь {user_id} купил кейс T{case_tier} за {gems_amount} гемов"
@@ -6184,6 +7202,11 @@ def create_web_app(
                     await db.execute(
                         "UPDATE users SET coins = coins + $1 WHERE user_id = $2",
                         coins_amount, user_id
+                    )
+                    await db.track_economy_event(
+                        user_id=user_id, event_type="earn", resource="coins",
+                        amount=coins_amount, source="shop",
+                        metadata={"item_type": item_type, "cost_gems": gems_amount},
                     )
                     import logging
                     logging.getLogger(__name__).info(
@@ -6224,6 +7247,12 @@ def create_web_app(
                     # Увеличиваем количество кейсов у пользователя (только поле keys, без синхронизации user_cases)
                     await db.increment_user_keys(user_id, keys_amount)
                     
+                    await _track_economy_safe(
+                        db, user_id=user_id, event_type="earn", resource="keys",
+                        amount=keys_amount, source="shop",
+                        metadata={"item_type": item_type, "cost_gems": gems_amount},
+                    )
+
                     import logging
                     logging.getLogger(__name__).info(
                         f"Пользователь {user_id} купил {keys_amount} кейсов за {gems_amount} гемов"
@@ -6285,6 +7314,11 @@ def create_web_app(
                             "UPDATE users SET gems = gems - $1 WHERE user_id = $2",
                             set_price, user_id
                         )
+                        await db.track_economy_event(
+                            user_id=user_id, event_type="spend", resource="gems",
+                            amount=set_price, source="shop",
+                            metadata={"item_type": item_type, "set_id": set_id},
+                        )
                     elif set_currency == "coins":
                         current_coins = user_profile.get("coins", 0)
                         if current_coins < set_price:
@@ -6296,6 +7330,11 @@ def create_web_app(
                         await db.execute(
                             "UPDATE users SET coins = coins - $1 WHERE user_id = $2",
                             set_price, user_id
+                        )
+                        await db.track_economy_event(
+                            user_id=user_id, event_type="spend", resource="coins",
+                            amount=set_price, source="shop",
+                            metadata={"item_type": item_type, "set_id": set_id},
                         )
                     else:
                         return web.json_response({
@@ -6465,7 +7504,8 @@ def create_web_app(
 
             return_url = data.get("return_url", request.app.get("webapp_url", "https://t.me/your_bot"))
 
-            payment_result = payment_service.create_payment(
+            payment_result = await asyncio.to_thread(
+                payment_service.create_payment,
                 amount=price_rub,
                 currency="RUB",
                 description=item_name,
@@ -6956,6 +7996,234 @@ def create_web_app(
     app.router.add_get("/api/shop/particles/daily", particles_daily_handler)
     app.router.add_post("/api/shop/particles/buy", particles_buy_handler)
     app.router.add_post("/api/payments/gems/create", gems_payment_handler)
+
+    # ── Ruble products admin API ──
+
+    async def ruble_products_list_handler(request: web.Request) -> web.Response:
+        user_id = await require_user_id(request)
+        is_admin = user_id in app.get("admin_ids", set())
+        if not is_admin:
+            return web.json_response({"error": "admin_only"}, status=403)
+        try:
+            active_only = request.rel_url.query.get("active_only", "false").lower() == "true"
+            products = await db.get_ruble_products(active_only=active_only)
+            return web.json_response({"products": products})
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error("Ошибка получения ruble_products: %s", e, exc_info=True)
+            return web.json_response({"error": "internal_server_error", "message": str(e)}, status=500)
+
+    async def ruble_product_detail_handler(request: web.Request) -> web.Response:
+        user_id = await require_user_id(request)
+        is_admin = user_id in app.get("admin_ids", set())
+        if not is_admin:
+            return web.json_response({"error": "admin_only"}, status=403)
+        try:
+            code = request.match_info.get("code", "").strip()
+            if not code:
+                return web.json_response({"error": "code_required"}, status=400)
+            product = await db.get_ruble_product(code)
+            if not product:
+                return web.json_response({"error": "product_not_found"}, status=404)
+            return web.json_response({"product": product})
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error("Ошибка получения ruble_product: %s", e, exc_info=True)
+            return web.json_response({"error": "internal_server_error", "message": str(e)}, status=500)
+
+    async def ruble_product_create_handler(request: web.Request) -> web.Response:
+        user_id = await require_user_id(request)
+        is_admin = user_id in app.get("admin_ids", set())
+        if not is_admin:
+            return web.json_response({"error": "admin_only"}, status=403)
+        if request.method != "POST":
+            return web.json_response({"error": "method_not_allowed"}, status=405)
+        try:
+            data = await request.json()
+            code = data.get("code", "").strip()
+            item_type = data.get("item_type", "").strip()
+            name = data.get("name", "").strip()
+            if not code or not item_type or not name:
+                return web.json_response({"error": "code_itemtype_name_required"}, status=400)
+            price = float(data.get("price", 0))
+            if price < 0:
+                return web.json_response({"error": "invalid_price"}, status=400)
+            currency = data.get("currency", "rubles")
+            if currency not in ("rubles", "gems", "coins"):
+                return web.json_response({"error": "invalid_currency"}, status=400)
+            create_kwargs = {
+                "code": code,
+                "item_type": item_type,
+                "name": name,
+                "price": price,
+                "currency": currency,
+            }
+            for f in ("package_type", "shop_set_id", "description", "image_url", "badge", "sort_order"):
+                if data.get(f) is not None:
+                    create_kwargs[f] = data[f]
+            for f in ("show_in_game", "show_in_shop", "is_active"):
+                if f in data:
+                    create_kwargs[f] = bool(data[f])
+            result = await db.create_ruble_product(**create_kwargs)
+            if result.get("success"):
+                return web.json_response({"success": True, "product_id": result.get("product_id")})
+            return web.json_response({"error": result.get("error", "unknown")}, status=500)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error("Ошибка создания ruble_product: %s", e, exc_info=True)
+            return web.json_response({"error": "internal_server_error", "message": str(e)}, status=500)
+
+    async def ruble_product_update_handler(request: web.Request) -> web.Response:
+        user_id = await require_user_id(request)
+        is_admin = user_id in app.get("admin_ids", set())
+        if not is_admin:
+            return web.json_response({"error": "admin_only"}, status=403)
+        if request.method != "POST":
+            return web.json_response({"error": "method_not_allowed"}, status=405)
+        try:
+            data = await request.json()
+            code_or_id = data.get("code") or data.get("id")
+            if not code_or_id:
+                return web.json_response({"error": "code_or_id_required"}, status=400)
+            try:
+                code_or_id = int(code_or_id)
+            except (ValueError, TypeError):
+                code_or_id = str(code_or_id)
+            update_kwargs = {}
+            for f in ("code", "item_type", "package_type", "shop_set_id", "name", "description", "image_url", "badge"):
+                if data.get(f) is not None:
+                    update_kwargs[f] = data[f]
+            for f in ("sort_order",):
+                if data.get(f) is not None:
+                    update_kwargs[f] = int(data[f])
+            for f in ("show_in_game", "show_in_shop", "is_active", "is_system"):
+                if f in data:
+                    update_kwargs[f] = bool(data[f])
+            if "price" in data:
+                price = float(data["price"])
+                if price < 0:
+                    return web.json_response({"error": "invalid_price"}, status=400)
+                update_kwargs["price"] = price
+            if "currency" in data:
+                cur = data["currency"]
+                if cur not in ("rubles", "gems", "coins"):
+                    return web.json_response({"error": "invalid_currency"}, status=400)
+                update_kwargs["currency"] = cur
+            if not update_kwargs:
+                return web.json_response({"error": "no_fields"}, status=400)
+            result = await db.update_ruble_product(code_or_id, **update_kwargs)
+            if result.get("success"):
+                return web.json_response({"success": True})
+            return web.json_response({"error": result.get("error", "unknown")}, status=500)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error("Ошибка обновления ruble_product: %s", e, exc_info=True)
+            return web.json_response({"error": "internal_server_error", "message": str(e)}, status=500)
+
+    async def ruble_product_delete_handler(request: web.Request) -> web.Response:
+        user_id = await require_user_id(request)
+        is_admin = user_id in app.get("admin_ids", set())
+        if not is_admin:
+            return web.json_response({"error": "admin_only"}, status=403)
+        if request.method != "POST":
+            return web.json_response({"error": "method_not_allowed"}, status=405)
+        try:
+            data = await request.json()
+            code_or_id = data.get("code") or data.get("id")
+            if not code_or_id:
+                return web.json_response({"error": "code_or_id_required"}, status=400)
+            try:
+                code_or_id = int(code_or_id)
+            except (ValueError, TypeError):
+                code_or_id = str(code_or_id)
+            result = await db.delete_ruble_product(code_or_id)
+            if result.get("success"):
+                return web.json_response({"success": True})
+            return web.json_response({"error": result.get("error", "unknown")}, status=500)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error("Ошибка удаления ruble_product: %s", e, exc_info=True)
+            return web.json_response({"error": "internal_server_error", "message": str(e)}, status=500)
+
+    # ── Ruble products public API ──
+
+    async def ruble_products_public_handler(request: web.Request) -> web.Response:
+        try:
+            surface = request.rel_url.query.get("surface", "shop")
+            products = await db.get_ruble_products(active_only=True, surface=surface)
+            return web.json_response({"products": products})
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error("Ошибка получения публичных ruble_products: %s", e, exc_info=True)
+            return web.json_response({"error": "internal_server_error", "message": str(e)}, status=500)
+
+    app.router.add_get("/api/admin/ruble-products", ruble_products_list_handler)
+    app.router.add_get("/api/admin/ruble-products/{code}", ruble_product_detail_handler)
+    app.router.add_post("/api/admin/ruble-products/create", ruble_product_create_handler)
+    app.router.add_post("/api/admin/ruble-products/update", ruble_product_update_handler)
+    app.router.add_post("/api/admin/ruble-products/delete", ruble_product_delete_handler)
+    app.router.add_get("/api/shop/ruble-products", ruble_products_public_handler)
+
+    # ── Image upload for admin ──
+
+    UPLOADS_DIR = Path(__file__).resolve().parents[1] / "extraShop" / "uploads" / "products"
+
+    async def admin_upload_product_image(request: web.Request) -> web.Response:
+        user_id = await require_user_id(request)
+        is_admin = user_id in app.get("admin_ids", set())
+        if not is_admin:
+            return web.json_response({"error": "admin_only"}, status=403)
+        if request.method != "POST":
+            return web.json_response({"error": "method_not_allowed"}, status=405)
+        try:
+            reader = await request.multipart()
+            field = await reader.next()
+            if not field or field.name != "file":
+                return web.json_response({"error": "file_field_required"}, status=400)
+            import uuid, os
+            content_type = field.headers.get("Content-Type", "")
+            if content_type not in ("image/png", "image/jpeg", "image/webp"):
+                return web.json_response({"error": "invalid_image_type", "allowed": ["image/png", "image/jpeg", "image/webp"]}, status=400)
+            ext_map = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}
+            ext = ext_map.get(content_type, ".png")
+            data = b""
+            while True:
+                chunk = await field.read_chunk(65536)
+                if not chunk:
+                    break
+                data += chunk
+            if len(data) > 5 * 1024 * 1024:
+                return web.json_response({"error": "file_too_large", "max_mb": 5}, status=400)
+            UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+            filename = str(uuid.uuid4()) + ext
+            filepath = UPLOADS_DIR / filename
+            filepath.write_bytes(data)
+            image_url = f"/extraShop/uploads/products/{filename}"
+            return web.json_response({"success": True, "image_url": image_url})
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error("Ошибка загрузки картинки: %s", e, exc_info=True)
+            return web.json_response({"error": "internal_server_error", "message": str(e)}, status=500)
+
+    async def uploads_static_handler(request: web.Request) -> web.Response:
+        filename = request.match_info.get("filename", "").lstrip("/")
+        if not filename or ".." in filename:
+            raise web.HTTPForbidden()
+        file_path = UPLOADS_DIR / filename
+        if not file_path.exists() or not file_path.is_file():
+            raise web.HTTPNotFound()
+        content_type = "image/png"
+        if filename.endswith(".jpg") or filename.endswith(".jpeg"):
+            content_type = "image/jpeg"
+        elif filename.endswith(".webp"):
+            content_type = "image/webp"
+        return web.FileResponse(file_path, headers={
+            "Cache-Control": "public, max-age=86400",
+            "Access-Control-Allow-Origin": "*",
+        })
+
+    app.router.add_post("/api/admin/uploads/product-image", admin_upload_product_image)
+    app.router.add_get("/extraShop/uploads/products/{filename}", uploads_static_handler)
     
     async def dice_status_handler(request: web.Request) -> web.Response:
         """Получить статус кубика (можно ли бросать, когда был последний бросок)."""
@@ -7026,6 +8294,10 @@ def create_web_app(
             user_id = await require_user_id(request)
         try:
             data = await db.claim_generator_keys(int(user_id))
+            if data.get("success") and data.get("keys_claimed", 0) > 0:
+                await _track_economy_safe(db, user_id=int(user_id), event_type="earn",
+                    resource="keys", amount=data["keys_claimed"], source="generator",
+                    metadata={"generator_level": data.get("level")})
             return web.json_response(data)
         except Exception as e:
             import logging
@@ -7038,6 +8310,11 @@ def create_web_app(
         currency = payload.get("currency")
         try:
             data = await db.upgrade_generator(int(user_id), currency)
+            if data.get("success"):
+                cost = data.get("cost", 0)
+                await _track_economy_safe(db, user_id=int(user_id), event_type="spend",
+                    resource=currency, amount=cost, source="generator_upgrade",
+                    metadata={"old_level": data.get("old_level"), "new_level": data.get("new_level")})
             return web.json_response(data)
         except Exception as e:
             import logging
@@ -7105,6 +8382,7 @@ def create_web_app(
 
         try:
             await db.mark_welcome_shown(user_id)
+            await db.track_onboarding_event(user_id, "welcome_completed", True)
             return web.json_response({"success": True})
         except Exception as e:
             import logging
@@ -7146,7 +8424,9 @@ def create_web_app(
             first_name=first_name_from_data,
             last_name=last_name,
         )
-        
+
+        await db.track_onboarding_event(user_id, "user_created", True)
+
         # Отмечаем, что приветствие было показано
         await db.mark_welcome_shown(user_id)
         
@@ -7205,6 +8485,519 @@ def create_web_app(
     app.router.add_get("/api/welcome/status", welcome_status_handler)
     app.router.add_post("/api/welcome/mark-shown", welcome_mark_shown_handler)
     app.router.add_post("/api/welcome/create-user", welcome_create_user_handler)
+
+    # Роуты extraShop
+    async def extra_shop_index(request: web.Request) -> web.FileResponse:
+        index_path = EXTRA_SHOP_DIR / "index.html"
+        if not index_path.exists():
+            raise web.HTTPNotFound(text="extraShop page not found")
+        return web.FileResponse(index_path, headers={"Cache-Control": "no-store, must-revalidate"})
+
+    app.router.add_get("/extraShop", extra_shop_index)
+    app.router.add_get("/extraShop/", extra_shop_index)
+
+    # Legal pages for extraShop
+    async def extra_shop_oferta(_: web.Request) -> web.FileResponse:
+        path = EXTRA_SHOP_DIR / "oferta.html"
+        if not path.exists():
+            raise web.HTTPNotFound(text="oferta.html not found")
+        return web.FileResponse(path, headers={"Cache-Control": "no-store, must-revalidate"})
+
+    async def extra_shop_privacy(_: web.Request) -> web.FileResponse:
+        path = EXTRA_SHOP_DIR / "privacy.html"
+        if not path.exists():
+            raise web.HTTPNotFound(text="privacy.html not found")
+        return web.FileResponse(path, headers={"Cache-Control": "no-store, must-revalidate"})
+
+    async def extra_shop_refund(_: web.Request) -> web.FileResponse:
+        path = EXTRA_SHOP_DIR / "refund.html"
+        if not path.exists():
+            raise web.HTTPNotFound(text="refund.html not found")
+        return web.FileResponse(path, headers={"Cache-Control": "no-store, must-revalidate"})
+
+    app.router.add_get("/extraShop/oferta", extra_shop_oferta)
+    app.router.add_get("/extraShop/oferta/", extra_shop_oferta)
+    app.router.add_get("/extraShop/privacy", extra_shop_privacy)
+    app.router.add_get("/extraShop/privacy/", extra_shop_privacy)
+    app.router.add_get("/extraShop/refund", extra_shop_refund)
+    app.router.add_get("/extraShop/refund/", extra_shop_refund)
+
+    # Admin panel for shop_sets (HTML served without auth, API endpoints remain admin-protected)
+    async def extra_shop_admin(_: web.Request) -> web.FileResponse:
+        path = EXTRA_SHOP_DIR / "admin.html"
+        if not path.exists():
+            raise web.HTTPNotFound(text="admin.html not found")
+        return web.FileResponse(path, headers={"Cache-Control": "no-store, must-revalidate"})
+
+    app.router.add_get("/extraShop/admin", extra_shop_admin)
+    app.router.add_get("/extraShop/admin/", extra_shop_admin)
+
+    # POST /api/payments/checkout/public/start — публичный магазин без Telegram WebApp auth
+
+    async def _resolve_ruble_checkout_item(
+        db: Database,
+        *,
+        user_id: int,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Валидация рублевого товара и сбор metadata.
+
+        Сначала ищет товар в ruble_products (по product_code или item_type+package_type),
+        затем fallback на старый hardcoded config.
+        Возвращает {"item_type", "item_name", "amount_rub", "metadata"} при успехе,
+        либо {"error": "код", "message": "текст", "status": http_code} при ошибке.
+        """
+        from infrastructure.shop_config import GEM_PACKAGES
+
+        item_type = str(data.get("item_type", "") or "")
+        package_type = str(data.get("package_type", "") or "")
+        product_code = str(data.get("product_code", "") or "")
+        recipient_id_raw = data.get("recipient_id")
+
+        metadata: dict[str, Any] = {"user_id": user_id, "item_type": item_type}
+        item_name: str = ""
+        amount_rub: float = 0.0
+
+        # 1. Try DB ruble_products
+        db_product = None
+        if product_code:
+            db_product = await db.get_ruble_product(product_code)
+        if not db_product and item_type:
+            # Try matching by item_type + package_type
+            all_products = await db.get_ruble_products(active_only=True)
+            db_product = next((p for p in all_products if p["item_type"] == item_type and
+                               (not package_type or p.get("package_type") == package_type)), None)
+
+        if db_product and db_product.get("is_active"):
+            amount_rub = float(db_product.get("price", 0))
+            db_item_type = str(db_product.get("item_type") or item_type)
+            db_package_type = db_product.get("package_type")
+            shop_set_id = db_product.get("shop_set_id")
+            if db_item_type == "shop_set" and shop_set_id:
+                db_item_type = f"shop_set_{int(shop_set_id)}"
+
+            item_type = db_item_type
+            package_type = str(db_package_type or "")
+            item_name = str(db_product.get("name", "") or item_type)
+            metadata.update({
+                "product_code": db_product.get("code"),
+                "item_type": item_type,
+                "package_type": package_type or None,
+                "item_name": item_name,
+                "amount_rub": amount_rub,
+            })
+            if db_product.get("image_url"):
+                metadata["image_url"] = db_product["image_url"]
+            if shop_set_id:
+                metadata["shop_set_id"] = int(shop_set_id)
+            if package_type:
+                metadata["package_type"] = package_type
+                # For gems_package, infer gems count from config or metadata
+                if item_type == "gems_package":
+                    pkg_cfg = GEM_PACKAGES.get(package_type)
+                    if pkg_cfg:
+                        metadata["package_gems"] = int(pkg_cfg["gems"])
+                    metadata["starter"] = (package_type == "starter_once")
+
+        # 2. Fallback: legacy hardcoded types
+        elif item_type == "gems_package":
+            if not package_type:
+                return {"error": "missing_package_type", "message": "package_type required for gems_package", "status": 400}
+            pkg = GEM_PACKAGES.get(package_type)
+            if not pkg:
+                return {"error": "unknown_package_type", "message": f"Неизвестный пакет: {package_type}", "status": 400}
+            if pkg.get("one_time"):
+                settings = await db.get_user_settings(user_id)
+                if settings and settings.get("starter_pack_used"):
+                    return {"error": "already_used", "message": "Стартовый пакет уже куплен", "status": 400}
+            gems_count = int(pkg["gems"])
+            amount_rub = float(pkg["price"])
+            item_name = f"{gems_count} гемов"
+            if pkg.get("one_time"):
+                item_name += " (стартовый)"
+            metadata.update({
+                "package_type": package_type,
+                "package_gems": gems_count,
+                "amount_rub": amount_rub,
+                "item_name": item_name,
+                "starter": package_type == "starter_once",
+            })
+
+        elif item_type == "extrapass":
+            amount_rub = 179.0
+            item_name = "ExtraPass (30 дней)"
+            metadata.update({"item_name": item_name, "amount_rub": amount_rub})
+
+        elif item_type == "extrapass_ultra":
+            amount_rub = 349.0
+            item_name = "ExtraPass Ultra (30 дней)"
+            metadata.update({"item_name": item_name, "amount_rub": amount_rub})
+
+        elif item_type == "extrapass_gift":
+            recipient_id = int(recipient_id_raw) if recipient_id_raw else 0
+            if not recipient_id or recipient_id <= 0:
+                return {"error": "missing_recipient", "message": "recipient_id required for gift", "status": 400}
+            gift_ultra = str(data.get("ultra", "") or "").lower() in {"1", "true", "yes"}
+            amount_rub = 349.0 if gift_ultra else 179.0
+            item_name = ("Ultra " if gift_ultra else "") + "ExtraPass (подарок)"
+            metadata.update({
+                "item_name": item_name,
+                "amount_rub": amount_rub,
+                "recipient_id": recipient_id,
+                "ultra": gift_ultra,
+            })
+
+        elif item_type == "starter_boost":
+            amount_rub = 499.0
+            item_name = "Starter Boost"
+            metadata.update({"item_name": item_name, "amount_rub": amount_rub})
+
+        elif item_type.startswith("shop_set_"):
+            try:
+                set_id = int(item_type.split("_")[-1])
+            except (ValueError, IndexError):
+                return {"error": "invalid_set_id", "status": 400}
+            set_data = await db.get_shop_set(set_id)
+            if not set_data:
+                return {"error": "set_not_found", "status": 404}
+            if not set_data.get("is_active"):
+                return {"error": "set_inactive", "message": "Набор недоступен", "status": 400}
+            if set_data.get("currency") != "rubles":
+                return {"error": "set_currency_not_rubles", "message": "Набор не продаётся за рубли", "status": 400}
+            amount_rub = float(set_data.get("price", 0))
+            item_name = str(set_data.get("name", "") or f"Набор #{set_id}")
+            metadata.update({
+                "item_name": item_name,
+                "amount_rub": amount_rub,
+                "shop_set_id": set_id,
+            })
+
+        else:
+            return {"error": "unknown_item_type", "message": f"Неизвестный тип товара: {item_type}", "status": 400}
+
+        if amount_rub <= 0:
+            return {"error": "invalid_amount", "status": 400}
+
+        return {
+            "item_type": item_type,
+            "item_name": item_name,
+            "amount_rub": amount_rub,
+            "metadata": metadata,
+        }
+
+    async def checkout_public_start_handler(request: web.Request) -> web.Response:
+        logger = logging.getLogger(__name__)
+
+        if request.method != "POST":
+            return web.json_response({"error": "method_not_allowed"}, status=405)
+
+        try:
+            data = await request.json()
+            telegram_id_raw = data.get("telegram_id") or data.get("recipient_id")
+            if not telegram_id_raw:
+                return web.json_response(
+                    {"error": "missing_telegram_id", "message": "Укажите Telegram ID для зачисления"},
+                    status=400,
+                )
+
+            try:
+                user_id = int(str(telegram_id_raw).strip())
+            except (ValueError, TypeError):
+                return web.json_response(
+                    {"error": "invalid_telegram_id", "message": "Telegram ID должен быть числом"},
+                    status=400,
+                )
+
+            if user_id <= 0:
+                return web.json_response(
+                    {"error": "invalid_telegram_id", "message": "Telegram ID должен быть положительным числом"},
+                    status=400,
+                )
+
+            user_exists = await db.fetchval("SELECT 1 FROM users WHERE user_id = $1", user_id)
+            if not user_exists:
+                return web.json_response({
+                    "error": "user_not_found",
+                    "message": "Сначала откройте игру ExtraArena в Telegram хотя бы один раз.",
+                }, status=404)
+
+            secret = request.app["bot_token"]
+
+            resolved = await _resolve_ruble_checkout_item(db, user_id=user_id, data=data)
+            if "error" in resolved:
+                return web.json_response(
+                    {"error": resolved["error"], "message": resolved.get("message", "")},
+                    status=resolved.get("status", 400),
+                )
+
+            item_type = resolved["item_type"]
+            item_name = resolved["item_name"]
+            amount_rub = resolved["amount_rub"]
+            metadata = resolved["metadata"]
+
+            now = datetime.now(timezone.utc)
+            expires_at = now + timedelta(minutes=60)
+            jti = str(uuid.uuid4())
+
+            payload = {
+                "user_id": user_id,
+                "item_type": item_type,
+                "item_name": item_name,
+                "amount_rub": amount_rub,
+                "metadata": metadata,
+                "exp": int(expires_at.timestamp()),
+                "iat": int(now.timestamp()),
+                "jti": jti,
+            }
+
+            metadata["checkout_jti"] = jti
+
+            session_result = await db.create_checkout_session(
+                checkout_jti=jti,
+                user_id=user_id,
+                item_type=item_type,
+                amount=amount_rub,
+                metadata=metadata,
+                expires_at=expires_at,
+            )
+            if not session_result.get("success"):
+                logger.error("Не удалось создать checkout session %s: %s", jti, session_result.get("error"))
+                return web.json_response(
+                    {"error": "checkout_session_failed", "message": "Не удалось создать сессию оплаты"},
+                    status=500,
+                )
+
+            payload_json = _stdlib_json.dumps(payload, separators=(",", ":"), ensure_ascii=True, sort_keys=True)
+            payload_b64 = base64.urlsafe_b64encode(payload_json.encode()).rstrip(b"=").decode()
+            signature = hmac.new(secret.encode(), payload_b64.encode(), "sha256").hexdigest()
+
+            token = f"{payload_b64}.{signature}"
+
+            logger.info("Public checkout started: user=%s item=%s amount=%.2f token=%s", user_id, item_type, amount_rub, payload["jti"])
+
+            extra_shop_url = request.app.get("extra_shop_url", request.app.get("webapp_url", ""))
+            return web.json_response({
+                "success": True,
+                "checkout_url": f"{extra_shop_url.rstrip('/')}/extraShop?checkout={token}",
+                "checkout_jti": payload["jti"],
+                "token": token,
+            })
+
+        except Exception as e:
+            logger.error("Ошибка checkout_public_start: %s", e, exc_info=True)
+            return web.json_response({"error": "internal_server_error", "message": str(e)}, status=500)
+
+    # POST /api/payments/checkout/start — валидация товара и создание checkout-токена
+    async def checkout_start_handler(request: web.Request) -> web.Response:
+        logger = logging.getLogger(__name__)
+        user_id = await require_user_id(request)
+
+        if request.method != "POST":
+            return web.json_response({"error": "method_not_allowed"}, status=405)
+
+        try:
+            data = await request.json()
+            secret = request.app["bot_token"]
+
+            resolved = await _resolve_ruble_checkout_item(db, user_id=user_id, data=data)
+            if "error" in resolved:
+                return web.json_response(
+                    {"error": resolved["error"], "message": resolved.get("message", "")},
+                    status=resolved.get("status", 400),
+                )
+
+            item_type = resolved["item_type"]
+            item_name = resolved["item_name"]
+            amount_rub = resolved["amount_rub"]
+            metadata = resolved["metadata"]
+
+            now = datetime.now(timezone.utc)
+            expires_at = now + timedelta(minutes=60)
+            jti = str(uuid.uuid4())
+
+            payload = {
+                "user_id": user_id,
+                "item_type": item_type,
+                "item_name": item_name,
+                "amount_rub": amount_rub,
+                "metadata": metadata,
+                "exp": int(expires_at.timestamp()),
+                "iat": int(now.timestamp()),
+                "jti": jti,
+            }
+
+            metadata["checkout_jti"] = jti
+
+            session_result = await db.create_checkout_session(
+                checkout_jti=jti,
+                user_id=user_id,
+                item_type=item_type,
+                amount=amount_rub,
+                metadata=metadata,
+                expires_at=expires_at,
+            )
+            if not session_result.get("success"):
+                logger.error("Не удалось создать checkout session %s: %s", jti, session_result.get("error"))
+                return web.json_response(
+                    {"error": "checkout_session_failed", "message": "Не удалось создать сессию оплаты"},
+                    status=500,
+                )
+
+            payload_json = _stdlib_json.dumps(payload, separators=(",", ":"), ensure_ascii=True, sort_keys=True)
+            payload_b64 = base64.urlsafe_b64encode(payload_json.encode()).rstrip(b"=").decode()
+            signature = hmac.new(secret.encode(), payload_b64.encode(), "sha256").hexdigest()
+
+            token = f"{payload_b64}.{signature}"
+
+            logger.info("Checkout started: user=%s item=%s amount=%.2f token=%s", user_id, item_type, amount_rub, payload["jti"])
+
+            extra_shop_url = request.app.get("extra_shop_url", request.app.get("webapp_url", ""))
+            return web.json_response({
+                "success": True,
+                "checkout_url": f"{extra_shop_url.rstrip('/')}/extraShop?checkout={token}",
+                "checkout_jti": jti,
+            })
+
+        except Exception as e:
+            logger.error("Ошибка checkout_start: %s", e, exc_info=True)
+            return web.json_response({"error": "internal_server_error", "message": str(e)}, status=500)
+
+    # POST /api/payments/checkout/create — проверка токена, поиск/создание YooKassa payment (идемпотентно)
+    async def checkout_create_handler(request: web.Request) -> web.Response:
+        logger = logging.getLogger(__name__)
+
+        if request.method != "POST":
+            return web.json_response({"error": "method_not_allowed"}, status=405)
+
+        try:
+            data = await request.json()
+            token = str(data.get("token", "") or "")
+            if not token:
+                return web.json_response({"error": "missing_token"}, status=400)
+
+            secret = request.app["bot_token"]
+            parts = token.rsplit(".", 1)
+            if len(parts) != 2:
+                return web.json_response({"error": "invalid_token_format"}, status=400)
+
+            payload_b64, provided_sig = parts
+            expected_sig = hmac.new(secret.encode(), payload_b64.encode(), "sha256").hexdigest()
+            if not hmac.compare_digest(expected_sig, provided_sig):
+                return web.json_response({"error": "invalid_signature"}, status=400)
+
+            try:
+                padded = payload_b64 + "=" * ((4 - len(payload_b64) % 4) % 4)
+                payload_json = base64.urlsafe_b64decode(padded).decode()
+                payload = _stdlib_json.loads(payload_json)
+            except Exception:
+                return web.json_response({"error": "invalid_token_payload"}, status=400)
+
+            exp = int(payload.get("exp", 0))
+            if time.time() > exp:
+                return web.json_response({"error": "token_expired", "message": "Checkout session expired, please restart purchase"}, status=400)
+
+            jti = str(payload.get("jti", ""))
+            if not jti:
+                return web.json_response({"error": "missing_jti"}, status=400)
+
+            logger.info("Checkout create requested: jti=%s", jti)
+
+            session = await db.get_checkout_session(jti)
+            if not session:
+                return web.json_response({"error": "session_not_found", "message": "Сессия оплаты не найдена"}, status=404)
+
+            if session.get("payment_id") and session.get("confirmation_url"):
+                logger.info("Checkout session %s уже имеет payment %s, возвращаем существующий", jti, session["payment_id"])
+                return web.json_response({
+                    "success": True,
+                    "confirmation_url": session["confirmation_url"],
+                    "payment_id": session["payment_id"],
+                })
+
+            user_id = int(payload["user_id"])
+            item_type = str(payload.get("item_type", ""))
+            item_name = str(payload.get("item_name", ""))
+            amount_rub = float(payload.get("amount_rub", 0))
+            metadata = dict(payload.get("metadata", {}))
+            metadata.setdefault("user_id", user_id)
+            metadata.setdefault("item_type", item_type)
+            metadata.setdefault("item_name", item_name)
+            metadata.setdefault("amount_rub", amount_rub)
+            metadata.setdefault("checkout_jti", jti)
+
+            payment_service = request.app.get("payment_service")
+            if not payment_service:
+                return web.json_response({"error": "payment_service_not_configured"}, status=503)
+
+            webapp_url = request.app.get("webapp_url", "https://t.me/your_bot")
+            return_url = str(data.get("return_url") or webapp_url or "")
+
+            logger.info(
+                "Creating YooKassa payment for checkout: jti=%s user_id=%s item_type=%s amount=%.2f",
+                jti, user_id, item_type, amount_rub,
+            )
+            payment_result = await asyncio.to_thread(
+                payment_service.create_payment,
+                amount=amount_rub,
+                currency="RUB",
+                description=item_name or f"Покупка {item_type}",
+                return_url=return_url,
+                metadata=metadata,
+                idempotence_key=f"checkout:{jti}",
+            )
+
+            if not payment_result.get("success"):
+                err = payment_result.get("error", "unknown")
+                logger.error("YooKassa create_payment failed: %s", err)
+                message = f"Ошибка создания платежа: {err}"
+                if "api.yookassa.ru" in err or "SSLError" in err or "Max retries exceeded" in err:
+                    message = "ЮKassa сейчас недоступна с сервера. Проверьте сеть/VPN на устройстве, где запущен сервер, и попробуйте ещё раз."
+                return web.json_response({"success": False, "error": err, "message": message}, status=400)
+
+            payment_id = payment_result.get("payment_id")
+            confirmation_url = payment_result.get("confirmation_url")
+            logger.info("YooKassa payment created for checkout: jti=%s payment_id=%s", jti, payment_id)
+
+            attach_result = await db.attach_checkout_payment(
+                checkout_jti=jti,
+                payment_id=payment_id,
+                confirmation_url=confirmation_url,
+            )
+            if not attach_result.get("success"):
+                existing = await db.get_checkout_session(jti)
+                if existing and existing.get("confirmation_url"):
+                    return web.json_response({
+                        "success": True,
+                        "confirmation_url": existing["confirmation_url"],
+                        "payment_id": existing.get("payment_id"),
+                    })
+                logger.warning("Не удалось прикрепить payment к session %s: %s", jti, attach_result.get("error"))
+
+            db_result = await db.create_payment(
+                user_id=user_id,
+                payment_id=payment_id,
+                amount=amount_rub,
+                currency="RUB",
+                description=item_name or f"Платеж {payment_id}",
+                metadata=metadata,
+            )
+            if not db_result.get("success"):
+                logger.warning("Не удалось сохранить платеж %s в БД: %s", payment_id, db_result.get("error"))
+
+            return web.json_response({
+                "success": True,
+                "confirmation_url": confirmation_url,
+                "payment_id": payment_id,
+            })
+
+        except Exception as e:
+            logger.error("Ошибка checkout_create: %s", e, exc_info=True)
+            return web.json_response({"error": "internal_server_error", "message": str(e)}, status=500)
+
+    app.router.add_post("/api/payments/checkout/public/start", checkout_public_start_handler)
+    app.router.add_post("/api/payments/checkout/start", checkout_start_handler)
+    app.router.add_post("/api/payments/checkout/create", checkout_create_handler)
+
     app.router.add_get("/{path:.*}", static_handler)
 
     # ============================================
