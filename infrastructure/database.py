@@ -331,6 +331,7 @@ class Database:
         battle_summary_changed = await self._ensure_battle_summary_table()
         battle_actions_changed = await self._ensure_battle_actions_table()
         admin_actions_changed = await self._ensure_admin_account_actions_table()
+        cosmetics_changed = await self._ensure_cosmetic_tables()
 
         schema_changed = (
             (current_version != SCHEMA_VERSION)
@@ -365,6 +366,7 @@ class Database:
             or battle_summary_changed
             or battle_actions_changed
             or admin_actions_changed
+            or cosmetics_changed
         )
 
         # Обновляем референсные данные для новой боевой системы
@@ -448,6 +450,15 @@ class Database:
             except Exception as e:
                 import logging
                 logging.getLogger(__name__).warning(f"Не удалось выдать приветственные бонусы пользователю {user_id}: {e}")
+
+            # Выдаем стартовые косметические предметы
+            try:
+                await self.grant_starter_cosmetics(user_id)
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).warning(
+                    f"Не удалось выдать стартовую косметику пользователю {user_id}: {e}"
+                )
 
         await self.execute(
             """
@@ -853,13 +864,14 @@ class Database:
                 cost_gems, user_id
             )
         
-        # Обновляем никнейм
+        # Сохраняем никнейм (вставка с обновлением при конфликте)
         await self.execute(
             """
-            UPDATE profiles
-            SET custom_nickname = $1,
-                nickname_changed = TRUE
-            WHERE user_id = $2
+            INSERT INTO profiles (user_id, custom_nickname, nickname_changed)
+            VALUES ($2, $1, TRUE)
+            ON CONFLICT (user_id)
+            DO UPDATE SET custom_nickname = EXCLUDED.custom_nickname,
+                          nickname_changed = TRUE
             """,
             new_nickname, user_id
         )
@@ -5660,6 +5672,190 @@ class Database:
                 changed = True
 
         return changed
+
+    async def _ensure_cosmetic_tables(self) -> bool:
+        """Создать таблицы косметики, seed стартовых аватарок, мигрировать пользователей."""
+        changed = False
+
+        # ── cosmetic_items: каталог всех предметов ──
+        if not await self.fetchval("SELECT to_regclass('public.cosmetic_items')"):
+            await self.execute("""
+                CREATE TABLE cosmetic_items (
+                    id          SERIAL PRIMARY KEY,
+                    slug        TEXT UNIQUE NOT NULL,
+                    item_type   TEXT NOT NULL,
+                    class       TEXT NOT NULL DEFAULT 'starter',
+                    name        TEXT NOT NULL,
+                    asset_path  TEXT,
+                    media_type  TEXT NOT NULL DEFAULT 'image',
+                    has_sound   BOOLEAN NOT NULL DEFAULT FALSE,
+                    is_active   BOOLEAN NOT NULL DEFAULT TRUE,
+                    sort_order  INT NOT NULL DEFAULT 0,
+                    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """)
+            changed = True
+
+        # ── user_cosmetics: что пользователь получил ──
+        if not await self.fetchval("SELECT to_regclass('public.user_cosmetics')"):
+            await self.execute("""
+                CREATE TABLE user_cosmetics (
+                    id          SERIAL PRIMARY KEY,
+                    user_id     BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                    cosmetic_id INT NOT NULL REFERENCES cosmetic_items(id),
+                    acquired_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    source      TEXT NOT NULL DEFAULT 'grant',
+                    UNIQUE(user_id, cosmetic_id)
+                )
+            """)
+            await self.execute(
+                "CREATE INDEX user_cosmetics_user_id_idx ON user_cosmetics(user_id)"
+            )
+            changed = True
+
+        # ── user_equipped_cosmetics: что сейчас надето ──
+        if not await self.fetchval("SELECT to_regclass('public.user_equipped_cosmetics')"):
+            await self.execute("""
+                CREATE TABLE user_equipped_cosmetics (
+                    user_id     BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                    item_type   TEXT NOT NULL,
+                    cosmetic_id INT NOT NULL REFERENCES cosmetic_items(id),
+                    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (user_id, item_type)
+                )
+            """)
+            changed = True
+
+        # ── seed стартовых аватарок ──
+        await self.execute("""
+            INSERT INTO cosmetic_items (slug, item_type, class, name, asset_path, media_type, sort_order) VALUES
+                ('avatar_1', 'avatar', 'starter', 'Страж арены',    '/DesignAssets/PlayerCosmetics/Avatars/1.png', 'image', 1),
+                ('avatar_2', 'avatar', 'starter', 'Охотник теней',  '/DesignAssets/PlayerCosmetics/Avatars/2.png', 'image', 2),
+                ('avatar_3', 'avatar', 'starter', 'Железный кулак', '/DesignAssets/PlayerCosmetics/Avatars/3.png', 'image', 3),
+                ('avatar_4', 'avatar', 'starter', 'Пустошь',        '/DesignAssets/PlayerCosmetics/Avatars/4.png', 'image', 4),
+                ('avatar_5', 'avatar', 'starter', 'Воин духа',      '/DesignAssets/PlayerCosmetics/Avatars/5.png', 'image', 5),
+                ('avatar_6', 'avatar', 'starter', 'Крылатый',       '/DesignAssets/PlayerCosmetics/Avatars/6.png', 'image', 6)
+            ON CONFLICT (slug) DO NOTHING
+        """)
+
+        # ── seed фонов профиля ──
+        await self.execute("""
+            INSERT INTO cosmetic_items (slug, item_type, class, name, asset_path, media_type, sort_order) VALUES
+                ('bg_7',  'profile_background', 'starter', 'Тёмная арена',    '/DesignAssets/PlayerCosmetics/Background/7.png',  'image', 1),
+                ('bg_8',  'profile_background', 'starter', 'Пепельный свод',  '/DesignAssets/PlayerCosmetics/Background/8.png',  'image', 2),
+                ('bg_9',  'profile_background', 'rare',    'Грозовой фронт',  '/DesignAssets/PlayerCosmetics/Background/9.png',  'image', 3),
+                ('bg_10', 'profile_background', 'rare',    'Алая заря',       '/DesignAssets/PlayerCosmetics/Background/10.png', 'image', 4),
+                ('bg_11', 'profile_background', 'epic',    'Кристальные своды','/DesignAssets/PlayerCosmetics/Background/11.png','image', 5),
+                ('bg_12', 'profile_background', 'epic',    'Пустота',         '/DesignAssets/PlayerCosmetics/Background/12.png', 'image', 6)
+            ON CONFLICT (slug) DO NOTHING
+        """)
+
+        # ── seed стартового титула ──
+        await self.execute("""
+            INSERT INTO cosmetic_items (slug, item_type, class, name, asset_path, media_type, sort_order) VALUES
+                ('title_1', 'title', 'starter', 'Игрок ExtraArena', NULL, 'image', 1)
+            ON CONFLICT (slug) DO NOTHING
+        """)
+
+        # ── миграция существующих пользователей: выдать все starter-предметы ──
+        await self.execute("""
+            INSERT INTO user_cosmetics (user_id, cosmetic_id, source)
+            SELECT u.user_id, ci.id, 'grant'
+            FROM users u
+            CROSS JOIN cosmetic_items ci
+            WHERE ci.class = 'starter'
+              AND COALESCE(u.is_bot, FALSE) = FALSE
+            ON CONFLICT (user_id, cosmetic_id) DO NOTHING
+        """)
+
+        # ── миграция: надеть avatar_1 всем у кого нет ни одного equipped avatar ──
+        await self.execute("""
+            INSERT INTO user_equipped_cosmetics (user_id, item_type, cosmetic_id)
+            SELECT u.user_id, 'avatar', ci.id
+            FROM users u
+            CROSS JOIN cosmetic_items ci
+            WHERE ci.slug = 'avatar_1'
+              AND COALESCE(u.is_bot, FALSE) = FALSE
+              AND NOT EXISTS (
+                  SELECT 1 FROM user_equipped_cosmetics uec
+                  WHERE uec.user_id = u.user_id AND uec.item_type = 'avatar'
+              )
+            ON CONFLICT (user_id, item_type) DO NOTHING
+        """)
+
+        return changed
+
+    async def grant_starter_cosmetics(self, user_id: int) -> None:
+        """Выдать все starter-предметы пользователю и надеть avatar_1 если пусто."""
+        # Выдать все starter-предметы
+        await self.execute("""
+            INSERT INTO user_cosmetics (user_id, cosmetic_id, source)
+            SELECT $1, id, 'grant'
+            FROM cosmetic_items
+            WHERE class = 'starter' AND is_active = TRUE
+            ON CONFLICT (user_id, cosmetic_id) DO NOTHING
+        """, user_id)
+
+        # Надеть avatar_1 если нет equipped avatar
+        await self.execute("""
+            INSERT INTO user_equipped_cosmetics (user_id, item_type, cosmetic_id)
+            SELECT $1, 'avatar', id
+            FROM cosmetic_items
+            WHERE slug = 'avatar_1'
+            ON CONFLICT (user_id, item_type) DO NOTHING
+        """, user_id)
+
+    async def get_user_cosmetics(self, user_id: int) -> dict:
+        """Вернуть все предметы пользователя + текущий equipped по каждому типу."""
+        owned_rows = await self.fetch("""
+            SELECT ci.id, ci.slug, ci.item_type, ci.class, ci.name,
+                   ci.asset_path, ci.media_type, ci.has_sound, ci.sort_order
+            FROM user_cosmetics uc
+            JOIN cosmetic_items ci ON ci.id = uc.cosmetic_id
+            WHERE uc.user_id = $1 AND ci.is_active = TRUE
+            ORDER BY ci.item_type, ci.sort_order
+        """, user_id)
+
+        equipped_rows = await self.fetch("""
+            SELECT uec.item_type, ci.id, ci.slug, ci.class, ci.name,
+                   ci.asset_path, ci.media_type, ci.has_sound
+            FROM user_equipped_cosmetics uec
+            JOIN cosmetic_items ci ON ci.id = uec.cosmetic_id
+            WHERE uec.user_id = $1
+        """, user_id)
+
+        items = [dict(r) for r in owned_rows]
+        equipped = {r["item_type"]: dict(r) for r in equipped_rows}
+
+        return {"items": items, "equipped": equipped}
+
+    async def equip_cosmetic(self, user_id: int, cosmetic_id: int) -> dict:
+        """Надеть предмет. Проверить, что пользователь им владеет."""
+        # Проверка владения
+        owned = await self.fetchval("""
+            SELECT 1 FROM user_cosmetics
+            WHERE user_id = $1 AND cosmetic_id = $2
+        """, user_id, cosmetic_id)
+        if not owned:
+            return {"success": False, "error": "not_owned"}
+
+        # Получить тип предмета
+        item = await self.fetchrow("""
+            SELECT id, item_type, slug, class, name, asset_path, media_type
+            FROM cosmetic_items WHERE id = $1 AND is_active = TRUE
+        """, cosmetic_id)
+        if not item:
+            return {"success": False, "error": "item_not_found"}
+
+        # Надеть
+        await self.execute("""
+            INSERT INTO user_equipped_cosmetics (user_id, item_type, cosmetic_id, updated_at)
+            VALUES ($1, $2, $3, NOW())
+            ON CONFLICT (user_id, item_type) DO UPDATE
+            SET cosmetic_id = EXCLUDED.cosmetic_id, updated_at = NOW()
+        """, user_id, item["item_type"], cosmetic_id)
+
+        return {"success": True, "equipped": dict(item)}
 
     async def get_user_deck_presets(self, user_id: int) -> list[dict[str, Any]]:
         """Получить все пресеты колод пользователя."""

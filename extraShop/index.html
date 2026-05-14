@@ -1234,6 +1234,7 @@
 (function() {
   var params = new URLSearchParams(location.search);
   var token = params.get('checkout');
+  var historyToken = params.get('history');
 
   // ==================== CHECKOUT OVERLAY (has ?checkout=) ====================
   if (token) {
@@ -1521,6 +1522,84 @@
     }
 
     renderVpnStep();
+    return;
+  }
+
+  // ==================== HISTORY (has ?history=) ====================
+  if (historyToken) {
+    var nav = document.querySelector('.bottom-nav');
+    if (nav) nav.style.display = 'none';
+
+    document.querySelectorAll('.page').forEach(function(p) { p.classList.toggle('active', p.id === 'history'); });
+    var historySection = document.getElementById('history');
+    var panelBody = historySection.querySelector('.panel-body');
+    if (!panelBody) {
+      panelBody = document.createElement('div');
+      panelBody.className = 'panel-body';
+      historySection.querySelector('.panel').appendChild(panelBody);
+    }
+    panelBody.innerHTML = '<div id="history-content" style="display:grid;gap:12px"><p style="text-align:center;color:var(--sub)">Загрузка истории...</p></div>';
+
+    var historyContent = document.getElementById('history-content');
+
+    function escH(s) {
+      var d = document.createElement('div');
+      d.appendChild(document.createTextNode(s || ''));
+      return d.innerHTML;
+    }
+
+    function fmtDate(ds) {
+      try {
+        var d = new Date(ds);
+        return d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })
+          + ' ' + d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+      } catch(e) { return ds || ''; }
+    }
+
+    fetch('/api/payments/history?token=' + encodeURIComponent(historyToken))
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        if (data.success && Array.isArray(data.history)) {
+          if (data.history.length === 0) {
+            historyContent.innerHTML = '<div class="notice">Покупок пока нет.</div>';
+            return;
+          }
+          var html = '';
+          data.history.forEach(function(item) {
+            var desc = escH(item.description || 'Покупка #' + (item.payment_id || '—'));
+            var amount = (item.amount || 0) + ' ' + (item.currency || 'RUB');
+            var date = fmtDate(item.created_at);
+            var isSucceeded = item.status === 'succeeded';
+            var statusLabel = isSucceeded ? 'Оплачено' : (item.status || '—');
+            var statusClass = isSucceeded ? 'status-success' : 'status-other';
+            html +=
+              '<div style="display:grid;grid-template-columns:1fr auto;gap:6px;padding:10px;border-radius:10px;background:rgba(26,16,48,.6);border:1px solid rgba(74,61,106,.35)">' +
+                '<div>' +
+                  '<div style="font-size:11px;color:var(--muted);margin-bottom:2px">' + date + '</div>' +
+                  '<div style="color:var(--text);font-weight:600">' + desc + '</div>' +
+                '</div>' +
+                '<div style="text-align:right">' +
+                  '<div style="color:var(--gold);font-weight:700;font-size:15px">' + amount + '</div>' +
+                  '<div style="font-size:12px;color:' + (isSucceeded ? 'var(--success)' : 'var(--muted)') + '">' + statusLabel + '</div>' +
+                '</div>' +
+              '</div>';
+          });
+          historyContent.innerHTML = html;
+        } else {
+          var err = data.error || data.message || '';
+          if (err === 'token_expired') {
+            historyContent.innerHTML = '<div class="notice">Ссылка устарела. Запросите новую из игры.</div>';
+          } else if (err === 'invalid_signature') {
+            historyContent.innerHTML = '<div class="notice">Недействительная ссылка.</div>';
+          } else {
+            historyContent.innerHTML = '<div class="notice">Не удалось загрузить историю. Попробуйте позже.</div>';
+          }
+        }
+      })
+      .catch(function() {
+        historyContent.innerHTML = '<div class="notice">Не удалось загрузить историю. Проверьте соединение.</div>';
+      });
+
     return;
   }
 

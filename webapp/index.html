@@ -79,6 +79,7 @@ html, body {
 @keyframes scaleIn { from{opacity:0;transform:scale(0.85) translateY(20px)} to{opacity:1;transform:scale(1) translateY(0)} }
 @keyframes bounce { 0%,100%{transform:translateY(0)} 40%{transform:translateY(-20px)} 60%{transform:translateY(-8px)} }
 @keyframes shimmer { 0%{background-position:-200% 0} 100%{background-position:200% 0} }
+@keyframes titleShimmer { 0%{background-position:0% center} 100%{background-position:200% center} }
 @keyframes profileFadeIn { from{opacity:0;transform:scale(0.96)} to{opacity:1;transform:scale(1)} }
 @keyframes connectorPulse { 0%,100%{opacity:0.3} 50%{opacity:0.7} }
 
@@ -902,7 +903,7 @@ const MOCK_COSMETICS = [
   {id:'avatar_epic_ram',   type:'avatar',             class:'epic',    name:'Шлем героя',           owned:true},
   {id:'bg_default',        type:'profile_background', class:'starter', name:'Темная арена',         owned:true},
   {id:'bg_epic_crystal',   type:'profile_background', class:'epic',    name:'Кристальные своды',   owned:true},
-  {id:'bg_limited_01',     type:'profile_background', class:'limited', name:'Разлом сезона',        owned:false, animated:true},
+  {id:'bg_limited_01',     type:'profile_background', class:'limited', name:'Разлом сезона',        owned:false, animated:true, mediaUrl:'/DesignAssets/Cosmetics/bg_limited_01.mp4', mediaType:'video', hasSound:true},
   {id:'title_default',     type:'title',              class:'starter', name:'Новичок арены',        owned:true},
   {id:'title_seven_seas',  type:'title',              class:'epic',    name:'Повелитель 7 морей',   owned:false},
   {id:'title_mythic_flame',type:'title',              class:'mythic',  name:'Пламя чемпиона',       owned:true},
@@ -997,7 +998,24 @@ const TopBar = ({title, onBack, onMenu, showBack=false, extra=null, profile, onP
   const gems  = profile ? (profile.gems  ?? 0) : '—';
   const fmtNum = v => typeof v === 'number' ? v.toLocaleString('ru-RU') : v;
   const avatarLetter = (title || 'E')[0].toUpperCase();
-  const photoUrl = profile?.photo_url || null;
+  const gameAvatarUrl = profile?.equipped_avatar_url || null;
+  const topBarIsUltra = profile?.extra_pass === 'ultra';
+  const topBarHasExtraPass = profile?.extra_pass === 'active' || profile?.extra_pass === 'ultra';
+  const glowDisabled = localStorage.getItem('extraGlowDisabled') === 'true';
+
+  const getNicknameGlowStyle = () => {
+    if (glowDisabled) return {color: T.white};
+    if (topBarIsUltra) return {
+      background:'linear-gradient(90deg,#22d3ee,#f0abfc,#22d3ee)',
+      backgroundSize:'200% auto',
+      WebkitBackgroundClip:'text',
+      WebkitTextFillColor:'transparent',
+      backgroundClip:'text',
+      animation:'titleShimmer 3s linear infinite',
+    };
+    if (topBarHasExtraPass) return {color:'#fbbf24', textShadow:'0 0 16px #fbbf2455'};
+    return {color: T.white};
+  };
 
   return (
     <div style={{height:'52px',background:'rgba(15,10,26,0.98)',display:'flex',alignItems:'center',justifyContent:'space-between',padding:'0 14px',flexShrink:0,borderBottom:`1px solid ${T.purple1}`}}>
@@ -1008,13 +1026,20 @@ const TopBar = ({title, onBack, onMenu, showBack=false, extra=null, profile, onP
           </button>
         ) : (
           <div onClick={onProfileClick} style={{display:'flex',alignItems:'center',gap:'8px',cursor:onProfileClick?'pointer':'default',minWidth:0}}>
-            <div style={{width:'34px',height:'34px',borderRadius:'50%',background:`linear-gradient(135deg,${T.purple2},${T.purple3})`,border:`2px solid ${T.purpleHL}`,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,overflow:'hidden'}}>
-              {photoUrl
-                ? <img src={photoUrl} alt="" style={{width:'100%',height:'100%',objectFit:'cover'}}/>
+            <div style={{
+              width:'34px',height:'34px',
+              borderRadius:'10px',
+              background:`linear-gradient(135deg,${T.purple2},${T.purple3})`,
+              border:`2px solid ${T.purpleHL}`,
+              display:'flex',alignItems:'center',justifyContent:'center',
+              flexShrink:0,overflow:'hidden'
+            }}>
+              {gameAvatarUrl
+                ? <img src={gameAvatarUrl} alt="" style={{width:'100%',height:'100%',objectFit:'cover'}}/>
                 : <span style={{fontSize:'14px',fontWeight:'900',color:'white',fontFamily:"'Exo 2',sans-serif"}}>{avatarLetter}</span>
               }
             </div>
-            <span style={{fontSize:'15px',fontWeight:'700',color:T.white,fontFamily:"'Exo 2',sans-serif",overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{title}</span>
+            <span style={{fontSize:'15px',fontWeight:'700',fontFamily:"'Exo 2',sans-serif",overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',...getNicknameGlowStyle()}}>{title}</span>
           </div>
         )}
         {showBack && <span style={{fontSize:'15px',fontWeight:'700',color:T.white,fontFamily:"'Exo 2',sans-serif"}}>{title}</span>}
@@ -5085,55 +5110,225 @@ window.__analytics = AnalyticsController;
 // ═══════════════════════════════════════════
 const CosmeticPickerSheet = ({type, ownedItems, selectedItem, onSelect, onClose}) => {
   const typeLabel = type==='avatar'?'Аватар':type==='profile_background'?'Фон':'Титул';
+  const [isExpanded, setIsExpanded] = React.useState(false);
+  const [sortAsc, setSortAsc] = React.useState(true);
+
+  const CLASS_ORDER = {starter:0, rare:1, epic:2, mythic:3, limited:4};
+  const displayItems = [...ownedItems]
+    .sort((a, b) => {
+      const diff = (CLASS_ORDER[a.class]??99) - (CLASS_ORDER[b.class]??99);
+      return sortAsc ? diff : -diff;
+    });
+
+  const getTitlePreviewStyle = (item) => {
+    if (item.class === 'mythic')  return {color:'#ef4444', textShadow:'0 0 14px #ef444488'};
+    if (item.class === 'limited') return {background:'linear-gradient(90deg,#22d3ee,#f0abfc,#22d3ee)',backgroundSize:'200% auto',WebkitBackgroundClip:'text',WebkitTextFillColor:'transparent',backgroundClip:'text',animation:'titleShimmer 3s linear infinite'};
+    return {color: T.white};
+  };
 
   return (
-    <div style={{position:'absolute',inset:0,background:'rgba(5,3,14,0.72)',backdropFilter:'blur(8px)',zIndex:40,display:'flex',flexDirection:'column',justifyContent:'flex-end'}} onClick={onClose}>
-      <div onClick={e=>e.stopPropagation()} className="safe-pad-bottom" style={{background:`linear-gradient(180deg,#1a1238 0%,#130d26 100%)`,borderRadius:'24px 24px 0 0',padding:'16px 18px 24px',animation:'slideUp 0.28s cubic-bezier(0.32,0.72,0,1)',border:`1px solid ${T.purple1}`,borderBottom:'none',boxShadow:'0 -16px 50px rgba(0,0,0,0.5)',maxHeight:'60vh',display:'flex',flexDirection:'column'}}>
-        <div style={{width:'36px',height:'4px',borderRadius:'2px',background:T.purple2,margin:'0 auto 16px'}}/>
-        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'14px',flexShrink:0}}>
-          <span style={{fontSize:'17px',fontWeight:'900',color:T.white,fontFamily:"'Exo 2',sans-serif"}}>{typeLabel}</span>
-          <button onClick={onClose} style={{width:'32px',height:'32px',borderRadius:'50%',background:T.bgCard,border:`1px solid ${T.purple1}`,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer'}}>
-            <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 2L10 10M10 2L2 10" stroke={T.grey1} strokeWidth="1.8" strokeLinecap="round"/></svg>
-          </button>
+    <div
+      style={{position:'absolute',inset:0,background:'rgba(5,3,14,0.72)',backdropFilter:'blur(8px)',zIndex:40,display:'flex',flexDirection:'column',justifyContent:'flex-end'}}
+      onClick={onClose}
+    >
+      <div
+        onClick={e=>e.stopPropagation()}
+        className="safe-pad-bottom"
+        style={{
+          background:`linear-gradient(180deg,#1a1238 0%,#130d26 100%)`,
+          borderRadius: isExpanded ? '0' : '24px 24px 0 0',
+          padding:'16px 18px 24px',
+          animation:'slideUp 0.28s cubic-bezier(0.32,0.72,0,1)',
+          border:`1px solid ${T.purple1}`,
+          borderBottom:'none',
+          boxShadow:'0 -16px 50px rgba(0,0,0,0.5)',
+          maxHeight: isExpanded ? '100dvh' : '70vh',
+          transition: 'max-height 0.3s cubic-bezier(0.32,0.72,0,1)',
+          display:'flex',
+          flexDirection:'column'
+        }}
+      >
+        {/* Drag handle — click to expand/collapse */}
+        <div
+          onClick={() => setIsExpanded(v => !v)}
+          style={{width:'100%',display:'flex',flexDirection:'column',alignItems:'center',gap:'4px',cursor:'pointer',paddingBottom:'4px'}}
+        >
+          <div style={{width:'36px',height:'4px',borderRadius:'2px',background:T.purple2}}/>
+          <svg width="14" height="8" viewBox="0 0 14 8" fill="none" style={{opacity:0.4,transition:'transform 0.2s',transform:isExpanded?'rotate(180deg)':'rotate(0deg)'}}>
+            <path d="M1 7L7 1L13 7" stroke={T.grey2} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
         </div>
-        <div style={{flex:1,overflowY:'auto',display:'flex',flexDirection:'column',gap:'8px'}}>
-          {ownedItems.map(item => {
-            const meta = COSMETIC_CLASS_META[item.class] || COSMETIC_CLASS_META.starter;
-            const isSelected = selectedItem === item.id;
-            const isLocked = !item.owned;
-            return (
-              <div key={item.id}
-                onClick={()=>{ if(!isLocked) onSelect(item); else window.showToast('Предмет пока не получен', 'error', 2000); }}
-                style={{
-                  background: isSelected?`${meta.bg}`:T.bgCard,
-                  border:`1px solid ${isSelected?meta.border:T.purple1}`,
-                  borderRadius:'14px',padding:'13px 15px',
-                  display:'flex',alignItems:'center',gap:'12px',
-                  cursor:isLocked?'default':'pointer',
-                  opacity:isLocked?0.45:1,
-                  transition:'all 0.15s',
-                  position:'relative',overflow:'hidden'
-                }}>
-                {item.class==='limited' && (
-                  <div style={{position:'absolute',inset:0,borderRadius:'14px',background:'linear-gradient(105deg,transparent 40%,rgba(251,191,36,0.12) 45%,rgba(251,191,36,0.25) 50%,rgba(251,191,36,0.12) 55%,transparent 60%)',backgroundSize:'200% 100%',animation:'shimmer 2.5s ease-in-out infinite',pointerEvents:'none'}}/>
-                )}
-                <div style={{width:'44px',height:'44px',borderRadius:'12px',background:meta.bg,border:`1px solid ${meta.border}`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'20px',flexShrink:0}}>
-                  {type==='avatar'?'👤':type==='profile_background'?'🎨':'🏷️'}
-                </div>
-                <div style={{flex:1,minWidth:0}}>
-                  <div style={{fontSize:'13px',fontWeight:'700',color:T.white,fontFamily:"'Exo 2',sans-serif",overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{item.name}</div>
-                  <div style={{display:'flex',alignItems:'center',gap:'6px',marginTop:'4px'}}>
-                    <span style={{fontSize:'10px',color:meta.color,background:meta.bg,borderRadius:'5px',padding:'1px 7px',fontWeight:'600'}}>{meta.label}</span>
-                    {isLocked && <span style={{fontSize:'10px',color:T.grey3}}>🔒</span>}
-                    {item.animated && <span style={{fontSize:'10px',color:'#fbbf24',fontWeight:'600'}}>✨ аним.</span>}
+
+        {/* Header */}
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'16px',flexShrink:0}}>
+          <span style={{fontSize:'17px',fontWeight:'900',color:T.white,fontFamily:"'Exo 2',sans-serif"}}>{typeLabel}</span>
+          <div style={{display:'flex',alignItems:'center',gap:'8px'}}>
+            <button
+              onClick={() => setSortAsc(v => !v)}
+              style={{
+                padding:'5px 10px',borderRadius:'20px',
+                background: T.bgCard,
+                border:`1px solid ${T.purple2}`,
+                color: T.grey1,fontSize:'11px',fontWeight:'700',
+                cursor:'pointer',display:'flex',alignItems:'center',gap:'5px',
+                fontFamily:"'Exo 2',sans-serif",
+              }}
+            >
+              {sortAsc ? '↑ Частые' : '↓ Редкие'}
+            </button>
+            <button
+              onClick={onClose}
+              style={{width:'32px',height:'32px',borderRadius:'50%',background:T.bgCard,border:`1px solid ${T.purple1}`,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer'}}
+            >
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 2L10 10M10 2L2 10" stroke={T.grey1} strokeWidth="1.8" strokeLinecap="round"/></svg>
+            </button>
+          </div>
+        </div>
+
+        {/* Content */}
+        <div style={{flex:1,overflowY:'auto'}}>
+          {type === 'avatar' && (
+            /* === GRID 3 COLUMNS FOR AVATARS === */
+            <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'10px'}}>
+              {displayItems.map(item => {
+                const meta = COSMETIC_CLASS_META[item.class] || COSMETIC_CLASS_META.starter;
+                const isSelected = selectedItem === item.id;
+                const isLocked = !item.owned;
+                return (
+                  <div
+                    key={item.id}
+                    onClick={()=>{ if(!isLocked) onSelect(item); else window.showToast('Предмет пока не получен','error',2000); }}
+                    style={{
+                      display:'flex',flexDirection:'column',alignItems:'center',gap:'7px',
+                      padding:'8px 6px 10px',
+                      background: isSelected ? meta.bg : 'rgba(255,255,255,0.03)',
+                      border:`1.5px solid ${isSelected ? meta.color : 'rgba(255,255,255,0.08)'}`,
+                      borderRadius:'16px',
+                      cursor: isLocked?'default':'pointer',
+                      opacity: isLocked?0.4:1,
+                      transition:'all 0.15s',
+                      boxShadow: isSelected ? `0 0 14px ${meta.color}55` : 'none',
+                      position:'relative',
+                    }}
+                  >
+                    <div style={{width:'100%',aspectRatio:'1/1',borderRadius:'12px',overflow:'hidden',background:meta.bg,position:'relative'}}>
+                      {item.asset_path
+                        ? <img src={item.asset_path} alt={item.name} style={{width:'100%',height:'100%',objectFit:'cover',display:'block'}}/>
+                        : <div style={{width:'100%',height:'100%',display:'flex',alignItems:'center',justifyContent:'center',fontSize:'28px'}}>👤</div>
+                      }
+                      {isSelected && (
+                        <div style={{position:'absolute',top:'5px',right:'5px',width:'18px',height:'18px',borderRadius:'50%',background:meta.color,display:'flex',alignItems:'center',justifyContent:'center'}}>
+                          <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M2 5l2.5 2.5 4-5" stroke="#fff" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                        </div>
+                      )}
+                      {isLocked && (
+                        <div style={{position:'absolute',inset:0,display:'flex',alignItems:'center',justifyContent:'center',background:'rgba(0,0,0,0.4)',borderRadius:'12px'}}>
+                          <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><rect x="4" y="9" width="12" height="9" rx="2" fill={T.grey3}/><path d="M7 9V6a3 3 0 016 0v3" stroke={T.grey3} strokeWidth="1.8" strokeLinecap="round"/></svg>
+                        </div>
+                      )}
+                    </div>
+                    <span style={{fontSize:'10px',fontWeight:'700',color:isSelected?meta.color:T.grey1,fontFamily:"'Exo 2',sans-serif",textAlign:'center',width:'100%',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',lineHeight:'1.2'}}>
+                      {item.name}
+                    </span>
+                    <span style={{fontSize:'9px',color:meta.color,background:meta.bg,borderRadius:'4px',padding:'1px 5px',fontWeight:'600'}}>
+                      {(COSMETIC_CLASS_META[item.class]||COSMETIC_CLASS_META.starter).label}
+                    </span>
                   </div>
-                </div>
-                {isSelected && (
-                  <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="9" fill={meta.color} opacity="0.2"/><path d="M5 9l3 3 5-6" stroke={meta.color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                )}
-              </div>
-            );
-          })}
+                );
+              })}
+            </div>
+          )}
+
+          {type === 'profile_background' && (
+            /* === ONE PER ROW WITH FULL-SIZE IMAGE === */
+            <div style={{display:'flex',flexDirection:'column',gap:'10px'}}>
+              {displayItems.map(item => {
+                const meta = COSMETIC_CLASS_META[item.class] || COSMETIC_CLASS_META.starter;
+                const isSelected = selectedItem === item.id;
+                const isLocked = !item.owned;
+                return (
+                  <div
+                    key={item.id}
+                    onClick={()=>{ if(!isLocked) onSelect(item); else window.showToast('Предмет пока не получен','error',2000); }}
+                    style={{
+                      border:`1.5px solid ${isSelected ? meta.color : 'rgba(255,255,255,0.08)'}`,
+                      borderRadius:'16px',
+                      overflow:'hidden',
+                      cursor: isLocked?'default':'pointer',
+                      opacity: isLocked?0.4:1,
+                      transition:'all 0.15s',
+                      boxShadow: isSelected ? `0 0 16px ${meta.color}55` : 'none',
+                      position:'relative',
+                    }}
+                  >
+                    <div style={{aspectRatio:'16/7',position:'relative',overflow:'hidden',borderRadius:'14px'}}>
+                      {item.asset_path
+                        ? <img src={item.asset_path} alt={item.name} style={{width:'100%',height:'100%',objectFit:'cover',display:'block',borderRadius:'14px'}}/>
+                        : <div style={{width:'100%',height:'100%',background:meta.bg,borderRadius:'14px'}}/>
+                      }
+                      <div style={{position:'absolute',inset:0,background:'linear-gradient(to top,rgba(0,0,0,0.72) 0%,transparent 55%)',borderRadius:'14px'}}/>
+                      <div style={{position:'absolute',bottom:0,left:0,right:0,padding:'8px 12px',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+                        <span style={{fontSize:'13px',fontWeight:'700',color:T.white,fontFamily:"'Exo 2',sans-serif"}}>
+                          {item.name}
+                        </span>
+                        <span style={{fontSize:'10px',color:meta.color,background:`${meta.color}33`,borderRadius:'5px',padding:'2px 7px',fontWeight:'600'}}>
+                          {meta.label}
+                        </span>
+                      </div>
+                      {isSelected && (
+                        <div style={{position:'absolute',top:'8px',right:'8px',width:'22px',height:'22px',borderRadius:'50%',background:meta.color,display:'flex',alignItems:'center',justifyContent:'center'}}>
+                          <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2.5 6l3 3 5-6" stroke="#fff" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                        </div>
+                      )}
+                      {isLocked && (
+                        <div style={{position:'absolute',inset:0,display:'flex',alignItems:'center',justifyContent:'center',background:'rgba(0,0,0,0.45)',borderRadius:'14px'}}>
+                          <svg width="24" height="24" viewBox="0 0 20 20" fill="none"><rect x="4" y="9" width="12" height="9" rx="2" fill={T.grey3}/><path d="M7 9V6a3 3 0 016 0v3" stroke={T.grey3} strokeWidth="1.8" strokeLinecap="round"/></svg>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {type === 'title' && (
+            /* === LIST FOR TITLES (with real visual style preview) === */
+            <div style={{display:'flex',flexDirection:'column',gap:'8px'}}>
+              {displayItems.map(item => {
+                const meta = COSMETIC_CLASS_META[item.class] || COSMETIC_CLASS_META.starter;
+                const isSelected = selectedItem === item.id;
+                const isLocked = !item.owned;
+                return (
+                  <div
+                    key={item.id}
+                    onClick={()=>{ if(!isLocked) onSelect(item); else window.showToast('Предмет пока не получен','error',2000); }}
+                    style={{
+                      background: isSelected ? meta.bg : T.bgCard,
+                      border:`1px solid ${isSelected?meta.color:T.purple1}`,
+                      borderRadius:'14px',padding:'13px 15px',
+                      display:'flex',alignItems:'center',gap:'12px',
+                      cursor:isLocked?'default':'pointer',
+                      opacity:isLocked?0.45:1,
+                      transition:'all 0.15s',
+                      boxShadow: isSelected ? `0 0 12px ${meta.color}44` : 'none',
+                    }}
+                  >
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{fontSize:'15px',fontWeight:'900',fontFamily:"'Exo 2',sans-serif",overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',...getTitlePreviewStyle(item)}}>{item.name}</div>
+                      <div style={{display:'flex',alignItems:'center',gap:'6px',marginTop:'4px'}}>
+                        <span style={{fontSize:'10px',color:meta.color,background:meta.bg,borderRadius:'5px',padding:'1px 7px',fontWeight:'600'}}>{meta.label}</span>
+                        {isLocked && <span style={{fontSize:'10px',color:T.grey3}}>🔒</span>}
+                      </div>
+                    </div>
+                    {isSelected && (
+                      <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="9" fill={meta.color} opacity="0.2"/><path d="M5 9l3 3 5-6" stroke={meta.color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -5166,7 +5361,6 @@ const SlotChip = ({type, meta, onClick, hasAlternatives, style}) => {
         <div style={{display:'flex',alignItems:'center',gap:'4px',marginTop:'3px'}}>
           <span style={{width:'5px',height:'5px',borderRadius:'50%',background:meta.color,flexShrink:0,boxShadow:`0 0 4px ${meta.color}66`}}/>
           <span style={{fontSize:'9px',color:meta.color,fontWeight:'600'}}>{meta.classLabel}</span>
-          {!hasAlternatives && <span style={{fontSize:'8px',color:T.grey3}}>🔒</span>}
         </div>
       </div>
     </button>
@@ -5177,34 +5371,123 @@ const SlotChip = ({type, meta, onClick, hasAlternatives, style}) => {
 // PROFILE SCREEN
 // ═══════════════════════════════════════════
 const ProfileScreen = ({profile, onClose}) => {
-  const [selectedAvatar,     setSelectedAvatar]     = React.useState('avatar_default');
-  const [selectedBackground, setSelectedBackground] = React.useState('bg_default');
-  const [selectedTitle,     setSelectedTitle]       = React.useState('title_default');
+  const [selectedAvatar,     setSelectedAvatar]     = React.useState('');
+  const [selectedBackground, setSelectedBackground] = React.useState('');
+  const [selectedTitle,     setSelectedTitle]       = React.useState('');
   const [pickerType,         setPickerType]         = React.useState(null);
+  const nickRef = React.useRef(null);
+  const [nickStatus, setNickStatus] = React.useState(null);
+  const [showNickWarning, setShowNickWarning] = React.useState(false);
+  const [hideId, setHideId] = React.useState(false);
+  const [glowDisabled, setGlowDisabled] = React.useState(
+    () => localStorage.getItem('extraGlowDisabled') === 'true'
+  );
+  const [randomIgnoreStarters, setRandomIgnoreStarters] = React.useState(false);
+  const [isMuted, setIsMuted] = React.useState(true);
+  const videoRef = React.useRef(null);
+  const nickChanged = profile?.nickname_changed || false;
+  const [cosmeticsData, setCosmeticsData] = React.useState(null);
+  const [cosmeticsLoading, setCosmeticsLoading] = React.useState(true);
 
   const trophies = profile?.trophies ?? 0;
   const league = getLeague(trophies);
   const displayName = profile?.custom_nickname || profile?.first_name || profile?.username || 'ExtraArena';
-  const photoUrl = profile?.photo_url || null;
-  const hasExtraPass = profile?.extra_pass === 'active';
-  const isUltra = profile?.extra_pass_ultra === true;
+  const hasExtraPass = profile?.extra_pass === 'active' || profile?.extra_pass === 'ultra';
+  const isUltra = profile?.extra_pass === 'ultra';
 
-  const itemsByType = (type) => MOCK_COSMETICS.filter(c => c.type === type);
+  const canHideId = hasExtraPass || isUltra;
+
+  React.useEffect(() => {
+    setCosmeticsLoading(true);
+    fetch(apiUrl('/api/cosmetics/owned'))
+      .then(r => r.json())
+      .then(data => {
+        setCosmeticsData(data);
+        if (data.equipped?.avatar)             setSelectedAvatar(String(data.equipped.avatar.id));
+        if (data.equipped?.profile_background) setSelectedBackground(String(data.equipped.profile_background.id));
+        if (data.equipped?.title)              setSelectedTitle(String(data.equipped.title.id));
+      })
+      .catch(() => {})
+      .finally(() => setCosmeticsLoading(false));
+  }, [profile?.user_id]);
+
+  // itemsByType: API first, MOCK fallback
+  const itemsByType = (type) => {
+    if (cosmeticsData?.items) {
+      return cosmeticsData.items
+        .filter(c => c.item_type === type)
+        .map(c => ({
+          id: String(c.id),
+          type: c.item_type,
+          class: c.class,
+          name: c.name,
+          owned: true,
+          asset_path: c.asset_path,
+          media_type: c.media_type,
+          has_sound: c.has_sound,
+          animated: c.media_type === 'gif' || c.media_type === 'video',
+        }));
+    }
+    return MOCK_COSMETICS.filter(c => c.type === type);
+  };
+
   const selectedItem = (type) => {
     const id = type==='avatar'?selectedAvatar:type==='profile_background'?selectedBackground:selectedTitle;
-    return MOCK_COSMETICS.find(c => c.id === id) || null;
+    return itemsByType(type).find(c => String(c.id) === String(id)) || null;
   };
 
   const handleSelect = (item) => {
-    if (item.type === 'avatar') setSelectedAvatar(item.id);
-    else if (item.type === 'profile_background') setSelectedBackground(item.id);
-    else setSelectedTitle(item.id);
+    if (item.type === 'avatar') setSelectedAvatar(String(item.id));
+    else if (item.type === 'profile_background') {
+      setSelectedBackground(String(item.id));
+      setIsMuted(true);
+    }
+    else setSelectedTitle(String(item.id));
     setPickerType(null);
-    // TODO: integrate with backend /api/cosmetics/equip when available
-    if (item.owned) {
-      window.showToast(`Предмет "${item.name}" надет`, 'success', 2000);
+
+    if (!item.owned) return;
+
+    // Реальный предмет из API (числовой id) — сохранить на бэк
+    if (cosmeticsData && !isNaN(Number(item.id))) {
+      fetch(apiUrl('/api/cosmetics/equip'), {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({cosmetic_id: Number(item.id)}),
+      })
+      .then(r => r.json())
+      .then(d => {
+        if (d.success) window.showToast(`"${item.name}" надет`, 'success', 2000);
+        else window.showToast(d.error || 'Ошибка', 'error');
+      })
+      .catch(() => window.showToast('Ошибка сети', 'error'));
+    } else {
+      window.showToast(`"${item.name}" надет`, 'success', 2000);
     }
   };
+
+  const handleRandom = () => {
+    const pick = (type) => {
+      const allOwned = itemsByType(type).filter(c => c.owned);
+      const nonStarter = allOwned.filter(c => c.class !== 'starter');
+      const pool = randomIgnoreStarters && nonStarter.length > 0 ? nonStarter : allOwned;
+      return pool.length ? pool[Math.floor(Math.random() * pool.length)] : null;
+    };
+    const equip = (item) => {
+      if (cosmeticsData && !isNaN(Number(item.id))) {
+        fetch(apiUrl('/api/cosmetics/equip'), {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cosmetic_id:Number(item.id)})}).catch(()=>{});
+      }
+    };
+    const av = pick('avatar'), bg = pick('profile_background'), ti = pick('title');
+    if (av) { setSelectedAvatar(String(av.id)); equip(av); }
+    if (bg) { setSelectedBackground(String(bg.id)); setIsMuted(true); equip(bg); }
+    if (ti) { setSelectedTitle(String(ti.id)); equip(ti); }
+    window.showToast('Случайный образ!', 'success', 2000);
+  };
+
+  // True если у игрока есть хотя бы 1 нестартовый предмет хотя бы в одной категории
+  const hasAnyNonStarter = ['avatar','profile_background','title'].some(type =>
+    itemsByType(type).filter(c => c.owned && c.class !== 'starter').length > 0
+  );
 
   const slotMeta = (type) => {
     const sel = selectedItem(type);
@@ -5212,8 +5495,93 @@ const ProfileScreen = ({profile, onClose}) => {
     return {name: sel?.name||'Базовый', classLabel: meta.label, color: meta.color, bg: meta.bg, border: meta.border};
   };
 
-  const bgItem = MOCK_COSMETICS.find(c => c.id === selectedBackground);
+  const bgItem = selectedItem('profile_background');
   const bgClass = bgItem ? COSMETIC_CLASS_META[bgItem.class] : COSMETIC_CLASS_META.starter;
+  const titleItem = selectedItem('title');
+  const titleMeta = titleItem ? COSMETIC_CLASS_META[titleItem.class] : COSMETIC_CLASS_META.starter;
+  const equippedAvatarItem = selectedItem('avatar');
+
+  const getTitleDisplayStyle = () => {
+    if (!titleItem) return {color: T.grey2};
+    switch (titleItem.class) {
+      case 'mythic':
+        return {color:'#ef4444', textShadow:'0 0 18px #ef444499, 0 0 6px #ef444466'};
+      case 'limited':
+        return {
+          background:'linear-gradient(90deg,#22d3ee,#f0abfc,#22d3ee)',
+          backgroundSize:'200% auto',
+          WebkitBackgroundClip:'text',
+          WebkitTextFillColor:'transparent',
+          backgroundClip:'text',
+          animation:'titleShimmer 3s linear infinite',
+        };
+      default:
+        return {color: T.white};
+    }
+  };
+
+  const getCardNicknameStyle = () => {
+    if (glowDisabled) return {color: T.white};
+    if (isUltra) return {
+      background:'linear-gradient(90deg,#22d3ee,#f0abfc,#22d3ee)',
+      backgroundSize:'200% auto',
+      WebkitBackgroundClip:'text',
+      WebkitTextFillColor:'transparent',
+      backgroundClip:'text',
+      animation:'titleShimmer 3s linear infinite',
+    };
+    if (hasExtraPass) return {color:'#fbbf24', textShadow:'0 0 12px #fbbf2455'};
+    return {color: T.white};
+  };
+
+  const formatMemberSince = (isoDate) => {
+    if (!isoDate) return null;
+    const reg = new Date(isoDate);
+    const now = new Date();
+    let years = now.getFullYear() - reg.getFullYear();
+    let months = now.getMonth() - reg.getMonth();
+    if (months < 0) { years--; months += 12; }
+    if (years === 0 && months === 0) return 'Ты с нами меньше месяца';
+    const yStr = years > 0 ? `${years} ${years===1?'год':years<5?'года':'лет'}` : '';
+    const mStr = months > 0 ? `${months} ${months===1?'месяц':months<5?'месяца':'месяцев'}` : '';
+    return `Ты с нами уже ${[yStr,mStr].filter(Boolean).join(' ')}`;
+  };
+
+  const doSaveNick = async () => {
+    const val = nickRef.current?.value?.trim() || '';
+    if (!val || nickStatus === 'saving') return;
+    setNickStatus('saving');
+    const res = await window.saveNickname(val);
+    if (res?.success) {
+      setNickStatus('ok');
+      setTimeout(() => setNickStatus(null), 2000);
+    } else {
+      setNickStatus('err');
+      setTimeout(() => setNickStatus(null), 2500);
+    }
+  };
+
+  const handleNickSave = () => {
+    const val = nickRef.current?.value?.trim() || '';
+    if (!val) return;
+    if (!nickChanged) {
+      setShowNickWarning(true);
+    } else {
+      doSaveNick();
+    }
+  };
+
+  const toggleGlow = () => {
+    const next = !glowDisabled;
+    setGlowDisabled(next);
+    localStorage.setItem('extraGlowDisabled', String(next));
+  };
+
+  React.useEffect(() => {
+    if (videoRef.current) {
+      videoRef.current.muted = isMuted;
+    }
+  }, [isMuted]);
 
   return (
     <div style={{position:'absolute',inset:0,background:'rgba(8,5,16,0.92)',backdropFilter:'blur(14px)',zIndex:30,display:'flex',flexDirection:'column',animation:'profileFadeIn 0.25s'}}>
@@ -5230,111 +5598,286 @@ const ProfileScreen = ({profile, onClose}) => {
         </div>
       </div>
 
-      {/* Content */}
-      <div style={{flex:1,overflowY:'auto',padding:'8px 10px 20px',display:'flex',flexDirection:'column',alignItems:'center'}}>
+      {/* Scrollable content */}
+      <div style={{flex:1,overflowY:'auto',padding:'12px 10px 20px',display:'flex',flexDirection:'column',alignItems:'center'}}>
 
-        {/* Editor wrapper — relative container for connected slots */}
-        <div style={{position:'relative',width:'100%',maxWidth:'380px',marginTop:'4px'}}>
+        {/* ═══════ ID Card ═══════ */}
+        {/* Wrapper — relative so avatar can overflow bottom */}
+        <div style={{position:'relative',width:'100%',maxWidth:'380px',marginBottom:'14px'}}>
 
-          {/* ── Avatar slot (left-top, outside card) ── */}
-          <div style={{position:'absolute',top:'6px',left:'0',zIndex:3,display:'flex',alignItems:'center',gap:'2px'}}>
-            <SlotChip
-              type="avatar"
-              meta={slotMeta('avatar')}
-              hasAlternatives={itemsByType('avatar').filter(c=>c.owned).length > 1}
-              onClick={()=>setPickerType('avatar')}
-              style={{maxWidth:'130px'}}
-            />
-            <div style={{display:'flex',alignItems:'center',flexShrink:0}}>
-              <div style={{width:'10px',height:'1px',background:slotMeta('avatar').color,opacity:0.5}}/>
-              <div style={{width:'5px',height:'5px',borderRadius:'50%',background:slotMeta('avatar').color,boxShadow:`0 0 5px ${slotMeta('avatar').color}66`}}/>
+          {/* Card — full background, no overlay */}
+          <div style={{height:'190px',borderRadius:'18px',overflow:'hidden',position:'relative',background:`linear-gradient(135deg,${bgClass.color}44 0%,#1a1030 100%)`}}>
+
+            {/* Background media */}
+            {(bgItem?.asset_path && bgItem.media_type !== 'video' && bgItem.media_type !== 'gif') ? (
+              <img src={bgItem.asset_path} alt="" style={{position:'absolute',inset:0,width:'100%',height:'100%',objectFit:'cover',pointerEvents:'none'}}/>
+            ) : (bgItem?.mediaUrl || bgItem?.asset_path) && (bgItem?.mediaType==='video' || bgItem?.media_type==='video') ? (
+              <video ref={videoRef} src={bgItem.mediaUrl||bgItem.asset_path} autoPlay loop playsInline muted={isMuted}
+                style={{position:'absolute',inset:0,width:'100%',height:'100%',objectFit:'cover',pointerEvents:'none'}}/>
+            ) : (bgItem?.mediaUrl || bgItem?.asset_path) && (bgItem?.mediaType==='gif' || bgItem?.media_type==='gif') ? (
+              <img src={bgItem.mediaUrl||bgItem.asset_path} alt="" style={{position:'absolute',inset:0,width:'100%',height:'100%',objectFit:'cover',pointerEvents:'none'}}/>
+            ) : bgItem?.animated ? (
+              <div style={{position:'absolute',inset:0,background:'linear-gradient(105deg,transparent 40%,rgba(251,191,36,0.08) 50%,transparent 60%)',backgroundSize:'200% 100%',animation:'shimmer 3s ease-in-out infinite',pointerEvents:'none'}}/>
+            ) : null}
+
+              {/* Bottom vignette — covers last ~60px so text is readable */}
+            <div style={{position:'absolute',bottom:0,left:0,right:0,height:'70px',background:'linear-gradient(to bottom,transparent,rgba(0,0,0,0.72))',pointerEvents:'none'}}/>
+
+            {/* Trophies — bottom right */}
+            <div style={{position:'absolute',bottom:'10px',right:'12px',display:'flex',alignItems:'center',gap:'4px',zIndex:2}}>
+              <span style={{fontSize:'13px',fontWeight:'800',color:T.orange,fontFamily:"'Exo 2',sans-serif",textShadow:'0 0 10px rgba(245,146,30,0.6)'}}>🏆 {trophies.toLocaleString()}</span>
             </div>
-          </div>
 
-          {/* ── Background slot (right-top, outside card) ── */}
-          <div style={{position:'absolute',top:'6px',right:'0',zIndex:3,display:'flex',alignItems:'center',gap:'2px'}}>
-            <div style={{display:'flex',alignItems:'center',flexShrink:0}}>
-              <div style={{width:'5px',height:'5px',borderRadius:'50%',background:slotMeta('profile_background').color,boxShadow:`0 0 5px ${slotMeta('profile_background').color}66`}}/>
-              <div style={{width:'10px',height:'1px',background:slotMeta('profile_background').color,opacity:0.5}}/>
-            </div>
-            <SlotChip
-              type="profile_background"
-              meta={slotMeta('profile_background')}
-              hasAlternatives={itemsByType('profile_background').filter(c=>c.owned).length > 1}
-              onClick={()=>setPickerType('profile_background')}
-              style={{maxWidth:'130px'}}
-            />
-          </div>
-
-          {/* ── Preview Card ── */}
-          <div id="profile-preview-card" style={{
-            width:'100%',position:'relative',zIndex:1,marginTop:'44px',
-            background: `linear-gradient(155deg,${bgClass.color}18,${T.bgCard})`,
-            border:`1px solid ${bgClass.border}`,
-            borderRadius:'22px',overflow:'hidden',
-            boxShadow:`0 0 40px ${bgClass.color}15, 0 12px 32px rgba(0,0,0,0.5)`,
-            padding:'24px 20px 20px'
-          }}>
-            {bgItem?.animated && (
-              <div style={{position:'absolute',inset:0,borderRadius:'22px',background:'linear-gradient(105deg,transparent 40%,rgba(251,191,36,0.06) 45%,rgba(251,191,36,0.14) 50%,rgba(251,191,36,0.06) 55%,transparent 60%)',backgroundSize:'200% 100%',animation:'shimmer 3s ease-in-out infinite',pointerEvents:'none'}}/>
-            )}
-
-            {/* ExtraPass badge */}
-            {(hasExtraPass || isUltra) && (
-              <div style={{position:'absolute',top:'12px',right:'12px',background:isUltra?'linear-gradient(135deg,#7c3aed,#4338ca)':`linear-gradient(135deg,${T.orange},${T.orangeD})`,borderRadius:'8px',padding:'3px 10px',fontSize:'10px',fontWeight:'800',color:'white',fontFamily:"'Exo 2',sans-serif",letterSpacing:'0.3px',zIndex:2}}>
-                {isUltra?'💫 Ultra':'⭐ ExtraPass'}
+            {/* Title — right of avatar upper 50%, inside card */}
+            <div onClick={()=>setPickerType('title')} style={{position:'absolute',bottom:'33px',left:'82px',right:'56px',cursor:'pointer',zIndex:2}}>
+              <div style={{fontSize:'15px',fontWeight:'900',fontFamily:"'Exo 2',sans-serif",lineHeight:1.1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',...getTitleDisplayStyle()}}>
+                {titleItem?.name || 'Игрок ExtraArena'}
               </div>
-            )}
+            </div>
 
-            <div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:'10px',position:'relative',zIndex:1}}>
-              {/* Avatar */}
-              <div id="profile-avatar-area" style={{width:'70px',height:'70px',borderRadius:'50%',background:`linear-gradient(135deg,${T.purple2},${T.purple3})`,border:`3px solid ${slotMeta('avatar').color}`,display:'flex',alignItems:'center',justifyContent:'center',overflow:'hidden',flexShrink:0,boxShadow:`0 0 20px ${slotMeta('avatar').color}44`,transition:'border-color 0.3s, box-shadow 0.3s'}}>
-                {photoUrl
-                  ? <img src={photoUrl} alt="" style={{width:'100%',height:'100%',objectFit:'cover'}}/>
-                  : <span style={{fontSize:'26px',fontWeight:'900',color:'white',fontFamily:"'Exo 2',sans-serif"}}>{displayName[0].toUpperCase()}</span>
+            {/* Nickname · Clan — right of avatar lower 50%, inside card */}
+            <div style={{position:'absolute',bottom:'16px',left:'82px',right:'56px',display:'flex',alignItems:'center',gap:'4px',zIndex:2,overflow:'hidden'}}>
+              <span style={{fontSize:'12px',fontWeight:'700',fontFamily:"'Exo 2',sans-serif",overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',...getCardNicknameStyle()}}>
+                {displayName}
+              </span>
+              <span style={{fontSize:'12px',color:'rgba(255,255,255,0.35)',flexShrink:0}}>·</span>
+              <span style={{fontSize:'11px',color:'rgba(255,255,255,0.5)',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>
+                {profile?.squad_id ? `Squad #${profile.squad_id}` : 'Не в клане'}
+              </span>
+            </div>
+
+            {/* Mute button */}
+            {bgItem && (bgItem.hasSound || bgItem.has_sound) && (
+              <button onClick={e=>{e.stopPropagation();setIsMuted(v=>!v);}} style={{position:'absolute',top:'8px',left:'10px',width:'26px',height:'26px',borderRadius:'8px',background:'rgba(0,0,0,0.45)',backdropFilter:'blur(4px)',border:'1px solid rgba(255,255,255,0.15)',display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',zIndex:5}}>
+                {isMuted
+                  ? <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M2 4.5H4L7 2v9L4 8.5H2V4.5z" fill="white" opacity="0.7"/><path d="M10 5L12 7M12 5L10 7" stroke="white" strokeWidth="1.4" strokeLinecap="round" opacity="0.7"/></svg>
+                  : <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M2 4.5H4L7 2v9L4 8.5H2V4.5z" fill="white"/><path d="M9 4.5c.8.6 1.3 1.5 1.3 2.5s-.5 1.9-1.3 2.5" stroke="white" strokeWidth="1.4" strokeLinecap="round"/></svg>
                 }
-              </div>
+              </button>
+            )}
 
-              <div style={{textAlign:'center'}}>
-                <div style={{fontSize:'18px',fontWeight:'900',color:T.white,fontFamily:"'Exo 2',sans-serif",overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{displayName}</div>
-
-                {/* Title */}
-                <div id="profile-title-area" style={{marginTop:'4px'}}>
-                  {(()=>{ const t = selectedItem('title'); const tm = t ? COSMETIC_CLASS_META[t.class] : COSMETIC_CLASS_META.starter; return <span style={{fontSize:'12px',color:tm.color,fontWeight:'600'}}>{t?.name||'Новичок арены'}</span>; })()}
-                </div>
+            {/* PlayerID chip — top right, copyable */}
+            {!hideId && (
+              <div onClick={()=>{ navigator.clipboard?.writeText(String(profile?.user_id)).catch(()=>{}); window.showToast('ID скопирован','success',1500); }} style={{position:'absolute',top:'10px',right:'12px',background:'rgba(0,0,0,0.35)',backdropFilter:'blur(4px)',borderRadius:'6px',padding:'2px 8px',fontSize:'10px',color:'rgba(255,255,255,0.5)',fontFamily:"'Exo 2',sans-serif",zIndex:2,cursor:'pointer'}}>
+                #{profile?.user_id}
               </div>
+            )}
+            {hideId && canHideId && (
+              <div style={{position:'absolute',top:'10px',right:'12px',background:'rgba(0,0,0,0.3)',borderRadius:'6px',padding:'2px 8px',fontSize:'10px',color:'rgba(255,255,255,0.25)',zIndex:2}}>🙈</div>
+            )}
 
-              {/* Stats row */}
-              <div style={{display:'flex',alignItems:'center',gap:'12px',marginTop:'2px',flexWrap:'wrap',justifyContent:'center'}}>
-                <div style={{display:'flex',alignItems:'center',gap:'4px',background:T.purple1,borderRadius:'8px',padding:'4px 8px'}}>
-                  <span style={{fontSize:'12px'}}>🏆</span>
-                  <span style={{fontSize:'11px',fontWeight:'800',color:T.orange,fontFamily:"'Exo 2',sans-serif"}}>{trophies.toLocaleString()}</span>
-                </div>
-                <div style={{display:'flex',alignItems:'center',gap:'4px',background:`${league.color}18`,borderRadius:'8px',padding:'4px 8px',border:`1px solid ${league.color}33`}}>
-                  <span style={{fontSize:'12px'}}>{league.emoji}</span>
-                  <span style={{fontSize:'11px',fontWeight:'700',color:league.color,fontFamily:"'Exo 2',sans-serif"}}>{league.name}</span>
-                </div>
+            {/* Avatar — bottom-left, inside card */}
+            <div
+              onClick={()=>setPickerType('avatar')}
+              style={{
+                position:'absolute',
+                bottom:'8px',
+                left:'14px',
+                width:'56px',height:'56px',
+                borderRadius:'13px',
+                background:`linear-gradient(135deg,${slotMeta('avatar').bg},${T.purple2})`,
+                border:`2px solid ${slotMeta('avatar').color}`,
+                boxShadow:`0 0 16px ${slotMeta('avatar').color}66, 0 4px 14px rgba(0,0,0,0.7)`,
+                overflow:'hidden',
+                zIndex:3,
+                cursor:'pointer',
+              }}
+            >
+              {equippedAvatarItem?.asset_path
+                ? <img src={equippedAvatarItem.asset_path} alt="" style={{width:'100%',height:'100%',objectFit:'cover'}}/>
+                : <span style={{width:'100%',height:'100%',display:'flex',alignItems:'center',justifyContent:'center',fontSize:'22px',fontWeight:'900',color:'white',fontFamily:"'Exo 2',sans-serif"}}>{displayName[0].toUpperCase()}</span>
+              }
+            </div>
+
+            {/* ExtraPass bar — bottom of card */}
+            {(hasExtraPass || isUltra) && (
+              <div style={{position:'absolute',bottom:0,left:0,right:0,height:'20px',display:'flex',alignItems:'center',justifyContent:'center',background:isUltra?'linear-gradient(90deg,rgba(124,58,237,0.88),rgba(67,56,202,0.88),rgba(96,165,250,0.65))':`linear-gradient(90deg,${T.orange}cc,${T.orangeD}cc)`,zIndex:2}}>
+                <span style={{fontSize:'9px',fontWeight:'800',color:'rgba(255,255,255,0.95)',fontFamily:"'Exo 2',sans-serif",letterSpacing:'0.3px'}}>
+                  {isUltra ? '💫 ExtraPass ULTRA' : '⭐ ExtraPass'}
+                </span>
               </div>
+            )}
+          </div>
+        </div>
+
+        {/* ═══════ Cosmetic slots ═══════ */}
+        <div style={{display:'flex',gap:'8px',flexWrap:'wrap',marginTop:'0px',width:'100%',maxWidth:'380px'}}>
+          <SlotChip type="avatar"
+            meta={slotMeta('avatar')}
+            hasAlternatives={itemsByType('avatar').filter(c=>c.owned).length > 1}
+            onClick={()=>setPickerType('avatar')}
+            style={{flex:1,minWidth:'90px'}}
+          />
+          <SlotChip type="profile_background"
+            meta={slotMeta('profile_background')}
+            hasAlternatives={itemsByType('profile_background').filter(c=>c.owned).length > 1}
+            onClick={()=>setPickerType('profile_background')}
+            style={{flex:1,minWidth:'90px'}}
+          />
+          <SlotChip type="title"
+            meta={slotMeta('title')}
+            hasAlternatives={itemsByType('title').filter(c=>c.owned).length > 1}
+            onClick={()=>setPickerType('title')}
+            style={{flex:1,minWidth:'90px'}}
+          />
+        </div>
+
+        <button
+          onClick={handleRandom}
+          style={{
+            width:'100%',maxWidth:'380px',marginTop:'8px',
+            padding:'10px',borderRadius:'13px 13px 0 0',
+            background:'linear-gradient(135deg,rgba(139,92,246,0.2),rgba(96,165,250,0.15))',
+            border:`1px solid ${T.purple2}`,
+            color:T.grey1,fontSize:'13px',fontWeight:'700',
+            fontFamily:"'Exo 2',sans-serif",
+            cursor:'pointer',
+            display:'flex',alignItems:'center',justifyContent:'center',gap:'8px',
+            transition:'all 0.15s',
+          }}
+        >
+          🎲 Случайный образ
+        </button>
+
+        <div style={{
+          width:'100%',maxWidth:'380px',
+          display:'flex',alignItems:'center',justifyContent:'space-between',
+          padding:'8px 12px',
+          background:'rgba(255,255,255,0.02)',
+          border:`1px solid ${T.purple1}`,
+          borderTop:'none',
+          borderRadius:'0 0 13px 13px',
+          marginTop:'-1px',
+        }}>
+          <span style={{fontSize:'11px',color: hasAnyNonStarter ? T.grey1 : T.grey3,fontFamily:"'Inter',sans-serif"}}>
+            Игнорировать стартовые предметы
+          </span>
+          <div
+            onClick={hasAnyNonStarter ? () => setRandomIgnoreStarters(v => !v) : undefined}
+            style={{
+              width:'36px',height:'20px',borderRadius:'10px',
+              background: randomIgnoreStarters && hasAnyNonStarter ? T.purple3 : T.purple2,
+              border:`1px solid ${randomIgnoreStarters && hasAnyNonStarter ? T.purple3 : T.purple1}`,
+              position:'relative',
+              cursor: hasAnyNonStarter ? 'pointer' : 'not-allowed',
+              opacity: hasAnyNonStarter ? 1 : 0.4,
+              transition:'background 0.2s',
+              flexShrink:0,
+            }}>
+            <div style={{
+              position:'absolute',top:'2px',
+              left: randomIgnoreStarters && hasAnyNonStarter ? '18px' : '2px',
+              width:'16px',height:'16px',borderRadius:'8px',
+              background:'white',transition:'left 0.2s',
+              boxShadow:'0 1px 3px rgba(0,0,0,0.3)'
+            }}/>
+          </div>
+        </div>
+
+        {/* ═══════ Nickname block ═══════ */}
+        <div style={{width:'100%',maxWidth:'380px',marginTop:'16px',background:T.bgCard,border:`1px solid ${T.purple1}`,borderRadius:'14px',padding:'14px'}}>
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'10px'}}>
+            <span style={{fontSize:'13px',fontWeight:'700',color:T.white,fontFamily:"'Exo 2',sans-serif"}}>✏️ Никнейм</span>
+            <span style={{fontSize:'11px',color:nickChanged?T.grey2:T.orange,fontWeight:'600'}}>
+              {nickChanged ? '500 💎' : 'Бесплатно'}
+            </span>
+          </div>
+          <div style={{display:'flex',gap:'8px'}}>
+            <input ref={nickRef}
+              defaultValue={profile?.custom_nickname || ''}
+              onKeyDown={e=>e.key==='Enter'&&handleNickSave()}
+              maxLength={20}
+              placeholder="Твой никнейм..."
+              style={{flex:1,background:T.bgDeep,border:`1px solid ${nickStatus==='err'?'#f87171':T.purple2}`,borderRadius:'9px',padding:'8px 11px',color:T.white,fontSize:'12px',fontFamily:"'Inter',sans-serif",outline:'none'}}/>
+            <button onClick={handleNickSave} disabled={nickStatus==='saving'}
+              style={{width:'38px',height:'38px',borderRadius:'9px',background:nickStatus==='ok'?'#166534':nickStatus==='err'?'#7f1d1d':T.purple2,border:`1px solid ${T.purple3}`,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',transition:'background 0.2s',opacity:nickStatus==='saving'?0.6:1}}>
+              {nickStatus==='saving' ? <div style={{width:'14px',height:'14px',border:'2px solid rgba(255,255,255,0.3)',borderTopColor:T.purpleLt,borderRadius:'50%',animation:'spin 0.7s linear infinite'}}/> :
+               nickStatus==='ok'     ? <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 7l4 4 6-7" stroke="#4ade80" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg> :
+               nickStatus==='err'    ? <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 2L12 12M12 2L2 12" stroke="#f87171" strokeWidth="1.8" strokeLinecap="round"/></svg> :
+               <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 14l3-1 8-8-2-2-8 8-1 3z" fill={T.purpleLt}/><path d="M10 3l2 2" stroke={T.purpleLt} strokeWidth="1.2"/></svg>}
+            </button>
+          </div>
+          {nickStatus==='err' && <div style={{fontSize:'11px',color:'#f87171',marginTop:'5px'}}>Не удалось сохранить. Недостаточно гемов?</div>}
+        </div>
+
+        {/* ═══════ Hide ID — always visible, toggle only for subscribers ═══════ */}
+        <div style={{width:'100%',maxWidth:'380px',marginTop:'10px',background:T.bgCard,border:`1px solid ${T.purple1}`,borderRadius:'14px',padding:'12px 14px'}}>
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'8px'}}>
+            <div style={{display:'flex',alignItems:'center',gap:'8px'}}>
+              <span style={{fontSize:'13px',fontWeight:'700',color:T.white,fontFamily:"'Exo 2',sans-serif"}}>🙈 Скрыть ID</span>
+              {!canHideId && (
+                <span style={{fontSize:'10px',color:T.orange,background:'rgba(245,146,30,0.12)',borderRadius:'5px',padding:'1px 7px',fontWeight:'600',fontFamily:"'Exo 2',sans-serif"}}>⭐ ExtraPass</span>
+              )}
+            </div>
+            {/* Toggle — clickable only with subscription */}
+            <div onClick={canHideId ? ()=>setHideId(v=>!v) : undefined}
+              style={{
+                width:'44px',height:'24px',borderRadius:'12px',
+                background: hideId&&canHideId ? T.orange : T.purple2,
+                border:`1px solid ${hideId&&canHideId ? T.orange : T.purple3}`,
+                position:'relative',
+                cursor: canHideId ? 'pointer' : 'not-allowed',
+                opacity: canHideId ? 1 : 0.4,
+                transition:'background 0.2s,border 0.2s',
+                flexShrink:0
+              }}>
+              <div style={{
+                position:'absolute',top:'2px',
+                left: hideId&&canHideId ? '22px' : '2px',
+                width:'20px',height:'20px',borderRadius:'10px',
+                background:'white',transition:'left 0.2s',
+                boxShadow:'0 1px 4px rgba(0,0,0,0.3)'
+              }}/>
             </div>
           </div>
-
-          {/* ── Title slot (below card, connector above) ── */}
-          <div style={{display:'flex',flexDirection:'column',alignItems:'center',marginTop:'6px',zIndex:3,position:'relative'}}>
-            <div style={{width:'1px',height:'10px',background:slotMeta('title').color,opacity:0.4}}/>
-            <div style={{width:'4px',height:'4px',borderRadius:'50%',background:slotMeta('title').color,boxShadow:`0 0 4px ${slotMeta('title').color}66`}}/>
-            <SlotChip
-              type="title"
-              meta={slotMeta('title')}
-              hasAlternatives={itemsByType('title').filter(c=>c.owned).length > 1}
-              onClick={()=>setPickerType('title')}
-              style={{
-                display:'inline-flex',marginTop:'4px',
-                maxWidth:'280px'
-              }}
-            />
+          {/* Disclaimer text */}
+          <div style={{fontSize:'10px',color:T.grey3,lineHeight:1.5,fontFamily:"'Inter',sans-serif"}}>
+            Мы скрываем ID только из твоей карточки игрока. В истории боёв и списке игроков он всё равно будет виден.
           </div>
-
         </div>
+
+        {/* ═══════ Glow toggle ═══════ */}
+        <div style={{width:'100%',maxWidth:'380px',marginTop:'10px',background:T.bgCard,border:`1px solid ${T.purple1}`,borderRadius:'14px',padding:'12px 14px'}}>
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'8px'}}>
+            <div style={{display:'flex',alignItems:'center',gap:'8px'}}>
+              <span style={{fontSize:'13px',fontWeight:'700',color:T.white,fontFamily:"'Exo 2',sans-serif"}}>✨ Отключить свечение</span>
+              {!canHideId && (
+                <span style={{fontSize:'10px',color:T.orange,background:'rgba(245,146,30,0.12)',borderRadius:'5px',padding:'1px 7px',fontWeight:'600',fontFamily:"'Exo 2',sans-serif"}}>⭐ ExtraPass</span>
+              )}
+            </div>
+            <div
+              onClick={canHideId ? toggleGlow : undefined}
+              style={{
+                width:'44px',height:'24px',borderRadius:'12px',
+                background: glowDisabled && canHideId ? T.orange : T.purple2,
+                border:`1px solid ${glowDisabled && canHideId ? T.orange : T.purple3}`,
+                position:'relative',
+                cursor: canHideId ? 'pointer' : 'not-allowed',
+                opacity: canHideId ? 1 : 0.4,
+                transition:'background 0.2s,border 0.2s',
+                flexShrink:0
+              }}>
+              <div style={{
+                position:'absolute',top:'2px',
+                left: glowDisabled && canHideId ? '22px' : '2px',
+                width:'20px',height:'20px',borderRadius:'10px',
+                background:'white',transition:'left 0.2s',
+                boxShadow:'0 1px 4px rgba(0,0,0,0.3)'
+              }}/>
+            </div>
+          </div>
+          <div style={{fontSize:'10px',color:T.grey3,lineHeight:1.5,fontFamily:"'Inter',sans-serif"}}>
+            Убирает золотое или переливающееся свечение с никнейма в интерфейсе.
+          </div>
+        </div>
+
+        {/* ═══════ Registration date ═══════ */}
+        {profile?.reg_date && (
+          <div style={{width:'100%',maxWidth:'380px',marginTop:'10px',textAlign:'center',fontSize:'11px',color:T.grey2,fontFamily:"'Inter',sans-serif"}}>
+            🗓 {formatMemberSince(profile.reg_date)}
+          </div>
+        )}
+
       </div>
 
       {/* Picker drawer */}
@@ -5346,6 +5889,32 @@ const ProfileScreen = ({profile, onClose}) => {
           onSelect={handleSelect}
           onClose={()=>setPickerType(null)}
         />
+      )}
+
+      {/* Nickname change warning modal */}
+      {showNickWarning && (
+        <div onClick={()=>setShowNickWarning(false)} style={{position:'absolute',inset:0,background:'rgba(5,2,12,0.92)',zIndex:50,display:'flex',alignItems:'center',justifyContent:'center',padding:'20px'}}>
+          <div onClick={e=>e.stopPropagation()} style={{width:'100%',maxWidth:'320px',background:T.bgDeep,border:`1px solid ${T.purple1}`,borderRadius:'20px',padding:'24px 20px 20px',animation:'popIn 0.2s',boxShadow:'0 20px 60px rgba(0,0,0,0.7)'}}>
+            <div style={{textAlign:'center',marginBottom:'16px'}}>
+              <div style={{fontSize:'28px',marginBottom:'8px'}}>⚠️</div>
+              <div style={{fontSize:'14px',fontWeight:'700',color:T.white,fontFamily:"'Exo 2',sans-serif",marginBottom:'8px'}}>Смена никнейма</div>
+              <div style={{fontSize:'12px',color:T.grey1,lineHeight:1.6}}>
+                Первая смена никнейма бесплатна.<br/>
+                Все последующие смены стоят 500 💎.
+              </div>
+            </div>
+            <div style={{display:'flex',gap:'8px'}}>
+              <button onClick={()=>setShowNickWarning(false)}
+                style={{flex:1,height:'40px',background:T.bgCard,border:`1px solid ${T.purple2}`,borderRadius:'10px',color:T.grey1,fontSize:'13px',fontWeight:'700',fontFamily:"'Exo 2',sans-serif",cursor:'pointer'}}>
+                Отмена
+              </button>
+              <button onClick={()=>{setShowNickWarning(false);doSaveNick();}}
+                style={{flex:1,height:'40px',background:`linear-gradient(135deg,${T.orange},${T.orangeD})`,border:'none',borderRadius:'10px',color:'white',fontSize:'13px',fontWeight:'800',fontFamily:"'Exo 2',sans-serif",cursor:'pointer'}}>
+                Сохранить
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -5954,9 +6523,9 @@ const BattlePassSheet = ({onClose, profile}) => {
                       <span style={{fontSize:'10px'}}>🔒</span><span>{icon}</span><span style={{fontFamily:"'Exo 2'",fontWeight:'600'}}>{r.reward_amount.toLocaleString()}</span>
                     </span>
                   );
-                };
+  };
 
-                return (
+  return (
                   <div key={i} onClick={canClaim ? (()=>handleClaim(tier.position)) : undefined} style={{
                     background: isUltra ? 'linear-gradient(135deg,#3d1a6e,#5b2daa)' : isClaimed ? `linear-gradient(135deg,${T.bgCard},#1a3a1a)` : T.bgCard,
                     border: isUltra ? '1px solid #FFD70055' : isClaimed ? '1px solid #2ecc7144' : canClaim ? `1px solid ${T.orange}55` : `1px solid ${T.purple1}`,

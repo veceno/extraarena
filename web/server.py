@@ -630,6 +630,9 @@ async def _process_battle_end(
     engine.rewards_granted = True
     logger.info("✅ Battle end flags set for match %s", match_id)
 
+    # ── Очистка match_game_modes после завершения матча ──
+    app.get("match_game_modes", {}).pop(match_id, None)
+
     # ═══════════ Economy tracking: battle rewards ═══════════
     eco_meta = {
         "match_id": match_id,
@@ -688,8 +691,8 @@ async def _process_battle_end(
 
         await db.save_battle_result(
             match_id=match_id,
-            winner_id=winner_id,
-            loser_id=loser_id,
+            winner_id=winner_id_int,
+            loser_id=loser_id if loser_id is None else int(loser_id),
             winner_score=0,
             loser_score=0,
             match_duration=match_duration_seconds,
@@ -1387,6 +1390,7 @@ async def check_and_run_bot(match_id: str, active_matches: dict[str, BattleEngin
                 # Удаляем матч из активных
                 if match_id in active_matches:
                     del active_matches[match_id]
+                app.get("match_game_modes", {}).pop(match_id, None)
                 
                 # Рассылаем событие завершения через Socket.IO (если есть подключенные клиенты)
                 try:
@@ -2011,12 +2015,22 @@ def create_web_app(
         # Убеждаемся, что title есть (по умолчанию "Игрок")
         title = record.get("title") or "Игрок"
         
+        # Получить asset_path надетой аватарки
+        equipped_avatar_row = await db.fetchrow("""
+            SELECT ci.asset_path
+            FROM user_equipped_cosmetics uec
+            JOIN cosmetic_items ci ON ci.id = uec.cosmetic_id
+            WHERE uec.user_id = $1 AND uec.item_type = 'avatar'
+        """, user_id)
+        equipped_avatar_url = equipped_avatar_row["asset_path"] if equipped_avatar_row else None
+
         payload: dict[str, Any] = {
             "user_id": record["user_id"],
             "username": record.get("username"),
             "first_name": first_name or record.get("first_name"),
             "photo_url": photo_url,
             "extra_pass": record.get("extra_pass", "inactive"),
+            "equipped_avatar_url": equipped_avatar_url,
             "trophies": record.get("trophies", 0),
             "max_trophies": record.get("max_trophies", 0),
             "league": record.get("league", 1),
@@ -2243,6 +2257,29 @@ def create_web_app(
             return web.json_response(
                 {"error": "internal_server_error", "message": str(e)}, status=500
             )
+
+    async def cosmetics_owned_handler(request: web.Request) -> web.Response:
+        """GET /api/cosmetics/owned — предметы пользователя + equipped."""
+        user_id = await require_user_id(request)
+        data = await db.get_user_cosmetics(user_id)
+        return web.json_response(data)
+
+    async def cosmetics_equip_handler(request: web.Request) -> web.Response:
+        """POST /api/cosmetics/equip — надеть предмет."""
+        user_id = await require_user_id(request)
+        try:
+            payload = await request.json()
+            cosmetic_id = int(payload.get("cosmetic_id", 0))
+            if not cosmetic_id:
+                return web.json_response({"error": "cosmetic_id_required"}, status=400)
+            result = await db.equip_cosmetic(user_id, cosmetic_id)
+            if not result["success"]:
+                return web.json_response(result, status=400)
+            return web.json_response(result)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error("equip_cosmetic error user=%s: %s", user_id, e)
+            return web.json_response({"error": "internal_error"}, status=500)
 
     async def promocode_use_handler(request: web.Request) -> web.Response:
         """Обработчик использования промокода."""
@@ -3566,6 +3603,148 @@ def create_web_app(
 
         await db.update_invite_status(invite_id, "cancelled")
         return web.json_response({"success": True, "status": "cancelled"})
+
+    # ========== Хэндлеры раздела "Друзья" (friend requests) ==========
+
+    async def friend_request_send_handler(request: web.Request) -> web.Response:
+        user_id = await require_user_id(request)
+
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid_json"}, status=400)
+
+        addressee_id = data.get("addressee_id")
+        try:
+            addressee_id = int(addressee_id)
+        except (TypeError, ValueError):
+            return web.json_response({"error": "invalid_addressee_id"}, status=400)
+
+        if addressee_id == user_id:
+            return web.json_response({"success": False, "error": "cannot_add_self"}, status=400)
+
+        target_exists = await db.fetchval("SELECT 1 FROM users WHERE user_id = $1", addressee_id)
+        if not target_exists:
+            return web.json_response({"success": False, "error": "user_not_found"}, status=404)
+
+        has_pending = await db.has_pending_friend_request_pair(user_id, addressee_id)
+        if has_pending:
+            return web.json_response({"success": False, "error": "request_already_exists"}, status=409)
+
+        result = await db.create_friend_request(user_id, addressee_id)
+        if not result.get("success"):
+            return web.json_response({"success": False, "error": result.get("error", "request_create_failed")}, status=500)
+
+        return web.json_response({"success": True, "request_id": result["id"]})
+
+    async def friend_requests_list_handler(request: web.Request) -> web.Response:
+        user_id = await require_user_id(request)
+
+        try:
+            incoming = await db.get_incoming_friend_requests(user_id)
+            outgoing = await db.get_outgoing_friend_requests(user_id)
+            return web.json_response({"incoming": incoming, "outgoing": outgoing})
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(
+                "Ошибка получения заявок в друзья для user_id %s: %s", user_id, e, exc_info=True
+            )
+            return web.json_response({"error": "internal_server_error", "message": str(e)}, status=500)
+
+    async def friend_request_respond_handler(request: web.Request) -> web.Response:
+        user_id = await require_user_id(request)
+
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid_json"}, status=400)
+
+        request_id = data.get("request_id")
+        action = data.get("action")
+        try:
+            request_id = int(request_id)
+        except (TypeError, ValueError):
+            return web.json_response({"error": "invalid_request_id"}, status=400)
+
+        if action not in ("accept", "decline"):
+            return web.json_response({"error": "invalid_action"}, status=400)
+
+        fr = await db.get_friend_request_by_id(request_id)
+        if not fr:
+            return web.json_response({"success": False, "error": "request_not_found"}, status=404)
+
+        if fr["addressee_id"] != user_id:
+            return web.json_response({"success": False, "error": "not_your_request"}, status=403)
+
+        if fr["status"] != "pending":
+            return web.json_response({"success": False, "error": "request_already_processed"}, status=409)
+
+        new_status = "accepted" if action == "accept" else "declined"
+        await db.update_friend_request_status(request_id, new_status)
+        return web.json_response({"success": True, "status": action})
+
+    async def friend_request_cancel_handler(request: web.Request) -> web.Response:
+        user_id = await require_user_id(request)
+
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid_json"}, status=400)
+
+        request_id = data.get("request_id")
+        try:
+            request_id = int(request_id)
+        except (TypeError, ValueError):
+            return web.json_response({"error": "invalid_request_id"}, status=400)
+
+        fr = await db.get_friend_request_by_id(request_id)
+        if not fr:
+            return web.json_response({"success": False, "error": "request_not_found"}, status=404)
+
+        if fr["requester_id"] != user_id:
+            return web.json_response({"success": False, "error": "not_your_request"}, status=403)
+
+        if fr["status"] != "pending":
+            return web.json_response({"success": False, "error": "request_not_pending"}, status=409)
+
+        await db.update_friend_request_status(request_id, "cancelled")
+        return web.json_response({"success": True})
+
+    async def friend_list_handler(request: web.Request) -> web.Response:
+        user_id = await require_user_id(request)
+
+        try:
+            friends = await db.get_friend_list(user_id)
+            return web.json_response({"friends": friends})
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(
+                "Ошибка получения списка друзей для user_id %s: %s", user_id, e, exc_info=True
+            )
+            return web.json_response({"error": "internal_server_error", "message": str(e)}, status=500)
+
+    async def friend_remove_handler(request: web.Request) -> web.Response:
+        user_id = await require_user_id(request)
+
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid_json"}, status=400)
+
+        friend_id = data.get("friend_id")
+        try:
+            friend_id = int(friend_id)
+        except (TypeError, ValueError):
+            return web.json_response({"error": "invalid_friend_id"}, status=400)
+
+        if friend_id == user_id:
+            return web.json_response({"success": False, "error": "cannot_remove_self"}, status=400)
+
+        removed = await db.remove_friendship(user_id, friend_id)
+        if not removed:
+            return web.json_response({"success": False, "error": "friendship_not_found"}, status=404)
+
+        return web.json_response({"success": True})
 
     # ========== Хэндлеры для работы с кейсами ==========
     
@@ -5250,6 +5429,8 @@ def create_web_app(
     app.router.add_get("/api/settings", settings_handler)
     app.router.add_post("/api/settings", settings_handler)
     app.router.add_post("/api/change-nickname", change_nickname_handler)
+    app.router.add_get("/api/cosmetics/owned",  cosmetics_owned_handler)
+    app.router.add_post("/api/cosmetics/equip", cosmetics_equip_handler)
     app.router.add_post("/api/promocode/use", promocode_use_handler)
     app.router.add_post("/api/admin/promocodes/create", promocode_create_handler)
     app.router.add_get("/api/admin/promocodes/list", promocode_list_handler)
@@ -6617,6 +6798,12 @@ def create_web_app(
     app.router.add_post("/api/friends/invite/respond", friend_invite_respond_handler)
     app.router.add_get("/api/friends/invite/pending", friend_invite_pending_handler)
     app.router.add_post("/api/friends/invite/cancel", friend_invite_cancel_handler)
+    app.router.add_post("/api/friends/request", friend_request_send_handler)
+    app.router.add_get("/api/friends/requests", friend_requests_list_handler)
+    app.router.add_post("/api/friends/request/respond", friend_request_respond_handler)
+    app.router.add_post("/api/friends/request/cancel", friend_request_cancel_handler)
+    app.router.add_get("/api/friends/list", friend_list_handler)
+    app.router.add_post("/api/friends/remove", friend_remove_handler)
     async def payment_config_handler(_: web.Request) -> web.Response:
         """Отдать конфигурацию платежей (курсы и коэффициенты)."""
         return web.json_response({
@@ -7563,10 +7750,9 @@ def create_web_app(
                 rotation_date = rotation_date.date()
 
             if isinstance(raw_cards, str):
-                import json as _json
-                raw_cards = _json.loads(raw_cards)
+                raw_cards = _stdlib_json.loads(raw_cards)
             if isinstance(purchased_raw, str):
-                purchased_raw = _json.loads(purchased_raw)
+                purchased_raw = _stdlib_json.loads(purchased_raw)
             purchased_today = purchased_raw if isinstance(purchased_raw, list) else []
 
             if rotation_date != today or not raw_cards or not isinstance(raw_cards, list) or len(raw_cards) == 0:
@@ -7581,10 +7767,9 @@ def create_web_app(
                 ]
                 raw_cards = [c for c in raw_cards if c is not None]
 
-                import json as _json
                 await db.update_user_settings(
                     user_id,
-                    particles_rotation_cards=_json.dumps(raw_cards),
+                    particles_rotation_cards=_stdlib_json.dumps(raw_cards),
                     particles_rotation_date=today,
                     particles_purchased_today="[]",
                 )
@@ -7643,15 +7828,13 @@ def create_web_app(
             rotation_date = settings_record.get("particles_rotation_date") if settings_record else None
             purchased_raw = settings_record.get("particles_purchased_today") if settings_record else None
 
-            import json as _json
             if isinstance(purchased_raw, str):
-                purchased_raw = _json.loads(purchased_raw)
+                purchased_raw = _stdlib_json.loads(purchased_raw)
 
             if isinstance(rotation_date, datetime):
                 rotation_date = rotation_date.date()  # type: ignore[assignment]
             if isinstance(raw_cards, str):
-                import json as _json
-                raw_cards = _json.loads(raw_cards)
+                raw_cards = _stdlib_json.loads(raw_cards)
 
             if rotation_date != date.today() or not raw_cards or card_id not in raw_cards:
                 return web.json_response({"error": "card_not_in_rotation"}, status=400)
@@ -7701,10 +7884,10 @@ def create_web_app(
             )
             updated_particles = particles_row["particles"] if particles_row else particles_amount
 
-            purchased = _json.loads(purchased_raw) if isinstance(purchased_raw, str) else (purchased_raw or [])
+            purchased = _stdlib_json.loads(purchased_raw) if isinstance(purchased_raw, str) else (purchased_raw or [])
             if card_id not in purchased:
                 purchased.append(card_id)
-            await db.update_user_settings(user_id, particles_purchased_today=_json.dumps(purchased))
+            await db.update_user_settings(user_id, particles_purchased_today=_stdlib_json.dumps(purchased))
 
             return web.json_response({
                 "success": True,
