@@ -4503,12 +4503,15 @@ const MailScreen = ({onClose, userId}) => {
   const [selected,  setSelected]  = React.useState(null);
   const [filterCat, setFilterCat] = React.useState(null);
 
+  const initData = window.Telegram?.WebApp?.initData || '';
+
   const loadMail = React.useCallback(async () => {
     setLoading(true);
     try {
       let url = '/api/mail';
       const p = new URLSearchParams();
-      if (userId) p.set('user_id', userId);
+      if (initData) p.set('_auth', initData);
+      else if (userId) p.set('user_id', userId);
       if (filterCat) p.set('category', filterCat);
       p.set('limit', '50');
       url += '?' + p.toString();
@@ -4518,7 +4521,7 @@ const MailScreen = ({onClose, userId}) => {
       setMails(data.mail || []);
     } catch(e) { setMails([]); }
     setLoading(false);
-  }, [userId, filterCat]);
+  }, [userId, filterCat, initData]);
 
   React.useEffect(() => { loadMail(); }, [loadMail]);
 
@@ -4526,7 +4529,8 @@ const MailScreen = ({onClose, userId}) => {
     if (mail.is_read) return;
     try {
       let url = '/api/mail/read';
-      if (userId) url += '?user_id=' + userId;
+      if (initData) url += '?_auth=' + encodeURIComponent(initData);
+      else if (userId) url += '?user_id=' + userId;
       await fetch(url, {
         method: 'POST',
         headers: {'Content-Type':'application/json'},
@@ -5989,7 +5993,7 @@ const App = () => {
   const onTouchEnd = (e) => {
     if(hasOverlay) return;
     const dx = (e.changedTouches[0]?.clientX||0) - swipeStartX.current;
-    if(Math.abs(dx)>50){ if(dx<0)setNavTab(t=>(t+1)%NAV_ITEMS.length); else setNavTab(t=>(t-1+NAV_ITEMS.length)%NAV_ITEMS.length); }
+    if(Math.abs(dx)>100){ if(dx<0)setNavTab(t=>(t+1)%NAV_ITEMS.length); else setNavTab(t=>(t-1+NAV_ITEMS.length)%NAV_ITEMS.length); }
   };
 
   React.useEffect(()=>{
