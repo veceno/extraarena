@@ -5,10 +5,11 @@ import base64
 import hashlib
 import hmac
 import json as _stdlib_json
-import math
 import logging
+import math
 import os
 import random
+import string
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -16,6 +17,8 @@ from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import parse_qsl
 
+import bcrypt
+import jwt as pyjwt
 from aiohttp import web
 import socketio
 
@@ -30,6 +33,8 @@ from infrastructure.matchmaking import Matchmaker
 from infrastructure.case_system import roll_tier_upgrade, process_case_opening, generate_case_rewards
 from infrastructure.payments_logic import process_successful_payment
 from infrastructure.shop_config import SHOP_PRICES, GEM_PACKAGES, PARTICLES_COSTS
+from web.extraid_handlers import register_handlers as register_extraid_handlers
+from infrastructure.extraid_database import ExtraIDDatabase
 
 WEBAPP_DIR = Path(__file__).resolve().parents[1] / "webapp"
 DESIGN_ASSETS_DIR = Path(__file__).resolve().parents[1] / "DesignAssets"
@@ -1129,6 +1134,88 @@ AUTH_CLOCK_SKEW_SECONDS = 300
 MATCH_SESSIONS: dict[str, dict[int, set[str]]] = {}
 MATCH_LOCKS: dict[str, asyncio.Lock] = {}
 
+# Кеш IP-геолокации: {ip: (country, expiry_timestamp)}
+_ip_geo_cache: dict[str, tuple[str, float]] = {}
+
+
+def _display_id_generator(check_exists_fn) -> str:
+    while True:
+        digits = "".join(random.choices(string.digits, k=4))
+        letters = "".join(random.choices(string.ascii_uppercase, k=3))
+        display_id = f"{digits}-{letters}"
+        if not check_exists_fn(display_id):
+            return display_id
+
+
+def _mask_email(email: str) -> str:
+    if "@" not in email:
+        return email
+    local, domain = email.split("@", 1)
+    if len(local) <= 1:
+        return f"{local[0]}***@{domain}"
+    return f"{local[0]}***@{domain}"
+
+
+def _nickname_valid(nick: str) -> bool:
+    import re
+    return bool(re.fullmatch(r"[a-zA-Z0-9_-]{3,20}", nick))
+
+
+async def _get_ip_country(ip: str, settings) -> str | None:
+    import logging
+    logger = logging.getLogger(__name__)
+    now = time.time()
+    cached = _ip_geo_cache.get(ip)
+    if cached and cached[1] > now:
+        return cached[0]
+
+    api_key = settings.ip_geo_api_key
+    try:
+        if api_key:
+            url = f"http://pro.ip-api.com/json/{ip}?key={api_key}&fields=countryCode"
+        else:
+            url = f"http://ip-api.com/json/{ip}?fields=countryCode"
+        timeout = aiohttp.ClientTimeout(total=3)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(url) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    country = data.get("countryCode")
+                    if country:
+                        _ip_geo_cache[ip] = (country, now + 3600)
+                        return country
+    except Exception:
+        logger.debug("IP geo lookup failed", exc_info=True)
+    return None
+
+
+async def _verify_jwt_token_async(token: str, db, settings) -> tuple[int, str] | None:
+    try:
+        payload = pyjwt.decode(
+            token, settings.jwt_secret, algorithms=["HS256"],
+            options={"require": ["user_id", "session_id", "exp", "iat"]}
+        )
+    except (pyjwt.ExpiredSignatureError, pyjwt.InvalidTokenError, pyjwt.DecodeError):
+        return None
+
+    session_id = payload.get("session_id")
+    if not session_id:
+        return None
+
+    try:
+        session_uuid = uuid.UUID(session_id)
+    except (ValueError, TypeError):
+        return None
+
+    session = await db.verify_session(session_uuid, token)
+    if not session:
+        return None
+    return (int(payload["user_id"]), session_id)
+
+
+def _hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
 
 def _is_dev_local(request) -> bool:
     settings = get_settings()
@@ -1155,9 +1242,16 @@ def _validate_auth_date(data_dict: dict[str, str]) -> bool:
 
 
 async def require_user_id(request) -> int:
-    init_data = request.rel_url.query.get("_auth")
-    if init_data:
-        verified_data = _verify_init_data(init_data, request.app["bot_token"])
+    auth_param = request.rel_url.query.get("_auth")
+    if auth_param:
+        # 1. Попытаться верифицировать как JWT
+        settings = get_settings()
+        jwt_result = await _verify_jwt_token_async(auth_param, request.app["extraid_db"], settings)
+        if jwt_result:
+            return jwt_result[0]
+
+        # 2. Попытаться верифицировать как Telegram initData
+        verified_data = _verify_init_data(auth_param, request.app["bot_token"])
         if verified_data:
             if not _validate_auth_date(verified_data):
                 raise web.HTTPUnauthorized(
@@ -1170,8 +1264,8 @@ async def require_user_id(request) -> int:
                 return uid
 
         if _is_dev_local(request):
-            if init_data.isdigit():
-                return int(init_data)
+            if auth_param.isdigit():
+                return int(auth_param)
             raise web.HTTPUnauthorized(
                 reason="invalid_init_data",
                 text='{"error":"invalid_auth"}',
@@ -1198,9 +1292,16 @@ async def require_user_id(request) -> int:
     )
 
 
-def require_user_id_from_payload(request, payload: dict) -> int:
+async def require_user_id_from_payload(request, payload: dict) -> int:
     auth_token = payload.get("_auth") or payload.get("auth")
     if auth_token:
+        # 1. Попытаться верифицировать как JWT
+        settings = get_settings()
+        jwt_result = await _verify_jwt_token_async(str(auth_token), request.app["extraid_db"], settings)
+        if jwt_result:
+            return jwt_result[0]
+
+        # 2. Попытаться верифицировать как Telegram initData
         verified_data = _verify_init_data(str(auth_token), request.app["bot_token"])
         if verified_data:
             if not _validate_auth_date(verified_data):
@@ -1824,6 +1925,7 @@ async def trigger_bot_move(match_id: str) -> None:
 def create_web_app(
     db: Database,
     bot_token: str,
+    extraid_db: ExtraIDDatabase | None = None,
     payment_service=None,
     webapp_url: str | None = None,
     extra_shop_url: str | None = None,
@@ -1838,6 +1940,7 @@ def create_web_app(
 
     app = web.Application()
     app["db"] = db
+    app["extraid_db"] = extraid_db
     app["bot_token"] = bot_token
     app["payment_service"] = payment_service
     app["webapp_url"] = webapp_url or "https://t.me/your_bot"
@@ -2053,6 +2156,7 @@ def create_web_app(
             "selected_hero_id": record.get("selected_hero_id", 0),
             "custom_nickname": record.get("custom_nickname"),
             "nickname_changed": record.get("nickname_changed", False),
+            "extra_account_id": str(record.get("extra_account_id")) if record.get("extra_account_id") else None,
             "settings": settings_data,
             "should_show_welcome": welcome_should_show,  # Флаг для фронтенда
         }
@@ -4048,6 +4152,8 @@ def create_web_app(
         p2_name, p2_avatar_url = ("Бот" if is_bot else "Игрок 2"), None
         p1_trophies, p2_trophies = 0, 0
         p1_clan, p2_clan = "", ""
+        p1_title, p1_title_class = "", ""
+        p2_title, p2_title_class = "", ""
         
         try:
             # Загружаем профиль первого игрока
@@ -4063,8 +4169,9 @@ def create_web_app(
                         p1_profile.get("username") or
                         f"Игрок {p1_id_int}"
                     )
-                    # Для аватара проверяем img (основное поле), затем fallback на старые поля
+                    # Для аватара: ПРИОРИТЕТ — equipped cosmetic → Telegram img → fallback
                     p1_avatar_url = (
+                        p1_profile.get("equipped_avatar_url") or 
                         p1_profile.get("img") or 
                         p1_profile.get("photo_url") or 
                         p1_profile.get("avatar_file_id") or 
@@ -4072,6 +4179,23 @@ def create_web_app(
                     )
                     p1_trophies = int(p1_profile.get("trophies", 0) or 0)
                     p1_clan = p1_profile.get("clan") or p1_profile.get("clan_name") or ""
+                    
+                    # Титул: equipped cosmetic → legacy profiles.title → дефолт
+                    p1_title = ""
+                    p1_title_class = ""
+                    try:
+                        eq_title = await db_instance.get_equipped_title(p1_id_int)
+                        if eq_title:
+                            p1_title = eq_title.get("name", "")
+                            p1_title_class = eq_title.get("class", "starter")
+                    except Exception:
+                        pass
+                    if not p1_title:
+                        legacy_title = p1_profile.get("title", "").strip()
+                        if legacy_title and legacy_title != "Игрок" and legacy_title != "Новичок":
+                            p1_title = legacy_title
+                            p1_title_class = "starter"
+                    print(f"✅ P1 title: '{p1_title}' (class: {p1_title_class})")
                     print(f"✅ P1 name resolved: {p1_name}, avatar: {p1_avatar_url}, trophies: {p1_trophies}, clan: {p1_clan}")
             
             # Загружаем профиль второго игрока
@@ -4108,6 +4232,7 @@ def create_web_app(
                         # Берем аватар из БД только если bot_info не предоставил аватар
                         if not p2_avatar_url:
                             p2_avatar_url = (
+                                p2_profile.get("equipped_avatar_url") or 
                                 p2_profile.get("img") or 
                                 p2_profile.get("photo_url") or 
                                 p2_profile.get("avatar_file_id") or 
@@ -4148,6 +4273,7 @@ def create_web_app(
                             f"Игрок {p2_id_int}"
                         )
                         p2_avatar_url = (
+                            p2_profile.get("equipped_avatar_url") or 
                             p2_profile.get("img") or 
                             p2_profile.get("photo_url") or 
                             p2_profile.get("avatar_file_id") or 
@@ -4158,6 +4284,27 @@ def create_web_app(
                         print(f"✅ P2 name resolved: {p2_name}, avatar: {p2_avatar_url}")
                 
             logger.info("Battle init: loaded player names p1=%s, p2=%s", p1_name, p2_name)
+            
+            # Загружаем титул P2 (общий путь для бота и не-бота)
+            if p2_id_int > 0:
+                try:
+                    eq_title_p2 = await db_instance.get_equipped_title(p2_id_int)
+                    if eq_title_p2:
+                        p2_title = eq_title_p2.get("name", "")
+                        p2_title_class = eq_title_p2.get("class", "starter")
+                except Exception:
+                    pass
+                if not p2_title and not is_bot:
+                    p2_profile_title = await db_instance.get_user_profile(p2_id_int)
+                    if p2_profile_title:
+                        legacy_title = p2_profile_title.get("title", "").strip()
+                        if legacy_title and legacy_title != "Игрок" and legacy_title != "Новичок":
+                            p2_title = legacy_title
+                            p2_title_class = "starter"
+                elif not p2_title and is_bot:
+                    p2_title = "Бот-чемпион"
+                    p2_title_class = "starter"
+                print(f"✅ P2 title: '{p2_title}' (class: {p2_title_class})")
         except Exception as profile_exc:
             logger.warning("Battle init: failed to load player profiles: %s", profile_exc)
             print(f"❌ ERROR loading profiles: {profile_exc}")
@@ -4252,6 +4399,8 @@ def create_web_app(
                     "is_bot": False,
                     "trophies": p1_trophies,
                     "clan": p1_clan,
+                    "title": p1_title,
+                    "rarity": p1_title_class,
                 },
                 p2_data={
                     "user_id": p2_id_int,
@@ -4262,6 +4411,8 @@ def create_web_app(
                     "trophies": p2_trophies,
                     "clan": p2_clan,
                     "difficulty": bot_difficulty,
+                    "title": p2_title,
+                    "rarity": p2_title_class,
                 },
             )
             
@@ -4297,7 +4448,7 @@ def create_web_app(
         except Exception:
             return web.json_response({"error": "invalid_json"}, status=400)
 
-        user_id = require_user_id_from_payload(request, data)
+        user_id = await require_user_id_from_payload(request, data)
         trophies = data.get("trophies")
         user_avg_level = data.get("user_avg_level") or data.get("avg_level") or 1
         selected_deck_id = data.get("selected_deck_id") or data.get("deck_id")
@@ -4410,7 +4561,7 @@ def create_web_app(
         except Exception:
             return web.json_response({"error": "invalid_json"}, status=400)
 
-        user_id = require_user_id_from_payload(request, data)
+        user_id = await require_user_id_from_payload(request, data)
         difficulty = data.get("difficulty", "medium")
         selected_deck_id = data.get("selected_deck_id") or data.get("deck_id")
         game_mode = data.get("game_mode") or data.get("mode") or "classic"
@@ -4917,7 +5068,7 @@ def create_web_app(
         # Поддержка: card_id, card_id_from_hand, hand_index
         raw_card_id = payload.get("card_id") or payload.get("card_id_from_hand") or payload.get("hand_index")
         board_position = payload.get("target_position") or payload.get("board_position") or payload.get("position") or 0
-        user_id_int = require_user_id_from_payload(request, payload)
+        user_id_int = await require_user_id_from_payload(request, payload)
         
         # Параметры для зелий / battlecry
         target_id = payload.get("target_id")
@@ -5041,7 +5192,7 @@ def create_web_app(
         attacker_id = payload.get("attacker_id")
         target_id = payload.get("target_id")
         target_is_hero = bool(payload.get("target_is_hero"))
-        user_id_int = require_user_id_from_payload(request, payload)
+        user_id_int = await require_user_id_from_payload(request, payload)
 
         if not match_id or attacker_id is None or user_id_int is None:
             return web.json_response({"error": "invalid_parameters"}, status=400)
@@ -5157,13 +5308,11 @@ def create_web_app(
         except Exception:
             return web.json_response({"error": "invalid_json"}, status=400)
 
-        # Получаем match_id из URL-параметра
         match_id = request.match_info.get("match_id")
         if not match_id:
             return web.json_response({"error": "match_id_required"}, status=400)
 
-        # Получаем user_id из payload
-        user_id_int = require_user_id_from_payload(request, payload)
+        user_id_int = await require_user_id_from_payload(request, payload)
         if user_id_int is None:
             return web.json_response({"error": "user_id_required"}, status=400)
 
@@ -5176,22 +5325,18 @@ def create_web_app(
         lock = _get_match_lock(match_id)
         async with lock:
             engine.mark_surrender(user_id_int)
-        
-        # Получаем состояние сдавшегося игрока
+
         player_state = engine.get_player_state(user_id_int)
-        
-        # Проверяем, что трофеи ещё не были списаны
+
         if player_state.surrender_processed:
             logger.warning("Surrender already processed for player %s", user_id_int)
             return web.json_response({"error": "surrender_already_processed"}, status=400)
-        
-        # Получаем БД
+
         db = request.app.get("db")
         if not db:
             logger.error("Database not available")
             return web.json_response({"error": "database_unavailable"}, status=500)
-        
-        # Получаем текущие трофеи из БД
+
         try:
             user_info = await db.get_user_info(user_id_int)
             current_trophies = user_info.get("trophies", 0) if user_info else 0
@@ -5199,7 +5344,6 @@ def create_web_app(
             logger.error("Failed to get user trophies: %s", exc)
             current_trophies = 0
 
-        # HTTP handler: проверяем режим — training/friendly без штрафа
         game_mode = _resolve_match_game_mode(request.app, match_id, engine)
         if game_mode in ("training", "friendly"):
             logger.info("🤝 Surrender (HTTP) in %s mode — no trophy deduction for %s", game_mode, user_id_int)
@@ -5208,38 +5352,30 @@ def create_web_app(
             if game_over_result.get("game_over"):
                 await _process_battle_end(request.app, match_id, engine, game_over_result.get("winner_id"))
             return web.json_response({"success": True, "surrender_processed": True, "trophy_penalty": 0, "new_trophies": current_trophies, "game_over": game_over_result.get("game_over")})
+
         penalty_delta, tier_name, tier_data = calculate_trophy_delta(
             current_trophies,
             is_winner=False,
             status=ReplacementStatus.SURRENDERED
         )
-        
-        # Списываем трофеи немедленно
+
         try:
             result = await db.update_user_trophies(user_id_int, penalty_delta)
             new_trophies = result.get("trophies", 0)
-            
             logger.warning(
-                "[SURRENDER_IMMEDIATE] Player %s lost %d trophies instantly (%d -> %d). Bot takeover initiated.",
+                "[SURRENDER_IMMEDIATE] Player %s lost %d trophies instantly (%d -> %d).",
                 user_id_int, abs(penalty_delta), current_trophies, new_trophies
             )
-            
-            # Устанавливаем флаг, чтобы избежать двойного списания в конце боя
             player_state.surrender_processed = True
-            
         except Exception as exc:
             logger.error("Failed to update trophies for surrendered player: %s", exc)
             return web.json_response({"error": "trophy_update_failed"}, status=500)
-        
-        # СРАЗУ вызываем проверку окончания игры (согласно правилам)
+
         game_over_result = engine.check_game_over()
-        
-        # Если матч завершился, обрабатываем финал
+
         if game_over_result.get("game_over"):
             winner_id = game_over_result.get("winner_id")
             await _process_battle_end(request.app, match_id, engine, winner_id)
-            
-            # Уведомляем через Socket.IO если доступно
             sio_inst = request.app.get("socketio")
             if sio_inst:
                 await sio_inst.emit("game_over", {
@@ -5250,11 +5386,9 @@ def create_web_app(
                     "reason": "surrender"
                 }, room=match_id)
 
-        # Запускаем бота, если сейчас ход сдавшегося игрока и игра НЕ закончена
         if not game_over_result.get("game_over") and engine.current_player_id == user_id_int:
             await check_and_run_bot(match_id, ACTIVE_MATCHES)
-        
-        # Получаем текущее состояние
+
         current_state = engine.get_full_state(viewer_id=user_id_int)
 
         return web.json_response({
@@ -5267,9 +5401,7 @@ def create_web_app(
         })
 
     async def battle_turn_end_handler(request: web.Request) -> web.Response:
-        """
-        Завершение хода игрока через core/actions.EndTurnAction.
-        """
+        """Завершение хода игрока через core/actions.EndTurnAction."""
         try:
             payload = await request.json()
         except Exception:
@@ -5278,8 +5410,8 @@ def create_web_app(
         match_id = payload.get("match_id") or payload.get("id")
         if not match_id:
             return web.json_response({"error": "match_id_required"}, status=400)
-        
-        user_id_int = require_user_id_from_payload(request, payload)
+
+        user_id_int = await require_user_id_from_payload(request, payload)
         if user_id_int is None:
             return web.json_response({"error": "user_id_required"}, status=400)
 
@@ -5296,28 +5428,22 @@ def create_web_app(
         async with lock:
             try:
                 try:
-                    engine.record_analytics_action(user_id_int, {
-                        "type": "end_turn",
-                    })
+                    engine.record_analytics_action(user_id_int, {"type": "end_turn"})
                 except Exception:
                     pass
-
                 result = engine.end_turn(user_id_int)
                 logger.info("turn_end_handler: success, current_player=%s", engine.get_current_player_id())
             except Exception as exc:
                 logger.warning("Ошибка завершения хода для матча %s: %s", match_id, exc, exc_info=True)
                 return web.json_response({"error": "turn_end_failed", "details": str(exc)}, status=400)
 
-        # Запускаем бота, если ход перешел к нему
         try:
             await check_and_run_bot(match_id, ACTIVE_MATCHES)
         except Exception as exc:
             logger.warning("Не удалось запустить проверку бота: %s", exc, exc_info=True)
 
-        # Получаем состояние с legal_actions для нового текущего игрока
         state = engine.get_full_state(viewer_id=user_id_int)
-        
-        # Рассылаем обновление всем через Socket.IO
+
         sio_inst = request.app.get("socketio")
         if sio_inst:
             await sio_inst.emit("turn_end", {
@@ -5330,10 +5456,7 @@ def create_web_app(
         return web.json_response({"match_id": match_id, "state": state})
 
     async def battle_preview_handler(request: web.Request) -> web.Response:
-        """
-        Предпросмотр урона для действия без его выполнения.
-        Возвращает изменения HP объектов.
-        """
+        """Предпросмотр урона для действия без его выполнения."""
         try:
             payload = await request.json()
         except Exception:
@@ -5341,11 +5464,11 @@ def create_web_app(
 
         match_id = payload.get("match_id")
         action_data = payload.get("action")
-        
+
         if not match_id or not action_data:
             return web.json_response({"error": "match_id_and_action_required"}, status=400)
-        
-        user_id_int = require_user_id_from_payload(request, payload)
+
+        user_id_int = await require_user_id_from_payload(request, payload)
         if user_id_int is None:
             return web.json_response({"error": "user_id_required"}, status=400)
 
@@ -5356,12 +5479,9 @@ def create_web_app(
         logger = logging.getLogger(__name__)
         logger.info("preview_handler: match=%s user=%s action=%s", match_id, user_id_int, action_data)
 
-        # Парсим действие из payload
         try:
             from core.actions import PlayCardAction, AttackAction, EndTurnAction
-            
             action_type = action_data.get("type")
-            
             if action_type == "play_card":
                 action = PlayCardAction(
                     hand_index=action_data.get("hand_index", 0),
@@ -5378,18 +5498,13 @@ def create_web_app(
                 action = EndTurnAction()
             else:
                 return web.json_response({"error": "unknown_action_type"}, status=400)
-            
         except Exception as exc:
             logger.warning("Ошибка парсинга действия: %s", exc, exc_info=True)
             return web.json_response({"error": "invalid_action_format", "details": str(exc)}, status=400)
 
-        # Получаем предпросмотр
         try:
             preview_delta = engine.get_preview_delta(action)
-            return web.json_response({
-                "success": True,
-                "preview_data": preview_delta
-            })
+            return web.json_response({"success": True, "preview_data": preview_delta})
         except Exception as exc:
             logger.warning("Ошибка получения предпросмотра: %s", exc, exc_info=True)
             return web.json_response({"error": "preview_failed", "details": str(exc)}, status=400)
@@ -8476,7 +8591,7 @@ def create_web_app(
         except Exception:
             body = None
         if body is not None:
-            user_id = require_user_id_from_payload(request, body)
+            user_id = await require_user_id_from_payload(request, body)
         else:
             user_id = await require_user_id(request)
         try:
@@ -9184,6 +9299,21 @@ def create_web_app(
     app.router.add_post("/api/payments/checkout/public/start", checkout_public_start_handler)
     app.router.add_post("/api/payments/checkout/start", checkout_start_handler)
     app.router.add_post("/api/payments/checkout/create", checkout_create_handler)
+
+    # Register ExtraID handlers
+    register_extraid_handlers(
+        app,
+        extraid_db,
+        _verify_init_data,
+        _validate_auth_date,
+        _extract_user_id_from_init_data,
+        _verify_jwt_token_async,
+        _display_id_generator,
+        _mask_email,
+        _nickname_valid,
+        _get_ip_country,
+        require_user_id,
+    )
 
     app.router.add_get("/{path:.*}", static_handler)
 

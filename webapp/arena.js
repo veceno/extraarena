@@ -457,26 +457,40 @@ function renderBattleState(state) {
     // Определяем по player_ids
     const p1 = {
       user_id: state.player_ids ? state.player_ids[0] : null,
-      // КРИТИЧНО: Явная проверка на undefined/null, чтобы 0 HP не превращался в 30
       hp: (state.player1_hp !== undefined && state.player1_hp !== null) ? state.player1_hp : 30,
+      max_hp: (state.player1_max_hp !== undefined && state.player1_max_hp !== null) ? state.player1_max_hp : ((state.player1_hp !== undefined && state.player1_hp !== null) ? state.player1_hp : 30),
       mana: state.player1_mana || 0,
       max_mana: state.player?.max_mana || 10,
       hand: state.player1_hand || [],
       board: state.player1_board || [],
       name: state.player?.name || 'Игрок',
-      avatar_url: state.player?.avatar_url
+      title: state.player?.title || state.player1_title || '',
+      rarity: state.player?.rarity || state.player1_rarity || '',
+      clan: state.player?.clan || state.player1_clan || '',
+      description: state.player?.description || state.player1_description || '',
+      mechanics: state.player?.mechanics || state.player1_mechanics || [],
+      avatar_url: state.player?.avatar_url,
+      extra_pass: state.player?.extra_pass,
+      hero: state.player?.hero || null
     };
     
     const p2 = {
       user_id: state.player_ids ? state.player_ids[1] : null,
-      // КРИТИЧНО: Явная проверка на undefined/null, чтобы 0 HP не превращался в 30
       hp: (state.player2_hp !== undefined && state.player2_hp !== null) ? state.player2_hp : 30,
+      max_hp: (state.player2_max_hp !== undefined && state.player2_max_hp !== null) ? state.player2_max_hp : ((state.player2_hp !== undefined && state.player2_hp !== null) ? state.player2_hp : 30),
       mana: state.player2_mana || 0,
       max_mana: state.opponent?.max_mana || 10,
       hand: state.player2_hand || [],
       board: state.player2_board || [],
       name: state.opponent?.name || 'Оппонент',
-      avatar_url: state.opponent?.avatar_url
+      title: state.opponent?.title || state.player2_title || '',
+      rarity: state.opponent?.rarity || state.player2_rarity || '',
+      clan: state.opponent?.clan || state.player2_clan || '',
+      description: state.opponent?.description || state.player2_description || '',
+      mechanics: state.opponent?.mechanics || state.player2_mechanics || [],
+      avatar_url: state.opponent?.avatar_url,
+      extra_pass: state.opponent?.extra_pass,
+      hero: state.opponent?.hero || null
     };
     
     if (String(p1.user_id) === String(userIdNum)) {
@@ -487,6 +501,9 @@ function renderBattleState(state) {
       opponentStateData = p1;
     }
   }
+
+  // Сохраняем извлечённый оппонент в модульную переменную для openOpponentInfo
+  window.__arenaOpponentState = opponentStateData;
   
   // КРИТИЧНО: Логируем HP при каждом обновлении для отслеживания изменений
   console.log('[ARENA] 💚 HP TRACKING: Мой HP =', myState.hp, '| Оппонент HP =', opponentStateData.hp);
@@ -649,21 +666,31 @@ function updateBattleLog(history) {
 // ============================================
 
 function renderPlayerPanel(playerState) {
-  // HP - поддержка новой структуры с hero объектом
   const hpText = document.getElementById('player-hp-text');
   const hpMaxText = document.getElementById('player-hp-max-text');
   if (hpText) {
-    // Новая структура: playerState.hero.hp, старая: playerState.hp
     const hp = playerState.hero?.hp ?? playerState.hp ?? 30;
     const hpValue = Math.max(0, hp);
+    const maxHp = playerState.hero?.max_hp ?? playerState.max_hp ?? 30;
     hpText.textContent = hpValue;
 
-    // ОБНОВЛЕНО: Динамическое макс. HP
     if (hpMaxText) {
-      hpMaxText.textContent = '/' + (playerState.hero?.max_hp ?? 30);
+      hpMaxText.textContent = '/' + maxHp;
+    }
+
+    // HP Fill Bar
+    const hpFill = document.getElementById('player-hp-fill');
+    if (hpFill) {
+      const hpPct = Math.max(0, Math.min(100, (hpValue / maxHp) * 100));
+      hpFill.style.width = hpPct + '%';
+    }
+
+    // HP Warning pulse (<= 7)
+    const hpBlock = document.getElementById('player-hp-block');
+    if (hpBlock) {
+      hpBlock.classList.toggle('hp-warning', hpValue <= 7);
     }
     
-    // Детекция изменений HP
     if (previousPlayerHP !== null) {
       if (hpValue > previousPlayerHP && hpValue > 0) {
         console.log('[ARENA] 💚 Healing detected for player:', previousPlayerHP, '->', hpValue);
@@ -677,23 +704,56 @@ function renderPlayerPanel(playerState) {
     previousPlayerHP = hpValue;
   }
   
-  // Имя
   const nameText = document.getElementById('player-name-text');
   if (nameText) {
     nameText.textContent = playerState.name || 'Игрок';
   }
   
-  // Аватар (первая буква имени)
   const avatarLetter = document.getElementById('player-avatar-letter');
   if (avatarLetter) {
     const firstName = playerState.name || 'И';
     avatarLetter.textContent = firstName[0].toUpperCase();
   }
-  
-  // ДОБАВЛЕНО: Премиальный визуал для ExtraPass
+
+  // Title text
+  const playerTitleEl = document.getElementById('player-title-text');
+  if (playerTitleEl) {
+    const titleText = playerState.title || currentState?.player_title || '';
+    playerTitleEl.textContent = titleText;
+    playerTitleEl.className = 'player-title-text';
+    if (titleText) {
+      const rarity = (playerState.rarity || currentState?.player_rarity || '').toLowerCase();
+      if (rarity === 'epic') playerTitleEl.classList.add('title-epic');
+      else if (rarity === 'mythic') playerTitleEl.classList.add('title-mythic');
+      else if (rarity === 'limited') playerTitleEl.classList.add('title-limited');
+      else if (rarity === 'rare') playerTitleEl.classList.add('title-rare');
+      else if (rarity === 'starter') playerTitleEl.classList.add('title-starter');
+      else playerTitleEl.classList.add('title-starter'); // fallback for legacy titles
+    }
+  }
+
+  // Avatar rarity class + image
+  const playerAvatar = document.getElementById('player-avatar');
+  if (playerAvatar) {
+    const rarity = (playerState.rarity || currentState?.player_rarity || '').toLowerCase();
+    playerAvatar.className = 'player-avatar avatar-class-' + (rarity || 'starter');
+
+    const avatarImg = document.getElementById('player-avatar-img');
+    if (avatarImg) {
+      const avatarUrl = playerState.avatar_url || currentState?.player?.avatar_url || '';
+      if (avatarUrl) {
+        avatarImg.src = avatarUrl;
+        avatarImg.alt = playerState.name || '';
+        playerAvatar.classList.add('has-avatar-img');
+      } else {
+        playerAvatar.classList.remove('has-avatar-img');
+      }
+    }
+  }
+
+  // ExtraPass
   const infoBlock = document.querySelector('.player-info-block');
   if (infoBlock) {
-    // Проверяем extra_pass из state или из playerState
     const hasExtraPass = currentState?.extra_pass === 'active' || playerState?.extra_pass === 'active';
     if (hasExtraPass) {
       infoBlock.classList.add('extra-pass-active');
@@ -703,14 +763,13 @@ function renderPlayerPanel(playerState) {
     }
   }
   
-  // Мана
+  // Mana
   const manaText = document.getElementById('player-mana-text');
   const manaMaxText = document.getElementById('player-mana-max-text');
   const manaFill = document.getElementById('player-mana-fill');
   
   if (manaText) {
     const manaValue = playerState.mana || 0;
-    // Если мана дробная, показываем 1 знак после запятой
     manaText.textContent = manaValue % 1 === 0 ? manaValue : manaValue.toFixed(1);
   }
   
@@ -723,36 +782,46 @@ function renderPlayerPanel(playerState) {
     manaFill.style.width = `${Math.min(100, Math.max(0, manaPercent))}%`;
   }
 
-  // КРИТИЧНО: Восстанавливаем подсветку своего героя при режиме TARGETING после перерисовки
+  // Restore targeting highlight
   const playerPanel = document.querySelector('.player-panel-root');
   if (playerPanel && interactionMode.type === 'TARGETING') {
     const playActions = getPlayCardTargets(interactionMode.data?.handIndex ?? selectedCard?.index ?? 0);
     const playerHeroId = playerState.hero?.instance_id;
     if (playActions.some(a => a.target_is_hero && (String(a.target_id) === String(playerHeroId) || !a.target_id))) {
-      // Примечание: если target_id не указан, но есть target_is_hero, обычно это враг,
-      // но для хила мы проверяем ID. Если ID совпал или это явно хил (нужно больше инфы от сервера),
-      // но пока ориентируемся на ID.
       playerPanel.classList.add('targetable-friendly');
     }
   }
+
+  // End-turn pulse check (no legal actions)
+  checkEndTurnPulse();
 }
 
 function renderOpponentPanel(opponentState) {
-  // HP - поддержка новой структуры с hero объектом
   const hpText = document.getElementById('opponent-hp-text');
   const hpMaxText = document.getElementById('opponent-hp-max-text');
   if (hpText) {
-    // Новая структура: opponentState.hero.hp, старая: opponentState.hp
     const hp = opponentState.hero?.hp ?? opponentState.hp ?? 30;
     const hpValue = Math.max(0, hp);
+    const maxHp = opponentState.hero?.max_hp ?? opponentState.max_hp ?? 30;
     hpText.textContent = hpValue;
 
-    // ОБНОВЛЕНО: Динамическое макс. HP
     if (hpMaxText) {
-      hpMaxText.textContent = '/' + (opponentState.hero?.max_hp ?? 30);
+      hpMaxText.textContent = '/' + maxHp;
+    }
+
+    // HP Fill Bar
+    const hpFill = document.getElementById('opponent-hp-fill');
+    if (hpFill) {
+      const hpPct = Math.max(0, Math.min(100, (hpValue / maxHp) * 100));
+      hpFill.style.width = hpPct + '%';
+    }
+
+    // HP Warning pulse (<= 7)
+    const hpBlock = document.getElementById('opponent-hp-block');
+    if (hpBlock) {
+      hpBlock.classList.toggle('hp-critical', hpValue <= 7);
     }
     
-    // Детекция изменений HP
     if (previousOpponentHP !== null) {
       if (hpValue > previousOpponentHP && hpValue > 0) {
         console.log('[ARENA] 💚 Healing detected for opponent:', previousOpponentHP, '->', hpValue);
@@ -766,26 +835,69 @@ function renderOpponentPanel(opponentState) {
     previousOpponentHP = hpValue;
   }
   
-  // Имя
   const nameText = document.getElementById('opponent-name-text');
   if (nameText) {
     nameText.textContent = opponentState.name || 'Оппонент';
   }
   
-  // Аватар (первая буква имени)
   const avatarLetter = document.getElementById('opponent-avatar-letter');
   if (avatarLetter) {
     const firstName = opponentState.name || 'О';
     avatarLetter.textContent = firstName[0].toUpperCase();
   }
   
-  // Количество карт в руке
   const handCount = document.getElementById('opponent-hand-count');
   if (handCount) {
     handCount.textContent = opponentState.hand ? opponentState.hand.length : 0;
   }
+
+  // Title text
+  const opponentTitleEl = document.getElementById('opponent-title-text');
+  if (opponentTitleEl) {
+    const titleText = opponentState.title || currentState?.opponent_title || '';
+    opponentTitleEl.textContent = titleText;
+    opponentTitleEl.className = 'opponent-title-text';
+    if (titleText) {
+      const rarity = (opponentState.rarity || currentState?.opponent_rarity || '').toLowerCase();
+      if (rarity === 'epic') opponentTitleEl.classList.add('title-epic');
+      else if (rarity === 'mythic') opponentTitleEl.classList.add('title-mythic');
+      else if (rarity === 'limited') opponentTitleEl.classList.add('title-limited');
+      else if (rarity === 'rare') opponentTitleEl.classList.add('title-rare');
+      else opponentTitleEl.classList.add('title-starter');
+    }
+  }
+
+  // Clan badge
+  const clanBadge = document.getElementById('opponent-clan-badge');
+  if (clanBadge) {
+    const clan = opponentState.clan || currentState?.opponent_clan || '';
+    if (clan) {
+      clanBadge.textContent = clan;
+      clanBadge.style.display = 'inline-block';
+    } else {
+      clanBadge.style.display = 'none';
+    }
+  }
+
+  // Avatar rarity class + image
+  const opponentAvatar = document.getElementById('opponent-avatar');
+  if (opponentAvatar) {
+    const rarity = (opponentState.rarity || currentState?.opponent_rarity || '').toLowerCase();
+    opponentAvatar.className = 'opponent-avatar avatar-class-' + (rarity || 'starter');
+
+    const avatarImg = document.getElementById('opponent-avatar-img');
+    if (avatarImg) {
+      const avatarUrl = opponentState.avatar_url || currentState?.opponent?.avatar_url || '';
+      if (avatarUrl) {
+        avatarImg.src = avatarUrl;
+        avatarImg.alt = opponentState.name || '';
+        opponentAvatar.classList.add('has-avatar-img');
+      } else {
+        opponentAvatar.classList.remove('has-avatar-img');
+      }
+    }
+  }
   
-  // ДОБАВЛЕНО: Премиальный визуал для ExtraPass оппонента
   const opponentInfoIsland = document.querySelector('.opponent-info-island');
   if (opponentInfoIsland) {
     const hasExtraPass = opponentState?.extra_pass === 'active';
@@ -797,7 +909,7 @@ function renderOpponentPanel(opponentState) {
     }
   }
   
-  // КРИТИЧНО: Восстанавливаем подсветку героя при режиме TARGETING после перерисовки
+  // Restore targeting highlight
   const opponentPanel = document.querySelector('.opponent-panel-root');
   if (opponentPanel && interactionMode.type === 'TARGETING') {
     const playActions = getPlayCardTargets(interactionMode.data?.handIndex ?? selectedCard?.index ?? 0);
@@ -936,7 +1048,7 @@ function createHandCardElement(card, index) {
   cardDiv.appendChild(artWrapper);
   cardDiv.appendChild(manaDiv);
 
-  // Статы: не добавляем для зелий
+  // Статы
   if (cardType !== 'potion') {
     const statsDiv = document.createElement('div');
     statsDiv.className = 'hand-card-stats';
@@ -945,30 +1057,30 @@ function createHandCardElement(card, index) {
     atkDiv.className = 'card-stat attack';
     atkDiv.textContent = card.attack || card.atk || 0;
 
+    const infoBtn = document.createElement('button');
+    infoBtn.className = 'card-info-btn';
+    infoBtn.textContent = 'i';
+    infoBtn.title = 'Информация о карте';
+    infoBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openCardInfo(card);
+    });
+
     const hpDiv = document.createElement('div');
     hpDiv.className = 'card-stat health';
     hpDiv.textContent = card.hp || card.hp_current || 0;
 
     statsDiv.appendChild(atkDiv);
+    statsDiv.appendChild(infoBtn);
     statsDiv.appendChild(hpDiv);
     cardDiv.appendChild(statsDiv);
   }
   
-  // ДОБАВЛЕНО: Имя карты
+  // Имя карты
   const nameLabel = document.createElement('div');
   nameLabel.className = 'card-name-label';
   nameLabel.textContent = card.name || 'Карта';
   cardDiv.appendChild(nameLabel);
-  
-  // ДОБАВЛЕНО: Инфо-иконка
-  const infoBtn = document.createElement('div');
-  infoBtn.className = 'card-info-button';
-  infoBtn.textContent = 'i';
-  infoBtn.addEventListener('click', (e) => {
-    e.stopPropagation(); // Предотвращаем срабатывание глобального клика
-    showCardDescription(card, infoBtn);
-  });
-  cardDiv.appendChild(infoBtn);
   
   // Обработчики drag & drop
   cardDiv.draggable = true;
@@ -1164,13 +1276,21 @@ function createBoardCardElement(card, side) {
     const atkDiv = document.createElement('div');
     atkDiv.className = 'unit-stat attack';
     atkDiv.textContent = card.attack || card.atk || 0;
+
+    const infoBtn = document.createElement('button');
+    infoBtn.className = 'card-info-btn';
+    infoBtn.textContent = 'i';
+    infoBtn.title = 'Информация о карте';
+    infoBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openCardInfo(card);
+    });
     
     const hpDiv = document.createElement('div');
     hpDiv.className = 'unit-stat health';
     const hpValue = card.hp || card.hp_current || 0;
     hpDiv.textContent = hpValue;
     
-    // Детекция урона юниту
     const instanceId = String(card.instance_id);
     const oldHp = previousUnitHPs[instanceId];
     if (oldHp !== undefined && hpValue < oldHp) {
@@ -1179,6 +1299,7 @@ function createBoardCardElement(card, side) {
     previousUnitHPs[instanceId] = hpValue;
     
     statsDiv.appendChild(atkDiv);
+    statsDiv.appendChild(infoBtn);
     statsDiv.appendChild(hpDiv);
     cardDiv.appendChild(statsDiv);
   }
@@ -1189,17 +1310,15 @@ function createBoardCardElement(card, side) {
   nameLabel.textContent = card.name || 'Юнит';
   cardDiv.appendChild(nameLabel);
   
-  // ДОБАВЛЕНО: Инфо-иконка
-  const infoBtn = document.createElement('div');
-  infoBtn.className = 'card-info-button';
-  infoBtn.textContent = 'i';
-  infoBtn.style.bottom = '14px'; // Для доски чуть ниже
-  infoBtn.addEventListener('click', (e) => {
-    e.stopPropagation(); // Предотвращаем срабатывание глобального клика
-    showCardDescription(card, infoBtn);
-  });
-  cardDiv.appendChild(infoBtn);
-  
+  // Status overlay icons (attack target, freeze, etc.)
+  const soAttack = document.createElement('div');
+  soAttack.className = 'status-overlay-icon so-attack-target';
+  const soAttackImg = document.createElement('img');
+  soAttackImg.src = '../DesignAssets/Arena/CardEffects/target.png';
+  soAttackImg.alt = 'target';
+  soAttack.appendChild(soAttackImg);
+  cardDiv.appendChild(soAttack);
+
   // Если это карта игрока, разрешаем атаку
   if (side === 'player' && card.can_attack) {
     cardDiv.style.cursor = 'pointer';
@@ -1623,7 +1742,7 @@ function highlightValidTargets(actions) {
         if (!isFreeze) {
           if (isHeal) {
             const currentHp = currentState?.player?.hero?.hp ?? currentState?.player?.hp ?? 30;
-            const maxHp = currentState?.player?.hero?.max_hp ?? 30;
+            const maxHp = currentState?.player?.hero?.max_hp ?? currentState?.player?.max_hp ?? 30;
             if (currentHp < maxHp) playerHeroTargetable = true;
           } else {
             playerHeroTargetable = true;
@@ -1720,7 +1839,7 @@ function highlightAttackTargets(attackerId) {
   opponentUnits.forEach(unit => {
     const instanceId = unit.dataset.instanceId;
     if (validTargets.has(instanceId)) {
-      unit.classList.add('attack-target', 'targetable-enemy');
+      unit.classList.add('attack-target', 'targetable-enemy', 'status-attack-target');
       
       // Предпросмотр
       unit.onmouseenter = () => showDamagePreview(unit, false, targets.find(a => a.target_id === instanceId));
@@ -1746,7 +1865,7 @@ function clearAttackTargets() {
   const opponentPanel = document.querySelector('.opponent-panel-root');
   
   opponentUnits.forEach(unit => {
-    unit.classList.remove('attack-target', 'targetable-enemy');
+    unit.classList.remove('attack-target', 'targetable-enemy', 'status-attack-target');
     unit.onmouseenter = null;
     unit.onmouseleave = null;
     hideDamagePreview(unit, false);
@@ -1899,105 +2018,13 @@ function handleGlobalTargetClick(targetId, isHero, event) {
 // ============================================
 
 async function showDamagePreview(targetEl, isHero, targetData) {
-  /**
-   * Запрашивает предпросмотр урона у сервера и отображает его.
-   */
-  if (interactionMode.type === 'NONE') return;
-
-  const targetId = isHero ? null : targetEl.dataset.instanceId;
-  
-  let action = null;
-  if (interactionMode.type === 'ATTACK') {
-    action = {
-      type: 'attack',
-      attacker_id: interactionMode.data.instance_id,
-      target_id: targetId,
-      target_is_hero: isHero
-    };
-  } else if (interactionMode.type === 'TARGETING') {
-    action = {
-      type: 'play_card',
-      hand_index: interactionMode.data.handIndex ?? selectedCard?.index ?? 0,
-      target_id: targetId,
-      target_is_hero: isHero
-    };
-  }
-
-  if (!action) return;
-
-  try {
-    const response = await fetch('/api/battle/preview', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        match_id: matchId,
-        _auth: authToken,
-        action: action
-      })
-    });
-
-    if (!response.ok) return;
-
-    const result = await response.json();
-    if (!result.success || !result.preview_data) return;
-
-    // Ищем дельту для текущей цели
-    let targetInstanceId = targetId;
-    
-    if (isHero) {
-      // Определяем, на какого героя навели: оппонента или своего
-      const isOpponent = targetEl.classList.contains('opponent-panel-root');
-      const hero = isOpponent ? (currentState.opponent?.hero) : (currentState.player?.hero);
-      
-      if (hero && hero.instance_id) {
-        targetInstanceId = String(hero.instance_id);
-      } else {
-        // Фолбэк: ищем ID, который есть в preview_data и не является юнитом на столе
-        const boardUnitIds = new Set();
-        document.querySelectorAll('.board-unit-card').forEach(el => boardUnitIds.add(el.dataset.instanceId));
-        
-        for (const id of Object.keys(result.preview_data)) {
-          if (!boardUnitIds.has(id)) {
-            targetInstanceId = id;
-            break;
-          }
-        }
-      }
-    }
-
-    const delta = result.preview_data[targetInstanceId];
-    if (delta === undefined || delta === 0) return;
-
-    const hpTextEl = isHero 
-      ? (targetEl.querySelector('.hp-value-large') || targetEl.querySelector('#opponent-hp-text'))
-      : targetEl.querySelector('.unit-stat.health');
-
-    if (!hpTextEl) return;
-
-    const currentHp = parseInt(hpTextEl.textContent);
-    const newHp = Math.max(0, currentHp + delta); // delta уже со знаком
-    
-    // Сохраняем оригинал если еще не сохранен
-    if (!hpTextEl.dataset.originalHp) {
-      hpTextEl.dataset.originalHp = hpTextEl.textContent;
-    }
-    
-    const previewClass = delta > 0 ? 'heal-preview-text' : 'hp-preview-text';
-    hpTextEl.innerHTML = `${currentHp} <span class="${previewClass}">→ ${newHp}</span>`;
-  } catch (error) {
-    console.error('[ARENA] Ошибка предпросмотра урона:', error);
-  }
+  // Предпросмотр текста HP отключён — оставлена только CSS-подсветка целей
+  return;
 }
 
 function hideDamagePreview(targetEl, isHero) {
-  const hpTextEl = isHero 
-    ? (targetEl.querySelector('.hp-value-large') || targetEl.querySelector('#opponent-hp-text'))
-    : targetEl.querySelector('.unit-stat.health');
-
-  if (hpTextEl && hpTextEl.dataset.originalHp) {
-    hpTextEl.textContent = hpTextEl.dataset.originalHp;
-    delete hpTextEl.dataset.originalHp;
-  }
+  // Предпросмотр текста HP отключён — оставлена только CSS-подсветка целей
+  return;
 }
 
 function handleAttackerClick(attackerCard) {
@@ -2831,36 +2858,164 @@ function spawnDamageParticles(element) {
 }
 
 // ============================================
-// ОПИСАНИЕ КАРТ (TOOLTIP / MODAL)
+// CARD INFO MODAL (bottom-sheet popup)
 // ============================================
 
-/**
- * Показывает глобальное модальное окно с информацией
- */
-function showGlobalModal(title, text) {
-  let tooltip = document.getElementById('card-description-tooltip');
-  if (!tooltip) {
-    tooltip = document.createElement('div');
-    tooltip.id = 'card-description-tooltip';
-    tooltip.className = 'card-description-tooltip';
-    document.body.appendChild(tooltip);
-  }
-
-  tooltip.innerHTML = `<h3 style="color: #FF9400; margin-bottom: 12px; font-size: 20px;">${title}</h3><p style="line-height: 1.4;">${text}</p><div style="margin-top: 15px; font-size: 12px; color: rgba(255,255,255,0.5);">Нажмите в любом месте, чтобы закрыть</div>`;
-  tooltip.style.display = 'block';
-  tooltip.setAttribute('aria-hidden', 'false');
-}
-
-function showCardDescription(card, anchorEl) {
-  // Добавляем лог данных карты для отладки
-  console.log('[ARENA] Full card data:', card);
+function openCardInfo(card) {
+  console.log('[ARENA] Card info modal:', card);
+  
+  const modal = document.getElementById('card-info-modal');
+  if (!modal) return;
 
   const cardName = card.name || 'Карта';
-  const cardLevel = card.level || 1;
-  const description = card.description || card.text || 'Нет описания';
+  const cardLevel = card.level;
   
-  const title = `${cardName} (Ур. ${cardLevel})`;
-  showGlobalModal(title, description);
+  document.getElementById('card-info-name').textContent = cardName;
+  document.getElementById('card-info-level').textContent = cardLevel != null ? 'Уровень ' + cardLevel : '';
+  document.getElementById('card-info-attack').textContent = card.attack != null ? card.attack : (card.atk != null ? card.atk : '—');
+  
+  const hp = card.hp ?? card.hp_current;
+  const maxHp = card.maxHp ?? card.max_hp;
+  document.getElementById('card-info-health').textContent = hp != null ? (maxHp ? hp + '/' + maxHp : hp) : '—';
+  
+  document.getElementById('card-info-mana').textContent = card.mana != null ? card.mana : (card.mana_cost != null ? card.mana_cost : '—');
+  document.getElementById('card-info-description').textContent = card.description || card.text || 'Нет описания.';
+
+  const artEl = document.getElementById('card-info-art');
+  const fb = document.getElementById('card-info-art-fallback');
+  if (card.image) {
+    artEl.src = card.image;
+    artEl.style.display = 'block';
+    fb.style.display = 'none';
+  } else {
+    artEl.style.display = 'none';
+    fb.style.display = 'flex';
+    fb.textContent = card.emoji || '⚔️';
+  }
+
+  const mechEl = document.getElementById('card-info-mechanics');
+  mechEl.innerHTML = '';
+  const mechanics = card.mechanics || [];
+  if (mechanics.length > 0) {
+    mechanics.forEach(function(m) {
+      const chip = document.createElement('span');
+      chip.className = 'mechanic-chip';
+      chip.textContent = m;
+      mechEl.appendChild(chip);
+    });
+  }
+  
+  modal.classList.add('open');
+}
+
+function closeCardInfo() {
+  const modal = document.getElementById('card-info-modal');
+  if (modal) modal.classList.remove('open');
+}
+
+// ============================================
+// SURRENDER HOLD-TO-ACTIVATE (1.5s)
+// ============================================
+
+function initSurrenderHold() {
+  const btn = document.getElementById('surrender-hold-btn');
+  const ring = document.getElementById('surrender-ring');
+  if (!btn) return;
+  
+  const holdDuration = 1500;
+  let holdStart = null;
+  let rafId = null;
+  let triggered = false;
+
+  function update(ts) {
+    if (!holdStart) return;
+    const elapsed = ts - holdStart;
+    const pct = Math.min(100, (elapsed / holdDuration) * 100);
+    if (ring) ring.style.setProperty('--pct', pct + '%');
+    if (elapsed >= holdDuration && !triggered) {
+      triggered = true;
+      cancelAnimationFrame(rafId);
+      btn.classList.remove('holding');
+      if (ring) ring.style.setProperty('--pct', '0%');
+      openSurrenderModal();
+      return;
+    }
+    rafId = requestAnimationFrame(update);
+  }
+
+  function start(e) {
+    e.preventDefault();
+    e.stopPropagation(); // не даём всплыть до player-panel-root (режим TARGETING)
+    triggered = false;
+    holdStart = performance.now();
+    btn.classList.add('holding');
+    rafId = requestAnimationFrame(update);
+  }
+
+  function end() {
+    holdStart = null;
+    triggered = false;
+    btn.classList.remove('holding');
+    cancelAnimationFrame(rafId);
+    if (ring) ring.style.setProperty('--pct', '0%');
+  }
+
+  btn.addEventListener('mousedown', start);
+  btn.addEventListener('touchstart', start, { passive: false });
+  ['mouseup', 'mouseleave', 'touchend', 'touchcancel'].forEach(function(ev) {
+    btn.addEventListener(ev, end);
+  });
+}
+
+// ============================================
+// END-TURN PULSE (no legal actions)
+// ============================================
+
+function checkEndTurnPulse() {
+  const btn = document.getElementById('end-turn-button');
+  if (!btn) return;
+  
+  const isMyTurn = currentState?.is_my_turn;
+  const legalActions = cachedLegalActions || [];
+  const realActions = legalActions.filter(a => a.type !== 'end_turn');
+  const hasLegalActions = realActions.length > 0;
+  
+  if (isMyTurn && !hasLegalActions) {
+    btn.classList.add('pulse-ready');
+  } else {
+    btn.classList.remove('pulse-ready');
+  }
+}
+
+// ============================================
+// OPPONENT INFO BUTTON
+// ============================================
+
+function openOpponentInfo() {
+  const opponentState = window.__arenaOpponentState || currentState?.opponent || {};
+  const name = opponentState.name || 'Оппонент';
+  const title = opponentState.title || '';
+  const hp = opponentState.hero?.hp ?? opponentState.hp ?? 30;
+  const maxHp = opponentState.hero?.max_hp ?? opponentState.max_hp ?? 30;
+  const mana = opponentState.mana ?? 0;
+  const cardsCount = (opponentState.hand || []).length;
+  const clan = opponentState.clan || '';
+  const description = opponentState.description || 'Противник';
+  const mechanics = opponentState.mechanics || [];
+  
+  if (clan) mechanics.push('Кланы ' + clan);
+  
+  openCardInfo({
+    name: name,
+    level: null,
+    attack: null,
+    hp: hp,
+    max_hp: maxHp,
+    mana: mana,
+    description: description,
+    mechanics: mechanics,
+    emoji: '👤'
+  });
 }
 
 // ============================================
@@ -2900,16 +3055,34 @@ function initArenaMusic() {
 // ============================================
 
 function bindUIHandlers() {
+  // Card info modal — close on backdrop click or Escape
+  const cardInfoModal = document.getElementById('card-info-modal');
+  if (cardInfoModal) {
+    cardInfoModal.addEventListener('click', function(e) {
+      if (e.target === cardInfoModal || e.target.id === 'card-info-modal') {
+        closeCardInfo();
+      }
+    });
+    document.addEventListener('keydown', function(e) {
+      if (e.key === 'Escape') closeCardInfo();
+    });
+  }
+
+  // Opponent info button
+  const opponentInfoBtn = document.getElementById('opponent-info-btn');
+  if (opponentInfoBtn) {
+    opponentInfoBtn.addEventListener('click', function(e) {
+      e.stopPropagation();
+      openOpponentInfo();
+    });
+  }
+
+  // Surrender hold-to-activate
+  initSurrenderHold();
+
   // Глобальный слушатель для закрытия окон
   document.addEventListener('click', (e) => {
-    const logOverlay = document.getElementById('battle-log-overlay');
     const tooltip = document.getElementById('card-description-tooltip');
-
-    if (logOverlay && logOverlay.getAttribute('aria-hidden') === 'false') {
-      if (!logOverlay.contains(e.target)) {
-        logOverlay.setAttribute('aria-hidden', 'true');
-      }
-    }
 
     if (tooltip && tooltip.style.display === 'block') {
       if (!tooltip.contains(e.target)) {
@@ -2923,15 +3096,8 @@ function bindUIHandlers() {
   const endTurnBtn = document.getElementById('end-turn-button');
   if (endTurnBtn) {
     endTurnBtn.addEventListener('click', () => {
+      endTurnBtn.classList.remove('pulse-ready');
       endTurn();
-    });
-  }
-  
-  // Кнопка сдачи
-  const surrenderBtn = document.getElementById('surrender-button');
-  if (surrenderBtn) {
-    surrenderBtn.addEventListener('click', () => {
-      openSurrenderModal();
     });
   }
 
@@ -2940,23 +3106,20 @@ function bindUIHandlers() {
   const logOverlay = document.getElementById('battle-log-overlay');
   if (logBtn && logOverlay) {
     logBtn.addEventListener('click', (e) => {
-      e.stopPropagation(); // Важно: предотвращаем закрытие сразу после открытия
-      const isHidden = logOverlay.getAttribute('aria-hidden') === 'true';
-      
-      if (isHidden) {
-        // Открываем лог
-        logOverlay.setAttribute('aria-hidden', 'false');
-      } else {
-        // Закрываем лог
-        logOverlay.setAttribute('aria-hidden', 'true');
-      }
+      e.stopPropagation();
+      logOverlay.setAttribute('aria-hidden', 'false');
+    });
+
+    // Закрытие лога по клику в любом месте внутри overlay
+    logOverlay.addEventListener('click', function(e) {
+      if (logOverlay.getAttribute('aria-hidden') === 'true') return;
+      logOverlay.setAttribute('aria-hidden', 'true');
     });
   }
   
   // Модальное окно сдачи
   const surrenderModal = document.getElementById('surrender-modal');
   if (surrenderModal) {
-    // Кнопка "Продолжить бой"
     const cancelBtn = surrenderModal.querySelector('[data-action="cancel"]');
     if (cancelBtn) {
       cancelBtn.addEventListener('click', () => {
@@ -2964,7 +3127,6 @@ function bindUIHandlers() {
       });
     }
     
-    // Кнопка "Сдаться"
     const confirmBtn = surrenderModal.querySelector('[data-action="confirm"]');
     if (confirmBtn) {
       confirmBtn.addEventListener('click', () => {
@@ -2973,7 +3135,6 @@ function bindUIHandlers() {
       });
     }
     
-    // Закрытие по клику на overlay
     const overlay = surrenderModal.querySelector('.surrender-modal-overlay');
     if (overlay) {
       overlay.addEventListener('click', () => {
@@ -2982,24 +3143,22 @@ function bindUIHandlers() {
     }
   }
   
-  // Клик по герою оппонента - ЕДИНАЯ ТОЧКА ОБРАБОТКИ
+  // Клик по герою оппонента
   const opponentPanel = document.querySelector('.opponent-panel-root');
   if (opponentPanel) {
     opponentPanel.addEventListener('click', (e) => {
       e.stopPropagation();
       
-      // КРИТИЧНО: Только в режиме ATTACK или TARGETING передаем клик
       if (interactionMode.type === 'ATTACK' || interactionMode.type === 'TARGETING') {
         handleGlobalTargetClick(null, true, e);
       }
     });
   }
   
-  // ДОБАВЛЕНО: Клик по своему герою (для хила)
+  // Клик по своему герою (для хила)
   const playerPanel = document.querySelector('.player-panel-root');
   if (playerPanel) {
     playerPanel.addEventListener('click', (e) => {
-      // Только в режиме TARGETING (хил/бафф)
       if (interactionMode.type === 'TARGETING') {
         e.stopPropagation();
         handleGlobalTargetClick(null, true, e);
@@ -3016,7 +3175,6 @@ function bindUIHandlers() {
     });
   }
   
-  // Закрытие по клику на overlay
   const resultOverlay = document.querySelector('.result-overlay-bg');
   if (resultOverlay) {
     resultOverlay.addEventListener('click', () => {

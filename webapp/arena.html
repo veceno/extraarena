@@ -13,69 +13,53 @@
   <!-- ARENA BATTLEFIELD CONTAINER -->
   <div id="arena-battlefield-container">
     
-    <!-- Surrender Button (White Flag) -->
-    <button class="surrender-button" id="surrender-button" title="Сдаться">
-      🏳️
-    </button>
-
     <!-- Battle Log Overlay -->
     <div class="battle-log-overlay" id="battle-log-overlay" aria-hidden="true">
-      <div class="battle-log-rows" id="battle-log-rows">
-        <!-- Last actions will be here -->
-      </div>
+      <div class="battle-log-rows" id="battle-log-rows"></div>
       <div class="log-footer-hint">Нажмите в любом месте, чтобы закрыть</div>
     </div>
     
     <!-- ========== ZONE TOP: OPPONENT ========== -->
-    <div class="arena-zone arena-zone-top">
+    <div class="arena-zone-top">
       
-      <!-- Opponent Panel (Horizontal Layout) -->
       <div class="opponent-panel-root">
-        
-        <!-- LEFT ISLAND: Opponent Info Block (2/3) -->
         <div class="opponent-info-island">
-          
-          <!-- Avatar Section (33% width) -->
-          <div class="opponent-avatar-section">
-            <span class="avatar-letter" id="opponent-avatar-letter">О</span>
-          </div>
-          
-          <!-- Stats Section (66% width) -->
-          <div class="opponent-stats-section">
-            
-            <!-- HP Block (2/3 height) -->
-            <div class="opponent-hp-block">
+
+          <!-- Top row: cards inline + HP + info btn -->
+          <div class="opponent-top-row">
+            <div class="opponent-cards-inline">
+              <img src="../DesignAssets/Arena/CardsAvailable.png" alt="Cards" class="cards-icon-white">
+              <span class="cards-count-inline" id="opponent-hand-count">5</span>
+            </div>
+            <div class="opponent-hp-block" id="opponent-hp-block">
+              <div class="hp-fill" id="opponent-hp-fill" style="width:100%;"></div>
               <span class="hp-value-large" id="opponent-hp-text">30</span>
               <span class="hp-max-text" id="opponent-hp-max-text">/30</span>
               <img src="../DesignAssets/Arena/HealthPoints.png" alt="HP" class="hp-heart-icon-white">
-              
-              <!-- Status Icons for Hero -->
               <div class="status-icon-container status-icon-target"><img src="../DesignAssets/Arena/CardEffects/target.png" class="status-icon"></div>
               <div class="status-icon-container status-icon-heal"><img src="../DesignAssets/Arena/CardEffects/toHeal.png" class="status-icon"></div>
             </div>
-            
-            <!-- Name Block (1/3 height) -->
-            <div class="opponent-name-block">
-              <span class="opponent-name-text" id="opponent-name-text">ОППОНЕНТ</span>
+            <button class="opponent-info-btn" id="opponent-info-btn" title="Инфо">i</button>
+          </div>
+
+          <!-- Bottom row: avatar + name + title + clan -->
+          <div class="opponent-name-block">
+            <div class="opponent-avatar avatar-class-epic" id="opponent-avatar">
+              <img class="avatar-img" id="opponent-avatar-img" src="" alt="">
+              <span class="avatar-letter" id="opponent-avatar-letter">О</span>
             </div>
-            
-          </div>
-          
-        </div>
-        
-        <!-- RIGHT ISLAND: Cards Widget (1/3) -->
-        <div class="opponent-cards-widget">
-          <div class="cards-widget-icon">
-            <img src="../DesignAssets/Arena/CardsAvailable.png" alt="Cards" class="cards-icon-white">
-          </div>
-          <div class="cards-widget-counter">
-            <span class="cards-count-text" id="opponent-hand-count">5</span>
+            <div class="opponent-name-title-stack" style="min-width:0;flex:1;">
+              <span class="opponent-title-text title-epic" id="opponent-title-text"></span>
+              <div class="opponent-name-clan-row">
+                <span class="opponent-name-text" id="opponent-name-text">ОППОНЕНТ</span>
+                <span class="opponent-clan-badge" id="opponent-clan-badge" style="display:none;"></span>
+              </div>
+            </div>
           </div>
         </div>
-        
       </div>
       
-      <!-- Opponent Board (Slots) -->
+      <!-- Opponent Board -->
       <div class="arena-board arena-opponent-board" id="opponent-board-zone">
         <div class="board-slot opponent-slot" data-slot="0"></div>
         <div class="board-slot opponent-slot" data-slot="1"></div>
@@ -87,9 +71,8 @@
     </div>
     
     <!-- ========== ZONE CENTER: BATTLEFIELD ========== -->
-    <div class="arena-zone arena-zone-center">
+    <div class="arena-zone-center">
       
-      <!-- Player Board (Slots) -->
       <div class="arena-board arena-player-board" id="player-board-zone">
         <div class="board-slot player-slot" data-slot="0"></div>
         <div class="board-slot player-slot" data-slot="1"></div>
@@ -101,13 +84,12 @@
     </div>
     
     <!-- ========== ZONE BOTTOM: PLAYER ========== -->
-    <div class="arena-zone arena-zone-bottom">
+    <div class="arena-zone-bottom">
       
-      <!-- Turn Indicator (Above Cards) -->
+      <!-- Turn Indicator -->
       <div class="turn-indicator-container">
-        <!-- Battle Log Toggle Button (moved to top) -->
         <button class="battle-log-btn" id="battle-log-btn" title="Лог боя">
-          <img src="/DesignAssets/Arena/log.png" alt="Log" class="log-icon">
+          <img src="../DesignAssets/Arena/log.png" alt="Log" class="log-icon">
         </button>
         <div class="turn-timer-display" id="turn-timer-container">
           <span class="timer-icon">⏱</span>
@@ -119,48 +101,39 @@
       </div>
       
       <!-- Player Hand -->
-      <div class="arena-player-hand" id="player-hand-zone">
-        <!-- Cards will be injected here -->
-      </div>
+      <div class="arena-player-hand" id="player-hand-zone"></div>
       
-      <!-- Player Panel Root: 66% / 33% Grid -->
+      <!-- Player Panel Root -->
       <div class="player-panel-root">
         
-        <!-- LEFT STACK (66%): Unified Data Capsule -->
         <div class="player-data-stack">
-          
-          <!-- INFO BLOCK: Avatar (33%) + Stats (66%) -->
-          <div class="player-info-block">
-            
-            <!-- Avatar Section (33% width) -->
-            <div class="player-avatar-section">
-              <span class="avatar-letter" id="player-avatar-letter">Я</span>
+          <div class="player-info-block">            
+            <div class="player-hp-block" id="player-hp-block">
+              <div class="hp-fill" id="player-hp-fill" style="width:100%;"></div>
+              <span class="hp-value-large" id="player-hp-text">24</span>
+              <span class="hp-max-text" id="player-hp-max-text">/30</span>
+              <img src="../DesignAssets/Arena/HealthPoints.png" alt="HP" class="hp-heart-icon-white">
+              <div class="status-icon-container status-icon-target"><img src="../DesignAssets/Arena/CardEffects/target.png" class="status-icon"></div>
+              <div class="status-icon-container status-icon-heal"><img src="../DesignAssets/Arena/CardEffects/toHeal.png" class="status-icon"></div>
             </div>
             
-            <!-- Stats Section (66% width) -->
-            <div class="player-stats-section">
-              
-              <!-- HP Block (2/3 height) -->
-              <div class="player-hp-block">
-                <span class="hp-value-large" id="player-hp-text">24</span>
-                <span class="hp-max-text" id="player-hp-max-text">/30</span>
-                <img src="../DesignAssets/Arena/HealthPoints.png" alt="HP" class="hp-heart-icon-white">
-
-                <!-- Status Icons for Hero -->
-                <div class="status-icon-container status-icon-target"><img src="../DesignAssets/Arena/CardEffects/target.png" class="status-icon"></div>
-                <div class="status-icon-container status-icon-heal"><img src="../DesignAssets/Arena/CardEffects/toHeal.png" class="status-icon"></div>
+            <div class="player-name-block">
+              <div class="player-avatar avatar-class-mythic" id="player-avatar">
+                <img class="avatar-img" id="player-avatar-img" src="" alt="">
+                <span class="avatar-letter" id="player-avatar-letter">Я</span>
               </div>
-              
-              <!-- Name Block (1/3 height) -->
-              <div class="player-name-block">
+              <div class="player-name-title-stack" style="flex:1;min-width:0;">
+                <span class="player-title-text title-mythic" id="player-title-text"></span>
                 <span class="player-name-text" id="player-name-text">Имя игрока</span>
               </div>
-              
+              <!-- Surrender hold button (1.5s hold to activate) -->
+              <button class="surrender-hold-btn" id="surrender-hold-btn" title="Удержите для сдачи">
+                <div class="surrender-hold-ring" id="surrender-ring"></div>
+                <span>🏳</span>
+              </button>
             </div>
-            
           </div>
           
-          <!-- MANA BLOCK: Counter + Progress Bar -->
           <div class="player-mana-block">
             <div class="mana-counter">
               <span class="mana-counter-text" id="player-mana-text">5</span>
@@ -170,10 +143,8 @@
               <div class="mana-progressbar-fill" id="player-mana-fill"></div>
             </div>
           </div>
-          
         </div>
         
-        <!-- RIGHT COLUMN (33%): End Turn Button -->
         <button class="end-turn-button-ref" id="end-turn-button">
           <div class="end-turn-icon-ref"></div>
         </button>
@@ -223,17 +194,15 @@
     </div>
   </div>
   
-  <!-- Battle Result Modal (Victory/Defeat) -->
+  <!-- Battle Result Modal -->
   <div class="result-overlay" id="battle-result-modal" aria-hidden="true">
     <div class="result-overlay-bg"></div>
     <div class="result-card">
-      <!-- Result Icon & Title -->
       <div class="result-header">
         <div class="result-icon" id="result-icon">🏆</div>
         <h1 class="result-title" id="result-title">Победа!</h1>
       </div>
       
-      <!-- Trophy Section -->
       <div class="result-trophy-section" id="result-trophy-section">
         <div class="trophy-delta-container">
           <span class="trophy-icon">🏆</span>
@@ -245,7 +214,6 @@
         </div>
       </div>
       
-      <!-- Coins Section -->
       <div class="result-coins-section" id="result-coins-section">
         <div class="coins-delta-container">
           <span class="coins-icon">🪙</span>
@@ -257,7 +225,6 @@
         </div>
       </div>
       
-      <!-- Stars Section (Battle Pass) -->
       <div class="result-stars-section" id="result-stars-section">
         <div class="stars-delta-container">
           <span class="stars-icon">⭐</span>
@@ -269,15 +236,11 @@
         </div>
       </div>
       
-      <!-- Rewards Section (Optional) -->
       <div class="result-rewards-section" id="result-rewards-section" style="display: none;">
         <h3 class="rewards-title">Награды:</h3>
-        <div class="rewards-list" id="result-rewards-list">
-          <!-- Rewards will be injected here -->
-        </div>
+        <div class="rewards-list" id="result-rewards-list"></div>
       </div>
       
-      <!-- Actions -->
       <div class="result-actions">
         <a href="#" class="result-btn-share" id="result-share-btn" target="_blank">
           <span>Поделиться результатом</span>
@@ -285,6 +248,38 @@
         </a>
         <button type="button" class="result-btn-primary" id="result-close-btn">Вернуться в меню</button>
       </div>
+    </div>
+  </div>
+
+  <!-- Card Info Modal (bottom-sheet popup) -->
+  <div class="card-info-modal" id="card-info-modal">
+    <div class="card-info-modal-card">
+      <div class="card-info-modal-header">
+        <div class="card-info-art-wrapper">
+          <img class="card-info-art" id="card-info-art" src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==" alt="">
+          <span class="card-info-art-fallback" id="card-info-art-fallback">⚔️</span>
+        </div>
+        <div class="card-info-header-text">
+          <h3 class="card-info-name" id="card-info-name">Название</h3>
+          <span class="card-info-level" id="card-info-level">Уровень 1</span>
+        </div>
+      </div>
+      <div class="card-info-stats-row">
+        <div class="card-info-stat attack">
+          <span class="card-info-stat-value" id="card-info-attack">0</span>
+          <span class="card-info-stat-label">Атака</span>
+        </div>
+        <div class="card-info-stat health">
+          <span class="card-info-stat-value" id="card-info-health">0</span>
+          <span class="card-info-stat-label">Здоровье</span>
+        </div>
+        <div class="card-info-stat mana">
+          <span class="card-info-stat-value" id="card-info-mana">0</span>
+          <span class="card-info-stat-label">Мана</span>
+        </div>
+      </div>
+      <div class="card-info-mechanics" id="card-info-mechanics"></div>
+      <p class="card-info-description" id="card-info-description">Нет описания.</p>
     </div>
   </div>
   

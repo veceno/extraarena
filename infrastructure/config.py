@@ -94,12 +94,21 @@ class Settings:
     extra_shop_url: str
     environment: str = "development"
     database: DatabaseSettings | None = None
+    extraid_database: DatabaseSettings | None = None
     web_host: str = "0.0.0.0"
     web_port: int = 8081
     yookassa: YooKassaSettings | None = None
     stars_rate_rub: float = DEFAULT_STARS_RATE_RUB
     stars_markup: float = DEFAULT_STARS_MARKUP
     stars_test_mode: bool = True
+    jwt_secret: str = "dev_secret_change_in_production!"
+    jwt_expiry_days: int = 30
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from: str = "noreply@extraarena.gg"
+    ip_geo_api_key: str = ""
 
 
 def _load_env() -> None:
@@ -117,6 +126,14 @@ def get_settings() -> Settings:
         user=os.getenv("DB_USER", DEFAULT_DB_USER),
         password=os.getenv("DB_PASSWORD", DEFAULT_DB_PASSWORD),
         database=os.getenv("DB_NAME", DEFAULT_DB_NAME),
+    )
+
+    extraid_db_settings = DatabaseSettings(
+        host=os.getenv("EXTRAID_DB_HOST", DEFAULT_DB_HOST),
+        port=int(os.getenv("EXTRAID_DB_PORT", str(DEFAULT_DB_PORT))),
+        user=os.getenv("EXTRAID_DB_USER", DEFAULT_DB_USER),
+        password=os.getenv("EXTRAID_DB_PASSWORD", DEFAULT_DB_PASSWORD),
+        database=os.getenv("EXTRAID_DB_NAME", "extraid"),
     )
 
     yookassa_shop_id = os.getenv("YOOKASSA_SHOP_ID", "")
@@ -144,10 +161,19 @@ def get_settings() -> Settings:
         extra_shop_url=os.getenv("EXTRA_SHOP_URL", DEFAULT_EXTRA_SHOP_URL),
         environment=os.getenv("ENVIRONMENT", "development"),
         database=db_settings,
+        extraid_database=extraid_db_settings,
         web_host=os.getenv("WEBAPP_HOST", "0.0.0.0"),
         web_port=int(os.getenv("WEBAPP_PORT", "8081")),
         yookassa=yookassa_settings,
         stars_rate_rub=stars_rate_rub,
         stars_markup=stars_markup,
         stars_test_mode=stars_test_mode,
+        jwt_secret=os.getenv("JWT_SECRET", "dev_secret_change_in_production!"),
+        jwt_expiry_days=int(os.getenv("JWT_EXPIRY_DAYS", "30")),
+        smtp_host=os.getenv("SMTP_HOST", ""),
+        smtp_port=int(os.getenv("SMTP_PORT", "587")),
+        smtp_user=os.getenv("SMTP_USER", ""),
+        smtp_password=os.getenv("SMTP_PASSWORD", ""),
+        smtp_from=os.getenv("SMTP_FROM", "noreply@extraarena.gg"),
+        ip_geo_api_key=os.getenv("IP_GEO_API_KEY", ""),
     )

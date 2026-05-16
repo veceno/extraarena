@@ -8,3 +8,6 @@ python-socketio
 asyncpg
 numpy
 pillow>=10.0
+PyJWT>=2.8.0
+bcrypt>=4.1.0
+aiosmtplib>=3.0.0

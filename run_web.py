@@ -6,6 +6,7 @@ from aiohttp import web
 
 from infrastructure.config import get_settings
 from infrastructure.database import Database
+from infrastructure.extraid_database import ExtraIDDatabase
 from web.server import create_web_app
 
 logging.basicConfig(
@@ -22,9 +23,13 @@ async def main() -> None:
     await db.connect()
     await db.init_schema()
 
+    extraid_db = ExtraIDDatabase(settings.extraid_database.dsn)
+    await extraid_db.connect()
+
     web_app = create_web_app(
         db=db,
         bot_token=settings.bot_token,
+        extraid_db=extraid_db,
         webapp_url=settings.webapp_url,
         stars_rate_rub=settings.stars_rate_rub,
         stars_markup=settings.stars_markup,
@@ -43,6 +48,7 @@ async def main() -> None:
     finally:
         await runner.cleanup()
         await db.close()
+        await extraid_db.disconnect()
 
 
 if __name__ == "__main__":

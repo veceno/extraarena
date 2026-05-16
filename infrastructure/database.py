@@ -14,11 +14,16 @@ try:  # pragma: no cover - ветка с отсутствием asyncpg пров
 except ModuleNotFoundError:  # pragma: no cover - альтернативный путь при локальных тестах
     asyncpg = None  # type: ignore
 
+try:
+    import bcrypt  # type: ignore
+except ModuleNotFoundError:
+    bcrypt = None  # type: ignore
+
 from infrastructure.config import DECK_SIZE, MAX_FREE_DECK_PRESETS, MAX_TOTAL_DECK_PRESETS, DatabaseSettings, get_league_by_trophies_fn, LEAGUE_CONFIG
 
 
 # Версию схемы повышаем при изменении структуры таблиц
-SCHEMA_VERSION = 25
+SCHEMA_VERSION = 26
 
 # Таблица ростов статов по редкости (урон/хп растут одинаково)
 RARITY_STATS: dict[str, float] = {
@@ -332,7 +337,7 @@ class Database:
         battle_actions_changed = await self._ensure_battle_actions_table()
         admin_actions_changed = await self._ensure_admin_account_actions_table()
         cosmetics_changed = await self._ensure_cosmetic_tables()
-
+        user_cases_changed = await self._ensure_user_cases_table()
         schema_changed = (
             (current_version != SCHEMA_VERSION)
             or users_changed
@@ -367,6 +372,7 @@ class Database:
             or battle_actions_changed
             or admin_actions_changed
             or cosmetics_changed
+            or user_cases_changed
         )
 
         # Обновляем референсные данные для новой боевой системы
@@ -523,12 +529,16 @@ class Database:
                 u.energy_cd,
                 COALESCE(u.season, 0) as season,
                 u.extra_pass_expires_at,
+                u.extra_account_id,
                 COALESCE(p.img, '') as img,
                 COALESCE(p.title, 'Игрок') as title,
                 p.custom_nickname,
-                COALESCE(p.nickname_changed, FALSE) as nickname_changed
+                COALESCE(p.nickname_changed, FALSE) as nickname_changed,
+                equipped_avatar.asset_path as equipped_avatar_url
             FROM users u
             LEFT JOIN profiles p ON p.user_id = u.user_id
+            LEFT JOIN user_equipped_cosmetics uec ON uec.user_id = u.user_id AND uec.item_type = 'avatar'
+            LEFT JOIN cosmetic_items equipped_avatar ON equipped_avatar.id = uec.cosmetic_id AND equipped_avatar.item_type = 'avatar'
             WHERE u.user_id = $1
             """,
             user_id,
@@ -1123,6 +1133,12 @@ class Database:
         )
         changed |= await self._add_column_if_missing(
             "users", columns, "warnings_count INTEGER NOT NULL DEFAULT 0"
+        )
+        changed |= await self._add_column_if_missing(
+            "users", columns, "extra_account_id UUID"
+        )
+        changed |= await self._add_column_if_missing(
+            "users", columns, "auth_source TEXT NOT NULL DEFAULT 'telegram'"
         )
 
         if not await self._constraint_exists("users", "users_status_check"):
@@ -2231,13 +2247,53 @@ class Database:
 
     # --- Заглушки для Кейсов (система удалена) ---
 
+    async def _ensure_user_cases_table(self) -> bool:
+        changed = False
+        if not await self.fetchval("SELECT to_regclass('public.user_cases')"):
+            await self.execute("""
+                CREATE TABLE user_cases (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                    case_id INTEGER NOT NULL,
+                    tier INTEGER NOT NULL DEFAULT 1,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """)
+            await self.execute("CREATE INDEX IF NOT EXISTS idx_user_cases_user_id ON user_cases(user_id)")
+            changed = True
+
+        columns = await self._get_columns("user_cases")
+        changed |= await self._add_column_if_missing("user_cases", columns, "id SERIAL PRIMARY KEY")
+        changed |= await self._add_column_if_missing("user_cases", columns, "user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE")
+        changed |= await self._add_column_if_missing("user_cases", columns, "case_id INTEGER NOT NULL DEFAULT 1")
+        changed |= await self._add_column_if_missing("user_cases", columns, "tier INTEGER NOT NULL DEFAULT 1")
+        changed |= await self._add_column_if_missing("user_cases", columns, "status TEXT NOT NULL DEFAULT 'pending'")
+        changed |= await self._add_column_if_missing("user_cases", columns, "created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
+        return changed
+
     async def get_cases_list(self) -> list[dict[str, Any]]:
         """Заглушка для списка кейсов."""
         return []
 
     async def get_user_cases(self, user_id: int) -> list[dict[str, Any]]:
-        """Заглушка для кейсов пользователя."""
-        return []
+        rows = await self.fetch(
+            "SELECT * FROM user_cases WHERE user_id = $1 AND status = 'pending'", user_id
+        )
+        return [dict(r) for r in rows]
+
+    async def add_user_case(self, user_id: int, case_id: int, tier: int) -> dict:
+        row = await self.fetchrow(
+            """
+            INSERT INTO user_cases (user_id, case_id, tier, status)
+            VALUES ($1, $2, $3, 'pending')
+            RETURNING *
+            """,
+            user_id, case_id, tier
+        )
+        if row:
+            return dict(row)
+        return {"error": "failed"}
 
     # --- Коммьюнити (Посты и лайки) ---
 
@@ -5856,6 +5912,16 @@ class Database:
         """, user_id, item["item_type"], cosmetic_id)
 
         return {"success": True, "equipped": dict(item)}
+
+    async def get_equipped_title(self, user_id: int) -> Optional[dict]:
+        """Вернуть надетый титул {name, class} или None."""
+        row = await self.fetchrow("""
+            SELECT ci.name, ci.class
+            FROM user_equipped_cosmetics uec
+            JOIN cosmetic_items ci ON ci.id = uec.cosmetic_id
+            WHERE uec.user_id = $1 AND uec.item_type = 'title' AND ci.is_active = TRUE
+        """, user_id)
+        return dict(row) if row else None
 
     async def get_user_deck_presets(self, user_id: int) -> list[dict[str, Any]]:
         """Получить все пресеты колод пользователя."""

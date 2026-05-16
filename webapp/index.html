@@ -823,6 +823,8 @@ const T = {
   midGold:  '#ffd060',
   midBg:    'rgba(224,64,192,0.06)',
   midBorder:'rgba(224,64,192,0.18)',
+  red:      '#ffb4ab',
+  green:    '#4ade80',
 };
 
 // ═══════════════════════════════════════════
@@ -2298,9 +2300,11 @@ const BattlePickSheet = ({onClose, profile}) => {
 // ═══════════════════════════════════════════
 // MENU SHEET
 // ═══════════════════════════════════════════
-const MenuSheet = ({onClose, onSettings, onMail, onSupport, onInfo, onFriends, profile, frPending}) => {
+const MenuSheet = ({onClose, onSettings, onMail, onSupport, onInfo, onFriends, onExtraID, profile, frPending}) => {
   const [copyMsg, setCopyMsg] = React.useState(false);
-  const extraId = profile?.user_id || profile?.id || '';
+  const extraId = profile?.extra_account_id ? (profile?.extra_account_id || '') : '';
+  const hasExtraID = !!profile?.extra_account_id;
+  const extraIDLabel = profile?.extra_account_id ? (extraId.substring(0,8) || extraId) : '';
   const copyId = () => { if(extraId){ navigator.clipboard?.writeText(String(extraId)).catch(()=>{}); setCopyMsg(true); setTimeout(()=>setCopyMsg(false), 2000); } };
   const items = [
     {img:ICONS.menu.settings, label:'Настройки', wide:false, action:onSettings},
@@ -2326,10 +2330,20 @@ const MenuSheet = ({onClose, onSettings, onMail, onSupport, onInfo, onFriends, p
             <img src={ICONS.menu.profile} alt="" style={{width:'28px',height:'28px',filter:iconWhite}}/>
           </div>
           <div style={{flex:1,minWidth:0}}>
-            <div style={{fontSize:'13px',fontWeight:'700',color:T.grey1,fontFamily:"'Exo 2',sans-serif"}}>Вход не выполнен</div>
-            <div style={{fontSize:'10px',color:T.grey3,marginTop:'2px'}}>Войдите для сохранения прогресса</div>
+            {hasExtraID
+              ? React.createElement(React.Fragment, null,
+                  React.createElement('div', {style:{fontSize:'13px',fontWeight:'700',color:T.orangeLt,fontFamily:"'Exo 2',sans-serif"}}, extraIDLabel),
+                  React.createElement('div', {style:{fontSize:'10px',color:T.grey3,marginTop:'2px'}}, 'ExtraID активирован')
+                )
+              : React.createElement(React.Fragment, null,
+                  React.createElement('div', {style:{fontSize:'13px',fontWeight:'700',color:T.grey1,fontFamily:"'Exo 2',sans-serif"}}, 'Вход не выполнен'),
+                  React.createElement('div', {style:{fontSize:'10px',color:T.grey3,marginTop:'2px'}}, 'Войдите для сохранения прогресса')
+                )
+            }
           </div>
-          <button onClick={onClose} style={{padding:'7px 14px',borderRadius:'9px',background:T.purple2,border:`1px solid ${T.purple3}`,color:T.white,fontSize:'11px',fontWeight:'700',fontFamily:"'Exo 2',sans-serif",cursor:'pointer',flexShrink:0}}>Войти</button>
+          <button onClick={()=>{onClose(); setTimeout(()=>onExtraID?.(),120);}} style={{padding:'7px 14px',borderRadius:'9px',background:T.purple2,border:`1px solid ${T.purple3}`,color:T.white,fontSize:'11px',fontWeight:'700',fontFamily:"'Exo 2',sans-serif",cursor:'pointer',flexShrink:0}}>
+            {hasExtraID ? 'Управление' : 'Войти'}
+          </button>
         </div>
 
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px'}}>
@@ -2353,14 +2367,332 @@ const MenuSheet = ({onClose, onSettings, onMail, onSupport, onInfo, onFriends, p
           </div>
           <div style={{flex:1,minWidth:0}}>
             <div style={{fontSize:'9px',color:T.grey3,textTransform:'uppercase',letterSpacing:'0.5px'}}>ExtraID</div>
-            <div style={{fontSize:'12px',fontWeight:'700',color:T.white,fontFamily:"'Exo 2',sans-serif",overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{extraId || 'Загрузка...'}</div>
+            <div style={{fontSize:'12px',fontWeight:'700',color:T.white,fontFamily:"'Exo 2',sans-serif",overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{extraIDLabel || 'Загрузка...'}</div>
           </div>
-          <button onClick={copyId} style={{padding:'5px 10px',borderRadius:'7px',background:copyMsg?'#166534':T.purple2,border:`1px solid ${copyMsg?'#4ade80':T.purple3}`,color:copyMsg?'#4ade80':T.purpleLt,fontSize:'10px',fontWeight:'600',cursor:'pointer',fontFamily:"'Inter',sans-serif",flexShrink:0,transition:'all 0.2s'}}>
-            {copyMsg ? '✓ Скоп.' : 'Копир.'}
+          <button onClick={onExtraID ? (()=>{onClose(); setTimeout(()=>onExtraID(),120);}) : copyId} style={{padding:'5px 10px',borderRadius:'7px',background:copyMsg?'#166534':T.purple2,border:`1px solid ${copyMsg?'#4ade80':T.purple3}`,color:copyMsg?'#4ade80':T.purpleLt,fontSize:'10px',fontWeight:'600',cursor:'pointer',fontFamily:"'Inter',sans-serif",flexShrink:0,transition:'all 0.2s'}}>
+            {copyMsg ? '✓ Скоп.' : 'Управление'}
           </button>
         </div>
       </div>
     </div>
+  );
+};
+
+// ═══════════════════════════════════════════
+// EXTRAID SHEET
+// ═══════════════════════════════════════════
+const ExtraIDSheet = ({onClose, view, onSetView, extraIDData, onExtraIDData, profile, onReloadProfile}) => {
+  const [email,       setEmail]       = React.useState('');
+  const [password,    setPassword]    = React.useState('');
+  const [nickname,    setNickname]    = React.useState('');
+  const [error,       setError]       = React.useState('');
+  const [loading,     setLoading]     = React.useState(false);
+  const [editNick,    setEditNick]    = React.useState(false);
+  const [newNick,     setNewNick]     = React.useState('');
+  const [delPass,     setDelPass]     = React.useState('');
+  const [copyMsg,     setCopyMsg]     = React.useState(false);
+  const [focusedInput,setFocusedInput] = React.useState(null);
+  const [showPass,    setShowPass]     = React.useState(false);
+
+  const inputStyle = (name) => ({
+    width:'100%', padding:'13px 14px', borderRadius:'12px',
+    background: focusedInput===name ? 'rgba(61,42,112,0.8)' : T.bgCard,
+    border: '1.5px solid ' + (focusedInput===name ? T.purple3 : T.purple1),
+    color: T.white, fontSize:'15px',
+    fontFamily:"'Inter',sans-serif", outline:'none', boxSizing:'border-box',
+    transition:'all 0.15s',
+    boxShadow: focusedInput===name ? '0 0 0 3px ' + T.purple2 + '40' : 'none'
+  });
+
+  const back = (v) => { setError(''); onSetView(v); };
+  const setErr = (e) => { setError(e); setLoading(false); };
+
+  const doRegister = async () => {
+    if (!email || !password) { setErr('Заполните все поля'); return; }
+    setLoading(true);
+    const authData = resolveUserId();
+    console.log('[ExtraID] doRegister start, authData type:', typeof authData, !!authData);
+    try {
+      const ctrl = new AbortController();
+      const tid = setTimeout(() => ctrl.abort(), 15000);
+      let r, d;
+      try {
+        r = await fetch('/api/extraid/register?_auth=' + encodeURIComponent(authData), {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,password,nickname:nickname||undefined}), signal: ctrl.signal});
+        clearTimeout(tid);
+        d = await r.json();
+        console.log('[ExtraID] register response:', r.status, d);
+      } catch(e) {
+        clearTimeout(tid);
+        console.error('[ExtraID] register fetch error:', e);
+        setErr(e.name === 'AbortError' ? 'Сервер не ответил (таймаут)' : 'Ошибка сети');
+        setLoading(false);
+        return;
+      }
+      if (d.ok) {
+        const lr = await fetch('/api/extraid/login', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,password})});
+        const ld = await lr.json();
+        console.log('[ExtraID] login response:', lr.status, ld);
+        if (ld.ok) {
+          saveExtraToken(ld.token); var ed=await loadExtraIDProfile(ld.token);
+          onExtraIDData(ed); onReloadProfile(); onSetView('profile'); if(ld.reg_bonus) window.showToast?.('Бонус: +3 ключа!','success',3000);
+        } else {
+          setErr('Аккаунт создан, но не удалось войти. Используй форму входа.');
+          onSetView('login');
+        }
+      } else {
+        var m = d.error==='email_taken'?'Email уже занят':d.error==='nickname_taken'?'Никнейм занят':d.error==='password_too_short'?'Пароль от 8 символов':d.message||'Ошибка регистрации';
+        setErr(m);
+      }
+    } catch(e) { console.error('[ExtraID] doRegister unexpected:', e); setErr('Ошибка сети'); }
+    setLoading(false);
+  };
+
+  const doLogin = async () => {
+    if (!email || !password) { setErr('Заполните все поля'); return; }
+    setLoading(true);
+    try {
+      const r = await fetch('/api/extraid/login', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,password})});
+      const d = await r.json();
+      if (d.ok) {
+        saveExtraToken(d.token); var ed=await loadExtraIDProfile(d.token);
+        onExtraIDData(ed); onReloadProfile(); onSetView('profile'); if(d.reg_bonus) window.showToast?.('Бонус: +3 ключа!','success',3000);
+      } else { setErr(d.error==='invalid_credentials'?'Неверный email или пароль':d.message||'Ошибка входа'); }
+    } catch(_) { setErr('Ошибка сети'); }
+    setLoading(false);
+  };
+
+
+
+  const doUpdateNick = async () => {
+    var ad = resolveUserId();
+    try {
+      const r = await fetch('/api/extraid/profile?_auth='+encodeURIComponent(ad), {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({nickname:newNick})});
+      const d = await r.json();
+      if (d.ok) { var ed=await loadExtraIDProfile(ad); onExtraIDData(ed); setEditNick(false); window.showToast?.('Никнейм обновлён','success',2000); }
+      else { setErr(d.error==='nickname_taken'?'Никнейм занят':d.message||'Ошибка'); }
+    } catch(_) { setErr('Ошибка сети'); }
+  };
+
+  const doDelete = async () => {
+    if (!delPass) { setErr('Введи пароль'); return; }
+    var ad = resolveUserId();
+    try {
+      const r = await fetch('/api/extraid/delete?_auth='+encodeURIComponent(ad), {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:delPass,confirm:'DELETE'})});
+      const d = await r.json();
+      if (d.ok) { clearExtraToken(); onExtraIDData(null); onReloadProfile(); onClose(); }
+      else { setErr(d.error==='invalid_password'?'Неверный пароль':d.message||'Ошибка'); }
+    } catch(_) { setErr('Ошибка сети'); }
+  };
+
+  const copyDisplayId = () => {
+    if (extraIDData?.display_id) {
+      navigator.clipboard?.writeText(extraIDData.display_id).catch(()=>{});
+      setCopyMsg(true); setTimeout(()=>setCopyMsg(false),2000);
+    }
+  };
+
+  const doLogout = async () => {
+    const token = localStorage.getItem('extra_id_token');
+    if (token) {
+      try { await fetch(`/api/auth/logout?_auth=${encodeURIComponent(token)}`, {method:'POST'}); } catch(_) {}
+    }
+    clearExtraToken();
+    onExtraIDData(null);
+    onReloadProfile();
+    onSetView('onboarding');
+    onClose();
+    window.showToast?.('Вы вышли из ExtraID','info',2000);
+  };
+
+  var renderContent = null;
+
+  if (view === 'onboarding') {
+    renderContent = [
+      React.createElement('div', {key:'hero',style:{width:'100%',height:'30vh',minHeight:'200px',borderRadius:'16px',overflow:'hidden',flexShrink:0,border:`1px solid ${T.purple1}20`,marginBottom:'16px',background:'linear-gradient(180deg,#3d2a70 0%,#1a1238 100%)',display:'flex',alignItems:'center',justifyContent:'center'}},
+        React.createElement('span', {style:{fontSize:'80px',opacity:.3}}, '\uD83D\uDEE1\uFE0F')
+      ),
+      React.createElement('h1', {key:'h1',style:{fontSize:'22px',fontWeight:'900',color:T.white,textAlign:'center',marginBottom:'4px',fontFamily:"'Exo 2',sans-serif"}}, 'Создай ExtraID'),
+      React.createElement('p', {key:'p',style:{fontSize:'15px',color:T.grey1,textAlign:'center',marginBottom:'16px',fontFamily:"'Inter',sans-serif"}}, 'Самый надёжный способ защитить свой прогресс!'),
+      React.createElement('div', {key:'benefits',style:{background:'rgba(26,16,48,0.6)',backdropFilter:'blur(12px)',borderRadius:'16px',padding:'14px',marginBottom:'14px',border:`1px solid ${T.purple1}40`}},
+        [{icon:'\uD83C\uDFAE',label:'Открой все платформы'},{icon:'\uD83D\uDEE1\uFE0F',label:'Не бойся блокировки Telegram'},{icon:'\uD83C\uDF96\uFE0F',label:'Получи приятные бонусы'}].map((b,i)=>[
+          i>0&&React.createElement('div',{key:'d'+i,style:{height:'1px',background:`linear-gradient(90deg,transparent,${T.purple1}40,transparent)`,margin:'10px 0'}}),
+          React.createElement('div',{key:'b'+i,style:{display:'flex',alignItems:'center',gap:'12px'}},
+            React.createElement('div',{style:{width:'36px',height:'36px',borderRadius:'10px',background:T.purple2,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,border:`1px solid ${T.purple1}30`}},React.createElement('span',null,b.icon)),
+            React.createElement('span',{style:{fontSize:'14px',color:T.white,fontFamily:"'Inter',sans-serif"}},b.label)
+          )
+        ])
+      ),
+      React.createElement('div', {key:'reward',style:{background:`linear-gradient(135deg,${T.purple2},#1a1238)`,borderRadius:'16px',padding:'14px',marginBottom:'16px',border:`1px solid ${T.orange}40`,display:'flex',alignItems:'center',gap:'12px'}},
+        React.createElement('div',{style:{width:'44px',height:'44px',borderRadius:'12px',background:'rgba(0,0,0,0.3)',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,border:`1px solid ${T.orange}40`}},React.createElement('span',{style:{fontSize:'24px'}},'\uD83C\uDF81')),
+        React.createElement('div',{style:{flex:1}},
+          React.createElement('div',{style:{fontSize:'10px',color:T.orangeLt,textTransform:'uppercase',letterSpacing:'1px',fontFamily:"'Inter',sans-serif"}},'БОНУС ЗА РЕГИСТРАЦИЮ'),
+          React.createElement('div',{style:{fontSize:'15px',fontWeight:'800',color:T.white,fontFamily:"'Exo 2',sans-serif"}},'3 Кейса')
+        )
+      ),
+      React.createElement('button', {key:'cta',onClick:()=>onSetView('register'),style:{width:'100%',height:'48px',borderRadius:'12px',background:T.orange,border:'none',color:'#fff',fontSize:'16px',fontWeight:'800',cursor:'pointer',fontFamily:"'Exo 2',sans-serif",marginBottom:'8px'}}, 'Продолжить'),
+      React.createElement('button', {key:'restore',onClick:()=>{ if(tg?.openTelegramLink) tg.openTelegramLink('https://t.me/lqsup'); else window.open('https://t.me/lqsup','_blank'); },style:{width:'100%',padding:'10px',borderRadius:'12px',background:'transparent',border:'none',color:T.grey1,fontSize:'13px',cursor:'pointer',fontFamily:"'Inter',sans-serif"}}, 'Восстановить игровой прогресс'),
+    ];
+  }
+
+  if (view === 'register') {
+    renderContent = [
+      React.createElement('button', {key:'back',onClick:()=>back('onboarding'),style:{background:'none',border:'none',color:T.grey1,fontSize:'13px',cursor:'pointer',alignSelf:'flex-start',marginBottom:'16px',fontFamily:"'Inter',sans-serif",padding:0}}, '\u2190 Назад'),
+      React.createElement('div', {key:'header',style:{display:'flex',alignItems:'center',gap:'14px',marginBottom:'20px'}},
+        React.createElement('div',{style:{width:'48px',height:'48px',borderRadius:'50%',background:T.purple2,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,border:`2px solid ${T.purple1}`}},React.createElement('span',{style:{fontSize:'24px'}},'\uD83C\uDD94')),
+        React.createElement('div',null,
+          React.createElement('div',{style:{fontSize:'20px',fontWeight:'900',color:T.white,fontFamily:"'Exo 2',sans-serif"}},'Создать ExtraID'),
+          React.createElement('div',{style:{fontSize:'13px',color:T.grey3,marginTop:'2px',fontFamily:"'Inter',sans-serif"}},'Быстро. Бесплатно. Навсегда.')
+        )
+      ),
+      error?React.createElement('div',{key:'err',style:{padding:'10px 14px',background:T.red+'20',border:'1px solid '+T.red+'40',borderRadius:'10px',color:T.red,fontSize:'13px',marginBottom:'14px',fontFamily:"'Inter',sans-serif"}},error):null,
+      // Email
+      React.createElement('div',{key:'emailBlock',style:{marginBottom:'14px'}},
+        React.createElement('div',{style:{fontSize:'11px',textTransform:'uppercase',letterSpacing:'0.5px',color:T.grey3,marginBottom:'6px',fontFamily:"'Inter',sans-serif"}},'Email'),
+        React.createElement('input',{type:'email',value:email,onChange:(e)=>setEmail(e.target.value),placeholder:'you@example.com',autoComplete:'email',onFocus:()=>setFocusedInput('email'),onBlur:()=>setFocusedInput(null),style:inputStyle('email')})
+      ),
+      // Password
+      React.createElement('div',{key:'passBlock',style:{marginBottom:'14px',position:'relative'}},
+        React.createElement('div',{style:{fontSize:'11px',textTransform:'uppercase',letterSpacing:'0.5px',color:T.grey3,marginBottom:'6px',fontFamily:"'Inter',sans-serif"}},'Пароль'),
+        React.createElement('input',{type:showPass?'text':'password',value:password,onChange:(e)=>setPassword(e.target.value),placeholder:'Минимум 8 символов',autoComplete:'new-password',onFocus:()=>setFocusedInput('pass'),onBlur:()=>setFocusedInput(null),style:{...inputStyle('pass'),paddingRight:'44px'}}),
+        React.createElement('button',{onClick:()=>setShowPass(!showPass),style:{position:'absolute',right:'8px',top:'50%',transform:'translateY(-50%)',border:'none',background:'transparent',color:T.grey1,fontSize:'18px',cursor:'pointer',padding:'4px',lineHeight:'1'}},showPass?'\uD83D\uDC41\uFE0F':'\uD83D\uDC40')
+      ),
+      // Nickname
+      React.createElement('div',{key:'nickBlock',style:{marginBottom:'18px'}},
+        React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'6px'}},
+          React.createElement('div',{style:{fontSize:'11px',textTransform:'uppercase',letterSpacing:'0.5px',color:T.grey3,fontFamily:"'Inter',sans-serif"}},'Никнейм'),
+          React.createElement('span',{style:{fontSize:'11px',color:T.grey3,fontFamily:"'Inter',sans-serif"}},nickname.length+'/20')
+        ),
+        React.createElement('input',{value:nickname,onChange:(e)=>setNickname(e.target.value),placeholder:'3-20 символов a-z 0-9 _ -',maxLength:20,onFocus:()=>setFocusedInput('nick'),onBlur:()=>setFocusedInput(null),style:inputStyle('nick')})
+      ),
+      // Submit
+      React.createElement('button',{key:'btn',disabled:loading,onClick:doRegister,style:{width:'100%',height:'52px',borderRadius:'14px',background:loading?T.purple2:'linear-gradient(135deg,'+T.orange+','+T.purpleHL+')',border:'none',color:'#fff',fontSize:'16px',fontWeight:'900',cursor:loading?'not-allowed':'pointer',opacity:loading?.6:1,fontFamily:"'Exo 2',sans-serif",boxShadow:loading?'none':'0 4px 20px rgba(245,146,30,0.3)',transition:'all 0.15s'}}, loading?'Создание...':'Создать аккаунт'),
+      // Footer link — login not available in TG WebApp; direct to support
+      React.createElement('div',{key:'footer',style:{marginTop:'14px',textAlign:'center'}},
+        React.createElement('span',{style:{fontSize:'13px',color:T.grey3,fontFamily:"'Inter',sans-serif"}},'Уже есть аккаунт? '),
+        React.createElement('button',{onClick:()=>{ if(tg?.openTelegramLink) tg.openTelegramLink('https://t.me/lqsup'); else window.open('https://t.me/lqsup','_blank'); },style:{background:'none',border:'none',color:T.orangeLt,fontSize:'13px',fontWeight:'600',cursor:'pointer',fontFamily:"'Inter',sans-serif",padding:0}},'Написать в поддержку')
+      ),
+    ];
+  }
+
+  if (view === 'login') {
+    renderContent = [
+      React.createElement('button', {key:'back',onClick:()=>back('onboarding'),style:{background:'none',border:'none',color:T.grey1,fontSize:'13px',cursor:'pointer',alignSelf:'flex-start',marginBottom:'16px',fontFamily:"'Inter',sans-serif",padding:0}}, '\u2190 Назад'),
+      React.createElement('div', {key:'header',style:{display:'flex',alignItems:'center',gap:'14px',marginBottom:'20px'}},
+        React.createElement('div',{style:{width:'48px',height:'48px',borderRadius:'50%',background:T.purple2,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,border:`2px solid ${T.purple1}`}},React.createElement('span',{style:{fontSize:'24px'}},'\uD83D\uDD10')),
+        React.createElement('div',null,
+          React.createElement('div',{style:{fontSize:'20px',fontWeight:'900',color:T.white,fontFamily:"'Exo 2',sans-serif"}},'Войти в ExtraID'),
+          React.createElement('div',{style:{fontSize:'13px',color:T.grey3,marginTop:'2px',fontFamily:"'Inter',sans-serif"}},'Введите email и пароль')
+        )
+      ),
+      error?React.createElement('div',{key:'err',style:{padding:'10px 14px',background:T.red+'20',border:'1px solid '+T.red+'40',borderRadius:'10px',color:T.red,fontSize:'13px',marginBottom:'14px',fontFamily:"'Inter',sans-serif"}},error):null,
+      // Email
+      React.createElement('div',{key:'emailBlock',style:{marginBottom:'14px'}},
+        React.createElement('div',{style:{fontSize:'11px',textTransform:'uppercase',letterSpacing:'0.5px',color:T.grey3,marginBottom:'6px',fontFamily:"'Inter',sans-serif"}},'Email'),
+        React.createElement('input',{type:'email',value:email,onChange:(e)=>setEmail(e.target.value),placeholder:'you@example.com',autoComplete:'email',onFocus:()=>setFocusedInput('email'),onBlur:()=>setFocusedInput(null),style:inputStyle('email')})
+      ),
+      // Password
+      React.createElement('div',{key:'passBlock',style:{marginBottom:'18px',position:'relative'}},
+        React.createElement('div',{style:{fontSize:'11px',textTransform:'uppercase',letterSpacing:'0.5px',color:T.grey3,marginBottom:'6px',fontFamily:"'Inter',sans-serif"}},'Пароль'),
+        React.createElement('input',{type:showPass?'text':'password',value:password,onChange:(e)=>setPassword(e.target.value),placeholder:'Введите пароль',autoComplete:'current-password',onFocus:()=>setFocusedInput('pass'),onBlur:()=>setFocusedInput(null),style:{...inputStyle('pass'),paddingRight:'44px'}}),
+        React.createElement('button',{onClick:()=>setShowPass(!showPass),style:{position:'absolute',right:'8px',top:'50%',transform:'translateY(-50%)',border:'none',background:'transparent',color:T.grey1,fontSize:'18px',cursor:'pointer',padding:'4px',lineHeight:'1'}},showPass?'\uD83D\uDC41\uFE0F':'\uD83D\uDC40')
+      ),
+      // Submit
+      React.createElement('button',{key:'btn',disabled:loading,onClick:doLogin,style:{width:'100%',height:'52px',borderRadius:'14px',background:loading?T.purple2:'linear-gradient(135deg,'+T.orange+','+T.purpleHL+')',border:'none',color:'#fff',fontSize:'16px',fontWeight:'900',cursor:loading?'not-allowed':'pointer',opacity:loading?.6:1,fontFamily:"'Exo 2',sans-serif",boxShadow:loading?'none':'0 4px 20px rgba(245,146,30,0.3)',transition:'all 0.15s'}}, loading?'Вход...':'Войти'),
+      // Footer link
+      React.createElement('div',{key:'footer',style:{marginTop:'14px',textAlign:'center'}},
+        React.createElement('span',{style:{fontSize:'13px',color:T.grey3,fontFamily:"'Inter',sans-serif"}},'Нет аккаунта? '),
+        React.createElement('button',{onClick:()=>onSetView('register'),style:{background:'none',border:'none',color:T.orangeLt,fontSize:'13px',fontWeight:'600',cursor:'pointer',fontFamily:"'Inter',sans-serif",padding:0}},'Создать ExtraID')
+      ),
+    ];
+  }
+
+
+  if (view === 'profile') {
+    var nick = extraIDData?.nickname || '—';
+    var trophies = profile?.trophies || 0;
+    renderContent = [
+      React.createElement('h2', {key:'h2',style:{fontSize:'20px',fontWeight:'900',color:T.white,marginBottom:'16px',fontFamily:"'Exo 2',sans-serif"}}, 'ExtraID'),
+      // ExtraID card
+      React.createElement('div', {key:'card',style:{background:T.bgCard,border:`1px solid ${T.purple1}`,borderRadius:'14px',padding:'14px',marginBottom:'12px',display:'flex',alignItems:'center',gap:'12px'}},
+        React.createElement('div',{style:{width:'40px',height:'40px',borderRadius:'12px',background:`linear-gradient(135deg,${T.purple2},${T.purple3})`,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}},React.createElement('span',{style:{fontSize:'18px'}},'\uD83C\uDD94')),
+        React.createElement('div',{style:{flex:1,minWidth:0}},
+          React.createElement('div',{style:{fontSize:'10px',color:T.grey3,textTransform:'uppercase',letterSpacing:'.5px',fontFamily:"'Inter',sans-serif"}},'ExtraID'),
+          React.createElement('div',{style:{fontSize:'16px',fontWeight:'800',color:T.white,fontFamily:"'Exo 2',sans-serif"}},extraIDData?.display_id||'—')
+        ),
+        React.createElement('button',{onClick:copyDisplayId,style:{padding:'7px 12px',borderRadius:'8px',background:copyMsg?'#166534':T.purple2,border:`1px solid ${copyMsg?'#4ade80':T.purple3}`,color:copyMsg?'#4ade80':T.purpleLt,fontSize:'11px',fontWeight:'700',cursor:'pointer',fontFamily:"'Inter',sans-serif",flexShrink:0}},copyMsg?'✓':'Копир.')
+      ),
+      // ExtraArena block
+      React.createElement('div', {key:'arena',style:{background:T.bgCard,border:`1px solid ${T.purple1}`,borderRadius:'14px',padding:'14px',marginBottom:'12px',display:'flex',alignItems:'center',gap:'12px'}},
+        React.createElement('div',{style:{width:'40px',height:'40px',borderRadius:'12px',background:T.purple2,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}},React.createElement('span',{style:{fontSize:'20px'}},'⚔️')),
+        React.createElement('div',{style:{flex:1,minWidth:0}},
+          React.createElement('div',{style:{fontSize:'15px',fontWeight:'700',color:T.orangeLt,fontFamily:"'Exo 2',sans-serif"}},'ExtraArena'),
+          React.createElement('div',{style:{fontSize:'12px',color:T.grey1,marginTop:'2px',fontFamily:"'Inter',sans-serif"}},extraIDData?.linked_telegram?'Подключено через Telegram':'Email-аккаунт')
+        ),
+        React.createElement('div',{style:{textAlign:'right'}},
+          React.createElement('div',{style:{fontSize:'18px',fontWeight:'900',color:T.orange,fontFamily:"'Exo 2',sans-serif"}},trophies),
+          React.createElement('div',{style:{fontSize:'10px',color:T.grey3,textTransform:'uppercase',fontFamily:"'Inter',sans-serif"}},'Кубков')
+        )
+      ),
+      // Actions
+      React.createElement('button',{key:'play',onClick:onClose,style:{width:'100%',height:'44px',borderRadius:'12px',background:T.purple2,border:`1px solid ${T.purple3}`,color:T.white,fontSize:'14px',fontWeight:'700',cursor:'pointer',fontFamily:"'Exo 2',sans-serif",marginBottom:'8px'}},'Играть'),
+      React.createElement('button',{key:'settings',onClick:()=>onSetView('settings'),style:{width:'100%',height:'44px',borderRadius:'12px',background:T.bgCard,border:`1px solid ${T.purple1}`,color:T.white,fontSize:'14px',fontWeight:'700',cursor:'pointer',fontFamily:"'Exo 2',sans-serif",marginBottom:'8px'}},'Настройки'),
+      React.createElement('button',{key:'logout',onClick:doLogout,style:{width:'100%',height:'44px',borderRadius:'12px',background:'transparent',border:`1px solid ${T.red}40`,color:T.red,fontSize:'13px',fontWeight:'600',cursor:'pointer',fontFamily:"'Inter',sans-serif"}},'Выйти'),
+    ];
+  }
+
+  if (view === 'settings') {
+    renderContent = [
+      React.createElement('button', {key:'back',onClick:()=>onSetView('profile'),style:{background:'none',border:'none',color:T.grey1,fontSize:'13px',cursor:'pointer',alignSelf:'flex-start',marginBottom:'12px',fontFamily:"'Inter',sans-serif"}}, '\u2190 Назад'),
+      React.createElement('h2', {key:'h2',style:{fontSize:'20px',fontWeight:'900',color:T.white,marginBottom:'16px',fontFamily:"'Exo 2',sans-serif"}}, 'Настройки'),
+      // Email
+      React.createElement('div', {key:'email',style:{background:T.bgCard,border:`1px solid ${T.purple1}`,borderRadius:'14px',padding:'14px',marginBottom:'12px',display:'flex',alignItems:'center',gap:'12px'}},
+        React.createElement('div',{style:{width:'36px',height:'36px',borderRadius:'10px',background:T.purple2,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}},React.createElement('span',null,'📧')),
+        React.createElement('div',{style:{flex:1}},
+          React.createElement('div',{style:{fontSize:'12px',color:T.grey3,fontFamily:"'Inter',sans-serif"}},'Email'),
+          React.createElement('div',{style:{fontSize:'14px',fontWeight:'600',color:T.white,fontFamily:"'Exo 2',sans-serif"}},extraIDData?.email||'—')
+        )
+      ),
+      // Nickname
+      React.createElement('div', {key:'nick',style:{background:T.bgCard,border:`1px solid ${T.purple1}`,borderRadius:'14px',padding:'14px',marginBottom:'12px',display:'flex',alignItems:'center',gap:'12px'}},
+        React.createElement('div',{style:{width:'36px',height:'36px',borderRadius:'10px',background:T.purple2,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}},React.createElement('span',null,'👤')),
+        React.createElement('div',{style:{flex:1}},
+          React.createElement('div',{style:{fontSize:'12px',color:T.grey3,fontFamily:"'Inter',sans-serif"}},'ExtraID Nickname'),
+          React.createElement('div',{style:{fontSize:'14px',fontWeight:'600',color:T.white,fontFamily:"'Exo 2',sans-serif"}},extraIDData?.nickname||'не задан')
+        ),
+        React.createElement('button',{onClick:()=>{setEditNick(!editNick);setNewNick(extraIDData?.nickname||'')},style:{padding:'7px 14px',borderRadius:'8px',background:T.purple2,border:`1px solid ${T.purple3}`,color:T.white,fontSize:'12px',fontWeight:'600',cursor:'pointer',fontFamily:"'Inter',sans-serif",flexShrink:0}},editNick?'Отмена':'Изменить')
+      ),
+      editNick?React.createElement('div',{key:'editNick',style:{marginBottom:'12px',display:'flex',gap:'8px'}},
+        React.createElement('input',{value:newNick,onChange:(e)=>setNewNick(e.target.value),placeholder:'Новый никнейм',style:{flex:1,padding:'10px 12px',borderRadius:'10px',background:T.bgCard,border:`1px solid ${T.purple1}`,color:T.white,fontSize:'13px',fontFamily:"'Inter',sans-serif",outline:'none',boxSizing:'border-box'}}),
+        React.createElement('button',{onClick:doUpdateNick,style:{padding:'10px 16px',borderRadius:'10px',background:T.orange,border:'none',color:'#fff',fontSize:'13px',fontWeight:'700',cursor:'pointer',fontFamily:"'Exo 2',sans-serif",flexShrink:0}},'OK')
+      ):null,
+      // Danger Zone
+      React.createElement('div', {key:'dangerTitle',style:{padding:'8px 0',marginTop:'8px'}},
+        React.createElement('div',{style:{fontSize:'13px',fontWeight:'700',color:T.red,fontFamily:"'Inter',sans-serif",display:'flex',alignItems:'center',gap:'6px'}},
+          React.createElement('span',null,'⚠️'),
+          'Опасная зона'
+        )
+      ),
+      React.createElement('div', {key:'danger',style:{background:T.bgCard,border:`1px solid ${T.red}20`,borderRadius:'14px',overflow:'hidden',marginBottom:'12px'}},
+        React.createElement('div',{style:{display:'flex',alignItems:'center',gap:'8px',padding:'12px 14px'}},
+          React.createElement('input',{type:'password',value:delPass,onChange:(e)=>setDelPass(e.target.value),placeholder:'Введи пароль для удаления',style:{flex:1,padding:'10px 12px',borderRadius:'8px',background:'rgba(0,0,0,0.3)',border:`1px solid ${T.red}30`,color:T.white,fontSize:'13px',fontFamily:"'Inter',sans-serif",outline:'none',boxSizing:'border-box'}}),
+          React.createElement('button',{onClick:doDelete,style:{padding:'10px 14px',borderRadius:'8px',background:T.red,border:'none',color:'#fff',fontSize:'12px',fontWeight:'700',cursor:'pointer',fontFamily:"'Inter',sans-serif",flexShrink:0}},'Удалить')
+        ),
+        React.createElement('div',{style:{padding:'0 14px 10px',fontSize:'10px',color:T.grey3,fontFamily:"'Inter',sans-serif"}},'Полное удаление аккаунта ExtraID')
+      ),
+    ];
+  }
+
+  return React.createElement('div', {style:{position:'absolute',inset:0,background:'rgba(5,3,14,0.72)',backdropFilter:'blur(8px)',zIndex:20,display:'flex',flexDirection:'column',justifyContent:'flex-end'},onClick:onClose},
+    React.createElement('div', {onClick:e=>e.stopPropagation(),className:'safe-pad-bottom',style:{background:`linear-gradient(180deg,#1a1238 0%,#130d26 100%)`,borderRadius:'24px 24px 0 0',padding:'16px 18px 24px',animation:'slideUp 0.28s cubic-bezier(0.32,0.72,0,1)',border:`1px solid ${T.purple1}`,borderBottom:'none',boxShadow:'0 -16px 50px rgba(0,0,0,0.5)',maxHeight:'85vh',overflowY:'auto'}},
+      React.createElement('div',{style:{width:'36px',height:'4px',borderRadius:'2px',background:T.purple2,margin:'0 auto 16px'}}),
+      React.createElement('div',{style:{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'16px'}},
+        React.createElement('span',{style:{fontSize:'22px',fontWeight:'900',color:T.white,fontFamily:"'Exo 2',sans-serif"}},'ExtraID'),
+        React.createElement('button',{onClick:onClose,style:{width:'34px',height:'34px',borderRadius:'50%',background:T.bgCard,border:`1px solid ${T.purple1}`,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer'}},
+          React.createElement('svg',{width:'12',height:'12',viewBox:'0 0 12 12',fill:'none'},React.createElement('path',{d:'M2 2L10 10M10 2L2 10',stroke:T.grey1,strokeWidth:'1.8',strokeLinecap:'round'}))
+        )
+      ),
+      React.createElement('div',{style:{display:'flex',flexDirection:'column',gap:'0'}}, renderContent)
+    )
   );
 };
 
@@ -5950,6 +6282,9 @@ const App = () => {
   const [frPendingCount, setFrPendingCount] = React.useState(0);
   const [inBattle,       setInBattle]       = React.useState(false);
   const [showProfile,    setShowProfile]    = React.useState(false);
+  const [showExtraID,    setShowExtraID]    = React.useState(false);
+  const [extraIDView,    setExtraIDView]    = React.useState('onboarding');
+  const [extraIDData,    setExtraIDData]    = React.useState(null);
 
   window.showToast = (msg, type, ms) => {
     type = type || 'success'; ms = ms || 3000;
@@ -5958,9 +6293,9 @@ const App = () => {
     setTimeout(function(){ setToast(function(t){ return t && t.id === id ? null : t; }); }, ms);
   };
 
-  const hasOverlay = showAI || showGenerator || showMenu || showSettings || showBattlePick || showGameMode || showMail || showCaseOpen || showInfo || showGloryPath || showLeagueInfo || showBattlePass || showPreBattle || showSupport || showInvite || showBattles || showFriends || showProfile;
+  const hasOverlay = showAI || showGenerator || showMenu || showSettings || showBattlePick || showGameMode || showMail || showCaseOpen || showInfo || showGloryPath || showLeagueInfo || showBattlePass || showPreBattle || showSupport || showInvite || showBattles || showFriends || showProfile || showExtraID;
 
-  React.useEffect(()=>{ window.__rootSetPreBattle = setShowPreBattle; window.__updateProfile = setProfile; return ()=>window.__rootSetPreBattle=null; }, []);
+  React.useEffect(()=>{ window.__rootSetPreBattle = setShowPreBattle; window.__updateProfile = setProfile; window.__initExtraIDData = async ()=>{ const ad = resolveUserId(); const ed = await loadExtraIDProfile(ad); if(ed) setExtraIDData(ed); }; return ()=>window.__rootSetPreBattle=null; }, []);
 
   React.useEffect(()=>{
     const anyOpen = showAI || showGenerator || showMenu || showSettings || showBattlePick || showGameMode || showMail || showCaseOpen || showInfo || showGloryPath || showLeagueInfo || showBattlePass || showSupport || showBattles;
@@ -6118,7 +6453,7 @@ const App = () => {
 
       {!showAI && !showGenerator && <BottomNav active={navTab} onChange={setNavTab}/>}
 
-      {showMenu       && <MenuSheet       onClose={()=>setShowMenu(false)} onSettings={openSettings} onMail={()=>{setShowMenu(false);setTimeout(()=>setShowMail(true),120);}} onSupport={()=>{setShowMenu(false);setTimeout(()=>setShowSupport(true),120);}} onInfo={()=>{setShowMenu(false);setTimeout(()=>setShowInfo(true),120);}} onFriends={()=>{setShowMenu(false);setTimeout(()=>setShowFriends(true),120);}} profile={profile} frPending={frPendingCount}/>}
+      {showMenu       && <MenuSheet       onClose={()=>setShowMenu(false)} onSettings={openSettings} onMail={()=>{setShowMenu(false);setTimeout(()=>setShowMail(true),120);}} onSupport={()=>{setShowMenu(false);setTimeout(()=>setShowSupport(true),120);}} onInfo={()=>{setShowMenu(false);setTimeout(()=>setShowInfo(true),120);}} onFriends={()=>{setShowMenu(false);setTimeout(()=>setShowFriends(true),120);}} onExtraID={()=>{setShowMenu(false);setTimeout(()=>{setExtraIDView(profile?.extra_account_id?'profile':'onboarding');setShowExtraID(true);},120);}} profile={profile} frPending={frPendingCount}/>}
       {showSettings   && <SettingsScreen  onClose={()=>setShowSettings(false)} profile={profile}/>}
       {showBattlePick && <BattlePickSheet onClose={()=>setShowBattlePick(false)} profile={profile}/>}
       {showGameMode   && <GameModeSheet   onClose={()=>setShowGameMode(false)} onConfirm={(mode, deckId)=>{setShowGameMode(false);window.startBattle(profile, deckId, mode);}}/>}
@@ -6134,6 +6469,7 @@ const App = () => {
       {showInvite   && incomingInvite && <IncomingInviteModal invite={incomingInvite} profile={profile} onClose={()=>{setShowInvite(false);setIncomingInvite(null);}} onStart={()=>setInBattle(true)}/>}
       {showFriends && <FriendsScreen onClose={()=>{setShowFriends(false);setTimeout(async()=>{try{const r=await fetch(_buildAuthUrl('/api/friends/requests'));const d=await r.json();setFrPendingCount((d.incoming||[]).length+(d.outgoing||[]).length);}catch(e){}},300);}} profile={profile}/>}
       {showProfile && <ProfileScreen profile={profile} onClose={()=>setShowProfile(false)}/>}
+      {showExtraID && <ExtraIDSheet onClose={()=>setShowExtraID(false)} view={extraIDView} onSetView={setExtraIDView} extraIDData={extraIDData} onExtraIDData={setExtraIDData} profile={profile} onReloadProfile={()=>loadProfile(resolveUserId())} />}
 
       {/* League Up Modal */}
       {leagueUp && (()=>{

@@ -324,6 +324,9 @@ if (tg) {
 // Display-only: resolves identity for rendering/client use.
 // Auth for API calls should always be the string initData via _auth param.
 function resolveUserId() {
+  const jwtToken = localStorage.getItem('extra_id_token');
+  if (jwtToken) return jwtToken;
+
   const urlParams = new URLSearchParams(window.location.search);
   
   // Пробуем получить initData разными способами
@@ -368,6 +371,55 @@ function resolveUserId() {
   return null;
 }
 
+// Device analytics — send once per session
+async function collectDeviceData() {
+    if (sessionStorage.getItem("device_reported")) return;
+
+    var tgPlatform = tg?.platform;
+    if (tgPlatform === "unknown" || !tgPlatform) {
+        tgPlatform = null;
+    }
+
+    var data = {
+        platform: tgPlatform ? "telegram_miniapp" : "web_browser",
+        screen_width: window.screen.width,
+        screen_height: window.screen.height,
+        device_pixel_ratio: window.devicePixelRatio,
+        locale_language: navigator.language?.split("-")[0],
+        locale_region: navigator.language?.split("-")[1] || null,
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        tg_platform: tgPlatform,
+        tg_version: tg?.version || null,
+    };
+
+    var authData = resolveUserId();
+    var ad = typeof authData === "string" ? authData : String(authData);
+    try {
+        await fetch("/api/analytics/device?_auth=" + encodeURIComponent(ad), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(data),
+        });
+    } catch (_) {}
+
+    sessionStorage.setItem("device_reported", "1");
+}
+
+function saveExtraToken(token) {
+  localStorage.setItem('extra_id_token', token);
+}
+function clearExtraToken() {
+  localStorage.removeItem('extra_id_token');
+}
+async function loadExtraIDProfile(authData) {
+  try {
+    const resp = await fetch(`/api/extraid/profile?_auth=${encodeURIComponent(authData)}`);
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    return data.extra_id_bound ? data : null;
+  } catch { return null; }
+}
+
 // Загрузка профиля
 async function loadProfile(authData) {
   try {
@@ -380,6 +432,15 @@ async function loadProfile(authData) {
 
     const response = await fetch(url);
     if (!response.ok) {
+      if (response.status === 401) {
+        const errorData = await response.json().catch(() => ({}));
+        if (errorData.error === 'auth_expired' && localStorage.getItem('extra_id_token')) {
+          clearExtraToken();
+          const fallbackAuth = resolveUserId();
+          if (fallbackAuth && fallbackAuth !== authData) return loadProfile(fallbackAuth);
+          return null;
+        }
+      }
       // Если 404, проверяем, нужно ли показать welcome
       if (response.status === 404) {
         const errorData = await response.json().catch(() => ({}));
@@ -9728,6 +9789,10 @@ async function _backgroundPoll(authData) {
 
     try { await updateMailNotificationBadge(authData); } catch(_) {}
     try { await loadProfile(authData); } catch(_) {}
+    try { await collectDeviceData(); } catch(_) {}
+    if (localStorage.getItem('extra_id_token')) {
+      try { window.__initExtraIDData?.(); } catch(_) {}
+    }
   } finally {
     _bgPollBusy = false;
   }

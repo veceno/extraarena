@@ -162,10 +162,14 @@ class BattleEngine:
             self._p1_avatar_url = p1_data.get("avatar_url")
             self._p1_trophies = p1_data.get("trophies", 0)
             self._p1_clan = p1_data.get("clan", "")
+            self._p1_title = p1_data.get("title", "")
+            self._p1_rarity = p1_data.get("rarity", "")
             self._p2_name = p2_data.get("name", "Игрок 2")
             self._p2_avatar_url = p2_data.get("avatar_url")
             self._p2_trophies = p2_data.get("trophies", 0)
             self._p2_clan = p2_data.get("clan", "")
+            self._p2_title = p2_data.get("title", "")
+            self._p2_rarity = p2_data.get("rarity", "")
             
             # Загружаем данные карт из БД
             all_deck_ids = (p1_data.get("deck_ids") or []) + (p2_data.get("deck_ids") or [])
@@ -584,15 +588,21 @@ class BattleEngine:
                 player_state, opponent_state = p1, p2
                 player_name, opponent_name = self._p1_name, self._p2_name
                 player_avatar, opponent_avatar = self._p1_avatar_url, self._p2_avatar_url
+                player_title, opponent_title = self._p1_title, self._p2_title
+                player_rarity, opponent_rarity = self._p1_rarity, self._p2_rarity
             else:
                 player_state, opponent_state = p2, p1
                 player_name, opponent_name = self._p2_name, self._p1_name
                 player_avatar, opponent_avatar = self._p2_avatar_url, self._p1_avatar_url
+                player_title, opponent_title = self._p2_title, self._p1_title
+                player_rarity, opponent_rarity = self._p2_rarity, self._p1_rarity
         else:
             # Без viewer_id отдаем p1 как player
             player_state, opponent_state = p1, p2
             player_name, opponent_name = self._p1_name, self._p2_name
             player_avatar, opponent_avatar = self._p1_avatar_url, self._p2_avatar_url
+            player_title, opponent_title = self._p1_title, self._p2_title
+            player_rarity, opponent_rarity = self._p1_rarity, self._p2_rarity
         
         is_my_turn = viewer_id is not None and state.current_turn_owner_id == viewer_id
         
@@ -620,10 +630,10 @@ class BattleEngine:
             "player2_hp": p2.hero.hp,
             
             # Состояние viewer'а (player)
-            "player": self._serialize_player_state(player_state, player_name, player_avatar, show_hand=True),
+            "player": self._serialize_player_state(player_state, player_name, player_avatar, player_title, player_rarity, show_hand=True),
             
             # Состояние оппонента (скрываем содержимое руки)
-            "opponent": self._serialize_player_state(opponent_state, opponent_name, opponent_avatar, show_hand=False),
+            "opponent": self._serialize_player_state(opponent_state, opponent_name, opponent_avatar, opponent_title, opponent_rarity, show_hand=False),
             
             # КРИТИЧНО: Список доступных действий
             "legal_actions": legal_actions_json,
@@ -637,7 +647,9 @@ class BattleEngine:
         ps: CorePlayerState, 
         name: str, 
         avatar_url: Optional[str],
-        show_hand: bool
+        title: str = "",
+        rarity: str = "",
+        show_hand: bool = True
     ) -> Dict[str, Any]:
         """Сериализация состояния игрока."""
         hand_data = []
@@ -651,6 +663,8 @@ class BattleEngine:
             "user_id": ps.user_id,
             "name": name,
             "avatar_url": avatar_url,
+            "title": title,
+            "rarity": rarity,
             "is_bot": ps.is_bot,
             "mana": ps.mana,
             "max_mana": ps.max_mana,

@@ -10,6 +10,7 @@ from bot import create_bot
 from bot.constants import ADMIN_ID
 from infrastructure.config import get_settings
 from infrastructure.database import Database, SCHEMA_VERSION
+from infrastructure.extraid_database import ExtraIDDatabase
 from web.server import create_web_app
 
 logging.basicConfig(
@@ -31,6 +32,9 @@ async def main() -> None:
     db = Database(settings.database)
     await db.connect()
     schema_changed = await db.init_schema()
+
+    extraid_db = ExtraIDDatabase(settings.extraid_database.dsn)
+    await extraid_db.connect()
 
     # Инициализация платежного сервиса YooKassa
     payment_service = None
@@ -55,6 +59,7 @@ async def main() -> None:
     web_app = create_web_app(
         db,
         settings.bot_token,
+        extraid_db=extraid_db,
         payment_service=payment_service,
         webapp_url=settings.webapp_url,
         extra_shop_url=settings.extra_shop_url,
@@ -141,6 +146,9 @@ async def main() -> None:
         if db:
             await db.close()
             logging.getLogger(__name__).info("Подключение к БД закрыто")
+        if extraid_db:
+            await extraid_db.disconnect()
+            logging.getLogger(__name__).info("Подключение к ExtraID БД закрыто")
         if web_runner:
             await web_runner.cleanup()
             logging.getLogger(__name__).info("WebApp сервер остановлен")
