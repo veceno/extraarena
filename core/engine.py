@@ -16,186 +16,22 @@ from core.effects import (
     apply_lifesteal,
     get_taunt_targets,
     has_taunt,
+    is_random_battlecry_damage_card,
     process_effects,
     requires_target,
 )
 from core.state import CardInstance, CardType, GameState, GameStatus, PlayerState
+from infrastructure.match_modes import ClassicParams
 
 
 logger = logging.getLogger(__name__)
 
 
 def scale_card_by_level(card: CardInstance, level: int) -> CardInstance:
-    """
-    Масштабировать характеристики карты в зависимости от уровня (1-10).
-    
-    Правила масштабирования:
-    - Warriors: +1 Atk на четных уровнях, +1 HP на нечетных
-    - Potions: Линейное масштабирование урона (+1 за уровень), снижение mana_cost для delete_target (мин. 4)
-    - Heroes: +2 HP за уровень, +1 к reflect_X/armor_X/start_mana_X каждые 3 уровня (макс. 10 маны)
-    
-    Args:
-        card: Исходная карта
-        level: Уровень карты (1-10)
-        
-    Returns:
-        Масштабированная карта (модифицируется in-place и возвращается)
-    """
-    if level < 1 or level > 10:
-        logger.warning("[SCALE] Некорректный уровень %d для карты %s, используется 1", level, card.name)
-        level = 1
-    
-    # Устанавливаем уровень
-    card.level = level
-    
-    if level == 1:
-        # Базовый уровень - без изменений
-        return card
-    
-    # === WARRIORS: +1 Atk на четных, +1 HP на нечетных + Масштабирование механик ===
-    if card.card_type == CardType.WARRIOR:
-        # Четные уровни: +1 Atk за каждый четный уровень (2, 4, 6, 8, 10)
-        even_levels = level // 2
-        card.attack += even_levels
-        
-        # Нечетные уровни: +1 HP за каждый нечетный уровень (3, 5, 7, 9)
-        odd_levels = (level - 1) // 2
-        card.hp += odd_levels
-        card.max_hp += odd_levels
+    """Compatibility wrapper for callers that still import from core.engine."""
+    from core.card_scaling import scale_card_by_level as _scale_card_by_level
 
-        # Масштабирование механик (AOE damage, Targeted Heal/Damage)
-        scaled_mechanics = []
-        for mechanic in card.mechanics:
-            # 1. AOE Damage (Нерф AOE): +1 каждые 2 уровня
-            # Паттерн: Любая механика, содержащая aoe_damage_X (deathrattle_aoe_damage_3 и т.д.)
-            aoe_match = re.match(r"(.*aoe_damage_)(\d+)", mechanic)
-            if aoe_match:
-                prefix, base_val = aoe_match.groups()
-                new_val = int(base_val) + ((level - 1) // 2)
-                scaled_mechanics.append(f"{prefix}{new_val}")
-                continue
-
-            # 2. Targeted Heal / Damage (Single Target): Tiered рост каждые 2 уровня
-            target_match = re.match(r"(.*(?:heal_target|damage)_)(\d+)", mechanic)
-            if target_match:
-                prefix, base_val = target_match.groups()
-                new_val = int(base_val) + ((level - 1) // 2)
-                scaled_mechanics.append(f"{prefix}{new_val}")
-                continue
-
-            # 3. Passive mechanics (regen, armor, aura, reflect): Tiered рост каждые 3 уровня
-            passive_scaled = False
-            for passive_prefix in ["regen_", "armor_", "aura_atk_", "reflect_"]:
-                passive_match = re.match(rf"({passive_prefix})(\d+)", mechanic)
-                if passive_match:
-                    prefix, base_val = passive_match.groups()
-                    new_val = int(base_val) + ((level - 1) // 3)
-                    scaled_mechanics.append(f"{prefix}{new_val}")
-                    passive_scaled = True
-                    break
-            if passive_scaled:
-                continue
-
-            # Остальные механики без изменений (taunt, shield, charge, lifesteal, etc.)
-            scaled_mechanics.append(mechanic)
-        
-        card.mechanics = scaled_mechanics
-        
-        logger.debug(
-            "[SCALE] Warrior %s (lvl %d): Atk +%d, HP +%d, mechanics scaled",
-            card.name, level, even_levels, odd_levels
-        )
-    
-    # === POTIONS: Масштабирование урона и снижение стоимости ===
-    elif card.card_type == CardType.POTION:
-        # Масштабируем урон в механиках (damage_X -> damage_(X + level - 1))
-        scaled_mechanics = []
-        for mechanic in card.mechanics:
-            # Парсим damage_X
-            match = re.match(r"(spell_|battlecry_)?damage_(\d+)", mechanic)
-            if match:
-                prefix = match.group(1) or ""
-                base_damage = int(match.group(2))
-                new_damage = base_damage + ((level - 1) // 3)
-                scaled_mechanic = f"{prefix}damage_{new_damage}"
-                scaled_mechanics.append(scaled_mechanic)
-                logger.debug(
-                    "[SCALE] Potion %s (lvl %d): %s -> %s",
-                    card.name, level, mechanic, scaled_mechanic
-                )
-            else:
-                scaled_mechanics.append(mechanic)
-        
-        card.mechanics = scaled_mechanics
-        
-        # Снижаем стоимость delete_target (минимум 4 маны)
-        if "delete_target" in card.mechanics:
-            card.mana_cost = max(4, card.mana_cost - (level - 1))
-            logger.debug(
-                "[SCALE] Potion %s (lvl %d): delete_target mana_cost снижена до %d",
-                card.name, level, card.mana_cost
-            )
-    
-    # === HEROES: +2 HP за уровень, +1 к механикам каждые 3 уровня ===
-    elif card.card_type == CardType.HERO:
-        # +2 HP за уровень
-        hp_bonus = (level - 1) * 2
-        card.hp += hp_bonus
-        card.max_hp += hp_bonus
-        
-        # +1 к reflect_X, armor_X, start_mana_X каждые 3 уровня
-        bonus_tiers = (level - 1) // 3  # 0 на уровнях 1-3, 1 на 4-6, 2 на 7-9, 3 на 10
-        
-        if bonus_tiers > 0:
-            scaled_mechanics = []
-            for mechanic in card.mechanics:
-                # reflect_X
-                match = re.match(r"reflect_(\d+)", mechanic)
-                if match:
-                    base_value = int(match.group(1))
-                    new_value = base_value + bonus_tiers
-                    scaled_mechanics.append(f"reflect_{new_value}")
-                    logger.debug(
-                        "[SCALE] Hero %s (lvl %d): reflect_%d -> reflect_%d",
-                        card.name, level, base_value, new_value
-                    )
-                    continue
-                
-                # armor_X
-                match = re.match(r"armor_(\d+)", mechanic)
-                if match:
-                    base_value = int(match.group(1))
-                    new_value = base_value + bonus_tiers
-                    scaled_mechanics.append(f"armor_{new_value}")
-                    logger.debug(
-                        "[SCALE] Hero %s (lvl %d): armor_%d -> armor_%d",
-                        card.name, level, base_value, new_value
-                    )
-                    continue
-                
-                # start_mana_X (ограничение min(10, ...))
-                match = re.match(r"start_mana_(\d+)", mechanic)
-                if match:
-                    base_value = int(match.group(1))
-                    new_value = min(10, base_value + bonus_tiers)
-                    scaled_mechanics.append(f"start_mana_{new_value}")
-                    logger.debug(
-                        "[SCALE] Hero %s (lvl %d): start_mana_%d -> start_mana_%d",
-                        card.name, level, base_value, new_value
-                    )
-                    continue
-                
-                # Остальные механики без изменений
-                scaled_mechanics.append(mechanic)
-            
-            card.mechanics = scaled_mechanics
-        
-        logger.debug(
-            "[SCALE] Hero %s (lvl %d): HP +%d, mechanics bonus tier %d",
-            card.name, level, hp_bonus, bonus_tiers
-        )
-    
-    return card
+    return _scale_card_by_level(card, level)
 
 
 class ArenaEnvironment:
@@ -204,18 +40,54 @@ class ArenaEnvironment:
     Хранит состояние и обрабатывает действия игроков.
     """
 
-    def __init__(self, state: GameState, mana_per_turn: int = 1) -> None:
+    def __init__(
+        self,
+        state: GameState,
+        mana_per_turn: int = 1,
+        classic_params: ClassicParams | None = None,
+        apply_start_effects: bool = True,
+    ) -> None:
         """
         Инициализировать среду с начальным состоянием.
         
         Args:
             state: Начальное игровое состояние
             mana_per_turn: Прирост маны за ход (default 1, blitz=2)
+            classic_params: параметры режима (переопределяет mana_per_turn и новые флаги)
         """
         self.state = state
-        self.mana_per_turn = mana_per_turn
+        if classic_params is None:
+            classic_params = ClassicParams(mana_per_turn=mana_per_turn)
+        self.classic_params = classic_params
+        self.mana_per_turn = self.classic_params.mana_per_turn
+        self._ensure_base_snapshots()
         # Применяем стартовые эффекты героев (например, start_mana)
-        self.apply_start_game_effects()
+        if apply_start_effects:
+            self.apply_start_game_effects()
+            self._apply_start_turn_mode_effects()
+
+    def _ensure_base_snapshots(self) -> None:
+        """Зафиксировать базовые статы карт, чтобы runtime-баффы не переживали ресайкл."""
+        for player in (self.state.p1, self.state.p2):
+            for card in [
+                player.hero,
+                *player.hand,
+                *player.board,
+                *player.deck,
+                *player.graveyard,
+            ]:
+                card.ensure_base_snapshot()
+
+    def _resolve_player_pair(self, player_id: int) -> Tuple[Optional[PlayerState], Optional[PlayerState]]:
+        if self.state.p1.user_id == player_id:
+            return self.state.p1, self.state.p2
+        if self.state.p2.user_id == player_id:
+            return self.state.p2, self.state.p1
+        return None, None
+
+    def _card_requires_play_target(self, card: CardInstance) -> bool:
+        """Возвращает обязательность выбора цели с учётом карт с авто-выбором цели."""
+        return requires_target(card.mechanics) and not is_random_battlecry_damage_card(card)
 
     def step(self, player_id: int, action: BaseAction) -> Tuple[bool, str]:
         """
@@ -239,6 +111,12 @@ class ArenaEnvironment:
         if self.state.status != GameStatus.ONGOING:
             return False, "game_over"
 
+        # Определяем игрока и противника до проверки хода, чтобы мусорный
+        # current_turn_owner_id не превращал неизвестного player_id в P2.
+        player, opponent = self._resolve_player_pair(player_id)
+        if player is None or opponent is None:
+            return False, "unknown_player"
+
         # Проверка, что сейчас ход этого игрока
         if self.state.current_turn_owner_id != player_id:
             return False, "not_your_turn"
@@ -259,14 +137,6 @@ class ArenaEnvironment:
                 e,
             )
             return False, str(e)
-
-        # Определяем игрока и противника
-        if self.state.p1.user_id == player_id:
-            player = self.state.p1
-            opponent = self.state.p2
-        else:
-            player = self.state.p2
-            opponent = self.state.p1
 
         # Обработка действий
         action_description: Optional[Tuple[str, str]] = None
@@ -334,43 +204,46 @@ class ArenaEnvironment:
             return False, "invalid_hand_index"
 
         card = player.hand[action.hand_index]
+        card.ensure_base_snapshot()
+        consumes_ally = "consume_ally" in card.mechanics
 
-        # Проверка маны
-        if player.mana < card.mana_cost:
+        if card.card_type == CardType.WARRIOR and len(player.board) >= 7 and not consumes_ally:
+            return False, "board_full"
+
+        # Проверка маны (с учётом spells_free для зелий)
+        effective_mana_cost = 0 if (self.classic_params.spells_free and card.card_type == CardType.POTION) else card.mana_cost
+        if player.mana < effective_mana_cost:
             return False, "insufficient_mana"
 
-        # КРИТИЧНО: Проверка target_id для карт с requires_target
-        if requires_target(card.mechanics) and not action.target_id:
+        # КРИТИЧНО: Проверка target_id для карт с обязательной целью
+        if self._card_requires_play_target(card) and not action.target_id:
             logger.warning(
                 "[CORE] play_card: карта %s требует цель, но target_id отсутствует",
                 card.name,
             )
             return False, "target_required"
 
-        # Списываем ману
-        player.mana -= card.mana_cost
+        target_error = self._validate_play_target(player, opponent, card, action.target_id)
+        if target_error:
+            return False, target_error
+
+        consumed_unit = None
+        if consumes_ally:
+            consumed_unit = self._find_unit_by_id(player.board, action.target_id)
+            if not consumed_unit:
+                return False, "consume_target_not_found"
+            if len(player.board) >= 7 and len(player.board) - 1 >= 7:
+                return False, "board_full"
+
+        # Списываем ману и убираем карту из руки только после всех preflight-проверок.
+        player.mana -= effective_mana_cost
+        card = player.hand.pop(action.hand_index)
 
         # Обработка по типу карты
         if card.card_type == CardType.WARRIOR:
-            # Проверка места на доске
-            if len(player.board) >= 7:  # Максимум 7 существ на доске
-                return False, "board_full"
-            
             # Обработка consume_ally ПЕРЕД выставлением на доску
-            if "consume_ally" in card.mechanics:
-                if not action.target_id:
-                    return False, "consume_requires_target"
-                
-                # Ищем союзного юнита для поглощения
-                consumed_unit = None
-                for unit in player.board:
-                    if str(unit.instance_id) == action.target_id:
-                        consumed_unit = unit
-                        break
-                
-                if not consumed_unit:
-                    return False, "consume_target_not_found"
-                
+            if consumes_ally and consumed_unit:
+                consumed_unit.ensure_base_snapshot()
                 # Поглощаем союзника: добавляем его статы к карте
                 card.attack += consumed_unit.attack
                 card.hp += consumed_unit.hp
@@ -398,6 +271,15 @@ class ArenaEnvironment:
             if "charge" in card.mechanics:
                 card.is_ready = True
                 logger.debug("[CORE] %s получил Charge - готов к атаке", card.name)
+            elif self.classic_params.summon_ready_on_play:
+                # При summon_ready_on_play сразу готов, кроме явных запретов
+                if "freeze_on_play" in card.mechanics:
+                    card.is_ready = False
+                    card.is_frozen = True
+                    logger.debug("[CORE] %s freeze_on_play — не готов", card.name)
+                else:
+                    card.is_ready = True
+                    logger.debug("[CORE] %s сразу готов (summon_ready_on_play)", card.name)
             else:
                 card.is_ready = False  # Существо спит в первый ход
                 logger.debug("[CORE] %s выставлен на доску - спит до следующего хода", card.name)
@@ -406,22 +288,10 @@ class ArenaEnvironment:
             process_effects(self.state, card, player, opponent, action.target_id)
 
         elif card.card_type == CardType.POTION:
-            # КРИТИЧНО: Для зелий с target_id, если цель - герой, передаем объект героя
-            target_obj = None
-            if action.target_id:
-                # Ищем цель среди существ противника
-                target_obj = self._find_unit_by_id(opponent.board, action.target_id)
-                # Если не нашли среди существ, проверяем героя
-                if not target_obj and str(opponent.hero.instance_id) == action.target_id:
-                    target_obj = opponent.hero
-            
             # Применяем эффекты зелья
             process_effects(self.state, card, player, opponent, action.target_id)
             # Зелье не остается на доске, отправляем в сброс
             player.graveyard.append(card)
-
-        # Убираем карту из руки
-        player.hand.pop(action.hand_index)
 
         return True, ""
 
@@ -439,7 +309,7 @@ class ArenaEnvironment:
             return False, "unit_not_ready"
 
         # Вычисляем эффективную атаку с учетом аур
-        effective_attack = self._apply_aura_bonuses(attacker, player.board)
+        effective_attack = self._apply_aura_bonuses(attacker, player)
 
         # Проверка атаки
         if effective_attack <= 0:
@@ -501,11 +371,13 @@ class ArenaEnvironment:
                 return False, "target_not_found"
 
             # Вычисляем атаку цели с учетом её аур
-            target_effective_attack = self._apply_aura_bonuses(target, opponent.board)
+            target_index = opponent.board.index(target)
+            target_effective_attack = self._apply_aura_bonuses(target, opponent)
 
             # Обмен ударами (с передачей атакующего для reflect)
             damage_dealt = apply_damage(target, effective_attack, attacker)
             apply_damage(attacker, target_effective_attack, target)
+            self._apply_attack_cleave(attacker, opponent, target_index)
             
             # Применяем Lifesteal
             if damage_dealt > 0:
@@ -536,9 +408,25 @@ class ArenaEnvironment:
         old_turn = self.state.turn_number
         self.state.turn_number += 1
 
+        self._apply_start_turn_mode_effects()
+        if self.state.status != GameStatus.ONGOING:
+            return
+
         # Восстанавливаем ману противнику
         opponent.max_mana = min(10, opponent.max_mana + self.mana_per_turn)
         opponent.mana = opponent.max_mana
+        pending_mana_drain = self.state.pending_mana_drain_by_player.pop(opponent.user_id, 0)
+        if pending_mana_drain > 0:
+            old_mana = opponent.mana
+            opponent.mana = max(0, opponent.mana - pending_mana_drain)
+            logger.debug(
+                "[CORE] Кража маны: игрок %s начинает ход с %d/%d маны вместо %d/%d",
+                opponent.user_id,
+                opponent.mana,
+                opponent.max_mana,
+                old_mana,
+                opponent.max_mana,
+            )
 
         # Делаем всех существ противника готовыми к атаке (пробуждаем)
         for unit in opponent.board:
@@ -563,15 +451,16 @@ class ArenaEnvironment:
                         old_hp = unit.hp
                         unit.hp = min(unit.max_hp, unit.hp + regen_amount)
                         logger.debug(
-                            "[CORE] %s регенерирует %d HP (%d -> %d)",
+                            "[CORE] %s регенерирует %d здоровья (%d -> %d)",
                             unit.name,
                             regen_amount,
                             old_hp,
                             unit.hp,
                         )
-                        break  # Обрабатываем только первую регенерацию
                     except (ValueError, IndexError):
                         logger.warning("[CORE] Некорректный формат regen: %s", mechanic)
+
+        self._apply_regen(opponent.hero)
 
         # ЧЕСТНЫЙ ЦИКЛ КОЛОДЫ: Противник тянет карту (лимит руки: 4 карты)
         # Если колода пуста, перемешиваем сброс обратно
@@ -584,9 +473,7 @@ class ArenaEnvironment:
                 )
                 # Сбрасываем состояние карт до базового
                 for card in opponent.graveyard:
-                    card.hp = card.max_hp
-                    card.is_ready = False
-                    card.is_frozen = False
+                    card.reset_to_base_state()
                 
                 # Перемешиваем и возвращаем в колоду
                 random.shuffle(opponent.graveyard)
@@ -613,6 +500,43 @@ class ArenaEnvironment:
                 burned_card.name,
             )
 
+    def _apply_start_turn_mode_effects(self) -> None:
+        """Apply mode effects that trigger at the start of the active player's turn."""
+        if not self.classic_params.sudden_death_enabled:
+            return
+        if self.state.status != GameStatus.ONGOING:
+            return
+
+        player = self.state.p1 if self.state.p1.user_id == self.state.current_turn_owner_id else self.state.p2
+        user_id = int(player.user_id)
+        last_applied_turn = self.state.sudden_death_last_applied_turn_by_player.get(user_id)
+        if last_applied_turn == self.state.turn_number:
+            return
+
+        turn_count = self.state.sudden_death_turns_by_player.get(user_id, 0) + 1
+        self.state.sudden_death_turns_by_player[user_id] = turn_count
+        self.state.sudden_death_last_applied_turn_by_player[user_id] = self.state.turn_number
+        damage = (
+            self.classic_params.sudden_death_damage_start
+            + (turn_count - 1) * self.classic_params.sudden_death_damage_step
+        )
+        if damage <= 0:
+            return
+
+        player.hero.hp -= damage
+        logger.info(
+            "[CORE] Sudden Death: %s получает %d урона (собственный ход %d) здоровья=%d",
+            player.hero.name,
+            damage,
+            turn_count,
+            player.hero.hp,
+        )
+        self.state.action_history.append(
+            ("system", f"Внезапная смерть: {player.hero.name} теряет {damage} здоровья")
+        )
+        self.state.action_history = self.state.action_history[-100:]
+        self._check_game_over()
+
     def _cleanup_dead_units(self, player: PlayerState) -> None:
         """Удалить мертвых существ с доски игрока, активируя Deathrattle."""
         # Определяем противника для Deathrattle эффектов
@@ -638,11 +562,13 @@ class ArenaEnvironment:
                             unit.name,
                             damage
                         )
-                        # Наносим урон ВСЕМ вражеским юнитам
+                        # Наносим урон живым вражеским юнитам
                         for enemy_unit in opponent.board:
-                            apply_damage(enemy_unit, damage)
-                        # Наносим урон вражескому герою
-                        apply_damage(opponent.hero, damage)
+                            if enemy_unit.hp > 0:
+                                apply_damage(enemy_unit, damage)
+                        # Наносим урон вражескому герою, если бой ещё не завершён для него
+                        if opponent.hero.hp > 0:
+                            apply_damage(opponent.hero, damage)
 
                         # Добавляем в лог
                         self.state.action_history.append((log_type, f"{unit.name} взрывается после смерти и наносит {damage} урона всем врагам!"))
@@ -708,20 +634,95 @@ class ArenaEnvironment:
             if str(unit.instance_id) == unit_id:
                 return unit
         return None
+
+    def _validate_play_target(
+        self,
+        player: PlayerState,
+        opponent: PlayerState,
+        card: CardInstance,
+        target_id: Optional[str],
+    ) -> Optional[str]:
+        """Проверить, что target_id соответствует механике карты до оплаты/мутаций."""
+        if not target_id:
+            if "consume_ally" in card.mechanics:
+                return "consume_requires_target"
+            return None
+
+        if is_random_battlecry_damage_card(card):
+            return None
+
+        if "consume_ally" in card.mechanics:
+            return None if self._find_unit_by_id(player.board, target_id) else "consume_target_not_found"
+
+        if "delete_target" in card.mechanics:
+            if target_id == str(opponent.hero.instance_id):
+                return "delete_target_cannot_target_hero"
+            return None if self._find_unit_by_id(opponent.board, target_id) else "target_not_found"
+
+        possible_targets = set(self._get_possible_targets(player, opponent, card.mechanics))
+        if possible_targets:
+            return None if target_id in possible_targets else "target_not_found"
+
+        # Карты без таргетинга не должны принимать произвольный target_id:
+        # иначе клиент может протащить id карты из руки или чужой объект.
+        if requires_target(card.mechanics) or target_id:
+            return "target_not_found"
+
+        return None
+
+    def _apply_regen(self, target: CardInstance) -> None:
+        """Apply all regen_X mechanics on a unit or hero."""
+        if target.hp <= 0:
+            return
+        for mechanic in target.mechanics:
+            if not mechanic.startswith("regen_"):
+                continue
+            try:
+                regen_amount = int(mechanic[6:])
+            except (ValueError, IndexError):
+                logger.warning("[CORE] Некорректный формат regen: %s", mechanic)
+                continue
+            old_hp = target.hp
+            target.hp = min(target.max_hp, target.hp + regen_amount)
+            logger.debug(
+                "[CORE] %s регенерирует %d здоровья (%d -> %d)",
+                target.name,
+                regen_amount,
+                old_hp,
+                target.hp,
+            )
+
+    def _apply_attack_cleave(
+        self,
+        attacker: CardInstance,
+        opponent: PlayerState,
+        target_index: int,
+    ) -> None:
+        """Warrior cleave hits the neighbors of the attacked board target."""
+        for mechanic in attacker.mechanics:
+            match = re.match(r"cleave_(\d+)(?:_\d+)?$", mechanic)
+            if not match:
+                continue
+            damage = int(match.group(1))
+            for neighbor_index in (target_index - 1, target_index + 1):
+                if 0 <= neighbor_index < len(opponent.board):
+                    neighbor = opponent.board[neighbor_index]
+                    if neighbor.hp > 0:
+                        apply_damage(neighbor, damage, attacker)
     
-    def _get_aura_bonus(self, board: List[CardInstance], unit: CardInstance) -> int:
+    def _get_aura_bonus(self, player: PlayerState, unit: CardInstance) -> int:
         """
         Получить бонус атаки от аур на доске.
         
         Args:
-            board: Доска игрока
+            player: Владелец юнита
             unit: Юнит, для которого считается бонус
             
         Returns:
             Суммарный бонус атаки от всех аур
         """
         bonus = 0
-        for aura_unit in board:
+        for aura_unit in [player.hero, *player.board]:
             # Не применяем ауру к самому себе
             if aura_unit.instance_id == unit.instance_id:
                 continue
@@ -768,41 +769,45 @@ class ArenaEnvironment:
         
         return bonus
     
-    def _apply_aura_bonuses(self, attacker: CardInstance, board: List[CardInstance]) -> int:
+    def _apply_aura_bonuses(self, attacker: CardInstance, player: PlayerState) -> int:
         """
         Получить эффективную атаку юнита с учетом аур.
         
         Args:
             attacker: Атакующий юнит
-            board: Доска игрока
+            player: Владелец юнита
             
         Returns:
             Эффективная атака с бонусами
         """
         base_attack = attacker.attack
-        aura_bonus = self._get_aura_bonus(board, attacker)
+        aura_bonus = self._get_aura_bonus(player, attacker)
         return base_attack + aura_bonus
 
     def get_preview_delta(self, action: BaseAction) -> Dict[str, int]:
         """
-        Симулировать действие и вернуть изменения HP объектов.
+        Симулировать действие и вернуть изменения здоровья объектов.
         
         Args:
             action: Действие для симуляции
             
         Returns:
-            Словарь {instance_id: delta_hp}, где delta_hp - изменение HP (отрицательное для урона)
+            Словарь {instance_id: delta_hp}, где delta_hp - изменение здоровья (отрицательное для урона)
         """
         import copy
         
         # Создаем временную копию состояния
         temp_state = copy.deepcopy(self.state)
-        temp_env = ArenaEnvironment(temp_state)
+        temp_env = ArenaEnvironment(
+            temp_state,
+            classic_params=self.classic_params,
+            apply_start_effects=False,
+        )
         
-        # Сохраняем HP до действия
+        # Сохраняем здоровья до действия
         hp_before: Dict[str, int] = {}
         
-        # Собираем HP всех объектов
+        # Собираем здоровья всех объектов
         for unit in temp_state.p1.board:
             hp_before[str(unit.instance_id)] = unit.hp
         for unit in temp_state.p2.board:
@@ -818,7 +823,7 @@ class ArenaEnvironment:
             # Если действие невалидно, возвращаем пустой словарь
             return {}
         
-        # Собираем HP после действия
+        # Собираем здоровья после действия
         hp_after: Dict[str, int] = {}
         for unit in temp_state.p1.board:
             hp_after[str(unit.instance_id)] = unit.hp
@@ -858,30 +863,28 @@ class ArenaEnvironment:
             return actions
 
         # Определяем игрока и противника
-        if self.state.p1.user_id == player_id:
-            player = self.state.p1
-            opponent = self.state.p2
-        else:
-            player = self.state.p2
-            opponent = self.state.p1
+        player, opponent = self._resolve_player_pair(player_id)
+        if player is None or opponent is None:
+            return actions
 
         # 1. Действия розыгрыша карт из руки
         for hand_idx, card in enumerate(player.hand):
-            # Проверка маны
-            if player.mana < card.mana_cost:
+            # Проверка маны (с учётом spells_free для зелий)
+            effective_mana_cost = 0 if (self.classic_params.spells_free and card.card_type == CardType.POTION) else card.mana_cost
+            if player.mana < effective_mana_cost:
                 continue
 
             # Для существ
             if card.card_type == CardType.WARRIOR:
                 # Проверка места на доске
-                if len(player.board) >= 7:
+                if len(player.board) >= 7 and "consume_ally" not in card.mechanics:
                     continue
 
                 # Проверка choose_shield_damage: может быть с целью ИЛИ без
                 has_choose_shield_damage = "choose_shield_damage" in card.mechanics
                 
                 # Если требуется цель (Battlecry)
-                if requires_target(card.mechanics) or has_choose_shield_damage:
+                if self._card_requires_play_target(card) or has_choose_shield_damage:
                     # Генерируем действия для каждой возможной цели
                     possible_targets = self._get_possible_targets(
                         player, opponent, card.mechanics
@@ -945,7 +948,7 @@ class ArenaEnvironment:
             if not unit.is_ready:
                 continue
 
-            effective_attack = self._apply_aura_bonuses(unit, player.board)
+            effective_attack = self._apply_aura_bonuses(unit, player)
             if effective_attack <= 0:
                 continue
 
@@ -1039,8 +1042,13 @@ class ArenaEnvironment:
                 targets.append(str(unit.instance_id))
             return targets
 
-        # Урон, удаление или заморозка с уроном - вражеские цели + герой
-        if is_damage or is_delete or is_freeze:
+        if is_delete:
+            for unit in opponent.board:
+                targets.append(str(unit.instance_id))
+            return targets
+
+        # Урон или заморозка с уроном - вражеские цели + герой
+        if is_damage or is_freeze:
             for unit in opponent.board:
                 targets.append(str(unit.instance_id))
             # Урон и заморозка могут быть применены к герою
@@ -1160,6 +1168,8 @@ class ArenaEnvironment:
             match = re.match(r"battlecry_damage_(\d+)", mechanic)
             if match:
                 damage = match.group(1)
+                if "тока киришима" in card_name.casefold() or "тоука киришима" in card_name.casefold():
+                    return f"наносит {damage} урона случайному врагу"
                 target_name = self._get_target_name(target_id, owner, opponent)
                 return f"наносит {damage} урона по {target_name}"
         
@@ -1169,7 +1179,7 @@ class ArenaEnvironment:
             if match:
                 heal = match.group(1)
                 target_name = self._get_target_name(target_id, owner, opponent)
-                return f"исцелил {target_name} (+{heal} ХП)"
+                return f"исцелил {target_name} (+{heal} здоровья)"
         
         # Battlecry Heal Target (Targeted Heal)
         for mechanic in mechanics:
@@ -1177,14 +1187,14 @@ class ArenaEnvironment:
             if match:
                 heal = match.group(1)
                 target_name = self._get_target_name(target_id, owner, opponent)
-                return f"исцеляет {target_name} на {heal} HP"
+                return f"исцеляет {target_name} на {heal} здоровья"
         
         # Battlecry Heal Hero
         for mechanic in mechanics:
             match = re.match(r"battlecry_heal_hero_(\d+)", mechanic)
             if match:
                 heal = match.group(1)
-                return f"исцелил вашего героя (+{heal} ХП)"
+                return f"исцелил вашего героя (+{heal} здоровья)"
         
         # Battlecry Draw
         if "battlecry_draw_card" in mechanics:
@@ -1229,7 +1239,7 @@ class ArenaEnvironment:
             if match:
                 heal = match.group(1)
                 target_name = self._get_target_name(target_id, owner, opponent)
-                return f"исцелил {target_name} (+{heal} ХП)"
+                return f"исцелил {target_name} (+{heal} здоровья)"
         
         # Spell AOE Damage
         for mechanic in mechanics:
@@ -1280,7 +1290,7 @@ class ArenaEnvironment:
         
         # Cast Random Spell
         if "cast_random_spell" in mechanics:
-            return "применил случайное заклинание"
+            return ""
         
         # Choose Shield Damage (Геральт)
         if "choose_shield_damage" in mechanics:
@@ -1370,7 +1380,7 @@ class ArenaEnvironment:
             if mechanic.startswith("start_mana_"):
                 try:
                     amount = mechanic[11:]
-                    passives.append(f"Старт: +{amount} маны")
+                    passives.append(f"Стартовый бонус: +{amount} маны")
                     break
                 except:
                     pass
@@ -1440,7 +1450,7 @@ class ArenaEnvironment:
         attacker_name = attacker.name if attacker else "существо"
         
         # Вычисляем эффективную атаку с учетом аур
-        effective_attack = self._apply_aura_bonuses(attacker, player.board) if attacker else 0
+        effective_attack = self._apply_aura_bonuses(attacker, player) if attacker else 0
         
         if action.target_is_hero:
             # Атака героя

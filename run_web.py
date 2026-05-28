@@ -26,14 +26,28 @@ async def main() -> None:
     extraid_db = ExtraIDDatabase(settings.extraid_database.dsn)
     await extraid_db.connect()
 
+    rustore_payment_service = None
+    if settings.rustore:
+        from infrastructure.rustore_payments import RuStoreInvoiceVerifier
+        rustore_payment_service = RuStoreInvoiceVerifier(settings.rustore)
+
     web_app = create_web_app(
         db=db,
         bot_token=settings.bot_token,
         extraid_db=extraid_db,
+        rustore_payment_service=rustore_payment_service,
+        rustore_console_app_id=settings.rustore.console_app_id if settings.rustore else "",
+        rustore_app_url=settings.rustore_app_url,
+        payment_provider_order=settings.payment_provider_order,
         webapp_url=settings.webapp_url,
         stars_rate_rub=settings.stars_rate_rub,
         stars_markup=settings.stars_markup,
         stars_test_mode=settings.stars_test_mode,
+        android_latest_version_code=settings.android_latest_version_code,
+        android_latest_version_name=settings.android_latest_version_name,
+        android_min_supported_version_code=settings.android_min_supported_version_code,
+        android_update_channel_url=settings.android_update_channel_url,
+        android_apk_url=settings.android_apk_url,
     )
 
     runner = web.AppRunner(web_app)

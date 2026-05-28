@@ -37,6 +37,37 @@ def register_effect(name: str) -> Callable[[EffectHandler], EffectHandler]:
     return decorator
 
 
+def is_random_battlecry_damage_card(card: "CardInstance") -> bool:
+    """Тока Киришима использует battlecry_damage_X как случайный, а не целевой урон."""
+    try:
+        if int(getattr(card, "card_id", 0) or 0) == 15:
+            return True
+    except (TypeError, ValueError):
+        pass
+
+    name = str(getattr(card, "name", "") or "").casefold()
+    return "тока киришима" in name or "тоука киришима" in name or "touka" in name
+
+
+def _apply_random_battlecry_damage(
+    card: "CardInstance",
+    opponent: "PlayerState",
+    damage_amount: int,
+) -> None:
+    targets = list(opponent.board) + [opponent.hero]
+    if not targets:
+        return
+
+    target = random.choice(targets)
+    apply_damage(target, damage_amount)
+    logger.debug(
+        "[EFFECTS] %s наносит %d случайного урона по %s",
+        card.name,
+        damage_amount,
+        target.name,
+    )
+
+
 # ============================================================================
 # PASSIVE MECHANICS (применяются постоянно)
 # ============================================================================
@@ -462,11 +493,32 @@ def _register_mana_effects():
                 target_id: Optional[str] = None,
             ) -> None:
                 f"""Отнять {amount} маны у противника и передать владельцу."""
-                drained = min(opponent.mana, amount)
-                opponent.mana -= drained
+                current_drained = min(opponent.mana, amount)
+                opponent.mana -= current_drained
+
+                pending_drains = getattr(state, "pending_mana_drain_by_player", None)
+                if pending_drains is None:
+                    pending_drains = {}
+                    state.pending_mana_drain_by_player = pending_drains
+
+                existing_pending = pending_drains.get(opponent.user_id, 0)
+                future_pool = max(0, opponent.max_mana - existing_pending)
+                future_drained = min(amount - current_drained, future_pool)
+                if future_drained > 0:
+                    pending_drains[opponent.user_id] = existing_pending + future_drained
+
+                drained = current_drained + future_drained
                 owner.mana = min(owner.max_mana, owner.mana + drained)
-                logger.debug("[EFFECTS] mana_drain: Игрок %s потерял %d маны (было=%d), игрок %s получил %d маны (стало=%d/%d)",
-                           opponent.user_id, drained, opponent.mana + drained, owner.user_id, drained, owner.mana, owner.max_mana)
+                logger.debug(
+                    "[EFFECTS] mana_drain: Игрок %s потерял %d маны сейчас и %d следующим ходом, игрок %s получил %d маны (стало=%d/%d)",
+                    opponent.user_id,
+                    current_drained,
+                    future_drained,
+                    owner.user_id,
+                    drained,
+                    owner.mana,
+                    owner.max_mana,
+                )
             return handler
         
         EFFECT_HANDLERS[f"mana_drain_{drain}"] = make_drain_handler(drain)
@@ -500,8 +552,8 @@ def _register_buff_effects():
                             continue
                         
                         unit.attack += atk
-                        unit.hp += hp
                         unit.max_hp += hp
+                        unit.hp += hp
                         logger.debug(
                             "[EFFECTS] %s получил бафф +%d/+%d (теперь %d/%d)",
                             unit.name,
@@ -533,8 +585,8 @@ def _register_buff_effects():
                     for unit in owner.board:
                         if str(unit.instance_id) == target_id:
                             unit.attack += atk
-                            unit.hp += hp
                             unit.max_hp += hp
+                            unit.hp += hp
                             logger.debug(
                                 "[EFFECTS] %s получил battlecry бафф +%d/+%d",
                                 unit.name,
@@ -666,11 +718,13 @@ def _register_deathrattle_aoe_damage_effects():
                 target_id: Optional[str] = None,
             ) -> None:
                 f"""Deathrattle: нанести {dmg} урона всем вражеским существам И герою."""
-                # Урон всем вражеским юнитам
+                # Урон всем живым вражеским юнитам
                 for unit in opponent.board:
-                    apply_damage(unit, dmg)
+                    if unit.hp > 0:
+                        apply_damage(unit, dmg)
                 # Урон вражескому герою
-                apply_damage(opponent.hero, dmg)
+                if opponent.hero.hp > 0:
+                    apply_damage(opponent.hero, dmg)
                 logger.debug(
                     "[EFFECTS] Deathrattle: %s нанес %d урона всем вражеским существам и герою",
                     card.name,
@@ -750,7 +804,7 @@ def effect_cast_random_spell(
             apply_damage(target, dmg)
             state.action_history.append((
                 log_type,
-                f"⚡ {card.name} использует Texas Smash на {dmg} урона по {target.name}!"
+                f"⚡ {card.name} применяет «Техасский удар»: {dmg} урона по {target.name}!"
             ))
             logger.debug("[EFFECTS] Мидория (lvl %d): Texas Smash %d урона по %s", level, dmg, target.name)
         else:
@@ -762,7 +816,7 @@ def effect_cast_random_spell(
         apply_heal(owner.hero, heal)
         state.action_history.append((
             log_type,
-            f"⚡ {card.name} использует Recovery и восстанавливает {heal} HP!"
+            f"⚡ {card.name} применяет «Восстановление»: +{heal} здоровья герою!"
         ))
         logger.debug("[EFFECTS] Мидория (lvl %d): Recovery %d HP", level, heal)
     
@@ -783,7 +837,7 @@ def effect_cast_random_spell(
             target_names = ", ".join([t.name for t in targets_to_freeze])
             state.action_history.append((
                 log_type,
-                f"⚡ {card.name} использует Blackwhip и замораживает: {target_names}!"
+                f"⚡ {card.name} применяет «Чёрный кнут»: заморожены {target_names}!"
             ))
             logger.debug("[EFFECTS] Мидория (lvl %d): Blackwhip заморозил %d врагов", level, len(targets_to_freeze))
         else:
@@ -797,7 +851,7 @@ def effect_cast_random_spell(
         card.max_hp += buff
         state.action_history.append((
             log_type,
-            f"⚡ {card.name} использует Full Cowl и получает +{buff}/+{buff}!"
+            f"⚡ {card.name} применяет «Полный покров»: получает +{buff} атаки и +{buff} здоровья!"
         ))
         logger.debug("[EFFECTS] Мидория (lvl %d): Full Cowl +%d/+%d (теперь %d/%d)", 
                     level, buff, buff, card.attack, card.hp)
@@ -860,7 +914,9 @@ def apply_damage_modifiers(target: CardInstance, damage: int) -> int:
     
     # Проверка обычного щита - блокирует весь урон один раз
     if "shield" in target.mechanics:
-        target.mechanics.remove("shield")
+        mechanics = list(target.mechanics)
+        mechanics.remove("shield")
+        target.mechanics = mechanics
         logger.debug("[EFFECTS] Щит поглотил %d урона", damage)
         return 0
     
@@ -913,13 +969,15 @@ def apply_damage(target: CardInstance, damage: int, attacker: Optional[CardInsta
     """
     # Применяем модификаторы урона
     modified_damage = apply_damage_modifiers(target, damage)
-    
+    old_hp = target.hp
+
     target.hp -= modified_damage
     if target.hp < 0:
         target.hp = 0
+    actual_damage = max(0, old_hp - target.hp)
     
     # Проверка reflect_X - отражаем урон атакующему
-    if attacker and modified_damage > 0:
+    if attacker and actual_damage > 0:
         for mechanic in target.mechanics:
             if mechanic.startswith("reflect_"):
                 try:
@@ -939,7 +997,7 @@ def apply_damage(target: CardInstance, damage: int, attacker: Optional[CardInsta
                 except (ValueError, IndexError):
                     logger.warning("[EFFECTS] Некорректный формат reflect: %s", mechanic)
     
-    return modified_damage
+    return actual_damage
 
 
 def apply_heal(target: CardInstance, heal: int) -> None:
@@ -1002,6 +1060,20 @@ def process_effects(
         # КРИТИЧНО: пропускаем deathrattle_* механики - они обрабатываются только в _cleanup_dead_units
         if mechanic.startswith("deathrattle_"):
             continue
+
+        # КРИТИЧНО: cleave_* для WARRIOR - пассивная механика атаки (обрабатывается в _handle_attack)
+        # Для POTION cleave_* остаётся battlecry-эффектом (random hits)
+        if mechanic.startswith("cleave_") and card.card_type.value == "warrior":
+            continue
+
+        random_battlecry_damage = re.match(r"battlecry_damage_(\d+)", mechanic)
+        if random_battlecry_damage and is_random_battlecry_damage_card(card):
+            _apply_random_battlecry_damage(
+                card,
+                opponent,
+                int(random_battlecry_damage.group(1)),
+            )
+            continue
         
         # Пробуем зарегистрированные обработчики
         handler = EFFECT_HANDLERS.get(mechanic)
@@ -1036,7 +1108,7 @@ def process_effects(
         if mechanic.startswith("deathrattle_"):
             continue
         
-        match = re.match(r"(battlecry_)?damage_(\d+)(?:_(\d+))?", mechanic)
+        match = re.match(r"(battlecry_|spell_)?damage_(\d+)(?:_(\d+))?", mechanic)
         if match and target_id:
             damage_amount = int(match.group(2))
             logger.debug(

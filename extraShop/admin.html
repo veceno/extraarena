@@ -407,6 +407,7 @@
 
     .status.active { color: var(--green); background: rgba(74, 222, 128, 0.08); }
     .status.draft { color: var(--gold); background: rgba(251, 191, 36, 0.08); }
+    .status.scheduled { color: var(--blue); background: rgba(96, 165, 250, 0.08); }
     .status.hidden { color: var(--blue); background: rgba(96, 165, 250, 0.08); }
     .status.archived { color: var(--muted); }
 
@@ -427,6 +428,102 @@
       color: var(--muted);
       font-size: 11px;
     }
+
+    .season-tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin: 12px 0;
+      padding: 6px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: rgba(15, 18, 26, 0.72);
+    }
+
+    .season-tab {
+      min-height: 32px;
+      padding: 0 11px;
+      border: 1px solid transparent;
+      border-radius: 7px;
+      color: var(--muted);
+      background: transparent;
+      font-weight: 750;
+    }
+
+    .season-tab.active {
+      color: var(--fg);
+      border-color: var(--line-strong);
+      background: rgba(96, 165, 250, 0.1);
+    }
+
+    .season-tab-panel { display: none; }
+    .season-tab-panel.active { display: block; }
+
+    .season-chain {
+      display: grid;
+      gap: 8px;
+      padding: 12px;
+      background: rgba(11, 13, 18, 0.36);
+    }
+
+    .season-chain-row {
+      display: grid;
+      grid-template-columns: minmax(240px, 1fr) 210px minmax(240px, 1fr);
+      gap: 8px;
+      align-items: stretch;
+    }
+
+    .season-chain-node,
+    .season-chain-link {
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: rgba(21, 25, 35, 0.86);
+      padding: 10px;
+      min-width: 0;
+    }
+
+    .season-chain-link {
+      display: grid;
+      align-content: center;
+      text-align: center;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 750;
+    }
+
+    .season-chain-link.aligned { color: var(--green); border-color: rgba(74, 222, 128, 0.34); }
+    .season-chain-link.gap,
+    .season-chain-link.overlap,
+    .season-chain-link.unknown { color: var(--orange); border-color: rgba(245, 146, 30, 0.34); }
+
+    .reward-token {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      min-height: 28px;
+      padding: 4px 9px;
+      border: 1px solid rgba(154, 164, 183, 0.2);
+      border-radius: 7px;
+      background: rgba(11, 13, 18, 0.48);
+      color: var(--soft);
+      font-size: 12px;
+      font-weight: 750;
+    }
+
+    .reward-token::before {
+      content: "";
+      width: 18px;
+      height: 18px;
+      border-radius: 6px;
+      background: linear-gradient(135deg, #6ee7b7, #60a5fa);
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,0.22);
+    }
+
+    .reward-token.coins::before { border-radius: 50%; background: linear-gradient(135deg, #facc15, #f97316); }
+    .reward-token.gems::before { transform: rotate(45deg) scale(0.78); background: linear-gradient(135deg, #67e8f9, #8b5cf6); }
+    .reward-token.keys::before { background: linear-gradient(135deg, #fde68a, #f59e0b); clip-path: polygon(15% 40%, 46% 40%, 46% 28%, 80% 28%, 80% 44%, 66% 44%, 66% 58%, 48% 58%, 48% 72%, 15% 72%); }
+    .reward-token.card::before { background: linear-gradient(135deg, #f0abfc, #60a5fa); }
+    .reward-token.case::before { background: linear-gradient(135deg, #fb7185, #fbbf24); }
 
     .price {
       font-variant-numeric: tabular-nums;
@@ -1430,6 +1527,10 @@
       .bottom-validation {
         grid-template-columns: repeat(2, minmax(0, 1fr));
       }
+
+      .season-chain-row {
+        grid-template-columns: 1fr;
+      }
     }
 
     @media (max-width: 560px) {
@@ -1497,9 +1598,12 @@
         <button class="nav-button active" type="button" data-nav="products"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 7H4"/><path d="M20 12H4"/><path d="M20 17H4"/><path d="M7 7v10"/></svg>Products</button>
         <button class="nav-button" type="button" data-nav="analytics"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 20V10"/><path d="M12 20V4"/><path d="M6 20v-6"/></svg>Analytics</button>
         <button class="nav-button" type="button" data-nav="players"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>Players</button>
-        <button class="nav-button" type="button" data-nav="purchases" disabled style="opacity:0.4"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 5h18v14H3z"/><path d="M3 10h18"/><path d="M7 15h.01"/><path d="M11 15h2"/></svg>Purchases</button>
+        <button class="nav-button" type="button" data-nav="squads"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.46"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>Squads</button>
+        <button class="nav-button" type="button" data-nav="promocodes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-7"/><path d="M2 7h20v5H2z"/><path d="M12 22V7"/><path d="M12 7H7.5a2.5 2.5 0 1 1 0-5C11 2 12 7 12 7Z"/><path d="M12 7h4.5a2.5 2.5 0 1 0 0-5C13 2 12 7 12 7Z"/></svg>Promocodes</button>
+        <button class="nav-button" type="button" data-nav="seasons"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 2v4"/><path d="M16 2v4"/><path d="M3 10h18"/><rect x="3" y="4" width="18" height="18" rx="2"/><path d="m8 15 2 2 4-5"/></svg>Seasons</button>
+        <button class="nav-button" type="button" data-nav="configs"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 15.5A3.5 3.5 0 1 0 12 8a3.5 3.5 0 0 0 0 7.5Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21a2 2 0 0 1-4 0v-.09a1.7 1.7 0 0 0-.4-1.1 1.7 1.7 0 0 0-1-.6 1.7 1.7 0 0 0-1.88.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.1-.4H3a2 2 0 0 1 0-4h.09a1.7 1.7 0 0 0 1.1-.4 1.7 1.7 0 0 0 .6-1 1.7 1.7 0 0 0-.34-1.88l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1.1V3a2 2 0 0 1 4 0v.09a1.7 1.7 0 0 0 .4 1.1 1.7 1.7 0 0 0 1 .6 1.7 1.7 0 0 0 1.88-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9c.2.37.5.7.6 1 .25.37.7.6 1.1.6H21a2 2 0 0 1 0 4h-.09a1.7 1.7 0 0 0-1.1.4 1.7 1.7 0 0 0-.4 0Z"/></svg>Configs</button>
       </nav>
-      <div class="sidebar-footer"><strong>Admin panel</strong>Shop sets &amp; ruble products</div>
+      <div class="sidebar-footer"><strong>Admin panel</strong>Shop, players, analytics, promos &amp; configs</div>
     </aside>
 
     <main>
@@ -1551,8 +1655,9 @@
             <section class="form-section"><div class="section-head"><strong>Identity</strong></div>
               <div class="form-grid">
                 <div class="field"><label>Code *</label><input id="pe-code" placeholder="e.g. extrapass"></div>
-                <div class="field"><label>Item type *</label><input id="pe-item-type" placeholder="e.g. extrapass"></div>
-                <div class="field"><label>Package type</label><input id="pe-package-type" placeholder="e.g. starter_once"></div>
+                <div class="field"><label>Item type *</label><select id="pe-item-type"></select></div>
+                <div class="field" id="pe-package-field"><label>Package type</label><select id="pe-package-type"></select></div>
+                <div class="field" id="pe-shop-set-field"><label>Shop set</label><select id="pe-shop-set-id"></select></div>
                 <div class="field full"><label>Name *</label><input id="pe-name" placeholder="Product name"></div>
                 <div class="field full"><label>Description</label><textarea id="pe-desc" placeholder="Optional"></textarea></div>
               </div>
@@ -1638,6 +1743,7 @@
         <header class="topbar">
           <div><div class="title-kicker">Dashboard</div><h1>Analytics</h1></div>
           <div><select id="analytics-days" style="padding:6px 12px;border-radius:6px;background:#151923;color:#f2f4f8;border:1px solid #303848"><option value="7">7 days</option><option value="14">14 days</option><option value="30" selected>30 days</option><option value="60">60 days</option></select></div>
+          <button class="primary" type="button" id="btn-dataset-export">Export TrainV2 JSONL</button>
         </header>
 
         <div id="analytics-status" style="min-height:20px;margin-bottom:10px"></div>
@@ -1677,6 +1783,26 @@
         </section>
 
         <section class="table-shell" style="margin-bottom:16px">
+          <div class="table-head"><div><strong>Battle meta</strong><span id="battle-meta-subtitle">winrate, mode pickrate, bot outcomes</span></div></div>
+          <div style="background:rgba(21,25,35,0.3);border-radius:0 0 8px 8px;padding:16px">
+            <div class="mini-grid" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px">
+              <div>
+                <div style="font-size:11px;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px">Modes pickrate</div>
+                <table class="mini-table"><thead><tr><th>Mode</th><th>Games</th><th>Pick</th><th>Bot WR</th></tr></thead><tbody id="mode-pickrate-tbody"><tr><td colspan="4" style="text-align:center;padding:24px;color:var(--muted)">—</td></tr></tbody></table>
+              </div>
+              <div>
+                <div style="font-size:11px;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px">Bots win most</div>
+                <table class="mini-table"><thead><tr><th>Mode</th><th>Wins</th><th>Losses</th><th>WR</th></tr></thead><tbody id="bot-mode-wins-tbody"><tr><td colspan="4" style="text-align:center;padding:24px;color:var(--muted)">—</td></tr></tbody></table>
+              </div>
+              <div>
+                <div style="font-size:11px;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px">Bots lose most</div>
+                <table class="mini-table"><thead><tr><th>Mode</th><th>Wins</th><th>Losses</th><th>WR</th></tr></thead><tbody id="bot-mode-losses-tbody"><tr><td colspan="4" style="text-align:center;padding:24px;color:var(--muted)">—</td></tr></tbody></table>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="table-shell" style="margin-bottom:16px">
           <div class="table-head"><div><strong>Economy events</strong><span>last 30 days</span></div></div>
           <div id="economy-content" style="background:rgba(21,25,35,0.3);border-radius:0 0 8px 8px;padding:16px">
             <div style="text-align:center;padding:48px 16px;color:var(--muted);font-size:13px">Economy events will appear here as transactions are tracked</div>
@@ -1694,6 +1820,22 @@
               <div>
                 <div style="font-size:11px;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px">Never used</div>
                 <table class="mini-table"><thead><tr><th>Card</th><th>Rarity</th></tr></thead><tbody id="never-used-tbody"><tr><td style="text-align:center;padding:24px;color:var(--muted)">—</td></tr></tbody></table>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="table-shell" style="margin-bottom:16px">
+          <div class="table-head"><div><strong>Bot cards outcomes</strong><span>cards bots win and lose with</span></div></div>
+          <div style="background:rgba(21,25,35,0.3);border-radius:0 0 8px 8px;padding:16px">
+            <div class="mini-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+              <div>
+                <div style="font-size:11px;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px">Winning cards</div>
+                <table class="mini-table"><thead><tr><th>Card</th><th>Games</th><th>Wins</th><th>WR</th></tr></thead><tbody id="bot-card-wins-tbody"><tr><td colspan="4" style="text-align:center;padding:24px;color:var(--muted)">—</td></tr></tbody></table>
+              </div>
+              <div>
+                <div style="font-size:11px;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px">Losing cards</div>
+                <table class="mini-table"><thead><tr><th>Card</th><th>Games</th><th>Losses</th><th>WR</th></tr></thead><tbody id="bot-card-losses-tbody"><tr><td colspan="4" style="text-align:center;padding:24px;color:var(--muted)">—</td></tr></tbody></table>
               </div>
             </div>
           </div>
@@ -1778,6 +1920,7 @@
               <option value="active">Active</option>
               <option value="banned">Banned</option>
               <option value="warned">Warned</option>
+              <option value="bots">Bots</option>
             </select>
             <select id="po-search-activity" style="background:var(--surface);border:1px solid var(--line);color:var(--fg);padding:6px 8px;border-radius:6px;font-size:13px">
               <option value="all">Any activity</option>
@@ -1809,6 +1952,23 @@
             <section class="panel-card">
               <h3>Profile</h3>
               <div id="pd-profile-info" style="font-size:13px;color:var(--soft)">—</div>
+            </section>
+            <section class="panel-card">
+              <h3>Account edit</h3>
+              <div class="form-grid three">
+                <div class="field"><label>Username</label><input id="pd-edit-username" placeholder="username"></div>
+                <div class="field"><label>First name</label><input id="pd-edit-first-name" placeholder="First name"></div>
+                <div class="field"><label>Last name</label><input id="pd-edit-last-name" placeholder="Last name"></div>
+                <div class="field"><label>Trophies</label><input id="pd-edit-trophies" type="number"></div>
+                <div class="field"><label>Max trophies</label><input id="pd-edit-max-trophies" type="number"></div>
+                <div class="field"><label>League</label><input id="pd-edit-league" type="number" min="1"></div>
+                <div class="field"><label>Energy</label><input id="pd-edit-energy" type="number"></div>
+                <div class="field"><label>Status</label><select id="pd-edit-status"><option value="active">active</option><option value="warn">warn</option><option value="banned">banned</option></select></div>
+                <div class="field"><label>Reason</label><input id="pd-edit-reason" placeholder="Admin reason"></div>
+              </div>
+              <div class="top-actions" style="justify-content:flex-start;margin-top:10px">
+                <button class="primary" type="button" id="btn-pd-save-account">Save account data</button>
+              </div>
             </section>
             <section class="panel-card">
               <h3>Balances</h3>
@@ -1852,7 +2012,7 @@
                 </select>
                 <input type="number" id="pd-resource-amount" placeholder="Amount (±)" style="background:var(--surface);border:1px solid var(--line);color:var(--fg);padding:5px 8px;border-radius:6px;font-size:12px">
                 <input type="text" id="pd-resource-reason" placeholder="Reason" style="background:var(--surface);border:1px solid var(--line);color:var(--fg);padding:5px 8px;border-radius:6px;font-size:12px">
-                <button class="primary" type="button" id="btn-pd-adjust" style="font-size:12px">Adjust resource</button>
+                <button class="primary" type="button" id="btn-pd-adjust" style="font-size:12px">Adjust resource + notify</button>
                 <hr style="border-color:var(--line);margin:4px 0">
                 <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:2px">ExtraPass</label></div>
                 <select id="pd-ep-mode" style="background:var(--surface);border:1px solid var(--line);color:var(--fg);padding:5px 8px;border-radius:6px;font-size:12px">
@@ -1862,7 +2022,7 @@
                 </select>
                 <input type="number" id="pd-ep-days" placeholder="Days" style="background:var(--surface);border:1px solid var(--line);color:var(--fg);padding:5px 8px;border-radius:6px;font-size:12px" min="1" value="30">
                 <input type="text" id="pd-ep-reason" placeholder="Reason" style="background:var(--surface);border:1px solid var(--line);color:var(--fg);padding:5px 8px;border-radius:6px;font-size:12px">
-                <button class="primary" type="button" id="btn-pd-set-ep" style="font-size:12px">Set ExtraPass</button>
+                <button class="primary" type="button" id="btn-pd-set-ep" style="font-size:12px">Set ExtraPass + notify</button>
               </div>
             </section>
             <!-- Hidden modals for ban/unban/warn/note -->
@@ -1891,6 +2051,312 @@
         </div>
       </section>
 
+      <!-- SQUADS VIEW -->
+      <section class="view" id="squads-view">
+        <header class="topbar">
+          <div><div class="title-kicker">Clan operations</div><h1>Squads</h1></div>
+          <div><select id="sq-days" style="padding:6px 12px;border-radius:6px;background:#151923;color:#f2f4f8;border:1px solid #303848"><option value="7">7 days</option><option value="14">14 days</option><option value="30" selected>30 days</option><option value="60">60 days</option><option value="180">180 days</option></select></div>
+          <button class="secondary" type="button" id="btn-sq-refresh">Reload</button>
+        </header>
+        <div id="sq-status" style="min-height:20px;margin-bottom:10px"></div>
+        <div id="sq-partial-warnings" style="margin-bottom:10px"></div>
+        <section class="metrics">
+          <article class="metric-card"><div class="metric-label"><span>Squads</span></div><div class="metric-value" id="sq-total" style="color:var(--purple)">—</div><div class="metric-note"><span id="sq-new">—</span> new</div></article>
+          <article class="metric-card"><div class="metric-label"><span>Members</span></div><div class="metric-value" id="sq-members" style="color:var(--green)">—</div><div class="metric-note"><span id="sq-slots">—</span> slots · <span id="sq-bots">—</span> bots</div></article>
+          <article class="metric-card"><div class="metric-label"><span>CBRP</span></div><div class="metric-value" id="sq-cbrp" style="color:var(--gold)">—</div><div class="metric-note"><span id="sq-boosted">—</span> boosted</div></article>
+          <article class="metric-card"><div class="metric-label"><span>Treasury</span></div><div class="metric-value" id="sq-treasury" style="color:var(--orange)">—</div><div class="metric-note">all squads</div></article>
+          <article class="metric-card"><div class="metric-label"><span>Pending joins</span></div><div class="metric-value" id="sq-pending" style="color:var(--blue)">—</div><div class="metric-note">selected period</div></article>
+        </section>
+
+        <div style="display:grid;grid-template-columns:minmax(0,1.2fr) minmax(360px,0.8fr);gap:16px;margin-top:16px">
+          <section class="table-shell">
+            <div class="table-head"><div><strong>Squad search</strong><span id="sq-list-total">loading...</span></div></div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;padding:12px;background:rgba(21,25,35,0.4);border-bottom:1px solid var(--line)">
+              <input type="search" id="sq-search-q" placeholder="ID, tag, name..." style="flex:1;min-width:160px;background:var(--surface);border:1px solid var(--line);color:var(--fg);padding:6px 10px;border-radius:6px;font-size:13px">
+              <select id="sq-filter" style="background:var(--surface);border:1px solid var(--line);color:var(--fg);padding:6px 8px;border-radius:6px;font-size:13px"><option value="all">All</option><option value="open">Open</option><option value="closed">Closed</option><option value="boost">Boost</option><option value="full">Full</option></select>
+              <select id="sq-sort" style="background:var(--surface);border:1px solid var(--line);color:var(--fg);padding:6px 8px;border-radius:6px;font-size:13px"><option value="cbrp">CBRP</option><option value="members">Members</option><option value="treasury">Treasury</option><option value="created">Created</option><option value="rank">Rank</option></select>
+              <button class="primary" type="button" id="btn-sq-search" style="font-size:12px;padding:6px 12px">Search</button>
+            </div>
+            <div class="table-scroll"><table>
+              <thead><tr><th>ID</th><th>Name</th><th>Owner</th><th>Members</th><th>CBRP</th><th>Treasury</th><th>Status</th><th></th></tr></thead>
+              <tbody id="sq-list-tbody"><tr><td colspan="8" style="text-align:center;padding:24px;color:var(--muted)">Loading...</td></tr></tbody>
+            </table></div>
+          </section>
+
+          <section class="panel-card">
+            <h3>Create squad</h3>
+            <div class="form-grid">
+              <div class="field"><label>Owner user_id</label><input id="sq-create-owner" type="number" placeholder="6803854304"></div>
+              <div class="field"><label>Type</label><select id="sq-create-type"><option value="open">open</option><option value="closed">closed</option></select></div>
+              <div class="field"><label>Name</label><input id="sq-create-name" placeholder="Squad name"></div>
+              <div class="field"><label>Tag</label><input id="sq-create-tag" placeholder="TAG"></div>
+              <div class="field"><label>Min trophies</label><input id="sq-create-min" type="number" min="0" value="0"></div>
+              <div class="field full"><label>Description</label><input id="sq-create-desc" placeholder="Description"></div>
+            </div>
+            <div class="top-actions" style="justify-content:flex-start;margin-top:10px">
+              <button class="primary" type="button" id="btn-sq-create">Create squad</button>
+            </div>
+          </section>
+        </div>
+
+        <section class="table-shell" style="margin-top:16px">
+          <div class="table-head"><div><strong>Squad analytics</strong><span>CBRP, activity, upgrades, purchases</span></div></div>
+          <div style="background:rgba(21,25,35,0.3);border-radius:0 0 8px 8px;padding:16px">
+            <div class="mini-grid" style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px">
+              <div><div style="font-size:11px;color:var(--muted);margin-bottom:6px;text-transform:uppercase">Top CBRP</div><table class="mini-table"><tbody id="sq-top-cbrp-tbody"><tr><td style="text-align:center;padding:18px;color:var(--muted)">—</td></tr></tbody></table></div>
+              <div><div style="font-size:11px;color:var(--muted);margin-bottom:6px;text-transform:uppercase">CBRP events</div><table class="mini-table"><tbody id="sq-events-tbody"><tr><td style="text-align:center;padding:18px;color:var(--muted)">—</td></tr></tbody></table></div>
+              <div><div style="font-size:11px;color:var(--muted);margin-bottom:6px;text-transform:uppercase">Activity</div><table class="mini-table"><tbody id="sq-activity-tbody"><tr><td style="text-align:center;padding:18px;color:var(--muted)">—</td></tr></tbody></table></div>
+              <div><div style="font-size:11px;color:var(--muted);margin-bottom:6px;text-transform:uppercase">Upgrades</div><table class="mini-table"><tbody id="sq-upgrades-tbody"><tr><td style="text-align:center;padding:18px;color:var(--muted)">—</td></tr></tbody></table></div>
+            </div>
+            <div class="mini-grid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:16px">
+              <div><div style="font-size:11px;color:var(--muted);margin-bottom:6px;text-transform:uppercase">Shop purchases</div><table class="mini-table"><tbody id="sq-purchases-tbody"><tr><td style="text-align:center;padding:18px;color:var(--muted)">—</td></tr></tbody></table></div>
+              <div><div style="font-size:11px;color:var(--muted);margin-bottom:6px;text-transform:uppercase">Roles</div><table class="mini-table"><tbody id="sq-roles-tbody"><tr><td style="text-align:center;padding:18px;color:var(--muted)">—</td></tr></tbody></table></div>
+              <div><div style="font-size:11px;color:var(--muted);margin-bottom:6px;text-transform:uppercase">Weekly snapshots</div><table class="mini-table"><tbody id="sq-snapshots-tbody"><tr><td style="text-align:center;padding:18px;color:var(--muted)">—</td></tr></tbody></table></div>
+            </div>
+            <div style="margin-top:16px">
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px"><div style="font-size:11px;color:var(--muted);text-transform:uppercase">Runtime config</div><button class="secondary" type="button" id="btn-sq-process-weekly" style="font-size:11px;padding:3px 8px">Process weekly CBRP</button></div>
+              <table class="mini-table"><tbody id="sq-config-tbody"><tr><td style="text-align:center;padding:18px;color:var(--muted)">—</td></tr></tbody></table>
+            </div>
+          </div>
+        </section>
+
+        <section class="view" id="squad-detail-inline" style="display:block;margin-top:16px">
+          <div id="sq-detail-empty" class="panel-card" style="color:var(--muted)">Open a squad to manage members, requests, balances, upgrades and settings.</div>
+          <div id="sq-detail-content" style="display:none"></div>
+        </section>
+      </section>
+
+      <!-- PROMOCODES VIEW -->
+      <section class="view" id="promocodes-view">
+        <header class="topbar">
+          <div><div class="title-kicker">Rewards</div><h1>Promocodes</h1></div>
+          <div style="color:var(--muted);font-size:12px">Permanent, personal and welcome codes</div>
+          <button class="secondary" type="button" id="btn-promo-refresh">Reload</button>
+        </header>
+        <div style="display:grid;grid-template-columns:minmax(320px,420px) minmax(0,1fr);gap:16px">
+          <section class="panel-card">
+            <h3>Create promocode</h3>
+            <div class="form-grid">
+              <div class="field full"><label>Code</label><input id="promo-code" placeholder="WELCOME2026"></div>
+              <div class="field"><label>Type</label><select id="promo-type"><option value="permanent">permanent</option><option value="personal">personal</option><option value="welcome">welcome</option></select></div>
+              <div class="field"><label>Expires at</label><input id="promo-expires" type="datetime-local"></div>
+              <div class="field"><label>Gems</label><input id="promo-gems" type="number" min="0" value="0"></div>
+              <div class="field"><label>Coins</label><input id="promo-coins" type="number" min="0" value="0"></div>
+              <div class="field"><label>Keys</label><input id="promo-keys" type="number" min="0" value="0"></div>
+              <div class="toggle"><span class="toggle-label">ExtraPass reward</span><span class="switch" id="promo-extrapass-switch" data-on="0"></span></div>
+            </div>
+            <div class="top-actions" style="justify-content:flex-start;margin-top:10px">
+              <button class="primary" type="button" id="btn-promo-create">Create promocode</button>
+            </div>
+          </section>
+          <section class="table-shell">
+            <div class="table-head"><div><strong>Promocodes</strong><span id="promo-count">loading...</span></div></div>
+            <div class="table-scroll"><table>
+              <thead><tr><th>Code</th><th>Type</th><th>Rewards</th><th>Uses</th><th>Expires</th><th>Actions</th></tr></thead>
+              <tbody id="promocodes-tbody"><tr><td colspan="6" style="text-align:center;padding:24px;color:var(--muted)">Loading...</td></tr></tbody>
+            </table></div>
+          </section>
+        </div>
+      </section>
+
+      <!-- SEASONS VIEW -->
+      <section class="view" id="seasons-view">
+        <header class="topbar">
+          <div><div class="title-kicker">Progression ops</div><h1>ExtraPass Seasons</h1></div>
+          <div class="filter"><label>Preset</label><select id="season-create-preset"><option value="blank">Пустой сезон</option><option value="copy_current">Копия текущего</option><option value="balanced_45">Базовый 45</option></select></div>
+          <div class="top-actions"><button class="primary" type="button" id="btn-season-create-draft"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 5v14"/><path d="M5 12h14"/></svg>Начать новый сезон</button><button class="secondary" type="button" id="btn-season-refresh">Reload</button></div>
+        </header>
+        <div id="seasons-status" style="min-height:20px;margin-bottom:10px"></div>
+        <section class="metrics">
+          <article class="metric-card"><div class="metric-label"><span>Текущий сезон</span><span id="season-active-status">—</span></div><div class="metric-value" id="season-active-name" style="color:var(--purple)">—</div><div class="metric-note" id="season-active-dates">loading...</div></article>
+          <article class="metric-card"><div class="metric-label"><span>Следующий старт</span></div><div class="metric-value" id="season-next-date" style="color:var(--green)">—</div><div class="metric-note" id="season-next-name">—</div></article>
+          <article class="metric-card"><div class="metric-label"><span>Черновики</span></div><div class="metric-value" id="season-draft-count" style="color:var(--gold)">—</div><div class="metric-note">готовятся без ручного запуска</div></article>
+          <article class="metric-card"><div class="metric-label"><span>Цепочка</span></div><div class="metric-value" id="season-chain-issues" style="color:var(--orange)">—</div><div class="metric-note">разрывы и пересечения</div></article>
+        </section>
+
+        <div class="season-tabs">
+          <button class="season-tab active" type="button" data-season-tab="current">Текущий сезон</button>
+          <button class="season-tab" type="button" data-season-tab="draft">Новый сезон</button>
+          <button class="season-tab" type="button" data-season-tab="rewards">ExtraPass rewards</button>
+          <button class="season-tab" type="button" data-season-tab="schedule">Обзор сменяемости сезонов</button>
+        </div>
+
+        <section class="season-tab-panel active" data-season-panel="current">
+          <div class="editor-layout">
+            <div class="form-stack">
+              <section class="form-section"><div class="section-head"><strong>Настройка текущего сезона</strong><span id="sc-id">—</span></div>
+                <div class="form-grid">
+                  <div class="field"><label>Название</label><input id="sc-name"></div>
+                  <div class="field"><label>Номер</label><input id="sc-number" type="number" min="1"></div>
+                  <div class="field full"><label>Подзаголовок</label><input id="sc-subtitle"></div>
+                  <div class="field full"><label>Описание</label><textarea id="sc-description"></textarea></div>
+                  <div class="field"><label>Дата начала</label><input id="sc-start" type="datetime-local"></div>
+                  <div class="field"><label>Дата окончания</label><input id="sc-end" type="datetime-local"></div>
+                  <div class="field"><label>Max stars</label><input id="sc-max-stars" type="number" min="1" max="99"></div>
+                  <div class="field"><label>Pass до этапа</label><input id="sc-pass-end" type="number" min="1" max="99"></div>
+                  <div class="field"><label>Ultra c этапа</label><input id="sc-ultra-start" type="number" min="1" max="99"></div>
+                  <div class="field"><label>Status</label><select id="sc-status"><option value="draft">draft</option><option value="scheduled">scheduled</option><option value="active">active</option><option value="archived">archived</option></select></div>
+                  <div class="field"><label>Free track_type</label><input id="sc-free-track"></div>
+                  <div class="field"><label>Pass track_type</label><input id="sc-pass-track"></div>
+                  <div class="field"><label>Ultra track_type</label><input id="sc-ultra-track"></div>
+                  <div class="toggle"><span class="toggle-label">Автосмена по датам</span><span class="switch on" id="sc-auto-switch" data-on="1"></span></div>
+                </div>
+                <div class="top-actions" style="justify-content:flex-start;padding:0 12px 12px">
+                  <button class="primary" type="button" id="btn-season-save-current">Save season</button>
+                </div>
+              </section>
+            </div>
+            <aside class="side-stack">
+              <section class="side-panel"><div class="side-head"><strong>Все сезоны</strong><span id="season-list-count">—</span></div><div class="preview-body" id="season-list-preview">Loading...</div></section>
+            </aside>
+          </div>
+        </section>
+
+        <section class="season-tab-panel" data-season-panel="draft">
+          <div class="editor-layout">
+            <div class="form-stack">
+              <section class="form-section"><div class="section-head"><strong>Черновик сезона</strong><span id="sd-id">—</span></div>
+                <div class="form-grid">
+                  <div class="field"><label>Выбрать черновик</label><select id="season-draft-select"></select></div>
+                  <div class="field"><label>Status</label><select id="sd-status"><option value="draft">draft</option><option value="scheduled">scheduled</option><option value="active">active</option><option value="archived">archived</option></select></div>
+                  <div class="field"><label>Название</label><input id="sd-name"></div>
+                  <div class="field"><label>Номер</label><input id="sd-number" type="number" min="1"></div>
+                  <div class="field full"><label>Подзаголовок</label><input id="sd-subtitle"></div>
+                  <div class="field full"><label>Описание</label><textarea id="sd-description"></textarea></div>
+                  <div class="field"><label>Дата начала</label><input id="sd-start" type="datetime-local"></div>
+                  <div class="field"><label>Дата окончания</label><input id="sd-end" type="datetime-local"></div>
+                  <div class="field"><label>Max stars</label><input id="sd-max-stars" type="number" min="1" max="99"></div>
+                  <div class="field"><label>Pass до этапа</label><input id="sd-pass-end" type="number" min="1" max="99"></div>
+                  <div class="field"><label>Ultra c этапа</label><input id="sd-ultra-start" type="number" min="1" max="99"></div>
+                  <div class="toggle"><span class="toggle-label">Автосмена по датам</span><span class="switch on" id="sd-auto-switch" data-on="1"></span></div>
+                </div>
+                <div class="top-actions" style="justify-content:flex-start;padding:0 12px 12px">
+                  <button class="primary" type="button" id="btn-season-save-draft">Save draft</button>
+                </div>
+              </section>
+              <section class="form-section"><div class="section-head"><strong>JSON ExtraPass дорожек</strong><span>free / premium / ultra</span></div>
+                <div class="form-grid">
+                  <div class="field full"><label>Загрузить JSON</label><input type="file" id="season-json-file" accept="application/json,.json"></div>
+                  <div class="field full"><label>JSON</label><textarea id="season-json-import" style="min-height:220px" placeholder='{"free":[{"position":1,"reward_type":"coins","reward_amount":200}],"premium":[],"ultra":[]}'></textarea></div>
+                </div>
+                <div class="top-actions" style="justify-content:flex-start;padding:0 12px 12px">
+                  <button class="primary" type="button" id="btn-season-import-json">Import JSON into draft</button>
+                  <button class="secondary" type="button" id="btn-season-json-template">Template</button>
+                </div>
+              </section>
+            </div>
+            <aside class="side-stack">
+              <section class="side-panel"><div class="side-head"><strong>Pipeline</strong><span>auto-ready</span></div><div class="preview-body" id="season-pipeline-preview">Создание черновика -> дорожки -> инфо-поля -> даты -> scheduled.</div></section>
+            </aside>
+          </div>
+        </section>
+
+        <section class="season-tab-panel" data-season-panel="rewards">
+          <section class="panel-card">
+            <h3>Полная настройка ExtraPass-наград</h3>
+            <div class="form-grid three">
+              <div class="field"><label>Season</label><select id="sr-season-select"></select></div>
+              <div class="field"><label>Lane</label><select id="sr-lane"><option value="free">Free</option><option value="premium">ExtraPass</option><option value="ultra">Ultra</option></select></div>
+              <div class="field"><label>Position</label><input id="sr-position" type="number" min="1" value="1"></div>
+              <div class="field"><label>Reward type</label><select id="sr-reward-type"><option value="coins">coins</option><option value="gems">gems</option><option value="keys">keys</option><option value="case">case</option><option value="card">card</option><option value="particles">particles</option></select></div>
+              <div class="field"><label>Amount</label><input id="sr-reward-amount" type="number" min="0" value="0"></div>
+              <div class="field"><label>Meta JSON</label><input id="sr-reward-meta" placeholder='{"case_tier":4}'></div>
+            </div>
+            <div class="top-actions" style="justify-content:flex-start;margin-top:10px">
+              <button class="primary" type="button" id="btn-sr-upsert">Create / upsert reward</button>
+            </div>
+          </section>
+          <section class="table-shell" style="margin-top:16px">
+            <div class="table-head"><div><strong>Season reward tracks</strong><span id="sr-count">loading...</span></div></div>
+            <div class="table-scroll"><table>
+              <thead><tr><th>ID</th><th>Lane</th><th>Pos</th><th>Reward</th><th>Meta</th><th>Status</th><th>Actions</th></tr></thead>
+              <tbody id="sr-tbody"><tr><td colspan="7" style="text-align:center;padding:24px;color:var(--muted)">Loading...</td></tr></tbody>
+            </table></div>
+          </section>
+        </section>
+
+        <section class="season-tab-panel" data-season-panel="schedule">
+          <section class="table-shell">
+            <div class="table-head"><div><strong>Обзор сменяемости сезонов</strong><span id="season-chain-count">loading...</span></div></div>
+            <div id="season-chain" class="season-chain"><div style="text-align:center;padding:24px;color:var(--muted)">Loading...</div></div>
+          </section>
+          <section class="table-shell" style="margin-top:16px">
+            <div class="table-head"><div><strong>Season rows</strong><span>status, dates, track content</span></div></div>
+            <div class="table-scroll"><table>
+              <thead><tr><th>#</th><th>Name</th><th>Status</th><th>Start</th><th>End</th><th>Tracks</th><th>Auto</th></tr></thead>
+              <tbody id="seasons-tbody"><tr><td colspan="7" style="text-align:center;padding:24px;color:var(--muted)">Loading...</td></tr></tbody>
+            </table></div>
+          </section>
+        </section>
+      </section>
+
+      <!-- CONFIGS VIEW -->
+      <section class="view" id="configs-view">
+        <header class="topbar">
+          <div><div class="title-kicker">Game configuration</div><h1>Configs</h1></div>
+          <div style="color:var(--muted);font-size:12px">General DB-backed game config; squad runtime config is managed in Squads</div>
+          <button class="secondary" type="button" id="btn-configs-refresh">Reload</button>
+        </header>
+        <div id="configs-status" style="min-height:20px;margin-bottom:10px"></div>
+        <div id="cfg-partial-warnings" style="margin-bottom:10px"></div>
+        <section class="metrics">
+          <article class="metric-card"><div class="metric-label"><span>Shop sets</span></div><div class="metric-value" id="cfg-shop-sets" style="color:var(--purple)">—</div></article>
+          <article class="metric-card"><div class="metric-label"><span>Ruble products</span></div><div class="metric-value" id="cfg-ruble-products" style="color:var(--orange)">—</div></article>
+          <article class="metric-card"><div class="metric-label"><span>Reward tracks</span></div><div class="metric-value" id="cfg-reward-tracks" style="color:var(--gold)">—</div></article>
+          <article class="metric-card"><div class="metric-label"><span>Promocodes</span></div><div class="metric-value" id="cfg-promocodes" style="color:var(--green)">—</div></article>
+        </section>
+        <section class="panel-card" style="margin-top:16px">
+          <h3>Runtime availability</h3>
+          <div class="form-grid three">
+            <div class="toggle"><span class="toggle-label">Maintenance mode</span><span class="switch" id="cfg-maintenance-switch" data-on="0"></span></div>
+            <div class="field" style="grid-column:span 2"><label>Status</label><input id="cfg-runtime-summary" readonly value="Loading..."></div>
+          </div>
+          <div class="table-shell" style="margin-top:12px">
+            <div class="table-head"><div><strong>Sections and modes</strong><span>disabled items stay visible in app</span></div></div>
+            <table class="mini-table"><tbody id="cfg-feature-toggles"><tr><td style="text-align:center;padding:16px;color:var(--muted)">Loading...</td></tr></tbody></table>
+          </div>
+          <div class="table-shell" style="margin-top:12px">
+            <div class="table-head"><div><strong>Card blacklist</strong><span id="cfg-disabled-card-count">loading...</span></div></div>
+            <div class="table-scroll" style="max-height:280px"><table>
+              <thead><tr><th>ID</th><th>Name</th><th>Type</th><th>Rarity</th><th>State</th><th>Actions</th></tr></thead>
+              <tbody id="cfg-cards-tbody"><tr><td colspan="6" style="text-align:center;padding:24px;color:var(--muted)">Loading...</td></tr></tbody>
+            </table></div>
+          </div>
+        </section>
+        <section class="table-shell" style="margin-top:16px">
+          <div class="table-head"><div><strong>Match modes</strong><span>DB overrides</span></div></div>
+          <div class="table-scroll"><table>
+            <thead><tr><th>Mode</th><th>Status</th><th>Bot allowed</th><th>Description</th><th>Actions</th></tr></thead>
+            <tbody id="cfg-modes-tbody"><tr><td colspan="5" style="text-align:center;padding:24px;color:var(--muted)">Loading...</td></tr></tbody>
+          </table></div>
+        </section>
+        <section class="panel-card" style="margin-top:16px">
+          <h3>Reward track tier</h3>
+          <div class="form-grid three">
+            <div class="field"><label>Track</label><select id="rt-track-type"><option value="bp_free">bp_free</option><option value="bp_premium">bp_premium</option><option value="bp_ultra">bp_ultra</option></select></div>
+            <div class="field"><label>Position</label><input id="rt-position" type="number" min="1" value="1"></div>
+            <div class="field"><label>Reward type</label><select id="rt-reward-type"><option value="coins">coins</option><option value="gems">gems</option><option value="keys">keys</option><option value="case">case</option><option value="card">card</option><option value="particles">particles</option></select></div>
+            <div class="field"><label>Amount</label><input id="rt-reward-amount" type="number" min="0" value="0"></div>
+            <div class="field"><label>Meta JSON</label><input id="rt-reward-meta" placeholder='{"case_tier":4}'></div>
+            <div class="toggle"><span class="toggle-label">ExtraPass required</span><span class="switch" id="rt-extra-pass-switch" data-on="0"></span></div>
+          </div>
+          <div class="top-actions" style="justify-content:flex-start;margin-top:10px">
+            <button class="primary" type="button" id="btn-rt-create">Create / upsert tier</button>
+          </div>
+        </section>
+        <section class="table-shell" style="margin-top:16px">
+          <div class="table-head"><div><strong>Reward tracks</strong><span id="rt-count">loading...</span></div></div>
+          <div class="table-scroll"><table>
+            <thead><tr><th>ID</th><th>Track</th><th>Pos</th><th>Reward</th><th>Pass</th><th>Status</th><th>Actions</th></tr></thead>
+            <tbody id="rt-tbody"><tr><td colspan="7" style="text-align:center;padding:24px;color:var(--muted)">Loading...</td></tr></tbody>
+          </table></div>
+        </section>
+        <section class="table-shell" style="margin-top:16px">
+          <div class="table-head"><div><strong>Managed API / DB areas</strong><span>available from this admin</span></div></div>
+          <table class="mini-table"><tbody id="cfg-areas-tbody"><tr><td style="text-align:center;padding:24px;color:var(--muted)">Loading...</td></tr></tbody></table>
+        </section>
+      </section>
+
       <section class="view" id="purchases-view"><header class="topbar"><div><div class="title-kicker">Payment</div><h1>Purchases</h1></div><div style="color:var(--muted)">not connected yet</div></header></section>
     </main>
   </div>
@@ -1910,43 +2376,74 @@
         var p=new URLSearchParams(location.search);
         if(window.Telegram&&window.Telegram.WebApp&&window.Telegram.WebApp.initData){var d=window.Telegram.WebApp.initData;if(new URLSearchParams(d).get('auth_date')){AUTH_PARAM={key:'_auth',value:d};return}}
         if(p.get('_auth')){AUTH_PARAM={key:'_auth',value:p.get('_auth')};return}
-        if(p.get('user_id')){AUTH_PARAM={key:'user_id',value:p.get('user_id')};return}
       })();
-      if(!AUTH_PARAM){document.body.innerHTML='<div style="display:grid;place-items:center;height:100vh;color:#f2f4f8;font-family:Inter,sans-serif;background:#0b0d12"><div style="text-align:center;max-width:420px;padding:32px;border:1px solid #303848;border-radius:8px;background:#151923"><strong style="font-size:18px;display:block;margin-bottom:12px">Auth required</strong><p style="color:#9aa4b7;font-size:13px">Open admin from Telegram WebApp<br>or pass <code style="color:#f5921e">?_auth=...</code><br>or <code style="color:#f5921e">?user_id=...</code></p></div></div>';return}
+      if(AUTH_PARAM&&location.search){history.replaceState(null,'',location.pathname+location.hash)}
 
-      var shopSets=[],rubleProducts=[],editingProduct=null,isDirty=!1,loadError=null,editorRewards=[],
+      var shopSets=[],rubleProducts=[],editingProduct=null,editingSet=null,isDirty=!1,loadError=null,editorRewards=[];
+      var productOptions={item_types:[],package_types:{},shop_sets:[]},
+          seasonsState={seasons:[],reward_tracks:[],reward_counts:{},overview:[],active:null,drafts:[],scheduled:[],presets:[]},
+          selectedDraftId=null,selectedRewardSeasonId=null,
           VALID_REWARD_TYPES=['gems','coins','keys','case','card','particles'],
           $=function(s){return document.querySelector(s)},
           $$=function(s){return [].slice.call(document.querySelectorAll(s))};
 
-      function showView(n){['products-view','editor-view','product-editor-view','analytics-view','players-view','player-detail-view','purchases-view'].forEach(function(id){$('#'+id).classList.toggle('active',id===n)});$$('[data-nav]').forEach(function(b){b.classList.toggle('active',b.dataset.nav===(n==='analytics-view'?'analytics':n==='players-view'||n==='player-detail-view'?'players':n==='purchases-view'?'purchases':'products'))})}
+      function showView(n){['products-view','editor-view','product-editor-view','analytics-view','players-view','player-detail-view','squads-view','promocodes-view','seasons-view','configs-view','purchases-view'].forEach(function(id){$('#'+id).classList.toggle('active',id===n)});$$('[data-nav]').forEach(function(b){b.classList.toggle('active',b.dataset.nav===(n==='analytics-view'?'analytics':n==='players-view'||n==='player-detail-view'?'players':n==='squads-view'?'squads':n==='promocodes-view'?'promocodes':n==='seasons-view'?'seasons':n==='configs-view'?'configs':n==='purchases-view'?'purchases':'products'))})}
       $('[data-nav="products"]').addEventListener('click',function(){showView('products-view')});
       $('[data-nav="analytics"]').addEventListener('click',function(){showView('analytics-view');loadAnalytics()});
       $('[data-nav="players"]').addEventListener('click',function(){showView('players-view');loadPlayersOverview()});
-      $('[data-nav="purchases"]').addEventListener('click',function(){showView('purchases-view')});
+      $('[data-nav="squads"]').addEventListener('click',function(){showView('squads-view');loadSquadsAdmin()});
+      $('[data-nav="promocodes"]').addEventListener('click',function(){showView('promocodes-view');loadPromocodes()});
+      $('[data-nav="seasons"]').addEventListener('click',function(){showView('seasons-view');loadSeasons()});
+      $('[data-nav="configs"]').addEventListener('click',function(){showView('configs-view');loadConfigs()});
       document.querySelectorAll('.btn-back-products').forEach(function(b){b.addEventListener('click',function(){showView('products-view')})});
       document.querySelectorAll('.btn-back-players').forEach(function(b){b.addEventListener('click',function(){showView('players-view');loadPlayersOverview()})});
+      $('#po-list-tbody').addEventListener('click',function(ev){var b=ev.target.closest('[data-player-open]');if(b)openPlayerDetail(b.dataset.playerOpen)});
 
-      function toast(m,s){var e=document.createElement('div');e.className='toast '+s;e.innerHTML=m;document.body.appendChild(e);setTimeout(function(){e.remove()},3500)}
+      function toast(m,s){var e=document.createElement('div');e.className='toast '+s;e.textContent=m;document.body.appendChild(e);setTimeout(function(){e.remove()},3500)}
       function escHtml(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
       function setStatusClass(a){return(a===!0||a===void 0)?'active':'hidden'}
       function setStatusLabel(a){return(a===!0||a===void 0)?'active':'archived'}
       function fmtDate(i){if(!i)return'—';try{return new Date(i).toLocaleString()}catch(e){return i}}
+      function renderAdminBlockWarnings(target,errors){
+        var el=$(target);if(!el)return;
+        var keys=Object.keys(errors||{});
+        if(!keys.length){el.innerHTML='';return}
+        el.innerHTML='<div style="color:var(--orange);font-size:12px;background:rgba(245,146,30,0.08);padding:8px 12px;border-radius:6px;border:1px solid rgba(245,146,30,0.24)">Partial data: '+keys.map(function(k){return'<strong>'+escHtml(k)+'</strong>: '+escHtml(errors[k])}).join(' · ')+'</div>';
+      }
 
       function buildUrl(path,ep){
         var u=new URL(path,location.origin);
-        if(AUTH_PARAM)u.searchParams.set(AUTH_PARAM.key,AUTH_PARAM.value);
         if(ep)Object.entries(ep).forEach(function(kv){if(kv[1]!==void 0&&kv[1]!==null)u.searchParams.set(kv[0],kv[1])});
         return u.toString();
       }
 
       async function api(method,path,body,ep){
         var opts={method:method,headers:body instanceof FormData?{}:{'Content-Type':'application/json'}};
+        if(AUTH_PARAM)opts.headers.Authorization='Bearer '+AUTH_PARAM.value;
         if(body&&!(body instanceof FormData))opts.body=JSON.stringify(body);
         else if(body instanceof FormData)opts.body=body;
         var r=await fetch(buildUrl(path,ep),opts),d=await r.json();
         if(!r.ok)throw new Error(d.error||d.message||'HTTP '+r.status);
         return d;
+      }
+
+      async function downloadAdminFile(path,ep,filename){
+        var headers={};if(AUTH_PARAM)headers.Authorization='Bearer '+AUTH_PARAM.value;
+        var r=await fetch(buildUrl(path,ep),{headers:headers});
+        if(!r.ok){var t=await r.text();throw new Error(t||'HTTP '+r.status)}
+        var blob=await r.blob(),url=URL.createObjectURL(blob),a=document.createElement('a');
+        a.href=url;a.download=filename;document.body.appendChild(a);a.click();a.remove();
+        setTimeout(function(){URL.revokeObjectURL(url)},1000);
+      }
+
+      async function loadProductOptions(){
+        try{
+          var res=await api('GET','/api/admin/ruble-products/options');
+          productOptions=res.data||productOptions;
+        }catch(e){
+          productOptions=productOptions||{item_types:[],package_types:{},shop_sets:[]};
+          $('#products-status-bar').innerHTML+='<div style="color:var(--orange);font-size:12px;background:rgba(245,146,30,0.08);padding:8px 12px;border-radius:6px;border:1px solid rgba(245,146,30,0.24);margin-top:6px">Product options unavailable: '+escHtml(e.message)+'</div>';
+        }
       }
 
       // ── Load all ──
@@ -1956,7 +2453,7 @@
         $('#metric-api').style.color='var(--gold)';$('#metric-api').textContent='loading';$('#metric-api-note').textContent='fetching...';
         $('#products-status-bar').innerHTML='';loadError=null;
         try{
-          var res=await Promise.all([api('GET','/api/admin/shop/sets',null,{active_only:'false'}),api('GET','/api/admin/ruble-products',null,{active_only:'false'})]);
+          var res=await Promise.all([api('GET','/api/admin/shop/sets',null,{active_only:'false'}),api('GET','/api/admin/ruble-products',null,{active_only:'false'}),loadProductOptions()]);
           shopSets=res[0].sets||[];rubleProducts=res[1].products||[];
           $('#metric-api').style.color='var(--green)';$('#metric-api').textContent='OK';$('#metric-api-note').textContent=shopSets.length+' sets, '+rubleProducts.length+' products';
         }catch(e){
@@ -2013,32 +2510,78 @@
       async function archiveProduct(code){if(!confirm('Archive '+code+'?'))return;try{await api('POST','/api/admin/ruble-products/delete',{code:code});toast('Archived','info');await loadAll()}catch(e){toast('Error: '+e.message,'error')}}
 
       // ── Product editor ──
+      function productTypeList(){
+        return(productOptions.item_types&&productOptions.item_types.length)?productOptions.item_types:[
+          {value:'extrapass',label:'ExtraPass',defaults:{code:'extrapass',name:'ExtraPass',price:179,show_in_game:true,show_in_shop:true}},
+          {value:'extrapass_ultra',label:'ExtraPass Ultra',defaults:{code:'extrapass_ultra',name:'ExtraPass Ultra',price:349,badge:'popular',show_in_game:true,show_in_shop:true}},
+          {value:'starter_boost',label:'Starter Boost',defaults:{code:'starter_boost',name:'Starter Boost',price:499,show_in_game:true,show_in_shop:true}},
+          {value:'gems_package',label:'Gems package',defaults:{code:'gems_100',name:'100 gems',price:99,show_in_game:false,show_in_shop:true}},
+          {value:'shop_set',label:'Shop set',defaults:{code:'shop_set',name:'Shop Set',price:0,show_in_game:true,show_in_shop:true}}
+        ];
+      }
+      function productTypeByValue(value){return productTypeList().find(function(x){return x.value===value})||productTypeList()[0]}
+      function fillProductSelectors(p){
+        var current=(p&&p.item_type)||'gems_package',types=productTypeList();
+        if(!types.find(function(x){return x.value===current}))types=types.concat([{value:current,label:current,defaults:{}}]);
+        $('#pe-item-type').innerHTML=types.map(function(t){return'<option value="'+escHtml(t.value)+'">'+escHtml(t.label||t.value)+'</option>'}).join('');
+        $('#pe-item-type').value=current;
+        updateProductTypeControls(p||null);
+      }
+      function updateProductTypeControls(p){
+        var type=$('#pe-item-type').value||'gems_package';
+        var packages=((productOptions.package_types||{})[type]||[]).slice();
+        if(type==='gems_package'&&!packages.length)packages=[{value:'starter_once',label:'50 gems · one-time',price:49,badge:'one-time'},{value:'gems_100',label:'100 gems',price:99}];
+        $('#pe-package-field').style.display=type==='gems_package'?'':'none';
+        $('#pe-package-type').innerHTML=packages.map(function(pkg){return'<option value="'+escHtml(pkg.value)+'" data-price="'+escHtml(pkg.price||0)+'" data-badge="'+escHtml(pkg.badge||'')+'">'+escHtml(pkg.label||pkg.value)+'</option>'}).join('');
+        if(type==='gems_package')$('#pe-package-type').value=(p&&p.package_type)||($('#pe-package-type').querySelector('[value="gems_100"]')?'gems_100':($('#pe-package-type').value||''));
+        var sets=(productOptions.shop_sets&&productOptions.shop_sets.length?productOptions.shop_sets:shopSets).slice();
+        $('#pe-shop-set-field').style.display=type==='shop_set'?'':'none';
+        $('#pe-shop-set-id').innerHTML='<option value="">Select set</option>'+sets.map(function(s){return'<option value="'+Number(s.id)+'" data-price="'+escHtml(s.price||0)+'" data-currency="'+escHtml(s.currency||'rubles')+'">'+escHtml(s.name||('Set #'+s.id))+'</option>'}).join('');
+        if(type==='shop_set'&&p&&p.shop_set_id)$('#pe-shop-set-id').value=String(p.shop_set_id);
+      }
+      function applyProductDefaultsForSelection(force){
+        if(!editingProduct||!editingProduct.is_new)return;
+        var type=$('#pe-item-type').value||'gems_package',def=(productTypeByValue(type).defaults||{});
+        function setVal(id,value){if(force||!$('#'+id).value)$('#'+id).value=value==null?'':String(value)}
+        setVal('pe-code',def.code||type);setVal('pe-name',def.name||type);setVal('pe-price',def.price||0);setVal('pe-badge',def.badge||'');
+        _ps('show-in-game',def.show_in_game!==false);_ps('show-in-shop',def.show_in_shop!==false);_ps('is-active',true);
+        if(type==='gems_package'){
+          var pkg=$('#pe-package-type').selectedOptions[0];
+          if(pkg){setVal('pe-code',pkg.value==='starter_once'?'gems_starter_once':pkg.value);setVal('pe-name',pkg.textContent||pkg.value);setVal('pe-price',pkg.dataset.price||def.price||0);setVal('pe-badge',pkg.dataset.badge||def.badge||'')}
+        }else if(type==='shop_set'){
+          var set=$('#pe-shop-set-id').selectedOptions[0];
+          if(set&&set.value){setVal('pe-code','shop_set_'+set.value);setVal('pe-name',set.textContent||('Shop set '+set.value));setVal('pe-price',set.dataset.price||def.price||0)}
+        }
+      }
       function openProductEditor(code){
         editingProduct=code?{code:code,is_new:!1}:{code:null,is_new:!0};isDirty=!1;showView('product-editor-view');
         var p=code?rubleProducts.find(function(x){return x.code===code}):null;
         if(p){
           $('#pe-breadcrumb').textContent=p.name||p.code;$('#pe-title').textContent=p.name||p.code;
-          $('#pe-code').value=p.code||'';$('#pe-code').readOnly=!0;$('#pe-item-type').value=p.item_type||'';$('#pe-package-type').value=p.package_type||'';
+          $('#pe-code').value=p.code||'';$('#pe-code').readOnly=!0;fillProductSelectors(p);
           $('#pe-name').value=p.name||'';$('#pe-desc').value=p.description||'';$('#pe-price').value=p.price||0;
           $('#pe-currency').value=p.currency||'rubles';$('#pe-badge').value=p.badge||'';$('#pe-sort-order').value=p.sort_order||100;
           _ps('show-in-game',p.show_in_game!==!1);_ps('show-in-shop',p.show_in_shop!==!1);_ps('is-active',p.is_active!==!1);
           if(p.image_url){$('#pe-img-preview').src=p.image_url;$('#pe-img-preview').style.display='block';$('#pe-img-url').value=p.image_url}
           else{$('#pe-img-preview').style.display='none';$('#pe-img-url').value=''}
           $('#pe-delete-btn').style.display='';
-          if(p.is_system){$('#pe-code').readOnly=!0;$('#pe-item-type').readOnly=!0;$('#pe-package-type').readOnly=!0}
+          $('#pe-item-type').disabled=!!p.is_system;$('#pe-package-type').disabled=!!p.is_system;$('#pe-shop-set-id').disabled=!!p.is_system;
         }else{
           $('#pe-breadcrumb').textContent='New product';$('#pe-title').textContent='New Ruble Product';
-          $('#pe-code').value='';$('#pe-code').readOnly=!1;$('#pe-item-type').value='';$('#pe-item-type').readOnly=!1;
-          $('#pe-package-type').value='';$('#pe-package-type').readOnly=!1;$('#pe-name').value='';$('#pe-desc').value='';
+          $('#pe-code').value='';$('#pe-code').readOnly=!1;$('#pe-item-type').disabled=!1;$('#pe-package-type').disabled=!1;$('#pe-shop-set-id').disabled=!1;
+          fillProductSelectors(null);$('#pe-name').value='';$('#pe-desc').value='';
           $('#pe-price').value='0';$('#pe-currency').value='rubles';$('#pe-badge').value='';$('#pe-sort-order').value='100';
           _ps('show-in-game',!0);_ps('show-in-shop',!0);_ps('is-active',!0);
-          $('#pe-img-preview').style.display='none';$('#pe-img-url').value='';$('#pe-delete-btn').style.display='none'
+          $('#pe-img-preview').style.display='none';$('#pe-img-url').value='';$('#pe-delete-btn').style.display='none';applyProductDefaultsForSelection(!0)
         }
         _pf('Ready to edit');
       }
       function _ps(n,on){$('#pe-switch-'+n).classList.toggle('on',!!on);$('#pe-switch-'+n).dataset.on=on?'1':'0'}
       function _pf(m,ok){var e=$('#pe-feedback');e.textContent=m;e.style.color=ok===!1?'var(--red)':ok===!0?'var(--green)':'var(--soft)'}
       ['show-in-game','show-in-shop','is-active'].forEach(function(n){$('#pe-switch-'+n).addEventListener('click',function(){var c=this.dataset.on==='1';_ps(n,!c);isDirty=!0})});
+      $('#pe-item-type').addEventListener('change',function(){updateProductTypeControls(null);applyProductDefaultsForSelection(!0);isDirty=!0});
+      $('#pe-package-type').addEventListener('change',function(){applyProductDefaultsForSelection(!0);isDirty=!0});
+      $('#pe-shop-set-id').addEventListener('change',function(){applyProductDefaultsForSelection(!0);isDirty=!0});
 
       $('#pe-file-input').addEventListener('change',async function(){
         var f=this.files[0];if(!f)return;
@@ -2053,9 +2596,13 @@
       async function saveProduct(){
         var code=$('#pe-code').value.trim(),name=$('#pe-name').value.trim(),it=$('#pe-item-type').value.trim();
         if(!code||!name||!it){toast('Code, name, item_type required','error');_pf('Fill required fields',!1);return}
+        if(it==='gems_package'&&!$('#pe-package-type').value){toast('Package type required','error');_pf('Choose a gem package',!1);return}
+        if(it==='shop_set'&&!$('#pe-shop-set-id').value){toast('Shop set required','error');_pf('Choose a shop set',!1);return}
         var price=parseFloat($('#pe-price').value)||0;if(price<0){toast('Price>=0','error');return}
         var body={code:code,item_type:it,name:name,description:$('#pe-desc').value.trim()||null,price:price,currency:$('#pe-currency').value||'rubles',badge:$('#pe-badge').value.trim()||null,sort_order:parseInt($('#pe-sort-order').value)||100,show_in_game:$('#pe-switch-show-in-game').dataset.on==='1',show_in_shop:$('#pe-switch-show-in-shop').dataset.on==='1',is_active:$('#pe-switch-is-active').dataset.on==='1'};
-        if($('#pe-package-type').value.trim())body.package_type=$('#pe-package-type').value.trim();
+        if(it==='gems_package'){body.package_type=$('#pe-package-type').value.trim();body.shop_set_id=null}
+        else if(it==='shop_set'){body.shop_set_id=parseInt($('#pe-shop-set-id').value)||null;body.package_type=null}
+        else{body.package_type=null;body.shop_set_id=null}
         if($('#pe-img-url').value.trim())body.image_url=$('#pe-img-url').value.trim();
         _pf('Saving...',void 0);$('#pe-feedback').style.color='var(--gold)';
         try{
@@ -2071,7 +2618,8 @@
 
       // ── Set editor ──
       function openSetEditor(setId){
-        var s=setId?shopSets.find(function(x){return x.id===setId})||null:null;editorRewards=[];
+        editingSet=setId?shopSets.find(function(x){return x.id===setId})||null:null;
+        var s=editingSet;editorRewards=[];
         showView('editor-view');
         if(s){
           $('#editor-breadcrumb').textContent=s.name||'Set #'+s.id;$('#editor-title').textContent=s.name||'Set #'+s.id;
@@ -2131,6 +2679,7 @@
       })});
 
       async function saveSet(pub){
+        var s=editingSet;
         var nm=$('#editor-name').value.trim();if(!nm){toast('Name required','error');_ef('Name required',!1);return}
         var pr=parseFloat($('#editor-price').value)||0;if(pr<0){toast('Price>=0','error');return}
         var cu=$('#editor-currency').value;if(['rubles','gems','coins'].indexOf(cu)===-1){toast('Invalid currency','error');return}
@@ -2147,7 +2696,7 @@
       }
       $('#btn-editor-save').addEventListener('click',function(){saveSet(!1)});
       $('#btn-editor-publish').addEventListener('click',function(){saveSet(!0)});
-      $('#btn-editor-delete').addEventListener('click',async function(){if(!s)return;if(!confirm('Archive set "'+s.name+'"?'))return;try{await api('POST','/api/admin/shop/sets/delete',{set_id:s.id});toast('Archived','info');await loadAll();showView('products-view')}catch(e){toast('Error: '+e.message,'error')}});
+      $('#btn-editor-delete').addEventListener('click',async function(){var s=editingSet;if(!s)return;if(!confirm('Archive set "'+s.name+'"?'))return;try{await api('POST','/api/admin/shop/sets/delete',{set_id:s.id});toast('Archived','info');await loadAll();showView('products-view')}catch(e){toast('Error: '+e.message,'error')}});
 
       // ── Analytics ──
       function fmtMoney(v){return v!=null?(v/1).toLocaleString('ru-RU',{minimumFractionDigits:0,maximumFractionDigits:0})+' ₽':'0 ₽'}
@@ -2216,6 +2765,21 @@
         try{
           var bt=await api('GET','/api/admin/analytics/battles',null,{days:d}),bd=bt.data||{};
           renderBarChart('battles-chart',bd.battles_by_day,'count','count','var(--teal)','battles-subtitle','last '+d+' days · '+fmtNum(bd.total)+' battles','No battle data yet');
+          var botModes=bd.bot_mode_outcomes||[],botByMode={};
+          botModes.forEach(function(m){botByMode[m.mode_id||'default']=m});
+          var modeRows=bd.mode_pickrate||[];
+          if(modeRows.length){
+            $('#mode-pickrate-tbody').innerHTML=modeRows.map(function(m){var bm=botByMode[m.mode_id||'default']||{},wr=m.bot_winrate!=null?m.bot_winrate:(bm.winrate||0);return'<tr><td><strong>'+escHtml(m.mode_id||'default')+'</strong></td><td>'+fmtNum(m.games)+'</td><td>'+((m.pickrate||0)*100).toFixed(1)+'%</td><td>'+((wr||0)*100).toFixed(1)+'%</td></tr>'}).join('');
+          }else{
+            $('#mode-pickrate-tbody').innerHTML='<tr><td colspan="4" style="text-align:center;padding:24px;color:var(--muted)">No mode data yet</td></tr>';
+          }
+          if(botModes.length){
+            $('#bot-mode-wins-tbody').innerHTML=botModes.slice().sort(function(a,b){return (b.winrate||0)-(a.winrate||0)}).slice(0,8).map(function(m){return'<tr><td>'+escHtml(m.mode_id||'default')+'</td><td>'+fmtNum(m.bot_wins!=null?m.bot_wins:m.wins)+'</td><td>'+fmtNum(m.bot_losses!=null?m.bot_losses:m.losses)+'</td><td>'+((m.winrate||0)*100).toFixed(1)+'%</td></tr>'}).join('');
+            $('#bot-mode-losses-tbody').innerHTML=botModes.slice().sort(function(a,b){return (a.winrate||0)-(b.winrate||0)}).slice(0,8).map(function(m){return'<tr><td>'+escHtml(m.mode_id||'default')+'</td><td>'+fmtNum(m.bot_wins!=null?m.bot_wins:m.wins)+'</td><td>'+fmtNum(m.bot_losses!=null?m.bot_losses:m.losses)+'</td><td>'+((m.winrate||0)*100).toFixed(1)+'%</td></tr>'}).join('');
+          }else{
+            $('#bot-mode-wins-tbody').innerHTML='<tr><td colspan="4" style="text-align:center;padding:24px;color:var(--muted)">No bot outcome data yet</td></tr>';
+            $('#bot-mode-losses-tbody').innerHTML='<tr><td colspan="4" style="text-align:center;padding:24px;color:var(--muted)">No bot outcome data yet</td></tr>';
+          }
         }catch(e){renderChartEmpty('battles-chart','Error: '+e.message);}
         // Economy
         try{
@@ -2240,6 +2804,17 @@
             $('#never-used-tbody').innerHTML=cdata.never_used_cards.slice(0,20).map(function(c){return'<tr><td>'+escHtml(c.name)+'</td><td>'+escHtml(c.rarity)+'</td></tr>'}).join('');
           }else{
             $('#never-used-tbody').innerHTML='<tr><td style="text-align:center;padding:24px;color:var(--muted)">All cards have been used!</td></tr>';
+          }
+          var botCards=cdata.bot_cards||{};
+          if(botCards.winning_cards&&botCards.winning_cards.length){
+            $('#bot-card-wins-tbody').innerHTML=botCards.winning_cards.slice(0,12).map(function(c){return'<tr><td><strong>'+escHtml(c.name)+'</strong></td><td>'+fmtNum(c.games)+'</td><td>'+fmtNum(c.wins)+'</td><td>'+((c.winrate||0)*100).toFixed(1)+'%</td></tr>'}).join('');
+          }else{
+            $('#bot-card-wins-tbody').innerHTML='<tr><td colspan="4" style="text-align:center;padding:24px;color:var(--muted)">No bot card data yet</td></tr>';
+          }
+          if(botCards.losing_cards&&botCards.losing_cards.length){
+            $('#bot-card-losses-tbody').innerHTML=botCards.losing_cards.slice(0,12).map(function(c){return'<tr><td><strong>'+escHtml(c.name)+'</strong></td><td>'+fmtNum(c.games)+'</td><td>'+fmtNum(c.losses)+'</td><td>'+((c.winrate||0)*100).toFixed(1)+'%</td></tr>'}).join('');
+          }else{
+            $('#bot-card-losses-tbody').innerHTML='<tr><td colspan="4" style="text-align:center;padding:24px;color:var(--muted)">No bot card data yet</td></tr>';
           }
         }catch(e){
           $('#popular-cards-tbody').innerHTML='<tr><td style="text-align:center;padding:24px;color:var(--muted)">Error: '+escHtml(e.message)+'</td></tr>';
@@ -2301,6 +2876,11 @@
         }
       }
       $('#analytics-days').addEventListener('change',loadAnalytics);
+      $('#btn-dataset-export').addEventListener('click',async function(){
+        var d=$('#analytics-days').value||'30';
+        try{await downloadAdminFile('/api/admin/analytics/dataset/export',{days:d,limit:'50000',include_players:'false'},'extraarena-dataset.jsonl')}
+        catch(e){toast('Export error: '+e.message,'error')}
+      });
 
       // ═══════════════════════════════════════════
       // PLAYERS ADMIN
@@ -2378,8 +2958,8 @@
           $('#btn-po-next').disabled=poOffset+poLimit>=poTotal;
           if(players.length){
             $('#po-list-tbody').innerHTML=players.map(function(p){
-              var statusColor=p.is_banned?'var(--red)':p.warnings_count>0?'var(--orange)':'var(--green)';
-              var statusText=p.is_banned?'BANNED':p.warnings_count>0?'WARN ('+p.warnings_count+')':'active';
+              var statusColor=p.is_bot?'var(--blue)':p.is_banned?'var(--red)':p.warnings_count>0?'var(--orange)':'var(--green)';
+              var statusText=p.is_bot?'BOT':p.is_banned?'BANNED':p.warnings_count>0?'WARN ('+p.warnings_count+')':'active';
               var passText=p.extra_pass||'inactive';
               return'<tr>'+
                 '<td><code style="font-size:12px;color:var(--blue)">'+escHtml(String(p.user_id))+'</code></td>'+
@@ -2392,7 +2972,7 @@
                 '<td><span style="color:'+(passText==='inactive'?'var(--muted)':'var(--green)')+'">'+escHtml(passText)+'</span></td>'+
                 '<td><span style="color:'+statusColor+'">'+statusText+'</span></td>'+
                 '<td><span style="font-size:11px;color:var(--muted)">'+(p.last_seen?String(p.last_seen).slice(0,16):'—')+'</span></td>'+
-                '<td><button class="secondary" type="button" style="font-size:11px;padding:3px 8px" onclick="openPlayerDetail(\''+String(p.user_id)+'\')">Open</button></td>'+
+                '<td><button class="secondary" type="button" style="font-size:11px;padding:3px 8px" data-player-open="'+escHtml(String(p.user_id))+'">Open</button></td>'+
                 '</tr>';
             }).join('');
           }else{
@@ -2418,8 +2998,8 @@
           var p=data.profile||{};
           $('#pd-title').textContent=p.first_name||'Player #'+uid;
           $('#pd-breadcrumb').textContent='@'+(p.username||uid);
-          var statusColor=p.is_banned?'var(--red)':p.warnings_count>0?'var(--orange)':'var(--green)';
-          var statusText=p.is_banned?'BANNED':'active';
+          var statusColor=p.is_bot?'var(--blue)':p.is_banned?'var(--red)':p.warnings_count>0?'var(--orange)':'var(--green)';
+          var statusText=p.is_bot?'BOT':p.is_banned?'BANNED':'active';
           $('#pd-status-badge').textContent=statusText;
           $('#pd-status-badge').style.color=statusColor;
           $('#pd-status-badge').style.border='1px solid '+statusColor;
@@ -2427,6 +3007,7 @@
           // Profile info
           var pi='<div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 16px">';
           pi+='<span>ID:</span><span><code style="color:var(--blue)">'+escHtml(String(p.user_id||'—'))+'</code></span>';
+          pi+='<span>Account type:</span><span style="color:'+(p.is_bot?'var(--blue)':'var(--green)')+'">'+(p.is_bot?'Bot':'Human')+'</span>';
           pi+='<span>Username:</span><span>@'+escHtml(p.username||'—')+'</span>';
           pi+='<span>Name:</span><span>'+escHtml([p.first_name,p.last_name].filter(Boolean).join(' ')||'—')+'</span>';
           pi+='<span>ExtraPass:</span><span style="color:'+(p.extra_pass!=='inactive'?'var(--green)':'var(--muted)')+'">'+escHtml(p.extra_pass||'inactive')+(p.extra_pass_expires_at?' until '+String(p.extra_pass_expires_at).slice(0,10):'')+'</span>';
@@ -2440,6 +3021,14 @@
           if(p.banned_until)pi+='<span>Banned until:</span><span style="color:var(--red)">'+escHtml(String(p.banned_until).slice(0,16))+'</span>';
           pi+='</div>';
           $('#pd-profile-info').innerHTML=pi;
+          $('#pd-edit-username').value=p.username||'';
+          $('#pd-edit-first-name').value=p.first_name||'';
+          $('#pd-edit-last-name').value=p.last_name||'';
+          $('#pd-edit-trophies').value=p.trophies||0;
+          $('#pd-edit-max-trophies').value=p.max_trophies||0;
+          $('#pd-edit-league').value=p.league||1;
+          $('#pd-edit-energy').value=(data.balances&&data.balances.energy)!=null?data.balances.energy:(p.energy||0);
+          $('#pd-edit-status').value=p.is_banned?'banned':(p.warnings_count>0?'warn':'active');
 
           // Balances
           var bal=data.balances||{};
@@ -2509,6 +3098,27 @@
 
       // Player detail: back
       $('#btn-pd-back').addEventListener('click',function(){showView('players-view');loadPlayersOverview()});
+
+      $('#btn-pd-save-account').addEventListener('click',async function(){
+        if(!poPlayerId){toast('Open player first','error');return}
+        var fields={
+          username:$('#pd-edit-username').value.trim(),
+          first_name:$('#pd-edit-first-name').value.trim(),
+          last_name:$('#pd-edit-last-name').value.trim(),
+          trophies:parseInt($('#pd-edit-trophies').value)||0,
+          max_trophies:parseInt($('#pd-edit-max-trophies').value)||0,
+          league:parseInt($('#pd-edit-league').value)||1,
+          energy:parseInt($('#pd-edit-energy').value)||0,
+          status:$('#pd-edit-status').value||'active'
+        };
+        var reason=$('#pd-edit-reason').value.trim()||'Account data edit from admin panel';
+        try{
+          var res=await api('POST','/api/admin/players/'+poPlayerId+'/update',{fields:fields,reason:reason});
+          toast('Account updated','success');
+          loadPlayerDetail(poPlayerId);
+          loadPlayersList();
+        }catch(e){toast('Account update: '+escHtml(e.message),'error')}
+      });
 
       // Ban modal
       $('#btn-pd-ban').addEventListener('click',function(){
@@ -2588,7 +3198,7 @@
         if(!reason.trim()){toast('Reason required','error');return}
         try{
           var res=await api('POST','/api/admin/players/'+poPlayerId+'/resource',{resource:resource,amount:amount,reason:reason});
-          toast('Resource adjusted','success');
+          toast(amount>0?'Resource granted and notification sent':'Resource adjusted','success');
           loadPlayerDetail(poPlayerId);
         }catch(e){toast('Adjust: '+escHtml(e.message),'error')}
       });
@@ -2603,10 +3213,710 @@
         if(reason.trim())body.reason=reason;
         try{
           var res=await api('POST','/api/admin/players/'+poPlayerId+'/extra-pass',body);
-          toast('ExtraPass: '+mode,'success');
+          toast('ExtraPass: '+mode+' · notification sent','success');
           loadPlayerDetail(poPlayerId);
         }catch(e){toast('ExtraPass: '+escHtml(e.message),'error')}
       });
+
+      // ═══════════════════════════════════════════
+      // SQUADS ADMIN
+      // ═══════════════════════════════════════════
+      var sqOffset=0,sqLimit=50,sqSelectedId=null,sqConfigCache={};
+
+      function renderSimpleRows(id,rows,empty,mapper){
+        if(rows&&rows.length)$(id).innerHTML=rows.map(mapper).join('');
+        else $(id).innerHTML='<tr><td style="text-align:center;padding:18px;color:var(--muted)">'+escHtml(empty||'No data')+'</td></tr>';
+      }
+
+      async function loadSquadsAdmin(){
+        await Promise.all([loadSquadsAnalytics(),loadSquadsList()]);
+      }
+
+      async function loadSquadsAnalytics(){
+        var days=$('#sq-days').value||'30';
+        try{
+          var res=await api('GET','/api/admin/squads/analytics',null,{days:days}),d=res.data||{},s=d.summary||{};
+          renderAdminBlockWarnings('#sq-partial-warnings',d.errors||{});
+          sqConfigCache=d.config||{};
+          $('#sq-total').textContent=fmtNum(s.total_squads);
+          $('#sq-new').textContent='+'+fmtNum(s.new_squads);
+          $('#sq-members').textContent=fmtNum(s.total_members);
+          $('#sq-slots').textContent=fmtNum(s.total_slots);
+          $('#sq-bots').textContent=fmtNum(s.bot_members||0);
+          $('#sq-cbrp').textContent=fmtNum(s.total_cbrp);
+          $('#sq-boosted').textContent=fmtNum(s.boosted_squads);
+          $('#sq-treasury').textContent=fmtNum(s.total_treasury);
+          var pending=(d.requests||[]).filter(function(r){return r.status==='pending'})[0];
+          $('#sq-pending').textContent=fmtNum(pending?pending.count:0);
+          renderSimpleRows('#sq-top-cbrp-tbody',d.top_cbrp,'No squads',function(c){return'<tr><td><strong>'+escHtml(c.name)+'</strong><br><span style="font-size:11px;color:var(--muted)">['+escHtml(c.tag||c.public_id||c.id)+'] · '+fmtNum(c.human_members!=null?c.human_members:c.members_count)+' humans · '+fmtNum(c.bot_members||0)+' bots</span></td><td>'+fmtNum(c.cbrp)+'</td></tr>'});
+          renderSimpleRows('#sq-events-tbody',d.cbrp_events,'No CBRP events',function(e){return'<tr><td>'+escHtml(e.event_type)+'</td><td>'+fmtNum(e.count)+'</td><td>'+fmtNum(e.cbrp)+'</td></tr>'});
+          renderSimpleRows('#sq-activity-tbody',d.activity,'No activity',function(e){return'<tr><td>'+escHtml(e.type)+'</td><td>'+fmtNum(e.count)+'</td></tr>'});
+          renderSimpleRows('#sq-upgrades-tbody',d.upgrades,'No upgrades',function(u){return'<tr><td>'+escHtml(u.upgrade_type)+' lv.'+fmtNum(u.level)+'</td><td>'+fmtNum(u.squads)+'</td></tr>'});
+          renderSimpleRows('#sq-purchases-tbody',d.purchases,'No purchases',function(p){return'<tr><td>'+escHtml(p.reward_id)+'</td><td>'+fmtNum(p.count)+'</td><td>'+fmtNum(p.tokens_spent)+'</td></tr>'});
+          renderSimpleRows('#sq-roles-tbody',d.member_roles,'No members',function(r){return'<tr><td>'+escHtml(r.role)+'</td><td>'+fmtNum(r.count)+'</td><td>'+fmtNum(r.personal_tokens)+'</td></tr>'});
+          renderSimpleRows('#sq-snapshots-tbody',d.snapshots,'No snapshots',function(r){return'<tr><td>'+escHtml(r.period_key)+'</td><td>'+fmtNum(r.delta_trophies)+'</td><td>'+fmtNum(r.cbrp_awarded)+'</td></tr>'});
+          renderSquadConfig(d.config||{});
+        }catch(e){
+          renderAdminBlockWarnings('#sq-partial-warnings',{analytics:e.message});
+          $('#sq-status').innerHTML='<div style="color:var(--red);font-size:12px;background:rgba(239,68,68,0.08);padding:8px 12px;border-radius:6px;border:1px solid rgba(239,68,68,0.22)">Squads analytics error: '+escHtml(e.message)+'</div>';
+        }
+      }
+
+      function renderSquadConfig(cfg){
+        var keys=['squad_creation_policy','squad_weekly_cbrp_enabled','squad_seasonal_cbrp_enabled','squad_clan_boost_token_multiplier','squad_creator_passive_tax_pct','squad_weekly_delta_divisor','squad_weekly_personal_tokens_divisor','squad_weekly_treasury_tokens_divisor'];
+        $('#sq-config-tbody').innerHTML=keys.map(function(k){
+          var v=cfg[k];
+          var text=typeof v==='object'?JSON.stringify(v):String(v);
+          return'<tr><td><strong>'+escHtml(k)+'</strong></td><td><input id="sq-cfg-'+escHtml(k)+'" value="'+escHtml(text)+'" style="width:100%;background:var(--surface);border:1px solid var(--line);color:var(--fg);padding:4px 7px;border-radius:6px;font-size:12px"></td><td><button class="secondary" type="button" style="font-size:11px;padding:3px 8px" onclick="saveSquadConfig(&quot;'+escHtml(k)+'&quot;)">Save</button></td></tr>';
+        }).join('');
+      }
+
+      window.saveSquadConfig=async function(key){
+        var raw=$('#sq-cfg-'+key).value;
+        var value=raw;
+        if(raw==='true')value=true;
+        else if(raw==='false')value=false;
+        else if(raw!==''&&!isNaN(Number(raw)))value=Number(raw);
+        else if((raw.startsWith('{')&&raw.endsWith('}'))||(raw.startsWith('[')&&raw.endsWith(']'))){try{value=JSON.parse(raw)}catch(e){toast('Invalid JSON','error');return}}
+        try{
+          var res=await api('POST','/api/admin/squads/config',{key:key,value:value});
+          toast('Squad config saved','success');
+          sqConfigCache=res.data||{};
+          renderSquadConfig(sqConfigCache);
+        }catch(e){toast('Squad config: '+escHtml(e.message),'error')}
+      };
+
+      async function loadSquadsList(){
+        $('#sq-list-tbody').innerHTML='<tr><td colspan="8" style="text-align:center;padding:24px;color:var(--muted)">Loading...</td></tr>';
+        try{
+          var res=await api('GET','/api/admin/squads/list',null,{q:$('#sq-search-q').value||null,filter:$('#sq-filter').value,sort:$('#sq-sort').value,limit:sqLimit,offset:sqOffset}),d=res.data||{},rows=d.squads||[];
+          $('#sq-list-total').textContent='Total: '+fmtNum(d.total||0);
+          if(rows.length){
+            $('#sq-list-tbody').innerHTML=rows.map(function(c){
+              var id=Number(c.id);
+              var humanMembers=c.human_members!=null?c.human_members:c.members_count;
+              var botMembers=c.bot_members||0;
+              return'<tr>'+
+                '<td><code style="color:var(--blue)">'+id+'</code><br><span style="font-size:11px;color:var(--muted)">'+escHtml(c.public_id||'')+'</span></td>'+
+                '<td><strong>'+escHtml(c.name)+'</strong><br><span style="font-size:11px;color:var(--muted)">['+escHtml(c.tag||'—')+'] '+escHtml(c.type||'open')+'</span></td>'+
+                '<td>'+escHtml(c.owner_name||c.owner_id||'—')+'</td>'+
+                '<td>'+fmtNum(humanMembers)+'/'+fmtNum(c.max_members)+'<br><span style="font-size:11px;color:'+(botMembers?'var(--blue)':'var(--muted)')+'">'+fmtNum(botMembers)+' bots</span></td>'+
+                '<td>'+fmtNum(c.cbrp)+'</td>'+
+                '<td>'+fmtNum(c.treasury_tokens)+'</td>'+
+                '<td><span style="color:'+(c.has_boost?'var(--gold)':'var(--muted)')+'">'+(c.has_boost?'BOOST':'regular')+'</span><br><span style="font-size:11px;color:var(--orange)">'+fmtNum(c.pending_requests)+' req</span></td>'+
+                '<td><button class="secondary" type="button" style="font-size:11px;padding:3px 8px" onclick="openSquadAdmin('+id+')">Open</button></td>'+
+                '</tr>';
+            }).join('');
+          }else{
+            $('#sq-list-tbody').innerHTML='<tr><td colspan="8" style="text-align:center;padding:24px;color:var(--muted)">No squads found</td></tr>';
+          }
+        }catch(e){
+          $('#sq-list-tbody').innerHTML='<tr><td colspan="8" style="text-align:center;padding:24px;color:var(--muted)">Error: '+escHtml(e.message)+'</td></tr>';
+        }
+      }
+
+      window.openSquadAdmin=async function(id){
+        sqSelectedId=id;
+        $('#sq-detail-empty').style.display='none';
+        $('#sq-detail-content').style.display='block';
+        $('#sq-detail-content').innerHTML='<section class="panel-card" style="color:var(--muted)">Loading squad #'+id+'...</section>';
+        try{
+          var res=await api('GET','/api/admin/squads/'+id),d=res.data||{};
+          renderSquadDetail(d);
+        }catch(e){
+          $('#sq-detail-content').innerHTML='<section class="panel-card" style="color:var(--red)">Detail error: '+escHtml(e.message)+'</section>';
+        }
+      };
+
+      function renderSquadDetail(d){
+        var c=d.clan||{},members=d.members||[],requests=d.requests||[],events=d.events||[],activity=d.activity||[],up=d.upgrades||{};
+        $('#sq-detail-content').innerHTML=
+          '<div class="editor-layout">'+
+          '<div class="form-stack">'+
+            '<section class="panel-card"><h3>'+escHtml(c.name||'Squad')+' <span style="color:var(--muted);font-size:12px">#'+escHtml(c.id)+'</span></h3>'+
+              '<div class="form-grid three">'+
+                '<div class="field"><label>Name</label><input id="sq-edit-name" value="'+escHtml(c.name||'')+'"></div>'+
+                '<div class="field"><label>Tag</label><input id="sq-edit-tag" value="'+escHtml(c.tag||'')+'"></div>'+
+                '<div class="field"><label>Type</label><select id="sq-edit-type"><option value="open" '+(c.type==='open'?'selected':'')+'>open</option><option value="closed" '+(c.type==='closed'?'selected':'')+'>closed</option></select></div>'+
+                '<div class="field"><label>Owner ID</label><input id="sq-edit-owner" type="number" value="'+escHtml(c.owner_id||0)+'"></div>'+
+                '<div class="field"><label>Min trophies</label><input id="sq-edit-min" type="number" value="'+escHtml(c.min_trophies||0)+'"></div>'+
+                '<div class="field"><label>Max members</label><input id="sq-edit-max" type="number" value="'+escHtml(c.max_members||0)+'"></div>'+
+                '<div class="field"><label>CBRP</label><input id="sq-edit-cbrp" type="number" value="'+escHtml(c.cbrp||0)+'"></div>'+
+                '<div class="field"><label>Treasury</label><input id="sq-edit-treasury" type="number" value="'+escHtml(c.treasury_tokens||0)+'"></div>'+
+                '<div class="field"><label>Boost ID</label><input id="sq-edit-boost-id" type="number" value="'+escHtml(c.boost_public_id||'')+'"></div>'+
+                '<div class="field full"><label>Description</label><textarea id="sq-edit-desc">'+escHtml(c.description||'')+'</textarea></div>'+
+                '<div class="field full"><label>Avatar URL</label><input id="sq-edit-avatar" value="'+escHtml(c.avatar_url||'')+'"></div>'+
+                '<div class="field full"><label>Banner URL</label><input id="sq-edit-banner" value="'+escHtml(c.banner_url||'')+'"></div>'+
+                '<div class="toggle"><span class="toggle-label">Has boost</span><span class="switch '+(c.has_boost?'on':'')+'" id="sq-edit-boost" data-on="'+(c.has_boost?'1':'0')+'"></span></div>'+
+                '<div class="field"><label>Reason</label><input id="sq-edit-reason" placeholder="Admin reason"></div>'+
+              '</div><div class="top-actions" style="justify-content:flex-start;margin-top:10px"><button class="primary" type="button" onclick="saveSquadDetail()">Save squad</button><button class="danger" type="button" onclick="deleteSquadAdmin()">Delete squad</button></div></section>'+
+            '<section class="table-shell"><div class="table-head"><div><strong>Members</strong><span>'+fmtNum(members.filter(function(m){return !m.is_bot}).length)+' humans · '+fmtNum(members.filter(function(m){return m.is_bot}).length)+' bots</span></div></div><div class="table-scroll"><table><thead><tr><th>User</th><th>Role</th><th>Trophies</th><th>Tokens</th><th>Actions</th></tr></thead><tbody>'+
+              (members.length?members.map(function(m){var badge=m.is_bot?'<span style="color:var(--blue);font-size:11px">BOT</span>':'<span style="color:var(--muted);font-size:11px">human</span>';return'<tr><td><code>'+escHtml(m.user_id)+'</code> '+badge+'<br>'+escHtml(m.nick||'')+'</td><td>'+escHtml(m.role)+'</td><td>'+fmtNum(m.trophies)+'</td><td>'+fmtNum(m.personal_tokens)+'</td><td><div class="actions"><button class="secondary" style="font-size:11px;padding:3px 8px" onclick="squadMemberAction(&quot;promote&quot;,'+Number(m.user_id)+')">Promote</button><button class="secondary" style="font-size:11px;padding:3px 8px" onclick="squadMemberAction(&quot;demote&quot;,'+Number(m.user_id)+')">Demote</button><button class="danger" style="font-size:11px;padding:3px 8px" onclick="squadMemberAction(&quot;kick&quot;,'+Number(m.user_id)+')">Kick</button></div></td></tr>'}).join(''):'<tr><td colspan="5" style="text-align:center;padding:18px;color:var(--muted)">No members</td></tr>')+
+            '</tbody></table></div></section>'+
+            '<section class="table-shell"><div class="table-head"><div><strong>Requests</strong><span>recent</span></div></div><table class="mini-table"><tbody>'+
+              (requests.length?requests.map(function(r){return'<tr><td><code>'+escHtml(r.user_id)+'</code> '+escHtml(r.nick||'')+'</td><td>'+escHtml(r.status)+'</td><td>'+escHtml(String(r.created_at||'').slice(0,16))+'</td><td><button class="secondary" style="font-size:11px;padding:3px 8px" onclick="respondSquadRequest('+Number(r.id)+',&quot;accept&quot;)">Accept</button> <button class="danger" style="font-size:11px;padding:3px 8px" onclick="respondSquadRequest('+Number(r.id)+',&quot;reject&quot;)">Reject</button></td></tr>'}).join(''):'<tr><td style="text-align:center;padding:18px;color:var(--muted)">No requests</td></tr>')+
+            '</tbody></table></section>'+
+          '</div><aside class="side-stack">'+
+            '<section class="side-panel"><h4 style="margin:0 0 10px;font-size:13px">Balance</h4><select id="sq-balance-resource" style="width:100%;background:var(--surface);border:1px solid var(--line);color:var(--fg);padding:5px 8px;border-radius:6px;font-size:12px"><option value="cbrp">CBRP</option><option value="treasury_tokens">Treasury</option></select><input id="sq-balance-amount" type="number" placeholder="Amount +/-" style="width:100%;margin-top:6px;background:var(--surface);border:1px solid var(--line);color:var(--fg);padding:5px 8px;border-radius:6px;font-size:12px"><input id="sq-balance-reason" placeholder="Reason" style="width:100%;margin-top:6px;background:var(--surface);border:1px solid var(--line);color:var(--fg);padding:5px 8px;border-radius:6px;font-size:12px"><button class="primary" type="button" onclick="adjustSquadBalance()" style="width:100%;font-size:12px;margin-top:6px">Apply</button></section>'+
+            '<section class="side-panel"><h4 style="margin:0 0 10px;font-size:13px">Add / transfer member</h4><input id="sq-member-user" type="number" placeholder="user_id" style="width:100%;background:var(--surface);border:1px solid var(--line);color:var(--fg);padding:5px 8px;border-radius:6px;font-size:12px"><input id="sq-member-tokens" type="number" placeholder="personal tokens" style="width:100%;margin-top:6px;background:var(--surface);border:1px solid var(--line);color:var(--fg);padding:5px 8px;border-radius:6px;font-size:12px"><div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px"><button class="secondary" onclick="squadMemberAction(&quot;add&quot;)">Add</button><button class="secondary" onclick="squadMemberAction(&quot;transfer&quot;)">Owner</button><button class="secondary" onclick="squadMemberAction(&quot;set_tokens&quot;)">Tokens</button></div></section>'+
+            '<section class="side-panel"><h4 style="margin:0 0 10px;font-size:13px">Upgrades</h4><div style="font-size:12px;color:var(--muted);margin-bottom:6px">'+escHtml(JSON.stringify(up))+'</div><input id="sq-upgrade-type" placeholder="member_slots / cbrp_boost / boost" style="width:100%;background:var(--surface);border:1px solid var(--line);color:var(--fg);padding:5px 8px;border-radius:6px;font-size:12px"><input id="sq-upgrade-level" type="number" placeholder="level" style="width:100%;margin-top:6px;background:var(--surface);border:1px solid var(--line);color:var(--fg);padding:5px 8px;border-radius:6px;font-size:12px"><div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px"><button class="secondary" onclick="setSquadUpgrade(&quot;set&quot;)">Set</button><button class="primary" onclick="setSquadUpgrade(&quot;buy&quot;)">Buy next</button></div></section>'+
+            '<section class="side-panel"><h4 style="margin:0 0 10px;font-size:13px">Recent CBRP</h4><div style="max-height:220px;overflow:auto">'+(events.length?events.slice(0,20).map(function(e){return'<div style="font-size:11px;color:var(--soft);padding:5px 0;border-bottom:1px solid var(--line)">'+escHtml(e.nick||e.user_id)+' · '+escHtml(e.event_type)+' · '+fmtNum(e.cbrp)+' CBRP</div>'}).join(''):'<span style="color:var(--muted);font-size:12px">No events</span>')+'</div></section>'+
+            '<section class="side-panel"><h4 style="margin:0 0 10px;font-size:13px">Activity</h4><div style="max-height:220px;overflow:auto">'+(activity.length?activity.slice(0,20).map(function(a){return'<div style="font-size:11px;color:var(--soft);padding:5px 0;border-bottom:1px solid var(--line)">'+escHtml(a.type)+' · '+escHtml(a.text||'')+'</div>'}).join(''):'<span style="color:var(--muted);font-size:12px">No activity</span>')+'</div></section>'+
+          '</aside></div>';
+        $('#sq-edit-boost').addEventListener('click',function(){var on=this.dataset.on==='1';this.dataset.on=on?'0':'1';this.classList.toggle('on',!on)});
+      }
+
+      window.saveSquadDetail=async function(){
+        if(!sqSelectedId)return;
+        var fields={name:$('#sq-edit-name').value,tag:$('#sq-edit-tag').value,type:$('#sq-edit-type').value,owner_id:parseInt($('#sq-edit-owner').value)||0,min_trophies:parseInt($('#sq-edit-min').value)||0,max_members:parseInt($('#sq-edit-max').value)||0,cbrp:parseInt($('#sq-edit-cbrp').value)||0,treasury_tokens:parseInt($('#sq-edit-treasury').value)||0,boost_public_id:$('#sq-edit-boost-id').value?parseInt($('#sq-edit-boost-id').value):null,description:$('#sq-edit-desc').value,avatar_url:$('#sq-edit-avatar').value,banner_url:$('#sq-edit-banner').value,has_boost:$('#sq-edit-boost').dataset.on==='1'};
+        try{await api('POST','/api/admin/squads/'+sqSelectedId+'/update',{fields:fields,reason:$('#sq-edit-reason').value});toast('Squad saved','success');loadSquadsAdmin();openSquadAdmin(sqSelectedId)}catch(e){toast('Squad save: '+escHtml(e.message),'error')}
+      };
+      window.adjustSquadBalance=async function(){
+        try{await api('POST','/api/admin/squads/'+sqSelectedId+'/balance',{resource:$('#sq-balance-resource').value,amount:parseInt($('#sq-balance-amount').value)||0,reason:$('#sq-balance-reason').value});toast('Balance updated','success');loadSquadsAdmin();openSquadAdmin(sqSelectedId)}catch(e){toast('Balance: '+escHtml(e.message),'error')}
+      };
+      window.squadMemberAction=async function(action,userId){
+        var uid=userId||parseInt($('#sq-member-user').value)||0;
+        if(!uid){toast('user_id required','error');return}
+        try{await api('POST','/api/admin/squads/'+sqSelectedId+'/member',{action:action,target_user_id:uid,personal_tokens:parseInt($('#sq-member-tokens').value)||0});toast('Member action done','success');loadSquadsAdmin();openSquadAdmin(sqSelectedId)}catch(e){toast('Member: '+escHtml(e.message),'error')}
+      };
+      window.respondSquadRequest=async function(id,action){
+        try{await api('POST','/api/admin/squads/requests/respond',{request_id:id,action:action});toast('Request '+action,'success');loadSquadsAdmin();openSquadAdmin(sqSelectedId)}catch(e){toast('Request: '+escHtml(e.message),'error')}
+      };
+      window.setSquadUpgrade=async function(mode){
+        var type=$('#sq-upgrade-type').value.trim();
+        if(!type){toast('upgrade_type required','error');return}
+        try{await api('POST','/api/admin/squads/'+sqSelectedId+'/upgrade',{mode:mode,upgrade_type:type,level:parseInt($('#sq-upgrade-level').value)||0});toast('Upgrade updated','success');openSquadAdmin(sqSelectedId);loadSquadsAnalytics()}catch(e){toast('Upgrade: '+escHtml(e.message),'error')}
+      };
+      window.deleteSquadAdmin=async function(){
+        if(!sqSelectedId||!confirm('Delete squad #'+sqSelectedId+'?'))return;
+        try{await api('POST','/api/admin/squads/'+sqSelectedId+'/delete',{});toast('Squad deleted','success');sqSelectedId=null;$('#sq-detail-content').style.display='none';$('#sq-detail-empty').style.display='block';loadSquadsAdmin()}catch(e){toast('Delete squad: '+escHtml(e.message),'error')}
+      };
+
+      $('#btn-sq-refresh').addEventListener('click',loadSquadsAdmin);
+      $('#sq-days').addEventListener('change',loadSquadsAnalytics);
+      $('#btn-sq-search').addEventListener('click',function(){sqOffset=0;loadSquadsList()});
+      $('#sq-search-q').addEventListener('keydown',function(e){if(e.key==='Enter'){sqOffset=0;loadSquadsList()}});
+      $('#btn-sq-create').addEventListener('click',async function(){
+        var body={owner_id:parseInt($('#sq-create-owner').value)||0,name:$('#sq-create-name').value,tag:$('#sq-create-tag').value,type:$('#sq-create-type').value,min_trophies:parseInt($('#sq-create-min').value)||0,description:$('#sq-create-desc').value};
+        try{var res=await api('POST','/api/admin/squads/create',body);toast('Squad created','success');loadSquadsAdmin();if(res.data&&res.data.clan)openSquadAdmin(res.data.clan.id)}catch(e){toast('Create squad: '+escHtml(e.message),'error')}
+      });
+      $('#btn-sq-process-weekly').addEventListener('click',async function(){
+        if(!confirm('Process weekly squad CBRP now?'))return;
+        try{var res=await api('POST','/api/admin/squads/process-weekly',{});toast('Weekly processed: '+fmtNum((res.data||{}).awarded)+' awards','success');loadSquadsAnalytics()}catch(e){toast('Weekly CBRP: '+escHtml(e.message),'error')}
+      });
+
+      // ═══════════════════════════════════════════
+      // PROMOCODES ADMIN
+      // ═══════════════════════════════════════════
+      $('#promo-extrapass-switch').addEventListener('click',function(){
+        var on=this.dataset.on==='1';
+        this.dataset.on=on?'0':'1';
+        this.classList.toggle('on',!on);
+      });
+
+      function promoRewardsText(p){
+        var r=[];
+        if(p.reward_gems)r.push(fmtNum(p.reward_gems)+' gems');
+        if(p.reward_coins)r.push(fmtNum(p.reward_coins)+' coins');
+        if(p.reward_keys)r.push(fmtNum(p.reward_keys)+' keys');
+        if(p.reward_extrapass)r.push('ExtraPass');
+        return r.length?r.join(', '):'—';
+      }
+
+      async function loadPromocodes(){
+        $('#promocodes-tbody').innerHTML='<tr><td colspan="6" style="text-align:center;padding:24px;color:var(--muted)">Loading...</td></tr>';
+        try{
+          var res=await api('GET','/api/admin/promocodes/list'),rows=res.promocodes||[];
+          $('#promo-count').textContent=fmtNum(rows.length)+' codes';
+          if(rows.length){
+            $('#promocodes-tbody').innerHTML=rows.map(function(p){
+              return'<tr>'+
+                '<td><code style="color:var(--blue)">'+escHtml(p.code)+'</code></td>'+
+                '<td>'+escHtml(p.type||'permanent')+'</td>'+
+                '<td>'+escHtml(promoRewardsText(p))+'</td>'+
+                '<td>'+fmtNum(p.usage_count)+'</td>'+
+                '<td>'+(p.expires_at?escHtml(String(p.expires_at).slice(0,16)):'—')+'</td>'+
+                '<td><button class="danger" type="button" style="font-size:11px;padding:3px 8px" onclick="deletePromocode('+Number(p.id)+')">Delete</button></td>'+
+                '</tr>';
+            }).join('');
+          }else{
+            $('#promocodes-tbody').innerHTML='<tr><td colspan="6" style="text-align:center;padding:24px;color:var(--muted)">No promocodes yet</td></tr>';
+          }
+        }catch(e){
+          $('#promocodes-tbody').innerHTML='<tr><td colspan="6" style="text-align:center;padding:24px;color:var(--muted)">Error: '+escHtml(e.message)+'</td></tr>';
+        }
+      }
+
+      $('#btn-promo-refresh').addEventListener('click',loadPromocodes);
+      $('#btn-promo-create').addEventListener('click',async function(){
+        var code=$('#promo-code').value.trim().toUpperCase();
+        if(!code){toast('Code required','error');return}
+        var body={
+          code:code,
+          type:$('#promo-type').value||'permanent',
+          reward_gems:parseInt($('#promo-gems').value)||0,
+          reward_coins:parseInt($('#promo-coins').value)||0,
+          reward_keys:parseInt($('#promo-keys').value)||0,
+          reward_extrapass:$('#promo-extrapass-switch').dataset.on==='1'
+        };
+        var exp=$('#promo-expires').value;
+        if(exp)body.expires_at=exp;
+        try{
+          var res=await api('POST','/api/admin/promocodes/create',body);
+          toast('Promocode created','success');
+          $('#promo-code').value='';
+          loadPromocodes();
+        }catch(e){toast('Create promocode: '+escHtml(e.message),'error')}
+      });
+
+      window.deletePromocode=async function(id){
+        if(!confirm('Delete promocode #'+id+'?'))return;
+        try{
+          await api('POST','/api/admin/promocodes/delete',{id:id});
+          toast('Promocode deleted','success');
+          loadPromocodes();
+        }catch(e){toast('Delete promocode: '+escHtml(e.message),'error')}
+      };
+
+      // ═══════════════════════════════════════════
+      // SEASONS / EXTRAPASS ADMIN
+      // ═══════════════════════════════════════════
+      function seasonStatusClass(s){return s==='scheduled'?'scheduled':s==='draft'?'draft':s==='active'?'active':s==='archived'?'archived':'hidden'}
+      function seasonById(id){id=Number(id);return(seasonsState.seasons||[]).find(function(s){return Number(s.id)===id})||null}
+      function seasonTracks(s){if(!s)return[];return[s.free_track_type,s.pass_track_type,s.ultra_track_type].filter(Boolean)}
+      function laneTrackType(s,lane){if(!s)return'';return lane==='ultra'?s.ultra_track_type:lane==='premium'?s.pass_track_type:s.free_track_type}
+      function laneForTrack(s,track){return track===s.ultra_track_type?'ultra':track===s.pass_track_type?'premium':'free'}
+      function laneLabel(lane){return lane==='ultra'?'Ultra':lane==='premium'?'ExtraPass':'Free'}
+      function dtLocal(iso){
+        if(!iso)return'';
+        var d=new Date(iso);if(isNaN(d.getTime()))return String(iso).slice(0,16);
+        var z=function(n){return String(n).padStart(2,'0')};
+        return d.getFullYear()+'-'+z(d.getMonth()+1)+'-'+z(d.getDate())+'T'+z(d.getHours())+':'+z(d.getMinutes());
+      }
+      function readDateTime(id){var v=$('#'+id).value;if(!v)return null;var d=new Date(v);return isNaN(d.getTime())?v:d.toISOString()}
+      function rewardToken(r){
+        var type=String(r.reward_type||'coins');
+        var meta=r.reward_meta?'<span style="color:var(--muted);font-weight:650">'+escHtml(typeof r.reward_meta==='string'?r.reward_meta:JSON.stringify(r.reward_meta))+'</span>':'';
+        return'<span class="reward-token '+escHtml(type)+'">'+escHtml(type)+' × '+fmtNum(r.reward_amount||0)+'</span> '+meta;
+      }
+      function compactSeasonTitle(s){
+        if(!s)return'—';
+        return'Сезон '+fmtNum(s.season_number||s.id)+' · '+escHtml(s.name||'Без названия');
+      }
+      function fillSeasonForm(prefix,s){
+        if(!s)return;
+        $('#'+prefix+'-id').textContent='#'+s.id+' · '+(s.status||'draft');
+        $('#'+prefix+'-name').value=s.name||'';
+        $('#'+prefix+'-number').value=s.season_number||'';
+        $('#'+prefix+'-subtitle').value=s.subtitle||'';
+        $('#'+prefix+'-description').value=s.description||'';
+        $('#'+prefix+'-start').value=dtLocal(s.start_date);
+        $('#'+prefix+'-end').value=dtLocal(s.end_date);
+        $('#'+prefix+'-max-stars').value=s.max_stars||45;
+        $('#'+prefix+'-pass-end').value=s.pass_end_position||40;
+        $('#'+prefix+'-ultra-start').value=s.ultra_start_position||41;
+        $('#'+prefix+'-status').value=s.status||'draft';
+        setSwitch($('#'+prefix+'-auto-switch'),s.auto_switch!==false);
+        if(prefix==='sc'){
+          $('#sc-free-track').value=s.free_track_type||'';
+          $('#sc-pass-track').value=s.pass_track_type||'';
+          $('#sc-ultra-track').value=s.ultra_track_type||'';
+        }
+      }
+      function readSeasonForm(prefix){
+        var body={
+          name:$('#'+prefix+'-name').value.trim(),
+          season_number:parseInt($('#'+prefix+'-number').value)||1,
+          subtitle:$('#'+prefix+'-subtitle').value.trim(),
+          description:$('#'+prefix+'-description').value.trim(),
+          start_date:readDateTime(prefix+'-start'),
+          end_date:readDateTime(prefix+'-end'),
+          max_stars:parseInt($('#'+prefix+'-max-stars').value)||45,
+          pass_end_position:parseInt($('#'+prefix+'-pass-end').value)||40,
+          ultra_start_position:parseInt($('#'+prefix+'-ultra-start').value)||41,
+          status:$('#'+prefix+'-status').value||'draft',
+          auto_switch:$('#'+prefix+'-auto-switch').dataset.on==='1'
+        };
+        if(prefix==='sc'){
+          body.free_track_type=$('#sc-free-track').value.trim();
+          body.pass_track_type=$('#sc-pass-track').value.trim();
+          body.ultra_track_type=$('#sc-ultra-track').value.trim();
+        }
+        return body;
+      }
+      function updateSeasonsState(data){
+        seasonsState=data||seasonsState;
+        seasonsState.seasons=seasonsState.seasons||[];
+        seasonsState.reward_tracks=seasonsState.reward_tracks||[];
+        seasonsState.reward_counts=seasonsState.reward_counts||{};
+        seasonsState.overview=seasonsState.overview||[];
+        seasonsState.drafts=seasonsState.drafts||[];
+        seasonsState.scheduled=seasonsState.scheduled||[];
+      }
+      async function loadSeasons(){
+        $('#seasons-status').innerHTML='';
+        try{
+          var res=await api('GET','/api/admin/seasons');
+          updateSeasonsState(res.data||{});
+          renderSeasonsAdmin();
+        }catch(e){
+          $('#seasons-status').innerHTML='<div style="color:var(--red);font-size:12px;background:rgba(239,68,68,0.08);padding:8px 12px;border-radius:6px;border:1px solid rgba(239,68,68,0.22)">Seasons error: '+escHtml(e.message)+'</div>';
+        }
+      }
+      function renderSeasonsAdmin(){
+        var seasons=seasonsState.seasons||[],active=seasonsState.active||seasons.find(function(s){return s.is_active});
+        var sorted=seasons.slice().sort(function(a,b){return String(a.start_date||'9999').localeCompare(String(b.start_date||'9999'))||((a.season_number||0)-(b.season_number||0))});
+        var next=sorted.find(function(s){return !s.is_active&&s.start_date&&new Date(s.start_date)>new Date()});
+        var issues=(seasonsState.overview||[]).filter(function(x){var st=x.relation_to_next&&x.relation_to_next.status;return st&&['gap','overlap','unknown'].indexOf(st)>=0}).length;
+
+        $('#season-active-name').textContent=active?(active.name||('Сезон '+active.season_number)):'—';
+        $('#season-active-status').textContent=active?(active.status||'active'):'—';
+        $('#season-active-dates').textContent=active?(fmtDate(active.start_date)+' → '+fmtDate(active.end_date)):'No active season';
+        $('#season-next-date').textContent=next?String(next.start_date||'').slice(0,10):'—';
+        $('#season-next-name').textContent=next?compactSeasonTitle(next).replace(/&amp;/g,'&'):'Нет запланированного сезона';
+        $('#season-draft-count').textContent=fmtNum((seasonsState.drafts||[]).length);
+        $('#season-chain-issues').textContent=fmtNum(issues);
+        $('#season-chain-issues').style.color=issues?'var(--orange)':'var(--green)';
+
+        if(active)fillSeasonForm('sc',active);
+        renderSeasonSelectors();
+        renderSeasonListPreview();
+        renderSeasonRows();
+        renderSeasonChain();
+        renderSeasonRewards();
+      }
+      function renderSeasonSelectors(){
+        var seasons=seasonsState.seasons||[],drafts=(seasonsState.drafts||[]).slice().sort(function(a,b){return(b.id||0)-(a.id||0)});
+        if(!selectedDraftId&&drafts[0])selectedDraftId=drafts[0].id;
+        if(!selectedRewardSeasonId)selectedRewardSeasonId=(seasonsState.active&&seasonsState.active.id)||(drafts[0]&&drafts[0].id)||(seasons[0]&&seasons[0].id)||null;
+        $('#season-draft-select').innerHTML=drafts.length?drafts.map(function(s){return'<option value="'+Number(s.id)+'">'+compactSeasonTitle(s)+'</option>'}).join(''):'<option value="">Нет черновиков</option>';
+        if(selectedDraftId)$('#season-draft-select').value=String(selectedDraftId);
+        var draft=seasonById(selectedDraftId);
+        if(draft)fillSeasonForm('sd',draft);
+        else $('#sd-id').textContent='Создайте черновик';
+        $('#sr-season-select').innerHTML=seasons.map(function(s){return'<option value="'+Number(s.id)+'">'+compactSeasonTitle(s)+'</option>'}).join('');
+        if(selectedRewardSeasonId)$('#sr-season-select').value=String(selectedRewardSeasonId);
+      }
+      function renderSeasonListPreview(){
+        $('#season-list-count').textContent=fmtNum((seasonsState.seasons||[]).length)+' rows';
+        $('#season-list-preview').innerHTML=(seasonsState.seasons||[]).map(function(s){
+          return'<div style="display:flex;justify-content:space-between;gap:8px;padding:6px 0;border-bottom:1px solid rgba(48,56,72,0.5)"><span>'+compactSeasonTitle(s)+'</span><span class="status '+seasonStatusClass(s.status)+'">'+escHtml(s.status||'draft')+'</span></div>';
+        }).join('')||'<span style="color:var(--muted)">No seasons</span>';
+      }
+      function renderSeasonRows(){
+        var rows=seasonsState.overview||[];
+        $('#seasons-tbody').innerHTML=rows.length?rows.map(function(x){
+          var s=x.season,counts=x.track_counts||{},tracks=seasonTracks(s).map(function(t){return escHtml(t)+': '+fmtNum(counts[t]||0)}).join('<br>');
+          return'<tr><td>'+fmtNum(s.season_number||s.id)+'</td><td><strong>'+escHtml(s.name||'—')+'</strong><br><span style="color:var(--muted);font-size:11px">#'+Number(s.id)+'</span></td><td><span class="status '+seasonStatusClass(s.status)+'">'+escHtml(s.status||'draft')+'</span></td><td>'+escHtml(String(s.start_date||'—').slice(0,16))+'</td><td>'+escHtml(String(s.end_date||'—').slice(0,16))+'</td><td style="font-size:12px;color:var(--soft)">'+tracks+'</td><td>'+(s.auto_switch!==false?'yes':'no')+'</td></tr>';
+        }).join(''):'<tr><td colspan="7" style="text-align:center;padding:24px;color:var(--muted)">No seasons</td></tr>';
+      }
+      function renderSeasonNode(s,x){
+        if(!s)return'<div class="season-chain-node" style="color:var(--muted)">Следующий сезон не задан</div>';
+        return'<div class="season-chain-node"><div style="display:flex;justify-content:space-between;gap:8px"><strong>'+compactSeasonTitle(s)+'</strong><span class="status '+seasonStatusClass(s.status)+'">'+escHtml(s.status||'draft')+'</span></div><div style="margin-top:6px;color:var(--muted);font-size:12px">'+escHtml(String(s.start_date||'—').slice(0,16))+' → '+escHtml(String(s.end_date||'—').slice(0,16))+'</div><div style="margin-top:6px;color:'+(x&&x.has_reward_tracks?'var(--green)':'var(--orange)')+';font-size:12px">Дорожки БП: '+(x&&x.has_reward_tracks?'есть':'нет')+'</div></div>';
+      }
+      function renderSeasonChain(){
+        var rows=seasonsState.overview||[];
+        $('#season-chain-count').textContent=fmtNum(rows.length)+' seasons';
+        if(!rows.length){$('#season-chain').innerHTML='<div style="text-align:center;padding:24px;color:var(--muted)">No seasons</div>';return}
+        $('#season-chain').innerHTML=rows.map(function(x,i){
+          var rel=x.relation_to_next||{},next=rows[i+1]&&rows[i+1].season;
+          var detail=rel.status==='gap'?' · gap '+fmtNum(rel.days)+'d':rel.status==='overlap'?' · overlap '+fmtNum(rel.days)+'d':'';
+          return'<div class="season-chain-row">'+renderSeasonNode(x.season,x)+'<div class="season-chain-link '+escHtml(rel.status||'tail')+'">→<br>'+escHtml(rel.label||'—')+detail+'</div>'+renderSeasonNode(next,rows[i+1])+'</div>';
+        }).join('');
+      }
+      function renderSeasonRewards(){
+        var s=seasonById($('#sr-season-select').value)||seasonById(selectedRewardSeasonId)||seasonsState.active;
+        if(!s){$('#sr-tbody').innerHTML='<tr><td colspan="7" style="text-align:center;padding:24px;color:var(--muted)">No season selected</td></tr>';return}
+        selectedRewardSeasonId=s.id;
+        var types=seasonTracks(s);
+        var rows=(seasonsState.reward_tracks||[]).filter(function(r){return types.indexOf(r.track_type)>=0}).sort(function(a,b){return types.indexOf(a.track_type)-types.indexOf(b.track_type)||(a.position||0)-(b.position||0)||(a.id||0)-(b.id||0)});
+        $('#sr-count').textContent=fmtNum(rows.filter(function(r){return r.is_active!==false}).length)+' active / '+fmtNum(rows.length)+' rows';
+        $('#sr-tbody').innerHTML=rows.length?rows.map(function(r){
+          var lane=laneForTrack(s,r.track_type),active=r.is_active!==false,meta=r.reward_meta?escHtml(typeof r.reward_meta==='string'?r.reward_meta:JSON.stringify(r.reward_meta)):'—';
+          return'<tr><td><code>'+Number(r.id)+'</code></td><td>'+laneLabel(lane)+'<br><span style="color:var(--muted);font-size:11px">'+escHtml(r.track_type)+'</span></td><td>'+fmtNum(r.position)+'</td><td>'+rewardToken(r)+'</td><td style="font-size:11px;color:var(--muted);max-width:260px;overflow:hidden;text-overflow:ellipsis">'+meta+'</td><td><span style="color:'+(active?'var(--green)':'var(--red)')+'">'+(active?'active':'hidden')+'</span></td><td><div class="actions"><button class="secondary" type="button" style="font-size:11px;padding:3px 8px" onclick="editSeasonReward('+Number(r.id)+')">Edit</button><button class="secondary" type="button" style="font-size:11px;padding:3px 8px" onclick="toggleSeasonReward('+Number(r.id)+','+(!active)+')">'+(active?'Hide':'Show')+'</button><button class="danger" type="button" style="font-size:11px;padding:3px 8px" onclick="deleteSeasonReward('+Number(r.id)+')">Delete</button></div></td></tr>';
+        }).join(''):'<tr><td colspan="7" style="text-align:center;padding:24px;color:var(--muted)">No rewards for selected season</td></tr>';
+      }
+      async function saveSeason(prefix,id){
+        if(!id){toast('Season not selected','error');return}
+        try{
+          var res=await api('POST','/api/admin/seasons/'+Number(id),readSeasonForm(prefix));
+          updateSeasonsState(res.data||{});
+          toast('Season saved','success');
+          renderSeasonsAdmin();
+        }catch(e){toast('Season save: '+escHtml(e.message),'error')}
+      }
+      $('#btn-season-refresh').addEventListener('click',loadSeasons);
+      $('#btn-season-create-draft').addEventListener('click',async function(){
+        try{
+          var res=await api('POST','/api/admin/seasons/create-draft',{preset_key:$('#season-create-preset').value||'blank'});
+          updateSeasonsState(res.data||{});
+          selectedDraftId=(res.data&&res.data.season&&res.data.season.id)||selectedDraftId;
+          selectedRewardSeasonId=selectedDraftId;
+          toast('Draft season created','success');
+          renderSeasonsAdmin();
+          $$('.season-tab').forEach(function(b){b.classList.toggle('active',b.dataset.seasonTab==='draft')});
+          $$('[data-season-panel]').forEach(function(p){p.classList.toggle('active',p.dataset.seasonPanel==='draft')});
+        }catch(e){toast('Create season: '+escHtml(e.message),'error')}
+      });
+      $('#btn-season-save-current').addEventListener('click',function(){var s=seasonsState.active;if(s)saveSeason('sc',s.id)});
+      $('#btn-season-save-draft').addEventListener('click',function(){saveSeason('sd',selectedDraftId)});
+      $('#season-draft-select').addEventListener('change',function(){selectedDraftId=Number(this.value)||null;renderSeasonSelectors()});
+      $('#sr-season-select').addEventListener('change',function(){selectedRewardSeasonId=Number(this.value)||null;renderSeasonRewards()});
+      $('#season-json-file').addEventListener('change',function(){
+        var file=this.files&&this.files[0];if(!file)return;
+        file.text().then(function(text){$('#season-json-import').value=text}).catch(function(e){toast('JSON file: '+escHtml(e.message),'error')});
+        this.value='';
+      });
+      $('#btn-season-json-template').addEventListener('click',function(){
+        $('#season-json-import').value=JSON.stringify({free:[{position:1,reward_type:'coins',reward_amount:200}],premium:[{position:1,reward_type:'coins',reward_amount:400}],ultra:[{position:41,reward_type:'gems',reward_amount:120}]},null,2);
+      });
+      $('#btn-season-import-json').addEventListener('click',async function(){
+        if(!selectedDraftId){toast('Create or select draft first','error');return}
+        var parsed;
+        try{parsed=JSON.parse($('#season-json-import').value||'{}')}catch(e){toast('Invalid JSON','error');return}
+        try{
+          var res=await api('POST','/api/admin/seasons/'+Number(selectedDraftId)+'/rewards/import',{replace:true,tracks:parsed});
+          updateSeasonsState(res.data||{});
+          toast('Imported '+fmtNum((res.data&&res.data.imported)||0)+' rewards','success');
+          renderSeasonsAdmin();
+        }catch(e){toast('Import: '+escHtml(e.message),'error')}
+      });
+      $('#btn-sr-upsert').addEventListener('click',async function(){
+        var s=seasonById($('#sr-season-select').value);if(!s){toast('Season not selected','error');return}
+        var lane=$('#sr-lane').value,metaRaw=$('#sr-reward-meta').value.trim(),meta=null;
+        if(metaRaw){try{meta=JSON.parse(metaRaw)}catch(e){toast('Meta JSON invalid','error');return}}
+        var body={track_type:laneTrackType(s,lane),position:parseInt($('#sr-position').value)||1,reward_type:$('#sr-reward-type').value,reward_amount:parseInt($('#sr-reward-amount').value)||0,reward_meta:meta,extra_pass_required:lane!=='free'};
+        try{
+          await api('POST','/api/admin/rewards/tracks/create',body);
+          toast('Reward saved','success');
+          await loadSeasons();
+        }catch(e){toast('Reward save: '+escHtml(e.message),'error')}
+      });
+      ['sc-auto-switch','sd-auto-switch'].forEach(function(id){$('#'+id).addEventListener('click',function(){setSwitch(this,this.dataset.on!=='1')})});
+      $$('.season-tab').forEach(function(b){b.addEventListener('click',function(){
+        var tab=this.dataset.seasonTab;
+        $$('.season-tab').forEach(function(x){x.classList.toggle('active',x===b)});
+        $$('[data-season-panel]').forEach(function(p){p.classList.toggle('active',p.dataset.seasonPanel===tab)});
+      })});
+      window.editSeasonReward=function(id){
+        var r=(seasonsState.reward_tracks||[]).find(function(x){return Number(x.id)===Number(id)});if(!r)return;
+        var s=seasonById($('#sr-season-select').value)||seasonsState.active,lane=s?laneForTrack(s,r.track_type):'free';
+        $('#sr-lane').value=lane;$('#sr-position').value=r.position||1;$('#sr-reward-type').value=r.reward_type||'coins';$('#sr-reward-amount').value=r.reward_amount||0;$('#sr-reward-meta').value=r.reward_meta?(typeof r.reward_meta==='string'?r.reward_meta:JSON.stringify(r.reward_meta)):'';
+      };
+      window.toggleSeasonReward=async function(id,isActive){
+        try{await api('POST','/api/admin/rewards/tracks/update',{id:id,is_active:!!isActive});toast('Reward updated','success');await loadSeasons()}catch(e){toast('Reward update: '+escHtml(e.message),'error')}
+      };
+      window.deleteSeasonReward=async function(id){
+        if(!confirm('Delete reward tier #'+id+'?'))return;
+        try{await api('POST','/api/admin/rewards/tracks/delete',{id:id});toast('Reward deleted','success');await loadSeasons()}catch(e){toast('Reward delete: '+escHtml(e.message),'error')}
+      };
+
+      // ═══════════════════════════════════════════
+      // CONFIGS ADMIN
+      // ═══════════════════════════════════════════
+      var runtimeConfig={maintenance_mode:{enabled:false},feature_availability:{},disabled_card_ids:[]},runtimeCards=[];
+      var featureLabels={
+        shop:'Menu: Магазин',
+        collection:'Menu: Коллекция',
+        squads:'Menu: Сквады',
+        training:'Mode: Тренировка',
+        friendly:'Mode: Дружеская игра',
+        classic:'Trophy: Classic',
+        extra_arena:'Trophy: ExtraArena'
+      };
+      function setSwitch(el,on){if(!el)return;el.dataset.on=on?'1':'0';el.classList.toggle('on',!!on)}
+      $('#rt-extra-pass-switch').addEventListener('click',function(){
+        var on=this.dataset.on==='1';
+        this.dataset.on=on?'0':'1';
+        this.classList.toggle('on',!on);
+      });
+      $('#cfg-maintenance-switch').addEventListener('click',function(){
+        var next=this.dataset.on!=='1';
+        toggleMaintenance(next);
+      });
+
+      function renderRuntimeConfig(){
+        var rc=runtimeConfig||{},fa=rc.feature_availability||{},disabled=(rc.disabled_card_ids||[]).map(Number);
+        setSwitch($('#cfg-maintenance-switch'),!!(rc.maintenance_mode&&rc.maintenance_mode.enabled));
+        $('#cfg-runtime-summary').value=(rc.maintenance_mode&&rc.maintenance_mode.enabled?'Maintenance ON':'Maintenance OFF')+' · disabled cards: '+disabled.length;
+        $('#cfg-feature-toggles').innerHTML=Object.keys(featureLabels).map(function(key){
+          var enabled=fa[key]!==false;
+          return'<tr>'+
+            '<td><strong>'+escHtml(featureLabels[key])+'</strong><br><span style="font-size:11px;color:var(--muted)">'+escHtml(key)+'</span></td>'+
+            '<td><span style="color:'+(enabled?'var(--green)':'var(--red)')+'">'+(enabled?'available':'disabled')+'</span></td>'+
+            '<td style="text-align:right"><button class="'+(enabled?'danger':'primary')+'" type="button" style="font-size:11px;padding:3px 8px" onclick="toggleRuntimeFeature(\''+escHtml(key)+'\','+(!enabled)+')">'+(enabled?'Disable':'Enable')+'</button></td>'+
+          '</tr>';
+        }).join('');
+        $('#cfg-disabled-card-count').textContent=fmtNum(disabled.length)+' blocked';
+        if(!runtimeCards.length){
+          $('#cfg-cards-tbody').innerHTML='<tr><td colspan="6" style="text-align:center;padding:24px;color:var(--muted)">No cards</td></tr>';
+          return;
+        }
+        $('#cfg-cards-tbody').innerHTML=runtimeCards.map(function(c){
+          var blocked=disabled.indexOf(Number(c.id))>=0;
+          return'<tr>'+
+            '<td>'+escHtml(c.id)+'</td>'+
+            '<td><strong>'+escHtml(c.name||c.id)+'</strong></td>'+
+            '<td>'+escHtml(c.card_type||'unit')+'</td>'+
+            '<td>'+escHtml(c.rarity||'—')+'</td>'+
+            '<td><span style="color:'+(blocked?'var(--red)':'var(--green)')+'">'+(blocked?'blocked':'allowed')+'</span></td>'+
+            '<td><button class="'+(blocked?'primary':'danger')+'" type="button" style="font-size:11px;padding:3px 8px" onclick="toggleDisabledCard('+Number(c.id)+','+(!blocked)+')">'+(blocked?'Allow':'Block')+'</button></td>'+
+          '</tr>';
+        }).join('');
+      }
+
+      async function saveRuntimeConfig(){
+        var saved=await api('POST','/api/admin/runtime-config',runtimeConfig);
+        runtimeConfig=saved.data||runtimeConfig;
+        renderRuntimeConfig();
+      }
+
+      window.toggleMaintenance=async function(enabled){
+        try{
+          runtimeConfig.maintenance_mode={enabled:!!enabled};
+          await saveRuntimeConfig();
+          toast('Maintenance updated','success');
+        }catch(e){toast('Runtime update: '+escHtml(e.message),'error');loadConfigs()}
+      };
+
+      window.toggleRuntimeFeature=async function(key,enabled){
+        try{
+          runtimeConfig.feature_availability=Object.assign({},runtimeConfig.feature_availability||{});
+          runtimeConfig.feature_availability[key]=!!enabled;
+          await saveRuntimeConfig();
+          toast('Availability updated','success');
+        }catch(e){toast('Availability: '+escHtml(e.message),'error');loadConfigs()}
+      };
+
+      window.toggleDisabledCard=async function(cardId,blocked){
+        try{
+          var ids=(runtimeConfig.disabled_card_ids||[]).map(Number).filter(Boolean);
+          cardId=Number(cardId);
+          ids=ids.filter(function(id){return id!==cardId});
+          if(blocked)ids.push(cardId);
+          runtimeConfig.disabled_card_ids=ids;
+          await saveRuntimeConfig();
+          toast('Blacklist updated','success');
+        }catch(e){toast('Blacklist: '+escHtml(e.message),'error');loadConfigs()}
+      };
+
+      function renderRewardTracks(rows){
+        $('#rt-count').textContent=fmtNum(rows.length)+' tiers';
+        if(rows.length){
+          $('#rt-tbody').innerHTML=rows.map(function(r){
+            var active=r.is_active!==false;
+            var reward=escHtml(r.reward_type)+' × '+fmtNum(r.reward_amount);
+            if(r.reward_meta)reward+=' <span style="color:var(--muted);font-size:11px">'+escHtml(typeof r.reward_meta==='string'?r.reward_meta:JSON.stringify(r.reward_meta))+'</span>';
+            return'<tr>'+
+              '<td><code>'+Number(r.id)+'</code></td>'+
+              '<td>'+escHtml(r.track_type)+'</td>'+
+              '<td>'+fmtNum(r.position)+'</td>'+
+              '<td>'+reward+'</td>'+
+              '<td>'+(r.extra_pass_required?'yes':'no')+'</td>'+
+              '<td><span style="color:'+(active?'var(--green)':'var(--red)')+'">'+(active?'active':'hidden')+'</span></td>'+
+              '<td><div class="actions"><button class="secondary" type="button" style="font-size:11px;padding:3px 8px" onclick="toggleRewardTrack('+Number(r.id)+','+(!active)+')">'+(active?'Hide':'Show')+'</button><button class="danger" type="button" style="font-size:11px;padding:3px 8px" onclick="deleteRewardTrack('+Number(r.id)+')">Delete</button></div></td>'+
+              '</tr>';
+          }).join('');
+        }else{
+          $('#rt-tbody').innerHTML='<tr><td colspan="7" style="text-align:center;padding:24px;color:var(--muted)">No reward track tiers</td></tr>';
+        }
+      }
+
+      async function loadConfigs(){
+        $('#configs-status').innerHTML='';
+        renderAdminBlockWarnings('#cfg-partial-warnings',{});
+        $('#cfg-modes-tbody').innerHTML='<tr><td colspan="5" style="text-align:center;padding:24px;color:var(--muted)">Loading...</td></tr>';
+        try{
+          var res=await api('GET','/api/admin/configs'),d=res.data||{};
+          renderAdminBlockWarnings('#cfg-partial-warnings',d.errors||{});
+          $('#cfg-shop-sets').textContent=fmtNum((d.shop_sets||[]).length);
+          $('#cfg-ruble-products').textContent=fmtNum((d.ruble_products||[]).length);
+          $('#cfg-reward-tracks').textContent=fmtNum((d.reward_tracks||[]).length);
+          $('#cfg-promocodes').textContent=fmtNum(d.promocodes_count||0);
+          runtimeConfig=d.runtime_config||runtimeConfig;
+          runtimeCards=d.cards||[];
+          renderRuntimeConfig();
+          var modes=d.match_modes||[];
+          if(modes.length){
+            $('#cfg-modes-tbody').innerHTML=modes.map(function(m){
+              var enabled=m.db_enabled!==false;
+              return'<tr>'+
+                '<td><strong>'+escHtml(m.label||m.mode_id)+'</strong><br><span style="font-size:11px;color:var(--muted)">'+escHtml(m.mode_id)+'</span></td>'+
+                '<td><span style="color:'+(enabled?'var(--green)':'var(--red)')+'">'+(enabled?'enabled':'disabled')+'</span></td>'+
+                '<td>'+((m.bot_allowed||m.bot_available)?'yes':'no')+'</td>'+
+                '<td style="font-size:12px;color:var(--muted)">'+escHtml(m.description||'—')+'</td>'+
+                '<td><button class="'+(enabled?'danger':'primary')+'" type="button" style="font-size:11px;padding:3px 8px" onclick="toggleMatchMode(\''+escHtml(String(m.mode_id))+'\','+(!enabled)+')">'+(enabled?'Disable':'Enable')+'</button></td>'+
+                '</tr>';
+            }).join('');
+          }else{
+            $('#cfg-modes-tbody').innerHTML='<tr><td colspan="5" style="text-align:center;padding:24px;color:var(--muted)">No match modes</td></tr>';
+          }
+          renderRewardTracks(d.reward_tracks||[]);
+          var excluded=(d.excluded||[]).join(', ')||'none';
+          $('#cfg-areas-tbody').innerHTML=[
+            ['Shop sets','Managed in Products'],
+            ['Ruble products','Managed in Products'],
+            ['Promocodes','Managed in Promocodes'],
+            ['Match modes','Managed here'],
+            ['Reward tracks','Managed here'],
+            ['Cards/items APIs','Existing API detected; compact management can be added after card balance rules are finalized'],
+            ['TPS / Stars test mode','Existing operational API detected'],
+            ['Squads runtime','Managed in Squads'],
+            ['Excluded',excluded]
+          ].map(function(r){return'<tr><td><strong>'+escHtml(r[0])+'</strong></td><td>'+escHtml(r[1])+'</td></tr>'}).join('');
+        }catch(e){
+          renderAdminBlockWarnings('#cfg-partial-warnings',{configs:e.message});
+          $('#configs-status').innerHTML='<div style="color:var(--red);font-size:12px;background:rgba(239,68,68,0.08);padding:8px 12px;border-radius:6px;border:1px solid rgba(239,68,68,0.22)">Configs error: '+escHtml(e.message)+'</div>';
+          $('#cfg-modes-tbody').innerHTML='<tr><td colspan="5" style="text-align:center;padding:24px;color:var(--muted)">Error</td></tr>';
+        }
+      }
+
+      $('#btn-configs-refresh').addEventListener('click',loadConfigs);
+      $('#btn-rt-create').addEventListener('click',async function(){
+        var metaRaw=$('#rt-reward-meta').value.trim();
+        var meta=null;
+        if(metaRaw){
+          try{meta=JSON.parse(metaRaw)}catch(e){toast('Reward meta must be valid JSON','error');return}
+        }
+        var body={
+          track_type:$('#rt-track-type').value,
+          position:parseInt($('#rt-position').value)||1,
+          reward_type:$('#rt-reward-type').value,
+          reward_amount:parseInt($('#rt-reward-amount').value)||0,
+          reward_meta:meta,
+          extra_pass_required:$('#rt-extra-pass-switch').dataset.on==='1'
+        };
+        try{
+          await api('POST','/api/admin/rewards/tracks/create',body);
+          toast('Reward tier saved','success');
+          loadConfigs();
+        }catch(e){toast('Reward tier: '+escHtml(e.message),'error')}
+      });
+
+      window.toggleRewardTrack=async function(id,isActive){
+        try{
+          await api('POST','/api/admin/rewards/tracks/update',{id:id,is_active:!!isActive});
+          toast('Reward tier updated','success');
+          loadConfigs();
+        }catch(e){toast('Reward tier update: '+escHtml(e.message),'error')}
+      };
+
+      window.deleteRewardTrack=async function(id){
+        if(!confirm('Delete reward tier #'+id+'?'))return;
+        try{
+          await api('POST','/api/admin/rewards/tracks/delete',{id:id});
+          toast('Reward tier deleted','success');
+          loadConfigs();
+        }catch(e){toast('Reward tier delete: '+escHtml(e.message),'error')}
+      };
+
+      window.toggleMatchMode=async function(modeId,enabled){
+        try{
+          await api('POST','/api/admin/match-modes',{mode_id:modeId,enabled:!!enabled});
+          toast('Mode updated','success');
+          loadConfigs();
+        }catch(e){toast('Mode update: '+escHtml(e.message),'error')}
+      };
 
       // Init
       loadAll();

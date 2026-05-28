@@ -14,6 +14,9 @@ fi
 LOG_FILE="$DIR/extraarena.log"
 PID_FILE="$DIR/extraarena.pid"
 PORT="${WEBAPP_PORT:-${WEB_PORT:-8081}}"
+CLOUDPUB_BIN="${CLOUDPUB_BIN:-/Applications/cloudpub.app/Contents/MacOS/cloudpub}"
+CLOUDPUB_SERVICE_GUID="${CLOUDPUB_SERVICE_GUID:-}"
+CLOUDPUB_PUBLIC_URL="${CLOUDPUB_PUBLIC_URL:-${WEBAPP_URL:-}}"
 
 stop_pid() {
     local pid="$1"
@@ -132,6 +135,22 @@ for i in $(seq 1 30); do
     fi
     sleep 2
 done
+
+if [ -n "$CLOUDPUB_SERVICE_GUID" ] && [ -x "$CLOUDPUB_BIN" ]; then
+    echo "⏳ Запускаю CloudPub-туннель..."
+    "$CLOUDPUB_BIN" start "$CLOUDPUB_SERVICE_GUID" > /dev/null 2>&1 || true
+    if [ -n "$CLOUDPUB_PUBLIC_URL" ]; then
+        for _ in $(seq 1 15); do
+            if curl -sf "$CLOUDPUB_PUBLIC_URL/health" > /dev/null 2>&1; then
+                echo "✅ CloudPub готов ($CLOUDPUB_PUBLIC_URL)"
+                break
+            fi
+            sleep 2
+        done
+    fi
+elif [ -n "$CLOUDPUB_SERVICE_GUID" ]; then
+    echo "⚠️  CloudPub CLI не найден: $CLOUDPUB_BIN"
+fi
 
 # Ждём старта бота
 echo "⏳ Ожидаю Telegram бота..."

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="ea_bg">#07040F</color>
+    <color name="ea_panel">#120B24</color>
+    <color name="ea_orange">#FF8A3D</color>
+    <color name="ea_text">#F6F1FF</color>
+</resources>

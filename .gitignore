@@ -8,16 +8,23 @@ venv/
 # Environment / secrets
 .env
 .env.local
+firebase-adminsdk-*.json
+*service-account*.json
+android-app/Google Firebase/*firebase-adminsdk*.json
+android-app/Google Firebase/*service-account*.json
+android-app/Google Firebase/google-services.json
 
 # OS
 .DS_Store
 
 # AI model checkpoints
 ai/train/checkpoints/
+ai/train_v2/runs/
 
 # Runtime data
 infrastructure/data/
 generated/
+uploads/
 *.log
 *.pid
 .pytest_cache/
@@ -27,6 +34,7 @@ generated/
 .cursorignore
 .aider*
 .claude/
+.superpowers/
 .opencode/references/
 
 # Rust

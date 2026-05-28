@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Dict, List
+from typing import Dict, List, Optional
 from uuid import UUID, uuid4
 
 
@@ -82,12 +82,40 @@ class CardInstance:
     is_ready: bool = False
     is_frozen: bool = False
     description: str = ""
+    mechanics_desc: str = ""
     level: int = 1  # Уровень карты (1-10)
+    simplified_levelup: bool = False
+    base_attack: Optional[int] = None
+    base_hp: Optional[int] = None
+    base_max_hp: Optional[int] = None
+    base_mana_cost: Optional[int] = None
+    base_mechanics: Optional[List[str]] = None
     
     @property
     def is_asleep(self) -> bool:
         """Существо спит (не готово к атаке) если is_ready=False."""
         return not self.is_ready
+
+    def ensure_base_snapshot(self) -> None:
+        """Запомнить исходное состояние карты до runtime-модификаций."""
+        if self.base_attack is not None:
+            return
+        self.base_attack = int(self.attack)
+        self.base_max_hp = int(self.max_hp)
+        self.base_hp = int(self.max_hp if self.max_hp else self.hp)
+        self.base_mana_cost = int(self.mana_cost)
+        self.base_mechanics = list(self.mechanics)
+
+    def reset_to_base_state(self) -> None:
+        """Восстановить карту перед возвратом из сброса в колоду."""
+        self.ensure_base_snapshot()
+        self.attack = int(self.base_attack or 0)
+        self.max_hp = int(self.base_max_hp or 0)
+        self.hp = int(self.base_hp if self.base_hp is not None else self.max_hp)
+        self.mana_cost = int(self.base_mana_cost or 0)
+        self.mechanics = list(self.base_mechanics or [])
+        self.is_ready = False
+        self.is_frozen = False
 
 
 @dataclass
@@ -121,6 +149,9 @@ class GameState:
     history: List[Dict] = field(default_factory=list)
     action_history: List[tuple[str, str]] = field(default_factory=list)  # (type, text) - последние 100 действий
     status: GameStatus = GameStatus.ONGOING
+    sudden_death_turns_by_player: Dict[int, int] = field(default_factory=dict)
+    sudden_death_last_applied_turn_by_player: Dict[int, int] = field(default_factory=dict)
+    pending_mana_drain_by_player: Dict[int, int] = field(default_factory=dict)
 
     def _card_features(self, prefix: str, card: CardInstance) -> Dict[str, int]:
         """Извлечь фичи карты включая вектор механик."""

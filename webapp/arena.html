@@ -6,17 +6,140 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <title>Арена — ExtraArena</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script src="safe-area.js"></script>
   <link rel="stylesheet" href="arena-styles.css">
 </head>
 <body class="arena-page">
   
   <!-- ARENA BATTLEFIELD CONTAINER -->
   <div id="arena-battlefield-container">
-    
-    <!-- Battle Log Overlay -->
-    <div class="battle-log-overlay" id="battle-log-overlay" aria-hidden="true">
-      <div class="battle-log-rows" id="battle-log-rows"></div>
-      <div class="log-footer-hint">Нажмите в любом месте, чтобы закрыть</div>
+
+    <!-- Prebattle Screen -->
+    <section class="prebattle-screen" id="prebattle-screen" aria-hidden="false">
+      <div class="prebattle-topbar">
+        <span class="prebattle-pill"><span class="prebattle-dot"></span><span id="prebattle-mode-label">classic</span></span>
+        <span class="prebattle-pill" id="prebattle-modifier-label">Без модификаторов</span>
+      </div>
+
+      <div class="prebattle-layout">
+        <section class="prebattle-player-card" id="prebattle-opponent-card">
+          <div class="prebattle-profile-bg">
+            <img id="prebattle-opponent-bg" alt="">
+            <span class="prebattle-profile-fallback" id="prebattle-opponent-bg-fallback"></span>
+          </div>
+          <div class="prebattle-profile-info">
+            <div class="prebattle-avatar-stack">
+              <div class="prebattle-avatar">
+                <img id="prebattle-opponent-avatar" alt="">
+                <span id="prebattle-opponent-letter">О</span>
+              </div>
+            </div>
+            <div class="prebattle-identity">
+              <div class="prebattle-title-tag" id="prebattle-opponent-title"></div>
+              <div class="prebattle-nickname" id="prebattle-opponent-name">Оппонент</div>
+              <div class="prebattle-trophies" aria-label="Трофеи оппонента">
+                <svg class="prebattle-trophy-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4h10v3h3a2 2 0 0 1 2 2c0 3.1-2.2 5.3-5 5.8A5.4 5.4 0 0 1 13 18v2h3v2H8v-2h3v-2a5.4 5.4 0 0 1-4-3.2C4.2 14.3 2 12.1 2 9a2 2 0 0 1 2-2h3V4Zm0 5H4c0 1.7 1 3.1 2.5 3.6A8.7 8.7 0 0 1 7 9Zm10 0c0 1.3-.2 2.5-.5 3.6C18 12.1 20 10.7 20 9h-3Z"/></svg>
+                <span id="prebattle-opponent-trophies">0</span>
+              </div>
+              <div class="prebattle-clan" id="prebattle-opponent-clan"></div>
+            </div>
+          </div>
+        </section>
+
+        <div class="prebattle-status" id="prebattle-status-text">Противник найден</div>
+
+        <div class="countdown-core" id="prebattle-countdown" aria-label="Countdown 3 2 1 VS">
+          <div class="countdown-ring"></div>
+          <span class="countdown-value" id="countdown-value">3</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Battle Modals: Logs / Active Effects -->
+    <div class="battle-modal-layer" id="battle-modal-layer" aria-hidden="true">
+      <article class="battle-modal logs-modal" id="battle-log-overlay" aria-label="Логи боя">
+        <header class="battle-modal-header">
+          <h1 class="battle-modal-title">Логи боя</h1>
+          <span class="battle-modal-meta" id="battle-log-meta">Ход 0</span>
+        </header>
+        <div class="battle-modal-scroll" id="battle-log-rows"></div>
+        <footer class="battle-modal-footer">Нажми в любом месте, чтобы закрыть</footer>
+      </article>
+
+      <article class="battle-modal effects-modal" id="effects-overlay-backdrop" aria-label="Активные эффекты">
+        <header class="battle-modal-header">
+          <h1 class="battle-modal-title">Активные эффекты</h1>
+          <span class="battle-modal-meta">Скан боя</span>
+        </header>
+        <div class="battle-modal-tabs" id="effects-tabs" role="tablist" aria-label="Разделы активных эффектов">
+          <button class="battle-modal-tab" type="button" role="tab" aria-selected="true" data-tab="field">Доска</button>
+          <button class="battle-modal-tab" type="button" role="tab" aria-selected="false" data-tab="mode">Режим игры</button>
+        </div>
+        <div class="battle-modal-scroll">
+          <section class="effects-tab-panel is-active" id="effects-field-panel"></section>
+          <section class="effects-tab-panel" id="effects-mode-panel"></section>
+        </div>
+        <footer class="battle-modal-footer">Нажми в любом месте, чтобы закрыть</footer>
+      </article>
+
+      <article class="battle-modal card-info-modal" id="card-info-modal" aria-label="Информация о карте">
+        <header class="battle-modal-header">
+          <h1 class="battle-modal-title">Карта</h1>
+          <span class="battle-modal-meta" id="card-info-level">Уровень 1</span>
+        </header>
+        <div class="battle-modal-scroll card-info-scroll">
+          <section class="card-info-hero">
+            <div class="card-info-art-wrapper">
+              <img class="card-info-art" id="card-info-art" src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==" alt="">
+              <span class="card-info-art-fallback" id="card-info-art-fallback">⚔️</span>
+            </div>
+            <div class="card-info-header-text">
+              <h2 class="card-info-name" id="card-info-name">Название</h2>
+              <p class="card-info-description" id="card-info-description">Нет описания.</p>
+            </div>
+          </section>
+          <div class="card-info-stats-row">
+            <div class="card-info-stat attack">
+              <span class="card-info-stat-value" id="card-info-attack">0</span>
+              <span class="card-info-stat-label">Атака</span>
+            </div>
+            <div class="card-info-stat health">
+              <span class="card-info-stat-value" id="card-info-health">0</span>
+              <span class="card-info-stat-label">Здоровье</span>
+            </div>
+            <div class="card-info-stat mana">
+              <span class="card-info-stat-value" id="card-info-mana">0</span>
+              <span class="card-info-stat-label">Мана</span>
+            </div>
+          </div>
+          <p class="section-kicker">Механика</p>
+          <div class="card-info-mechanics" id="card-info-mechanics"></div>
+        </div>
+        <footer class="battle-modal-footer">Нажми в любом месте, чтобы закрыть</footer>
+      </article>
+
+      <article class="battle-modal turn-timer-modal" id="turn-timer-modal" aria-label="Таймер хода">
+        <header class="battle-modal-header">
+          <h1 class="battle-modal-title">Таймер хода</h1>
+          <span class="battle-modal-meta" id="turn-timer-modal-meta">Ход 0</span>
+        </header>
+        <div class="battle-modal-scroll">
+          <section class="timer-live-card">
+            <div class="timer-ring" id="turn-timer-ring">
+              <strong id="turn-timer-modal-remaining">25</strong>
+              <span>сек</span>
+            </div>
+            <div class="timer-live-copy">
+              <h2 id="turn-timer-modal-owner">Текущий ход</h2>
+              <p id="turn-timer-modal-summary">Время на решение в этом ходу.</p>
+            </div>
+          </section>
+          <p class="section-kicker">Последние ходы</p>
+          <div class="turn-timer-history" id="turn-timer-history"></div>
+        </div>
+        <footer class="battle-modal-footer">Нажми в любом месте, чтобы закрыть</footer>
+      </article>
     </div>
     
     <!-- ========== ZONE TOP: OPPONENT ========== -->
@@ -49,7 +172,7 @@
               <span class="avatar-letter" id="opponent-avatar-letter">О</span>
             </div>
             <div class="opponent-name-title-stack" style="min-width:0;flex:1;">
-              <span class="opponent-title-text title-epic" id="opponent-title-text"></span>
+              <span class="opponent-title-text" id="opponent-title-text"></span>
               <div class="opponent-name-clan-row">
                 <span class="opponent-name-text" id="opponent-name-text">ОППОНЕНТ</span>
                 <span class="opponent-clan-badge" id="opponent-clan-badge" style="display:none;"></span>
@@ -88,15 +211,18 @@
       
       <!-- Turn Indicator -->
       <div class="turn-indicator-container">
+        <div class="turn-indicator-plaque" id="turn-indicator-display">
+          <span class="turn-text" id="turn-status-text">Ожидание...</span>
+        </div>
         <button class="battle-log-btn" id="battle-log-btn" title="Лог боя">
           <img src="../DesignAssets/Arena/log.png" alt="Log" class="log-icon">
+        </button>
+        <button class="battle-log-btn effects-btn" id="effects-btn" title="Активные эффекты">
+          <img src="../DesignAssets/Arena/EffectsModal.png" alt="Effects" class="log-icon effects-icon">
         </button>
         <div class="turn-timer-display" id="turn-timer-container">
           <span class="timer-icon">⏱</span>
           <span class="timer-value" id="turn-timer-text">25</span>
-        </div>
-        <div class="turn-indicator-plaque" id="turn-indicator-display">
-          <span class="turn-text" id="turn-status-text">Ожидание...</span>
         </div>
       </div>
       
@@ -123,7 +249,7 @@
                 <span class="avatar-letter" id="player-avatar-letter">Я</span>
               </div>
               <div class="player-name-title-stack" style="flex:1;min-width:0;">
-                <span class="player-title-text title-mythic" id="player-title-text"></span>
+                <span class="player-title-text" id="player-title-text"></span>
                 <span class="player-name-text" id="player-name-text">Имя игрока</span>
               </div>
               <!-- Surrender hold button (1.5s hold to activate) -->
@@ -158,19 +284,28 @@
   <!-- Surrender Modals -->
   <div class="surrender-modal" id="surrender-modal" aria-hidden="true">
     <div class="surrender-modal-overlay" data-close="true"></div>
-    <div class="surrender-modal-card">
-      <div class="surrender-modal-header">
-        <div class="surrender-icon">🏳️</div>
-        <h2>Сдаться?</h2>
+    <section class="surrender-modal-card dialog" aria-label="Подтверждение сдачи">
+      <div class="dialog-top">
+        <div class="flag-mark">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 21V4m0 0c4-2 7 2 11 0v10c-4 2-7-2-11 0V4Z"/></svg>
+        </div>
+        <div>
+          <h2>Сдаться?</h2>
+          <div class="dialog-subtitle">Бой будет завершен поражением.</div>
+        </div>
       </div>
-      <div class="surrender-modal-body">
-        <p>Если ты сдашься, то мы автоматически засчитаем тебе поражения, <b>а трофеи будут списаны!</b></p>
+      <div class="dialog-body surrender-modal-body">
+        <p class="warning-copy">После сдачи результат нельзя отменить. Трофеи будут списаны сразу после завершения матча.</p>
+        <div class="loss-line">
+          <span>Изменение трофеев</span>
+          <strong id="surrender-loss-trophies">-</strong>
+        </div>
+        <div class="actions surrender-modal-actions">
+          <button type="button" class="btn keep surrender-cancel" data-action="cancel">Продолжить бой</button>
+          <button type="button" class="btn danger surrender-confirm" data-action="confirm">Сдаться</button>
+        </div>
       </div>
-      <div class="surrender-modal-actions">
-        <button type="button" class="btn-secondary surrender-cancel" data-action="cancel">Продолжить</button>
-        <button type="button" class="btn-primary surrender-confirm" data-action="confirm">Сдаться</button>
-      </div>
-    </div>
+    </section>
   </div>
 
   <div class="surrender-modal surrender-result" id="surrender-result-modal" aria-hidden="true">
@@ -197,96 +332,72 @@
   <!-- Battle Result Modal -->
   <div class="result-overlay" id="battle-result-modal" aria-hidden="true">
     <div class="result-overlay-bg"></div>
-    <div class="result-card">
-      <div class="result-header">
-        <div class="result-icon" id="result-icon">🏆</div>
-        <h1 class="result-title" id="result-title">Победа!</h1>
-      </div>
-      
-      <div class="result-trophy-section" id="result-trophy-section">
-        <div class="trophy-delta-container">
-          <span class="trophy-icon">🏆</span>
-          <span class="trophy-delta" id="result-trophy-delta">+25</span>
-        </div>
-        <div class="trophy-total-container">
-          <span class="trophy-label">Всего трофеев:</span>
-          <span class="trophy-total" id="result-trophy-total">1025</span>
+    <section class="result-card result-dialog" aria-label="Результат боя">
+      <div class="result-hero">
+        <div class="result-heading">
+          <div class="outcome-mark" id="result-icon">
+            <svg class="result-icon-svg trophy" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4h10v3h3a2 2 0 0 1 2 2c0 3.1-2.2 5.3-5 5.8A5.4 5.4 0 0 1 13 18v2h3v2H8v-2h3v-2a5.4 5.4 0 0 1-4-3.2C4.2 14.3 2 12.1 2 9a2 2 0 0 1 2-2h3V4Z"/></svg>
+            <svg class="result-icon-svg defeat" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17"/></svg>
+            <svg class="result-icon-svg draw" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 8h14M5 16h14"/></svg>
+          </div>
+          <div>
+            <h1 class="result-title" id="result-title">Победа</h1>
+            <div class="result-subtitle" id="result-subtitle">Оппонент повержен на арене.</div>
+          </div>
         </div>
       </div>
       
-      <div class="result-coins-section" id="result-coins-section">
-        <div class="coins-delta-container">
-          <span class="coins-icon">🪙</span>
-          <span class="coins-delta" id="result-coins-delta">+15</span>
+      <div class="result-content">
+        <div class="economy-card result-trophy-section" id="result-trophy-section">
+          <div>
+            <div class="economy-label">Трофеи</div>
+            <div class="economy-total" id="result-trophy-total">1025</div>
+          </div>
+          <div class="delta trophy-delta" id="result-trophy-delta">+25</div>
         </div>
-        <div class="coins-total-container">
-          <span class="coins-label">Всего монет:</span>
-          <span class="coins-total" id="result-coins-total">450</span>
+
+        <div class="rewards" id="result-rewards-grid">
+          <div class="reward result-coins-section" id="result-coins-section">
+            <strong id="result-coins-delta">+15</strong>
+            <span>Монеты</span>
+            <small id="result-coins-total">450</small>
+          </div>
+          <div class="reward result-stars-section" id="result-stars-section">
+            <strong id="result-stars-delta">+3</strong>
+            <span>Звезды</span>
+            <small id="result-stars-total">15</small>
+          </div>
+        </div>
+
+        <div class="result-rewards-section no-reward" id="result-rewards-section" style="display: none;">
+          Награды не начислены за этот бой.
+        </div>
+
+        <div class="result-actions">
+          <a href="#" class="btn share result-btn-share" id="result-share-btn" target="_blank">
+            Поделиться результатом
+          </a>
+          <button type="button" class="btn primary result-btn-primary" id="result-close-btn">Вернуться в меню</button>
         </div>
       </div>
-      
-      <div class="result-stars-section" id="result-stars-section">
-        <div class="stars-delta-container">
-          <span class="stars-icon">⭐</span>
-          <span class="stars-delta" id="result-stars-delta">+3</span>
-        </div>
-        <div class="stars-total-container">
-          <span class="stars-label">Всего звёзд:</span>
-          <span class="stars-total" id="result-stars-total">15</span>
-        </div>
-      </div>
-      
-      <div class="result-rewards-section" id="result-rewards-section" style="display: none;">
-        <h3 class="rewards-title">Награды:</h3>
-        <div class="rewards-list" id="result-rewards-list"></div>
-      </div>
-      
-      <div class="result-actions">
-        <a href="#" class="result-btn-share" id="result-share-btn" target="_blank">
-          <span>Поделиться результатом</span>
-          <span style="font-size: 20px;">✈️</span>
-        </a>
-        <button type="button" class="result-btn-primary" id="result-close-btn">Вернуться в меню</button>
-      </div>
-    </div>
+    </section>
   </div>
 
-  <!-- Card Info Modal (bottom-sheet popup) -->
-  <div class="card-info-modal" id="card-info-modal">
-    <div class="card-info-modal-card">
-      <div class="card-info-modal-header">
-        <div class="card-info-art-wrapper">
-          <img class="card-info-art" id="card-info-art" src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==" alt="">
-          <span class="card-info-art-fallback" id="card-info-art-fallback">⚔️</span>
-        </div>
-        <div class="card-info-header-text">
-          <h3 class="card-info-name" id="card-info-name">Название</h3>
-          <span class="card-info-level" id="card-info-level">Уровень 1</span>
-        </div>
-      </div>
-      <div class="card-info-stats-row">
-        <div class="card-info-stat attack">
-          <span class="card-info-stat-value" id="card-info-attack">0</span>
-          <span class="card-info-stat-label">Атака</span>
-        </div>
-        <div class="card-info-stat health">
-          <span class="card-info-stat-value" id="card-info-health">0</span>
-          <span class="card-info-stat-label">Здоровье</span>
-        </div>
-        <div class="card-info-stat mana">
-          <span class="card-info-stat-value" id="card-info-mana">0</span>
-          <span class="card-info-stat-label">Мана</span>
-        </div>
-      </div>
-      <div class="card-info-mechanics" id="card-info-mechanics"></div>
-      <p class="card-info-description" id="card-info-description">Нет описания.</p>
-    </div>
-  </div>
-  
   <!-- Arena Background Music -->
   <audio id="arena-bg-music" loop preload="auto">
     <source src="../DesignAssets/Arena/Sounds/arena_theme.wav" type="audio/wav">
   </audio>
+
+  <!-- Arena SFX -->
+  <audio id="arena-sfx-battle-start" preload="auto"><source src="../DesignAssets/Sounds/arena/battle_start.wav" type="audio/wav"></audio>
+  <audio id="arena-sfx-card-attacked" preload="auto"><source src="../DesignAssets/Sounds/arena/card_attacked.wav" type="audio/wav"></audio>
+  <audio id="arena-sfx-card-death" preload="auto"><source src="../DesignAssets/Sounds/arena/card_death.wav" type="audio/wav"></audio>
+  <audio id="arena-sfx-card-frozen" preload="auto"><source src="../DesignAssets/Sounds/arena/card_frozen.wav" type="audio/wav"></audio>
+  <audio id="arena-sfx-card-heal" preload="auto"><source src="../DesignAssets/Sounds/arena/card_heal.wav" type="audio/wav"></audio>
+  <audio id="arena-sfx-card-selected" preload="auto"><source src="../DesignAssets/Sounds/arena/card_selected.wav" type="audio/wav"></audio>
+  <audio id="arena-sfx-hero-damage" preload="auto"><source src="../DesignAssets/Sounds/arena/hero_damage.wav" type="audio/wav"></audio>
+  <audio id="arena-sfx-hero-death" preload="auto"><source src="../DesignAssets/Sounds/arena/hero_death.wav" type="audio/wav"></audio>
+  <audio id="arena-sfx-next-move" preload="auto"><source src="../DesignAssets/Sounds/arena/next_move_btn_pressed.wav" type="audio/wav"></audio>
   
   <!-- Scripts -->
   <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>

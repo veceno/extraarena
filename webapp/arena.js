@@ -19,6 +19,15 @@ let matchId = null;
 let userId = null;
 let authToken = null;
 let currentState = null;
+let socketJoined = false;
+let clientReadySent = false;
+let socketJoinRetryTimer = null;
+let prebattleRendered = false;
+let prebattleSequenceStarted = false;
+let prebattleComplete = false;
+let activeBattleModal = null;
+let pendingInitialBattleState = null;
+let arenaWaitingOverlay = null;
 
 // Для drag & drop
 let selectedCard = null;
@@ -28,7 +37,127 @@ let selectedAttacker = null;
 let previousPlayerHP = null;
 let previousOpponentHP = null;
 let previousUnitHPs = {}; // { instanceId: hp }
+let previousArenaSoundSnapshot = null;
+let previousArenaHapticSnapshot = null;
+let pendingArenaStateHaptic = null;
+let lastArenaHapticAt = 0;
+let arenaLastHapticKey = '';
 let currentTurnCount = 0;
+
+const ARENA_SFX = {
+  battleStart: 'arena-sfx-battle-start',
+  cardAttacked: 'arena-sfx-card-attacked',
+  cardDeath: 'arena-sfx-card-death',
+  cardFrozen: 'arena-sfx-card-frozen',
+  cardHeal: 'arena-sfx-card-heal',
+  cardSelected: 'arena-sfx-card-selected',
+  heroDamage: 'arena-sfx-hero-damage',
+  heroDeath: 'arena-sfx-hero-death',
+  nextMove: 'arena-sfx-next-move'
+};
+
+const SURRENDER_TROPHY_TIERS = [
+  { min: 0, max: 300, penalty: -7 },
+  { min: 301, max: 700, penalty: -10 },
+  { min: 701, max: 2500, penalty: -25 },
+  { min: 2501, max: 5000, penalty: -25 },
+  { min: 5001, max: 8000, penalty: -30 },
+  { min: 8001, max: 99999, penalty: -30 }
+];
+
+const ARENA_BAD_CONNECTION_THRESHOLD_MS = 1200;
+const ARENA_HEALTH_PING_INTERVAL_MS = 15000;
+const ARENA_CONNECTION_FAILURE_DELAY_MS = 10000;
+let arenaHealthInterval = null;
+let arenaHealthStopped = false;
+let arenaBadPingDismissed = false;
+let arenaConnectionIssueSince = null;
+let arenaConnectionIssueTimer = null;
+
+const ARENA_HAPTIC_PRIORITY = {
+  light: 1,
+  selection: 1,
+  success: 2,
+  medium: 3,
+  warning: 4,
+  heavy: 5,
+  error: 6
+};
+
+function isAndroidArenaShell() {
+  return !!(window.ExtraArenaApp && typeof window.ExtraArenaApp.haptic === 'function');
+}
+
+function arenaHaptic(style, options = {}) {
+  if (!isAndroidArenaShell()) return;
+  const normalized = style || 'light';
+  const key = options.key || normalized;
+  const minInterval = Number(options.minInterval ?? 55);
+  const now = Date.now();
+  if (key === arenaLastHapticKey && now - lastArenaHapticAt < minInterval) return;
+  arenaLastHapticKey = key;
+  lastArenaHapticAt = now;
+  try {
+    window.ExtraArenaApp.haptic(normalized);
+  } catch (e) {}
+}
+
+function queueArenaStateHaptic(style, reason) {
+  if (!style) return;
+  const nextPriority = ARENA_HAPTIC_PRIORITY[style] || 0;
+  const currentPriority = pendingArenaStateHaptic
+    ? (ARENA_HAPTIC_PRIORITY[pendingArenaStateHaptic.style] || 0)
+    : -1;
+  if (!pendingArenaStateHaptic || nextPriority >= currentPriority) {
+    pendingArenaStateHaptic = { style, reason: reason || style };
+  }
+}
+
+function flushArenaStateHaptic() {
+  if (!pendingArenaStateHaptic) return;
+  const effect = pendingArenaStateHaptic;
+  pendingArenaStateHaptic = null;
+  arenaHaptic(effect.style, { key: 'state-' + effect.reason, minInterval: 180 });
+}
+
+function recordArenaStateHaptic(playerState, opponentState) {
+  const next = createArenaSoundSnapshot(playerState, opponentState);
+  const prev = previousArenaHapticSnapshot;
+  previousArenaHapticSnapshot = next;
+  pendingArenaStateHaptic = null;
+
+  if (!prev) return;
+
+  if (next.playerHeroHp <= 0 && prev.playerHeroHp > 0) {
+    queueArenaStateHaptic('error', 'hero-death');
+  } else if (next.playerHeroHp < prev.playerHeroHp) {
+    queueArenaStateHaptic('heavy', 'hero-damage');
+  } else if (next.playerHeroHp > prev.playerHeroHp && next.playerHeroHp > 0) {
+    queueArenaStateHaptic('success', 'hero-heal');
+  }
+
+  Object.entries(prev.units).forEach(([id, oldUnit]) => {
+    if (oldUnit.side !== 'player') return;
+    if (!next.units[id] && oldUnit.hp > 0) {
+      queueArenaStateHaptic('heavy', 'card-death');
+    }
+  });
+
+  Object.entries(next.units).forEach(([id, newUnit]) => {
+    if (newUnit.side !== 'player') return;
+    const oldUnit = prev.units[id];
+    if (!oldUnit) return;
+    if (newUnit.hp <= 0 && oldUnit.hp > 0) {
+      queueArenaStateHaptic('heavy', 'card-death');
+    } else if (newUnit.hp < oldUnit.hp) {
+      queueArenaStateHaptic('medium', 'card-damage');
+    } else if (newUnit.hp > oldUnit.hp) {
+      queueArenaStateHaptic('success', 'card-heal');
+    }
+  });
+
+  flushArenaStateHaptic();
+}
 
 // ЕДИНЫЙ РЕЖИМ ВЗАИМОДЕЙСТВИЯ
 let interactionMode = {
@@ -49,8 +178,355 @@ let cachedLegalActions = [];
  * @returns {boolean}
  */
 function canPlayCard(handIndex) {
+  if (isArenaWaitingForPlayers(currentState)) return false;
   if (!cachedLegalActions || cachedLegalActions.length === 0) return true; // fallback
   return cachedLegalActions.some(a => a.type === 'play_card' && a.hand_index === handIndex);
+}
+
+function getClassicModeParams(state = currentState) {
+  return (state && state.mode_config && state.mode_config.classic) || {};
+}
+
+function getModeId(state = currentState) {
+  return (state && (state.game_mode || (state.mode_config && state.mode_config.mode_id))) || 'classic';
+}
+
+function isArenaWaitingForPlayers(state = currentState) {
+  return state && state.match_status === 'waiting_for_players';
+}
+
+function updateArenaWaitingOverlay(state = currentState) {
+  const waiting = isArenaWaitingForPlayers(state);
+  if (!waiting) {
+    if (arenaWaitingOverlay) arenaWaitingOverlay.style.display = 'none';
+    return;
+  }
+  if (!arenaWaitingOverlay) {
+    arenaWaitingOverlay = document.createElement('div');
+    arenaWaitingOverlay.id = 'arena-waiting-overlay';
+    arenaWaitingOverlay.style.cssText = 'position:fixed;inset:0;z-index:12500;background:rgba(5,3,14,.82);backdrop-filter:blur(10px);display:flex;align-items:center;justify-content:center;padding:22px;pointer-events:auto';
+    arenaWaitingOverlay.innerHTML = ''
+      + '<section style="width:100%;max-width:360px;border-radius:18px;padding:22px 18px;background:linear-gradient(180deg,rgba(27,17,48,.98),rgba(13,8,27,.98));border:1px solid rgba(124,92,191,.45);box-shadow:0 24px 80px rgba(0,0,0,.58);text-align:center">'
+      + '<div style="width:46px;height:46px;margin:0 auto 14px;border-radius:50%;border:3px solid rgba(245,146,30,.22);border-top-color:#f5921e;animation:spin .9s linear infinite"></div>'
+      + '<h2 style="margin:0 0 8px;color:#fff;font:1000 22px/1.1 sans-serif">Ждем соперника</h2>'
+      + '<p style="margin:0;color:#c9c1d9;font:600 13px/1.45 sans-serif">Бой начнется, когда оба игрока загрузят арену.</p>'
+      + '</section>';
+    document.body.appendChild(arenaWaitingOverlay);
+  }
+  arenaWaitingOverlay.style.display = 'flex';
+}
+
+function getPrebattleModeLabel(state = currentState) {
+  const modeId = String(getModeId(state) || 'classic').toLowerCase();
+  if (modeId === 'classic' || modeId.includes('classic')) return 'classic';
+  if (modeId.includes('extra_arena') || modeId.includes('extraarena')) return 'extraarena';
+  return modeId.replace(/[_\s-]+/g, '');
+}
+
+function isPotionCard(card) {
+  return (card && String(card.card_type || '').toLowerCase() === 'potion');
+}
+
+function getRawManaCost(card) {
+  const raw = card && (card.mana ?? card.mana_cost ?? 0);
+  const parsed = parseInt(raw, 10);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function getEffectiveManaCost(card, state = currentState) {
+  const classic = getClassicModeParams(state);
+  if (classic.spells_free === true && isPotionCard(card)) return 0;
+  return getRawManaCost(card);
+}
+
+function hasEnoughManaForCard(card, state = currentState) {
+  const playerMana = Number(state?.player?.mana ?? 0);
+  return getEffectiveManaCost(card, state) <= playerMana;
+}
+
+function isPowerMaxMode(state = currentState) {
+  return getClassicModeParams(state).card_level_mode === 'max';
+}
+
+function isSummonReadyMode(state = currentState) {
+  return getClassicModeParams(state).summon_ready_on_play === true;
+}
+
+function getModeUiMeta(state = currentState) {
+  const modeId = getModeId(state);
+  const classic = getClassicModeParams(state);
+  if (classic.card_level_mode === 'max' || modeId.includes('powermax')) {
+    return { key: 'powermax', icon: '10', label: 'PowerMax', title: 'Все карты максимального уровня' };
+  }
+  if (classic.spells_free === true || modeId.includes('spellstorm')) {
+    return { key: 'spellstorm', icon: '0', label: 'SpellStorm', title: 'Заклинания бесплатные' };
+  }
+  if (classic.summon_ready_on_play === true || modeId.includes('blitzkrieg')) {
+    return { key: 'blitzkrieg', icon: '⚡', label: 'Blitzkrieg', title: 'Существа готовы после выставления' };
+  }
+  if (classic.sudden_death_enabled === true || modeId.includes('sudden_death')) {
+    return { key: 'sudden-death', icon: '-HP', label: 'Sudden Death', title: 'Герой теряет здоровье в начале своих ходов' };
+  }
+  if (modeId && modeId !== 'classic') {
+    const label = state?.mode_config?.label || modeId;
+    return { key: 'generic', icon: '✦', label: label.replace('ExtraArena ', ''), title: label };
+  }
+  return null;
+}
+
+function formatCompactNumber(value) {
+  const parsed = parseInt(value, 10);
+  if (!Number.isFinite(parsed)) return '0';
+  return parsed.toLocaleString('ru-RU');
+}
+
+function firstLetter(value, fallback) {
+  const text = String(value || fallback || '?').trim();
+  return (text.charAt(0) || '?').toUpperCase();
+}
+
+function setText(id, value) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = value == null ? '' : String(value);
+}
+
+function setOptionalImage(imgId, wrapperSelector, url) {
+  const img = document.getElementById(imgId);
+  const wrapper = img ? img.closest(wrapperSelector) : null;
+  if (!img || !wrapper) return;
+  const hasUrl = Boolean(url);
+  wrapper.classList.toggle('has-image', hasUrl);
+  if (hasUrl) img.src = url;
+  else img.removeAttribute('src');
+}
+
+function playArenaSfx(name, options = {}) {
+  if (window._sfxEnabled === false) return;
+  const audioId = ARENA_SFX[name] || name;
+  const baseAudio = document.getElementById(audioId);
+  if (!baseAudio) return;
+
+  const volume = options.volume ?? 0.72;
+  const audio = baseAudio.paused ? baseAudio : baseAudio.cloneNode(true);
+  audio.volume = volume;
+
+  if (audio !== baseAudio) {
+    audio.addEventListener('ended', () => audio.remove(), { once: true });
+    document.body.appendChild(audio);
+  }
+
+  try {
+    audio.currentTime = 0;
+  } catch (e) {}
+
+  audio.play().catch(err => {
+    console.warn('[ARENA] Не удалось проиграть SFX:', audioId, err);
+    if (audio !== baseAudio) audio.remove();
+  });
+}
+
+function primeArenaSfx() {
+  Object.values(ARENA_SFX).forEach(id => {
+    const audio = document.getElementById(id);
+    if (!audio) return;
+    try { audio.load(); } catch (e) {}
+  });
+}
+
+function initArenaSfx() {
+  window.playArenaSfx = playArenaSfx;
+  primeArenaSfx();
+  const unlock = () => {
+    primeArenaSfx();
+    document.removeEventListener('pointerdown', unlock);
+    document.removeEventListener('touchstart', unlock);
+  };
+  document.addEventListener('pointerdown', unlock, { once: true, passive: true });
+  document.addEventListener('touchstart', unlock, { once: true, passive: true });
+}
+
+function getModifierLabel(state) {
+  const modeId = String(getModeId(state) || '').toLowerCase();
+  const classic = getClassicModeParams(state);
+  const modifiers = [];
+  if (classic.card_level_mode === 'max' || modeId.includes('powermax')) modifiers.push('PowerMax');
+  if (classic.spells_free === true || modeId.includes('spellstorm')) modifiers.push('SpellStorm');
+  if (classic.summon_ready_on_play === true || modeId.includes('blitzkrieg')) modifiers.push('Blitzkrieg');
+  if (classic.sudden_death_enabled === true || modeId.includes('sudden_death')) modifiers.push('SuddenDeath');
+  return modifiers.length > 0 ? modifiers.join(' · ') : 'Без модификаторов';
+}
+
+function renderPrebattleProfile(prefix, profile, fallbackName) {
+  const name = profile?.name || fallbackName;
+  const title = profile?.title || '';
+  const clan = profile?.clan || '';
+  const titleRarity = String(profile?.title_rarity || profile?.rarity || '').toLowerCase();
+  setText('prebattle-' + prefix + '-name', name);
+  setText('prebattle-' + prefix + '-clan', clan);
+  setText('prebattle-' + prefix + '-trophies', formatCompactNumber(profile?.trophies));
+  setText('prebattle-' + prefix + '-letter', firstLetter(name, fallbackName));
+  setText('prebattle-' + prefix + '-bg-fallback', firstLetter(name, fallbackName));
+  setOptionalImage('prebattle-' + prefix + '-avatar', '.prebattle-avatar', profile?.avatar_url);
+  setOptionalImage('prebattle-' + prefix + '-bg', '.prebattle-profile-bg', profile?.background_url);
+
+  const titleEl = document.getElementById('prebattle-' + prefix + '-title');
+  if (titleEl) {
+    titleEl.textContent = title;
+    titleEl.className = 'prebattle-title-tag';
+    if (title) {
+      titleEl.classList.add('has-title');
+      if (titleRarity === 'mythic' || titleRarity === 'mythical') titleEl.classList.add('title-mythical');
+      else if (titleRarity === 'limited') titleEl.classList.add('title-limited');
+    }
+  }
+}
+
+function renderPrebattleScreen(state) {
+  const screen = document.getElementById('prebattle-screen');
+  if (!screen || !state) return;
+
+  const opponent = state.opponent || {};
+  setText('prebattle-mode-label', getPrebattleModeLabel(state));
+  setText('prebattle-modifier-label', getModifierLabel(state));
+  renderPrebattleProfile('opponent', opponent, 'Оппонент');
+  setText('prebattle-status-text', 'Противник найден');
+  screen.setAttribute('aria-hidden', 'false');
+  screen.classList.remove('is-hidden');
+  prebattleRendered = true;
+}
+
+function hidePrebattleScreen() {
+  const screen = document.getElementById('prebattle-screen');
+  if (!screen) return;
+  screen.setAttribute('aria-hidden', 'true');
+  screen.classList.add('is-hidden');
+}
+
+function playCountdownValue(value, isVs) {
+  const el = document.getElementById('countdown-value');
+  if (!el) return Promise.resolve();
+  if (isVs) {
+    arenaHaptic('heavy', { key: 'countdown-vs', minInterval: 240 });
+  } else {
+    arenaHaptic('selection', { key: 'countdown-' + value, minInterval: 240 });
+  }
+  el.textContent = value;
+  el.classList.toggle('is-vs', Boolean(isVs));
+  el.classList.remove('is-swapping');
+  void el.offsetWidth;
+  el.classList.add('is-swapping');
+  return new Promise(resolve => setTimeout(resolve, isVs ? 950 : 1050));
+}
+
+async function startPrebattleSequence() {
+  if (prebattleSequenceStarted) return;
+  prebattleSequenceStarted = true;
+  const screen = document.getElementById('prebattle-screen');
+  if (screen) {
+    screen.setAttribute('aria-hidden', 'false');
+    screen.classList.remove('is-hidden');
+  }
+  try {
+    await playCountdownValue('3', false);
+    await playCountdownValue('2', false);
+    await playCountdownValue('1', false);
+    playArenaSfx('battleStart', { volume: 0.85 });
+    await playCountdownValue('VS', true);
+  } finally {
+    prebattleComplete = true;
+    if (pendingInitialBattleState) {
+      const stateToRender = pendingInitialBattleState;
+      pendingInitialBattleState = null;
+      renderBattleState(stateToRender);
+    }
+    hidePrebattleScreen();
+    trySendClientReady();
+  }
+}
+
+function trySendClientReady() {
+  if (clientReadySent || !socket || !socket.connected || !socketJoined || !prebattleComplete) return;
+  clientReadySent = true;
+  console.log('[SOCKET.IO] Отправка сигнала client_ready после prebattle...');
+  socket.emit('client_ready', { match_id: matchId });
+}
+
+function getArenaHeroHp(playerState) {
+  const hp = playerState?.hero?.hp ?? playerState?.hp ?? 30;
+  return Math.max(0, Number(hp) || 0);
+}
+
+function getArenaCardHp(card) {
+  const hp = card?.hp ?? card?.hp_current ?? card?.health ?? 0;
+  return Math.max(0, Number(hp) || 0);
+}
+
+function getArenaCardId(card) {
+  const id = card?.instance_id ?? card?.id ?? card?.card_id;
+  return id == null ? null : String(id);
+}
+
+function createArenaSoundSnapshot(playerState, opponentState) {
+  const units = {};
+  [
+    ['player', playerState?.board || []],
+    ['opponent', opponentState?.board || []]
+  ].forEach(([side, board]) => {
+    board.forEach(card => {
+      const id = getArenaCardId(card);
+      if (!id) return;
+      units[id] = {
+        hp: getArenaCardHp(card),
+        frozen: card.is_frozen === true,
+        side
+      };
+    });
+  });
+
+  return {
+    playerHeroHp: getArenaHeroHp(playerState),
+    opponentHeroHp: getArenaHeroHp(opponentState),
+    units
+  };
+}
+
+function playHeroHpSfx(prevHp, nextHp) {
+  if (nextHp < prevHp) {
+    playArenaSfx(nextHp <= 0 ? 'heroDeath' : 'heroDamage');
+  } else if (nextHp > prevHp && nextHp > 0) {
+    playArenaSfx('cardHeal');
+  }
+}
+
+function processArenaStateSfx(playerState, opponentState) {
+  recordArenaStateHaptic(playerState, opponentState);
+  const next = createArenaSoundSnapshot(playerState, opponentState);
+  const prev = previousArenaSoundSnapshot;
+  previousArenaSoundSnapshot = next;
+
+  if (!prev) return;
+
+  playHeroHpSfx(prev.playerHeroHp, next.playerHeroHp);
+  playHeroHpSfx(prev.opponentHeroHp, next.opponentHeroHp);
+
+  Object.entries(prev.units).forEach(([id, oldUnit]) => {
+    if (!next.units[id] && oldUnit.hp > 0) {
+      playArenaSfx('cardDeath');
+    }
+  });
+
+  Object.entries(next.units).forEach(([id, newUnit]) => {
+    const oldUnit = prev.units[id];
+    if (!oldUnit) return;
+    if (newUnit.hp < oldUnit.hp) {
+      playArenaSfx(newUnit.hp <= 0 ? 'cardDeath' : 'cardAttacked');
+    } else if (newUnit.hp > oldUnit.hp) {
+      playArenaSfx('cardHeal');
+    }
+    if (!oldUnit.frozen && newUnit.frozen) {
+      playArenaSfx('cardFrozen');
+    }
+  });
 }
 
 /**
@@ -69,6 +545,7 @@ function getPlayCardTargets(handIndex) {
  * @returns {boolean}
  */
 function canAttack(instanceId) {
+  if (isArenaWaitingForPlayers(currentState)) return false;
   // ИСПРАВЛЕНО: Доверяем свойству can_attack самого юнита, 
   // так как legal_actions могут запаздывать или быть неполными
   const board = currentState?.player?.board || currentState?.player1_board || currentState?.player2_board || [];
@@ -105,12 +582,239 @@ function isValidAttackTarget(targetId, isHero) {
   });
 }
 
+function buildArenaAuthUrl(path) {
+  if (!authToken) return path;
+  const separator = path.includes('?') ? '&' : '?';
+  return path + separator + '_auth=' + encodeURIComponent(authToken);
+}
+
+function arenaFetchWithTimeout(url, options = {}, timeoutMs = 6500) {
+  if (!window.AbortController) return fetch(url, options);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  return fetch(url, {...options, signal: controller.signal}).finally(() => clearTimeout(timer));
+}
+
+function makeClientActionId(prefix) {
+  const randomPart = window.crypto?.randomUUID ? window.crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return `${prefix}-${matchId || 'match'}-${randomPart}`;
+}
+
+async function parseActionError(response, fallbackMessage) {
+  let payload = {};
+  try {
+    payload = await response.json();
+  } catch (error) {
+    payload = {};
+  }
+  if (payload.state) {
+    handleStateChanged({state: payload.state});
+  }
+  return new Error(payload.error || payload.message || fallbackMessage);
+}
+
+function isArenaAndroidShell() {
+  return new URLSearchParams(location.search).get('ea_platform') === 'android_app' || !!window.ExtraArenaApp;
+}
+
+async function shareArenaResult(text, url, title) {
+  const cleanText = String(text || '').trim();
+  const cleanUrl = String(url || 'https://t.me/extraarena_bot').trim();
+  const cleanTitle = String(title || 'ExtraArena').trim();
+  if (!cleanText && !cleanUrl) return false;
+
+  try {
+    if (isArenaAndroidShell() && window.ExtraArenaApp && typeof window.ExtraArenaApp.shareText === 'function') {
+      window.ExtraArenaApp.shareText(cleanText, cleanUrl, cleanTitle);
+      return true;
+    }
+  } catch (_) {}
+
+  const shareUrl = `https://t.me/share/url?url=${encodeURIComponent(cleanUrl)}&text=${encodeURIComponent(cleanText)}`;
+  const tg = window.Telegram?.WebApp;
+  if (tg?.openTelegramLink) {
+    tg.openTelegramLink(shareUrl);
+    return true;
+  }
+
+  try {
+    if (navigator.share) {
+      await navigator.share({title: cleanTitle, text: cleanText, url: cleanUrl});
+      return true;
+    }
+  } catch (_) {}
+
+  window.open(shareUrl, '_blank', 'noopener,noreferrer');
+  return true;
+}
+
+window.shareExtraArena = shareArenaResult;
+
+function arenaMaintenanceBlocks(data) {
+  return !!(data && data.maintenance_mode && data.maintenance_mode.enabled)
+    && (!data.is_admin || isArenaAndroidShell());
+}
+
+function ensureArenaHealthRoot() {
+  let root = document.getElementById('arena-health-root');
+  if (root) return root;
+  root = document.createElement('div');
+  root.id = 'arena-health-root';
+  document.body.appendChild(root);
+  return root;
+}
+
+function hideArenaBadConnection() {
+  const banner = document.getElementById('arena-bad-connection-banner');
+  if (banner) banner.remove();
+}
+
+function showArenaBadConnection(latency) {
+  if (arenaBadPingDismissed || arenaHealthStopped || document.getElementById('arena-connection-modal')) return;
+  const root = ensureArenaHealthRoot();
+  let banner = document.getElementById('arena-bad-connection-banner');
+  if (!banner) {
+    banner = document.createElement('button');
+    banner.id = 'arena-bad-connection-banner';
+    banner.type = 'button';
+    banner.style.cssText = [
+      'position:fixed',
+      'top:calc(10px + var(--ea-safe-top,0px))',
+      'left:50%',
+      'transform:translateX(-50%)',
+      'z-index:12000',
+      'min-height:32px',
+      'padding:6px 11px',
+      'border-radius:999px',
+      'border:1px solid rgba(251,191,36,.42)',
+      'background:linear-gradient(135deg,rgba(54,38,12,.96),rgba(33,23,9,.94))',
+      'box-shadow:0 8px 26px rgba(0,0,0,.38)',
+      'display:flex',
+      'align-items:center',
+      'gap:8px',
+      'color:#fde68a',
+      'font:900 11px "Exo 2",sans-serif',
+      'cursor:pointer'
+    ].join(';');
+    banner.addEventListener('click', () => {
+      arenaBadPingDismissed = true;
+      hideArenaBadConnection();
+    });
+    root.appendChild(banner);
+  }
+  banner.innerHTML = '<span style="display:inline-flex;align-items:flex-end;gap:2px;height:14px"><i style="width:4px;height:6px;border-radius:4px;background:#fbbf24"></i><i style="width:4px;height:9px;border-radius:4px;background:#fbbf24"></i><i style="width:4px;height:13px;border-radius:4px;background:#f59e0b;opacity:.55"></i></span><span>Плохое соединение</span><span style="color:rgba(253,230,138,.66);font-size:10px">' + Math.round(latency) + ' мс</span>';
+}
+
+function clearArenaConnectionIssue() {
+  arenaConnectionIssueSince = null;
+  if (arenaConnectionIssueTimer) {
+    clearTimeout(arenaConnectionIssueTimer);
+    arenaConnectionIssueTimer = null;
+  }
+}
+
+function showArenaConnectionModal(message) {
+  stopArenaHealthPing();
+  hideArenaBadConnection();
+  const root = ensureArenaHealthRoot();
+  if (document.getElementById('arena-connection-modal')) return;
+  const modal = document.createElement('div');
+  modal.id = 'arena-connection-modal';
+  modal.style.cssText = 'position:fixed;inset:0;z-index:13000;background:radial-gradient(circle at 50% 22%,rgba(124,92,191,.28),transparent 34%),rgba(5,3,14,.84);backdrop-filter:blur(12px);display:flex;align-items:center;justify-content:center;padding:22px';
+  modal.innerHTML = ''
+    + '<div style="width:100%;max-width:360px;border-radius:24px;padding:1px;background:linear-gradient(135deg,#ffb4ab,rgba(124,92,191,.44),rgba(45,212,191,.34));box-shadow:0 24px 80px rgba(0,0,0,.66)">'
+    + '<section style="border-radius:23px;padding:22px 18px 18px;background:linear-gradient(180deg,rgba(26,16,48,.98),rgba(13,8,27,.98));border:1px solid rgba(255,255,255,.06);text-align:center">'
+    + '<div style="width:72px;height:72px;border-radius:22px;margin:0 auto 14px;background:linear-gradient(135deg,#f5921e,#7c5cbf);display:grid;place-items:center;box-shadow:0 0 34px rgba(245,146,30,.32)">'
+    + '<svg width="38" height="38" viewBox="0 0 38 38" fill="none"><path d="M19 5.5a13.5 13.5 0 1 0 0 27 13.5 13.5 0 0 0 0-27Z" stroke="white" stroke-width="3" opacity=".92"/><path d="M19 12v8l5 3" stroke="white" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+    + '</div>'
+    + "<h2 style=\"margin:0;color:#f0ecff;font:1000 24px/1.05 'Exo 2',sans-serif\">Соединение разорвано</h2>"
+    + '<p style="margin:10px auto 18px;color:#c4b8e8;font:13px/1.55 Inter,sans-serif;max-width:300px">' + message + '</p>'
+    + "<button type=\"button\" id=\"arena-connection-restart\" style=\"width:100%;height:50px;border:0;border-radius:15px;background:linear-gradient(135deg,#f5921e,#d97510);color:#201005;font:1000 16px 'Exo 2',sans-serif;cursor:pointer;box-shadow:0 12px 30px rgba(245,146,30,.32)\">Перезапустить</button>"
+    + '</section></div>';
+  root.appendChild(modal);
+  document.getElementById('arena-connection-restart')?.addEventListener('click', () => {
+    window.location.replace('/');
+  });
+}
+
+function markArenaConnectionFailure() {
+  if (document.getElementById('arena-connection-modal')) return;
+  const now = Date.now();
+  if (!arenaConnectionIssueSince) {
+    arenaConnectionIssueSince = now;
+  }
+  const remaining = Math.max(0, ARENA_CONNECTION_FAILURE_DELAY_MS - (now - arenaConnectionIssueSince));
+  if (arenaConnectionIssueTimer) clearTimeout(arenaConnectionIssueTimer);
+  arenaConnectionIssueTimer = setTimeout(() => {
+    showArenaConnectionModal('Похоже, связь с ареной пропала или сервер временно недоступен. Перезапусти клиент, чтобы восстановить подключение.');
+  }, remaining);
+}
+
+function stopArenaHealthPing() {
+  arenaHealthStopped = true;
+  if (arenaHealthInterval) {
+    clearInterval(arenaHealthInterval);
+    arenaHealthInterval = null;
+  }
+  clearArenaConnectionIssue();
+}
+
+function startArenaHealthMonitor() {
+  if (arenaHealthInterval || arenaHealthStopped || !authToken) return;
+
+  const ping = async () => {
+    if (document.hidden || arenaHealthStopped) return;
+    const startedAt = performance.now();
+    try {
+      const runtimeUrl = buildArenaAuthUrl('/api/runtime/status');
+      const pingUrl = runtimeUrl + (runtimeUrl.includes('?') ? '&' : '?') + 'ea_ping_ts=' + Date.now();
+      const response = await arenaFetchWithTimeout(pingUrl, {cache:'no-store'});
+      const latency = Math.round(performance.now() - startedAt);
+      let data = null;
+      try { data = await response.json(); } catch (_) {}
+
+      if (response.ok) {
+        clearArenaConnectionIssue();
+        if (arenaMaintenanceBlocks(data)) {
+          showArenaConnectionModal('На сервере включили технические работы. Перезапусти клиент, чтобы открыть экран обслуживания.');
+          return;
+        }
+        if (latency > ARENA_BAD_CONNECTION_THRESHOLD_MS) showArenaBadConnection(latency);
+        else hideArenaBadConnection();
+        return;
+      }
+
+      if (response.status === 503 && data?.error === 'maintenance_mode') {
+        showArenaConnectionModal('Сервер перешел в режим технических работ. Перезапусти клиент, чтобы открыть экран обслуживания.');
+        return;
+      }
+
+      markArenaConnectionFailure();
+    } catch (_) {
+      markArenaConnectionFailure();
+    }
+  };
+
+  ping();
+  arenaHealthInterval = setInterval(ping, ARENA_HEALTH_PING_INTERVAL_MS);
+}
+
 // ============================================
 // ИНИЦИАЛИЗАЦИЯ
 // ============================================
 
 document.addEventListener('DOMContentLoaded', () => {
   console.log('[ARENA] Страница арены загружена');
+
+  const tg = window.Telegram?.WebApp;
+  if (tg) {
+    try { tg.ready(); } catch (e) {}
+    try { tg.expand(); } catch (e) {}
+    try { tg.setHeaderColor?.('#0f0a1a'); } catch (e) {}
+    try { tg.setBackgroundColor?.('#0f0a1a'); } catch (e) {}
+    try { tg.setBottomBarColor?.('#0f0a1a'); } catch (e) {}
+    window.ExtraArenaSafeArea?.sync?.();
+  }
   
   // Извлекаем параметры из URL
   const urlParams = new URLSearchParams(window.location.search);
@@ -137,9 +841,10 @@ document.addEventListener('DOMContentLoaded', () => {
     return;
   }
   
-  // Инициализируем Socket.IO и загружаем состояние
-  initSocketIO();
-  loadBattleState();
+  // Сначала грузим состояние: это дает серверу шанс лениво создать BattleEngine
+  // до входа Socket.IO в комнату матча.
+  loadBattleState().finally(() => initSocketIO());
+  startArenaHealthMonitor();
   
   // Привязываем обработчики UI
   bindUIHandlers();
@@ -164,12 +869,8 @@ function initSocketIO() {
   
   socket.on('connect', () => {
     console.log('[SOCKET.IO] Подключено! Socket ID:', socket.id);
-    
-    // Входим в комнату матча
-    socket.emit('join_match', {
-      match_id: matchId,
-      _auth: authToken
-    });
+    clearArenaConnectionIssue();
+    emitJoinMatch();
     
     // ВАЖНО: НЕ отправляем client_ready здесь
     // Сигнал будет отправлен после успешной загрузки состояния боя в loadBattleState()
@@ -177,25 +878,50 @@ function initSocketIO() {
   
   socket.on('disconnect', (reason) => {
     console.warn('[SOCKET.IO] Отключено:', reason);
+    markArenaConnectionFailure();
+  });
+
+  socket.on('connect_error', (error) => {
+    console.warn('[SOCKET.IO] Ошибка подключения:', error);
+    markArenaConnectionFailure();
+  });
+
+  socket.io.on('reconnect_failed', () => {
+    console.warn('[SOCKET.IO] Не удалось переподключиться');
+    markArenaConnectionFailure();
   });
   
   socket.on('error', (error) => {
     console.error('[SOCKET.IO] Ошибка:', error);
+    const message = error && (error.message || error.error || error);
+    if (!socketJoined && message === 'match_not_found') {
+      scheduleJoinRetry();
+    }
   });
   
   socket.on('joined_match', (data) => {
     console.log('[SOCKET.IO] Вступили в матч:', data);
+    socketJoined = true;
+    if (socketJoinRetryTimer) {
+      clearTimeout(socketJoinRetryTimer);
+      socketJoinRetryTimer = null;
+    }
     
-    // КРИТИЧНО: Сразу после входа в комнату отправляем сигнал готовности
-    // Это позволяет серверу запустить бота (если он ходит первым)
-    console.log('[SOCKET.IO] Отправка сигнала client_ready...');
-    socket.emit('client_ready', {
-      match_id: matchId
-    });
+    trySendClientReady();
   });
   
   socket.on('client_ready_ack', (data) => {
     console.log('[SOCKET.IO] Подтверждение готовности клиента получено:', data);
+  });
+
+  socket.on('match_waiting', (data) => {
+    console.log('[SOCKET.IO] match_waiting получено:', data);
+    handleStateChanged(data);
+  });
+
+  socket.on('match_ready', (data) => {
+    console.log('[SOCKET.IO] match_ready получено:', data);
+    handleStateChanged(data);
   });
   
   // События боя
@@ -219,10 +945,11 @@ function initSocketIO() {
   socket.on('turn_start', (data) => {
     console.log('[SOCKET.IO] turn_start получено:', data);
     
-    // КРИТИЧНО: Принудительно сбрасываем таймер на 25 секунд
+    // КРИТИЧНО: Принудительно сбрасываем таймер на длительность текущего режима
     const timerText = document.getElementById('turn-timer-text');
     if (timerText) {
-      timerText.textContent = '25';
+      const state = data.state || data.state_p1 || currentState || {};
+      timerText.textContent = String(Math.ceil(state.turn_duration || getClassicModeParams(state).turn_duration_seconds || 25));
     }
     
     handleStateChanged(data);
@@ -274,6 +1001,26 @@ function initSocketIO() {
    // Очищаем кеш результата при старте нового матча
   window.__battleResultEconomy = null;
   window.__resultModalShown = false;
+}
+
+function emitJoinMatch() {
+  if (!socket || !socket.connected || socketJoined) return;
+  socket.emit('join_match', {
+    match_id: matchId,
+    _auth: authToken
+  });
+}
+
+function scheduleJoinRetry() {
+  if (socketJoinRetryTimer) return;
+  socketJoinRetryTimer = setTimeout(async () => {
+    socketJoinRetryTimer = null;
+    try {
+      await loadBattleState();
+    } finally {
+      emitJoinMatch();
+    }
+  }, 1000);
 }
 
 // ── Helpers для безопасного мержа экономики результата ──
@@ -343,18 +1090,36 @@ function handleStateChanged(eventData) {
     console.warn('[ARENA] state_changed получено без state');
     return;
   }
+
+  if (newState.viewer_id != null && userId != null && String(newState.viewer_id) !== String(userId)) {
+    console.warn('[ARENA] Игнорируем state для другого viewer_id:', newState.viewer_id, 'current:', userId);
+    return;
+  }
+  if (!userId && newState.viewer_id != null) {
+    userId = newState.viewer_id;
+  }
   
-  // ДОБАВЛЕНО: Подробное логирование для отслеживания изменений HP
+  // ДОБАВЛЕНО: Подробное логирование для отслеживания изменений здоровья
   console.log('[ARENA] Обновление состояния:', newState);
-  console.log('[ARENA] 🔍 HP tracking:');
-  console.log('  - Player 1 HP:', newState.player1_hp || newState.player?.hp || '???');
-  console.log('  - Player 2 HP:', newState.player2_hp || newState.opponent?.hp || '???');
+  console.log('[ARENA] 🔍 здоровья tracking:');
+  console.log('  - Player 1 здоровья:', newState.player1_hp || newState.player?.hp || '???');
+  console.log('  - Player 2 здоровья:', newState.player2_hp || newState.opponent?.hp || '???');
   console.log('  - Current player:', newState.current_player_id);
   console.log('  - Is my turn:', newState.is_my_turn);
   console.log('  - Turn:', newState.turn);
   console.log('  - Player mana:', newState.player?.mana, '/', newState.player?.max_mana);
   console.log('  - Opponent mana:', newState.opponent?.mana, '/', newState.opponent?.max_mana);
   console.log(`[ARENA] ⏰ TIMER: turn_time_remaining=${newState.turn_time_remaining}, turn_duration=${newState.turn_duration}`);
+
+  if (!prebattleComplete) {
+    currentState = newState;
+    pendingInitialBattleState = newState;
+    if (!prebattleRendered) {
+      renderPrebattleScreen(newState);
+    }
+    startPrebattleSequence();
+    return;
+  }
   
   // ИСПРАВЛЕНО: Принудительный сброс таймера при смене хода
   // Проверяем, изменился ли номер хода - если да, обновляем таймер принудительно
@@ -395,7 +1160,16 @@ async function loadBattleState() {
     console.log('[ARENA] Состояние боя загружено:', state);
     
     currentState = state;
-    renderBattleState(state);
+    pendingInitialBattleState = state;
+    if (!prebattleRendered) {
+      renderPrebattleScreen(state);
+    }
+    if (!prebattleComplete) {
+      startPrebattleSequence();
+    } else {
+      pendingInitialBattleState = null;
+      renderBattleState(state);
+    }
     
   } catch (error) {
     console.error('[ARENA] Ошибка загрузки состояния боя:', error);
@@ -434,14 +1208,19 @@ function renderBattleState(state) {
     console.log('[ARENA] Identity derived from server: userId =', userId);
   }
 
+  const waitingForPlayers = isArenaWaitingForPlayers(state);
+  updateArenaWaitingOverlay(state);
+
   // КРИТИЧНО: Кешируем legal_actions для использования в рендеринге
-  cachedLegalActions = state.legal_actions || [];
+  cachedLegalActions = waitingForPlayers ? [] : (state.legal_actions || []);
   console.log('[ARENA] 📋 Legal actions:', cachedLegalActions.length, 'доступных действий');
+  applyModeUi(state);
 
   const userIdNum = Number(userId);
 
   // Используем server-authoritative is_my_turn
-  const isMyTurn = Boolean(state.is_my_turn);
+  const isMyTurn = Boolean(state.is_my_turn) && !waitingForPlayers;
+  state.is_my_turn = isMyTurn;
   
   // Определяем, кто игрок, а кто оппонент
   const playerState = state.player || (state.player_ids && state.player_ids[0] == userIdNum ? state : null);
@@ -505,14 +1284,17 @@ function renderBattleState(state) {
   // Сохраняем извлечённый оппонент в модульную переменную для openOpponentInfo
   window.__arenaOpponentState = opponentStateData;
   
-  // КРИТИЧНО: Логируем HP при каждом обновлении для отслеживания изменений
-  console.log('[ARENA] 💚 HP TRACKING: Мой HP =', myState.hp, '| Оппонент HP =', opponentStateData.hp);
+  // КРИТИЧНО: Логируем здоровья при каждом обновлении для отслеживания изменений
+  console.log('[ARENA] 💚 здоровья TRACKING: Мой здоровья =', myState.hp, '| Оппонент здоровья =', opponentStateData.hp);
   console.log('[ARENA] Мой state:', myState);
   console.log('[ARENA] Оппонент state:', opponentStateData);
+
+  processArenaStateSfx(myState, opponentStateData);
   
   // Рендерим панели
   renderPlayerPanel(myState);
   renderOpponentPanel(opponentStateData);
+  renderSuddenDeathBadges(state);
   
   // Сохраняем номер хода
   currentTurnCount = state.turn || 0;
@@ -551,8 +1333,8 @@ function renderBattleState(state) {
     console.log('[ARENA] 🏁 Игра завершена через state_changed, показываем финальный экран');
     
     // Извлекаем данные о победителе
-    const winnerId = state.winner_id || state.winner;
-    const isWinner = String(winnerId) === String(userId);
+    const winnerId = state.winner_id ?? state.winner ?? null;
+    const outcome = winnerId == null ? 'draw' : (String(winnerId) === String(userId) ? 'victory' : 'defeat');
     
     // Пытаемся достать экономику из кеша (game_over мог прийти раньше)
     const cached = _readEconomyFromCache();
@@ -583,12 +1365,12 @@ function renderBattleState(state) {
     }
     
     console.log('[ARENA] 🎯 Результат игры (state_changed):', { 
-      isWinner, winnerId, trophyDelta, trophyTotal, coinsDelta, coinsTotal, starsDelta, starsTotal, leagueUp
+      outcome, winnerId, trophyDelta, trophyTotal, coinsDelta, coinsTotal, starsDelta, starsTotal, leagueUp
     });
     
     // Показываем экран результата с задержкой для драматического эффекта
     setTimeout(() => {
-      showBattleResult(isWinner, trophyDelta, trophyTotal, coinsDelta, coinsTotal, starsDelta, starsTotal);
+      showBattleResult(outcome, trophyDelta, trophyTotal, coinsDelta, coinsTotal, starsDelta, starsTotal);
     }, 1200);
   }
 }
@@ -601,64 +1383,176 @@ function updateBattleLog(history) {
   const logRows = document.getElementById('battle-log-rows');
   if (!logRows) return;
 
-  // Очищаем лог
   logRows.innerHTML = '';
+  setText('battle-log-meta', 'Ход ' + (currentState?.turn || currentTurnCount || 0));
   
-  // Если история пуста, добавляем системную заглушку
   if (!history || history.length === 0) {
-    const row = document.createElement('div');
-    row.className = 'log-row';
-    row.innerHTML = '<span class="log-dot system"></span><span>Бой начался</span>';
-    logRows.appendChild(row);
+    logRows.appendChild(createLogGroup('События', 'system', [{ type: 'system', text: 'Бой начался' }]));
     return;
   }
 
-  // Берем все записи и рендерим (бэкенд уже ограничивает до 100)
-  // history может быть массивом строк или массивом [type, text]
-  const lastEntries = history.slice().reverse();
-  
-  lastEntries.forEach(entry => {
-    let type = 'system';
-    let text = '';
-    
-    if (Array.isArray(entry)) {
-      [type, text] = entry;
-    } else if (typeof entry === 'object') {
-      type = entry.type || 'system';
-      text = entry.text || '';
-    } else {
-      // Фолбэк для строк: пытаемся определить тип по содержанию или ставим system
-      text = entry;
-      if (text.includes('Вы ') || text.includes('Ваш')) type = 'player';
-      else if (text.includes('Оппонент') || text.includes('Противник')) type = 'opponent';
+  const groups = [];
+  let currentGroup = null;
+
+  history.forEach(entry => {
+    const parsed = normalizeLogEntry(entry);
+    if (parsed.type === 'system' && parsed.text.includes('———')) {
+      currentGroup = {
+        title: parsed.text.replace(/—/g, '').trim() || 'Ход',
+        side: 'system',
+        entries: []
+      };
+      groups.push(currentGroup);
+      return;
     }
-    
-    // Проверяем, является ли это разделителем хода
-    if (type === 'system' && text.includes('———')) {
-      // Создаём специальный разделитель
-      const separator = document.createElement('div');
-      separator.className = 'log-separator';
-      separator.textContent = text;
-      logRows.appendChild(separator);
-    } else {
-      // Обычная запись лога
-      const row = document.createElement('div');
-      row.className = 'log-row';
-      
-      // СТИЛЬ МИДОРИИ: Если есть молния, выделяем цветом
-      if (text.includes('⚡')) {
-        row.classList.add('log-midoriya');
-      }
-      
-      row.innerHTML = `<span class="log-dot ${type}"></span><span>${text}</span>`;
-      logRows.appendChild(row);
+
+    if (!currentGroup) {
+      currentGroup = { title: 'События', side: parsed.type || 'system', entries: [] };
+      groups.push(currentGroup);
     }
+
+    if (currentGroup.side === 'system' && parsed.type !== 'system') {
+      currentGroup.side = parsed.type;
+    }
+    currentGroup.entries.push(parsed);
   });
 
-  // Автопрокрутка лога вниз
+  const visibleGroups = groups.filter(group => group.entries.length > 0).reverse();
+  if (visibleGroups.length === 0) {
+    logRows.appendChild(createLogGroup('События', 'system', [{ type: 'system', text: 'Бой начался' }]));
+  } else {
+    visibleGroups.forEach(group => {
+      logRows.appendChild(createLogGroup(group.title, group.side, group.entries));
+    });
+  }
+
   requestAnimationFrame(() => {
-    logRows.scrollTop = logRows.scrollHeight;
+    logRows.scrollTop = 0;
   });
+}
+
+function normalizeLogEntry(entry) {
+  let type = 'system';
+  let text = '';
+
+  if (Array.isArray(entry)) {
+    [type, text] = entry;
+  } else if (typeof entry === 'object' && entry !== null) {
+    type = entry.type || 'system';
+    text = entry.text || '';
+  } else {
+    text = String(entry || '');
+    if (text.includes('Вы ') || text.includes('Ваш')) type = 'player';
+    else if (text.includes('Оппонент') || text.includes('Противник')) type = 'opponent';
+  }
+
+  return {
+    type: ['player', 'opponent', 'system'].includes(type) ? type : 'system',
+    text: String(text || '')
+  };
+}
+
+function createLogGroup(title, side, entries) {
+  const group = document.createElement('section');
+  group.className = 'turn-group ' + (side || 'system');
+
+  const head = document.createElement('div');
+  head.className = 'turn-head';
+  const label = document.createElement('span');
+  label.className = 'turn-label';
+  label.textContent = title || 'События';
+  const tag = document.createElement('span');
+  tag.className = 'side-tag';
+  tag.textContent = side === 'player' ? 'Вы' : (side === 'opponent' ? 'Соперник' : 'Система');
+  head.appendChild(label);
+  head.appendChild(tag);
+  group.appendChild(head);
+
+  entries.forEach(entry => {
+    const row = document.createElement('div');
+    row.className = 'log-entry';
+    if (isHeroDamageLog(entry.text)) row.classList.add('damage-hero');
+
+    const text = document.createElement('span');
+    text.innerHTML = formatLogEntryText(entry.text);
+    row.appendChild(text);
+
+    if (row.classList.contains('damage-hero')) {
+      const kind = document.createElement('span');
+      kind.className = 'kind';
+      kind.textContent = 'герой';
+      row.appendChild(kind);
+    }
+
+    group.appendChild(row);
+  });
+
+  return group;
+}
+
+function isHeroDamageLog(text) {
+  const value = String(text || '').toLowerCase();
+  return value.includes('hp') || (value.includes('геро') && (value.includes('урон') || value.includes('нанос')));
+}
+
+function formatLogEntryText(text) {
+  const safeText = escapeHtml(text || '');
+  const damageMatch = safeText.match(/([+-]?\d+\s*(?:HP|hp|хп))/);
+  if (damageMatch) {
+    return safeText.replace(damageMatch[1], '<strong>' + damageMatch[1] + '</strong>');
+  }
+  const colonIndex = safeText.indexOf(':');
+  if (colonIndex > 0 && colonIndex <= 24) {
+    return '<strong>' + safeText.slice(0, colonIndex) + '</strong>' + safeText.slice(colonIndex);
+  }
+  const firstSpace = safeText.indexOf(' ');
+  if (firstSpace > 0 && firstSpace <= 12) {
+    return '<strong>' + safeText.slice(0, firstSpace) + '</strong>' + safeText.slice(firstSpace);
+  }
+  return safeText;
+}
+
+function applyModeUi(state) {
+  const body = document.body;
+  if (!body) return;
+  body.classList.remove(
+    'mode-powermax',
+    'mode-spellstorm',
+    'mode-blitzkrieg',
+    'mode-sudden-death',
+    'mode-extra-arena'
+  );
+  const modeId = getModeId(state);
+  const meta = getModeUiMeta(state);
+  if (modeId.startsWith('extra_arena')) body.classList.add('mode-extra-arena');
+  if (meta) body.classList.add('mode-' + meta.key);
+}
+
+function renderSuddenDeathBadges(state) {
+  const sd = state && state.sudden_death;
+  updateSuddenDeathBadge('player-hp-block', sd && sd.enabled ? sd.player_next_damage : null);
+  updateSuddenDeathBadge('opponent-hp-block', sd && sd.enabled ? sd.opponent_next_damage : null);
+}
+
+function updateSuddenDeathBadge(hpBlockId, nextDamage) {
+  const block = document.getElementById(hpBlockId);
+  if (!block) return;
+
+  let badge = block.querySelector('.mode-hp-burn-badge');
+  if (!nextDamage) {
+    if (badge) badge.remove();
+    block.classList.remove('sudden-death-hp');
+    return;
+  }
+
+  if (!badge) {
+    badge = document.createElement('span');
+    badge.className = 'mode-hp-burn-badge';
+    block.appendChild(badge);
+  }
+  badge.textContent = '-' + nextDamage;
+  badge.title = 'Урон в начале следующего собственного хода';
+  block.classList.add('sudden-death-hp');
 }
 
 // ============================================
@@ -678,14 +1572,14 @@ function renderPlayerPanel(playerState) {
       hpMaxText.textContent = '/' + maxHp;
     }
 
-    // HP Fill Bar
+    // здоровья Fill Bar
     const hpFill = document.getElementById('player-hp-fill');
     if (hpFill) {
       const hpPct = Math.max(0, Math.min(100, (hpValue / maxHp) * 100));
       hpFill.style.width = hpPct + '%';
     }
 
-    // HP Warning pulse (<= 7)
+    // здоровья Warning pulse (<= 7)
     const hpBlock = document.getElementById('player-hp-block');
     if (hpBlock) {
       hpBlock.classList.toggle('hp-warning', hpValue <= 7);
@@ -722,13 +1616,10 @@ function renderPlayerPanel(playerState) {
     playerTitleEl.textContent = titleText;
     playerTitleEl.className = 'player-title-text';
     if (titleText) {
+      playerTitleEl.classList.add('has-title');
       const rarity = (playerState.rarity || currentState?.player_rarity || '').toLowerCase();
-      if (rarity === 'epic') playerTitleEl.classList.add('title-epic');
-      else if (rarity === 'mythic') playerTitleEl.classList.add('title-mythic');
+      if (rarity === 'mythic' || rarity === 'mythical') playerTitleEl.classList.add('title-mythical');
       else if (rarity === 'limited') playerTitleEl.classList.add('title-limited');
-      else if (rarity === 'rare') playerTitleEl.classList.add('title-rare');
-      else if (rarity === 'starter') playerTitleEl.classList.add('title-starter');
-      else playerTitleEl.classList.add('title-starter'); // fallback for legacy titles
     }
   }
 
@@ -787,7 +1678,7 @@ function renderPlayerPanel(playerState) {
   if (playerPanel && interactionMode.type === 'TARGETING') {
     const playActions = getPlayCardTargets(interactionMode.data?.handIndex ?? selectedCard?.index ?? 0);
     const playerHeroId = playerState.hero?.instance_id;
-    if (playActions.some(a => a.target_is_hero && (String(a.target_id) === String(playerHeroId) || !a.target_id))) {
+    if (playActions.some(a => String(a.target_id) === String(playerHeroId) || (a.target_is_hero && !a.target_id))) {
       playerPanel.classList.add('targetable-friendly');
     }
   }
@@ -809,14 +1700,14 @@ function renderOpponentPanel(opponentState) {
       hpMaxText.textContent = '/' + maxHp;
     }
 
-    // HP Fill Bar
+    // здоровья Fill Bar
     const hpFill = document.getElementById('opponent-hp-fill');
     if (hpFill) {
       const hpPct = Math.max(0, Math.min(100, (hpValue / maxHp) * 100));
       hpFill.style.width = hpPct + '%';
     }
 
-    // HP Warning pulse (<= 7)
+    // здоровья Warning pulse (<= 7)
     const hpBlock = document.getElementById('opponent-hp-block');
     if (hpBlock) {
       hpBlock.classList.toggle('hp-critical', hpValue <= 7);
@@ -858,12 +1749,10 @@ function renderOpponentPanel(opponentState) {
     opponentTitleEl.textContent = titleText;
     opponentTitleEl.className = 'opponent-title-text';
     if (titleText) {
+      opponentTitleEl.classList.add('has-title');
       const rarity = (opponentState.rarity || currentState?.opponent_rarity || '').toLowerCase();
-      if (rarity === 'epic') opponentTitleEl.classList.add('title-epic');
-      else if (rarity === 'mythic') opponentTitleEl.classList.add('title-mythic');
+      if (rarity === 'mythic' || rarity === 'mythical') opponentTitleEl.classList.add('title-mythical');
       else if (rarity === 'limited') opponentTitleEl.classList.add('title-limited');
-      else if (rarity === 'rare') opponentTitleEl.classList.add('title-rare');
-      else opponentTitleEl.classList.add('title-starter');
     }
   }
 
@@ -914,7 +1803,7 @@ function renderOpponentPanel(opponentState) {
   if (opponentPanel && interactionMode.type === 'TARGETING') {
     const playActions = getPlayCardTargets(interactionMode.data?.handIndex ?? selectedCard?.index ?? 0);
     const opponentHeroId = opponentState.hero?.instance_id;
-    if (playActions.some(a => a.target_is_hero && (String(a.target_id) === String(opponentHeroId) || !a.target_id))) {
+    if (playActions.some(a => String(a.target_id) === String(opponentHeroId) || (a.target_is_hero && !a.target_id))) {
       opponentPanel.classList.add('targetable-enemy');
     }
   }
@@ -977,16 +1866,33 @@ function createHandCardElement(card, index) {
   }
   
   // Также проверяем ману (дополнительная визуальная подсказка)
-  const cardMana = parseInt(card.mana || card.mana_cost || 0);
+  const cardMana = getRawManaCost(card);
+  const effectiveMana = getEffectiveManaCost(card);
+  const isFreeByMode = effectiveMana === 0 && cardMana > 0;
   const playerMana = currentState?.player?.mana || 0;
   
-  if (cardMana > playerMana) {
+  if (effectiveMana > playerMana) {
     cardDiv.classList.add('insufficient-mana');
+  }
+  if (isFreeByMode) {
+    cardDiv.classList.add('mode-free-spell');
+  }
+  if (isPowerMaxMode()) {
+    cardDiv.classList.add('mode-powermax-card');
+  }
+  if (isSummonReadyMode() && cardType === 'warrior') {
+    cardDiv.classList.add('mode-ready-on-play-card');
   }
 
   const manaDiv = document.createElement('div');
   manaDiv.className = 'mana-circle';
-  manaDiv.textContent = cardMana;
+  if (isFreeByMode) {
+    manaDiv.classList.add('mana-free');
+    manaDiv.textContent = '0';
+    manaDiv.title = 'Бесплатно в SpellStorm';
+  } else {
+    manaDiv.textContent = cardMana;
+  }
   
   // ДОБАВЛЕНО: Визуализация механик карты (минималистичные классы)
   const mechanics = card.mechanics || [];
@@ -1047,6 +1953,36 @@ function createHandCardElement(card, index) {
 
   cardDiv.appendChild(artWrapper);
   cardDiv.appendChild(manaDiv);
+
+  if (cardType === 'potion') {
+    const potionInfoBtn = document.createElement('button');
+    potionInfoBtn.className = 'card-info-btn potion-info-btn';
+    potionInfoBtn.textContent = 'i';
+    potionInfoBtn.title = 'Информация о карте';
+    potionInfoBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openCardInfo(card);
+    });
+    cardDiv.appendChild(potionInfoBtn);
+  }
+
+  if (isFreeByMode) {
+    const freeBadge = document.createElement('div');
+    freeBadge.className = 'mode-card-badge mode-card-badge-free';
+    freeBadge.textContent = 'FREE';
+    cardDiv.appendChild(freeBadge);
+  } else if (isPowerMaxMode() && card.level != null) {
+    const levelBadge = document.createElement('div');
+    levelBadge.className = 'mode-card-badge mode-card-badge-level';
+    levelBadge.textContent = 'LVL ' + card.level;
+    cardDiv.appendChild(levelBadge);
+  } else if (isSummonReadyMode() && cardType === 'warrior') {
+    const readyBadge = document.createElement('div');
+    readyBadge.className = 'mode-card-badge mode-card-badge-ready';
+    readyBadge.textContent = '⚡';
+    readyBadge.title = 'Будет готов сразу';
+    cardDiv.appendChild(readyBadge);
+  }
 
   // Статы
   if (cardType !== 'potion') {
@@ -1115,14 +2051,15 @@ function addStatusIcons(cardDiv, card) {
     const img = document.createElement('img');
     img.src = effectsPath + fileName;
     img.className = 'status-icon';
+    img.alt = '';
     container.appendChild(img);
     return container;
   };
 
   cardDiv.appendChild(createIcon('status-icon-shield',  'shield.png',      'icon-top-left'));
-  cardDiv.appendChild(createIcon('status-icon-taunt',   'provocation.png', 'icon-top-right'));
+  cardDiv.appendChild(createIcon('status-icon-taunt',   'provocation.png', 'icon-bottom-right'));
 
-  const frozenIcon = createIcon('status-icon-frozen', 'freeze.png', 'icon-bottom-right');
+  const frozenIcon = createIcon('status-icon-frozen', 'freeze.png', 'icon-top-right');
   if (card && card.is_frozen) {
     const counter = document.createElement('span');
     counter.className = 'freeze-counter';
@@ -1131,7 +2068,7 @@ function addStatusIcons(cardDiv, card) {
   }
   cardDiv.appendChild(frozenIcon);
 
-  cardDiv.appendChild(createIcon('status-icon-asleep', 'asleep.png', 'icon-bottom-left'));
+  cardDiv.appendChild(createIcon('status-icon-asleep', 'asleep.png', 'icon-top-center'));
   cardDiv.appendChild(createIcon('status-icon-target', 'target.png', 'icon-center'));
   cardDiv.appendChild(createIcon('status-icon-heal',   'toHeal.png', 'icon-center'));
 }
@@ -1189,6 +2126,9 @@ function createBoardCardElement(card, side) {
   const cardType = card.card_type || 'warrior';
   if (cardType === 'potion') {
     cardDiv.classList.add('potion-card-shape');
+  }
+  if (isPowerMaxMode()) {
+    cardDiv.classList.add('mode-powermax-card');
   }
   
   // LEGAL ACTIONS: Определяем, может ли юнит атаковать
@@ -1268,6 +2208,13 @@ function createBoardCardElement(card, side) {
 
   cardDiv.appendChild(artWrapper);
 
+  if (isPowerMaxMode() && card.level != null) {
+    const levelBadge = document.createElement('div');
+    levelBadge.className = 'mode-card-badge mode-card-badge-level board-mode-badge';
+    levelBadge.textContent = 'LVL ' + card.level;
+    cardDiv.appendChild(levelBadge);
+  }
+
   // Статы: не добавляем для зелий
   if (card.card_type !== 'potion') {
     const statsDiv = document.createElement('div');
@@ -1322,7 +2269,10 @@ function createBoardCardElement(card, side) {
   // Если это карта игрока, разрешаем атаку
   if (side === 'player' && card.can_attack) {
     cardDiv.style.cursor = 'pointer';
-    cardDiv.addEventListener('click', () => {
+    cardDiv.addEventListener('click', (e) => {
+      if (interactionMode.type === 'TARGETING') {
+        return;
+      }
       handleAttackerClick(card);
     });
   }
@@ -1375,6 +2325,14 @@ function updateTurnIndicator(state) {
   // КРИТИЧНО: Логируем типы для диагностики проблем с is_my_turn
   console.log('[ARENA] Обновление индикатора хода. is_my_turn:', isMyTurn, 'current_player_id:', currentPlayerId, '(type:', typeof currentPlayerId + '), my user_id:', userIdNum, '(type:', typeof userIdNum + ')');
   
+  if (isArenaWaitingForPlayers(state)) {
+    turnText.textContent = 'Ждем соперника';
+    turnPlaque.classList.remove('player-turn', 'opponent-turn', 'turn-expired');
+    const endTurnBtn = document.getElementById('end-turn-button');
+    if (endTurnBtn) endTurnBtn.disabled = true;
+    return;
+  }
+
   if (isMyTurn) {
     turnText.textContent = 'Ваш ход';
     turnPlaque.classList.add('player-turn');
@@ -1439,6 +2397,9 @@ function updateTurnTimer(state) {
   // КРИТИЧНО: НЕМЕДЛЕННО обновляем отображение таймера перед запуском интервала
   // Это гарантирует мгновенное обновление при смене хода
   timerText.textContent = Math.ceil(timeRemaining);
+  if (activeBattleModal === 'timer') {
+    renderTurnTimerModal({ ...state, turn_time_remaining: timeRemaining });
+  }
   
   // Визуальные предупреждения
   timerContainer.classList.remove('timer-warning', 'timer-critical');
@@ -1452,6 +2413,9 @@ function updateTurnTimer(state) {
   const updateTimer = () => {
     timeRemaining = Math.max(0, timeRemaining - 1);
     timerText.textContent = Math.ceil(timeRemaining);
+    if (activeBattleModal === 'timer') {
+      renderTurnTimerModal({ ...state, turn_time_remaining: timeRemaining });
+    }
     
     // Визуальные предупреждения
     timerContainer.classList.remove('timer-warning', 'timer-critical');
@@ -1478,21 +2442,22 @@ function updateTurnTimer(state) {
 
 function handleCardDragStart(e, card, index) {
   console.log('[ARENA] Начало перетаскивания карты:', card);
+  if (!currentState?.is_my_turn || !canPlayCard(index) || !hasEnoughManaForCard(card)) {
+    console.warn('[ARENA] ❌ Drag отменён: карта недоступна');
+    arenaHaptic('warning', { key: 'card-invalid', minInterval: 180 });
+    e.preventDefault();
+    return;
+  }
   selectedCard = { card, index };
+  arenaHaptic('selection', { key: 'card-pick', minInterval: 90 });
+  playArenaSfx('cardSelected', { volume: 0.62 });
   e.currentTarget.classList.add('dragging');
   
-  const cardType = card.card_type || 'warrior';
-  const mechanics = card.mechanics || [];
-  
-  const targetingMechanics = [
-    'battlecry_damage_1', 'consume_ally', 'battlecry_freeze'
-  ];
-  const isTargetingWarrior = cardType === 'warrior' && mechanics.some(m => targetingMechanics.includes(m));
-
   // Получаем возможные цели для этой карты
   const playActions = getPlayCardTargets(index);
-  const hasTargetingOptions = playActions.length > 0 && playActions.some(a => a.target_id !== null);
-  const requiresTarget = playActions.length > 0 && (isTargetingWarrior || playActions.every(a => a.target_id !== null));
+  const hasTargetingOptions = playActions.length > 0 && playActions.some(a => a.target_id !== null && a.target_id !== undefined);
+  const hasNoTargetOption = playActions.some(a => a.target_id === null || a.target_id === undefined);
+  const requiresTarget = hasTargetingOptions && !hasNoTargetOption;
 
   // Если это зелье или воин с целью - активируем режим TARGETING
   if (hasTargetingOptions || requiresTarget) {
@@ -1578,6 +2543,7 @@ function handleSlotDrop(e) {
   const slotIndex = parseInt(e.currentTarget.dataset.slot, 10);
   console.log('[ARENA] Карта сброшена на слот:', slotIndex);
   
+  arenaHaptic('medium', { key: 'slot-drop', minInterval: 120 });
   playCard(selectedCard.card, slotIndex);
   selectedCard = null;
 }
@@ -1598,9 +2564,15 @@ function handlePotionTargetDrop(e) {
   const targetUnit = e.currentTarget;
   const targetId = targetUnit.dataset.instanceId;
   
-  console.log('[ARENA] Зелье применено на существо:', targetId);
-  
-  playPotionCard(selectedCard.card, targetId, false);
+  const card = selectedCard.card;
+  console.log('[ARENA] Карта применена на существо:', targetId);
+
+  arenaHaptic('medium', { key: 'slot-drop-target', minInterval: 120 });
+  if (card.card_type === 'potion') {
+    playPotionCard(card, targetId, false);
+  } else {
+    playCard(card, null, targetId, false);
+  }
   selectedCard = null;
 }
 
@@ -1609,10 +2581,21 @@ function handlePotionHeroDrop(e) {
   
   if (!selectedCard) return;
   
-  console.log('[ARENA] Зелье применено на героя');
-  
-  // ИСПРАВЛЕНО: Для героя передаем null вместо -1
-  playPotionCard(selectedCard.card, null, true);
+  const panel = e.currentTarget;
+  const isPlayerHero = panel.classList.contains('player-panel-root');
+  const heroId = isPlayerHero
+    ? currentState?.player?.hero?.instance_id
+    : currentState?.opponent?.hero?.instance_id;
+  const card = selectedCard.card;
+
+  console.log('[ARENA] Карта применена на героя:', { isPlayerHero, heroId });
+
+  arenaHaptic('medium', { key: 'slot-drop-hero', minInterval: 120 });
+  if (card.card_type === 'potion') {
+    playPotionCard(card, heroId, true);
+  } else {
+    playCard(card, null, heroId, true);
+  }
   selectedCard = null;
 }
 
@@ -1624,8 +2607,9 @@ function handleCardClick(card, index, cardEl) {
   console.log('[ARENA] 🎴 Клик по карте:', card);
   
   // LEGAL ACTIONS: Проверяем, можно ли разыграть эту карту
-  if (!canPlayCard(index)) {
+  if (!currentState?.is_my_turn || !canPlayCard(index) || !hasEnoughManaForCard(card)) {
     console.warn('[ARENA] ❌ Карта недоступна для розыгрыша (legal_actions)');
+    arenaHaptic('warning', { key: 'card-invalid', minInterval: 180 });
     return;
   }
   
@@ -1634,22 +2618,14 @@ function handleCardClick(card, index, cardEl) {
   
   cardEl.classList.add('selected');
   selectedCard = { card, index };
-  
-  const cardType = card.card_type || 'warrior';
-  const mechanics = card.mechanics || [];
-  
-  // Проверка на необходимость выбора цели для воинов
-  const targetingMechanics = [
-    'battlecry_damage_1', 'consume_ally', 'battlecry_freeze'
-  ];
-  
-  const isTargetingWarrior = cardType === 'warrior' && mechanics.some(m => targetingMechanics.includes(m));
+  arenaHaptic('selection', { key: 'card-pick', minInterval: 90 });
+  playArenaSfx('cardSelected', { volume: 0.62 });
   
   // Получаем возможные цели для этой карты
   const playActions = getPlayCardTargets(index);
-  // Карта требует выбора цели если она в списке или если все её действия требуют цель
-  const hasTargetingOptions = playActions.length > 0 && playActions.some(a => a.target_id !== null);
-  const requiresTarget = playActions.length > 0 && (isTargetingWarrior || playActions.every(a => a.target_id !== null));
+  const hasTargetingOptions = playActions.length > 0 && playActions.some(a => a.target_id !== null && a.target_id !== undefined);
+  const hasNoTargetOption = playActions.some(a => a.target_id === null || a.target_id === undefined);
+  const requiresTarget = hasTargetingOptions && !hasNoTargetOption;
   
   // Если карта имеет цели, мы ВСЕГДА включаем режим TARGETING, 
   // но если она не требует цель (requiresTarget === false), мы также разрешаем клик по слотам.
@@ -1738,15 +2714,9 @@ function highlightValidTargets(actions) {
       
       // Определяем, союзник это или враг
       if (targetIdStr === String(playerHeroId)) {
-        // Лечение разрешено для своего героя, заморозка — нет
+        // Доверяем legal_actions: если свой герой пришёл целью, его можно выбрать.
         if (!isFreeze) {
-          if (isHeal) {
-            const currentHp = currentState?.player?.hero?.hp ?? currentState?.player?.hp ?? 30;
-            const maxHp = currentState?.player?.hero?.max_hp ?? currentState?.player?.max_hp ?? 30;
-            if (currentHp < maxHp) playerHeroTargetable = true;
-          } else {
-            playerHeroTargetable = true;
-          }
+          playerHeroTargetable = true;
         }
       } else if (targetIdStr === String(opponentHeroId)) {
         // Заморозка на героя НЕ разрешена, лечение на врага — нет
@@ -1797,7 +2767,11 @@ function highlightValidTargets(actions) {
     opponentPanel.classList.add('targetable-enemy');
     
     // Предпросмотр
-    opponentPanel.onmouseenter = () => showDamagePreview(opponentPanel, true, actions.find(a => a.target_is_hero));
+    opponentPanel.onmouseenter = () => showDamagePreview(
+      opponentPanel,
+      true,
+      actions.find(a => String(a.target_id) === String(opponentHeroId) || (a.target_is_hero && !a.target_id))
+    );
     opponentPanel.onmouseleave = () => hideDamagePreview(opponentPanel, true);
   }
   
@@ -1807,7 +2781,11 @@ function highlightValidTargets(actions) {
     console.log('[ARENA] 💚 Свой герой подсвечен для лечения');
 
     // Предпросмотр
-    playerPanel.onmouseenter = () => showDamagePreview(playerPanel, true, actions.find(a => a.target_is_hero));
+    playerPanel.onmouseenter = () => showDamagePreview(
+      playerPanel,
+      true,
+      actions.find(a => String(a.target_id) === String(playerHeroId) || (a.target_is_hero && !a.target_id))
+    );
     playerPanel.onmouseleave = () => hideDamagePreview(playerPanel, true);
   }
 }
@@ -1966,18 +2944,23 @@ function handleGlobalTargetClick(targetId, isHero, event) {
     // Проверяем валидность цели
     const isValidTarget = playActions.some(a => {
       if (isHero) {
+        const clickedElement = event?.target?.closest('.player-panel-root, .opponent-panel-root');
+        const isPlayerHero = clickedElement?.classList.contains('player-panel-root');
+        const clickedHeroId = isPlayerHero
+          ? currentState?.player?.hero?.instance_id
+          : currentState?.opponent?.hero?.instance_id;
+
         if (a.target_id) {
-          const playerHeroId = currentState?.player?.hero?.instance_id;
-          const opponentHeroId = currentState?.opponent?.hero?.instance_id;
-          return String(a.target_id) === String(playerHeroId) || String(a.target_id) === String(opponentHeroId);
+          return String(a.target_id) === String(clickedHeroId);
         }
-        return a.target_is_hero === true;
+        return a.target_is_hero === true && !isPlayerHero;
       }
       return String(a.target_id) === String(targetId);
     });
     
     if (!isValidTarget && playActions.length > 0) {
       console.warn('[ARENA] ❌ Цель не в списке валидных для карты');
+      arenaHaptic('warning', { key: 'target-invalid', minInterval: 160 });
       resetInteractionMode(); // Сбрасываем режим при клике на недопустимую цель
       return;
     }
@@ -1991,9 +2974,11 @@ function handleGlobalTargetClick(targetId, isHero, event) {
         : currentState?.opponent?.hero?.instance_id;
       
       console.log('[ARENA] 🎯 Разыгрываем карту на героя:', { isPlayerHero, heroId });
+      arenaHaptic('medium', { key: 'target-card', minInterval: 120 });
       executeTargetingPlay(heroId, true);
     } else {
       console.log('[ARENA] 🎯 Разыгрываем карту на юнита:', targetId);
+      arenaHaptic('medium', { key: 'target-card', minInterval: 120 });
       executeTargetingPlay(targetId, false);
     }
     
@@ -2002,14 +2987,17 @@ function handleGlobalTargetClick(targetId, isHero, event) {
     // Проверяем, что цель валидна для атаки
     if (!isValidAttackTarget(targetId, isHero)) {
       console.warn('[ARENA] ❌ Цель не валидна для атаки (taunt/legal_actions)');
+      arenaHaptic('warning', { key: 'target-invalid', minInterval: 160 });
       return;
     }
     
+    arenaHaptic('medium', { key: 'target-attack', minInterval: 120 });
     attack(interactionMode.data.instance_id, isHero ? null : targetId, isHero);
     resetInteractionMode();
     
   } else {
     console.warn('[ARENA] ⚠️ Клик по цели в режиме NONE - игнорируем');
+    arenaHaptic('warning', { key: 'target-invalid', minInterval: 160 });
   }
 }
 
@@ -2018,12 +3006,12 @@ function handleGlobalTargetClick(targetId, isHero, event) {
 // ============================================
 
 async function showDamagePreview(targetEl, isHero, targetData) {
-  // Предпросмотр текста HP отключён — оставлена только CSS-подсветка целей
+  // Предпросмотр текста здоровья отключён — оставлена только CSS-подсветка целей
   return;
 }
 
 function hideDamagePreview(targetEl, isHero) {
-  // Предпросмотр текста HP отключён — оставлена только CSS-подсветка целей
+  // Предпросмотр текста здоровья отключён — оставлена только CSS-подсветка целей
   return;
 }
 
@@ -2033,6 +3021,7 @@ function handleAttackerClick(attackerCard) {
   // Если ход не наш, игнорируем
   if (!currentState || !currentState.is_my_turn) {
     console.warn('[ARENA] Не ваш ход, атака невозможна');
+    arenaHaptic('warning', { key: 'attacker-invalid', minInterval: 160 });
     return;
   }
   
@@ -2041,6 +3030,7 @@ function handleAttackerClick(attackerCard) {
 
   if (!unitCanAttack) {
     console.warn('[ARENA] ❌ Существо не может атаковать');
+    arenaHaptic('warning', { key: 'attacker-invalid', minInterval: 160 });
     return;
   }
   
@@ -2051,6 +3041,8 @@ function handleAttackerClick(attackerCard) {
   };
   
   selectedAttacker = attackerCard;
+  arenaHaptic('selection', { key: 'attacker-select', minInterval: 120 });
+  playArenaSfx('cardSelected', { volume: 0.62 });
   
   // Подсвечиваем атакующего
   document.querySelectorAll('.board-unit-card').forEach(el => {
@@ -2126,13 +3118,13 @@ async function playCard(card, position, targetId = null, targetIsHero = false) {
         card_id: card.card_id || card.id || card.instance_id,
         target_position: position,
         target_id: targetId,
-        target_is_hero: targetIsHero
+        target_is_hero: targetIsHero,
+        client_action_id: makeClientActionId('play_card')
       })
     });
     
     if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.error || 'Не удалось разыграть карту');
+      throw await parseActionError(response, 'Не удалось разыграть карту');
     }
     
     const result = await response.json();
@@ -2140,6 +3132,7 @@ async function playCard(card, position, targetId = null, targetIsHero = false) {
     
     // Обновляем состояние
     if (result.state) {
+      arenaHaptic('medium', { key: 'play-card-ok', minInterval: 140 });
       currentState = result.state;
       renderBattleState(result.state);
       
@@ -2150,6 +3143,7 @@ async function playCard(card, position, targetId = null, targetIsHero = false) {
     
   } catch (error) {
     console.error('[ARENA] Ошибка розыгрыша карты:', error);
+    arenaHaptic('error', { key: 'play-card-error', minInterval: 220 });
     alert('Не удалось разыграть карту: ' + error.message);
   }
 }
@@ -2183,13 +3177,13 @@ async function playPotionCard(card, targetId, targetIsHero) {
         hand_index: handIndex,
         card_id: card.card_id || card.id || card.instance_id,
         target_id: targetId,
-        target_is_hero: targetIsHero
+        target_is_hero: targetIsHero,
+        client_action_id: makeClientActionId('play_card')
       })
     });
     
     if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.error || 'Не удалось разыграть зелье');
+      throw await parseActionError(response, 'Не удалось разыграть зелье');
     }
     
     const result = await response.json();
@@ -2217,6 +3211,7 @@ async function playPotionCard(card, targetId, targetIsHero) {
     // Обновляем состояние после анимации
     setTimeout(() => {
       if (result.state) {
+        arenaHaptic('medium', { key: 'play-card-ok', minInterval: 140 });
         currentState = result.state;
         renderBattleState(result.state);
 
@@ -2227,6 +3222,7 @@ async function playPotionCard(card, targetId, targetIsHero) {
     
   } catch (error) {
     console.error('[ARENA] Ошибка розыгрыша зелья:', error);
+    arenaHaptic('error', { key: 'play-card-error', minInterval: 220 });
     alert('Не удалось разыграть зелье: ' + error.message);
   }
 }
@@ -2283,13 +3279,13 @@ async function attack(attackerId, targetId, targetIsHero) {
         _auth: authToken,
         attacker_id: attackerId,
         target_id: targetId,
-        target_is_hero: targetIsHero
+        target_is_hero: targetIsHero,
+        client_action_id: makeClientActionId('attack')
       })
     });
     
     if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.error || 'Не удалось атаковать');
+      throw await parseActionError(response, 'Не удалось атаковать');
     }
     
     const result = await response.json();
@@ -2297,6 +3293,7 @@ async function attack(attackerId, targetId, targetIsHero) {
     
     // Обновляем состояние
     if (result.state) {
+      arenaHaptic('medium', { key: 'attack-ok', minInterval: 140 });
       currentState = result.state;
       renderBattleState(result.state);
       
@@ -2307,11 +3304,16 @@ async function attack(attackerId, targetId, targetIsHero) {
     
   } catch (error) {
     console.error('[ARENA] Ошибка атаки:', error);
+    arenaHaptic('error', { key: 'attack-error', minInterval: 220 });
     alert('Не удалось атаковать: ' + error.message);
   }
 }
 
 async function endTurn() {
+  if (isArenaWaitingForPlayers(currentState)) {
+    console.warn('[ARENA] Бой еще синхронизируется');
+    return;
+  }
   if (!currentState || !currentState.is_my_turn) {
     console.warn('[ARENA] Не ваш ход');
     return;
@@ -2319,19 +3321,21 @@ async function endTurn() {
   
   try {
     console.log('[ARENA] Завершение хода');
+    arenaHaptic('selection', { key: 'end-turn', minInterval: 120 });
+    playArenaSfx('nextMove', { volume: 0.7 });
     
     const response = await fetch('/api/battle/end-turn', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         match_id: matchId,
-        _auth: authToken
+        _auth: authToken,
+        client_action_id: makeClientActionId('end_turn')
       })
     });
     
     if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.error || 'Не удалось завершить ход');
+      throw await parseActionError(response, 'Не удалось завершить ход');
     }
     
     const result = await response.json();
@@ -2345,6 +3349,7 @@ async function endTurn() {
     
   } catch (error) {
     console.error('[ARENA] Ошибка завершения хода:', error);
+    arenaHaptic('error', { key: 'end-turn-error', minInterval: 220 });
     alert('Не удалось завершить ход: ' + error.message);
   }
 }
@@ -2352,11 +3357,13 @@ async function endTurn() {
 async function surrender() {
   try {
     console.log('[ARENA] Сдача через Socket.IO');
+    arenaHaptic('error', { key: 'surrender-confirm', minInterval: 260 });
     
     // Отправляем событие сдачи через Socket.IO
     socket.emit('surrender', {
       match_id: matchId,
-      _auth: authToken
+      _auth: authToken,
+      client_action_id: makeClientActionId('surrender')
     });
     
     // Ждём подтверждения от сервера
@@ -2377,7 +3384,7 @@ async function surrender() {
           console.warn('[ARENA] Server game_over timeout. Forcing local defeat screen.');
           const ack = window.__surrenderAck || {};
           showBattleResult(
-            false,
+            'defeat',
             ack.trophy_penalty || 0,
             ack.new_trophies || null,
             0,
@@ -2390,11 +3397,13 @@ async function surrender() {
     // Обработка ошибок
     socket.once('error', (error) => {
       console.error('[ARENA] Ошибка сдачи:', error);
+      arenaHaptic('error', { key: 'surrender-error', minInterval: 260 });
       alert('Не удалось сдаться: ' + error.message);
     });
     
   } catch (error) {
     console.error('[ARENA] Ошибка сдачи:', error);
+    arenaHaptic('error', { key: 'surrender-error', minInterval: 260 });
     alert('Не удалось сдаться: ' + error.message);
   }
 }
@@ -2413,10 +3422,10 @@ function handleGameOver(data) {
   }
   
   // Извлекаем данные о победителе
-  const winnerId = data.winner_id || data.winner || currentState?.winner_id;
-  const isWinner = String(winnerId) === String(userId);
+  const winnerId = data.winner_id ?? data.winner ?? currentState?.winner_id ?? null;
+  const outcome = winnerId == null ? 'draw' : (String(winnerId) === String(userId) ? 'victory' : 'defeat');
   
-  console.log('[ARENA] 🎯 Результат: isWinner =', isWinner, '| winnerId =', winnerId, '| myId =', userId);
+  console.log('[ARENA] 🎯 Результат:', outcome, '| winnerId =', winnerId, '| myId =', userId);
   
   // КРИТИЧНО: Извлекаем данные о трофеях из state (синхронизированы с БД)
   // Приоритет: players[userId] (новый game_over) > top-level (surrender personalized) > currentState > __surrenderAck
@@ -2480,13 +3489,26 @@ function handleGameOver(data) {
   
   // Показываем экран результата с небольшой задержкой для драматического эффекта
   setTimeout(() => {
-    showBattleResult(isWinner, trophyDelta, trophyTotal, coinsDelta, coinsTotal, starsDelta, starsTotal);
+    showBattleResult(outcome, trophyDelta, trophyTotal, coinsDelta, coinsTotal, starsDelta, starsTotal);
   }, 800);
 }
 
-function showBattleResult(isWinner, trophyDelta, trophyTotal, coinsDelta, coinsTotal, starsDelta, starsTotal) {
+function showBattleResult(outcome, trophyDelta, trophyTotal, coinsDelta, coinsTotal, starsDelta, starsTotal) {
+  if (typeof outcome === 'boolean') {
+    outcome = outcome ? 'victory' : 'defeat';
+  }
+  if (!['victory', 'defeat', 'draw'].includes(outcome)) {
+    outcome = outcome ? String(outcome) : 'defeat';
+    if (!['victory', 'defeat', 'draw'].includes(outcome)) outcome = 'defeat';
+  }
+  const isWinner = outcome === 'victory';
+  const isDraw = outcome === 'draw';
+  if (!window.__arenaBattleResultHaptic) {
+    window.__arenaBattleResultHaptic = true;
+    arenaHaptic(isWinner ? 'success' : (isDraw ? 'warning' : 'error'), { key: 'battle-result-' + outcome, minInterval: 500 });
+  }
   console.log('[ARENA] 🎬 showBattleResult called:', {
-    isWinner, trophyDelta, trophyTotal, coinsDelta, coinsTotal, starsDelta, starsTotal,
+    outcome, trophyDelta, trophyTotal, coinsDelta, coinsTotal, starsDelta, starsTotal,
     alreadyShown: !!window.__resultModalShown,
     cached: window.__battleResultEconomy ? 'yes' : 'no'
   });
@@ -2508,6 +3530,7 @@ function showBattleResult(isWinner, trophyDelta, trophyTotal, coinsDelta, coinsT
   const modal = document.getElementById('battle-result-modal');
   const icon = document.getElementById('result-icon');
   const title = document.getElementById('result-title');
+  const subtitle = document.getElementById('result-subtitle');
   const trophyDeltaEl = document.getElementById('result-trophy-delta');
   const trophyTotalEl = document.getElementById('result-trophy-total');
   const trophySection = document.getElementById('result-trophy-section');
@@ -2515,78 +3538,94 @@ function showBattleResult(isWinner, trophyDelta, trophyTotal, coinsDelta, coinsT
   const coinsTotalEl = document.getElementById('result-coins-total');
   const coinsSection = document.getElementById('result-coins-section');
   const shareBtn = document.getElementById('result-share-btn');
-  const card = modal.querySelector('.result-card');
+  const rewardsGrid = document.getElementById('result-rewards-grid');
+  const noRewardSection = document.getElementById('result-rewards-section');
+  const card = modal ? modal.querySelector('.result-card') : null;
   
-  if (!modal || !icon || !title) {
+  if (!modal || !icon || !title || !card) {
     console.error('[ARENA] Элементы модального окна результата не найдены');
-    alert(isWinner ? '🎉 Победа!' : '💔 Поражение');
-    setTimeout(() => window.location.href = '/', 1500);
+    alert(isWinner ? 'Победа!' : (isDraw ? 'Ничья' : 'Поражение'));
+    setTimeout(() => window.location.replace('/'), 1500);
     return;
   }
   
-  // Устанавливаем иконку и заголовок
-  if (isWinner) {
-    icon.textContent = '🏆';
-    title.textContent = 'Победа!';
-    card.classList.add('victory');
-    card.classList.remove('defeat');
+  const opponentName = document.getElementById('opponent-name-text')?.textContent || 'Оппонент';
+  card.classList.remove('victory', 'defeat', 'draw');
+  card.classList.add(outcome);
+  if (outcome === 'victory') {
+    title.textContent = 'Победа';
+    if (subtitle) subtitle.textContent = opponentName + ' повержен на арене.';
+  } else if (outcome === 'draw') {
+    title.textContent = 'Ничья';
+    if (subtitle) subtitle.textContent = 'Оба игрока удержали арену.';
   } else {
-    icon.textContent = '💔';
     title.textContent = 'Поражение';
-    card.classList.add('defeat');
-    card.classList.remove('victory');
+    if (subtitle) subtitle.textContent = 'Реванш доступен из меню арены.';
   }
   
   // Настройка кнопки "Поделиться"
   if (shareBtn) {
-    const opponentName = document.getElementById('opponent-name-text')?.textContent || 'игрока';
     const winnerHP = isWinner ? (document.getElementById('player-hp-text')?.textContent || '0') : (document.getElementById('opponent-hp-text')?.textContent || '0');
     const turnCount = currentTurnCount;
     const botLink = 'https://t.me/extraarena_bot';
     
     let shareText = '';
     if (isWinner) {
-      shareText = `Я победил игрока ${opponentName} в @extraarena_bot! 🏆\nБитва длилась ${turnCount} ходов. Мой герой выжил с ${winnerHP} HP!\n\nСможешь лучше? Принимай вызов! ⚔️`;
+      shareText = `Я победил игрока ${opponentName} в @extraarena_bot! 🏆\nБитва длилась ${turnCount} ходов. Мой герой выжил с ${winnerHP} здоровья!\n\nСможешь лучше? Принимай вызов! ⚔️`;
+      shareBtn.style.display = 'grid';
+    } else if (isDraw) {
+      shareText = `Я сыграл вничью с ${opponentName} в @extraarena_bot! ⚔️\nБитва длилась ${turnCount} ходов.\n\nПрисоединяйся к битве! 🏆`;
+      shareBtn.style.display = 'none';
     } else {
       shareText = `Я сразился с ${opponentName} в @extraarena_bot! ⚔️\nБитва длилась ${turnCount} ходов. В следующий раз победа будет за мной!\n\nПрисоединяйся к битве! 🏆`;
+      shareBtn.style.display = 'grid';
     }
     
     const encodedText = encodeURIComponent(shareText);
     shareBtn.href = `https://t.me/share/url?url=${botLink}&text=${encodedText}`;
+    if (shareBtn.__extraArenaShareHandler) {
+      shareBtn.removeEventListener('click', shareBtn.__extraArenaShareHandler);
+    }
+    shareBtn.__extraArenaShareHandler = (event) => {
+      if (!window.shareExtraArena) return;
+      event.preventDefault();
+      event.stopPropagation();
+      window.shareExtraArena(shareText, botLink, 'ExtraArena');
+    };
+    shareBtn.addEventListener('click', shareBtn.__extraArenaShareHandler);
   }
   
   // Отображаем трофеи с анимацией счетчика
+  const displayTrophyTotal = trophyTotal ?? currentState?.player?.trophies ?? null;
   const hasTrophyDelta = trophyDelta !== undefined && trophyDelta !== null && trophyDelta !== 0;
-  const hasTrophyTotal = trophyTotal !== undefined && trophyTotal !== null;
+  const hasTrophyTotal = displayTrophyTotal !== undefined && displayTrophyTotal !== null;
 
-  if (hasTrophyDelta || hasTrophyTotal) {
-    if (trophySection) trophySection.style.display = 'flex';
+  if (hasTrophyDelta || hasTrophyTotal || isDraw) {
+    if (trophySection) trophySection.style.display = 'grid';
     
     if (trophyDeltaEl) {
       if (hasTrophyDelta) {
         const deltaSign = trophyDelta > 0 ? '+' : '-';
         const deltaAbsValue = Math.abs(trophyDelta);
-        trophyDeltaEl.className = 'trophy-delta ' + (trophyDelta > 0 ? 'positive' : 'negative');
+        trophyDeltaEl.className = 'delta trophy-delta ' + (trophyDelta > 0 ? 'positive' : 'negative');
         
         // Анимация счетчика трофеев (с абсолютным значением)
         animateCounter(trophyDeltaEl, 0, deltaAbsValue, 1000, deltaSign);
         
-        // Показываем контейнер дельты (вместе с иконкой 🏆)
-        if (trophyDeltaEl.parentElement) {
-          trophyDeltaEl.parentElement.style.display = 'flex';
-        }
+        trophyDeltaEl.style.display = 'block';
       } else {
-        // Если дельты нет (0), скрываем весь контейнер дельты
-        if (trophyDeltaEl.parentElement) {
-          trophyDeltaEl.parentElement.style.display = 'none';
-        }
+        trophyDeltaEl.textContent = '0';
+        trophyDeltaEl.className = 'delta trophy-delta neutral';
+        trophyDeltaEl.style.display = 'block';
       }
     }
     
     if (trophyTotalEl && hasTrophyTotal) {
       // КРИТИЧНО: Анимация счетчика общих трофеев (используем state.trophy_total из БД)
-      const startValue = hasTrophyDelta ? Math.max(0, trophyTotal - trophyDelta) : trophyTotal;
-      animateCounter(trophyTotalEl, startValue, trophyTotal, 1000);
+      const startValue = hasTrophyDelta ? Math.max(0, displayTrophyTotal - trophyDelta) : displayTrophyTotal;
+      animateCounter(trophyTotalEl, startValue, displayTrophyTotal, 1000);
+    } else if (trophyTotalEl) {
+      trophyTotalEl.textContent = '—';
     }
   } else if (trophySection) {
     // Скрываем секцию трофеев, только если нет ни дельты, ни общего количества
@@ -2598,7 +3637,7 @@ function showBattleResult(isWinner, trophyDelta, trophyTotal, coinsDelta, coinsT
   const hasCoinsTotal = coinsTotal !== undefined && coinsTotal !== null;
 
   if (hasCoinsDelta || hasCoinsTotal) {
-    if (coinsSection) coinsSection.style.display = 'flex';
+    if (coinsSection) coinsSection.style.display = 'grid';
     
     if (coinsDeltaEl) {
       if (hasCoinsDelta) {
@@ -2609,13 +3648,10 @@ function showBattleResult(isWinner, trophyDelta, trophyTotal, coinsDelta, coinsT
         // Анимация счетчика монет (с абсолютным значением)
         animateCounter(coinsDeltaEl, 0, deltaAbsValue, 1200, deltaSign);
         
-        if (coinsDeltaEl.parentElement) {
-          coinsDeltaEl.parentElement.style.display = 'flex';
-        }
+        coinsDeltaEl.style.display = '';
       } else {
-        if (coinsDeltaEl.parentElement) {
-          coinsDeltaEl.parentElement.style.display = 'none';
-        }
+        coinsDeltaEl.textContent = '+0';
+        coinsDeltaEl.style.display = '';
       }
     }
     
@@ -2637,16 +3673,17 @@ function showBattleResult(isWinner, trophyDelta, trophyTotal, coinsDelta, coinsT
   const hasStarsTotal = starsTotal !== undefined && starsTotal !== null;
 
   if (hasStarsDelta || hasStarsTotal) {
-    if (starsSection) starsSection.style.display = 'flex';
+    if (starsSection) starsSection.style.display = 'grid';
 
     if (starsDeltaEl) {
       if (hasStarsDelta) {
         const deltaSign = starsDelta > 0 ? '+' : '-';
         starsDeltaEl.className = 'stars-delta positive';
         animateCounter(starsDeltaEl, 0, Math.abs(starsDelta), 1200, deltaSign);
-        if (starsDeltaEl.parentElement) starsDeltaEl.parentElement.style.display = 'flex';
-      } else if (starsDeltaEl.parentElement) {
-        starsDeltaEl.parentElement.style.display = 'none';
+        starsDeltaEl.style.display = '';
+      } else {
+        starsDeltaEl.textContent = '+0';
+        starsDeltaEl.style.display = '';
       }
     }
 
@@ -2656,6 +3693,23 @@ function showBattleResult(isWinner, trophyDelta, trophyTotal, coinsDelta, coinsT
     }
   } else if (starsSection) {
     starsSection.style.display = 'none';
+  }
+
+  if (isDraw) {
+    if (rewardsGrid) rewardsGrid.style.display = 'none';
+    if (noRewardSection) {
+      noRewardSection.style.display = 'block';
+      noRewardSection.textContent = 'Награды не начислены за этот бой.';
+    }
+  } else if (outcome === 'defeat') {
+    if (rewardsGrid) rewardsGrid.style.display = 'none';
+    if (noRewardSection) {
+      noRewardSection.style.display = 'block';
+      noRewardSection.textContent = 'Награды не начислены за поражение.';
+    }
+  } else {
+    if (rewardsGrid) rewardsGrid.style.display = 'grid';
+    if (noRewardSection) noRewardSection.style.display = 'none';
   }
   
   // Показываем модальное окно
@@ -2709,13 +3763,13 @@ function triggerHealAnimation(isPlayer) {
    */
   console.log('[ARENA] 💚 Triggering heal animation for', isPlayer ? 'player' : 'opponent');
   
-  // Получаем HP блок
+  // Получаем здоровья блок
   const hpBlock = isPlayer 
     ? document.querySelector('.player-hp-block')
     : document.querySelector('.opponent-hp-block');
   
   if (!hpBlock) {
-    console.warn('[ARENA] HP block not found for healing animation');
+    console.warn('[ARENA] здоровья block not found for healing animation');
     return;
   }
   
@@ -2878,7 +3932,13 @@ function openCardInfo(card) {
   const maxHp = card.maxHp ?? card.max_hp;
   document.getElementById('card-info-health').textContent = hp != null ? (maxHp ? hp + '/' + maxHp : hp) : '—';
   
-  document.getElementById('card-info-mana').textContent = card.mana != null ? card.mana : (card.mana_cost != null ? card.mana_cost : '—');
+  const rawMana = getRawManaCost(card);
+  const effectiveMana = getEffectiveManaCost(card);
+  const manaInfo = document.getElementById('card-info-mana');
+  if (manaInfo) {
+    manaInfo.textContent = effectiveMana === 0 && rawMana > 0 ? '0' : rawMana;
+    manaInfo.title = effectiveMana === 0 && rawMana > 0 ? 'Бесплатно в SpellStorm' : '';
+  }
   document.getElementById('card-info-description').textContent = card.description || card.text || 'Нет описания.';
 
   const artEl = document.getElementById('card-info-art');
@@ -2896,21 +3956,66 @@ function openCardInfo(card) {
   const mechEl = document.getElementById('card-info-mechanics');
   mechEl.innerHTML = '';
   const mechanics = card.mechanics || [];
-  if (mechanics.length > 0) {
+  const addMechanicDetail = function(title, description, kind, iconPath) {
+    const row = document.createElement('div');
+    row.className = 'mechanic-detail-row';
+
+    const icon = document.createElement('div');
+    icon.className = 'mechanic-detail-icon' + (kind ? ' mechanic-kind-' + kind : '');
+    const iconImg = document.createElement('img');
+    iconImg.className = 'mechanic-detail-img';
+    iconImg.src = iconPath || getMechanicIconPath('');
+    iconImg.alt = '';
+    icon.appendChild(iconImg);
+
+    const body = document.createElement('div');
+    body.className = 'mechanic-detail-body';
+
+    const titleEl = document.createElement('div');
+    titleEl.className = 'mechanic-detail-title';
+    titleEl.textContent = title || 'Механика';
+
+    const descEl = document.createElement('div');
+    descEl.className = 'mechanic-detail-description';
+    descEl.textContent = description || 'Описание механики отсутствует.';
+
+    body.appendChild(titleEl);
+    body.appendChild(descEl);
+    row.appendChild(icon);
+    row.appendChild(body);
+    mechEl.appendChild(row);
+  };
+
+  if (card.mechanics_desc) {
+    addMechanicDetail('МЕХАНИКА', card.mechanics_desc, 'database', getMechanicIconPath(mechanics[0] || ''));
+  } else if (mechanics.length > 0) {
     mechanics.forEach(function(m) {
-      const chip = document.createElement('span');
-      chip.className = 'mechanic-chip';
-      chip.textContent = m;
-      mechEl.appendChild(chip);
+      const parsed = parseMechanic(m);
+      if (!parsed) return;
+      addMechanicDetail(parsed.label, parsed.description, parsed.kind, getMechanicIconPath(m, parsed));
     });
   }
   
-  modal.classList.add('open');
+  openBattleModal('card-info');
 }
 
 function closeCardInfo() {
-  const modal = document.getElementById('card-info-modal');
-  if (modal) modal.classList.remove('open');
+  if (activeBattleModal === 'card-info') closeBattleModal();
+}
+
+function getMechanicIconPath(mechanic, parsed) {
+  const key = String(mechanic || parsed?.label || parsed?.kind || '').toLowerCase();
+  const base = '../DesignAssets/Arena/CardEffects/';
+  if (key.includes('freeze') || key.includes('frozen')) return base + 'freeze.png';
+  if (key.includes('shield') || key.includes('armor') || key.includes('reflect') || key.includes('bypass')) return base + 'shield.png';
+  if (key.includes('taunt') || key.includes('provoc')) return base + 'provocation.png';
+  if (key.includes('regen') || key.includes('heal') || key.includes('lifesteal')) return base + 'toHeal.png';
+  if (key.includes('poison')) return base + 'poison.png';
+  if (key.includes('stealth') || key.includes('delete') || key.includes('instant')) return base + 'stealth.png';
+  if (key.includes('target') || key.includes('damage') || key.includes('aoe') || key.includes('cleave')) return base + 'target.png';
+  if (key.includes('asleep') || key.includes('mana') || key.includes('drain')) return base + 'asleep.png';
+  if (parsed?.kind === 'battlecry' || parsed?.kind === 'deathrattle') return base + 'target.png';
+  return base + 'shield.png';
 }
 
 // ============================================
@@ -2993,29 +4098,36 @@ function checkEndTurnPulse() {
 
 function openOpponentInfo() {
   const opponentState = window.__arenaOpponentState || currentState?.opponent || {};
-  const name = opponentState.name || 'Оппонент';
-  const title = opponentState.title || '';
-  const hp = opponentState.hero?.hp ?? opponentState.hp ?? 30;
-  const maxHp = opponentState.hero?.max_hp ?? opponentState.max_hp ?? 30;
-  const mana = opponentState.mana ?? 0;
-  const cardsCount = (opponentState.hand || []).length;
-  const clan = opponentState.clan || '';
-  const description = opponentState.description || 'Противник';
-  const mechanics = opponentState.mechanics || [];
-  
-  if (clan) mechanics.push('Кланы ' + clan);
-  
-  openCardInfo({
-    name: name,
-    level: null,
-    attack: null,
-    hp: hp,
-    max_hp: maxHp,
-    mana: mana,
-    description: description,
-    mechanics: mechanics,
-    emoji: '👤'
-  });
+  const hero = opponentState.hero;
+  if (hero && hero.name) {
+    openCardInfo({
+      ...hero,
+      name: hero.name,
+      level: hero.level,
+      attack: hero.attack ?? hero.atk ?? 0,
+      hp: hero.hp ?? hero.hp_current ?? 30,
+      max_hp: hero.max_hp ?? hero.maxHp ?? 30,
+      mana: hero.mana ?? hero.mana_cost ?? 0,
+      description: hero.description || '',
+      mechanics: hero.mechanics || [],
+      mechanics_desc: hero.mechanics_desc,
+      card_type: hero.card_type || 'hero',
+      image: hero.image,
+      emoji: '🛡️'
+    });
+  } else {
+    openCardInfo({
+      name: opponentState.name || 'Оппонент',
+      level: null,
+      attack: null,
+      hp: opponentState.hp ?? 30,
+      max_hp: opponentState.max_hp ?? 30,
+      mana: opponentState.mana ?? 0,
+      description: 'Противник',
+      mechanics: [],
+      emoji: '👤'
+    });
+  }
 }
 
 // ============================================
@@ -3023,31 +4135,801 @@ function openOpponentInfo() {
 // ============================================
 
 function initArenaMusic() {
+  const urlParams = new URLSearchParams(location.search);
+  window._musicEnabled = urlParams.get('music') !== '0';
+  window._sfxEnabled = urlParams.get('sfx') !== '0';
+  initArenaSfx();
+
   const music = document.getElementById('arena-bg-music');
   if (!music) {
     console.warn('[ARENA] Элемент arena-bg-music не найден');
     return;
   }
-  
+
   let musicStarted = false;
-  
-  // Запускаем музыку по первому клику пользователя (обход ограничений браузера)
+  let musicPausedByLifecycle = false;
+  let musicManualStop = false;
+  let musicWatchdogInstalled = false;
+
+  const shouldKeepArenaMusicRunning = () => {
+    return window._musicEnabled && !musicManualStop && !document.hidden;
+  };
+
+  const ensureArenaMusicWatchdog = () => {
+    if (musicWatchdogInstalled) return;
+    musicWatchdogInstalled = true;
+    music.loop = true;
+
+    const resumeIfNeeded = () => {
+      if (!shouldKeepArenaMusicRunning()) return;
+      musicStarted = false;
+      startMusic();
+    };
+
+    ['ended', 'stalled', 'suspend', 'emptied'].forEach(eventName => {
+      music.addEventListener(eventName, () => setTimeout(resumeIfNeeded, 250));
+    });
+    music.addEventListener('pause', () => {
+      if (musicPausedByLifecycle) return;
+      setTimeout(resumeIfNeeded, 400);
+    });
+    setInterval(() => {
+      if (shouldKeepArenaMusicRunning() && musicStarted && (music.paused || music.ended)) {
+        resumeIfNeeded();
+      }
+    }, 2500);
+  };
+
   const startMusic = () => {
-    if (musicStarted) return;
-    
-    music.volume = 0.3; // Умеренная громкость
+    if (!window._musicEnabled) return;
+    ensureArenaMusicWatchdog();
+    if (musicStarted && !music.paused && !music.ended) return;
+
+    musicManualStop = false;
+    music.loop = true;
+    music.volume = 0.3;
     music.play().then(() => {
       console.log('[ARENA] 🎵 Фоновая музыка запущена');
       musicStarted = true;
     }).catch(err => {
       console.warn('[ARENA] Не удалось запустить музыку:', err);
     });
-    
-    // Удаляем обработчик после первого запуска
+
     document.body.removeEventListener('click', startMusic);
   };
-  
-  document.body.addEventListener('click', startMusic, { once: true });
+
+  if (window._musicEnabled) {
+    document.addEventListener('pointerdown', startMusic, { once: true, capture: true, passive: true });
+    document.addEventListener('touchstart', startMusic, { once: true, capture: true, passive: true });
+    document.addEventListener('keydown', startMusic, { once: true, capture: true });
+    document.body.addEventListener('click', startMusic, { once: true, capture: true });
+    if (isArenaAndroidShell()) setTimeout(startMusic, 150);
+  }
+
+  const pauseAllArenaMedia = (resetPosition = false) => {
+    if (resetPosition) musicManualStop = true;
+    document.querySelectorAll('audio, video').forEach(media => {
+      try {
+        media.pause();
+        if (resetPosition) media.currentTime = 0;
+      } catch (e) {}
+    });
+    musicStarted = false;
+  };
+
+  window.startArenaMusic = function() {
+    startMusic();
+  };
+
+  window.stopArenaMusic = function() {
+    pauseAllArenaMedia(true);
+  };
+
+  window.ExtraArenaAppPause = function() {
+    musicPausedByLifecycle = musicPausedByLifecycle || musicStarted || !music.paused;
+    pauseAllArenaMedia(false);
+  };
+
+  window.ExtraArenaAppResume = function() {
+    if (musicPausedByLifecycle && !document.hidden && window._musicEnabled) {
+      startMusic();
+    }
+    musicPausedByLifecycle = false;
+  };
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) window.ExtraArenaAppPause();
+    else window.ExtraArenaAppResume();
+  });
+  window.addEventListener('pagehide', () => window.ExtraArenaAppPause());
+}
+
+// ============================================
+// АКТИВНЫЕ ЭФФЕКТЫ — HELPERS
+// ============================================
+
+/**
+ * Парсит строку механики в читаемый объект эффекта.
+ * Поддерживает форматы:
+ *   - single: taunt, shield, charge, lifesteal, delete_target, ...
+ *   - prefix_N: regen_1, armor_2, reflect_2, aura_atk_1, ...
+ *   - prefix_X_Y: cleave_1_3, aura_atk_1_3, armor_1_3, battlecry_buff_2_3, ...
+ *   - compound_word_N: deathrattle_aoe_damage_3, battlecry_heal_hero_2, ...
+ * @param {string} mechanic
+ * @returns {{label: string, value: string, description: string, kind: string}|null}
+ */
+function parseMechanic(mechanic) {
+  if (!mechanic || typeof mechanic !== 'string') return null;
+  var m = mechanic.trim();
+
+  // ── Compound suffix (most specific → least specific) ──
+
+  var drAoe = m.match(/^deathrattle_aoe_damage_(\d+)$/);
+  if (drAoe) return { label: 'Предсмертный: массовый урон', value: drAoe[1], description: 'При гибели наносит ' + drAoe[1] + ' урона всем врагам', kind: 'deathrattle' };
+
+  var drDmg = m.match(/^deathrattle_damage_(\d+)$/);
+  if (drDmg) return { label: 'Предсмертный: урон', value: drDmg[1], description: 'При гибели наносит ' + drDmg[1] + ' урона всем врагам', kind: 'deathrattle' };
+
+  var drSum = m.match(/^deathrattle_summon_(\d+)$/);
+  if (drSum) return { label: 'Предсмертный: призыв', value: drSum[1], description: 'При гибели призывает существо', kind: 'deathrattle' };
+
+  var bcHealHero = m.match(/^battlecry_heal_hero_(\d+)$/);
+  if (bcHealHero) return { label: 'Эффект розыгрыша: лечение героя', value: bcHealHero[1], description: 'При розыгрыше лечит героя на ' + bcHealHero[1] + ' здоровья', kind: 'battlecry' };
+
+  var bcHealTarget = m.match(/^battlecry_heal_target_(\d+)$/);
+  if (bcHealTarget) return { label: 'Эффект розыгрыша: лечение цели', value: bcHealTarget[1], description: 'При розыгрыше лечит цель на ' + bcHealTarget[1] + ' здоровья', kind: 'battlecry' };
+
+  var bcAoeDmg = m.match(/^battlecry_aoe_damage_(\d+)$/);
+  if (bcAoeDmg) return { label: 'Эффект розыгрыша: массовый урон', value: bcAoeDmg[1], description: 'При розыгрыше наносит ' + bcAoeDmg[1] + ' урона всем врагам', kind: 'battlecry' };
+
+  var spellDmg = m.match(/^spell_damage_(\d+)$/);
+  if (spellDmg) return { label: 'Заклинание: урон', value: spellDmg[1], description: 'Наносит ' + spellDmg[1] + ' урона', kind: 'passive' };
+
+  var spellHeal = m.match(/^spell_heal_(\d+)$/);
+  if (spellHeal) return { label: 'Заклинание: лечение', value: spellHeal[1], description: 'Восстанавливает ' + spellHeal[1] + ' здоровья', kind: 'passive' };
+
+  var spellAoe = m.match(/^spell_aoe_damage_(\d+)$/);
+  if (spellAoe) return { label: 'Заклинание: массовый урон', value: spellAoe[1], description: 'Наносит ' + spellAoe[1] + ' урона всем врагам', kind: 'passive' };
+
+  // ── Multi-number X_Y patterns ──
+
+  var cleaveXy = m.match(/^cleave_(\d+)_(\d+)$/);
+  if (cleaveXy) return { label: 'Разрубание', value: cleaveXy[1] + '×' + cleaveXy[2], description: 'Наносит ' + cleaveXy[1] + ' урона до ' + cleaveXy[2] + ' соседним врагам', kind: 'passive' };
+
+  var auraXy = m.match(/^aura_atk_(\d+)_(\d+)$/);
+  if (auraXy) return { label: 'Аура атаки', value: '+' + auraXy[1], description: '+' + auraXy[1] + ' к атаке союзных существ', kind: 'aura' };
+
+  var armorXy = m.match(/^armor_(\d+)_(\d+)$/);
+  if (armorXy) return { label: 'Броня', value: armorXy[1], description: 'Входящий урон –' + armorXy[1], kind: 'passive' };
+
+  var startManaXy = m.match(/^start_mana_(\d+)_(\d+)$/);
+  if (startManaXy) return { label: 'Стартовая мана', value: '+' + startManaXy[1], description: '+' + startManaXy[1] + ' маны в начале боя', kind: 'start' };
+
+  var damageXy = m.match(/^damage_(\d+)_(\d+)$/);
+  if (damageXy) return { label: 'Урон', value: damageXy[1], description: 'Наносит ' + damageXy[1] + ' урона', kind: 'passive' };
+
+  var bcBuffXy = m.match(/^battlecry_buff_(\d+)_(\d+)$/);
+  if (bcBuffXy) return { label: 'Эффект розыгрыша: усиление', value: '+' + bcBuffXy[1], description: 'При розыгрыше усиливает союзников на +' + bcBuffXy[1], kind: 'battlecry' };
+
+  var buffAllXy = m.match(/^buff_all_(\d+)_(\d+)$/);
+  if (buffAllXy) return { label: 'Усиление всех', value: '+' + buffAllXy[1], description: 'Усиливает всех союзников на +' + buffAllXy[1], kind: 'passive' };
+
+  // ── Single-number patterns ──
+
+  var manaDrain = m.match(/^mana_drain_(\d+)$/);
+  if (manaDrain) return { label: 'Кража маны', value: manaDrain[1], description: 'Крадёт ' + manaDrain[1] + ' маны у врага', kind: 'passive' };
+
+  var manaGain = m.match(/^mana_gain_(\d+)$/);
+  if (manaGain) return { label: 'Прирост маны', value: '+' + manaGain[1], description: 'Даёт +' + manaGain[1] + ' маны', kind: 'passive' };
+
+  var aura = m.match(/^aura_atk_(\d+)$/);
+  if (aura) return { label: 'Аура атаки', value: '+' + aura[1], description: '+' + aura[1] + ' к атаке союзных существ', kind: 'aura' };
+
+  var regen = m.match(/^regen_(\d+)$/);
+  if (regen) return { label: 'Регенерация', value: '+' + regen[1], description: '+' + regen[1] + ' здоровья в начале своего хода', kind: 'passive' };
+
+  var armor = m.match(/^armor_(\d+)$/);
+  if (armor) return { label: 'Броня', value: armor[1], description: 'Входящий урон –' + armor[1], kind: 'passive' };
+
+  var reflect = m.match(/^reflect_(\d+)$/);
+  if (reflect) return { label: 'Отражение', value: reflect[1], description: 'Возвращает ' + reflect[1] + ' урона атакующему', kind: 'passive' };
+
+  var startMana = m.match(/^start_mana_(\d+)$/);
+  if (startMana) return { label: 'Стартовая мана', value: '+' + startMana[1], description: '+' + startMana[1] + ' маны в начале боя', kind: 'start' };
+
+  var aoeDmg = m.match(/^aoe_damage_(\d+)$/);
+  if (aoeDmg) return { label: 'Массовый урон', value: aoeDmg[1], description: 'Наносит ' + aoeDmg[1] + ' урона всем врагам', kind: 'passive' };
+
+  var heal = m.match(/^heal_(\d+)$/);
+  if (heal) return { label: 'Лечение', value: heal[1], description: 'Восстанавливает ' + heal[1] + ' здоровья', kind: 'passive' };
+
+  var healTarget = m.match(/^heal_target_(\d+)$/);
+  if (healTarget) return { label: 'Лечение цели', value: healTarget[1], description: 'Лечит цель на ' + healTarget[1] + ' здоровья', kind: 'battlecry' };
+
+  var bcDmg = m.match(/^battlecry_damage_(\d+)$/);
+  if (bcDmg) return { label: 'Эффект розыгрыша: урон', value: bcDmg[1], description: 'При розыгрыше наносит ' + bcDmg[1] + ' урона', kind: 'battlecry' };
+
+  var bcHeal = m.match(/^battlecry_heal_(\d+)$/);
+  if (bcHeal) return { label: 'Эффект розыгрыша: лечение', value: bcHeal[1], description: 'При розыгрыше лечит на ' + bcHeal[1] + ' здоровья', kind: 'battlecry' };
+
+  var bcBuff = m.match(/^battlecry_buff_(\d+)$/);
+  if (bcBuff) return { label: 'Эффект розыгрыша: усиление', value: '+' + bcBuff[1], description: 'При розыгрыше усиливает союзников на +' + bcBuff[1], kind: 'battlecry' };
+
+  var dmg = m.match(/^damage_(\d+)$/);
+  if (dmg) return { label: 'Урон', value: dmg[1], description: 'Наносит ' + dmg[1] + ' урона', kind: 'passive' };
+
+  var cleave = m.match(/^cleave_(\d+)$/);
+  if (cleave) return { label: 'Разрубание', value: cleave[1], description: 'Наносит ' + cleave[1] + ' урона соседним врагам', kind: 'passive' };
+
+  // ── Simple exact-match (no numeric suffix) ──
+
+  if (m === 'taunt') return { label: 'Провокация', value: '', description: 'Враг обязан атаковать эту карту', kind: 'status' };
+  if (m === 'shield') return { label: 'Щит', value: '', description: 'Блокирует следующий входящий урон', kind: 'status' };
+  if (m === 'permanent_shield') return { label: 'Вечный щит', value: '', description: 'Блокирует весь входящий урон', kind: 'status' };
+  if (m === 'charge') return { label: 'Рывок', value: '', description: 'Может атаковать в первый ход', kind: 'status' };
+  if (m === 'lifesteal') return { label: 'Вампиризм', value: '', description: 'Лечит героя на величину нанесённого урона', kind: 'passive' };
+  if (m === 'freeze') return { label: 'Заморозка', value: '', description: 'Пропускает готовность к атаке', kind: 'status' };
+  if (m === 'aoe_freeze') return { label: 'Массовая заморозка', value: '', description: 'Замораживает всех врагов при розыгрыше', kind: 'battlecry' };
+  if (m === 'instant_kill') return { label: 'Мгновенное убийство', value: '', description: 'Уничтожает цель независимо от здоровья', kind: 'passive' };
+  if (m === 'bypass_taunt') return { label: 'Обход провокации', value: '', description: 'Может игнорировать провокацию', kind: 'passive' };
+  if (m === 'consume_ally') return { label: 'Поглощение союзника', value: '', description: 'Уничтожает союзника и получает его статы', kind: 'battlecry' };
+  if (m === 'choose_shield_damage') return { label: 'Выбор: щит или урон', value: '', description: 'При розыгрыше: щит союзнику или урон врагу', kind: 'battlecry' };
+  if (m === 'cast_random_spell') return { label: 'Уникальное заклинание', value: '', description: 'При розыгрыше выбирает один из эффектов: Техасский удар, Восстановление, Чёрный кнут или Полный покров', kind: 'battlecry' };
+  if (m === 'delete_target') return { label: 'Удаление цели', value: '', description: 'Уничтожает выбранную цель', kind: 'passive' };
+  if (m === 'battlecry_freeze') return { label: 'Эффект розыгрыша: заморозка', value: '', description: 'При розыгрыше замораживает цель', kind: 'battlecry' };
+  if (m === 'battlecry_draw') return { label: 'Эффект розыгрыша: добор', value: '', description: 'При розыгрыше берёт карту из колоды', kind: 'battlecry' };
+  if (m === 'cleave') return { label: 'Разрубание', value: '', description: 'Наносит урон соседним врагам', kind: 'passive' };
+  if (m === 'deathrattle') return { label: 'Предсмертный эффект', value: '', description: 'Срабатывает при гибели', kind: 'deathrattle' };
+
+  // ── Generic prefix fallbacks (checked last) ──
+
+  if (m.startsWith('deathrattle_')) return { label: 'Предсмертный эффект', value: '', description: 'Срабатывает при гибели карты', kind: 'deathrattle' };
+  if (m.startsWith('battlecry_')) return { label: 'Эффект розыгрыша', value: '', description: 'Срабатывает при розыгрыше карты', kind: 'battlecry' };
+  if (m.startsWith('spell_')) return { label: 'Заклинание', value: '', description: 'Эффект заклинания', kind: 'passive' };
+
+  return null;
+}
+
+/**
+ * Собирает эффекты с одной карты (героя или юнита на поле).
+ * @param {Object} unit — карта из state (hero или board)
+ * @param {'player'|'opponent'} side
+ * @param {'hero'|'board'} zone
+ * @param {Object} state — полный state
+ * @returns {Array}
+ */
+function collectUnitEffects(unit, side, zone, state) {
+  if (!unit) return [];
+  const results = [];
+  const mechanics = unit.mechanics || [];
+  const sourceName = unit.name || 'Карта';
+  const sourceId = unit.instance_id || '';
+
+  mechanics.forEach(function(mechanic) {
+    const parsed = parseMechanic(mechanic);
+    if (!parsed) return;
+
+    const effect = {
+      side: side,
+      zone: zone,
+      sourceName: sourceName,
+      sourceId: sourceId,
+      label: parsed.label,
+      value: parsed.value,
+      description: parsed.description,
+      targets: [],
+      kind: parsed.kind
+    };
+
+    // Collect aura targets
+    if (parsed.kind === 'aura') {
+      var friendlyBoard = side === 'player'
+        ? (state.player && state.player.board || [])
+        : (state.opponent && state.opponent.board || []);
+      var targets = collectAuraTargets(sourceId, side, friendlyBoard, zone);
+      effect.targets = targets;
+    }
+
+    results.push(effect);
+  });
+
+  // Frozen status (may be separate field, not in mechanics)
+  if (unit.is_frozen === true && !mechanics.some(function(m) { return m === 'freeze'; })) {
+    results.push({
+      side: side,
+      zone: zone,
+      sourceName: sourceName,
+      sourceId: sourceId,
+      label: 'Заморозка',
+      value: '',
+      description: 'Пропускает готовность к атаке',
+      targets: [],
+      kind: 'status'
+    });
+  }
+
+  return results;
+}
+
+/**
+ * Собирает имена целей ауры.
+ * @param {string} sourceInstanceId
+ * @param {'player'|'opponent'} side
+ * @param {Array} friendlyBoard
+ * @param {'hero'|'board'} sourceZone
+ * @returns {string[]}
+ */
+function collectAuraTargets(sourceInstanceId, side, friendlyBoard, sourceZone) {
+  if (!friendlyBoard || friendlyBoard.length === 0) return [];
+  return friendlyBoard
+    .filter(function(u) {
+      // Board aura doesn't buff self
+      if (sourceZone === 'board' && String(u.instance_id) === String(sourceInstanceId)) return false;
+      return true;
+    })
+    .map(function(u) {
+      return u.name || 'Существо';
+    });
+}
+
+/**
+ * Собирает все видимые эффекты на поле.
+ * @param {Object} state
+ * @returns {Array}
+ */
+function collectVisibleEffects(state) {
+  if (!state) return [];
+  const all = [];
+
+  // Player hero
+  if (state.player && state.player.hero) {
+    const heroEffects = collectUnitEffects(state.player.hero, 'player', 'hero', state);
+    heroEffects.forEach(function(e) { all.push(e); });
+  }
+
+  // Player board
+  const playerBoard = (state.player && state.player.board) || [];
+  playerBoard.forEach(function(unit) {
+    const unitEffects = collectUnitEffects(unit, 'player', 'board', state);
+    unitEffects.forEach(function(e) { all.push(e); });
+  });
+
+  // Opponent hero (PUBLIC only)
+  if (state.opponent && state.opponent.hero) {
+    const oppHeroEffects = collectUnitEffects(state.opponent.hero, 'opponent', 'hero', state);
+    oppHeroEffects.forEach(function(e) { all.push(e); });
+  }
+
+  // Opponent board (PUBLIC only)
+  const opponentBoard = (state.opponent && state.opponent.board) || [];
+  opponentBoard.forEach(function(unit) {
+    const unitEffects = collectUnitEffects(unit, 'opponent', 'board', state);
+    unitEffects.forEach(function(e) { all.push(e); });
+  });
+
+  return all;
+}
+
+/**
+ * Собирает эффекты модификаторов боя.
+ * @param {Object} modeConfig
+ * @returns {{summary: Object, details: Array}|null}
+ */
+function collectModeEffects(modeConfig) {
+  if (!modeConfig) return null;
+
+  const classic = modeConfig.classic || {};
+  const rewards = modeConfig.rewards || {};
+  const modeId = modeConfig.mode_id || getModeId(currentState);
+  const title = modeConfig.label || getModeUiMeta(currentState)?.label || 'Classic';
+  const turnDuration = classic.turn_duration_seconds ?? currentState?.turn_duration ?? 25;
+  const manaPerTurn = classic.mana_per_turn ?? 1;
+
+  let summary = 'Стандартные правила ExtraArena без дополнительных модификаторов.';
+  let status = modeId === 'classic' ? 'Стандартный' : 'Активный';
+  if (classic.spells_free === true) {
+    summary = 'Все заклинания стоят 0 маны.';
+  } else if (classic.summon_ready_on_play === true) {
+    summary = 'Существа готовы атаковать сразу после выхода на доску.';
+  } else if (classic.sudden_death_enabled === true) {
+    const start = classic.sudden_death_damage_start || 1;
+    const step = classic.sudden_death_damage_step || 1;
+    summary = 'Герои теряют здоровье каждый ход: старт ' + start + ', затем +' + step + '.';
+  } else if (classic.card_level_mode === 'max') {
+    summary = 'Все карты играют на максимальном уровне.';
+  } else if (modeId === 'extra_arena:blitz') {
+    summary = 'Короткие ходы, ускоренная мана и меньше здоровья у героев.';
+  } else if (modeId === 'training') {
+    summary = 'Тренировочный бой без рейтинговых наград.';
+  } else if (modeId === 'friendly') {
+    summary = 'Дружеский бой без изменения рейтинга.';
+  }
+
+  let levelValue = 'Стандартный';
+  let levelDescription = 'Берётся текущий уровень из коллекции.';
+  if (classic.card_level_mode === 'max') {
+    levelValue = 'Максимальный';
+    levelDescription = 'Все карты считаются максимального уровня.';
+  } else if (classic.card_level_mode === 'disabled') {
+    levelValue = 'Первый';
+    levelDescription = 'Уровни карт в этом режиме не учитываются.';
+  }
+
+  const rewardsEnabled = rewards.enabled !== false;
+  const rewardsDescription = rewardsEnabled
+    ? 'Трофеи, монеты, звёзды и победы.'
+    : 'Матч без изменения рейтинга и наград.';
+
+  return {
+    summary: {
+      title,
+      description: summary,
+      status
+    },
+    details: [
+      {
+        title: 'Длина хода',
+        value: turnDuration + 'с',
+        description: 'Время на решение до автозавершения.'
+      },
+      {
+        title: 'Мана за ход',
+        value: '+' + manaPerTurn,
+        description: 'В начале вашего хода.'
+      },
+      {
+        title: 'Уровень карт',
+        value: levelValue,
+        description: levelDescription
+      },
+      {
+        title: 'Награды',
+        value: rewardsEnabled ? 'Активны' : 'Отключены',
+        description: rewardsDescription
+      }
+    ]
+  };
+}
+
+/**
+ * Рендерит содержимое модалки эффектов.
+ * @param {Array} effects
+ * @param {Array} modeEffects
+ */
+function renderEffectsModal(effects, modeEffects) {
+  var fieldPanel = document.getElementById('effects-field-panel');
+  var modePanel = document.getElementById('effects-mode-panel');
+  if (!fieldPanel || !modePanel) return;
+
+  fieldPanel.innerHTML = '';
+  modePanel.innerHTML = '';
+
+  effects = effects || [];
+  modeEffects = modeEffects || null;
+
+  var playerHero = effects.filter(function(e) { return e.side === 'player' && e.zone === 'hero'; });
+  var playerBoard = effects.filter(function(e) { return e.side === 'player' && e.zone === 'board'; });
+  var opponentHero = effects.filter(function(e) { return e.side === 'opponent' && e.zone === 'hero'; });
+  var opponentBoard = effects.filter(function(e) { return e.side === 'opponent' && e.zone === 'board'; });
+
+  addEffectsSection(fieldPanel, 'Ваш герой', playerHero, 'player');
+  addEffectsSection(fieldPanel, 'Ваше поле', playerBoard, 'player');
+  addEffectsSection(fieldPanel, 'Герой и поле соперника', opponentHero.concat(opponentBoard), 'opponent');
+  renderModeEffectsPanel(modePanel, modeEffects);
+
+  if (!fieldPanel.children.length) {
+    var fieldEmpty = document.createElement('div');
+    fieldEmpty.className = 'effects-empty';
+    fieldEmpty.textContent = 'На поле нет активных эффектов';
+    fieldPanel.appendChild(fieldEmpty);
+  }
+
+  if (!modePanel.children.length) {
+    var modeEmpty = document.createElement('div');
+    modeEmpty.className = 'effects-empty';
+    modeEmpty.textContent = 'Модификаторы режима не активны';
+    modePanel.appendChild(modeEmpty);
+  }
+}
+
+function renderModeEffectsPanel(container, modeEffects) {
+  if (!container || !modeEffects) return;
+
+  const summary = modeEffects.summary || {};
+  const details = modeEffects.details || [];
+  if (!summary.title && details.length === 0) return;
+
+  const hero = document.createElement('article');
+  hero.className = 'mode-summary-card';
+
+  const heroText = document.createElement('div');
+  const heroTitle = document.createElement('h2');
+  heroTitle.textContent = summary.title || 'Режим игры';
+  const heroDesc = document.createElement('p');
+  heroDesc.textContent = summary.description || 'Особые правила этого боя.';
+  heroText.appendChild(heroTitle);
+  heroText.appendChild(heroDesc);
+
+  const status = document.createElement('strong');
+  status.textContent = summary.status || 'Активный';
+
+  hero.appendChild(heroText);
+  hero.appendChild(status);
+  container.appendChild(hero);
+
+  const grid = document.createElement('div');
+  grid.className = 'mode-info-grid';
+  details.forEach(function(item) {
+    grid.appendChild(createModeInfoCard(item));
+  });
+  container.appendChild(grid);
+}
+
+function createModeInfoCard(item) {
+  const card = document.createElement('article');
+  card.className = 'mode-info-card';
+
+  const title = document.createElement('h2');
+  title.textContent = item.title || 'Параметр';
+
+  const value = document.createElement('strong');
+  value.textContent = item.value || '—';
+
+  const desc = document.createElement('p');
+  desc.textContent = item.description || '';
+
+  card.appendChild(title);
+  card.appendChild(value);
+  card.appendChild(desc);
+  return card;
+}
+
+function addEffectsSection(container, title, list, sideClass) {
+  if (!container || !list || list.length === 0) return;
+
+  var kicker = document.createElement('p');
+  kicker.className = 'section-kicker';
+  kicker.textContent = title;
+  container.appendChild(kicker);
+
+  var effectList = document.createElement('div');
+  effectList.className = 'effect-list';
+  list.forEach(function(effect) {
+    effectList.appendChild(createEffectCard(effect, sideClass));
+  });
+  container.appendChild(effectList);
+}
+
+function createEffectCard(effect, sideClass) {
+  var card = document.createElement('article');
+  card.className = 'effect-card ' + (sideClass || effect.side || 'system');
+
+  var textWrap = document.createElement('div');
+  var title = document.createElement('h2');
+  title.className = 'effect-title';
+  var source = effect.sourceName || effect.label || 'Эффект';
+  title.appendChild(document.createTextNode(source));
+  if (effect.kind) {
+    var badge = document.createElement('span');
+    badge.className = 'badge';
+    badge.textContent = formatEffectKind(effect.kind);
+    title.appendChild(badge);
+  }
+
+  var desc = document.createElement('p');
+  desc.className = 'effect-desc';
+  desc.textContent = [
+    effect.label && effect.label !== source ? effect.label : '',
+    effect.description || ''
+  ].filter(Boolean).join(': ') || 'Активный эффект';
+
+  textWrap.appendChild(title);
+  textWrap.appendChild(desc);
+
+  if (effect.targets && effect.targets.length > 0) {
+    var targets = document.createElement('div');
+    targets.className = 'effect-targets';
+    targets.textContent = 'Затрагивает: ' + effect.targets.join(', ');
+    textWrap.appendChild(targets);
+  }
+
+  var value = document.createElement('span');
+  value.className = 'value-chip';
+  value.textContent = effect.value !== undefined && effect.value !== null && effect.value !== ''
+    ? effect.value
+    : formatEffectKind(effect.kind || 'active');
+
+  card.appendChild(textWrap);
+  card.appendChild(value);
+  return card;
+}
+
+function formatEffectKind(kind) {
+  const labels = {
+    battlecry: 'Эффект розыгрыша',
+    passive: 'Пассивная способность',
+    start: 'Стартовый бонус',
+    aura: 'Аура',
+    status: 'Статус',
+    deathrattle: 'После гибели',
+    mode: 'Режим',
+    active: 'Активно'
+  };
+  return labels[kind] || String(kind || 'Активно');
+}
+
+/**
+ * Экранирует HTML-символы.
+ */
+function escapeHtml(text) {
+  if (!text) return '';
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/**
+ * Открывает модалку активных эффектов.
+ */
+function openEffectsModal() {
+  var effects = collectVisibleEffects(currentState);
+  var modeEffects = collectModeEffects(currentState && currentState.mode_config);
+  renderEffectsModal(effects, modeEffects);
+  selectEffectsTab('field');
+  openBattleModal('effects');
+}
+
+/**
+ * Закрывает модалку активных эффектов.
+ */
+function closeEffectsModal() {
+  closeBattleModal();
+}
+
+function openTurnTimerModal() {
+  renderTurnTimerModal(currentState || {});
+  openBattleModal('timer');
+}
+
+function renderTurnTimerModal(state) {
+  const turnDuration = Number(state.turn_duration || getClassicModeParams(state).turn_duration_seconds || 25);
+  const remaining = Math.max(0, Number(state.turn_time_remaining ?? turnDuration));
+  const elapsed = Math.max(0, turnDuration - remaining);
+  const progress = turnDuration > 0 ? Math.min(360, Math.max(0, (elapsed / turnDuration) * 360)) : 0;
+  const isMyTurn = !!state.is_my_turn;
+
+  setText('turn-timer-modal-meta', 'Ход ' + (state.turn || currentTurnCount || 0));
+  setText('turn-timer-modal-remaining', String(Math.ceil(remaining)));
+  setText('turn-timer-modal-owner', isMyTurn ? 'Ваш ход' : 'Ход противника');
+  setText(
+    'turn-timer-modal-summary',
+    'Всего на ход: ' + Math.ceil(turnDuration) + ' сек. Прошло: ' + Math.floor(elapsed) + ' сек.'
+  );
+
+  const ring = document.getElementById('turn-timer-ring');
+  if (ring) ring.style.setProperty('--timer-progress', progress + 'deg');
+  renderTurnTimerHistory(state.turn_time_history || []);
+}
+
+function renderTurnTimerHistory(history) {
+  const container = document.getElementById('turn-timer-history');
+  if (!container) return;
+  container.innerHTML = '';
+
+  const rows = Array.isArray(history) ? history.slice(-8).reverse() : [];
+  if (rows.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'timer-history-empty';
+    empty.textContent = 'История времени появится после завершения первых ходов.';
+    container.appendChild(empty);
+    return;
+  }
+
+  rows.forEach(function(item) {
+    const side = item.side === 'opponent' ? 'opponent' : 'player';
+    const row = document.createElement('div');
+    row.className = 'timer-history-row ' + side;
+
+    const text = document.createElement('div');
+    const title = document.createElement('div');
+    title.className = 'timer-history-title';
+    title.textContent = 'Ход ' + (item.turn || '—');
+    const sideEl = document.createElement('span');
+    sideEl.className = 'timer-history-side';
+    sideEl.textContent = side === 'player' ? 'Игрок' : 'Оппонент';
+    text.appendChild(title);
+    text.appendChild(sideEl);
+
+    const value = document.createElement('strong');
+    value.className = 'timer-history-value';
+    value.textContent = formatTurnSeconds(item.elapsed_seconds);
+
+    row.appendChild(text);
+    row.appendChild(value);
+    container.appendChild(row);
+  });
+}
+
+function formatTurnSeconds(value) {
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds)) return '—';
+  const rounded = Math.max(0, Math.round(seconds));
+  return rounded + ' сек';
+}
+
+function openBattleModal(name) {
+  const layer = document.getElementById('battle-modal-layer');
+  if (!layer) return;
+
+  activeBattleModal = name;
+  layer.setAttribute('aria-hidden', 'false');
+  layer.classList.add('open');
+  const modalIds = {
+    logs: 'battle-log-overlay',
+    effects: 'effects-overlay-backdrop',
+    'card-info': 'card-info-modal',
+    timer: 'turn-timer-modal'
+  };
+  layer.querySelectorAll('.battle-modal').forEach(function(modal) {
+    const isActive = modal.id === modalIds[name];
+    modal.classList.toggle('is-active', isActive);
+    modal.setAttribute('aria-hidden', isActive ? 'false' : 'true');
+  });
+}
+
+function closeBattleModal() {
+  const layer = document.getElementById('battle-modal-layer');
+  activeBattleModal = null;
+  if (layer) {
+    layer.setAttribute('aria-hidden', 'true');
+    layer.classList.remove('open');
+    layer.querySelectorAll('.battle-modal').forEach(function(modal) {
+      modal.classList.remove('is-active');
+      modal.setAttribute('aria-hidden', 'true');
+    });
+  }
+}
+
+function selectEffectsTab(tabName) {
+  const tabs = document.querySelectorAll('.battle-modal-tab[data-tab]');
+  tabs.forEach(tab => {
+    const selected = tab.dataset.tab === tabName;
+    tab.setAttribute('aria-selected', selected ? 'true' : 'false');
+  });
+
+  const fieldPanel = document.getElementById('effects-field-panel');
+  const modePanel = document.getElementById('effects-mode-panel');
+  if (fieldPanel) fieldPanel.classList.toggle('is-active', tabName === 'field');
+  if (modePanel) modePanel.classList.toggle('is-active', tabName === 'mode');
+}
+
+function bindScrollSafeClose(modal) {
+  if (!modal) return;
+  let scrollStarted = false;
+  let startX = 0;
+  let startY = 0;
+
+  modal.querySelectorAll('.battle-modal-scroll').forEach(scroller => {
+    scroller.addEventListener('pointerdown', function(e) {
+      scrollStarted = false;
+      startX = e.clientX;
+      startY = e.clientY;
+    });
+    scroller.addEventListener('pointermove', function(e) {
+      if (Math.abs(e.clientX - startX) > 6 || Math.abs(e.clientY - startY) > 6) {
+        scrollStarted = true;
+      }
+    });
+    scroller.addEventListener('click', function(e) {
+      if (scrollStarted) {
+        e.stopPropagation();
+        scrollStarted = false;
+      }
+    });
+  });
 }
 
 // ============================================
@@ -3055,19 +4937,6 @@ function initArenaMusic() {
 // ============================================
 
 function bindUIHandlers() {
-  // Card info modal — close on backdrop click or Escape
-  const cardInfoModal = document.getElementById('card-info-modal');
-  if (cardInfoModal) {
-    cardInfoModal.addEventListener('click', function(e) {
-      if (e.target === cardInfoModal || e.target.id === 'card-info-modal') {
-        closeCardInfo();
-      }
-    });
-    document.addEventListener('keydown', function(e) {
-      if (e.key === 'Escape') closeCardInfo();
-    });
-  }
-
   // Opponent info button
   const opponentInfoBtn = document.getElementById('opponent-info-btn');
   if (opponentInfoBtn) {
@@ -3104,18 +4973,75 @@ function bindUIHandlers() {
   // Кнопка лога боя
   const logBtn = document.getElementById('battle-log-btn');
   const logOverlay = document.getElementById('battle-log-overlay');
+  const battleModalLayer = document.getElementById('battle-modal-layer');
   if (logBtn && logOverlay) {
     logBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      logOverlay.setAttribute('aria-hidden', 'false');
-    });
-
-    // Закрытие лога по клику в любом месте внутри overlay
-    logOverlay.addEventListener('click', function(e) {
-      if (logOverlay.getAttribute('aria-hidden') === 'true') return;
-      logOverlay.setAttribute('aria-hidden', 'true');
+      openBattleModal('logs');
     });
   }
+
+  // Кнопка активных эффектов
+  const effectsBtn = document.getElementById('effects-btn');
+  const effectsBackdrop = document.getElementById('effects-overlay-backdrop');
+  if (effectsBtn && effectsBackdrop) {
+    effectsBtn.addEventListener('click', function(e) {
+      e.stopPropagation();
+      openEffectsModal();
+    });
+  }
+
+  const timerBtn = document.getElementById('turn-timer-container');
+  if (timerBtn) {
+    timerBtn.setAttribute('role', 'button');
+    timerBtn.setAttribute('tabindex', '0');
+    timerBtn.setAttribute('title', 'Статистика времени ходов');
+    timerBtn.addEventListener('click', function(e) {
+      e.stopPropagation();
+      openTurnTimerModal();
+    });
+    timerBtn.addEventListener('keydown', function(e) {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      e.preventDefault();
+      openTurnTimerModal();
+    });
+  }
+
+  if (battleModalLayer) {
+    battleModalLayer.addEventListener('click', function() {
+      if (activeBattleModal) closeBattleModal();
+    });
+  }
+
+  [
+    logOverlay,
+    effectsBackdrop,
+    document.getElementById('card-info-modal'),
+    document.getElementById('turn-timer-modal')
+  ].forEach(function(modal) {
+    if (!modal) return;
+    bindScrollSafeClose(modal);
+    modal.addEventListener('click', function(e) {
+      if (e.target.closest('.battle-modal-tabs')) return;
+      closeBattleModal();
+    });
+  });
+
+  const effectsTabs = document.getElementById('effects-tabs');
+  if (effectsTabs) {
+    effectsTabs.addEventListener('click', function(e) {
+      const tab = e.target.closest('.battle-modal-tab[data-tab]');
+      if (!tab) return;
+      e.stopPropagation();
+      selectEffectsTab(tab.dataset.tab);
+    });
+  }
+
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape' && activeBattleModal) {
+      closeBattleModal();
+    }
+  });
   
   // Модальное окно сдачи
   const surrenderModal = document.getElementById('surrender-modal');
@@ -3171,7 +5097,7 @@ function bindUIHandlers() {
   if (resultCloseBtn) {
     resultCloseBtn.addEventListener('click', () => {
       console.log('[ARENA] Возврат в главное меню');
-      window.location.href = '/';
+      window.location.replace('/');
     });
   }
   
@@ -3179,13 +5105,20 @@ function bindUIHandlers() {
   if (resultOverlay) {
     resultOverlay.addEventListener('click', () => {
       console.log('[ARENA] Возврат в главное меню (клик на overlay)');
-      window.location.href = '/';
+      window.location.replace('/');
     });
   }
 }
 
 function openSurrenderModal() {
   const modal = document.getElementById('surrender-modal');
+  const lossValue = document.getElementById('surrender-loss-trophies');
+  arenaHaptic('warning', { key: 'surrender-open', minInterval: 350 });
+  if (lossValue) {
+    const delta = getEstimatedSurrenderTrophyDelta();
+    lossValue.textContent = delta === null ? 'после боя' : String(delta);
+    lossValue.classList.toggle('is-neutral', delta === 0);
+  }
   if (modal) {
     modal.style.display = 'flex';
     modal.setAttribute('aria-hidden', 'false');
@@ -3200,4 +5133,37 @@ function closeSurrenderModal() {
   }
 }
 
+window.ExtraArenaAppBack = function() {
+  const resultModal = document.getElementById('battle-result-modal');
+  if (resultModal && resultModal.getAttribute('aria-hidden') !== 'true' && resultModal.style.display !== 'none') {
+    window.location.replace('/');
+    return true;
+  }
 
+  const surrenderModal = document.getElementById('surrender-modal');
+  if (surrenderModal && surrenderModal.getAttribute('aria-hidden') !== 'true' && surrenderModal.style.display !== 'none') {
+    closeSurrenderModal();
+    return true;
+  }
+
+  openSurrenderModal();
+  return true;
+};
+
+function getEstimatedSurrenderTrophyDelta() {
+  const rewards = currentState?.mode_config?.rewards;
+  if (rewards && (rewards.enabled === false || rewards.trophies === false)) return 0;
+  const modeId = getModeId(currentState);
+  if (modeId === 'training' || modeId === 'friendly') return 0;
+
+  const trophyValue = currentState?.player?.trophies
+    ?? currentState?.player_trophies
+    ?? currentState?.trophies
+    ?? currentState?.trophy_total;
+  const trophies = parseInt(trophyValue, 10);
+  if (!Number.isFinite(trophies)) return null;
+
+  const tier = SURRENDER_TROPHY_TIERS.find(item => trophies >= item.min && trophies <= item.max)
+    || SURRENDER_TROPHY_TIERS[SURRENDER_TROPHY_TIERS.length - 1];
+  return tier.penalty;
+}

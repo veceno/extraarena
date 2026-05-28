@@ -1,0 +1,50 @@
+{
+  "model_version": "classic_action_conditioned_onnx_v1",
+  "source_checkpoint": "/Users/laveqox/Documents/ExtraArenaRaS/ai/train_v2/runs/v4_opti_from_lite_0357_20260524_233907/checkpoints/update_0576.npz",
+  "obs_dim": 1456,
+  "action_feature_dim": 171,
+  "max_candidate_actions": 601,
+  "placement_mode": "append_only",
+  "inputs": [
+    "observation",
+    "action_features"
+  ],
+  "outputs": [
+    "logits",
+    "value"
+  ],
+  "config": {
+    "total_updates": 900,
+    "episodes_per_update": 168,
+    "max_steps_per_episode": 280,
+    "gamma": 0.99,
+    "gae_lambda": 0.95,
+    "clip_epsilon": 0.2,
+    "learning_rate": 8e-05,
+    "entropy_coef": 0.018,
+    "value_coef": 0.5,
+    "hidden_dim": 256,
+    "action_hidden_dim": 128,
+    "include_action_features": true,
+    "include_preview_features": false,
+    "seed": 35742,
+    "metrics_path": "ai/train_v2/runs/v4_opti_from_lite_0357_20260524_233907/metrics.jsonl",
+    "eval_every_updates": 25,
+    "eval_games": 12,
+    "resume_checkpoint": "ai/train_v2/runs/v4_lite_from_post_random_0251_20260524_225605/checkpoints/update_0357.npz",
+    "start_update": 357,
+    "fail_on_non_finite": true,
+    "min_batch_transitions": 2,
+    "rollout_workers": 84,
+    "verify_mask": false,
+    "placement_mode": "append_only",
+    "profile_actions": false,
+    "action_features_dtype": "float16",
+    "opponent_mix": "self:0.35,v4_lite:0.25,v4_max:0.20,greedy_face:0.15,random:0.05",
+    "learner_side": "random",
+    "starting_player": "random",
+    "level_handicap_rate": 0.0,
+    "learner_level": 1,
+    "opponent_level": 1
+  }
+}

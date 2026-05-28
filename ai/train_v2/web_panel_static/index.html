@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TrainV2 Panel</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <h1>TrainV2 Panel</h1>
+    <div id="summary" class="summary"></div>
+    <button id="refresh-btn" class="btn" title="Refresh">&#x21bb;</button>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab-btn active" data-tab="runs">Runs</button>
+    <button class="tab-btn" data-tab="profiles">Profiles</button>
+    <button class="tab-btn" data-tab="releases">Releases</button>
+    <button class="tab-btn" data-tab="evidence">Evidence</button>
+    <button class="tab-btn" data-tab="artifacts">Artifacts</button>
+    <button class="tab-btn" data-tab="doctor">Doctor</button>
+  </nav>
+
+  <main>
+    <section id="panel-runs" class="tab-panel active">
+      <div class="table-wrap"><table id="table-runs"><thead></thead><tbody></tbody></table></div>
+      <div id="detail-runs" class="detail"></div>
+    </section>
+    <section id="panel-profiles" class="tab-panel">
+      <div class="table-wrap"><table id="table-profiles"><thead></thead><tbody></tbody></table></div>
+    </section>
+    <section id="panel-releases" class="tab-panel">
+      <div class="table-wrap"><table id="table-releases"><thead></thead><tbody></tbody></table></div>
+      <div id="detail-releases" class="detail"></div>
+    </section>
+    <section id="panel-evidence" class="tab-panel">
+      <div class="table-wrap"><table id="table-acceptance"><thead></thead><tbody></tbody></table></div>
+      <div class="table-wrap"><table id="table-shadow"><thead></thead><tbody></tbody></table></div>
+      <div id="detail-evidence" class="detail"></div>
+    </section>
+    <section id="panel-artifacts" class="tab-panel">
+      <div class="table-wrap"><table id="table-artifacts"><thead></thead><tbody></tbody></table></div>
+      <div id="detail-artifacts" class="detail"></div>
+    </section>
+    <section id="panel-doctor" class="tab-panel">
+      <div id="doctor-content" class="detail"></div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

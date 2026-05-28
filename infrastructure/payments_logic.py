@@ -47,7 +47,15 @@ async def process_successful_payment(
         logger.warning("Попытка обработать платеж %s, но записи в БД нет", payment_id)
         return result
 
-    if payment_record.get("rewards_processed"):
+    claim_payment = getattr(db, "claim_payment_for_processing", None)
+    if claim_payment:
+        claimed_record = await claim_payment(payment_id)
+        if not claimed_record:
+            result["status"] = "already_processed"
+            logger.info("Платеж %s уже был обработан ранее или обрабатывается сейчас", payment_id)
+            return result
+        payment_record = claimed_record
+    elif payment_record.get("rewards_processed"):
         result["status"] = "already_processed"
         logger.info("Платеж %s уже был обработан ранее, пропускаем", payment_id)
         return result
@@ -78,6 +86,9 @@ async def process_successful_payment(
             payment_id,
             item_type,
         )
+        release_claim = getattr(db, "release_payment_processing_claim", None)
+        if release_claim:
+            await release_claim(payment_id)
         return result
 
     mail_content = None
@@ -105,27 +116,29 @@ async def process_successful_payment(
         logger=logger,
     )
 
-    # Помечаем платеж как обработанный (тот же подход, что и раньше в коде)
-    try:
-        updated_rows = await db.fetchval(
-            """
-            UPDATE payments
-            SET rewards_processed = TRUE
-            WHERE payment_id = $1 AND rewards_processed = FALSE
-            RETURNING 1
-            """,
-            payment_id,
-        )
-        if updated_rows:
-            logger.info("Платеж %s помечен как обработанный", payment_id)
-        else:
-            logger.warning(
-                "Платеж %s не удалось пометить как обработанный (возможно, параллельный процесс успел раньше)",
+    if claim_payment:
+        logger.info("Платеж %s помечен как обработанный атомарной заявкой перед выдачей", payment_id)
+    else:
+        try:
+            updated_rows = await db.fetchval(
+                """
+                UPDATE payments
+                SET rewards_processed = TRUE
+                WHERE payment_id = $1 AND rewards_processed = FALSE
+                RETURNING 1
+                """,
                 payment_id,
             )
-    except Exception as mark_err:  # pragma: no cover - защитный блок
-        logger.error("Ошибка фиксации статуса платежа %s: %s", payment_id, mark_err, exc_info=True)
-        result["warnings"].append(str(mark_err))
+            if updated_rows:
+                logger.info("Платеж %s помечен как обработанный", payment_id)
+            else:
+                logger.warning(
+                    "Платеж %s не удалось пометить как обработанный (возможно, параллельный процесс успел раньше)",
+                    payment_id,
+                )
+        except Exception as mark_err:  # pragma: no cover - защитный блок
+            logger.error("Ошибка фиксации статуса платежа %s: %s", payment_id, mark_err, exc_info=True)
+            result["warnings"].append(str(mark_err))
 
     result["status"] = "processed"
     return result
@@ -243,17 +256,38 @@ async def _grant_rewards_for_item(
         package_type = metadata.get("package_type", "")
         pkg = GEM_PACKAGES.get(package_type, {})
         gems = int(pkg.get("gems") or metadata.get("package_gems") or 0)
+        if pkg.get("one_time") and not metadata.get("skip_starter_mark"):
+            await db.execute(
+                """
+                INSERT INTO user_settings (user_id, starter_pack_used)
+                VALUES ($1, FALSE)
+                ON CONFLICT (user_id) DO NOTHING
+                """,
+                user_id,
+            )
+            starter_claimed = await db.fetchval(
+                """
+                UPDATE user_settings
+                SET starter_pack_used = TRUE
+                WHERE user_id = $1
+                  AND starter_pack_used = FALSE
+                RETURNING 1
+                """,
+                user_id,
+            )
+            if not starter_claimed:
+                logger.error("gems_package: starter_once уже был использован user_id=%s", user_id)
+                return {
+                    "rewards_given": False,
+                    "rewards_text": rewards_text,
+                    "attachments": attachments,
+                }
         if gems > 0:
             await db.execute("UPDATE users SET gems = gems + $1 WHERE user_id = $2", gems, user_id)
             _append_currency("gems", gems, "💎 гемов")
             rewards_given = True
         else:
             logger.error("gems_package: не удалось определить количество гемов для package_type=%s", package_type)
-        if rewards_given and pkg.get("one_time") and not metadata.get("skip_starter_mark"):
-            await db.execute(
-                "UPDATE user_settings SET starter_pack_used = TRUE WHERE user_id = $1",
-                user_id,
-            )
 
     elif item_type and item_type.startswith("gems_"):
         try:
@@ -268,31 +302,36 @@ async def _grant_rewards_for_item(
         from datetime import datetime, timedelta
 
         expires_at = datetime.now() + timedelta(days=30)
-        await db.execute(
-            "UPDATE users SET extra_pass = 'active', extra_pass_expires_at = $1 WHERE user_id = $2",
+        updated = await db.fetchval(
+            "UPDATE users SET extra_pass = 'active', extra_pass_expires_at = $1 WHERE user_id = $2 RETURNING 1",
             expires_at,
             user_id,
         )
-        attachments["extrapass"] = True
-        rewards_text.append("⭐ ExtraPass (30 дней)")
-        rewards_given = True
+        if updated:
+            attachments["extrapass"] = True
+            rewards_text.append("⭐ ExtraPass (30 дней)")
+            rewards_given = True
+        else:
+            logger.error("extrapass: пользователь %s не найден", user_id)
 
     elif item_type == "extrapass_ultra":
         from datetime import datetime, timedelta
 
         expires_at = datetime.now() + timedelta(days=30)
-        await db.execute(
-            "UPDATE users SET extra_pass = 'active', extra_pass_expires_at = $1 WHERE user_id = $2",
+        updated = await db.fetchval(
+            "UPDATE users SET extra_pass = 'ultra', extra_pass_expires_at = $1 WHERE user_id = $2 RETURNING 1",
             expires_at,
             user_id,
         )
-        # ExtraPass Ultra дает дополнительные бонусы
-        await db.execute("UPDATE users SET gems = gems + 500 WHERE user_id = $1", user_id)
-        _append_currency("gems", 500, "💎 гемов (бонус Ultra)")
-        attachments["extrapass"] = True
-        attachments["extrapass_ultra"] = True
-        rewards_text.append("💫 ExtraPass Ultra (30 дней)")
-        rewards_given = True
+        if updated:
+            await db.execute("UPDATE users SET gems = gems + 500 WHERE user_id = $1", user_id)
+            _append_currency("gems", 500, "💎 гемов (бонус Ultra)")
+            attachments["extrapass"] = True
+            attachments["extrapass_ultra"] = True
+            rewards_text.append("💫 ExtraPass Ultra (30 дней)")
+            rewards_given = True
+        else:
+            logger.error("extrapass_ultra: пользователь %s не найден", user_id)
 
     elif item_type == "extrapass_gift":
         from datetime import datetime, timedelta
@@ -304,10 +343,18 @@ async def _grant_rewards_for_item(
             is_ultra = metadata.get("ultra") in {True, "true", "1"}
 
             expires_at = datetime.now() + timedelta(days=30)
-            await db.execute(
-                "UPDATE users SET extra_pass = 'active', extra_pass_expires_at = $1 WHERE user_id = $2",
-                expires_at, recipient_id,
+            pass_mode = "ultra" if is_ultra else "active"
+            updated = await db.fetchval(
+                "UPDATE users SET extra_pass = $1, extra_pass_expires_at = $2 WHERE user_id = $3 RETURNING 1",
+                pass_mode, expires_at, recipient_id,
             )
+            if not updated:
+                logger.error("extrapass_gift: получатель %s не найден", recipient_id)
+                return {
+                    "rewards_given": False,
+                    "rewards_text": rewards_text,
+                    "attachments": attachments,
+                }
 
             if is_ultra:
                 await db.execute(
@@ -510,7 +557,7 @@ async def _create_purchase_mail(
     content = "\n".join(text_lines)
 
     try:
-        return await db.create_mail(
+        mail_result = await db.create_mail(
             user_id=user_id,
             sender="Система платежей",
             subject=subject,
@@ -519,7 +566,14 @@ async def _create_purchase_mail(
             icon="💳" if source == "yookassa_webhook" else "⭐",
             attachments=attachments if attachments else None,
         )
+        if not mail_result.get("success"):
+            logger.error(
+                "Не удалось создать письмо о покупке пользователю %s: %s",
+                user_id,
+                mail_result.get("error", "unknown"),
+            )
+            return None
+        return mail_result
     except Exception as mail_err:  # pragma: no cover - страховка
         logger.error("Не удалось создать письмо о покупке пользователю %s: %s", user_id, mail_err, exc_info=True)
         return None
-

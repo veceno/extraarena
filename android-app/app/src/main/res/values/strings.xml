@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ExtraArena</string>
+    <string name="default_notification_channel_id">extraarena_game</string>
+    <string name="extra_arena_widget_name">Модификатор ExtraArena</string>
+    <string name="squad_personal_cbrp_widget_name">Твой вклад CBRP в скваде</string>
+    <string name="shop_particles_widget_name">Новые частицы карт в магазине</string>
+</resources>

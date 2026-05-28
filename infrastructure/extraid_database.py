@@ -2,12 +2,21 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 import asyncpg
 
 logger = logging.getLogger(__name__)
+
+SYNTHETIC_USER_ID_MIN = 9_100_000_000_000
+
+
+def _coerce_uuid(value):
+    if value is None or isinstance(value, uuid.UUID):
+        return value
+    return uuid.UUID(str(value))
 
 
 class ExtraIDDatabase:
@@ -238,9 +247,18 @@ class ExtraIDDatabase:
     async def _ensure_synthetic_user_id_seq(self) -> None:
         await self.execute("""
             CREATE SEQUENCE IF NOT EXISTS synthetic_user_id_seq
-                START WITH 9000000000000
+                START WITH 9100000000000
                 INCREMENT BY 1
         """)
+        try:
+            current = await self.fetchval("SELECT last_value FROM synthetic_user_id_seq")
+            if current is None or int(current) < SYNTHETIC_USER_ID_MIN - 1:
+                await self.fetchval(
+                    "SELECT setval('synthetic_user_id_seq', $1, true)",
+                    SYNTHETIC_USER_ID_MIN - 1,
+                )
+        except Exception:
+            logger.exception("Failed to normalize synthetic_user_id_seq")
 
     # ═══════════════════════════════════════════════════════════════════
     # ExtraID account methods
@@ -255,6 +273,19 @@ class ExtraIDDatabase:
     async def get_extra_account_by_email(self, email: str) -> dict | None:
         row = await self.fetchrow(
             "SELECT * FROM extra_accounts WHERE LOWER(email) = LOWER($1) AND deleted_at IS NULL", email
+        )
+        return dict(row) if row else None
+
+    async def get_any_extra_account_by_email(self, email: str) -> dict | None:
+        row = await self.fetchrow(
+            """
+            SELECT *
+            FROM extra_accounts
+            WHERE LOWER(email) = LOWER($1)
+            ORDER BY deleted_at IS NULL DESC, created_at DESC
+            LIMIT 1
+            """,
+            email,
         )
         return dict(row) if row else None
 
@@ -273,18 +304,36 @@ class ExtraIDDatabase:
         return dict(row)
 
     async def get_synthetic_user_id(self) -> int:
-        return await self.fetchval("SELECT nextval('synthetic_user_id_seq')")
+        for _ in range(100):
+            user_id = int(await self.fetchval("SELECT nextval('synthetic_user_id_seq')"))
+            if user_id < SYNTHETIC_USER_ID_MIN:
+                await self.fetchval(
+                    "SELECT setval('synthetic_user_id_seq', $1, true)",
+                    SYNTHETIC_USER_ID_MIN - 1,
+                )
+                continue
+            try:
+                exists = await self.fetchval("SELECT 1 FROM users WHERE user_id = $1", user_id)
+            except Exception:
+                exists = None
+            if not exists:
+                return user_id
+        raise RuntimeError("failed_to_allocate_synthetic_user_id")
 
-    async def mark_reg_bonus_claimed(self, extra_account_id) -> None:
-        await self.execute(
-            "UPDATE extra_accounts SET reg_bonus_claimed = TRUE WHERE id = $1",
-            extra_account_id
+    async def mark_reg_bonus_claimed(self, extra_account_id) -> bool:
+        result = await self.execute(
+            """
+            UPDATE extra_accounts SET reg_bonus_claimed = TRUE
+            WHERE id = $1 AND reg_bonus_claimed = FALSE
+            """,
+            _coerce_uuid(extra_account_id)
         )
+        return result != "UPDATE 0"
 
     async def soft_delete_extra_account(self, extra_account_id) -> None:
         await self.execute(
             "UPDATE extra_accounts SET deleted_at = NOW() WHERE id = $1",
-            extra_account_id
+            _coerce_uuid(extra_account_id)
         )
 
     # ═══════════════════════════════════════════════════════════════════
@@ -306,6 +355,10 @@ class ExtraIDDatabase:
         return dict(row) if row else {}
 
     async def verify_session(self, session_id, token: str) -> dict | None:
+        try:
+            session_id = _coerce_uuid(session_id)
+        except (ValueError, TypeError, AttributeError):
+            return None
         row = await self.fetchrow(
             """
             SELECT * FROM auth_sessions
@@ -324,6 +377,10 @@ class ExtraIDDatabase:
         return dict(row)
 
     async def revoke_session(self, session_id) -> bool:
+        try:
+            session_id = _coerce_uuid(session_id)
+        except (ValueError, TypeError, AttributeError):
+            return False
         result = await self.execute(
             """
             UPDATE auth_sessions SET revoked = TRUE, revoked_at = NOW()
@@ -385,7 +442,7 @@ class ExtraIDDatabase:
             UPDATE bot_auth_codes SET used_at = NOW(), session_id = $1
             WHERE code = $2
             """,
-            session_id, code
+            _coerce_uuid(session_id), code
         )
 
     async def cleanup_old_bot_codes(self, user_id: int) -> None:
@@ -411,6 +468,7 @@ class ExtraIDDatabase:
         raw_user_agent: str | None = None
     ) -> None:
         try:
+            session_id = _coerce_uuid(session_id) if session_id else None
             await self.execute(
                 """
                 INSERT INTO device_analytics (

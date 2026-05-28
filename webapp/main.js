@@ -332,25 +332,10 @@ function resolveUserId() {
   // Пробуем получить initData разными способами
   let tgInitData = null;
   if (tg) {
-    // Основной способ - initData (полная строка для серверной проверки)
     tgInitData = tg.initData;
-    
-    // Если initData пустой, но есть initDataUnsafe с user, пробуем получить user_id напрямую
-    if (!tgInitData && tg.initDataUnsafe) {
-      // Проверяем, что initDataUnsafe не пустой объект
-      const hasUserData = tg.initDataUnsafe.user && tg.initDataUnsafe.user.id;
-      if (hasUserData) {
-        const userId = tg.initDataUnsafe.user.id;
-        console.log("Используем initDataUnsafe.user.id:", userId);
-        console.log("initDataUnsafe полный:", JSON.stringify(tg.initDataUnsafe));
-        return userId;
-      }
-    }
-    
-    // Если initData есть, используем его
     if (tgInitData && tgInitData.trim() !== "") {
       console.log("Найден initData:", tgInitData.substring(0, 50) + "...");
-      return tgInitData; // Return initData for server-side verification
+      return tgInitData;
     }
   }
 
@@ -358,7 +343,7 @@ function resolveUserId() {
   const urlId = urlParams.get("user_id");
   if (urlId) {
     console.log("Используем user_id из URL:", urlId);
-    return Number(urlId);
+    return urlId;
   }
   
   console.warn("Не удалось получить данные авторизации.");
@@ -369,6 +354,37 @@ function resolveUserId() {
   console.warn("tg.platform:", tg?.platform);
   console.warn("tg.version:", tg?.version);
   return null;
+}
+
+function getAndroidBridge() {
+  return window.ExtraArenaApp || null;
+}
+
+function isAndroidAppShell() {
+  const params = new URLSearchParams(window.location.search);
+  return params.get("ea_platform") === "android_app" || !!getAndroidBridge();
+}
+
+function openExternalPaymentUrl(url) {
+  if (!url) return false;
+  try {
+    const bridge = getAndroidBridge();
+    if (isAndroidAppShell() && bridge && typeof bridge.openExternal === "function") {
+      bridge.openExternal(url);
+      return true;
+    }
+  } catch (error) {
+    console.warn("Не удалось открыть ссылку через AndroidBridge:", error);
+  }
+
+  const link = document.createElement("a");
+  link.href = url;
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  return true;
 }
 
 // Device analytics — send once per session
@@ -595,6 +611,12 @@ function getDefaultSettings() {
     notif_news: false,
     notif_dice: false,
     notif_generator: true,
+    notif_shop: false,
+    notif_reminders: true,
+    notif_squad_member_role: true,
+    notif_squad_new_member: true,
+    notif_squad_disbanded: true,
+    notif_squad_boost: true,
     ads_enabled: true,
     sound_music: true,
     sound_sfx: true,
@@ -893,12 +915,12 @@ function renderProfile(data) {
   if (data.settings) {
     currentSettings = data.settings;
     renderSettings(data.settings);
-    // Управляем музыкой в соответствии с настройками
     if (data.settings.sound_music !== false) {
       toggleMusic(true);
     } else {
       toggleMusic(false);
     }
+    window._sfxEnabled = data.settings.sound_sfx ?? true;
   }
 }
 
@@ -1000,32 +1022,32 @@ function renderSettings(settings) {
     <div class="setting-group">
       <div class="setting-group-title">🔔 Уведомления</div>
       <div class="setting-item">
-        <span class="setting-label">Уведомления о кейсах</span>
-        <div class="toggle-switch ${mergedSettings.notif_cases ? "active" : ""}" data-setting="notif_cases"></div>
-      </div>
-      <div class="setting-item">
-        <span class="setting-label">Ежедневные награды</span>
-        <div class="toggle-switch ${mergedSettings.notif_daily_rewards ? "active" : ""}" data-setting="notif_daily_rewards"></div>
-      </div>
-      <div class="setting-item">
-        <span class="setting-label">Приглашения в игру</span>
-        <div class="toggle-switch ${mergedSettings.notif_game_invites ? "active" : ""}" data-setting="notif_game_invites"></div>
-      </div>
-      <div class="setting-item">
-        <span class="setting-label">Запросы в друзья</span>
-        <div class="toggle-switch ${mergedSettings.notif_friend_requests ? "active" : ""}" data-setting="notif_friend_requests"></div>
-      </div>
-      <div class="setting-item">
-        <span class="setting-label">События</span>
-        <div class="toggle-switch ${mergedSettings.notif_events ? "active" : ""}" data-setting="notif_events"></div>
-      </div>
-      <div class="setting-item">
-        <span class="setting-label">Новости</span>
-        <div class="toggle-switch ${mergedSettings.notif_news ? "active" : ""}" data-setting="notif_news"></div>
+        <span class="setting-label">Новое в магазине</span>
+        <div class="toggle-switch ${mergedSettings.notif_shop ? "active" : ""}" data-setting="notif_shop"></div>
       </div>
       <div class="setting-item">
         <span class="setting-label">Генератор ключей</span>
         <div class="toggle-switch ${mergedSettings.notif_generator ? "active" : ""}" data-setting="notif_generator"></div>
+      </div>
+      <div class="setting-item">
+        <span class="setting-label">Напоминания</span>
+        <div class="toggle-switch ${mergedSettings.notif_reminders ? "active" : ""}" data-setting="notif_reminders"></div>
+      </div>
+      <div class="setting-item">
+        <span class="setting-label">Сквад: повышение/понижение</span>
+        <div class="toggle-switch ${mergedSettings.notif_squad_member_role ? "active" : ""}" data-setting="notif_squad_member_role"></div>
+      </div>
+      <div class="setting-item">
+        <span class="setting-label">Сквад: новый участник</span>
+        <div class="toggle-switch ${mergedSettings.notif_squad_new_member ? "active" : ""}" data-setting="notif_squad_new_member"></div>
+      </div>
+      <div class="setting-item">
+        <span class="setting-label">Сквад расформирован</span>
+        <div class="toggle-switch ${mergedSettings.notif_squad_disbanded ? "active" : ""}" data-setting="notif_squad_disbanded"></div>
+      </div>
+      <div class="setting-item">
+        <span class="setting-label">Сквад Boost</span>
+        <div class="toggle-switch ${mergedSettings.notif_squad_boost ? "active" : ""}" data-setting="notif_squad_boost"></div>
       </div>
     </div>
 
@@ -1101,6 +1123,10 @@ function renderSettings(settings) {
       // Специальная обработка для музыки
       if (setting === "sound_music") {
         toggleMusic(newValue);
+        window._musicEnabled = newValue;
+      }
+      if (setting === "sound_sfx") {
+        window._sfxEnabled = newValue;
       }
 
       const authData = resolveUserId();
@@ -1123,6 +1149,10 @@ function renderSettings(settings) {
           toggle.classList.toggle("active"); // Откатываем изменение
           if (setting === "sound_music") {
             toggleMusic(!newValue); // Откатываем музыку
+            window._musicEnabled = !newValue;
+          }
+          if (setting === "sound_sfx") {
+            window._sfxEnabled = !newValue;
           }
           await showGameAlert("Не удалось сохранить настройку. Попробуйте еще раз.", "❌");
         }
@@ -1131,6 +1161,10 @@ function renderSettings(settings) {
         toggle.classList.toggle("active"); // Откатываем изменение
         if (setting === "sound_music") {
           toggleMusic(!newValue); // Откатываем музыку
+          window._musicEnabled = !newValue;
+        }
+        if (setting === "sound_sfx") {
+          window._sfxEnabled = !newValue;
         }
       }
     });
@@ -2283,8 +2317,7 @@ function initEventHandlers() {
         // Загружаем почту при открытии
         const authData = resolveUserId();
         if (authData) {
-          // Загружаем почту и автоматически помечаем все непрочитанные письма как прочитанные
-          loadMailAndMarkAsRead(authData);
+          loadMail(authData);
         }
       } else if (menuType === "support") {
         openModal("support-modal");
@@ -2617,6 +2650,14 @@ function initEventHandlers() {
     });
   });
 
+  setTimeout(() => {
+    const section = new URLSearchParams(window.location.search).get("section");
+    const target = section === "generator" ? "arena" : section;
+    if (!["shop", "arena", "squads", "collection", "community"].includes(target)) return;
+    const navItem = document.querySelector(`.nav-item[data-section="${target}"]`);
+    if (navItem) navItem.click();
+  }, 200);
+
   // Кнопки арены
   const startBattleBtn = document.getElementById("start-battle");
   if (startBattleBtn) {
@@ -2630,7 +2671,7 @@ function initEventHandlers() {
         }
       } catch (e) {}
       // Воспроизводим звук начала боя
-      playBattleModeSound();
+      window._playSfx?.('menu-open-sound');
       // Открываем модальное окно выбора режима боя и колоды
       openModal("battle-mode-modal");
     });
@@ -3167,6 +3208,44 @@ async function loadUserData(authData) {
   }
 }
 
+async function checkActiveBattleOnStartup(authData) {
+  const loadingText = document.getElementById("loading-text");
+  if (loadingText) {
+    loadingText.textContent = "Проверка активного боя...";
+  }
+
+  try {
+    let url = "/api/battle/active";
+    if (typeof authData === "string") {
+      url += `?_auth=${encodeURIComponent(authData)}`;
+    } else if (typeof authData === "number") {
+      url += `?user_id=${encodeURIComponent(authData)}`;
+    } else {
+      return false;
+    }
+
+    const response = await fetch(url);
+    if (!response.ok) {
+      return false;
+    }
+
+    const data = await response.json();
+    if (!data || !data.active || !data.redirect_url) {
+      return false;
+    }
+
+    const separator = data.redirect_url.includes("?") ? "&" : "?";
+    const authParam = typeof authData === "string"
+      ? `${separator}_auth=${encodeURIComponent(authData)}`
+      : `${separator}user_id=${encodeURIComponent(authData)}`;
+    window.location.replace(`${data.redirect_url}${authParam}`);
+    return true;
+  } catch (error) {
+    console.warn("Не удалось проверить активный бой:", error);
+    return false;
+  }
+}
+
 // Функция предзагрузки всех данных приложения во время загрузки
 async function preloadAppData(authData) {
   const loadingText = document.getElementById("loading-text");
@@ -3264,6 +3343,7 @@ function initBackgroundMusic() {
 
 function toggleMusic(enabled) {
   musicEnabled = enabled;
+  window._musicEnabled = enabled;
   if (backgroundMusic) {
     if (enabled) {
       backgroundMusic.play().catch(e => {
@@ -3507,6 +3587,11 @@ document.addEventListener("DOMContentLoaded", async () => {
   
   // Если получили данные авторизации, предзагружаем все данные
   if (authData) {
+    const redirectedToBattle = await checkActiveBattleOnStartup(authData);
+    if (redirectedToBattle) {
+      return;
+    }
+
     const loaded = await preloadAppData(authData);
     
     if (loaded) {
@@ -3520,6 +3605,7 @@ document.addEventListener("DOMContentLoaded", async () => {
           });
         }
       }
+      window._sfxEnabled = currentSettings?.sound_sfx ?? true;
       
       // Обновляем индикатор непрочитанных писем при загрузке приложения
       await updateMailNotificationBadge(authData);
@@ -3728,20 +3814,22 @@ async function createPayment(itemType, amount, description, metadata = {}) {
     normalizedMetadata.item_name = normalizedMetadata.item_name || (currentPaymentData.itemName || description);
     normalizedMetadata.amount_rub = normalizedMetadata.amount_rub || amount;
 
-    const response = await fetch(`/api/payments/checkout/start?_auth=${authParam}`, {
+    const androidShell = isAndroidAppShell();
+    const paymentEndpoint = androidShell ? "/api/payments/create" : "/api/payments/checkout/start";
+    const response = await fetch(`${paymentEndpoint}?_auth=${authParam}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        item_type: itemType || "",
-        package_type: metadata.package_type || "",
-        recipient_id: metadata.recipient_id || undefined,
-        ultra: metadata.ultra
+        item_type: itemType || normalizedMetadata.item_type || "",
+        package_type: normalizedMetadata.package_type || "",
+        recipient_id: normalizedMetadata.recipient_id || undefined,
+        ultra: normalizedMetadata.ultra
       })
     });
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error("Ошибка HTTP при старте checkout:", response.status, errorText);
+      console.error("Ошибка HTTP при старте платежа:", response.status, errorText);
       let errorMessage = "Ошибка создания заказа";
       try {
         const errorData = JSON.parse(errorText);
@@ -3766,19 +3854,25 @@ async function createPayment(itemType, amount, description, metadata = {}) {
       return;
     }
 
-    if (result.checkout_url) {
-      const checkoutFullUrl = result.checkout_url;
+    const paymentUrl = androidShell ? result.confirmation_url : result.checkout_url;
+    if (paymentUrl) {
+      const checkoutFullUrl = paymentUrl;
       if (result.checkout_jti) {
         sessionStorage.setItem("pending_checkout_jti", result.checkout_jti);
       }
-      const link = document.createElement("a");
-      link.href = checkoutFullUrl;
-      link.target = "_blank";
-      link.rel = "noopener noreferrer";
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      showNotification("Страница оплаты открыта. Баланс обновится после оплаты.", "success", 5000);
+      if (result.payment_id) {
+        sessionStorage.setItem("pending_payment_id", result.payment_id);
+        sessionStorage.setItem("pending_payment_item", itemType || normalizedMetadata.package_type || "yookassa_purchase");
+        sessionStorage.setItem("pending_payment_timestamp", Date.now().toString());
+        sessionStorage.setItem("pending_payment_method", "yookassa");
+      }
+      openExternalPaymentUrl(checkoutFullUrl);
+      if (androidShell && result.payment_id) {
+        startPaymentStatusCheck(result.payment_id);
+        showNotification("Открыли ЮKassa. После оплаты вернитесь в игру.", "success", 5000);
+      } else {
+        showNotification("Страница оплаты открыта. Баланс обновится после оплаты.", "success", 5000);
+      }
     } else {
       showNotification("Ошибка: не получен URL для оплаты", "error");
     }
@@ -3890,6 +3984,7 @@ async function showPaymentMethodModal(itemType, amount, itemName) {
     description: `Покупка: ${itemName}`,
     itemName: itemName
   };
+  const androidShell = isAndroidAppShell();
   
   // Логируем для отладки
   console.log("showPaymentMethodModal: установлен currentPaymentData:", currentPaymentData);
@@ -3897,6 +3992,9 @@ async function showPaymentMethodModal(itemType, amount, itemName) {
   // Загружаем конфигурацию платежей для расчета цены в Stars
   let starsPrice = null;
   try {
+    if (androidShell) {
+      starsPrice = null;
+    } else {
     const configResponse = await fetch("/api/payments/config");
     if (configResponse.ok) {
       const config = await configResponse.json();
@@ -3907,6 +4005,7 @@ async function showPaymentMethodModal(itemType, amount, itemName) {
         // В тестовом режиме для админов цена может быть 1 Star
         starsPrice = 1;
       }
+    }
     }
   } catch (error) {
     console.error("Ошибка загрузки конфигурации платежей:", error);
@@ -3919,8 +4018,14 @@ async function showPaymentMethodModal(itemType, amount, itemName) {
   if (starsPriceEl) {
     const priceValue = starsPriceEl.querySelector(".payment-price-value");
     if (priceValue) {
-      priceValue.textContent = starsPrice || "—";
+      priceValue.textContent = androidShell ? "Недоступно" : (starsPrice || "—");
     }
+  }
+
+  const starsOption = modal.querySelector('.payment-method-option[data-method="stars"]');
+  if (starsOption) {
+    starsOption.style.display = androidShell ? "none" : "";
+    starsOption.setAttribute("aria-hidden", androidShell ? "true" : "false");
   }
 
   if (cardPriceEl) {
@@ -4004,6 +4109,10 @@ function initPaymentMethodModal() {
 
       // Обрабатываем выбор метода оплаты
       if (method === "stars") {
+        if (isAndroidAppShell()) {
+          showNotification("Telegram Stars недоступны в приложении.", "error");
+          return;
+        }
         handleStarsPayment();
       } else if (method === "yookassa") {
         handleYooKassaPayment();
@@ -4021,6 +4130,12 @@ function initPaymentMethodModal() {
 
 // Обработка платежа через Telegram Stars
 async function handleStarsPayment() {
+  if (isAndroidAppShell()) {
+    showNotification("Telegram Stars недоступны в приложении.", "error");
+    closePaymentMethodModal();
+    return;
+  }
+
   if (!currentPaymentData.itemType || !currentPaymentData.amount) {
     showNotification("Ошибка: данные о покупке не найдены", "error");
     closePaymentMethodModal();
@@ -5250,6 +5365,8 @@ async function loadMail(authData, category = null) {
     let url = "/api/mail";
     if (typeof authData === "string") {
       url += `?_auth=${encodeURIComponent(authData)}`;
+    } else if (typeof authData === "number") {
+      url += `?user_id=${encodeURIComponent(authData)}`;
     } else {
       throw new Error("Invalid authentication data");
     }
@@ -5333,6 +5450,8 @@ async function updateMailNotificationBadge(authData) {
     let url = "/api/mail/unread-count";
     if (typeof authData === "string") {
       url += `?_auth=${encodeURIComponent(authData)}`;
+    } else if (typeof authData === "number") {
+      url += `?user_id=${encodeURIComponent(authData)}`;
     }
     
     console.log("Проверка непрочитанных писем:", url);
@@ -6161,6 +6280,50 @@ function renderCaseVisual(container, tier, options = {}) {
   }
 }
 
+function syncCaseOpeningTier(tier, options = {}) {
+  if (!caseOpeningState) {
+    return;
+  }
+  const normalizedTier = Math.max(1, Math.min(Number(tier) || 1, 5));
+  caseOpeningState.currentTier = normalizedTier;
+  if (caseOpeningState.userCase) {
+    caseOpeningState.userCase.tier = normalizedTier;
+  }
+
+  const tierText = `T${normalizedTier}`;
+  [
+    caseDOMCache.tierBadge || document.getElementById("case-tier-badge"),
+    caseDOMCache.tierBadgeTapping || document.getElementById("case-tier-badge-tapping"),
+  ].forEach(badge => {
+    if (!badge) return;
+    badge.textContent = tierText;
+    badge.setAttribute("data-tier", normalizedTier);
+  });
+
+  const config = getCaseTierConfig(normalizedTier);
+  if (caseDOMCache.stageInfo) {
+    const coinsRange = config.coinsRange ? `${config.coinsRange[0]}–${config.coinsRange[1]}` : "—";
+    const cardsRange = config.cardsRange ? `${config.cardsRange[0]}–${config.cardsRange[1]}` : "—";
+    caseDOMCache.stageInfo.innerHTML = `
+      <div>💰 Монеты: ${coinsRange}</div>
+      <div>🃏 Карт: ${cardsRange}</div>
+      <div>🌟 Макс редкость: ${escapeHtml(getCaseMaxRarityText(config))}</div>
+    `;
+  }
+
+  const animate = Boolean(options.animate && !CASE_EFFECTS_REDUCED);
+  if (caseDOMCache.caseDisplay) {
+    renderCaseVisual(caseDOMCache.caseDisplay, normalizedTier, { animate });
+    caseVisualCache.select.tier = normalizedTier;
+    caseVisualCache.select.container = caseDOMCache.caseDisplay;
+  }
+  if (caseDOMCache.caseDisplayTapping) {
+    renderCaseVisual(caseDOMCache.caseDisplayTapping, normalizedTier, { animate });
+    caseVisualCache.taps.tier = normalizedTier;
+    caseVisualCache.taps.container = caseDOMCache.caseDisplayTapping;
+  }
+}
+
 function spawnCaseTapSparks(display, accentColor) {
   if (CASE_EFFECTS_REDUCED) {
     return;
@@ -6562,7 +6725,7 @@ async function finalizeCaseOpening() {
     }
     
     caseOpeningState.tapResults = result.tap_results || caseOpeningState.tapResults;
-    caseOpeningState.currentTier = result.final_tier || caseOpeningState.currentTier;
+    syncCaseOpeningTier(result.final_tier || caseOpeningState.currentTier);
     renderCaseRewards(result.rewards);
     setCaseStage("rewards");
     
@@ -6647,7 +6810,12 @@ function renderCaseRewards(rewards) {
   });
   list.innerHTML = items.join("");
   if (noteEl) {
-    noteEl.textContent = "Награды уже зачислены на ваш аккаунт.";
+    const ultraBonus = rewards.extra_pass_bonus;
+    if (ultraBonus?.tier === "ultra" && ultraBonus.reroll_attempts > 0) {
+      noteEl.textContent = `Ultra-реролл применен: выбран лучший результат из ${ultraBonus.total_attempts}. Награды уже зачислены.`;
+    } else {
+      noteEl.textContent = "Награды уже зачислены на ваш аккаунт.";
+    }
   }
 }
 
@@ -6694,7 +6862,7 @@ async function handleCaseSkip() {
       return;
     }
     caseOpeningState.tapResults = result.tap_results || [];
-    caseOpeningState.currentTier = result.final_tier || caseOpeningState.currentTier;
+    syncCaseOpeningTier(result.final_tier || caseOpeningState.currentTier);
     renderCaseRewards(result.rewards);
     setCaseStage("rewards");
     
@@ -6862,8 +7030,8 @@ function sortCards(cards, sortBy) {
         const bLevel = b.level || 1;
         const aParticles = a.particles || 0;
         const bParticles = b.particles || 0;
-        const aRequired = calculateUpgradeParticles(a.rarity, aLevel);
-        const bRequired = calculateUpgradeParticles(b.rarity, bLevel);
+        const aRequired = getCardRequiredParticles(a, aLevel);
+        const bRequired = getCardRequiredParticles(b, bLevel);
         const aProgress = aRequired > 0 ? aParticles / aRequired : 0;
         const bProgress = bRequired > 0 ? bParticles / bRequired : 0;
         return isAsc ? aProgress - bProgress : bProgress - aProgress;
@@ -6910,10 +7078,10 @@ function calculateUpgradeParticles(rarity, level) {
     start: 1.4,
     superrare: 1.6,
     epic: 2.0,
-    legendary: 3.0,
+    legendary: 2.5,
     mythic: 4.0,
-    divine: 5.0,
-    limited: 6.0
+    divine: 3.0,
+    limited: 3.5
   };
   
   // Получаем базовое значение для текущего уровня
@@ -6947,7 +7115,7 @@ function calculateUpgradeCoins(rarity, level) {
     start: 1.3,
     superrare: 1.5,
     epic: 2.0,
-    legendary: 3.0,
+    legendary: 3.5,
     mythic: 4.0,
     divine: 5.0,
     limited: 6.0
@@ -6961,6 +7129,26 @@ function calculateUpgradeCoins(rarity, level) {
   
   // Вычисляем финальное количество монет (округление вверх)
   return Math.ceil(baseCoins * rarityMult);
+}
+
+function getCardMaxLevel(card) {
+  return Number(card?.max_level) || (card?.simplified_levelup ? 2 : 10);
+}
+
+function isCardMaxLevel(card, level = card?.level || 1) {
+  return Number(level || 1) >= getCardMaxLevel(card);
+}
+
+function getCardUpgradeCostLevel(card, level = card?.level || 1) {
+  return card?.simplified_levelup ? 9 : Number(level || 1);
+}
+
+function getCardRequiredParticles(card, level = card?.level || 1) {
+  return calculateUpgradeParticles(card?.rarity, isCardMaxLevel(card, level) ? 9 : getCardUpgradeCostLevel(card, level));
+}
+
+function getCardRequiredCoins(card, level = card?.level || 1) {
+  return isCardMaxLevel(card, level) ? 0 : calculateUpgradeCoins(card?.rarity, getCardUpgradeCostLevel(card, level));
 }
 
 // Рассчитать мощность карты с учетом уровня
@@ -7112,7 +7300,7 @@ function renderCardsGrid() {
     const currentPower = calculateCardPower(basePower, level);
     const particles = card.particles || 0;
     // Для карт максимального уровня показываем прогресс для последнего апгрейда (9->10)
-    const requiredParticles = level < 10 ? calculateUpgradeParticles(card.rarity, level) : calculateUpgradeParticles(card.rarity, 9);
+    const requiredParticles = getCardRequiredParticles(card, level);
     // Убеждаемся, что прогресс не превышает 100% и правильно рассчитывается
     // Если частиц больше или равно требуемым, показываем 100%
     // Если requiredParticles равен 0, но есть частицы, показываем 100%
@@ -7123,8 +7311,8 @@ function renderCardsGrid() {
       progressPercent = 100;
     }
     // Проверяем, можно ли улучшить карту (только по частицам, монеты не учитываем)
-    const canUpgradeByParticles = level < 10 && particles >= requiredParticles;
-    const isMaxLevel = level >= 10;
+    const isMaxLevel = isCardMaxLevel(card, level);
+    const canUpgradeByParticles = !isMaxLevel && particles >= requiredParticles;
     
     // Получаем URL изображения
     const imageUrl = card.image_file_id ? await getCardImageUrl(card.image_file_id) : null;
@@ -7596,7 +7784,7 @@ async function renderCardInSlot(slot, card) {
   const basePower = card.power || 0;
   const currentPower = calculateCardPower(basePower, level);
   // Для карт максимального уровня показываем прогресс для последнего апгрейда (9->10)
-  const requiredParticles = level < 10 ? calculateUpgradeParticles(card.rarity, level) : calculateUpgradeParticles(card.rarity, 9);
+  const requiredParticles = getCardRequiredParticles(card, level);
   // Прогресс всегда показываем: для карт не на макс уровне - текущий прогресс, для макс уровня - 100%
   // Убеждаемся, что прогресс не превышает 100% и правильно рассчитывается
   // Если частиц больше или равно требуемым, показываем 100%
@@ -7608,8 +7796,8 @@ async function renderCardInSlot(slot, card) {
     progressPercent = 100;
   }
   // Проверяем, можно ли улучшить карту (только по частицам, монеты не учитываем)
-  const canUpgradeByParticles = level < 10 && particles >= requiredParticles;
-  const isMaxLevel = level >= 10;
+  const isMaxLevel = isCardMaxLevel(card, level);
+  const canUpgradeByParticles = !isMaxLevel && particles >= requiredParticles;
   
   // Получаем URL изображения
   const imageUrl = card.image_file_id ? await getCardImageUrl(card.image_file_id) : null;
@@ -7771,14 +7959,15 @@ async function openCardDetail(card) {
   const particles = card.particles || 0;
   const basePower = card.power || 0;
   const currentPower = calculateCardPower(basePower, level);
-  const requiredParticles = calculateUpgradeParticles(card.rarity, level);
-  const requiredCoins = level < 10 ? calculateUpgradeCoins(card.rarity, level) : 0;
+  const isMaxLevel = isCardMaxLevel(card, level);
+  const requiredParticles = getCardRequiredParticles(card, level);
+  const requiredCoins = getCardRequiredCoins(card, level);
   const progressPercent = Math.min((particles / requiredParticles) * 100, 100);
-  const nextLevelPower = level < 10 ? calculateCardPower(basePower, level + 1) : currentPower;
+  const nextLevelPower = !isMaxLevel ? calculateCardPower(basePower, Math.min(level + 1, getCardMaxLevel(card))) : currentPower;
   
   // Получаем текущее количество монет пользователя
   const userCoins = currentProfile?.coins || 0;
-  const canUpgrade = level < 10 && particles >= requiredParticles && userCoins >= requiredCoins;
+  const canUpgrade = !isMaxLevel && particles >= requiredParticles && userCoins >= requiredCoins;
   
   // Получаем URL изображения
   const imageUrl = card.image_file_id ? await getCardImageUrl(card.image_file_id) : null;
@@ -7818,7 +8007,7 @@ async function openCardDetail(card) {
           <div class="card-detail-stat">
             <div class="stat-label">⚔️ Мощь</div>
             <div class="stat-value">${currentPower}</div>
-            ${level < 10 ? `
+            ${!isMaxLevel ? `
               <div class="stat-next">→ ${nextLevelPower}</div>
             ` : ''}
           </div>
@@ -7826,7 +8015,7 @@ async function openCardDetail(card) {
             <div class="stat-label">⚡ Частицы</div>
             <div class="stat-value ${particles >= requiredParticles ? 'ready' : ''}">${particles}/${requiredParticles}</div>
           </div>
-          ${level < 10 ? `
+          ${!isMaxLevel ? `
           <div class="card-detail-stat card-detail-stat-full">
             <div class="stat-label">💰 Монеты</div>
             <div class="stat-value ${userCoins >= requiredCoins ? 'ready' : ''}">${userCoins.toLocaleString()}/${requiredCoins.toLocaleString()}</div>
@@ -7838,7 +8027,7 @@ async function openCardDetail(card) {
         </div>
         `}
         </div>
-        ${level < 10 ? `
+        ${!isMaxLevel ? `
         <div class="card-detail-upgrade-progress">
           <div class="progress-bar">
             <div class="progress-fill" style="width: ${progressPercent}%"></div>
@@ -7923,7 +8112,7 @@ async function openCardDetail(card) {
           } else if (result.error === "insufficient_particles") {
             errorMessage = `Недостаточно частиц. Нужно: ${result.required || 0}, имеется: ${result.current || 0}`;
           } else if (result.error === "max_level_reached") {
-            errorMessage = "Карта уже достигла максимального уровня (10)";
+            errorMessage = `Карта уже достигла максимального уровня (${getCardMaxLevel(card)})`;
           }
           await showGameAlert(errorMessage, "❌");
         }

@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import json
 from typing import Any, Dict, List
 from uuid import uuid4
 
@@ -114,8 +115,10 @@ def card_from_db(
     card_id = card_data.get("id", 0)
     name = card_data.get("name", "Unknown")
     description = card_data.get("description", "")
+    mechanics_desc = card_data.get("mechanics_desc", "") or ""
     rarity = card_data.get("rarity", "common")
     card_type_str = card_data.get("card_type", "warrior")
+    simplified_levelup = bool(card_data.get("simplified_levelup", False))
     
     # Конвертируем тип карты
     if card_type_str == "hero":
@@ -134,6 +137,12 @@ def card_from_db(
     mechanics_raw = card_data.get("mechanics", [])
     if isinstance(mechanics_raw, list):
         mechanics = mechanics_raw
+    elif isinstance(mechanics_raw, str):
+        try:
+            parsed = json.loads(mechanics_raw)
+            mechanics = parsed if isinstance(parsed, list) else []
+        except json.JSONDecodeError:
+            mechanics = [mechanics_raw] if mechanics_raw else []
     else:
         mechanics = []
     
@@ -154,11 +163,13 @@ def card_from_db(
         mechanics=normalized_mechanics,
         is_ready=False,
         description=description,
+        mechanics_desc=mechanics_desc,
         level=1,  # Базовый уровень
+        simplified_levelup=simplified_levelup,
     )
     
-    # Применяем масштабирование через scale_card_by_level
-    from core.engine import scale_card_by_level
+    # Применяем единое масштабирование, совпадающее с формулой коллекции.
+    from core.card_scaling import scale_card_by_level
     return scale_card_by_level(card, level)
 
 
@@ -166,29 +177,38 @@ def deck_from_card_ids(
     card_ids: List[int],
     cards_data: Dict[int, Dict[str, Any]],
     user_levels: Dict[int, int] | None = None,
+    slot_levels: List[int] | None = None,
 ) -> List[CardInstance]:
     """
     Создать колоду из списка ID карт.
-    
+
     Args:
         card_ids: Список ID карт
         cards_data: Словарь {card_id: card_data} с данными всех карт
-        user_levels: Словарь {card_id: level} с уровнями карт пользователя
-        
+        user_levels: Словарь {card_id: level} с уровнями карт пользователя (игроки)
+        slot_levels: Список уровней по позиции карты в колоде (боты, per-card offset).
+                      Если передан, приоритет над user_levels для карт на этом индексе.
+
     Returns:
         Список CardInstance для колоды
     """
     deck: List[CardInstance] = []
-    
-    for card_id in card_ids:
+
+    for idx, card_id in enumerate(card_ids):
         if card_id not in cards_data:
             continue
-        
+
         card_data = cards_data[card_id]
-        level = user_levels.get(card_id, 1) if user_levels else 1
-        
+
+        # Slot-based уровень имеет приоритет (для ботов с per-card offset)
+        if slot_levels is not None and idx < len(slot_levels):
+            level = int(slot_levels[idx])
+        elif user_levels:
+            level = user_levels.get(card_id, 1)
+        else:
+            level = 1
+
         card_instance = card_from_db(card_data, level)
         deck.append(card_instance)
-    
-    return deck
 
+    return deck

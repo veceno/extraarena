@@ -3,7 +3,8 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-import random
+import re
+import secrets
 import string as _stdstring
 import time
 import uuid
@@ -18,15 +19,32 @@ from aiohttp import web, ClientTimeout, ClientSession
 from infrastructure.config import get_settings
 from infrastructure.database import Database
 from infrastructure.extraid_database import ExtraIDDatabase
+from infrastructure.push_notifications import build_android_push_payload
 
 logger = logging.getLogger(__name__)
 
 # Rate limiting store: {key: [timestamp, ...]}
 _rate_limit_store: dict[str, list[float]] = defaultdict(list)
+_EMAIL_RE = re.compile(
+    r"^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@"
+    r"(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+"
+    r"[A-Za-z]{2,63}$"
+)
+_NICKNAME_RE = re.compile(r"^[A-Za-z0-9_-]{3,20}$")
+
+
+def _prune_rate_limit_store(now: float, window_seconds: int) -> None:
+    for store_key, timestamps in list(_rate_limit_store.items()):
+        kept = [t for t in timestamps if now - t < window_seconds]
+        if kept:
+            _rate_limit_store[store_key] = kept
+        else:
+            _rate_limit_store.pop(store_key, None)
 
 
 def _check_rate_limit(key: str, max_requests: int, window_seconds: int) -> bool:
     now = time.time()
+    _prune_rate_limit_store(now, window_seconds)
     timestamps = _rate_limit_store[key]
     _rate_limit_store[key] = [t for t in timestamps if now - t < window_seconds]
     if len(_rate_limit_store[key]) >= max_requests:
@@ -74,6 +92,98 @@ def _hash_jwt(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
+def _parse_telegram_id(value: Any) -> int | None:
+    try:
+        telegram_id = int(str(value or "").strip())
+    except (TypeError, ValueError):
+        return None
+    return telegram_id if telegram_id > 0 else None
+
+
+def _valid_email(email: str) -> bool:
+    email = (email or "").strip()
+    if len(email) > 254 or email.count("@") != 1:
+        return False
+    local, domain = email.split("@", 1)
+    if not local or not domain or len(local) > 64:
+        return False
+    if local.startswith(".") or local.endswith(".") or ".." in local or ".." in domain:
+        return False
+    return bool(_EMAIL_RE.fullmatch(email))
+
+
+def _valid_nickname(nickname: str) -> bool:
+    return bool(_NICKNAME_RE.fullmatch((nickname or "").strip()))
+
+
+def _make_bot_auth_code() -> str:
+    return "".join(secrets.choice(_stdstring.digits) for _ in range(6))
+
+
+async def _get_any_extra_account_by_email(extraid_db: ExtraIDDatabase, email: str) -> dict | None:
+    if hasattr(extraid_db, "get_any_extra_account_by_email"):
+        return await extraid_db.get_any_extra_account_by_email(email)
+    row = await extraid_db.fetchrow(
+        "SELECT * FROM extra_accounts WHERE LOWER(email) = LOWER($1) LIMIT 1",
+        email,
+    )
+    return dict(row) if row else None
+
+
+async def _require_jwt_user_id_from_request(request: web.Request, data: dict[str, Any] | None = None) -> int | None:
+    extraid_db = _get_extraid_db(request)
+    settings = get_settings()
+    data = data or {}
+    headers = getattr(request, "headers", {}) or {}
+    auth_header = headers.get("Authorization", "")
+    bearer = ""
+    if auth_header.lower().startswith("bearer "):
+        bearer = auth_header[7:].strip()
+    token = (
+        bearer
+        or str(data.get("auth") or "").strip()
+        or request.rel_url.query.get("_auth", "").strip()
+    )
+    if not token:
+        return None
+    result = await _verify_jwt_token_async_fn(token, extraid_db, settings)
+    if not result:
+        return None
+    return int(result[0])
+
+
+async def _send_telegram_transfer_code(request: web.Request, user_id: int, code: str) -> bool:
+    text = (
+        "Код для переноса ExtraArena в приложение: "
+        f"{code}\n\nОн действует 5 минут. Никому его не показывай."
+    )
+
+    bot = request.app.get("telegram_bot") or request.app.get("bot")
+    if bot is not None:
+        try:
+            await bot.send_message(user_id, text)
+            return True
+        except Exception:
+            logger.warning("Failed to send Telegram transfer code via bot object", exc_info=True)
+
+    bot_token = request.app.get("bot_token") or ""
+    if not bot_token:
+        return False
+
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    try:
+        async with ClientSession(timeout=ClientTimeout(total=8)) as session:
+            async with session.post(url, json={"chat_id": user_id, "text": text}) as resp:
+                body = await resp.json(content_type=None)
+                if resp.status >= 400 or not body.get("ok"):
+                    logger.warning("Telegram transfer code delivery failed: status=%s body=%s", resp.status, body)
+                    return False
+                return True
+    except Exception:
+        logger.warning("Failed to send Telegram transfer code via HTTP API", exc_info=True)
+        return False
+
+
 # --- ExtraID: Register ---
 
 async def extraid_register_handler(request: web.Request) -> web.Response:
@@ -89,15 +199,16 @@ async def extraid_register_handler(request: web.Request) -> web.Response:
         email = (data.get("email") or "").strip().lower()
         password = data.get("password") or ""
         nickname = (data.get("nickname") or "").strip() or None
+        client = str(data.get("client") or data.get("platform") or request.headers.get("X-ExtraArena-Client", "")).strip().lower()
 
-        if "@" not in email or "." not in email:
+        if not _valid_email(email):
             return web.json_response({"error": "invalid_email"}, status=400)
         if len(password) < 8:
             return web.json_response({"error": "password_too_short", "message": "Пароль должен быть не менее 8 символов"}, status=400)
         if nickname and not _nickname_valid_fn(nickname):
             return web.json_response({"error": "invalid_nickname", "message": "Никнейм: 3-20 символов, только a-z, A-Z, 0-9, _, -"}, status=400)
 
-        existing_email = await extraid_db.get_extra_account_by_email(email)
+        existing_email = await _get_any_extra_account_by_email(extraid_db, email)
         if existing_email:
             return web.json_response({"error": "email_taken"}, status=409)
         if nickname:
@@ -116,6 +227,19 @@ async def extraid_register_handler(request: web.Request) -> web.Response:
                 user_id = _extract_user_id_from_init_data_fn(verified)
                 if user_id:
                     auth_source = "telegram"
+            else:
+                jwt_result = await _verify_jwt_token_async_fn(tg_auth, extraid_db, settings)
+                if jwt_result:
+                    user_id = jwt_result[0]
+                    auth_source = "extraid_mobile" if client in {"android", "android_app", "mobile", "mobile_app"} else "email_registration"
+                    existing_extra = await extraid_db.get_extra_account_by_user_id(user_id)
+                    if existing_extra:
+                        return web.json_response({
+                            "error": "extraid_already_exists",
+                            "display_id": existing_extra["display_id"],
+                        }, status=409)
+                else:
+                    return web.json_response({"error": "invalid_auth"}, status=401)
 
         if user_id is None:
             user_id = await extraid_db.get_synthetic_user_id()
@@ -124,6 +248,14 @@ async def extraid_register_handler(request: web.Request) -> web.Response:
                 "UPDATE users SET auth_source = 'email_registration' WHERE user_id = $1",
                 user_id
             )
+        else:
+            existing_for_user = await extraid_db.get_extra_account_by_user_id(user_id)
+            if existing_for_user:
+                return web.json_response({
+                    "error": "extraid_already_exists",
+                    "display_id": existing_for_user["display_id"],
+                }, status=409)
+            await db.ensure_user(user_id=user_id, username=None, first_name=nickname or email, last_name=None)
 
         display_id = _display_id_generator_fn(lambda did: False)
         while await extraid_db.fetchval("SELECT 1 FROM extra_accounts WHERE display_id = $1", display_id):
@@ -132,16 +264,33 @@ async def extraid_register_handler(request: web.Request) -> web.Response:
         password_hash = (await asyncio.to_thread(
             lambda: bcrypt.hashpw(password.encode(), bcrypt.gensalt(rounds=12)).decode()
         ))
-        extra = await extraid_db.create_extra_account(user_id, display_id, email, password_hash, nickname)
+        try:
+            extra = await extraid_db.create_extra_account(user_id, display_id, email, password_hash, nickname)
+        except Exception as e:
+            constraint = str(getattr(e, "constraint_name", "") or "").lower()
+            if e.__class__.__name__ == "UniqueViolationError" and "email" in constraint:
+                return web.json_response({"error": "email_taken"}, status=409)
+            if e.__class__.__name__ == "UniqueViolationError" and "nickname" in constraint:
+                return web.json_response({"error": "nickname_taken"}, status=409)
+            raise
         await db.execute(
             "UPDATE users SET extra_account_id = $1, auth_source = $2 WHERE user_id = $3",
             extra["id"], auth_source, user_id
         )
 
+        reg_bonus = False
+        if auth_source == "telegram":
+            reg_bonus_claimed = await extraid_db.mark_reg_bonus_claimed(extra["id"])
+            if reg_bonus_claimed is not False:
+                reg_bonus = True
+                await db.execute("UPDATE users SET keys = COALESCE(keys, 0) + 3 WHERE user_id = $1", user_id)
+
         return web.json_response({
             "ok": True,
             "display_id": display_id,
             "email_sent": False,
+            "linked_telegram": auth_source == "telegram",
+            "reg_bonus": reg_bonus,
         })
     except Exception:
         logger.exception("ExtraID register handler error")
@@ -163,6 +312,11 @@ async def extraid_login_handler(request: web.Request) -> web.Response:
         email = (data.get("email") or "").strip().lower()
         password = data.get("password") or ""
 
+        client_key_email = hashlib.sha256(email.encode()).hexdigest()[:16] if email else "empty"
+        client_key = f"extraid_login:{getattr(request, 'remote', None) or 'unknown'}:{client_key_email}"
+        if not _check_rate_limit(client_key, 10, 60):
+            return web.json_response({"error": "rate_limited"}, status=429)
+
         extra = await extraid_db.get_extra_account_by_email(email)
         if not extra:
             return web.json_response({"error": "invalid_credentials"}, status=401)
@@ -177,7 +331,7 @@ async def extraid_login_handler(request: web.Request) -> web.Response:
 
         now = datetime.now(timezone.utc)
         session_exp = now + timedelta(days=settings.jwt_expiry_days)
-        session_uuid = str(uuid.uuid4())
+        session_uuid = uuid.uuid4()
         token, _ = _make_jwt_session(user_id, session_uuid, settings)
         token_hash = _hash_jwt(token)
 
@@ -191,9 +345,10 @@ async def extraid_login_handler(request: web.Request) -> web.Response:
 
         reg_bonus = False
         if not extra["reg_bonus_claimed"]:
-            reg_bonus = True
-            await extraid_db.mark_reg_bonus_claimed(extra["id"])
-            await db.execute("UPDATE users SET keys = COALESCE(keys, 0) + 3 WHERE user_id = $1", user_id)
+            reg_bonus_claimed = await extraid_db.mark_reg_bonus_claimed(extra["id"])
+            if reg_bonus_claimed is not False:
+                reg_bonus = True
+                await db.execute("UPDATE users SET keys = COALESCE(keys, 0) + 3 WHERE user_id = $1", user_id)
 
         return web.json_response({
             "ok": True,
@@ -204,6 +359,220 @@ async def extraid_login_handler(request: web.Request) -> web.Response:
         })
     except Exception:
         logger.exception("ExtraID login handler error")
+        return web.json_response({"error": "server_error", "message": "Внутренняя ошибка сервера"}, status=500)
+
+
+# --- App Anonymous Auth ---
+
+async def anonymous_auth_handler(request: web.Request) -> web.Response:
+    db = _get_db(request)
+    extraid_db = _get_extraid_db(request)
+    settings = get_settings()
+
+    client_key = f"anonymous:{getattr(request, 'remote', None) or 'unknown'}"
+    if not _check_rate_limit(client_key, 8, 60):
+        return web.json_response({"error": "rate_limited"}, status=429)
+
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid_json"}, status=400)
+
+    try:
+        nickname = (data.get("nickname") or "").strip()
+        if not _valid_nickname(nickname):
+            return web.json_response({
+                "error": "invalid_nickname",
+                "message": "Никнейм: 3-20 символов, только a-z, A-Z, 0-9, _, -",
+            }, status=400)
+
+        user_id = await extraid_db.get_synthetic_user_id()
+        await db.ensure_user(user_id=user_id, username=None, first_name=nickname, last_name=None)
+
+        await db.execute(
+            "UPDATE users SET auth_source = 'android_anonymous' WHERE user_id = $1",
+            user_id,
+        )
+
+        session_uuid = uuid.uuid4()
+        token, session_exp = _make_jwt_session(user_id, session_uuid, settings)
+        await extraid_db.execute(
+            """
+            INSERT INTO auth_sessions (session_id, user_id, auth_method, token_hash, expires_at, device_label)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            """,
+            session_uuid,
+            user_id,
+            "android_anonymous",
+            _hash_jwt(token),
+            session_exp,
+            data.get("device_label"),
+        )
+
+        return web.json_response({
+            "ok": True,
+            "token": token,
+            "user_id": user_id,
+            "anonymous": True,
+            "nickname": nickname,
+        })
+    except Exception:
+        logger.exception("Anonymous auth handler error")
+        return web.json_response({"error": "server_error", "message": "Внутренняя ошибка сервера"}, status=500)
+
+
+# --- Telegram -> ExtraID transfer ---
+
+async def telegram_transfer_request_code_handler(request: web.Request) -> web.Response:
+    db = _get_db(request)
+    extraid_db = _get_extraid_db(request)
+
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid_json"}, status=400)
+
+    telegram_id = _parse_telegram_id(data.get("telegram_id"))
+    if telegram_id is None:
+        return web.json_response({"error": "invalid_telegram_id"}, status=400)
+
+    client_key = f"telegram_transfer_code:{getattr(request, 'remote', None) or 'unknown'}:{telegram_id}"
+    if not _check_rate_limit(client_key, 4, 60):
+        return web.json_response({"error": "rate_limited"}, status=429)
+
+    try:
+        user_exists = await db.fetchval("SELECT 1 FROM users WHERE user_id = $1", telegram_id)
+        if not user_exists:
+            return web.json_response({"error": "telegram_user_not_found"}, status=404)
+
+        existing_extra = await extraid_db.get_extra_account_by_user_id(telegram_id)
+        if existing_extra:
+            return web.json_response({
+                "error": "extraid_already_exists",
+                "display_id": existing_extra["display_id"],
+            }, status=409)
+
+        await extraid_db.cleanup_old_bot_codes(telegram_id)
+        for _ in range(12):
+            code = _make_bot_auth_code()
+            code_exists = await extraid_db.fetchval("SELECT 1 FROM bot_auth_codes WHERE code = $1", code)
+            if not code_exists:
+                break
+        else:
+            logger.error("Could not allocate Telegram transfer code")
+            return web.json_response({"error": "server_error"}, status=500)
+
+        await extraid_db.create_bot_auth_code(code, telegram_id)
+        if not await _send_telegram_transfer_code(request, telegram_id, code):
+            await extraid_db.cleanup_old_bot_codes(telegram_id)
+            return web.json_response({"error": "telegram_delivery_failed"}, status=502)
+
+        return web.json_response({"ok": True, "ttl_seconds": 300})
+    except Exception:
+        logger.exception("telegram_transfer_request_code_handler error")
+        return web.json_response({"error": "server_error", "message": "Внутренняя ошибка сервера"}, status=500)
+
+
+async def telegram_transfer_complete_handler(request: web.Request) -> web.Response:
+    db = _get_db(request)
+    extraid_db = _get_extraid_db(request)
+    settings = get_settings()
+
+    client_key = f"telegram_transfer_complete:{getattr(request, 'remote', None) or 'unknown'}"
+    if not _check_rate_limit(client_key, 8, 60):
+        return web.json_response({"error": "rate_limited"}, status=429)
+
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid_json"}, status=400)
+
+    try:
+        telegram_id = _parse_telegram_id(data.get("telegram_id"))
+        code = str(data.get("code") or "").strip()
+        email = (data.get("email") or "").strip().lower()
+        password = data.get("password") or ""
+
+        if telegram_id is None:
+            return web.json_response({"error": "invalid_telegram_id"}, status=400)
+        if len(code) != 6 or not code.isdigit():
+            return web.json_response({"error": "invalid_code"}, status=400)
+        if not _valid_email(email):
+            return web.json_response({"error": "invalid_email"}, status=400)
+        if len(password) < 8:
+            return web.json_response({"error": "password_too_short"}, status=400)
+
+        user_exists = await db.fetchval("SELECT 1 FROM users WHERE user_id = $1", telegram_id)
+        if not user_exists:
+            return web.json_response({"error": "telegram_user_not_found"}, status=404)
+
+        auth_code = await extraid_db.verify_bot_auth_code(code)
+        if not auth_code:
+            return web.json_response({"error": "invalid_code"}, status=400)
+        if int(auth_code["user_id"]) != telegram_id:
+            return web.json_response({"error": "code_user_mismatch"}, status=400)
+
+        existing_for_user = await extraid_db.get_extra_account_by_user_id(telegram_id)
+        if existing_for_user:
+            return web.json_response({
+                "error": "extraid_already_exists",
+                "display_id": existing_for_user["display_id"],
+            }, status=409)
+
+        existing_email = await _get_any_extra_account_by_email(extraid_db, email)
+        if existing_email:
+            return web.json_response({"error": "email_taken"}, status=409)
+
+        display_id = _display_id_generator_fn(lambda did: False)
+        while await extraid_db.fetchval("SELECT 1 FROM extra_accounts WHERE display_id = $1", display_id):
+            display_id = _display_id_generator_fn(lambda did: False)
+
+        password_hash = (await asyncio.to_thread(
+            lambda: bcrypt.hashpw(password.encode(), bcrypt.gensalt(rounds=12)).decode()
+        ))
+        try:
+            extra = await extraid_db.create_extra_account(telegram_id, display_id, email, password_hash, None)
+        except Exception as e:
+            constraint = str(getattr(e, "constraint_name", "") or "").lower()
+            if e.__class__.__name__ == "UniqueViolationError" and "email" in constraint:
+                return web.json_response({"error": "email_taken"}, status=409)
+            raise
+        await db.execute(
+            "UPDATE users SET extra_account_id = $1, auth_source = 'telegram_transfer' WHERE user_id = $2",
+            extra["id"], telegram_id
+        )
+
+        session_uuid = uuid.uuid4()
+        token, session_exp = _make_jwt_session(telegram_id, session_uuid, settings)
+        await extraid_db.execute(
+            """
+            INSERT INTO auth_sessions (session_id, user_id, auth_method, token_hash, expires_at, device_label)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            """,
+            session_uuid,
+            telegram_id,
+            "telegram_transfer",
+            _hash_jwt(token),
+            session_exp,
+            data.get("device_label"),
+        )
+        await extraid_db.mark_bot_code_used(code, session_uuid)
+
+        reg_bonus = False
+        reg_bonus_claimed = await extraid_db.mark_reg_bonus_claimed(extra["id"])
+        if reg_bonus_claimed is not False:
+            reg_bonus = True
+            await db.execute("UPDATE users SET keys = COALESCE(keys, 0) + 3 WHERE user_id = $1", telegram_id)
+
+        return web.json_response({
+            "ok": True,
+            "token": token,
+            "user_id": telegram_id,
+            "display_id": display_id,
+            "reg_bonus": reg_bonus,
+        })
+    except Exception:
+        logger.exception("telegram_transfer_complete_handler error")
         return web.json_response({"error": "server_error", "message": "Внутренняя ошибка сервера"}, status=500)
 
 
@@ -390,6 +759,10 @@ async def auth_session_revoke_handler(request: web.Request) -> web.Response:
     target_session_id = request.match_info.get("session_id")
     if not target_session_id:
         return web.json_response({"error": "session_id_required"}, status=400)
+    try:
+        target_session_uuid = uuid.UUID(str(target_session_id))
+    except (TypeError, ValueError):
+        return web.json_response({"error": "invalid_session_id"}, status=400)
 
     auth_param = request.rel_url.query.get("_auth")
     if auth_param:
@@ -398,12 +771,12 @@ async def auth_session_revoke_handler(request: web.Request) -> web.Response:
             return web.json_response({"error": "cannot_revoke_current_session"}, status=400)
 
     session = await extraid_db.fetchrow(
-        "SELECT user_id FROM auth_sessions WHERE session_id = $1 AND revoked = FALSE", target_session_id
+        "SELECT user_id FROM auth_sessions WHERE session_id = $1 AND revoked = FALSE", target_session_uuid
     )
     if not session or session["user_id"] != user_id:
         return web.json_response({"error": "session_not_found"}, status=404)
 
-    await extraid_db.revoke_session(target_session_id)
+    await extraid_db.revoke_session(target_session_uuid)
     return web.json_response({"ok": True})
 
 
@@ -479,6 +852,115 @@ async def analytics_device_handler(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
+# --- Android push devices ---
+
+async def push_register_handler(request: web.Request) -> web.Response:
+    db = _get_db(request)
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid_json"}, status=400)
+
+    user_id = await _require_jwt_user_id_from_request(request, data)
+    if not user_id:
+        return web.json_response({"error": "auth_required"}, status=401)
+
+    token = str(data.get("token") or "").strip()
+    if not token:
+        return web.json_response({"error": "token_required"}, status=400)
+
+    device_timezone = str(data.get("timezone") or "").strip()[:96] or None
+    utc_offset_minutes = None
+    try:
+        utc_offset_minutes = int(data.get("utc_offset_minutes"))
+    except (TypeError, ValueError):
+        utc_offset_minutes = None
+    if utc_offset_minutes is not None and not (-14 * 60 <= utc_offset_minutes <= 14 * 60):
+        utc_offset_minutes = None
+
+    try:
+        device = await db.register_push_device(
+            user_id,
+            token=token,
+            platform=str(data.get("platform") or "android").strip().lower() or "android",
+            app_version=(data.get("app_version") or None),
+            device_label=(data.get("device_label") or None),
+            os_name=(data.get("os_name") or None),
+            os_version=(data.get("os_version") or None),
+            timezone=device_timezone,
+            utc_offset_minutes=utc_offset_minutes,
+        )
+        return web.json_response({"ok": True, "device_id": device.get("id")})
+    except Exception:
+        logger.exception("push_register_handler error")
+        return web.json_response({"error": "server_error"}, status=500)
+
+
+async def push_unregister_handler(request: web.Request) -> web.Response:
+    db = _get_db(request)
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid_json"}, status=400)
+
+    user_id = await _require_jwt_user_id_from_request(request, data)
+    if not user_id:
+        return web.json_response({"error": "auth_required"}, status=401)
+
+    token = str(data.get("token") or "").strip()
+    if not token:
+        return web.json_response({"error": "token_required"}, status=400)
+
+    try:
+        removed = await db.unregister_push_device(user_id, token=token)
+        return web.json_response({"ok": True, "removed": removed})
+    except Exception:
+        logger.exception("push_unregister_handler error")
+        return web.json_response({"error": "server_error"}, status=500)
+
+
+async def push_test_handler(request: web.Request) -> web.Response:
+    db = _get_db(request)
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+
+    user_id = await _require_jwt_user_id_from_request(request, data)
+    if not user_id:
+        return web.json_response({"error": "auth_required"}, status=401)
+
+    sender = request.app.get("push_sender")
+    if sender is None:
+        return web.json_response({"error": "push_sender_unavailable"}, status=503)
+
+    devices = await db.get_push_devices(user_id, platform="android")
+    payload = build_android_push_payload(
+        "reminders",
+        "daily_reminder",
+        {"text": data.get("body") or "Тестовый пуш ExtraArena готов.", "section": "arena"},
+    )
+    sent = 0
+    failed = 0
+    for device in devices:
+        result = await sender.send(
+            token=device["token"],
+            title=payload.title,
+            body=payload.body,
+            data=payload.data,
+        )
+        if result.ok:
+            sent += 1
+        else:
+            failed += 1
+            await db.mark_push_device_error(
+                device["token"],
+                result.error or "push_test_failed",
+                permanent=result.permanent,
+            )
+    return web.json_response({"ok": sent > 0, "sent": sent, "failed": failed, "devices": len(devices)})
+
+
 def register_handlers(
     app: web.Application,
     extraid_db: ExtraIDDatabase,
@@ -518,9 +1000,17 @@ def register_handlers(
     app.router.add_post("/api/extraid/delete", extraid_delete_account_handler)
 
     # Auth sessions
+    app.router.add_post("/api/auth/anonymous", anonymous_auth_handler)
+    app.router.add_post("/api/telegram-transfer/request-code", telegram_transfer_request_code_handler)
+    app.router.add_post("/api/telegram-transfer/complete", telegram_transfer_complete_handler)
     app.router.add_get("/api/auth/sessions", auth_sessions_list_handler)
     app.router.add_delete("/api/auth/sessions/{session_id}", auth_session_revoke_handler)
     app.router.add_post("/api/auth/logout", auth_logout_handler)
 
     # Device analytics
     app.router.add_post("/api/analytics/device", analytics_device_handler)
+
+    # Android push devices
+    app.router.add_post("/api/push/register", push_register_handler)
+    app.router.add_post("/api/push/unregister", push_unregister_handler)
+    app.router.add_post("/api/push/test", push_test_handler)

@@ -10,8 +10,10 @@ import logging
 import time
 
 from core.actions import AttackAction, BaseAction, EndTurnAction, PlayCardAction
+from core.classic_setup import create_classic_game_state
 from core.engine import ArenaEnvironment
 from core.state import CardInstance, CardType, GameState, GameStatus, PlayerState as CorePlayerState
+from infrastructure.match_modes import ModeConfig, resolve_mode_config, serialize_mode_config
 
 
 # Глобальный словарь активных матчей
@@ -72,7 +74,10 @@ class BattleEngine:
         self.player_ids = player_ids or []
         self.is_bot_match = is_bot_match
         self.bot_id: Optional[int] = None
-        self.bot_difficulty: str = "medium"  # Сложность бота (lite/easy/medium/hard/max)
+        self.bot_difficulty: str = "medium"  # Inference profile key.
+        self.bot_difficulty_label: str = "medium"
+        self.bot_strength_tier: str = "medium"
+        self.bot_brain_profile: Optional[str] = None
         self._active_matches = active_matches if active_matches is not None else ACTIVE_MATCHES
         self._event_emitter = event_emitter
         self.current_player_id: Optional[int] = None
@@ -82,10 +87,13 @@ class BattleEngine:
         self.rewards_granted = False
         self.turn_start_time: Optional[float] = None
         self.match_start_time: Optional[float] = None
-        self.game_mode = game_mode
-        self._is_blitz = (game_mode == "extra_arena:blitz")
-        self.turn_duration = 5 if self._is_blitz else 25
+        self.mode_config: ModeConfig = resolve_mode_config(game_mode)
+        self.game_mode = self.mode_config.mode_id
+        self.ruleset = self.mode_config.ruleset
+        self.turn_duration = self.mode_config.classic.turn_duration_seconds
+        self.turn_time_history: list[dict[str, Any]] = []
         self.client_ready = False
+        self.client_ready_users: set[int] = set()
         self._card_cache: Dict[str, Any] = card_cache or {}
         self._logger = logging.getLogger(__name__)
         
@@ -105,6 +113,14 @@ class BattleEngine:
         self._p2_trophies: int = 0
         self._p1_clan: str = ""
         self._p2_clan: str = ""
+        self._p1_title: str = ""
+        self._p1_rarity: str = ""
+        self._p2_title: str = ""
+        self._p2_rarity: str = ""
+        self._p1_extra_pass: Optional[str] = None
+        self._p1_background_url: Optional[str] = None
+        self._p2_extra_pass: Optional[str] = None
+        self._p2_background_url: Optional[str] = None
         
         # Для совместимости со старым кодом (минимальные заглушки)
         p1_id = player_ids[0] if player_ids and len(player_ids) > 0 else 1
@@ -127,6 +143,7 @@ class BattleEngine:
         match_id: str,
         p1_data: Dict[str, Any],
         p2_data: Dict[str, Any],
+        starting_player_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Создать матч с использованием core/engine.
@@ -138,6 +155,17 @@ class BattleEngine:
         """
         try:
             from core.converter import deck_from_card_ids
+
+            if not self.mode_config.available:
+                return {
+                    "success": False,
+                    "error": f"mode_unavailable:{self.mode_config.mode_id}",
+                }
+            if self.mode_config.ruleset != "classic":
+                return {
+                    "success": False,
+                    "error": f"ruleset_not_implemented:{self.mode_config.ruleset}",
+                }
             
             self._logger.info(
                 "create_match: match_id=%s p1_id=%s p2_id=%s",
@@ -153,9 +181,15 @@ class BattleEngine:
             if p1_data.get("is_bot"):
                 self.bot_id = p1_data["user_id"]
                 self.bot_difficulty = p1_data.get("difficulty", "medium")
+                self.bot_difficulty_label = p1_data.get("difficulty_label", self.bot_difficulty)
+                self.bot_strength_tier = p1_data.get("strength_tier", self.bot_difficulty)
+                self.bot_brain_profile = p1_data.get("brain_profile")
             elif p2_data.get("is_bot"):
                 self.bot_id = p2_data["user_id"]
                 self.bot_difficulty = p2_data.get("difficulty", "medium")
+                self.bot_difficulty_label = p2_data.get("difficulty_label", self.bot_difficulty)
+                self.bot_strength_tier = p2_data.get("strength_tier", self.bot_difficulty)
+                self.bot_brain_profile = p2_data.get("brain_profile")
             
             # Метаданные
             self._p1_name = p1_data.get("name", "Игрок 1")
@@ -164,12 +198,16 @@ class BattleEngine:
             self._p1_clan = p1_data.get("clan", "")
             self._p1_title = p1_data.get("title", "")
             self._p1_rarity = p1_data.get("rarity", "")
+            self._p1_extra_pass = p1_data.get("extra_pass")
+            self._p1_background_url = p1_data.get("background_url")
             self._p2_name = p2_data.get("name", "Игрок 2")
             self._p2_avatar_url = p2_data.get("avatar_url")
             self._p2_trophies = p2_data.get("trophies", 0)
             self._p2_clan = p2_data.get("clan", "")
             self._p2_title = p2_data.get("title", "")
             self._p2_rarity = p2_data.get("rarity", "")
+            self._p2_extra_pass = p2_data.get("extra_pass")
+            self._p2_background_url = p2_data.get("background_url")
             
             # Загружаем данные карт из БД
             all_deck_ids = (p1_data.get("deck_ids") or []) + (p2_data.get("deck_ids") or [])
@@ -180,13 +218,35 @@ class BattleEngine:
                 len(cards_data),
             )
             
-            # Загружаем уровни карт
+            # Загружаем уровни карт (с оверрайдом для ботов)
             p1_levels = await self._load_user_card_levels(p1_data["user_id"], p1_data.get("deck_ids") or [])
             p2_levels = await self._load_user_card_levels(p2_data["user_id"], p2_data.get("deck_ids") or [])
-            
-            # Создаем колоды CardInstance
-            p1_deck = deck_from_card_ids(p1_data.get("deck_ids") or [], cards_data, p1_levels)
-            p2_deck = deck_from_card_ids(p2_data.get("deck_ids") or [], cards_data, p2_levels)
+            p1_levels = self._apply_card_level_mode(p1_levels, p1_data.get("deck_ids") or [])
+            p2_levels = self._apply_card_level_mode(p2_levels, p2_data.get("deck_ids") or [])
+
+            # Bot card level override: slot-based per-card levels.
+            # В normal режиме передаём в converter как slot_levels (per-index).
+            # В disabled/max _apply_card_level_mode уже всё установила — не трогаем.
+            p1_slot_levels = None
+            p2_slot_levels = None
+            p1_raw = p1_data.get("card_levels")
+            p2_raw = p2_data.get("card_levels")
+            if p1_data.get("is_bot") and p1_raw is not None and self.mode_config.classic.card_level_mode == "normal":
+                p1_slot_levels = [int(l) for l in p1_raw]
+                self._logger.info("[ADAPTER] Bot P1 card_levels: %s", p1_slot_levels)
+            if p2_data.get("is_bot") and p2_raw is not None and self.mode_config.classic.card_level_mode == "normal":
+                p2_slot_levels = [int(l) for l in p2_raw]
+                self._logger.info("[ADAPTER] Bot P2 card_levels: %s", p2_slot_levels)
+
+            # Создаем колоды CardInstance — боты через slot_levels, игроки через pX_levels
+            p1_deck = deck_from_card_ids(
+                p1_data.get("deck_ids") or [], cards_data, p1_levels,
+                slot_levels=p1_slot_levels,
+            )
+            p2_deck = deck_from_card_ids(
+                p2_data.get("deck_ids") or [], cards_data, p2_levels,
+                slot_levels=p2_slot_levels,
+            )
 
             # Store initial deck IDs for analytics
             self._p1_initial_deck_ids = [int(c) for c in (p1_data.get("deck_ids") or [])]
@@ -199,114 +259,56 @@ class BattleEngine:
                 len(p2_deck),
             )
             
-            # Извлекаем героев
-            p1_hero = self._extract_hero(p1_deck)
-            p2_hero = self._extract_hero(p2_deck)
-
-            # Blitz: hero HP -50% for both players
-            if self._is_blitz:
-                self._logger.info("[BLITZ] Halving hero HP: p1=%d→%d p2=%d→%d", p1_hero.hp, p1_hero.hp // 2, p2_hero.hp, p2_hero.hp // 2)
-                p1_hero.hp = p1_hero.hp // 2
-                p1_hero.max_hp = p1_hero.hp
-                p2_hero.hp = p2_hero.hp // 2
-                p2_hero.max_hp = p2_hero.hp
-            
-            # Создаем состояния игроков
-            p1_state = CorePlayerState(
-                user_id=p1_data["user_id"],
-                is_bot=p1_data.get("is_bot", False),
-                hero=p1_hero,
-                mana=1,
-                max_mana=1,
-                hand=[],
-                board=[],
-                deck=p1_deck,
-                trophies=p1_data.get("trophies", 0),
-            )
-            
-            p2_state = CorePlayerState(
-                user_id=p2_data["user_id"],
-                is_bot=p2_data.get("is_bot", False),
-                hero=p2_hero,
-                mana=0,
-                max_mana=0,
-                hand=[],
-                board=[],
-                deck=p2_deck,
-                trophies=p2_data.get("trophies", 0),
-            )
-            
-            # Раздаем стартовые руки (3 карты каждому) - CHEAPEST FIRST
-            # КРИТИЧНО: Фильтруем героев из колоды перед раздачей рук
             import random
-            
-            # P1: выбираем 3 самых дешевых ВОИНА (исключая героев и зелья)
-            if p1_state.deck:
-                # Фильтруем героев из колоды
-                playable_deck = [c for c in p1_state.deck if c.card_type != CardType.HERO]
-                p1_state.deck = playable_deck
-                
-                # Отделяем воинов от зелий
-                warriors = [c for c in p1_state.deck if c.card_type == CardType.WARRIOR]
-                potions = [c for c in p1_state.deck if c.card_type == CardType.POTION]
-                
-                # Сортируем воинов по стоимости маны
-                warriors.sort(key=lambda c: c.mana_cost)
-                
-                # Берем 3 самых дешевых воина в руку
-                for _ in range(min(3, len(warriors))):
-                    p1_state.hand.append(warriors.pop(0))
-                
-                # Собираем колоду обратно: оставшиеся воины + зелья
-                p1_state.deck = warriors + potions
-                
-                # Перемешиваем оставшуюся колоду
-                random.shuffle(p1_state.deck)
-                self._logger.info(
-                    "[GAME_START] Player %s starting hand (warriors only): %s",
-                    p1_state.user_id,
-                    [c.name for c in p1_state.hand]
-                )
-            
-            # P2: выбираем 3 самых дешевых ВОИНА (исключая героев и зелья)
-            if p2_state.deck:
-                # Фильтруем героев из колоды
-                playable_deck = [c for c in p2_state.deck if c.card_type != CardType.HERO]
-                p2_state.deck = playable_deck
-                
-                # Отделяем воинов от зелий
-                warriors = [c for c in p2_state.deck if c.card_type == CardType.WARRIOR]
-                potions = [c for c in p2_state.deck if c.card_type == CardType.POTION]
-                
-                # Сортируем воинов по стоимости маны
-                warriors.sort(key=lambda c: c.mana_cost)
-                
-                # Берем 3 самых дешевых воина в руку
-                for _ in range(min(3, len(warriors))):
-                    p2_state.hand.append(warriors.pop(0))
-                
-                # Собираем колоду обратно: оставшиеся воины + зелья
-                p2_state.deck = warriors + potions
-                
-                # Перемешиваем оставшуюся колоду
-                random.shuffle(p2_state.deck)
-                self._logger.info(
-                    "[GAME_START] Player %s starting hand (warriors only): %s",
-                    p2_state.user_id,
-                    [c.name for c in p2_state.hand]
-                )
-            
-            # Создаем игровое состояние
-            game_state = GameState(
-                p1=p1_state,
-                p2=p2_state,
-                current_turn_owner_id=p1_data["user_id"],
-                turn_number=1,
+            game_state = create_classic_game_state(
+                p1_user_id=p1_data["user_id"],
+                p2_user_id=p2_data["user_id"],
+                p1_deck=p1_deck,
+                p2_deck=p2_deck,
+                p1_is_bot=p1_data.get("is_bot", False),
+                p2_is_bot=p2_data.get("is_bot", False),
+                p1_trophies=p1_data.get("trophies", 0),
+                p2_trophies=p2_data.get("trophies", 0),
+                starting_player_id=starting_player_id,
+                rng=random.Random(),
             )
-            
+
+            health_multiplier = self.mode_config.classic.hero_health_multiplier
+            if health_multiplier != 1.0:
+                p1_hero = game_state.p1.hero
+                p2_hero = game_state.p2.hero
+                p1_hp = max(1, round(p1_hero.hp * health_multiplier))
+                p2_hp = max(1, round(p2_hero.hp * health_multiplier))
+                self._logger.info(
+                    "[MODE] Hero HP multiplier %.2f: p1=%d->%d p2=%d->%d",
+                    health_multiplier,
+                    p1_hero.hp,
+                    p1_hp,
+                    p2_hero.hp,
+                    p2_hp,
+                )
+                p1_hero.hp = p1_hp
+                p1_hero.max_hp = p1_hero.hp
+                p2_hero.hp = p2_hp
+                p2_hero.max_hp = p2_hero.hp
+
+            self._logger.info(
+                "[GAME_START] Player %s starting hand (warriors only): %s",
+                game_state.p1.user_id,
+                [c.name for c in game_state.p1.hand]
+            )
+            self._logger.info(
+                "[GAME_START] Player %s starting hand (warriors only): %s",
+                game_state.p2.user_id,
+                [c.name for c in game_state.p2.hand]
+            )
+
             # Инициализируем ArenaEnvironment
-            self._arena = ArenaEnvironment(game_state, mana_per_turn=2 if self._is_blitz else 1)
-            self.current_player_id = p1_data["user_id"]
+            self._arena = ArenaEnvironment(
+                game_state,
+                classic_params=self.mode_config.classic,
+            )
+            self.current_player_id = game_state.current_turn_owner_id
             self.turn = 1
             self.turn_start_time = time.time()
             self.match_start_time = time.time()
@@ -321,11 +323,12 @@ class BattleEngine:
                 "match_id": match_id,
                 "player_ids": self.player_ids,
                 "current_player_id": self.current_player_id,
+                "starting_player_id": game_state.current_turn_owner_id,
             }
             
         except Exception as exc:
             self._logger.error("create_match failed: %s", exc, exc_info=True)
-            return {"success": False, "error": str(exc)}
+            return {"success": False, "error": "create_match_failed"}
     
     async def _load_cards_data(self, card_ids: List[Any]) -> Dict[int, Dict[str, Any]]:
         """Загрузить данные карт из БД."""
@@ -370,6 +373,22 @@ class BattleEngine:
         except Exception as exc:
             self._logger.warning("Failed to load user card levels: %s", exc)
             return {}
+
+    def _apply_card_level_mode(self, levels: Dict[int, int], deck_ids: List[Any]) -> Dict[int, int]:
+        """Apply the resolved mode's card-level policy to a deck."""
+        card_level_mode = self.mode_config.classic.card_level_mode
+        if card_level_mode == "normal":
+            return levels
+
+        forced_level = 1 if card_level_mode == "disabled" else 10
+        adjusted = dict(levels)
+        for raw_card_id in deck_ids:
+            try:
+                card_id = int(str(raw_card_id).split(":")[0])
+            except (TypeError, ValueError):
+                continue
+            adjusted[card_id] = forced_level
+        return adjusted
     
     def _extract_hero(self, deck: List[CardInstance]) -> CardInstance:
         """Извлечь героя из колоды или создать дефолтного."""
@@ -421,10 +440,29 @@ class BattleEngine:
         if not self._arena:
             return {"success": False, "error": "arena_not_initialized"}
         
+        import copy
+
+        state_snapshot = copy.deepcopy(self._arena.state)
+        previous_turn_number = self._arena.state.turn_number
+        previous_turn_owner_id = self._arena.state.current_turn_owner_id
+        previous_turn_start_time = self.turn_start_time
+
         # Выполняем действие
-        success, error = self._arena.step(user_id, action)
+        try:
+            success, error = self._arena.step(user_id, action)
+        except Exception as exc:  # noqa: BLE001
+            self._arena.state = state_snapshot
+            self.current_player_id = previous_turn_owner_id
+            self.turn = previous_turn_number
+            self.turn_start_time = previous_turn_start_time
+            self._logger.error("execute_action failed: %s", exc, exc_info=True)
+            return {"success": False, "error": "action_failed"}
         
         if not success:
+            self._arena.state = state_snapshot
+            self.current_player_id = previous_turn_owner_id
+            self.turn = previous_turn_number
+            self.turn_start_time = previous_turn_start_time
             return {"success": False, "error": error}
         
         # Обновляем метаданные
@@ -434,6 +472,11 @@ class BattleEngine:
         
         # Если был EndTurn, сбрасываем таймер
         if isinstance(action, EndTurnAction):
+            self._record_completed_turn(
+                previous_turn_number,
+                previous_turn_owner_id,
+                previous_turn_start_time,
+            )
             self.turn_start_time = time.time()
         
         # Проверяем завершение игры
@@ -492,13 +535,14 @@ class BattleEngine:
         if hand_index < 0:
             return {"action": "play_card", "error": "card_not_found_in_hand"}
         
-        # Определяем target_id для core/actions
+        # Определяем target_id для core/actions. Если фронтенд уже передал
+        # instance_id героя, сохраняем его: герой может быть и союзной целью.
         resolved_target_id = None
-        if target_is_hero:
+        if target_id is not None:
+            resolved_target_id = str(target_id)
+        elif target_is_hero:
             opponent = state.p2 if state.p1.user_id == user_id else state.p1
             resolved_target_id = str(opponent.hero.instance_id)
-        elif target_id is not None:
-            resolved_target_id = str(target_id)
         
         action = PlayCardAction(
             hand_index=hand_index,
@@ -590,12 +634,16 @@ class BattleEngine:
                 player_avatar, opponent_avatar = self._p1_avatar_url, self._p2_avatar_url
                 player_title, opponent_title = self._p1_title, self._p2_title
                 player_rarity, opponent_rarity = self._p1_rarity, self._p2_rarity
+                player_extra_pass, opponent_extra_pass = self._p1_extra_pass, self._p2_extra_pass
+                player_background, opponent_background = self._p1_background_url, self._p2_background_url
             else:
                 player_state, opponent_state = p2, p1
                 player_name, opponent_name = self._p2_name, self._p1_name
                 player_avatar, opponent_avatar = self._p2_avatar_url, self._p1_avatar_url
                 player_title, opponent_title = self._p2_title, self._p1_title
                 player_rarity, opponent_rarity = self._p2_rarity, self._p1_rarity
+                player_extra_pass, opponent_extra_pass = self._p2_extra_pass, self._p1_extra_pass
+                player_background, opponent_background = self._p2_background_url, self._p1_background_url
         else:
             # Без viewer_id отдаем p1 как player
             player_state, opponent_state = p1, p2
@@ -603,14 +651,27 @@ class BattleEngine:
             player_avatar, opponent_avatar = self._p1_avatar_url, self._p2_avatar_url
             player_title, opponent_title = self._p1_title, self._p2_title
             player_rarity, opponent_rarity = self._p1_rarity, self._p2_rarity
+            player_extra_pass, opponent_extra_pass = self._p1_extra_pass, self._p2_extra_pass
+            player_background, opponent_background = self._p1_background_url, self._p2_background_url
         
-        is_my_turn = viewer_id is not None and state.current_turn_owner_id == viewer_id
+        waiting_for_players = self.is_waiting_for_players()
+        is_my_turn = (
+            viewer_id is not None
+            and state.current_turn_owner_id == viewer_id
+            and not waiting_for_players
+        )
         
         # Сериализуем legal_actions для viewer (если это его ход)
         legal_actions_json = []
         if viewer_id is not None and is_my_turn:
             legal_actions = self._arena.get_legal_actions(viewer_id)
             legal_actions_json = [self._serialize_action(a) for a in legal_actions]
+
+        required_ready_user_ids = self.required_ready_user_ids()
+        waiting_for_user_ids = [
+            user_id for user_id in required_ready_user_ids
+            if user_id not in self.client_ready_users
+        ]
         
         return {
             "match_id": self.match_id,
@@ -619,27 +680,70 @@ class BattleEngine:
             "is_my_turn": is_my_turn,
             "player_ids": [p1.user_id, p2.user_id],
             "viewer_id": viewer_id,
+            "match_status": "waiting_for_players" if waiting_for_players else "active",
+            "battle_started": not waiting_for_players,
+            "ready_user_ids": sorted(self.client_ready_users),
+            "waiting_for_user_ids": waiting_for_user_ids,
+            "ready_count": len(self.client_ready_users.intersection(required_ready_user_ids)),
+            "required_ready_count": len(required_ready_user_ids),
             "is_ended": self.is_ended,
             "game_over": state.status != GameStatus.ONGOING,
             "winner_id": self._get_winner_id(),
             "turn_time_remaining": self.get_turn_time_remaining(),
             "turn_duration": self.turn_duration,
+            "turn_time_history": self._serialize_turn_time_history(viewer_id),
+            "game_mode": self.game_mode,
+            "ruleset": self.ruleset,
+            "mode_config": serialize_mode_config(self.mode_config),
+            "sudden_death": self._serialize_sudden_death_state(player_state, opponent_state),
             
             # HP героев (для логов и быстрой проверки)
             "player1_hp": p1.hero.hp,
             "player2_hp": p2.hero.hp,
             
             # Состояние viewer'а (player)
-            "player": self._serialize_player_state(player_state, player_name, player_avatar, player_title, player_rarity, show_hand=True),
+            "player": self._serialize_player_state(player_state, player_name, player_avatar, player_title, player_rarity,
+                                                    player_extra_pass, player_background, show_hand=True),
             
             # Состояние оппонента (скрываем содержимое руки)
-            "opponent": self._serialize_player_state(opponent_state, opponent_name, opponent_avatar, opponent_title, opponent_rarity, show_hand=False),
+            "opponent": self._serialize_player_state(opponent_state, opponent_name, opponent_avatar, opponent_title, opponent_rarity,
+                                                      opponent_extra_pass, opponent_background, show_hand=False),
             
             # КРИТИЧНО: Список доступных действий
             "legal_actions": legal_actions_json,
             
             # История последних 100 действий (преобразуем в формат для клиента)
-            "action_history": self._serialize_action_history(state.action_history, is_my_turn),
+            "action_history": self._serialize_action_history(state.action_history, viewer_id),
+        }
+
+    def _serialize_sudden_death_state(
+        self,
+        player_state: CorePlayerState,
+        opponent_state: CorePlayerState,
+    ) -> Dict[str, Any]:
+        """Serialize viewer-relative Sudden Death counters for UI hints."""
+        classic = self.mode_config.classic
+        if not classic.sudden_death_enabled or not self._arena:
+            return {"enabled": False}
+
+        state = self._arena.state
+
+        def _turn_count(ps: CorePlayerState) -> int:
+            return int(state.sudden_death_turns_by_player.get(int(ps.user_id), 0))
+
+        def _next_damage(turn_count: int) -> int:
+            return classic.sudden_death_damage_start + turn_count * classic.sudden_death_damage_step
+
+        player_turns = _turn_count(player_state)
+        opponent_turns = _turn_count(opponent_state)
+        return {
+            "enabled": True,
+            "damage_start": classic.sudden_death_damage_start,
+            "damage_step": classic.sudden_death_damage_step,
+            "player_turn_count": player_turns,
+            "opponent_turn_count": opponent_turns,
+            "player_next_damage": _next_damage(player_turns),
+            "opponent_next_damage": _next_damage(opponent_turns),
         }
     
     def _serialize_player_state(
@@ -649,6 +753,8 @@ class BattleEngine:
         avatar_url: Optional[str],
         title: str = "",
         rarity: str = "",
+        extra_pass: Optional[str] = None,
+        background_url: Optional[str] = None,
         show_hand: bool = True
     ) -> Dict[str, Any]:
         """Сериализация состояния игрока."""
@@ -665,7 +771,10 @@ class BattleEngine:
             "avatar_url": avatar_url,
             "title": title,
             "rarity": rarity,
+            "extra_pass": extra_pass,
+            "background_url": background_url,
             "is_bot": ps.is_bot,
+            "replacement_status": getattr(ps.replacement_status, "value", str(ps.replacement_status)),
             "mana": ps.mana,
             "max_mana": ps.max_mana,
             "trophies": ps.trophies,
@@ -685,6 +794,7 @@ class BattleEngine:
             "description": card.description,
             "card_type": card.card_type.value,
             "rarity": card.rarity,
+            "level": card.level,
             "mana": card.mana_cost,
             "mana_cost": card.mana_cost,
             "attack": card.attack,
@@ -697,6 +807,7 @@ class BattleEngine:
             "can_attack": card.is_ready and card.attack > 0,
             "is_asleep": card.is_asleep,
             "is_frozen": card.is_frozen,
+            "mechanics_desc": card.mechanics_desc,
             "owner_id": owner_id,
             "image": f"/DesignAssets/Cards/{card.card_id}.png" if card.card_id else "/DesignAssets/Cards/9.png",
         }
@@ -716,7 +827,7 @@ class BattleEngine:
     def _serialize_action_history(
         self, 
         action_history: List[tuple[str, str]], 
-        is_my_turn: bool
+        viewer_id: Optional[int]
     ) -> List[Dict[str, str]]:
         """
         Сериализация истории действий для клиента.
@@ -724,15 +835,23 @@ class BattleEngine:
         
         Args:
             action_history: Список (type, text) из GameState
-            is_my_turn: Текущий ход игрока (для определения перспективы)
+            viewer_id: ID клиента, относительно которого маркируются P1/P2-события
             
         Returns:
             Список словарей {"type": "player"/"opponent"/"system", "text": "описание"}
         """
         result = []
         for log_type, text in action_history:
-            # Определяем финальный тип для клиента
-            if log_type == "player":
+            # В core log_type привязан к P1/P2, а клиенту нужна перспектива viewer.
+            if log_type == "player" and viewer_id is not None and self._arena:
+                actor_id = self._arena.state.p1.user_id
+                final_type = "player" if actor_id == viewer_id else "opponent"
+                prefix = "Вы" if final_type == "player" else "Противник"
+            elif log_type == "opponent" and viewer_id is not None and self._arena:
+                actor_id = self._arena.state.p2.user_id
+                final_type = "player" if actor_id == viewer_id else "opponent"
+                prefix = "Вы" if final_type == "player" else "Противник"
+            elif log_type == "player":
                 final_type = "player"
                 prefix = "Вы"
             elif log_type == "opponent":
@@ -823,14 +942,50 @@ class BattleEngine:
     
     def get_turn_time_remaining(self) -> float:
         """Возвращает оставшееся время хода."""
+        if self.is_waiting_for_players():
+            return float(self.turn_duration)
         if self.turn_start_time is None:
             return float(self.turn_duration)
         elapsed = time.time() - self.turn_start_time
         remaining = max(0, self.turn_duration - elapsed)
         return remaining
+
+    def _record_completed_turn(
+        self,
+        turn_number: int,
+        player_id: Optional[int],
+        started_at: Optional[float],
+        *,
+        now: Optional[float] = None,
+    ) -> None:
+        if player_id is None or started_at is None:
+            return
+        current_time = time.time() if now is None else now
+        elapsed = max(0.0, min(float(self.turn_duration), current_time - started_at))
+        self.turn_time_history.append({
+            "turn": int(turn_number or 0),
+            "player_id": int(player_id),
+            "elapsed_seconds": round(elapsed, 1),
+        })
+        self.turn_time_history = self.turn_time_history[-12:]
+
+    def _serialize_turn_time_history(self, viewer_id: Optional[int]) -> list[dict[str, Any]]:
+        history: list[dict[str, Any]] = []
+        for item in self.turn_time_history[-8:]:
+            player_id = item.get("player_id")
+            side = "player" if viewer_id is not None and player_id == viewer_id else "opponent"
+            history.append({
+                "turn": item.get("turn"),
+                "player_id": player_id,
+                "side": side,
+                "elapsed_seconds": item.get("elapsed_seconds"),
+            })
+        return history
     
     def is_turn_expired(self) -> bool:
         """Проверяет истечение времени хода."""
+        if self.is_waiting_for_players():
+            return False
         return self.get_turn_time_remaining() <= 0
     
     def is_bot(self, player_id: Optional[int]) -> bool:
@@ -887,7 +1042,57 @@ class BattleEngine:
                 "[AFK_DETECTED] Match: %s | Player: %s marked as AFK (2+ timeouts)",
                 self.match_id, player_id
             )
-            print(f"!!! [BATTLE_ENGINE] Игрок {player_id} помечен как AFK (таймауты: {timeout_count})")
+            self._logger.info("Player %s marked AFK after %s timeouts", player_id, timeout_count)
+
+    def reset_player_timeouts(self, player_id: int) -> None:
+        """Reset consecutive natural timer expirations for a player."""
+        if not self._arena:
+            return
+
+        state = self._arena.state
+        if state.p1.user_id == player_id:
+            self.p1_consecutive_timeouts = 0
+        elif state.p2.user_id == player_id:
+            self.p2_consecutive_timeouts = 0
+        else:
+            self._logger.warning("reset_player_timeouts: unknown player_id=%s", player_id)
+
+    def get_player_replacement_status(self, user_id: int) -> "ReplacementStatus":
+        """Return ACTIVE/AFK/SURRENDERED for a participant."""
+        from core.state import ReplacementStatus
+
+        if not self._arena:
+            return ReplacementStatus.ACTIVE
+
+        state = self._arena.state
+        if state.p1.user_id == user_id:
+            return getattr(state.p1, "replacement_status", ReplacementStatus.ACTIVE)
+        if state.p2.user_id == user_id:
+            return getattr(state.p2, "replacement_status", ReplacementStatus.ACTIVE)
+        return ReplacementStatus.ACTIVE
+
+    def restore_player_control(self, user_id: int) -> bool:
+        """
+        Return an AFK-replaced human to ACTIVE control without rewinding battle state.
+
+        SURRENDERED is intentionally final and is not restored.
+        """
+        from core.state import ReplacementStatus
+
+        if not self._arena:
+            return False
+
+        status = self.get_player_replacement_status(user_id)
+        if status == ReplacementStatus.SURRENDERED:
+            return False
+        if status == ReplacementStatus.AFK:
+            self.set_player_replacement_status(user_id, ReplacementStatus.ACTIVE)
+        self.reset_player_timeouts(user_id)
+        return status == ReplacementStatus.AFK
+
+    def mark_player_activity(self, user_id: int) -> None:
+        """Any real player action/reconnect proves activity and clears AFK timeout counters."""
+        self.restore_player_control(user_id)
     
     def mark_surrender(self, player_id: int) -> None:
         """
@@ -920,11 +1125,62 @@ class BattleEngine:
             "[SURRENDER] Player %s surrendered. Bot will continue playing.",
             player_id
         )
-        print(f"!!! [BATTLE_ENGINE] Игрок {player_id} сдался, за него играет бот")
+        self._logger.info("Player %s surrendered; replacement bot takes control", player_id)
     
-    def mark_client_ready(self) -> None:
-        """Помечает клиента готовым."""
-        self.client_ready = True
+    def _requires_ready_barrier(self) -> bool:
+        """PvP human-vs-human matches start only after both clients finish prebattle."""
+        if self.is_bot_match or not self._arena:
+            return False
+        required_ids = self.required_ready_user_ids()
+        return len(required_ids) >= 2
+
+    def required_ready_user_ids(self) -> set[int]:
+        """Human participants that must report client_ready before PvP actions unlock."""
+        if not self._arena:
+            return set()
+        state = self._arena.state
+        required: set[int] = set()
+        for player in (state.p1, state.p2):
+            if not getattr(player, "is_bot", False):
+                try:
+                    required.add(int(player.user_id))
+                except (TypeError, ValueError):
+                    continue
+        return required
+
+    def is_waiting_for_players(self) -> bool:
+        """Return True while a human-vs-human match is created but not fully synchronized."""
+        if self.is_ended or not self._requires_ready_barrier():
+            return False
+        return not self.required_ready_user_ids().issubset(self.client_ready_users)
+
+    def mark_client_ready(self, user_id: Optional[int] = None) -> dict[str, Any]:
+        """Помечает клиента готовым и запускает PvP-таймер только после готовности обоих."""
+        if user_id is not None:
+            try:
+                self.client_ready_users.add(int(user_id))
+            except (TypeError, ValueError):
+                pass
+
+        required_ids = self.required_ready_user_ids()
+        if not self._requires_ready_barrier():
+            self.client_ready = True
+        elif required_ids.issubset(self.client_ready_users):
+            if not self.client_ready:
+                self.turn_start_time = time.time()
+                self.match_start_time = self.match_start_time or self.turn_start_time
+            self.client_ready = True
+        else:
+            self.client_ready = False
+
+        ready_count = len(self.client_ready_users.intersection(required_ids))
+        return {
+            "all_ready": bool(self.client_ready),
+            "ready_user_ids": sorted(self.client_ready_users),
+            "waiting_for_user_ids": sorted(required_ids - self.client_ready_users),
+            "ready_count": ready_count,
+            "required_ready_count": len(required_ids),
+        }
     
     def set_player_replacement_status(self, user_id: int, status: "ReplacementStatus") -> None:
         """
@@ -1035,12 +1291,18 @@ class BattleEngine:
     @staticmethod
     def _snapshot_card(card: CardInstance) -> dict:
         return {
+            "instance_id": str(card.instance_id),
             "id": card.card_id,
+            "name": card.name,
+            "type": getattr(card.card_type, "value", str(card.card_type)),
+            "rarity": card.rarity,
+            "level": card.level,
             "mana": getattr(card, "mana_cost", 0),
             "atk": card.attack,
             "hp": card.hp,
             "max_hp": card.max_hp,
             "is_ready": card.is_ready,
+            "is_frozen": card.is_frozen,
             "mechanics": list(card.mechanics or []),
         }
 
