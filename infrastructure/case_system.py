@@ -42,7 +42,6 @@ ULTRA_RARITY_MULTIPLIERS = {
     "limited": 2.00,
 }
 ULTRA_T5_GEMS_CHANCE_MULTIPLIER = 1.8
-ULTRA_T5_LIMITED_SHARDS_CHANCE_MULTIPLIER = 1.8
 
 RARITY_SCORE = {
     "common": 1,
@@ -323,7 +322,6 @@ def score_case_rewards(rewards: Dict[str, Any]) -> float:
     """Оценка наград для автоматического Ultra-реролла."""
     score = float(rewards.get("coins", 0)) / 100
     score += float(rewards.get("gems", 0)) * 8
-    score += float(rewards.get("limited_shards", 0)) * 50
     if rewards.get("jackpot"):
         score += 80
 
@@ -362,7 +360,6 @@ async def _generate_single_case_rewards(
             "cards": List[Dict],
             "particles": List[Dict],
             "gems": int (опционально),
-            "limited_shards": int (опционально),
             "jackpot": bool (если был джекпот частиц)
         }
     """
@@ -371,7 +368,6 @@ async def _generate_single_case_rewards(
         "cards": [],
         "particles": [],
         "gems": 0,
-        "limited_shards": 0,
         "jackpot": False,
     }
 
@@ -436,14 +432,6 @@ async def _generate_single_case_rewards(
                 gems_range = tier_config.get("gems_amount", (10, 50))
                 rewards["gems"] = random.randint(gems_range[0], gems_range[1])
 
-        if "limited_shards_chance" in tier_config:
-            shards_chance = tier_config["limited_shards_chance"]
-            if extra_pass == "ultra":
-                shards_chance = min(shards_chance * ULTRA_T5_LIMITED_SHARDS_CHANCE_MULTIPLIER, 0.95)
-            if random.random() < shards_chance:
-                shards_range = tier_config.get("limited_shards_amount", (1, 5))
-                rewards["limited_shards"] = random.randint(shards_range[0], shards_range[1])
-
     return rewards
 
 
@@ -459,36 +447,22 @@ async def generate_case_rewards(
 
     Ultra-бонусы:
     - повышенные веса редких карт;
-    - повышенные шансы T5-бонусов;
-    - один автоматический реролл с выбором лучшего набора.
+    - повышенные шансы T5-бонусов.
     """
     extra_pass = normalize_extra_pass_status(extra_pass)
-    attempts_count = 1 + get_case_reroll_attempts(extra_pass)
-    candidates: List[Dict[str, Any]] = []
-
-    for attempt_index in range(attempts_count):
-        candidate = await _generate_single_case_rewards(
-            db,
-            tier,
-            user_id,
-            set(user_card_ids),
-            extra_pass,
-        )
-        candidate["_score"] = score_case_rewards(candidate)
-        candidate["_attempt"] = attempt_index + 1
-        candidates.append(candidate)
-
-    rewards = max(candidates, key=lambda candidate: candidate["_score"])
-    score = rewards.pop("_score", 0)
-    selected_attempt = rewards.pop("_attempt", 1)
+    rewards = await _generate_single_case_rewards(
+        db,
+        tier,
+        user_id,
+        set(user_card_ids),
+        extra_pass,
+    )
 
     if extra_pass == "ultra":
         rewards["extra_pass_bonus"] = {
             "tier": "ultra",
-            "reroll_attempts": attempts_count - 1,
-            "total_attempts": attempts_count,
-            "selected_attempt": selected_attempt,
-            "selected_score": round(score, 2),
+            "reroll_available": True,
+            "reroll_attempts": get_case_reroll_attempts(extra_pass),
         }
 
     return rewards
@@ -517,8 +491,8 @@ async def process_case_opening(
     if not user_case:
         return {"success": False, "error": "case_not_found"}
 
-    default_case_id = await db.get_default_case_id()
-    is_legacy_key_case = user_case.get("case_id") == default_case_id
+    default_case_id = await db.get_default_case_id() if hasattr(db, "get_default_case_id") else None
+    is_legacy_key_case = default_case_id is not None and user_case.get("case_id") == default_case_id
 
     final_tier = int(user_case.get("tier") or 1)
     final_tier = max(1, min(final_tier, 5))

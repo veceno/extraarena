@@ -3,7 +3,7 @@ Tests for get_battle_history unified query (summary + legacy fallback)
 and _resolve_legacy_opponent helper.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from infrastructure.database import Database
 
 
@@ -458,3 +458,82 @@ def _run(coro):
     except RuntimeError:
         loop = asyncio.new_event_loop()
         return loop.run_until_complete(coro)
+
+
+class TestCurrentResultStreak:
+    def test_summary_win_streak_skips_training_and_friendly(self):
+        async def mock_fetch(query, *args):
+            if "FROM battle_results" in query:
+                return []
+            if "FROM battle_summary" in query:
+                return [
+                    _row(id=5, match_id="training-win", p1_user_id=USER, p2_user_id=OPP,
+                         winner_user_id=USER, loser_user_id=OPP,
+                         game_mode="training", match_type="pve", created_at=NOW + timedelta(seconds=2)),
+                    _row(id=4, match_id="friendly-loss", p1_user_id=USER, p2_user_id=OPP,
+                         winner_user_id=OPP, loser_user_id=USER,
+                         game_mode="classic", match_type="friendly", created_at=NOW + timedelta(seconds=1)),
+                    _row(id=3, match_id="s1", p1_user_id=USER, p2_user_id=OPP,
+                         winner_user_id=USER, loser_user_id=OPP,
+                         game_mode="classic", match_type="pvp", created_at=NOW),
+                    _row(id=2, match_id="s2", p1_user_id=OPP, p2_user_id=USER,
+                         winner_user_id=USER, loser_user_id=OPP,
+                         game_mode="extra_arena:spellstorm", match_type="pvp", created_at=NOW - timedelta(seconds=1)),
+                    _row(id=1, match_id="s3", p1_user_id=USER, p2_user_id=OPP,
+                         winner_user_id=OPP, loser_user_id=USER,
+                         game_mode="classic", match_type="pvp", created_at=NOW - timedelta(seconds=2)),
+                ]
+            return []
+
+        db = _fake_db(fetch_returns=mock_fetch)
+        assert _run(db.get_current_result_streak(USER)) == {"kind": "win", "length": 2}
+
+    def test_legacy_loss_streak_dedupes_summary_and_breaks_on_draw(self):
+        async def mock_fetch(query, *args):
+            if "FROM battle_results" in query:
+                return [
+                    _row(id=50, match_id="dup", p1_id=USER, p2_id=OPP,
+                         winner_id=USER, loser_id=OPP,
+                         match_type="pvp", created_at=NOW + timedelta(seconds=5)),
+                    _row(id=40, match_id="l1", p1_id=OPP, p2_id=USER,
+                         winner_id=OPP, loser_id=USER,
+                         match_type="pvp", created_at=NOW - timedelta(seconds=1)),
+                    _row(id=30, match_id="draw", p1_id=USER, p2_id=OPP,
+                         winner_id=None, loser_id=None,
+                         match_type="pvp", created_at=NOW - timedelta(seconds=2)),
+                    _row(id=20, match_id="old", p1_id=OPP, p2_id=USER,
+                         winner_id=OPP, loser_id=USER,
+                         match_type="pvp", created_at=NOW - timedelta(seconds=3)),
+                ]
+            if "FROM battle_summary" in query:
+                return [
+                    _row(id=60, match_id="dup", p1_user_id=USER, p2_user_id=OPP,
+                         winner_user_id=OPP, loser_user_id=USER,
+                         game_mode="classic", match_type="pvp", created_at=NOW),
+                ]
+            return []
+
+        db = _fake_db(fetch_returns=mock_fetch)
+        assert _run(db.get_current_result_streak(USER)) == {"kind": "loss", "length": 2}
+
+    def test_same_timestamp_prefers_summary_then_higher_id_deterministically(self):
+        async def mock_fetch(query, *args):
+            if "FROM battle_results" in query:
+                return [
+                    _row(id=100, match_id="legacy-new", p1_id=USER, p2_id=OPP,
+                         winner_id=OPP, loser_id=USER,
+                         match_type="pvp", created_at=NOW),
+                ]
+            if "FROM battle_summary" in query:
+                return [
+                    _row(id=10, match_id="summary-old-id", p1_user_id=USER, p2_user_id=OPP,
+                         winner_user_id=OPP, loser_user_id=USER,
+                         game_mode="classic", match_type="pvp", created_at=NOW),
+                    _row(id=11, match_id="summary-new-id", p1_user_id=USER, p2_user_id=OPP,
+                         winner_user_id=USER, loser_user_id=OPP,
+                         game_mode="classic", match_type="pvp", created_at=NOW),
+                ]
+            return []
+
+        db = _fake_db(fetch_returns=mock_fetch)
+        assert _run(db.get_current_result_streak(USER)) == {"kind": "win", "length": 1}

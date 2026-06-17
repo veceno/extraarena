@@ -5,15 +5,17 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="extra-arena-asset-version" content="arena-onboarding-20260610-5">
   <title>Арена — ExtraArena</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <script src="safe-area.js"></script>
-  <link rel="stylesheet" href="arena-styles.css">
+  <script src="safe-area.js?v=arena-onboarding-20260610-5"></script>
+  <link rel="stylesheet" href="arena-styles.css?v=arena-onboarding-20260610-5">
 </head>
 <body class="arena-page">
   
   <!-- ARENA BATTLEFIELD CONTAINER -->
   <div id="arena-battlefield-container">
+    <div class="arena-background-reaction-layer" id="arena-background-reaction-layer" aria-hidden="true"></div>
 
     <!-- Prebattle Screen -->
     <section class="prebattle-screen" id="prebattle-screen" aria-hidden="false">
@@ -236,6 +238,9 @@
           <div class="player-info-block">            
             <div class="player-hp-block" id="player-hp-block">
               <div class="hp-fill" id="player-hp-fill" style="width:100%;"></div>
+              <button class="talkie-button" id="talkie-button" type="button" title="Talkie" aria-label="Talkie">
+                <img class="talkie-icon" src="../DesignAssets/Arena/Talkie.png" alt="">
+              </button>
               <span class="hp-value-large" id="player-hp-text">24</span>
               <span class="hp-max-text" id="player-hp-max-text">/30</span>
               <img src="../DesignAssets/Arena/HealthPoints.png" alt="HP" class="hp-heart-icon-white">
@@ -276,10 +281,39 @@
         </button>
         
       </div>
+
+      <section class="talkie-popover" id="talkie-popover" aria-hidden="true" aria-label="Talkie">
+        <header class="talkie-popover-header">
+          <span>Talkie</span>
+          <span class="talkie-limit" id="talkie-limit-text">0 / ход</span>
+        </header>
+        <div class="talkie-picker-grid" id="talkie-picker-grid"></div>
+        <label class="talkie-toggle-row">
+          <span>Использовать Talkies</span>
+          <input type="checkbox" id="talkie-muted-toggle" checked>
+          <span class="talkie-switch" aria-hidden="true"></span>
+        </label>
+        <p class="talkie-toggle-note" id="talkie-toggle-note">Если выключить - не сможешь отправлять и видеть чужие Talkies</p>
+      </section>
       
     </div>
     
   </div>
+
+  <section class="arena-launch-error" id="arena-launch-error" aria-hidden="true">
+    <div class="arena-launch-error-card" role="alert">
+      <div class="arena-launch-error-mark">!</div>
+      <p class="arena-launch-error-kicker">Арена недоступна</p>
+      <h1 id="arena-launch-error-title">Бой не найден</h1>
+      <p id="arena-launch-error-text">Не удалось открыть параметры боя.</p>
+      <div class="arena-launch-error-actions">
+        <button type="button" class="arena-launch-error-primary" id="arena-launch-error-back">Вернуться в меню</button>
+        <button type="button" class="arena-launch-error-secondary" id="arena-launch-error-close">Закрыть</button>
+      </div>
+    </div>
+  </section>
+
+  <div class="arena-onboarding-layer" id="arena-onboarding-layer" aria-live="polite" aria-hidden="true"></div>
   
   <!-- Surrender Modals -->
   <div class="surrender-modal" id="surrender-modal" aria-hidden="true">
@@ -383,6 +417,17 @@
     </section>
   </div>
 
+  <div class="talkie-fullscreen-overlay" id="talkie-fullscreen-overlay" aria-hidden="true">
+    <span class="talkie-screen-flash" aria-hidden="true"></span>
+    <span class="talkie-burst-flash" aria-hidden="true"></span>
+    <img class="talkie-fullscreen-image" id="talkie-fullscreen-image" alt="">
+  </div>
+
+  <div class="arena-card-text-overlay" id="arena-card-text-overlay" aria-hidden="true">
+    <div class="arena-card-text-copy" id="arena-card-text-copy"></div>
+  </div>
+  <div class="arena-card-target-hint" id="arena-card-target-hint" aria-hidden="true"></div>
+
   <!-- Arena Background Music -->
   <audio id="arena-bg-music" loop preload="auto">
     <source src="../DesignAssets/Arena/Sounds/arena_theme.wav" type="audio/wav">
@@ -398,10 +443,28 @@
   <audio id="arena-sfx-hero-damage" preload="auto"><source src="../DesignAssets/Sounds/arena/hero_damage.wav" type="audio/wav"></audio>
   <audio id="arena-sfx-hero-death" preload="auto"><source src="../DesignAssets/Sounds/arena/hero_death.wav" type="audio/wav"></audio>
   <audio id="arena-sfx-next-move" preload="auto"><source src="../DesignAssets/Sounds/arena/next_move_btn_pressed.wav" type="audio/wav"></audio>
+  <audio id="arena-sfx-player-turn-start" preload="auto"><source src="../DesignAssets/Sounds/arena/player_turn_start.wav" type="audio/wav"></audio>
+  <audio id="arena-sfx-victory" preload="auto"><source src="../DesignAssets/Sounds/arena/victory.wav" type="audio/wav"></audio>
+  <audio id="arena-sfx-defeat" preload="auto"><source src="../DesignAssets/Sounds/arena/defeat.wav" type="audio/wav"></audio>
+  <audio id="arena-sfx-surrender" preload="auto"><source src="../DesignAssets/Sounds/arena/surrender.wav" type="audio/wav"></audio>
+  <audio id="arena-sfx-low-time-tick" preload="auto"><source src="../DesignAssets/Sounds/arena/low_time_tick.wav" type="audio/wav"></audio>
+  <audio id="arena-sfx-talkie-happy" preload="auto"><source src="../DesignAssets/Arena/Talkies/sounds/happy.wav" type="audio/wav"></audio>
+  <audio id="arena-sfx-talkie-neutral" preload="auto"><source src="../DesignAssets/Arena/Talkies/sounds/neutral.wav" type="audio/wav"></audio>
+  <audio id="arena-sfx-talkie-rude" preload="auto"><source src="../DesignAssets/Arena/Talkies/sounds/rude.wav" type="audio/wav"></audio>
+  <audio id="arena-sfx-talkie-sad" preload="auto"><source src="../DesignAssets/Arena/Talkies/sounds/sad.wav" type="audio/wav"></audio>
+  <audio id="arena-sfx-onboarding-start" preload="auto"><source src="../DesignAssets/Sounds/onboarding/onboarding-start.mp3" type="audio/mpeg"></audio>
+  <audio id="arena-sfx-onboarding-step" preload="auto"><source src="../DesignAssets/Sounds/onboarding/onboarding-step.mp3" type="audio/mpeg"></audio>
+  <audio id="arena-sfx-onboarding-confirm" preload="auto"><source src="../DesignAssets/Sounds/onboarding/onboarding-confirm.mp3" type="audio/mpeg"></audio>
+  <audio id="arena-sfx-onboarding-complete" preload="auto"><source src="../DesignAssets/Sounds/onboarding/onboarding-complete.mp3" type="audio/mpeg"></audio>
+  <audio id="arena-sfx-onboarding-victory" preload="auto"><source src="../DesignAssets/Sounds/onboarding/onboarding-victory.mp3" type="audio/mpeg"></audio>
+  <audio id="arena-sfx-onboarding-blocked" preload="auto"><source src="../DesignAssets/Sounds/onboarding/onboarding-blocked.mp3" type="audio/mpeg"></audio>
   
   <!-- Scripts -->
   <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
-  <script src="arena.js"></script>
+  <script>
+    window.__EXTRA_ARENA_ASSET_VERSION__ = 'arena-onboarding-20260610-5';
+  </script>
+  <script src="arena.js?v=arena-onboarding-20260610-5"></script>
   
 </body>
 </html>

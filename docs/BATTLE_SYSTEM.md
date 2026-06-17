@@ -31,6 +31,12 @@ Frontend (Telegram WebApp / webapp/)
 - **`core/state.py`** — структуры данных (`GameState`, `PlayerState`, `CardInstance`).
 - **`core/actions.py`** — три типа действий (`PlayCardAction`, `AttackAction`, `EndTurnAction`).
 
+### Closed beta deployment policy
+
+- In-memory matchmaking and active battle state are supported only with a single web worker (`MATCH_STATE_BACKEND=memory`, `WEB_CONCURRENCY=1`).
+- Before restart or deploy, put matchmaking into maintenance/drain mode, stop accepting new searches, and wait for active PvP matches to finish or be terminated by the existing battle-finalization path.
+- Multi-worker deployment requires a shared match-state backend first; do not scale the memory backend horizontally.
+
 ---
 
 ## Игровые режимы
@@ -67,6 +73,7 @@ Frontend (Telegram WebApp / webapp/)
 - **P1** начинает с `mana=1`, `max_mana=1`
 - **P2** начинает с `mana=0`, `max_mana=0`
 - Стартовая рука: 3 самых дешёвых **воина** из колоды
+  - Design decision: the starting hand is the cheapest three warriors, not a random mulligan.
   - Герои из колоды исключаются
   - Зелья остаются в колоде
 - Оставшаяся колода (воины + зелья) перемешивается
@@ -86,7 +93,7 @@ Frontend (Telegram WebApp / webapp/)
 6. **Regen** (`regen_X`): каждый юнит восстанавливает X HP (до `max_hp`)
 7. Противник тянет карту:
    - Лимит руки: **4 карты**
-   - При переполнении → карта **сгорает** (burn)
+   - При переполнении → карта остаётся в колоде и не сгорает
    - Если колода пуста: сброс (graveyard) перемешивается и становится новой колодой
    - Карты в новой колоде сбрасывают состояние: `hp = max_hp`, `is_ready = False`, `is_frozen = False`
    - Если и колода, и сброс пусты — fatigue (карта не берётся)
@@ -168,12 +175,13 @@ Frontend (Telegram WebApp / webapp/)
 ### Атака героя
 1. Урон герою с модификаторами (щит, броня)
 2. `lifesteal` лечит героя атакующего на величину урона
-3. `instant_kill` **не работает** против героев
+3. `instant_kill` и `unit_killer` **не работают** против героев
 
 ### Атака юнита
 1. **Одновременный обмен ударами**: атакующий и цель наносят урон друг другу
 2. Оба получают урон с модификаторами
-3. `instant_kill`: если есть у атакующего и цель-юнит выжил — HP цели = 0 (мгновенная смерть)
+3. `unit_killer`: если есть у атакующего и цель-юнит не защитилась щитом — HP цели = 0 (мгновенная смерть)
+4. `instant_kill`: если есть у атакующего, одноразовый ваншот ещё не потрачен и цель-юнит не защитилась щитом — HP цели = 0 (мгновенная смерть)
 
 ### Модификаторы урона
 
@@ -181,12 +189,12 @@ Frontend (Telegram WebApp / webapp/)
 
 | Модификатор | Поведение |
 |---|---|
-| `permanent_shield` | Блокирует **весь** урон всегда |
 | `shield` | Блокирует **весь** урон **однократно**. Щит снимается после блокировки |
 | `armor_X` | Снижает урон на X |
 | `armor_X_Y` | Снижает урон на случайное значение от X до Y |
+| `permanent_shield` | Legacy/internal: блокирует весь урон всегда, в текущем каталоге карт не используется |
 
-Порядок проверки: `permanent_shield` → `shield` → `armor`.
+Порядок проверки для текущего каталога: `shield` → `armor`. Если legacy-механика `permanent_shield` вручную присутствует на юните, она всё ещё имеет приоритет над обычным щитом.
 
 ### Reflect
 
@@ -236,7 +244,8 @@ Frontend (Telegram WebApp / webapp/)
 | `spell_aoe_damage_X` | Наносит X урона всем вражеским существам |
 | `damage_X` | Прямой урон по цели (generic) |
 | `aoe_damage_X` | X урона всем вражеским существам |
-| `aoe_freeze` | Заморозка всех вражеских существ на 1 ход |
+| `aoe_freeze` | Заморозка до 3 вражеских существ на 1 ход |
+| `desk_freeze` | Заморозка всех вражеских существ на доске на 1 ход |
 | `freeze` / `freeze_X` | Заморозка выбранного существа. **Героев нельзя заморозить.** |
 | `buff_all_X_Y` | +X/+Y всем союзным существам (кроме себя) |
 | `delete_target` | Мгновенное удаление цели с доски (без урона, без Deathrattle) |
@@ -259,7 +268,6 @@ Frontend (Telegram WebApp / webapp/)
 |---|---|
 | `taunt` | Противник **обязан** атаковать это существо первым |
 | `shield` | Блокирует первый полученный урон (одноразовый) |
-| `permanent_shield` | Блокирует **весь** урон всегда |
 | `armor_X` | Снижение входящего урона на X |
 | `armor_X_Y` | Снижение урона на случайное [X, Y] |
 | `reflect_X` | Отражает X урона атакующему |
@@ -268,8 +276,9 @@ Frontend (Telegram WebApp / webapp/)
 | `charge` | Может атаковать в первый ход (без summoning sickness) |
 | `lifesteal` | Лечит героя владельца на величину нанесённого урона |
 | `bypass_taunt` | Игнорирует провокацию |
-| `instant_kill` | Мгновенно убивает цель-юнита при атаке. **Не работает против героев** |
-| `cleave_X_Y` | При атаке: X урона Y случайным врагам |
+| `instant_kill` | Один раз мгновенно убивает выбранного цель-юнита при атаке, если цель не защитилась щитом. **Не работает против героев** |
+| `unit_killer` | Мгновенно убивает каждого атакованного цель-юнита, если цель не защитилась щитом. **Не работает против героев** |
+| `cleave_X_Y` | При атаке: X урона до Y соседним врагам |
 | `start_mana_X` | +X стартовой маны (только у героев) |
 
 ### Deathrattle (срабатывают при смерти)

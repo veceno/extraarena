@@ -11,6 +11,7 @@ from core.state import CardInstance, CardType, GameState, GameStatus, PlayerStat
 from core.actions import PlayCardAction, AttackAction, EndTurnAction
 from core.effects import apply_damage, apply_heal
 from ai.arena_env import ArenaEnv
+from infrastructure.database import calculate_card_stats
 from infrastructure.match_modes import ClassicParams
 
 
@@ -77,6 +78,65 @@ class TestLevelProgression:
 
         assert hp_diff == 5, f"HP разница должна быть 5, получено {hp_diff}"
         assert attack_diff == 5, f"Attack разница должна быть 5, получено {attack_diff}"
+
+    def test_play_card_clamps_out_of_range_position_before_serializing_history(self):
+        """Модельный бот может прислать позицию из action-space шире текущей доски."""
+        p1 = PlayerState(
+            user_id=1,
+            hero=CardInstance(instance_id=uuid4(), card_id=1, name="Hero1", card_type=CardType.HERO, hp=30, max_hp=30),
+            hand=[
+                CardInstance(
+                    instance_id=uuid4(),
+                    card_id=18,
+                    name="P.E.K.K.A",
+                    card_type=CardType.WARRIOR,
+                    mana_cost=0,
+                    attack=7,
+                    hp=7,
+                    max_hp=7,
+                )
+            ],
+            board=[],
+            mana=10,
+            max_mana=10,
+        )
+        p2 = PlayerState(
+            user_id=2,
+            hero=CardInstance(instance_id=uuid4(), card_id=2, name="Hero2", card_type=CardType.HERO, hp=30, max_hp=30),
+        )
+        env = ArenaEnvironment(GameState(p1=p1, p2=p2, current_turn_owner_id=1), apply_start_effects=False)
+
+        success, error = env.step(1, PlayCardAction(hand_index=0, target_id=None, position=7))
+
+        assert (success, error) == (True, "")
+        assert [card.name for card in env.state.p1.board] == ["P.E.K.K.A"]
+        assert env.state.history[-1]["position"] == 0
+
+    def test_all_regular_rarities_use_same_combat_growth(self):
+        """Редкость не должна давать скрытый бонус к боевой прокачке."""
+        expected_l10 = 24  # ceil(10 * 1.10^9)
+        for rarity in ("common", "rare", "start", "superrare", "epic", "legendary", "mythic", "limited", "divine", "unique"):
+            card_data = {
+                'id': 200,
+                'name': f'{rarity} Warrior',
+                'card_type': 'warrior',
+                'base_attack': 10,
+                'current_attack': 10,
+                'base_hp': 10,
+                'current_hp': 10,
+                'mana_cost': 5,
+                'rarity': rarity,
+                'mechanics': [],
+            }
+
+            arena_card = card_from_db(card_data, level=10)
+            db_stats = calculate_card_stats(card_data, level=10)
+
+            assert arena_card.attack == expected_l10
+            assert arena_card.hp == expected_l10
+            assert db_stats["attack"] == expected_l10
+            assert db_stats["hp"] == expected_l10
+            assert db_stats["growth"] == 0.10
 
 
 # ============================================================================
@@ -800,6 +860,63 @@ class TestExtraArenaModifiers:
 
         # P1 second own turn: -2, hero to 0 -> game over
         assert env.state.status == GameStatus.P2_WIN or env.state.status == GameStatus.DRAW
+
+    def test_classic_overdraw_keeps_cards_in_deck_by_default(self):
+        p1_hero = CardInstance(instance_id=uuid4(), card_id=1, name="P1 Hero", card_type=CardType.HERO, hp=30, max_hp=30)
+        p2_hero = CardInstance(instance_id=uuid4(), card_id=2, name="P2 Hero", card_type=CardType.HERO, hp=30, max_hp=30)
+        queued = CardInstance(instance_id=uuid4(), card_id=99, name="Queued", card_type=CardType.WARRIOR, hp=1, max_hp=1)
+        p1 = PlayerState(user_id=1, is_bot=False, hero=p1_hero, mana=1, max_mana=1, hand=[], board=[], deck=[])
+        p2 = PlayerState(
+            user_id=2,
+            is_bot=False,
+            hero=p2_hero,
+            mana=1,
+            max_mana=1,
+            hand=[
+                CardInstance(instance_id=uuid4(), card_id=10 + index, name=f"Hand {index}", card_type=CardType.WARRIOR, hp=1, max_hp=1)
+                for index in range(4)
+            ],
+            board=[],
+            deck=[queued],
+            graveyard=[],
+        )
+        env = ArenaEnvironment(GameState(p1=p1, p2=p2, current_turn_owner_id=1, turn_number=1))
+
+        env._handle_end_turn(env.state.p1, env.state.p2)
+
+        assert [card.name for card in env.state.p2.deck] == ["Queued"]
+        assert env.state.p2.graveyard == []
+        assert len(env.state.p2.hand) == 4
+
+    def test_overdraw_to_discard_modifier_moves_overdrawn_cards_to_graveyard(self):
+        p1_hero = CardInstance(instance_id=uuid4(), card_id=1, name="P1 Hero", card_type=CardType.HERO, hp=30, max_hp=30)
+        p2_hero = CardInstance(instance_id=uuid4(), card_id=2, name="P2 Hero", card_type=CardType.HERO, hp=30, max_hp=30)
+        overdrawn = CardInstance(instance_id=uuid4(), card_id=99, name="Overdrawn", card_type=CardType.WARRIOR, hp=1, max_hp=1)
+        p1 = PlayerState(user_id=1, is_bot=False, hero=p1_hero, mana=1, max_mana=1, hand=[], board=[], deck=[])
+        p2 = PlayerState(
+            user_id=2,
+            is_bot=False,
+            hero=p2_hero,
+            mana=1,
+            max_mana=1,
+            hand=[
+                CardInstance(instance_id=uuid4(), card_id=20 + index, name=f"Hand {index}", card_type=CardType.WARRIOR, hp=1, max_hp=1)
+                for index in range(4)
+            ],
+            board=[],
+            deck=[overdrawn],
+            graveyard=[],
+        )
+        env = ArenaEnvironment(
+            GameState(p1=p1, p2=p2, current_turn_owner_id=1, turn_number=1),
+            classic_params=ClassicParams(overdraw_to_discard=True),
+        )
+
+        env._handle_end_turn(env.state.p1, env.state.p2)
+
+        assert env.state.p2.deck == []
+        assert [card.name for card in env.state.p2.graveyard] == ["Overdrawn"]
+        assert len(env.state.p2.hand) == 4
 
 
 # ============================================================================

@@ -28,6 +28,23 @@ let prebattleComplete = false;
 let activeBattleModal = null;
 let pendingInitialBattleState = null;
 let arenaWaitingOverlay = null;
+let onboardingModeHint = false;
+let onboardingTutorial = null;
+let onboardingFeedbackMessage = '';
+let onboardingFeedbackTimer = null;
+let onboardingFollowupMessage = '';
+let onboardingFollowupTimer = null;
+let onboardingFollowupStep = null;
+let onboardingFollowupReady = false;
+let onboardingAutoAdvanceTimer = null;
+let onboardingAutoAdvanceStep = null;
+let onboardingClickGuardInstalled = false;
+let onboardingSpotlightInterval = null;
+let onboardingSfxCurrent = null;
+let onboardingSfxLastStep = null;
+let onboardingVictorySfxPlayed = false;
+let onboardingMenuTourLeaving = false;
+let arenaLaunchBlocked = false;
 
 // Для drag & drop
 let selectedCard = null;
@@ -43,6 +60,8 @@ let pendingArenaStateHaptic = null;
 let lastArenaHapticAt = 0;
 let arenaLastHapticKey = '';
 let currentTurnCount = 0;
+let lastPlayerTurnStartSfxKey = '';
+let lastLowTimeTickSfxKey = '';
 
 const ARENA_SFX = {
   battleStart: 'arena-sfx-battle-start',
@@ -53,8 +72,428 @@ const ARENA_SFX = {
   cardSelected: 'arena-sfx-card-selected',
   heroDamage: 'arena-sfx-hero-damage',
   heroDeath: 'arena-sfx-hero-death',
-  nextMove: 'arena-sfx-next-move'
+  nextMove: 'arena-sfx-next-move',
+  playerTurnStart: 'arena-sfx-player-turn-start',
+  victory: 'arena-sfx-victory',
+  defeat: 'arena-sfx-defeat',
+  surrender: 'arena-sfx-surrender',
+  lowTimeTick: 'arena-sfx-low-time-tick',
+  talkieHappy: 'arena-sfx-talkie-happy',
+  talkieNeutral: 'arena-sfx-talkie-neutral',
+  talkieRude: 'arena-sfx-talkie-rude',
+  talkieSad: 'arena-sfx-talkie-sad',
+  onboardingStart: 'arena-sfx-onboarding-start',
+  onboardingStep: 'arena-sfx-onboarding-step',
+  onboardingConfirm: 'arena-sfx-onboarding-confirm',
+  onboardingComplete: 'arena-sfx-onboarding-complete',
+  onboardingVictory: 'arena-sfx-onboarding-victory',
+  onboardingBlocked: 'arena-sfx-onboarding-blocked'
 };
+const CARD_SFX_CONFIG_URL = '/assets/audio/characters/card_sfx_config.json';
+const CARD_SFX_CONFIG_DEFAULT = {
+  version: 1,
+  cards: {
+    '8': {
+      name: 'Глитч-Удар',
+      texts: {
+        'targeting:damage_1_5': {
+          type: 'targetHint',
+          text: 'Выбери цель для глитч-удара'
+        }
+      }
+    },
+    '10': {
+      name: 'Импульс Бездны',
+      texts: {
+        'mechanic:aoe_damage_2': {
+          type: 'screenText',
+          text: 'Импульс Бездны',
+          durationMs: 1500
+        }
+      }
+    },
+    '13': {
+      name: 'Черная Дыра',
+      texts: {
+        'targeting:delete_target': {
+          type: 'targetHint',
+          text: 'Выбери врага для Чёрной Дыры'
+        }
+      }
+    },
+    '18': {
+      name: 'П.Е.К.К.А.',
+      sounds: {
+        deploy: {
+          src: '/assets/audio/characters/018_pekka/pekka_deploy.mp3',
+          basePolicy: 'replace',
+          volume: 0.82
+        },
+        attack: {
+          src: '/assets/audio/characters/018_pekka/pekka_hit.mp3',
+          basePolicy: 'replace',
+          volume: 0.82
+        },
+        damage: {
+          src: '/assets/audio/characters/018_pekka/pekka_hit.mp3',
+          basePolicy: 'replace',
+          volume: 0.82
+        }
+      },
+      visuals: {
+        deploy: {
+          type: 'backgroundFlash',
+          color: '#a78bfa',
+          durationMs: 3000,
+          intensity: 0.32
+        }
+      }
+    },
+    '19': {
+      name: 'Саб-Зиро',
+      visuals: {
+        deploy: {
+          type: 'backgroundFlash',
+          color: '#38bdf8',
+          durationMs: 3300,
+          intensity: 0.62
+        },
+        'mechanic:battlecry_freeze': {
+          type: 'backgroundFlash',
+          color: '#0ea5e9',
+          durationMs: 3300,
+          intensity: 0.68
+        },
+        'mechanic:freeze': {
+          type: 'backgroundFlash',
+          color: '#0ea5e9',
+          durationMs: 3300,
+          intensity: 0.68
+        }
+      },
+      texts: {
+        'targeting:battlecry_freeze': {
+          type: 'targetHint',
+          text: 'Выбери врага для ледяного захвата'
+        }
+      }
+    },
+    '20': {
+      name: 'Канеки Кен',
+      texts: {
+        'targeting:consume_ally': {
+          type: 'targetHint',
+          text: 'Выбери союзника для поглощения'
+        }
+      }
+    },
+    '21': {
+      name: 'Геральт',
+      texts: {
+        'targeting:choose_shield_damage': {
+          type: 'targetHint',
+          text: 'Выбери цель для ведьмачьего знака'
+        }
+      }
+    },
+    '22': {
+      name: 'Дио Брандо',
+      texts: {
+        'mechanic:aoe_freeze': {
+          type: 'screenText',
+          text: 'Время остановлено',
+          durationMs: 1500
+        }
+      }
+    },
+    '25': {
+      name: 'Сайтама',
+      visuals: {
+        'mechanic:instant_kill': {
+          type: 'backgroundFlash',
+          color: '#ef4444',
+          durationMs: 3400,
+          intensity: 0.76
+        }
+      },
+      texts: {
+        'attack': {
+          type: 'screenText',
+          text: 'Один удар',
+          durationMs: 1400
+        },
+        'attacktargeting:instant_kill': {
+          type: 'targetHint',
+          text: 'Выбери цель для ваншота'
+        }
+      }
+    },
+    '26': {
+      name: 'Мидория',
+      visuals: {
+        deploy: {
+          type: 'backgroundFlash',
+          color: '#d946ef',
+          durationMs: 3400,
+          intensity: 0.6
+        }
+      },
+      texts: {
+        'mechanic:cast_random_spell': {
+          type: 'screenText',
+          defaultText: 'Случайная суперспособность',
+          durationMs: 1600,
+          detailText: {
+            midoriya_texas_smash: 'Техасский удар',
+            midoriya_recovery: 'Восстановление',
+            midoriya_blackwhip: 'Чёрный кнут',
+            midoriya_full_cowl: 'Полный покров'
+          }
+        }
+      }
+    },
+    '27': {
+      name: 'Скелет',
+      sounds: {
+        deploy: {
+          src: '/assets/audio/characters/027_skeleton/skeleton_ambient.mp3',
+          basePolicy: 'replace',
+          volume: 0.82
+        },
+        damage: {
+          src: '/assets/audio/characters/027_skeleton/skeleton_hurt.mp3',
+          basePolicy: 'replace',
+          volume: 0.82
+        },
+        death: {
+          src: '/assets/audio/characters/027_skeleton/skeleton_death.mp3',
+          basePolicy: 'replace',
+          volume: 0.82
+        }
+      },
+      visuals: {
+        death: {
+          type: 'backgroundFlash',
+          color: '#e5e7eb',
+          durationMs: 2400,
+          intensity: 0.42
+        }
+      }
+    },
+    '29': {
+      name: 'Штурмовик',
+      sounds: {
+        attack: {
+          src: '/assets/audio/characters/029_stormtrooper/stormtrooper_e11_blaster.mp3',
+          basePolicy: 'replace',
+          volume: 0.82
+        },
+        death: {
+          src: '/assets/audio/characters/029_stormtrooper/stormtrooper_death.mp3',
+          basePolicy: 'replace',
+          volume: 0.82
+        }
+      },
+      visuals: {
+        attack: {
+          type: 'backgroundFlash',
+          color: '#ef4444',
+          centerColor: '#f8fafc',
+          durationMs: 1800,
+          intensity: 0.48
+        }
+      }
+    },
+    '33': {
+      name: 'Маления',
+      visuals: {
+        deploy: {
+          type: 'backgroundFlash',
+          color: '#4ade80',
+          durationMs: 3200,
+          intensity: 0.52
+        },
+        attack: {
+          type: 'backgroundFlash',
+          color: '#10b981',
+          durationMs: 3600,
+          intensity: 0.58
+        },
+        'mechanic:lifesteal': {
+          type: 'backgroundFlash',
+          color: '#10b981',
+          durationMs: 3600,
+          intensity: 0.58
+        }
+      }
+    },
+    '34': {
+      name: 'Крипер',
+      sounds: {
+        deploy: {
+          src: '/assets/audio/characters/creeper/creeper_spawn_hiss.mp3',
+          basePolicy: 'replace',
+          volume: 0.82
+        },
+        death: {
+          src: '/assets/audio/characters/creeper/creeper_death_explosion.mp3',
+          basePolicy: 'replace',
+          volume: 0.82
+        },
+        'mechanic:deathrattle_aoe_damage_2': {
+          src: '/assets/audio/characters/creeper/creeper_death_explosion.mp3',
+          basePolicy: 'replace',
+          volume: 0.82
+        }
+      },
+      visuals: {
+        deploy: {
+          type: 'backgroundFlash',
+          color: '#22c55e',
+          durationMs: 2800,
+          intensity: 0.48
+        },
+        death: {
+          type: 'backgroundFlash',
+          color: '#ef4444',
+          durationMs: 3600,
+          intensity: 0.82
+        },
+        'mechanic:deathrattle_aoe_damage_2': {
+          type: 'backgroundFlash',
+          color: '#ef4444',
+          durationMs: 3600,
+          intensity: 0.82
+        }
+      }
+    },
+    '35': {
+      name: 'Фрирен',
+      visuals: {
+        deploy: {
+          type: 'backgroundFlash',
+          color: '#5eead4',
+          durationMs: 3200,
+          intensity: 0.5
+        },
+        'mechanic:battlecry_heal_target_5': {
+          type: 'backgroundFlash',
+          color: '#86efac',
+          durationMs: 3200,
+          intensity: 0.54
+        },
+        'mechanic:heal': {
+          type: 'backgroundFlash',
+          color: '#86efac',
+          durationMs: 3200,
+          intensity: 0.54
+        }
+      },
+      texts: {
+        'targeting:battlecry_heal_target_5': {
+          type: 'targetHint',
+          text: 'Выбери цель для заклинания Фрирен'
+        }
+      }
+    },
+    '36': {
+      name: 'Юни',
+      visuals: {
+        deploy: {
+          type: 'backgroundFlash',
+          color: '#5eead4',
+          durationMs: 3200,
+          intensity: 0.5
+        },
+        'mechanic:battlecry_heal_target_3': {
+          type: 'backgroundFlash',
+          color: '#86efac',
+          durationMs: 3200,
+          intensity: 0.54
+        },
+        'mechanic:heal': {
+          type: 'backgroundFlash',
+          color: '#86efac',
+          durationMs: 3200,
+          intensity: 0.54
+        }
+      },
+      texts: {
+        'targeting:battlecry_heal_target_3': {
+          type: 'targetHint',
+          text: 'Выбери цель для исцеления'
+        }
+      }
+    }
+  }
+};
+let cardSfxConfig = CARD_SFX_CONFIG_DEFAULT;
+let cardSfxConfigLoadStarted = false;
+const arenaUrlSfxAudio = new Map();
+let arenaBackgroundReactionTimer = null;
+let arenaCardTextOverlayTimer = null;
+const playedArenaSfxEventIds = new Set();
+const playedArenaSfxEventIdQueue = [];
+const recentArenaExplicitSfxKeys = new Map();
+const recentArenaExplicitSfxKeyQueue = [];
+const MAX_PLAYED_ARENA_SFX_EVENT_IDS = 160;
+const MAX_RECENT_ARENA_EXPLICIT_SFX_KEYS = 120;
+const RECENT_ARENA_EXPLICIT_SFX_TTL_MS = 1600;
+const ONBOARDING_TUTORIAL_FINAL_STEP = 8;
+const ONBOARDING_AUTO_ADVANCE_DELAY_MS = 2200;
+
+const TALKIE_ENABLED_STORAGE_KEY = 'extraarena.talkie.enabled';
+const TALKIE_DISABLE_BY_DEFAULT_STORAGE_KEY = 'extraarena.talkie.disableByDefault';
+const TALKIE_CATALOG = [
+  { id: '1', sound: 'neutral' },
+  { id: '2', sound: 'sad' },
+  { id: '3', sound: 'rude' },
+  { id: '4', sound: 'rude' },
+  { id: '5', sound: 'happy' },
+  { id: '6', sound: 'neutral' },
+  { id: '7', sound: 'happy' }
+];
+const TALKIE_SOUND_KEYS = {
+  happy: 'talkieHappy',
+  neutral: 'talkieNeutral',
+  rude: 'talkieRude',
+  sad: 'talkieSad'
+};
+const TALKIE_TIER_LIMITS = {
+  inactive: 1,
+  active: 2,
+  ultra: 3
+};
+
+function isExtraPassVisualMode(mode) {
+  return !!getPremiumNicknameTier(mode);
+}
+
+function getPremiumNicknameTier(mode) {
+  mode = String(mode || '').toLowerCase();
+  if (mode === 'ultra') return 'ultra';
+  if (mode === 'active' || mode === 'pass' || mode === 'extra_pass') return 'pass';
+  return '';
+}
+
+function applyPremiumNicknameVisual(el, extraPass, glowDisabled) {
+  if (!el) return;
+  const tier = getPremiumNicknameTier(extraPass);
+  el.classList.remove('premium-nickname', 'pass', 'ultra', 'glow-disabled');
+  if (!tier) return;
+  el.classList.add('premium-nickname', tier);
+  if (glowDisabled) el.classList.add('glow-disabled');
+}
+
+let talkieEnabled = true;
+let talkieDisableByDefault = false;
+let talkiePopoverOpen = false;
+let talkieSending = false;
+let talkieRemainingThisTurn = null;
+let talkieTurnNumber = null;
+let talkieTurnLimit = null;
+let talkieHideTimer = null;
+let talkiePendingResetTimer = null;
 
 const SURRENDER_TROPHY_TIERS = [
   { min: 0, max: 300, penalty: -7 },
@@ -73,6 +512,7 @@ let arenaHealthStopped = false;
 let arenaBadPingDismissed = false;
 let arenaConnectionIssueSince = null;
 let arenaConnectionIssueTimer = null;
+let arenaTerminalState = false;
 
 const ARENA_HAPTIC_PRIORITY = {
   light: 1,
@@ -88,8 +528,20 @@ function isAndroidArenaShell() {
   return !!(window.ExtraArenaApp && typeof window.ExtraArenaApp.haptic === 'function');
 }
 
+function isArenaHapticsEnabled() {
+  try {
+    if (typeof window.isHapticsEnabled === 'function') {
+      return window.isHapticsEnabled() !== false;
+    }
+    return localStorage.getItem('extra_haptics_enabled') !== 'false';
+  } catch (e) {
+    return true;
+  }
+}
+
 function arenaHaptic(style, options = {}) {
   if (!isAndroidArenaShell()) return;
+  if (!isArenaHapticsEnabled()) return;
   const normalized = style || 'light';
   const key = options.key || normalized;
   const minInterval = Number(options.minInterval ?? 55);
@@ -300,11 +752,19 @@ function setOptionalImage(imgId, wrapperSelector, url) {
   else img.removeAttribute('src');
 }
 
+function applyArenaSoundSettingsFromUserSettings(settings = {}) {
+  const urlParams = new URLSearchParams(location.search);
+  if (!urlParams.has('sfx') && typeof settings.sound_sfx === 'boolean') {
+    window._sfxEnabled = settings.sound_sfx;
+  }
+}
+
 function playArenaSfx(name, options = {}) {
-  if (window._sfxEnabled === false) return;
+  if (window._sfxEnabled === false) return false;
   const audioId = ARENA_SFX[name] || name;
+  if (isOnboardingTutorialState() && !String(audioId).includes('onboarding')) return false;
   const baseAudio = document.getElementById(audioId);
-  if (!baseAudio) return;
+  if (!baseAudio) return false;
 
   const volume = options.volume ?? 0.72;
   const audio = baseAudio.paused ? baseAudio : baseAudio.cloneNode(true);
@@ -323,6 +783,605 @@ function playArenaSfx(name, options = {}) {
     console.warn('[ARENA] Не удалось проиграть SFX:', audioId, err);
     if (audio !== baseAudio) audio.remove();
   });
+  return true;
+}
+
+function maybePlayPlayerTurnStartSfx(state) {
+  if (!state || !state.is_my_turn || isOnboardingTutorialState()) return;
+  const turnKey = `${state.turn ?? currentTurnCount ?? 'unknown'}:${state.current_player_id ?? 'player'}`;
+  if (lastPlayerTurnStartSfxKey === turnKey) return;
+  lastPlayerTurnStartSfxKey = turnKey;
+  playArenaSfx('playerTurnStart', { volume: 0.5 });
+}
+
+function maybePlayLowTimeTickSfx(state, remainingSeconds) {
+  const turnDuration = Number(state?.turn_duration || getClassicModeParams(state || {}).turn_duration_seconds || 25);
+  if (!state.is_my_turn || turnDuration < 10) return;
+  if (!(Number.isFinite(remainingSeconds) && remainingSeconds < 5 && remainingSeconds > 0)) return;
+  const tickKey = `${state.turn ?? currentTurnCount ?? 'unknown'}:${state.current_player_id ?? 'player'}`;
+  if (lastLowTimeTickSfxKey === tickKey) return;
+  lastLowTimeTickSfxKey = tickKey;
+  playArenaSfx('lowTimeTick', { volume: 0.46 });
+}
+
+function getBattleResultSfx(outcome) {
+  if (outcome === 'victory') return 'victory';
+  if (outcome === 'defeat' && (window.__arenaSurrenderRequested || window.__surrenderAck)) return 'surrender';
+  if (outcome === 'defeat') return 'defeat';
+  return null;
+}
+
+function isPlainArenaFeedbackObject(value) {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function isValidArenaCardSfxConfig(config) {
+  return Boolean(
+    isPlainArenaFeedbackObject(config)
+    && isPlainArenaFeedbackObject(config.cards)
+  );
+}
+
+function isValidArenaCardSoundConfig(sound) {
+  if (!isPlainArenaFeedbackObject(sound)) return false;
+  if (typeof sound.src !== 'string' || !sound.src.startsWith('/assets/audio/characters/')) return false;
+  if (sound.basePolicy != null && sound.basePolicy !== 'replace') return false;
+  if (sound.volume != null) {
+    const volume = Number(sound.volume);
+    if (!Number.isFinite(volume) || !(volume >= 0 && volume <= 1)) return false;
+  }
+  return true;
+}
+
+function isValidArenaCardVisualConfig(visual) {
+  if (!isPlainArenaFeedbackObject(visual)) return false;
+  if (visual.type !== 'backgroundFlash') return false;
+  if (visual.durationMs != null && !Number.isFinite(Number(visual.durationMs))) return false;
+  if (visual.intensity != null && !Number.isFinite(Number(visual.intensity))) return false;
+  return true;
+}
+
+function isValidArenaCardTextConfig(text) {
+  if (!isPlainArenaFeedbackObject(text)) return false;
+  if (text.type !== 'screenText' && text.type !== 'targetHint') return false;
+  if (text.type === 'targetHint') return Boolean(String(text.text || text.defaultText || '').trim());
+  return Boolean(
+    String(text.text || text.defaultText || '').trim()
+    || isPlainArenaFeedbackObject(text.detailText)
+  );
+}
+
+function sanitizeArenaCardFeedbackChannel(channel, validator) {
+  if (!isPlainArenaFeedbackObject(channel)) return null;
+  const sanitized = {};
+  Object.entries(channel).forEach(([eventName, config]) => {
+    const key = normalizeArenaSoundEventName(eventName);
+    if (!key || key === '__proto__' || key === 'constructor' || key === 'prototype') return;
+    if (validator(config)) sanitized[key] = { ...config };
+  });
+  return Object.keys(sanitized).length > 0 ? sanitized : null;
+}
+
+function sanitizeArenaCardFeedbackConfig(cardConfig) {
+  if (!isPlainArenaFeedbackObject(cardConfig)) return null;
+  const sanitized = {};
+  if (typeof cardConfig.name === 'string') sanitized.name = cardConfig.name;
+
+  const sounds = sanitizeArenaCardFeedbackChannel(cardConfig.sounds, isValidArenaCardSoundConfig);
+  if (sounds) sanitized.sounds = sounds;
+
+  const visuals = sanitizeArenaCardFeedbackChannel(cardConfig.visuals, isValidArenaCardVisualConfig);
+  if (visuals) sanitized.visuals = visuals;
+
+  const texts = sanitizeArenaCardFeedbackChannel(cardConfig.texts, isValidArenaCardTextConfig);
+  if (texts) sanitized.texts = texts;
+
+  return Object.keys(sanitized).length > 0 ? sanitized : null;
+}
+
+function mergeArenaCardFeedbackConfig(base = {}, override = {}) {
+  const merged = { ...base, ...override };
+  ['sounds', 'visuals', 'texts'].forEach(channel => {
+    if (base[channel] || override[channel]) {
+      merged[channel] = {
+        ...(isPlainArenaFeedbackObject(base[channel]) ? base[channel] : {}),
+        ...(isPlainArenaFeedbackObject(override[channel]) ? override[channel] : {})
+      };
+    }
+  });
+  return merged;
+}
+
+function mergeArenaCardSfxConfig(config) {
+  if (!isValidArenaCardSfxConfig(config)) return CARD_SFX_CONFIG_DEFAULT;
+  const merged = {
+    ...CARD_SFX_CONFIG_DEFAULT,
+    ...(Number.isFinite(Number(config.version)) ? { version: config.version } : {}),
+    cards: { ...CARD_SFX_CONFIG_DEFAULT.cards }
+  };
+
+  Object.entries(config.cards).forEach(([cardId, cardConfig]) => {
+    const key = String(cardId || '').trim();
+    if (!key || key === '__proto__' || key === 'constructor' || key === 'prototype') return;
+    const sanitized = sanitizeArenaCardFeedbackConfig(cardConfig);
+    if (!sanitized) return;
+    merged.cards[key] = mergeArenaCardFeedbackConfig(merged.cards[key], sanitized);
+  });
+  return merged;
+}
+
+function loadArenaCardSfxConfig() {
+  if (cardSfxConfigLoadStarted || typeof fetch !== 'function') return;
+  cardSfxConfigLoadStarted = true;
+  fetch(CARD_SFX_CONFIG_URL, { cache: 'no-cache' })
+    .then(response => {
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return response.json();
+    })
+    .then(config => {
+      if (isValidArenaCardSfxConfig(config)) {
+        cardSfxConfig = mergeArenaCardSfxConfig(config);
+      }
+    })
+    .catch(err => {
+      console.warn('[ARENA] Не удалось загрузить конфиг SFX карт, используется fallback:', err);
+    });
+}
+
+function playArenaUrlSfx(src, options = {}) {
+  if (window._sfxEnabled === false) return false;
+  if (isOnboardingTutorialState() && options.allowOnboarding !== true) return false;
+  if (!src) return false;
+
+  let baseAudio = arenaUrlSfxAudio.get(src);
+  if (!baseAudio) {
+    baseAudio = new Audio(src);
+    baseAudio.preload = 'auto';
+    arenaUrlSfxAudio.set(src, baseAudio);
+  }
+
+  const volume = options.volume ?? 0.72;
+  const audio = baseAudio.paused ? baseAudio : baseAudio.cloneNode(true);
+  audio.volume = volume;
+
+  if (audio !== baseAudio) {
+    audio.addEventListener('ended', () => audio.remove(), { once: true });
+    document.body.appendChild(audio);
+  }
+
+  try {
+    audio.currentTime = 0;
+  } catch (e) {}
+
+  audio.play().catch(err => {
+    console.warn('[ARENA] Не удалось проиграть URL SFX:', src, err);
+    if (audio !== baseAudio) audio.remove();
+  });
+  return true;
+}
+
+function normalizeArenaSfxToken(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function normalizeArenaSoundEventName(eventName) {
+  const value = normalizeArenaSfxToken(eventName);
+  if (value === 'played' || value === 'summon' || value === 'spawn') return 'deploy';
+  if (value === 'hit' || value === 'attacked') return 'damage';
+  return value;
+}
+
+function getArenaCatalogCardId(card) {
+  const id = card?.card_id ?? card?.cardId ?? card?.catalog_id ?? card?.catalogCardId ?? card?.dataset?.cardId ?? card?.id;
+  return id == null || id === '' ? null : String(id);
+}
+
+function getArenaSoundMechanic(cardOrEvent, options = {}) {
+  const mechanic = options.mechanic ?? cardOrEvent?.mechanic;
+  return mechanic == null || mechanic === '' ? '' : String(mechanic);
+}
+
+function resolveArenaCardSfx(eventName, cardOrEvent, options = {}) {
+  const normalizedEvent = normalizeArenaSoundEventName(eventName || cardOrEvent?.event);
+  const cardId = getArenaCatalogCardId(cardOrEvent);
+  if (!normalizedEvent || !cardId) return null;
+
+  const cardConfig = cardSfxConfig?.cards?.[String(cardId)];
+  const sounds = cardConfig?.sounds;
+  if (!sounds || typeof sounds !== 'object') return null;
+
+  const mechanic = getArenaSoundMechanic(cardOrEvent, options);
+  if (mechanic) {
+    const mechanicKey = `${normalizedEvent}:${mechanic}`;
+    if (sounds[mechanicKey]) return { ...sounds[mechanicKey], cardId, event: normalizedEvent, key: mechanicKey };
+  }
+  if (sounds[normalizedEvent]) return { ...sounds[normalizedEvent], cardId, event: normalizedEvent, key: normalizedEvent };
+  return null;
+}
+
+function resolveArenaCardVisual(eventName, cardOrEvent, options = {}) {
+  const normalizedEvent = normalizeArenaSoundEventName(eventName || cardOrEvent?.event);
+  const cardId = getArenaCatalogCardId(cardOrEvent);
+  if (!normalizedEvent || !cardId) return null;
+
+  const cardConfig = cardSfxConfig?.cards?.[String(cardId)];
+  const visuals = cardConfig?.visuals;
+  if (!visuals || typeof visuals !== 'object') return null;
+
+  const mechanic = getArenaSoundMechanic(cardOrEvent, options);
+  if (mechanic) {
+    const mechanicKey = `${normalizedEvent}:${mechanic}`;
+    if (visuals[mechanicKey]) return { ...visuals[mechanicKey], cardId, event: normalizedEvent, key: mechanicKey };
+  }
+  if (visuals[normalizedEvent]) return { ...visuals[normalizedEvent], cardId, event: normalizedEvent, key: normalizedEvent };
+  return null;
+}
+
+function getArenaFeedbackDetailCode(cardOrEvent, options = {}) {
+  return options.effect_code
+    ?? options.effectCode
+    ?? options.detail_code
+    ?? options.detailCode
+    ?? cardOrEvent?.effect_code
+    ?? cardOrEvent?.effectCode
+    ?? cardOrEvent?.detail_code
+    ?? cardOrEvent?.detailCode
+    ?? '';
+}
+
+function resolveArenaCardText(eventName, cardOrEvent, options = {}) {
+  const normalizedEvent = normalizeArenaSoundEventName(eventName || cardOrEvent?.event);
+  const cardId = getArenaCatalogCardId(cardOrEvent);
+  if (!normalizedEvent || !cardId) return null;
+
+  const cardConfig = cardSfxConfig?.cards?.[String(cardId)];
+  const texts = cardConfig?.texts;
+  if (!texts || typeof texts !== 'object') return null;
+
+  const mechanic = getArenaSoundMechanic(cardOrEvent, options);
+  if (mechanic) {
+    const mechanicKey = `${normalizedEvent}:${mechanic}`;
+    if (texts[mechanicKey]) {
+      return { ...texts[mechanicKey], cardId, event: normalizedEvent, key: mechanicKey };
+    }
+  }
+  if (texts[normalizedEvent]) return { ...texts[normalizedEvent], cardId, event: normalizedEvent, key: normalizedEvent };
+  return null;
+}
+
+function clampArenaNumber(value, fallback, min, max) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, parsed));
+}
+
+function arenaHexColorToRgba(value, alpha) {
+  const color = String(value || '').trim();
+  const normalizedAlpha = clampArenaNumber(alpha, 1, 0, 1);
+  const fallbackColor = `rgba(239,68,68,${normalizedAlpha})`;
+  if (!color) return fallbackColor;
+  const shortHex = color.match(/^#([0-9a-f]{3})$/i);
+  const longHex = color.match(/^#([0-9a-f]{6})$/i);
+  const hex = shortHex
+    ? shortHex[1].split('').map(part => part + part).join('')
+    : longHex?.[1];
+  if (!hex) return fallbackColor;
+
+  const red = parseInt(hex.slice(0, 2), 16);
+  const green = parseInt(hex.slice(2, 4), 16);
+  const blue = parseInt(hex.slice(4, 6), 16);
+  return `rgba(${red},${green},${blue},${normalizedAlpha})`;
+}
+
+function playArenaBackgroundReaction(reactionConfig = {}, options = {}) {
+  if (isOnboardingTutorialState() && options.allowOnboarding !== true) return false;
+  if (!reactionConfig || reactionConfig.type !== 'backgroundFlash') return false;
+
+  const layer = document.getElementById('arena-background-reaction-layer');
+  if (!layer) return false;
+
+  const durationMs = clampArenaNumber(reactionConfig.durationMs, 3600, 300, 8000);
+  const intensity = clampArenaNumber(reactionConfig.intensity, 0.82, 0.05, 1);
+  const color = reactionConfig.color || '#ef4444';
+  const centerColor = reactionConfig.centerColor || color;
+  const midColor = reactionConfig.midColor || color;
+  const edgeColor = reactionConfig.edgeColor || color;
+
+  layer.style.setProperty('--arena-bg-reaction-duration', `${durationMs}ms`);
+  layer.style.setProperty('--arena-bg-reaction-intensity', String(intensity));
+  layer.style.setProperty('--arena-bg-reaction-color', arenaHexColorToRgba(centerColor, intensity));
+  layer.style.setProperty('--arena-bg-reaction-mid-color', arenaHexColorToRgba(midColor, intensity * 0.42));
+  layer.style.setProperty('--arena-bg-reaction-edge-color', arenaHexColorToRgba(edgeColor, intensity * 0.16));
+
+  if (arenaBackgroundReactionTimer) {
+    clearTimeout(arenaBackgroundReactionTimer);
+    arenaBackgroundReactionTimer = null;
+  }
+  layer.classList.remove('is-active');
+  void layer.offsetWidth;
+  layer.classList.add('is-active');
+  arenaBackgroundReactionTimer = setTimeout(() => {
+    layer.classList.remove('is-active');
+    arenaBackgroundReactionTimer = null;
+  }, durationMs);
+  return true;
+}
+
+function playArenaScreenText(textConfig = {}, context = {}) {
+  if (isOnboardingTutorialState() && context.allowOnboarding !== true) return false;
+  if (!textConfig || textConfig.type !== 'screenText') return false;
+
+  const overlay = document.getElementById('arena-card-text-overlay');
+  const copy = document.getElementById('arena-card-text-copy');
+  if (!overlay || !copy) return false;
+
+  const detailCode = getArenaFeedbackDetailCode(context);
+  const detailText = textConfig.detailText && typeof textConfig.detailText === 'object'
+    ? textConfig.detailText[detailCode]
+    : '';
+  const text = String(detailText || textConfig.text || textConfig.defaultText || '').trim();
+  if (!text) return false;
+
+  const durationMs = clampArenaNumber(textConfig.durationMs, 1600, 800, 4200);
+  copy.textContent = text;
+  overlay.style.setProperty('--arena-card-text-duration', `${durationMs}ms`);
+  overlay.setAttribute('aria-hidden', 'false');
+
+  if (arenaCardTextOverlayTimer) {
+    clearTimeout(arenaCardTextOverlayTimer);
+    arenaCardTextOverlayTimer = null;
+  }
+  overlay.classList.remove('is-active');
+  void overlay.offsetWidth;
+  overlay.classList.add('is-active');
+  arenaCardTextOverlayTimer = setTimeout(() => {
+    overlay.classList.remove('is-active');
+    overlay.setAttribute('aria-hidden', 'true');
+    arenaCardTextOverlayTimer = null;
+  }, durationMs);
+  return true;
+}
+
+function showArenaTargetHint(textConfig = {}, context = {}) {
+  if (isOnboardingTutorialState() && context.allowOnboarding !== true) return false;
+  if (!textConfig || textConfig.type !== 'targetHint') return false;
+
+  const hint = document.getElementById('arena-card-target-hint');
+  if (!hint) return false;
+
+  const text = String(textConfig.text || textConfig.defaultText || '').trim();
+  if (!text) return false;
+
+  hint.textContent = text;
+  hint.setAttribute('aria-hidden', 'false');
+  hint.classList.add('is-visible');
+  return true;
+}
+
+function hideArenaTargetHint() {
+  const hint = document.getElementById('arena-card-target-hint');
+  if (!hint) return;
+  hint.classList.remove('is-visible');
+  hint.setAttribute('aria-hidden', 'true');
+}
+
+function playResolvedCardText(eventName, cardOrEvent, options = {}) {
+  const text = resolveArenaCardText(eventName, cardOrEvent, options);
+  if (!text) return false;
+  const context = { ...cardOrEvent, ...options };
+  if (text.type === 'screenText') return playArenaScreenText(text, context);
+  if (text.type === 'targetHint') return showArenaTargetHint(text, context);
+  return false;
+}
+
+function playResolvedCardSfx(eventName, cardOrEvent, fallbackKey, options = {}) {
+  const resolved = resolveArenaCardSfx(eventName, cardOrEvent, options);
+  const playedUrlSfx = resolved?.src
+    ? playArenaUrlSfx(resolved.src, { ...options, volume: resolved.volume ?? options.volume })
+    : false;
+  if (resolved?.src) {
+    if (resolved.basePolicy === 'replace') return playedUrlSfx;
+  }
+  if (fallbackKey) {
+    const playedFallbackSfx = playArenaSfx(fallbackKey, options);
+    return Boolean(playedUrlSfx || playedFallbackSfx);
+  }
+  return playedUrlSfx;
+}
+
+function playResolvedCardFeedback(eventName, cardOrEvent, fallbackKey, options = {}) {
+  const visual = resolveArenaCardVisual(eventName, cardOrEvent, options);
+  const playedVisual = visual ? playArenaBackgroundReaction(visual, options) : false;
+  const playedText = playResolvedCardText(eventName, cardOrEvent, options);
+  const playedSfx = playResolvedCardSfx(eventName, cardOrEvent, fallbackKey, options);
+  return Boolean(playedVisual || playedText || playedSfx);
+}
+
+function trimArenaSfxEventIdQueue() {
+  while (playedArenaSfxEventIdQueue.length > MAX_PLAYED_ARENA_SFX_EVENT_IDS) {
+    const oldId = playedArenaSfxEventIdQueue.shift();
+    playedArenaSfxEventIds.delete(oldId);
+  }
+}
+
+function rememberArenaSfxEventId(eventId) {
+  if (eventId == null || eventId === '') return false;
+  const normalizedId = String(eventId);
+  if (playedArenaSfxEventIds.has(normalizedId)) return true;
+  playedArenaSfxEventIds.add(normalizedId);
+  playedArenaSfxEventIdQueue.push(normalizedId);
+  trimArenaSfxEventIdQueue();
+  return false;
+}
+
+function makeArenaExplicitSfxKeys(eventName, cardOrEvent, mechanic) {
+  const normalizedEvent = normalizeArenaSoundEventName(eventName);
+  const keys = [];
+  const instanceId = cardOrEvent?.instance_id ?? cardOrEvent?.instanceId;
+  const cardId = getArenaCatalogCardId(cardOrEvent);
+  const normalizedMechanic = mechanic ? normalizeArenaSfxToken(mechanic) : '';
+  const eventPart = normalizedMechanic ? `${normalizedEvent}:${normalizedMechanic}` : normalizedEvent;
+  if (instanceId != null && instanceId !== '') keys.push(`instance:${instanceId}|${eventPart}`);
+  if (cardId != null && cardId !== '') keys.push(`card:${cardId}|${eventPart}`);
+  return keys;
+}
+
+function rememberArenaExplicitSfx(eventName, cardOrEvent, mechanic) {
+  const now = Date.now();
+  const keys = makeArenaExplicitSfxKeys(eventName, cardOrEvent, mechanic);
+  keys.forEach(key => {
+    recentArenaExplicitSfxKeys.set(key, now);
+    recentArenaExplicitSfxKeyQueue.push(key);
+  });
+  while (recentArenaExplicitSfxKeyQueue.length > MAX_RECENT_ARENA_EXPLICIT_SFX_KEYS) {
+    const oldKey = recentArenaExplicitSfxKeyQueue.shift();
+    const lastSeen = recentArenaExplicitSfxKeys.get(oldKey);
+    if (lastSeen == null || now - lastSeen > RECENT_ARENA_EXPLICIT_SFX_TTL_MS) {
+      recentArenaExplicitSfxKeys.delete(oldKey);
+    }
+  }
+}
+
+function shouldSkipRecentArenaExplicitSfx(eventName, cardOrEvent, mechanic) {
+  const now = Date.now();
+  const keys = makeArenaExplicitSfxKeys(eventName, cardOrEvent, mechanic);
+  return keys.some(key => {
+    const lastSeen = recentArenaExplicitSfxKeys.get(key);
+    if (lastSeen == null) return false;
+    if (now - lastSeen > RECENT_ARENA_EXPLICIT_SFX_TTL_MS) {
+      recentArenaExplicitSfxKeys.delete(key);
+      return false;
+    }
+    return true;
+  });
+}
+
+function isArenaHealMechanic(mechanic) {
+  return normalizeArenaSfxToken(mechanic).includes('heal');
+}
+
+function isArenaFreezeMechanic(mechanic) {
+  const value = normalizeArenaSfxToken(mechanic);
+  return value.includes('freeze') || value.includes('frozen');
+}
+
+function isArenaDeathrattleMechanic(mechanic) {
+  return normalizeArenaSfxToken(mechanic).includes('deathrattle');
+}
+
+function getArenaDeathrattleMechanic(cardOrEvent) {
+  const mechanics = Array.isArray(cardOrEvent?.mechanics) ? cardOrEvent.mechanics : [];
+  return mechanics.find(mechanic => isArenaDeathrattleMechanic(mechanic)) || '';
+}
+
+function hasReplaceArenaCardSfx(eventName, cardOrEvent, options = {}) {
+  const resolved = resolveArenaCardSfx(eventName, cardOrEvent, options);
+  return Boolean(resolved && resolved.src && resolved.basePolicy === 'replace');
+}
+
+function hasReplaceArenaDeathSfx(cardOrEvent) {
+  const deathrattleMechanic = getArenaDeathrattleMechanic(cardOrEvent);
+  if (
+    deathrattleMechanic &&
+    hasReplaceArenaCardSfx('mechanic', cardOrEvent, { mechanic: deathrattleMechanic })
+  ) {
+    return true;
+  }
+  return hasReplaceArenaCardSfx('death', cardOrEvent);
+}
+
+function shouldSuppressHeroHpSfxForCardDeath(prevSnapshot, nextSnapshot) {
+  if (!prevSnapshot || !nextSnapshot) return false;
+  return Object.entries(prevSnapshot.units || {}).some(([id, oldUnit]) => {
+    if (!oldUnit || oldUnit.hp <= 0) return false;
+    const newUnit = nextSnapshot.units?.[id];
+    const died = !newUnit || (newUnit.hp <= 0 && oldUnit.hp > 0);
+    return died && hasReplaceArenaDeathSfx(oldUnit);
+  });
+}
+
+function playArenaDeathCardSfx(cardOrEvent, fallbackKey = 'cardDeath') {
+  const deathrattleMechanic = getArenaDeathrattleMechanic(cardOrEvent);
+  if (
+    deathrattleMechanic &&
+    (
+      resolveArenaCardSfx('mechanic', cardOrEvent, { mechanic: deathrattleMechanic }) ||
+      resolveArenaCardVisual('mechanic', cardOrEvent, { mechanic: deathrattleMechanic })
+    )
+  ) {
+    return playResolvedCardFeedback('mechanic', cardOrEvent, fallbackKey, { mechanic: deathrattleMechanic });
+  }
+  return playResolvedCardFeedback('death', cardOrEvent, fallbackKey);
+}
+
+function getExplicitArenaSoundFallback(event) {
+  const eventName = normalizeArenaSoundEventName(event?.event);
+  const mechanic = event?.mechanic;
+  if (eventName === 'mechanic') {
+    if (isArenaHealMechanic(mechanic)) return 'cardHeal';
+    if (isArenaFreezeMechanic(mechanic)) return 'cardFrozen';
+  }
+  return null;
+}
+
+function rememberRelatedArenaExplicitSfx(eventName, event, mechanic) {
+  rememberArenaExplicitSfx(eventName, event, mechanic);
+  if (eventName === 'mechanic') {
+    if (isArenaDeathrattleMechanic(mechanic)) rememberArenaExplicitSfx('death', event, '');
+    if (isArenaHealMechanic(mechanic)) rememberArenaExplicitSfx('mechanic', event, 'heal');
+    if (isArenaFreezeMechanic(mechanic)) rememberArenaExplicitSfx('mechanic', event, 'freeze');
+  }
+}
+
+function processArenaSoundEvents(soundEvents) {
+  if (!Array.isArray(soundEvents) || soundEvents.length === 0) return;
+  soundEvents.forEach(event => {
+    if (!event || typeof event !== 'object') return;
+    if (event.event_id != null && playedArenaSfxEventIds.has(String(event.event_id))) return;
+
+    const eventName = normalizeArenaSoundEventName(event.event);
+    const mechanic = getArenaSoundMechanic(event);
+    const fallbackKey = getExplicitArenaSoundFallback(event);
+    const played = playResolvedCardFeedback(eventName, event, fallbackKey, {
+      mechanic,
+      effect_code: event.effect_code,
+      effectCode: event.effectCode
+    });
+    if (played) {
+      rememberArenaSfxEventId(event.event_id);
+      rememberRelatedArenaExplicitSfx(eventName, event, mechanic);
+    }
+  });
+}
+
+function stopOnboardingSfx() {
+  if (!onboardingSfxCurrent) return;
+  try {
+    onboardingSfxCurrent.pause();
+    onboardingSfxCurrent.currentTime = 0;
+  } catch (e) {}
+  onboardingSfxCurrent = null;
+}
+
+function playOnboardingSfx(name, options = {}) {
+  if (window._sfxEnabled === false) return;
+  const audioId = ARENA_SFX[name] || name;
+  const audio = document.getElementById(audioId);
+  if (!audio) return;
+
+  stopOnboardingSfx();
+  onboardingSfxCurrent = audio;
+  audio.volume = options.volume ?? 0.52;
+  audio.addEventListener('ended', () => {
+    if (onboardingSfxCurrent === audio) onboardingSfxCurrent = null;
+  }, { once: true });
+  try {
+    audio.currentTime = 0;
+  } catch (e) {}
+  audio.play().catch(err => {
+    console.warn('[ARENA] Не удалось проиграть onboarding SFX:', audioId, err);
+    if (onboardingSfxCurrent === audio) onboardingSfxCurrent = null;
+  });
 }
 
 function primeArenaSfx() {
@@ -335,7 +1394,19 @@ function primeArenaSfx() {
 
 function initArenaSfx() {
   window.playArenaSfx = playArenaSfx;
+  window.resolveArenaCardSfx = resolveArenaCardSfx;
+  window.resolveArenaCardVisual = resolveArenaCardVisual;
+  window.resolveArenaCardText = resolveArenaCardText;
+  window.playArenaBackgroundReaction = playArenaBackgroundReaction;
+  window.playArenaScreenText = playArenaScreenText;
+  window.showArenaTargetHint = showArenaTargetHint;
+  window.showArenaAttackHintForCard = showArenaAttackHintForCard;
+  window.hideArenaTargetHint = hideArenaTargetHint;
+  window.playResolvedCardText = playResolvedCardText;
+  window.playResolvedCardSfx = playResolvedCardSfx;
+  window.playResolvedCardFeedback = playResolvedCardFeedback;
   primeArenaSfx();
+  loadArenaCardSfxConfig();
   const unlock = () => {
     primeArenaSfx();
     document.removeEventListener('pointerdown', unlock);
@@ -343,6 +1414,427 @@ function initArenaSfx() {
   };
   document.addEventListener('pointerdown', unlock, { once: true, passive: true });
   document.addEventListener('touchstart', unlock, { once: true, passive: true });
+}
+
+function getTalkieById(talkieId) {
+  const normalizedId = String(talkieId || '').trim();
+  return TALKIE_CATALOG.find(item => item.id === normalizedId) || null;
+}
+
+function readTalkieEnabledPreference() {
+  try {
+    return localStorage.getItem(TALKIE_ENABLED_STORAGE_KEY) !== '0';
+  } catch (e) {
+    return true;
+  }
+}
+
+function persistTalkieEnabledPreference(enabled) {
+  try {
+    localStorage.setItem(TALKIE_ENABLED_STORAGE_KEY, enabled ? '1' : '0');
+  } catch (e) {}
+}
+
+function readTalkieDisableByDefaultPreference() {
+  try {
+    return localStorage.getItem(TALKIE_DISABLE_BY_DEFAULT_STORAGE_KEY) === '1';
+  } catch (e) {
+    return false;
+  }
+}
+
+function persistTalkieDisableByDefaultPreference(disabled) {
+  try {
+    localStorage.setItem(TALKIE_DISABLE_BY_DEFAULT_STORAGE_KEY, disabled ? '1' : '0');
+  } catch (e) {}
+}
+
+function applyTalkieDisableByDefault(disabled, options = {}) {
+  const wasDefaultDisabled = talkieDisableByDefault;
+  talkieDisableByDefault = Boolean(disabled);
+  persistTalkieDisableByDefaultPreference(talkieDisableByDefault);
+
+  if (talkieDisableByDefault) {
+    talkieEnabled = false;
+    hideTalkieFullscreen();
+  } else if (wasDefaultDisabled) {
+    talkieEnabled = readTalkieEnabledPreference();
+  }
+
+  updateTalkieAvailability(currentState);
+  if (options.emit !== false) {
+    emitTalkieSettings();
+  }
+}
+
+async function loadTalkieStartupSettings() {
+  if (!authToken) return;
+  try {
+    const response = await arenaFetchWithTimeout(
+      buildArenaAuthUrl('/api/settings'),
+      { cache: 'no-store' },
+      6500
+    );
+    if (!response.ok) return;
+    const settings = await response.json();
+    applyArenaSoundSettingsFromUserSettings(settings);
+    applyTalkieDisableByDefault(settings?.social_disable_talkies === true);
+  } catch (e) {
+    console.warn('[ARENA] Не удалось загрузить стартовые настройки Talkie:', e);
+  }
+}
+
+function getTalkieExtraPassTier(state = currentState) {
+  const mode = String(
+    state?.player?.extra_pass
+    || state?.extra_pass
+    || 'inactive'
+  ).toLowerCase();
+
+  if (mode === 'ultra') return 'ultra';
+  if (mode === 'active') return 'active';
+  return 'inactive';
+}
+
+function getTalkieTierLimit(state = currentState) {
+  const tier = getTalkieExtraPassTier(state);
+  return TALKIE_TIER_LIMITS[tier] || TALKIE_TIER_LIMITS.inactive;
+}
+
+function syncTalkieTurn(state = currentState) {
+  const turnNumber = state?.turn ?? currentTurnCount ?? 0;
+  const turnLimit = getTalkieTierLimit(state);
+  if (talkieTurnNumber === turnNumber && talkieTurnLimit === turnLimit) return;
+  talkieTurnNumber = turnNumber;
+  talkieTurnLimit = turnLimit;
+  talkieRemainingThisTurn = turnLimit;
+}
+
+function getTalkieRemaining(state = currentState) {
+  syncTalkieTurn(state);
+  const limit = getTalkieTierLimit(state);
+  if (talkieRemainingThisTurn == null) {
+    talkieRemainingThisTurn = limit;
+  }
+  return Math.max(0, Math.min(limit, Number(talkieRemainingThisTurn) || 0));
+}
+
+function renderTalkiePicker() {
+  const grid = document.getElementById('talkie-picker-grid');
+  if (!grid) return;
+
+  grid.innerHTML = '';
+  TALKIE_CATALOG.forEach(talkie => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'talkie-sticker-btn';
+    button.dataset.talkieId = talkie.id;
+    button.setAttribute('aria-label', `Talkie ${talkie.id}`);
+    button.title = `Talkie ${talkie.id}`;
+
+    const image = document.createElement('img');
+    image.src = `../DesignAssets/Arena/Talkies/Mini/${talkie.id}.png`;
+    image.alt = '';
+    button.appendChild(image);
+
+    button.addEventListener('click', (event) => {
+      event.stopPropagation();
+      sendTalkie(talkie.id);
+    });
+
+    grid.appendChild(button);
+  });
+}
+
+function setTalkiePopoverOpen(open) {
+  talkiePopoverOpen = Boolean(open);
+  const popover = document.getElementById('talkie-popover');
+  const button = document.getElementById('talkie-button');
+
+  if (popover) {
+    popover.classList.toggle('is-open', talkiePopoverOpen);
+    popover.setAttribute('aria-hidden', talkiePopoverOpen ? 'false' : 'true');
+  }
+  if (button) {
+    button.setAttribute('aria-expanded', talkiePopoverOpen ? 'true' : 'false');
+  }
+}
+
+function updateTalkieAvailability(state) {
+  state = state || currentState;
+  const limit = getTalkieTierLimit(state);
+  const remaining = getTalkieRemaining(state);
+  const isMyTurn = Boolean(state?.is_my_turn);
+  const canUse = Boolean(talkieEnabled && isMyTurn && remaining > 0 && !talkieSending);
+  const button = document.getElementById('talkie-button');
+  const limitText = document.getElementById('talkie-limit-text');
+  const toggle = document.getElementById('talkie-muted-toggle');
+  const popover = document.getElementById('talkie-popover');
+
+  if (isOnboardingTutorialState(state)) {
+    setTalkiePopoverOpen(false);
+    hideTalkieFullscreen();
+    if (button) {
+      button.hidden = true;
+      button.disabled = true;
+      button.classList.add('is-disabled');
+      button.setAttribute('aria-disabled', 'true');
+      button.setAttribute('aria-expanded', 'false');
+    }
+    if (popover) {
+      popover.classList.remove('is-open');
+      popover.setAttribute('aria-hidden', 'true');
+    }
+    document.querySelectorAll('.talkie-sticker-btn').forEach(item => {
+      item.disabled = true;
+      item.classList.add('is-disabled');
+    });
+    return;
+  }
+
+  if (button) {
+    button.hidden = false;
+    button.disabled = false;
+    button.classList.toggle('is-disabled', !canUse);
+    button.setAttribute('aria-disabled', 'false');
+    button.setAttribute('aria-expanded', talkiePopoverOpen ? 'true' : 'false');
+  }
+
+  if (limitText) {
+    if (!talkieEnabled) {
+      limitText.textContent = 'Talkies выключены';
+    } else if (!isMyTurn) {
+      limitText.textContent = 'Используй Talkies во время своего хода';
+    } else {
+      limitText.textContent = `${remaining}/${limit} / ход`;
+    }
+  }
+
+  if (toggle) {
+    toggle.checked = Boolean(talkieEnabled);
+  }
+
+  if (popover) {
+    popover.classList.toggle('is-muted', !talkieEnabled);
+  }
+
+  document.querySelectorAll('.talkie-sticker-btn').forEach(item => {
+    item.disabled = !canUse;
+    item.classList.toggle('is-disabled', !canUse);
+  });
+}
+
+function emitTalkieSettings() {
+  if (isOnboardingTutorialState()) return;
+  if (!socket || !socket.connected || !socketJoined) return;
+  socket.emit('battle_talkie_settings', {
+    match_id: matchId,
+    enabled: Boolean(talkieEnabled)
+  });
+}
+
+function setTalkieEnabled(enabled, options = {}) {
+  talkieEnabled = Boolean(enabled);
+  persistTalkieEnabledPreference(talkieEnabled);
+  if (!talkieEnabled) {
+    hideTalkieFullscreen();
+  }
+  updateTalkieAvailability(currentState);
+  if (options.emit !== false) {
+    emitTalkieSettings();
+  }
+}
+
+function handleTalkieAck(data = {}) {
+  talkieSending = false;
+  if (talkiePendingResetTimer) {
+    clearTimeout(talkiePendingResetTimer);
+    talkiePendingResetTimer = null;
+  }
+
+  if (typeof data.remaining === 'number') {
+    talkieRemainingThisTurn = data.remaining;
+  } else if (data.success) {
+    talkieRemainingThisTurn = Math.max(0, getTalkieRemaining(currentState) - 1);
+  }
+
+  if (!data.success) {
+    console.warn('[ARENA] Talkie отклонен сервером:', data.error || data);
+    arenaHaptic('warning', { key: 'talkie-rejected', minInterval: 250 });
+  }
+
+  updateTalkieAvailability(currentState);
+}
+
+function handleTalkieSettingsAck(data = {}) {
+  if (data.success === false) {
+    console.warn('[ARENA] Настройки Talkie не применены:', data.error || data);
+    updateTalkieAvailability(currentState);
+    return;
+  }
+
+  if (typeof data.enabled === 'boolean') {
+    talkieEnabled = data.enabled;
+    persistTalkieEnabledPreference(talkieEnabled);
+  }
+  updateTalkieAvailability(currentState);
+}
+
+function sendTalkie(talkieId) {
+  if (isOnboardingTutorialState()) {
+    setTalkiePopoverOpen(false);
+    updateTalkieAvailability(currentState);
+    return;
+  }
+  const talkie = getTalkieById(talkieId);
+  if (!talkie) return;
+
+  const remaining = getTalkieRemaining(currentState);
+  if (!talkieEnabled || !currentState?.is_my_turn || remaining <= 0) {
+    updateTalkieAvailability(currentState);
+    return;
+  }
+
+  if (!socket || !socket.connected || !socketJoined) {
+    console.warn('[ARENA] Talkie не отправлен: Socket.IO еще не готов');
+    arenaHaptic('warning', { key: 'talkie-socket-missing', minInterval: 250 });
+    updateTalkieAvailability(currentState);
+    return;
+  }
+
+  talkieSending = true;
+  updateTalkieAvailability(currentState);
+  arenaHaptic('selection', { key: 'talkie-send', minInterval: 120 });
+  socket.emit('battle_talkie', {
+    match_id: matchId,
+    talkie_id: talkie.id
+  });
+  setTalkiePopoverOpen(false);
+
+  if (talkiePendingResetTimer) {
+    clearTimeout(talkiePendingResetTimer);
+  }
+  talkiePendingResetTimer = setTimeout(() => {
+    talkieSending = false;
+    talkiePendingResetTimer = null;
+    updateTalkieAvailability(currentState);
+  }, 1800);
+}
+
+function hideTalkieFullscreen() {
+  const overlay = document.getElementById('talkie-fullscreen-overlay');
+  if (!overlay) return;
+  overlay.classList.remove('is-visible');
+  overlay.setAttribute('aria-hidden', 'true');
+}
+
+function showTalkieFullscreen(event) {
+  if (isOnboardingTutorialState()) {
+    hideTalkieFullscreen();
+    return;
+  }
+  if (!talkieEnabled) return;
+
+  const talkie = getTalkieById(event?.talkie_id);
+  if (!talkie) return;
+
+  const overlay = document.getElementById('talkie-fullscreen-overlay');
+  const image = document.getElementById('talkie-fullscreen-image');
+  const screenFlash = overlay?.querySelector('.talkie-screen-flash');
+  const burst = overlay?.querySelector('.talkie-burst-flash');
+  if (!overlay || !image) return;
+
+  const cacheKey = encodeURIComponent(String(event?.event_id || `${talkie.id}-${Date.now()}`));
+  image.removeAttribute('src');
+  image.src = `../DesignAssets/Arena/Talkies/Factual/${talkie.id}.png?v=${cacheKey}`;
+  image.alt = `Talkie ${talkie.id}`;
+
+  if (screenFlash) {
+    screenFlash.style.animation = 'none';
+    void screenFlash.offsetWidth;
+    screenFlash.style.animation = '';
+  }
+  if (burst) {
+    burst.style.animation = 'none';
+    void burst.offsetWidth;
+    burst.style.animation = '';
+  }
+  image.style.animation = 'none';
+  void image.offsetWidth;
+  image.style.animation = '';
+
+  overlay.setAttribute('aria-hidden', 'false');
+  overlay.classList.remove('is-visible');
+  requestAnimationFrame(() => {
+    overlay.classList.add('is-visible');
+  });
+
+  const soundAlias = String(event?.sound || talkie.sound || 'neutral').toLowerCase();
+  const soundKey = TALKIE_SOUND_KEYS[soundAlias] || TALKIE_SOUND_KEYS.neutral;
+  playArenaSfx(soundKey, { volume: 0.78 });
+  playTalkieHaptic(event);
+
+  if (talkieHideTimer) {
+    clearTimeout(talkieHideTimer);
+  }
+  talkieHideTimer = setTimeout(() => {
+    hideTalkieFullscreen();
+    talkieHideTimer = null;
+  }, 1450);
+}
+
+function playTalkieHaptic(event = {}) {
+  const isOwnTalkie = event?.sender_id != null && String(event?.sender_id) === String(userId);
+  const hapticKey = 'talkie-display-' + String(event?.event_id || event?.talkie_id || Date.now());
+  arenaHaptic(isOwnTalkie ? 'success' : 'medium', { key: hapticKey, minInterval: 90 });
+  setTimeout(() => arenaHaptic('light', { key: hapticKey + '-tail', minInterval: 80 }), 85);
+}
+
+function initTalkies() {
+  talkieDisableByDefault = readTalkieDisableByDefaultPreference();
+  talkieEnabled = talkieDisableByDefault ? false : readTalkieEnabledPreference();
+  renderTalkiePicker();
+
+  const button = document.getElementById('talkie-button');
+  if (button) {
+    button.setAttribute('aria-haspopup', 'dialog');
+    button.setAttribute('aria-expanded', 'false');
+    button.addEventListener('click', (event) => {
+      event.stopPropagation();
+      updateTalkieAvailability(currentState);
+      setTalkiePopoverOpen(!talkiePopoverOpen);
+    });
+  }
+
+  const toggle = document.getElementById('talkie-muted-toggle');
+  if (toggle) {
+    toggle.checked = Boolean(talkieEnabled);
+    toggle.addEventListener('change', () => {
+      setTalkieEnabled(toggle.checked);
+    });
+  }
+
+  document.addEventListener('click', (event) => {
+    if (!talkiePopoverOpen) return;
+    const popover = document.getElementById('talkie-popover');
+    const trigger = document.getElementById('talkie-button');
+    if (
+      popover
+      && !popover.contains(event.target)
+      && trigger
+      && !trigger.contains(event.target)
+    ) {
+      setTalkiePopoverOpen(false);
+    }
+  });
+
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && talkiePopoverOpen) {
+      setTalkiePopoverOpen(false);
+    }
+  });
+
+  updateTalkieAvailability(currentState);
 }
 
 function getModifierLabel(state) {
@@ -362,6 +1854,8 @@ function renderPrebattleProfile(prefix, profile, fallbackName) {
   const clan = profile?.clan || '';
   const titleRarity = String(profile?.title_rarity || profile?.rarity || '').toLowerCase();
   setText('prebattle-' + prefix + '-name', name);
+  const nameEl = document.getElementById('prebattle-' + prefix + '-name');
+  applyPremiumNicknameVisual(nameEl, profile?.extra_pass, profile?.nickname_glow_disabled);
   setText('prebattle-' + prefix + '-clan', clan);
   setText('prebattle-' + prefix + '-trophies', formatCompactNumber(profile?.trophies));
   setText('prebattle-' + prefix + '-letter', firstLetter(name, fallbackName));
@@ -384,6 +1878,12 @@ function renderPrebattleProfile(prefix, profile, fallbackName) {
 function renderPrebattleScreen(state) {
   const screen = document.getElementById('prebattle-screen');
   if (!screen || !state) return;
+
+  if (shouldBypassPrebattleForOnboarding(state)) {
+    prebattleRendered = true;
+    hidePrebattleScreen();
+    return;
+  }
 
   const opponent = state.opponent || {};
   setText('prebattle-mode-label', getPrebattleModeLabel(state));
@@ -420,6 +1920,10 @@ function playCountdownValue(value, isVs) {
 
 async function startPrebattleSequence() {
   if (prebattleSequenceStarted) return;
+  if (shouldBypassPrebattleForOnboarding(pendingInitialBattleState || currentState)) {
+    enterOnboardingBattleWithoutPrebattle(pendingInitialBattleState || currentState);
+    return;
+  }
   prebattleSequenceStarted = true;
   const screen = document.getElementById('prebattle-screen');
   if (screen) {
@@ -476,6 +1980,13 @@ function createArenaSoundSnapshot(playerState, opponentState) {
       const id = getArenaCardId(card);
       if (!id) return;
       units[id] = {
+        instanceId: card?.instance_id ?? id,
+        cardId: getArenaCatalogCardId(card),
+        card_id: getArenaCatalogCardId(card),
+        name: card?.name ?? card?.card_name ?? '',
+        card_name: card?.card_name ?? card?.name ?? '',
+        cardType: card?.card_type ?? card?.cardType ?? '',
+        mechanics: Array.isArray(card?.mechanics) ? card.mechanics.slice() : [],
         hp: getArenaCardHp(card),
         frozen: card.is_frozen === true,
         side
@@ -504,27 +2015,47 @@ function processArenaStateSfx(playerState, opponentState) {
   const prev = previousArenaSoundSnapshot;
   previousArenaSoundSnapshot = next;
 
+  if (isOnboardingTutorialState()) return;
   if (!prev) return;
 
-  playHeroHpSfx(prev.playerHeroHp, next.playerHeroHp);
-  playHeroHpSfx(prev.opponentHeroHp, next.opponentHeroHp);
+  const suppressHeroHpSfx = shouldSuppressHeroHpSfxForCardDeath(prev, next);
+  if (!suppressHeroHpSfx) {
+    playHeroHpSfx(prev.playerHeroHp, next.playerHeroHp);
+    playHeroHpSfx(prev.opponentHeroHp, next.opponentHeroHp);
+  }
 
   Object.entries(prev.units).forEach(([id, oldUnit]) => {
     if (!next.units[id] && oldUnit.hp > 0) {
-      playArenaSfx('cardDeath');
+      if (!shouldSkipRecentArenaExplicitSfx('death', oldUnit, '')) {
+        playArenaDeathCardSfx(oldUnit, 'cardDeath');
+      }
     }
   });
 
   Object.entries(next.units).forEach(([id, newUnit]) => {
     const oldUnit = prev.units[id];
-    if (!oldUnit) return;
+    if (!oldUnit) {
+      if (!shouldSkipRecentArenaExplicitSfx('deploy', newUnit, '')) {
+        playResolvedCardFeedback('deploy', newUnit, null);
+      }
+      return;
+    }
     if (newUnit.hp < oldUnit.hp) {
-      playArenaSfx(newUnit.hp <= 0 ? 'cardDeath' : 'cardAttacked');
+      const eventName = newUnit.hp <= 0 ? 'death' : 'damage';
+      const fallbackKey = newUnit.hp <= 0 ? 'cardDeath' : 'cardAttacked';
+      if (!shouldSkipRecentArenaExplicitSfx(eventName, newUnit, '')) {
+        if (eventName === 'death') playArenaDeathCardSfx(newUnit, fallbackKey);
+        else playResolvedCardFeedback(eventName, newUnit, fallbackKey);
+      }
     } else if (newUnit.hp > oldUnit.hp) {
-      playArenaSfx('cardHeal');
+      if (!shouldSkipRecentArenaExplicitSfx('mechanic', newUnit, 'heal')) {
+        playResolvedCardFeedback('mechanic', newUnit, 'cardHeal', { mechanic: 'heal' });
+      }
     }
     if (!oldUnit.frozen && newUnit.frozen) {
-      playArenaSfx('cardFrozen');
+      if (!shouldSkipRecentArenaExplicitSfx('mechanic', newUnit, 'freeze')) {
+        playResolvedCardFeedback('mechanic', newUnit, 'cardFrozen', { mechanic: 'freeze' });
+      }
     }
   });
 }
@@ -546,7 +2077,7 @@ function getPlayCardTargets(handIndex) {
  */
 function canAttack(instanceId) {
   if (isArenaWaitingForPlayers(currentState)) return false;
-  // ИСПРАВЛЕНО: Доверяем свойству can_attack самого юнита, 
+  // ИСПРАВЛЕНО: Доверяем свойству can_attack самого юнита,
   // так как legal_actions могут запаздывать или быть неполными
   const board = currentState?.player?.board || currentState?.player1_board || currentState?.player2_board || [];
   const unit = board.find(u => String(u.instance_id) === String(instanceId));
@@ -584,9 +2115,86 @@ function isValidAttackTarget(targetId, isHero) {
 
 function buildArenaAuthUrl(path) {
   if (!authToken) return path;
+  if (looksLikeArenaJwtBearer(authToken) && isSameOriginArenaApiPath(path)) return path;
   const separator = path.includes('?') ? '&' : '?';
   return path + separator + '_auth=' + encodeURIComponent(authToken);
 }
+
+function looksLikeArenaJwtBearer(value) {
+  return typeof value === 'string'
+    && /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(value.trim());
+}
+
+function isSameOriginArenaApiPath(path) {
+  try {
+    const url = new URL(path, window.location.origin);
+    return url.origin === window.location.origin && url.pathname.startsWith('/api/');
+  } catch (_) {
+    return false;
+  }
+}
+
+function installArenaJwtQueryAuthHeaderBridge() {
+  if (window.__eaArenaJwtQueryAuthHeaderBridgeInstalled || typeof window.fetch !== 'function') return;
+  window.__eaArenaJwtQueryAuthHeaderBridgeInstalled = true;
+  const nativeFetch = window.fetch.bind(window);
+
+  function liftArenaJwtAuthFromJsonBody(nextInit, headers) {
+    const body = nextInit.body;
+    if (typeof body !== 'string') return null;
+    const contentType = headers.get('Content-Type') || headers.get('content-type') || '';
+    if (contentType && !contentType.toLowerCase().includes('application/json')) return null;
+
+    let payload;
+    try {
+      payload = JSON.parse(body);
+    } catch (_) {
+      return null;
+    }
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+
+    const bodyToken = looksLikeArenaJwtBearer(payload._auth)
+      ? payload._auth
+      : looksLikeArenaJwtBearer(payload.auth)
+        ? payload.auth
+        : null;
+    if (!bodyToken) return null;
+
+    const sanitized = {...payload};
+    if (looksLikeArenaJwtBearer(sanitized._auth)) delete sanitized._auth;
+    if (looksLikeArenaJwtBearer(sanitized.auth)) delete sanitized.auth;
+    nextInit.body = JSON.stringify(sanitized);
+    return bodyToken;
+  }
+
+  window.fetch = (input, init) => {
+    try {
+      const originalUrl = typeof input === 'string' ? input : input?.url;
+      if (!originalUrl) return nativeFetch(input, init);
+      const url = new URL(originalUrl, window.location.origin);
+      const token = url.searchParams.get('_auth');
+      const nextInit = {...(init || {})};
+      const headers = new Headers(nextInit.headers || (typeof input !== 'string' ? input.headers : undefined) || {});
+      const bodyToken = liftArenaJwtAuthFromJsonBody(nextInit, headers);
+      const fallbackToken = !token && !bodyToken && looksLikeArenaJwtBearer(authToken) ? authToken : null;
+      const bearerToken = looksLikeArenaJwtBearer(token) ? token : (bodyToken || fallbackToken);
+      if (url.origin !== window.location.origin || !url.pathname.startsWith('/api/') || !bearerToken) {
+        return nativeFetch(input, init);
+      }
+
+      if (token) url.searchParams.delete('_auth');
+      if (!headers.has('Authorization')) headers.set('Authorization', `Bearer ${bearerToken}`);
+      nextInit.headers = headers;
+      const nextUrl = url.pathname + url.search + url.hash;
+      return nativeFetch(nextUrl, nextInit);
+    } catch (_) {
+      return nativeFetch(input, init);
+    }
+  };
+}
+
+// Telegram initData stays in _auth for launch and deep-link compatibility; JWT API calls are lifted into Authorization.
+installArenaJwtQueryAuthHeaderBridge();
 
 function arenaFetchWithTimeout(url, options = {}, timeoutMs = 6500) {
   if (!window.AbortController) return fetch(url, options);
@@ -610,7 +2218,636 @@ async function parseActionError(response, fallbackMessage) {
   if (payload.state) {
     handleStateChanged({state: payload.state});
   }
-  return new Error(payload.error || payload.message || fallbackMessage);
+  const error = new Error(payload.feedback || payload.error || payload.message || fallbackMessage);
+  error.feedback = payload.feedback || payload.result?.feedback || '';
+  error.payload = payload;
+  return error;
+}
+
+function isOnboardingTutorialState(state = currentState) {
+  const candidate = state || currentState || {};
+  const candidateMatchId = String(candidate?.match_id || matchId || '');
+  const stateSaysTutorial = Boolean(
+    candidate?.is_onboarding_tutorial
+    || String(candidate?.game_mode || '').toLowerCase() === 'tutorial'
+    || candidateMatchId.startsWith('tutorial-')
+  );
+  return Boolean(stateSaysTutorial || (onboardingModeHint && String(matchId || '').startsWith('tutorial-')));
+}
+
+function shouldBypassPrebattleForOnboarding(state = currentState) {
+  return Boolean(
+    onboardingModeHint
+    || state?.is_onboarding_tutorial
+    || String(state?.game_mode || '').toLowerCase() === 'tutorial'
+    || String(state?.match_id || matchId || '').startsWith('tutorial-')
+  );
+}
+
+function enterOnboardingBattleWithoutPrebattle(state) {
+  prebattleComplete = true;
+  prebattleSequenceStarted = true;
+  pendingInitialBattleState = null;
+  hidePrebattleScreen();
+  if (state) {
+    currentState = state;
+    renderBattleState(state);
+  }
+  trySendClientReady();
+}
+
+function getOnboardingTutorial(state = currentState) {
+  return state?.tutorial || onboardingTutorial || null;
+}
+
+function getOnboardingAllowedAction() {
+  return getOnboardingTutorial()?.allowed || {};
+}
+
+function getOnboardingCoachPlacement(tutorial) {
+  const allowed = tutorial?.allowed || {};
+  if (allowed.type === 'end_turn') return 'top';
+  return 'bottom';
+}
+
+function getOnboardingGenericFeedback() {
+  return getOnboardingTutorial()?.wrong_action_feedback?.generic || 'Сейчас не туда. Следуй подсветке.';
+}
+
+function playOnboardingStepCue(tutorial) {
+  const stepIndex = Number(tutorial?.step_index);
+  if (!Number.isFinite(stepIndex) || onboardingSfxLastStep === stepIndex) return;
+  onboardingSfxLastStep = stepIndex;
+  const finalStep = Number(tutorial?.final_step || ONBOARDING_TUTORIAL_FINAL_STEP);
+  if (stepIndex === 0) {
+    playOnboardingSfx('onboardingStart', { volume: 0.42 });
+  } else if (stepIndex >= finalStep) {
+    playOnboardingVictoryCue();
+  } else {
+    onboardingVictorySfxPlayed = false;
+    playOnboardingSfx('onboardingStep', { volume: 0.34 });
+  }
+}
+
+function playOnboardingVictoryCue() {
+  if (onboardingVictorySfxPlayed) return;
+  onboardingVictorySfxPlayed = true;
+  playOnboardingSfx('onboardingVictory', { volume: 0.46 });
+}
+
+function playOnboardingActionCue(payload) {
+  if (!payload || payload.result?.success === false) return;
+  const stepIndex = Number(payload.result?.tutorial_step ?? payload.state?.tutorial?.step_index);
+  if (Number.isFinite(stepIndex)) onboardingSfxLastStep = stepIndex;
+  const finalStep = Number(payload.state?.tutorial?.final_step || ONBOARDING_TUTORIAL_FINAL_STEP);
+  if (stepIndex >= finalStep) {
+    playOnboardingVictoryCue();
+  } else {
+    playOnboardingSfx('onboardingConfirm', { volume: 0.36 });
+  }
+}
+
+function clearOnboardingFollowup() {
+  if (onboardingFollowupTimer) {
+    clearTimeout(onboardingFollowupTimer);
+    onboardingFollowupTimer = null;
+  }
+  onboardingFollowupMessage = '';
+  onboardingFollowupStep = null;
+  onboardingFollowupReady = false;
+}
+
+function clearOnboardingAutoAdvance() {
+  if (onboardingAutoAdvanceTimer) {
+    clearTimeout(onboardingAutoAdvanceTimer);
+    onboardingAutoAdvanceTimer = null;
+  }
+  onboardingAutoAdvanceStep = null;
+}
+
+function scheduleOnboardingAutoAdvance(tutorial) {
+  const stepIndex = Number(tutorial?.step_index);
+  if (!tutorial?.is_auto_step || !Number.isFinite(stepIndex)) {
+    clearOnboardingAutoAdvance();
+    return;
+  }
+  if (onboardingAutoAdvanceStep === stepIndex && onboardingAutoAdvanceTimer) return;
+  clearOnboardingAutoAdvance();
+  onboardingAutoAdvanceStep = stepIndex;
+  const requestedDelayMs = Number(tutorial?.auto_advance_delay_ms || ONBOARDING_AUTO_ADVANCE_DELAY_MS);
+  const delayMs = Number.isFinite(requestedDelayMs)
+    ? Math.max(800, Math.min(12000, requestedDelayMs))
+    : ONBOARDING_AUTO_ADVANCE_DELAY_MS;
+  onboardingAutoAdvanceTimer = setTimeout(() => {
+    onboardingAutoAdvanceTimer = null;
+    const currentStep = Number(getOnboardingTutorial()?.step_index);
+    if (currentStep !== stepIndex || !isOnboardingTutorialState()) return;
+    sendOnboardingTutorialAction({ type: 'auto_continue' }, 'Не удалось продолжить обучение');
+  }, delayMs);
+}
+
+function scheduleOnboardingFollowup(message, stepIndex) {
+  clearOnboardingFollowup();
+  const normalized = String(message || '').trim();
+  const numericStep = Number(stepIndex);
+  if (!normalized || !Number.isFinite(numericStep)) return;
+  onboardingFollowupStep = numericStep;
+  onboardingFollowupMessage = normalized;
+  onboardingFollowupReady = false;
+  renderOnboardingTutorialLayer();
+  onboardingFollowupTimer = setTimeout(() => {
+    const currentStep = Number(getOnboardingTutorial()?.step_index);
+    if (currentStep !== numericStep) return;
+    onboardingFeedbackMessage = '';
+    onboardingFollowupReady = true;
+    renderOnboardingTutorialLayer();
+  }, 2000);
+}
+
+function getOnboardingHeroSelectors() {
+  return ['.opponent-panel-root', '#opponent-hp-block'];
+}
+
+function getOnboardingHandSelector(cardId) {
+  return `[data-onboarding-target="hand-card:${cardId}"]`;
+}
+
+function getOnboardingBoardSelector(cardId) {
+  return `[data-onboarding-target="board-card:${cardId}"], [data-onboarding-card-id="${cardId}"][data-owner-side="player"]`;
+}
+
+function getOnboardingFirstEmptySlot() {
+  const slots = Array.from(document.querySelectorAll('#player-board-zone .board-slot'));
+  return slots.find(slot => !slot.querySelector('.board-unit-card')) || slots[0] || null;
+}
+
+function getOnboardingSpotlightElement() {
+  const tutorial = getOnboardingTutorial();
+  if (!tutorial) return null;
+  const allowed = tutorial.allowed || {};
+  const target = String(tutorial.target || '');
+
+  if (allowed.type === 'play_card') {
+    if (selectedCard) return getOnboardingFirstEmptySlot();
+    return document.querySelector(getOnboardingHandSelector(allowed.card_id || target.split(':')[1]));
+  }
+
+  if (allowed.type === 'attack') {
+    if (interactionMode.type !== 'ATTACK') {
+      return document.querySelector(getOnboardingBoardSelector(allowed.attacker_card_id));
+    }
+    return document.querySelector('.opponent-panel-root') || document.getElementById('opponent-hp-block');
+  }
+
+  if (target === 'end_turn' || allowed.type === 'end_turn') {
+    return document.getElementById('end-turn-button');
+  }
+
+  if (target === 'opponent_hero') {
+    return document.querySelector('.opponent-panel-root') || document.getElementById('opponent-hp-block');
+  }
+
+  return null;
+}
+
+function getOnboardingAllowedClickSelectors() {
+  const tutorial = getOnboardingTutorial();
+  if (!tutorial) return [];
+  const allowed = tutorial.allowed || {};
+  if (allowed.type === 'play_card') {
+    return selectedCard ? ['#player-board-zone .board-slot'] : [getOnboardingHandSelector(allowed.card_id)];
+  }
+  if (allowed.type === 'attack') {
+    return interactionMode.type === 'ATTACK'
+      ? ['.opponent-panel-root', '#opponent-hp-block']
+      : [getOnboardingBoardSelector(allowed.attacker_card_id)];
+  }
+  if (allowed.type === 'end_turn') return ['#end-turn-button'];
+  if (allowed.type === 'complete') return ['.arena-onboarding-victory-action'];
+  return [];
+}
+
+function targetMatchesOnboardingSelectors(target, selectors) {
+  if (!target || !selectors.length) return false;
+  return selectors.some(selector => {
+    try {
+      return Boolean(target.closest(selector));
+    } catch (_) {
+      return false;
+    }
+  });
+}
+
+function positionOnboardingSpotlight() {
+  document.querySelectorAll('.arena-onboarding-target-pulse').forEach(el => {
+    el.classList.remove('arena-onboarding-target-pulse');
+  });
+
+  const layer = document.getElementById('arena-onboarding-layer');
+  const spotlight = layer?.querySelector('.arena-onboarding-spotlight');
+  if (!layer || !spotlight || !layer.classList.contains('is-active')) return;
+
+  const target = getOnboardingSpotlightElement();
+  if (!target) {
+    spotlight.classList.add('is-hidden');
+    return;
+  }
+
+  const rect = target.getBoundingClientRect();
+  if (!rect.width || !rect.height) {
+    spotlight.classList.add('is-hidden');
+    return;
+  }
+
+  spotlight.classList.remove('is-hidden');
+  spotlight.style.setProperty('--spotlight-left', Math.max(8, rect.left - 8) + 'px');
+  spotlight.style.setProperty('--spotlight-top', Math.max(8, rect.top - 8) + 'px');
+  spotlight.style.setProperty('--spotlight-width', (rect.width + 16) + 'px');
+  spotlight.style.setProperty('--spotlight-height', (rect.height + 16) + 'px');
+  target.classList.add('arena-onboarding-target-pulse');
+}
+
+function setOnboardingLayerActive(active) {
+  const layer = document.getElementById('arena-onboarding-layer');
+  if (!layer) return;
+  layer.classList.toggle('is-active', Boolean(active));
+  layer.setAttribute('aria-hidden', active ? 'false' : 'true');
+  if (!active) layer.classList.remove('is-victory');
+  if (active && !onboardingSpotlightInterval) {
+    onboardingSpotlightInterval = setInterval(positionOnboardingSpotlight, 320);
+    window.addEventListener('resize', positionOnboardingSpotlight);
+  } else if (!active && onboardingSpotlightInterval) {
+    clearInterval(onboardingSpotlightInterval);
+    onboardingSpotlightInterval = null;
+    window.removeEventListener('resize', positionOnboardingSpotlight);
+    document.querySelectorAll('.arena-onboarding-target-pulse').forEach(el => {
+      el.classList.remove('arena-onboarding-target-pulse');
+    });
+  }
+}
+
+function renderOnboardingTutorialLayer() {
+  const layer = document.getElementById('arena-onboarding-layer');
+  const tutorial = onboardingMenuTourLeaving ? onboardingTutorial : getOnboardingTutorial();
+  if (!layer || (!onboardingMenuTourLeaving && !isOnboardingTutorialState()) || !tutorial) {
+    setOnboardingLayerActive(false);
+    return;
+  }
+
+  setOnboardingLayerActive(true);
+  layer.innerHTML = '';
+  const stepIndex = Number(tutorial.step_index || 0);
+  const finalStep = Number(tutorial.final_step || ONBOARDING_TUTORIAL_FINAL_STEP);
+  const isFinalStep = stepIndex >= finalStep;
+  layer.classList.toggle('is-victory', isFinalStep);
+
+  if (isFinalStep) {
+    const modal = document.createElement('section');
+    modal.className = 'arena-onboarding-victory';
+    modal.setAttribute('role', 'dialog');
+    modal.setAttribute('aria-modal', 'true');
+    modal.setAttribute('aria-label', 'Победа в обучении');
+
+    const shine = document.createElement('span');
+    shine.className = 'arena-onboarding-victory-shine';
+    shine.setAttribute('aria-hidden', 'true');
+    modal.appendChild(shine);
+
+    const img = document.createElement('img');
+    img.className = 'arena-onboarding-victory-img';
+    img.alt = '';
+    img.src = tutorial.midoria_asset || '/DesignAssets/MidoriaOnboardingGuide.png';
+    modal.appendChild(img);
+
+    const copy = document.createElement('div');
+    copy.className = 'arena-onboarding-victory-copy';
+
+    const kicker = document.createElement('div');
+    kicker.className = 'arena-onboarding-victory-kicker';
+    kicker.textContent = 'Учебный бой завершен';
+    copy.appendChild(kicker);
+
+    const title = document.createElement('h1');
+    title.className = 'arena-onboarding-victory-title';
+    title.textContent = 'Победа';
+    copy.appendChild(title);
+
+    const text = document.createElement('p');
+    text.className = 'arena-onboarding-victory-text';
+    text.textContent = tutorial.message || 'Базу ты взял. Теперь покажу, где усилить колоду.';
+    copy.appendChild(text);
+
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'arena-onboarding-victory-action';
+    button.textContent = onboardingMenuTourLeaving ? 'Открываю...' : 'В меню';
+    button.disabled = onboardingMenuTourLeaving;
+    button.addEventListener('click', goToOnboardingMenuTour);
+    copy.appendChild(button);
+
+    modal.appendChild(copy);
+    layer.appendChild(modal);
+    return;
+  }
+
+  const spotlight = document.createElement('div');
+  spotlight.className = 'arena-onboarding-spotlight is-hidden';
+  layer.appendChild(spotlight);
+
+  const coach = document.createElement('section');
+  coach.className = 'arena-onboarding-coach';
+  if (getOnboardingCoachPlacement(tutorial) === 'top') {
+    coach.classList.add('is-top');
+  }
+
+  const img = document.createElement('img');
+  img.className = 'arena-onboarding-coach-img';
+  img.alt = '';
+  img.src = tutorial.midoria_asset || '/DesignAssets/MidoriaOnboardingGuide.png';
+
+  const bubble = document.createElement('div');
+  bubble.className = 'arena-onboarding-bubble' + (onboardingFeedbackMessage ? ' is-feedback' : '');
+
+  const meta = document.createElement('div');
+  meta.className = 'arena-onboarding-meta';
+
+  const name = document.createElement('strong');
+  name.className = 'arena-onboarding-name';
+  name.textContent = 'Мидория';
+
+  const step = document.createElement('span');
+  step.className = 'arena-onboarding-step';
+  const displayStep = Number(tutorial.display_step ?? stepIndex);
+  const displayStepsTotal = Number(tutorial.display_steps_total || finalStep);
+  step.textContent = stepIndex >= finalStep
+    ? 'Победа'
+    : (tutorial.is_auto_step
+      ? `Демо ${displayStep}/${displayStepsTotal}`
+      : (displayStep > 0 ? `Шаг ${displayStep}/${displayStepsTotal}` : 'Старт'));
+
+  meta.appendChild(name);
+  meta.appendChild(step);
+
+  const stagedFollowupMessage = String(
+    onboardingFollowupStep === stepIndex ? onboardingFollowupMessage : ''
+  ).trim();
+  let previousMessage = String(tutorial.previous_message || '').trim();
+  let currentMessage = onboardingFeedbackMessage || tutorial.message || '';
+
+  if (!onboardingFeedbackMessage && stagedFollowupMessage) {
+    if (onboardingFollowupReady) {
+      previousMessage = stagedFollowupMessage;
+      currentMessage = tutorial.message || '';
+    } else {
+      previousMessage = '';
+      currentMessage = stagedFollowupMessage;
+    }
+  }
+
+  const hasPreviousMessage = !onboardingFeedbackMessage && previousMessage && previousMessage !== currentMessage;
+  const isWaitingForFollowup = !onboardingFeedbackMessage && stagedFollowupMessage && !onboardingFollowupReady;
+
+  bubble.appendChild(meta);
+
+  if (hasPreviousMessage) {
+    const previous = document.createElement('div');
+    previous.className = 'arena-onboarding-text is-stacked';
+    previous.textContent = previousMessage;
+    bubble.appendChild(previous);
+
+    const current = document.createElement('div');
+    current.className = 'arena-onboarding-followup';
+    current.textContent = currentMessage;
+    bubble.appendChild(current);
+  } else {
+    const text = document.createElement('div');
+    text.className = 'arena-onboarding-text';
+    text.textContent = currentMessage;
+    bubble.appendChild(text);
+  }
+
+  if (!onboardingFeedbackMessage && !isWaitingForFollowup && tutorial.hint) {
+    const hint = document.createElement('div');
+    hint.className = 'arena-onboarding-hint';
+    hint.textContent = tutorial.hint;
+    bubble.appendChild(hint);
+  }
+
+  if (tutorial.is_auto_step && stepIndex < finalStep) {
+    const status = document.createElement('div');
+    status.className = 'arena-onboarding-status';
+    status.textContent = 'Ход противника...';
+    bubble.appendChild(status);
+  } else if (stepIndex === 0 || stepIndex >= finalStep) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'arena-onboarding-action';
+    button.textContent = stepIndex >= finalStep ? 'В меню' : 'Понятно';
+    button.addEventListener('click', () => {
+      if (stepIndex >= finalStep) {
+        goToOnboardingMenuTour();
+      } else {
+        sendOnboardingTutorialControl('continue');
+      }
+    });
+    bubble.appendChild(button);
+  }
+
+  coach.appendChild(img);
+  coach.appendChild(bubble);
+  layer.appendChild(coach);
+  requestAnimationFrame(positionOnboardingSpotlight);
+}
+
+function updateOnboardingTutorialFromState(state) {
+  if (onboardingMenuTourLeaving) {
+    renderOnboardingTutorialLayer();
+    return;
+  }
+  if (!isOnboardingTutorialState(state)) {
+    onboardingTutorial = null;
+    onboardingFeedbackMessage = '';
+    onboardingVictorySfxPlayed = false;
+    if (onboardingFeedbackTimer) {
+      clearTimeout(onboardingFeedbackTimer);
+      onboardingFeedbackTimer = null;
+    }
+    clearOnboardingFollowup();
+    clearOnboardingAutoAdvance();
+    renderOnboardingTutorialLayer();
+    return;
+  }
+  onboardingModeHint = true;
+  onboardingTutorial = state?.tutorial || onboardingTutorial;
+  const stepIndex = Number(onboardingTutorial?.step_index);
+  const finalStep = Number(onboardingTutorial?.final_step || ONBOARDING_TUTORIAL_FINAL_STEP);
+  if (Number.isFinite(stepIndex) && stepIndex < finalStep) {
+    onboardingVictorySfxPlayed = false;
+    onboardingMenuTourLeaving = false;
+  }
+  if (onboardingFollowupStep !== null && onboardingFollowupStep !== stepIndex) {
+    clearOnboardingFollowup();
+  }
+  renderOnboardingTutorialLayer();
+  installOnboardingClickGuard();
+  playOnboardingStepCue(onboardingTutorial);
+  scheduleOnboardingAutoAdvance(onboardingTutorial);
+}
+
+function showOnboardingTutorialFeedback(message, duration = 2300) {
+  if (!isOnboardingTutorialState()) return false;
+  clearOnboardingFollowup();
+  clearOnboardingAutoAdvance();
+  onboardingFeedbackMessage = message || 'Сейчас не туда. Следуй подсветке.';
+  if (onboardingFeedbackTimer) clearTimeout(onboardingFeedbackTimer);
+  renderOnboardingTutorialLayer();
+  onboardingFeedbackTimer = setTimeout(() => {
+    onboardingFeedbackMessage = '';
+    renderOnboardingTutorialLayer();
+  }, duration);
+  return true;
+}
+
+function handleOnboardingActionPayload(payload) {
+  if (!payload || !isOnboardingTutorialState(payload.state || currentState)) return;
+  if (payload.state) {
+    onboardingTutorial = payload.state.tutorial || onboardingTutorial;
+  }
+  const afterMessage = payload.result?.after_message || payload.feedback || payload.result?.feedback;
+  if (onboardingFeedbackTimer) {
+    clearTimeout(onboardingFeedbackTimer);
+    onboardingFeedbackTimer = null;
+  }
+  onboardingFeedbackMessage = '';
+  clearOnboardingFollowup();
+  clearOnboardingAutoAdvance();
+  if (afterMessage) {
+    scheduleOnboardingFollowup(afterMessage, getOnboardingTutorial()?.step_index);
+  } else {
+    renderOnboardingTutorialLayer();
+  }
+  scheduleOnboardingAutoAdvance(getOnboardingTutorial());
+  playOnboardingActionCue(payload);
+}
+
+function handleOnboardingActionError(error) {
+  if (!isOnboardingTutorialState()) return false;
+  const message = error?.feedback || error?.message || 'Сейчас не туда. Следуй подсветке.';
+  playOnboardingSfx('onboardingBlocked', { volume: 0.5 });
+  showOnboardingTutorialFeedback(message, 2400);
+  return true;
+}
+
+function installOnboardingClickGuard() {
+  if (onboardingClickGuardInstalled) return;
+  onboardingClickGuardInstalled = true;
+  document.addEventListener('click', function(event) {
+    if (!isOnboardingTutorialState() || !getOnboardingTutorial()) return;
+    if (event.target.closest('.arena-onboarding-coach')) return;
+    if (event.target.closest('.arena-onboarding-victory')) return;
+    const allowedSelectors = getOnboardingAllowedClickSelectors();
+    if (targetMatchesOnboardingSelectors(event.target, allowedSelectors)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    arenaHaptic('warning', { key: 'onboarding-blocked-click', minInterval: 160 });
+    const feedback = getOnboardingTutorial()?.wrong_action_feedback?.generic || 'Сейчас не туда. Следуй подсветке.';
+    playOnboardingSfx('onboardingBlocked', { volume: 0.5 });
+    showOnboardingTutorialFeedback(feedback);
+  }, true);
+}
+
+async function sendOnboardingTutorialControl(type) {
+  return sendOnboardingTutorialAction({ type }, 'Не удалось выполнить шаг обучения');
+}
+
+async function sendOnboardingTutorialAction(action, fallbackMessage = 'Не удалось выполнить шаг обучения') {
+  const actionBody = { ...(action || {}) };
+  const actionType = String(actionBody.type || 'action');
+  actionBody.match_id = actionBody.match_id || matchId;
+  actionBody.client_action_id = actionBody.client_action_id || makeClientActionId('tutorial_' + actionType);
+  if (userId != null && actionBody.user_id == null) actionBody.user_id = userId;
+
+  try {
+    const response = await fetch(buildArenaAuthUrl('/api/onboarding/tutorial/action'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(actionBody)
+    });
+    if (!response.ok) {
+      throw await parseActionError(response, fallbackMessage);
+    }
+    const payload = await response.json();
+    if (payload.state) {
+      currentState = payload.state;
+      renderBattleState(payload.state);
+    }
+    handleOnboardingActionPayload(payload);
+    return payload;
+  } catch (error) {
+    console.warn('[ARENA] Ошибка tutorial action:', error);
+    if (!handleOnboardingActionError(error)) {
+      alert(fallbackMessage + ': ' + error.message);
+    }
+    return null;
+  }
+}
+
+async function finishOnboardingTutorialForMenu() {
+  const actionBody = {
+    type: 'complete',
+    match_id: matchId,
+    client_action_id: makeClientActionId('tutorial_complete_menu')
+  };
+  if (userId != null) actionBody.user_id = userId;
+
+  const response = await fetch(buildArenaAuthUrl('/api/onboarding/tutorial/action'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(actionBody)
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.feedback || payload.message || payload.error || 'onboarding_complete_failed');
+  }
+  const nextStatus = String(payload?.onboarding?.status || '');
+  if (nextStatus && nextStatus !== 'menu_tour' && nextStatus !== 'completed') {
+    throw new Error('onboarding_state_not_ready');
+  }
+  return payload;
+}
+
+function buildOnboardingMenuTourUrl() {
+  let url = '/?onboarding_menu=1';
+  if (authToken && looksLikeArenaJwtBearer(authToken)) {
+    try { sessionStorage.setItem('extra_id_token', authToken); } catch (_) {}
+  } else if (authToken) {
+    url += '&_auth=' + encodeURIComponent(authToken);
+  }
+  url += '&music=' + (window._musicEnabled ? '1' : '0') + '&sfx=' + (window._sfxEnabled ? '1' : '0');
+  return url;
+}
+
+async function goToOnboardingMenuTour() {
+  if (onboardingMenuTourLeaving) return;
+  const finalTutorial = getOnboardingTutorial();
+  onboardingTutorial = finalTutorial || onboardingTutorial;
+  onboardingMenuTourLeaving = true;
+  clearOnboardingFollowup();
+  clearOnboardingAutoAdvance();
+  onboardingFeedbackMessage = '';
+  renderOnboardingTutorialLayer();
+  try {
+    await finishOnboardingTutorialForMenu();
+    onboardingTutorial = null;
+    currentState = null;
+    setOnboardingLayerActive(false);
+    window.location.replace(buildOnboardingMenuTourUrl());
+  } catch (error) {
+    console.warn('[ARENA] Не удалось завершить учебный бой перед меню:', error);
+    onboardingMenuTourLeaving = false;
+    onboardingTutorial = finalTutorial || getOnboardingTutorial();
+    showOnboardingTutorialFeedback('Не удалось открыть меню. Попробуй еще раз.', 2600);
+  }
 }
 
 function isArenaAndroidShell() {
@@ -670,7 +2907,7 @@ function hideArenaBadConnection() {
 }
 
 function showArenaBadConnection(latency) {
-  if (arenaBadPingDismissed || arenaHealthStopped || document.getElementById('arena-connection-modal')) return;
+  if (arenaTerminalState || arenaBadPingDismissed || arenaHealthStopped || document.getElementById('arena-connection-modal')) return;
   const root = ensureArenaHealthRoot();
   let banner = document.getElementById('arena-bad-connection-banner');
   if (!banner) {
@@ -713,7 +2950,24 @@ function clearArenaConnectionIssue() {
   }
 }
 
+function hideArenaConnectionModal() {
+  const modal = document.getElementById('arena-connection-modal');
+  if (modal) modal.remove();
+}
+
+function enterArenaTerminalState() {
+  arenaTerminalState = true;
+  if (socketJoinRetryTimer) {
+    clearTimeout(socketJoinRetryTimer);
+    socketJoinRetryTimer = null;
+  }
+  stopArenaHealthPing();
+  hideArenaBadConnection();
+  hideArenaConnectionModal();
+}
+
 function showArenaConnectionModal(message) {
+  if (arenaTerminalState) return;
   stopArenaHealthPing();
   hideArenaBadConnection();
   const root = ensureArenaHealthRoot();
@@ -733,11 +2987,12 @@ function showArenaConnectionModal(message) {
     + '</section></div>';
   root.appendChild(modal);
   document.getElementById('arena-connection-restart')?.addEventListener('click', () => {
-    window.location.replace('/');
+    window.location.reload();
   });
 }
 
 function markArenaConnectionFailure() {
+  if (arenaTerminalState) return;
   if (document.getElementById('arena-connection-modal')) return;
   const now = Date.now();
   if (!arenaConnectionIssueSince) {
@@ -760,7 +3015,7 @@ function stopArenaHealthPing() {
 }
 
 function startArenaHealthMonitor() {
-  if (arenaHealthInterval || arenaHealthStopped || !authToken) return;
+  if (arenaTerminalState || arenaHealthInterval || arenaHealthStopped || !authToken) return;
 
   const ping = async () => {
     if (document.hidden || arenaHealthStopped) return;
@@ -803,7 +3058,7 @@ function startArenaHealthMonitor() {
 // ИНИЦИАЛИЗАЦИЯ
 // ============================================
 
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
   console.log('[ARENA] Страница арены загружена');
 
   const tg = window.Telegram?.WebApp;
@@ -818,32 +3073,56 @@ document.addEventListener('DOMContentLoaded', () => {
   
   // Извлекаем параметры из URL
   const urlParams = new URLSearchParams(window.location.search);
-  matchId = urlParams.get('id');
+  matchId = normalizeArenaMatchId(urlParams.get('id'));
   const _auth = urlParams.get('_auth');
+  onboardingModeHint = urlParams.get('onboarding') === '1' || String(matchId || '').startsWith('tutorial-');
 
   if (_auth) {
-    sessionStorage.setItem('arena_auth', _auth);
-    history.replaceState(null, '', '/arena?id=' + matchId);
+    try { sessionStorage.setItem('arena_auth', _auth); } catch (_) {}
+    const clean = new URL(location.href);
+    clean.searchParams.delete('_auth');
+    history.replaceState(null, '', clean.pathname + clean.search + clean.hash);
   }
-  authToken = sessionStorage.getItem('arena_auth');
+  try { authToken = sessionStorage.getItem('arena_auth'); } catch (_) { authToken = null; }
+  if (!authToken && tg?.initData) authToken = tg.initData;
 
   console.log('[ARENA] Match ID:', matchId);
 
-  if (!matchId) {
-    console.error('[ARENA] Отсутствует match_id в URL');
-    alert('Ошибка: параметры боя не найдены');
+  if (isInvalidArenaMatchId(matchId)) {
+    console.warn('[ARENA] Отсутствует match_id в URL');
+    showArenaLaunchError(
+      'Бой не найден',
+      'Параметры боя отсутствуют или повреждены. Вернитесь в меню и начните матч заново.'
+    );
+    return;
+  }
+
+  if (isUnsupportedExternalArenaBrowser(urlParams, tg)) {
+    console.warn('[ARENA] Арена открыта вне поддерживаемого клиента');
+    showArenaLaunchError(
+      'Браузер не поддерживается',
+      'Играть в арену можно только внутри Telegram или Android-клиента. Закройте эту вкладку и откройте бой из приложения.'
+    );
     return;
   }
 
   if (!authToken) {
-    console.error('[ARENA] Отсутствует _auth токен');
-    alert('Ошибка: токен аутентификации не найден');
+    console.warn('[ARENA] Отсутствует _auth токен');
+    showArenaLaunchError(
+      'Сессия истекла',
+      'Не удалось подтвердить вход в арену. Перезапустите игру из Telegram и откройте бой ещё раз.'
+    );
     return;
   }
   
+  initTalkies();
+  await loadTalkieStartupSettings();
+
   // Сначала грузим состояние: это дает серверу шанс лениво создать BattleEngine
   // до входа Socket.IO в комнату матча.
-  loadBattleState().finally(() => initSocketIO());
+  loadBattleState().then((loaded) => {
+    if (loaded && !arenaLaunchBlocked) initSocketIO();
+  });
   startArenaHealthMonitor();
   
   // Привязываем обработчики UI
@@ -852,6 +3131,73 @@ document.addEventListener('DOMContentLoaded', () => {
   // Инициализируем фоновую музыку (запускается по первому клику)
   initArenaMusic();
 });
+
+function normalizeArenaMatchId(value) {
+  return typeof value === 'string' ? value.trim() : value;
+}
+
+function isInvalidArenaMatchId(value) {
+  if (typeof value !== 'string') return true;
+  const normalized = value.trim().toLowerCase();
+  return !normalized || ['null', 'undefined', 'none', 'nan'].includes(normalized);
+}
+
+function isArenaTelegramRuntime(tg) {
+  return !!(
+    tg
+    && (
+      (typeof tg.initData === 'string' && tg.initData.length > 0)
+      || !!tg.initDataUnsafe?.user
+    )
+  );
+}
+
+function isUnsupportedExternalArenaBrowser(urlParams, tg) {
+  if (isArenaAndroidShell()) return false;
+  if (urlParams?.get('ea_platform') === 'android_app') return false;
+  if (isArenaTelegramRuntime(tg)) return false;
+  return true;
+}
+
+function showArenaLaunchError(title, message) {
+  arenaLaunchBlocked = true;
+  const shell = document.getElementById('arena-battlefield-container');
+  const overlay = document.getElementById('arena-launch-error');
+  const titleEl = document.getElementById('arena-launch-error-title');
+  const textEl = document.getElementById('arena-launch-error-text');
+  const backBtn = document.getElementById('arena-launch-error-back');
+  const closeBtn = document.getElementById('arena-launch-error-close');
+
+  if (shell) {
+    shell.setAttribute('aria-hidden', 'true');
+    shell.classList.add('is-launch-blocked');
+  }
+  if (titleEl) titleEl.textContent = title || 'Арена недоступна';
+  if (textEl) textEl.textContent = message || 'Не удалось открыть бой.';
+  if (overlay) {
+    overlay.classList.add('is-visible');
+    overlay.setAttribute('aria-hidden', 'false');
+  }
+
+  const goBack = () => window.location.replace('/');
+  if (backBtn && !backBtn.__arenaLaunchBackHandler) {
+    backBtn.__arenaLaunchBackHandler = goBack;
+    backBtn.addEventListener('click', goBack);
+  }
+  if (closeBtn && !closeBtn.__arenaLaunchCloseHandler) {
+    closeBtn.__arenaLaunchCloseHandler = () => {
+      const tg = window.Telegram?.WebApp;
+      try {
+        if (tg?.close) {
+          tg.close();
+          return;
+        }
+      } catch (_) {}
+      goBack();
+    };
+    closeBtn.addEventListener('click', closeBtn.__arenaLaunchCloseHandler);
+  }
+}
 
 // ============================================
 // SOCKET.IO
@@ -870,7 +3216,7 @@ function initSocketIO() {
   socket.on('connect', () => {
     console.log('[SOCKET.IO] Подключено! Socket ID:', socket.id);
     clearArenaConnectionIssue();
-    emitJoinMatch();
+    emitJoinMatch({ force: true });
     
     // ВАЖНО: НЕ отправляем client_ready здесь
     // Сигнал будет отправлен после успешной загрузки состояния боя в loadBattleState()
@@ -878,6 +3224,7 @@ function initSocketIO() {
   
   socket.on('disconnect', (reason) => {
     console.warn('[SOCKET.IO] Отключено:', reason);
+    socketJoined = false;
     markArenaConnectionFailure();
   });
 
@@ -901,6 +3248,7 @@ function initSocketIO() {
   
   socket.on('joined_match', (data) => {
     console.log('[SOCKET.IO] Вступили в матч:', data);
+    clientReadySent = false;
     socketJoined = true;
     if (socketJoinRetryTimer) {
       clearTimeout(socketJoinRetryTimer);
@@ -908,6 +3256,7 @@ function initSocketIO() {
     }
     
     trySendClientReady();
+    emitTalkieSettings();
   });
   
   socket.on('client_ready_ack', (data) => {
@@ -922,6 +3271,12 @@ function initSocketIO() {
   socket.on('match_ready', (data) => {
     console.log('[SOCKET.IO] match_ready получено:', data);
     handleStateChanged(data);
+  });
+
+  socket.on('match_terminated', (data) => {
+    console.log('[SOCKET.IO] match_terminated получено:', data);
+    enterArenaTerminalState();
+    handleMatchTerminated(data || {});
   });
   
   // События боя
@@ -997,14 +3352,31 @@ function initSocketIO() {
     console.log('[SOCKET.IO] game_over получено:', data);
     handleGameOver(data);
   });
+
+  socket.on('battle_talkie', (data) => {
+    console.log('[SOCKET.IO] battle_talkie получено:', data);
+    if (isOnboardingTutorialState()) return;
+    showTalkieFullscreen(data);
+  });
+
+  socket.on('battle_talkie_ack', (data) => {
+    console.log('[SOCKET.IO] battle_talkie_ack получено:', data);
+    handleTalkieAck(data || {});
+  });
+
+  socket.on('battle_talkie_settings_ack', (data) => {
+    console.log('[SOCKET.IO] battle_talkie_settings_ack получено:', data);
+    handleTalkieSettingsAck(data || {});
+  });
   
    // Очищаем кеш результата при старте нового матча
   window.__battleResultEconomy = null;
   window.__resultModalShown = false;
 }
 
-function emitJoinMatch() {
-  if (!socket || !socket.connected || socketJoined) return;
+function emitJoinMatch(options = {}) {
+  const force = options.force === true;
+  if (arenaTerminalState || !socket || !socket.connected || (socketJoined && !force)) return;
   socket.emit('join_match', {
     match_id: matchId,
     _auth: authToken
@@ -1012,9 +3384,11 @@ function emitJoinMatch() {
 }
 
 function scheduleJoinRetry() {
+  if (arenaTerminalState) return;
   if (socketJoinRetryTimer) return;
   socketJoinRetryTimer = setTimeout(async () => {
     socketJoinRetryTimer = null;
+    if (arenaTerminalState) return;
     try {
       await loadBattleState();
     } finally {
@@ -1112,6 +3486,10 @@ function handleStateChanged(eventData) {
   console.log(`[ARENA] ⏰ TIMER: turn_time_remaining=${newState.turn_time_remaining}, turn_duration=${newState.turn_duration}`);
 
   if (!prebattleComplete) {
+    if (shouldBypassPrebattleForOnboarding(newState)) {
+      enterOnboardingBattleWithoutPrebattle(newState);
+      return;
+    }
     currentState = newState;
     pendingInitialBattleState = newState;
     if (!prebattleRendered) {
@@ -1134,6 +3512,7 @@ function handleStateChanged(eventData) {
   }
   
   currentState = newState;
+  processArenaSoundEvents(eventData.sound_events || eventData.result?.sound_events || []);
   renderBattleState(newState);
   
   // ИСПРАВЛЕНО: Если ход изменился, гарантируем обновление таймера после рендера
@@ -1150,7 +3529,7 @@ async function loadBattleState() {
   try {
     console.log('[ARENA] Загрузка состояния боя...');
     
-    const response = await fetch(`/api/battle/state?_auth=${encodeURIComponent(authToken)}&match_id=${matchId}`);
+    const response = await fetch(buildArenaAuthUrl(`/api/battle/state?match_id=${encodeURIComponent(matchId)}`));
     
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -1161,6 +3540,10 @@ async function loadBattleState() {
     
     currentState = state;
     pendingInitialBattleState = state;
+    if (shouldBypassPrebattleForOnboarding(state)) {
+      enterOnboardingBattleWithoutPrebattle(state);
+      return true;
+    }
     if (!prebattleRendered) {
       renderPrebattleScreen(state);
     }
@@ -1170,10 +3553,19 @@ async function loadBattleState() {
       pendingInitialBattleState = null;
       renderBattleState(state);
     }
+    return true;
     
   } catch (error) {
     console.error('[ARENA] Ошибка загрузки состояния боя:', error);
+    if (!currentState) {
+      showArenaLaunchError(
+        'Бой не загружен',
+        'Не удалось получить состояние боя. Вернитесь в меню и попробуйте начать матч заново.'
+      );
+      return false;
+    }
     alert('Не удалось загрузить бой: ' + error.message);
+    return false;
   }
 }
 
@@ -1308,12 +3700,15 @@ function renderBattleState(state) {
   
   // Обновляем индикатор хода
   updateTurnIndicator(state);
+  maybePlayPlayerTurnStartSfx(state);
   
   // Обновляем таймер
   updateTurnTimer(state);
+  updateTalkieAvailability(state);
 
   // Обновляем лог боя
   updateBattleLog(state.action_history || []);
+  updateOnboardingTutorialFromState(state);
   
   // КРИТИЧНО: Восстанавливаем подсветку целей при режиме TARGETING после полной перерисовки
   if (interactionMode.type === 'TARGETING') {
@@ -1324,6 +3719,11 @@ function renderBattleState(state) {
   
   // КРИТИЧНО: Проверяем завершение игры и показываем финальный экран
   if (state.is_ended === true || state.game_over === true) {
+    if (state.is_onboarding_tutorial) {
+      console.log('[ARENA] Учебный бой завершен, оставляем победный onboarding overlay');
+      return;
+    }
+    enterArenaTerminalState();
     // ⛔ Не перезаписываем результат, если game_over уже обработан с реальной экономикой
     if (window.__resultModalShown) {
       console.log('[ARENA] 🚫 game_over уже обработан, игнорируем late state_changed');
@@ -1530,16 +3930,16 @@ function applyModeUi(state) {
 
 function renderSuddenDeathBadges(state) {
   const sd = state && state.sudden_death;
-  updateSuddenDeathBadge('player-hp-block', sd && sd.enabled ? sd.player_next_damage : null);
-  updateSuddenDeathBadge('opponent-hp-block', sd && sd.enabled ? sd.opponent_next_damage : null);
+  updateSuddenDeathBadge('player-hp-block', sd && sd.enabled ? sd.player_turn_damage : null);
+  updateSuddenDeathBadge('opponent-hp-block', sd && sd.enabled ? sd.opponent_turn_damage : null);
 }
 
-function updateSuddenDeathBadge(hpBlockId, nextDamage) {
+function updateSuddenDeathBadge(hpBlockId, turnDamage) {
   const block = document.getElementById(hpBlockId);
   if (!block) return;
 
   let badge = block.querySelector('.mode-hp-burn-badge');
-  if (!nextDamage) {
+  if (!turnDamage) {
     if (badge) badge.remove();
     block.classList.remove('sudden-death-hp');
     return;
@@ -1550,8 +3950,8 @@ function updateSuddenDeathBadge(hpBlockId, nextDamage) {
     badge.className = 'mode-hp-burn-badge';
     block.appendChild(badge);
   }
-  badge.textContent = '-' + nextDamage;
-  badge.title = 'Урон в начале следующего собственного хода';
+  badge.textContent = '-' + turnDamage;
+  badge.title = 'Урон SuddenDeath на этом ходе';
   block.classList.add('sudden-death-hp');
 }
 
@@ -1601,6 +4001,7 @@ function renderPlayerPanel(playerState) {
   const nameText = document.getElementById('player-name-text');
   if (nameText) {
     nameText.textContent = playerState.name || 'Игрок';
+    applyPremiumNicknameVisual(nameText, playerState?.extra_pass || currentState?.extra_pass, playerState?.nickname_glow_disabled);
   }
   
   const avatarLetter = document.getElementById('player-avatar-letter');
@@ -1645,7 +4046,7 @@ function renderPlayerPanel(playerState) {
   // ExtraPass
   const infoBlock = document.querySelector('.player-info-block');
   if (infoBlock) {
-    const hasExtraPass = currentState?.extra_pass === 'active' || playerState?.extra_pass === 'active';
+    const hasExtraPass = isExtraPassVisualMode(currentState?.extra_pass) || isExtraPassVisualMode(playerState?.extra_pass);
     if (hasExtraPass) {
       infoBlock.classList.add('extra-pass-active');
       console.log('[ARENA] 💎 ExtraPass визуал активирован для игрока');
@@ -1729,6 +4130,7 @@ function renderOpponentPanel(opponentState) {
   const nameText = document.getElementById('opponent-name-text');
   if (nameText) {
     nameText.textContent = opponentState.name || 'Оппонент';
+    applyPremiumNicknameVisual(nameText, opponentState?.extra_pass, opponentState?.nickname_glow_disabled);
   }
   
   const avatarLetter = document.getElementById('opponent-avatar-letter');
@@ -1789,7 +4191,7 @@ function renderOpponentPanel(opponentState) {
   
   const opponentInfoIsland = document.querySelector('.opponent-info-island');
   if (opponentInfoIsland) {
-    const hasExtraPass = opponentState?.extra_pass === 'active';
+    const hasExtraPass = isExtraPassVisualMode(opponentState?.extra_pass);
     if (hasExtraPass) {
       opponentInfoIsland.classList.add('extra-pass-active');
       console.log('[ARENA] 💎 ExtraPass визуал активирован для оппонента');
@@ -1843,6 +4245,8 @@ function createHandCardElement(card, index) {
   const cardDiv = document.createElement('div');
   cardDiv.className = 'hand-card';
   cardDiv.dataset.cardId = card.card_id || card.id;
+  cardDiv.dataset.onboardingCardId = card.card_id || card.id;
+  cardDiv.dataset.onboardingTarget = 'hand-card:' + (card.card_id || card.id);
   cardDiv.dataset.index = index;
   cardDiv.dataset.instanceId = card.instance_id || '';
   
@@ -1906,6 +4310,9 @@ function createHandCardElement(card, index) {
     if (mechanics.includes('charge')) {
       cardDiv.classList.add('card-charge');
     }
+    if (mechanics.some(m => m === 'deathrattle' || m.startsWith('deathrattle_'))) {
+      cardDiv.classList.add('card-deathrattle', 'status-deathrattle');
+    }
   }
   
   // ДОБАВЛЕНО: Визуализация заморозки в руке
@@ -1932,24 +4339,6 @@ function createHandCardElement(card, index) {
   }
 
   artWrapper.appendChild(img);
-
-  // Иконки механик — внутри artWrapper, чтобы не выходить за пределы арта
-  if (Array.isArray(mechanics)) {
-    if (mechanics.includes('deathrattle')) {
-      cardDiv.classList.add('card-deathrattle');
-      const drIcon = document.createElement('div');
-      drIcon.className = 'mechanic-icon deathrattle-icon';
-      drIcon.textContent = '💀';
-      artWrapper.appendChild(drIcon);
-    }
-    const hasBC = mechanics.some(m => m.startsWith('battlecry_'));
-    if (hasBC) {
-      const bcIcon = document.createElement('div');
-      bcIcon.className = 'mechanic-icon battlecry-icon';
-      bcIcon.textContent = '🔔';
-      artWrapper.appendChild(bcIcon);
-    }
-  }
 
   cardDiv.appendChild(artWrapper);
   cardDiv.appendChild(manaDiv);
@@ -2044,20 +4433,30 @@ function createHandCardElement(card, index) {
  */
 function addStatusIcons(cardDiv, card) {
   const effectsPath = '../DesignAssets/Arena/CardEffects/';
+  const layer = document.createElement('div');
+  layer.className = 'card-status-layer';
 
-  const createIcon = (typeClass, fileName, posClass) => {
+  const createIcon = (typeClass, fileName, posClass, symbol = '') => {
     const container = document.createElement('div');
     container.className = `status-icon-container ${typeClass} ${posClass}`;
-    const img = document.createElement('img');
-    img.src = effectsPath + fileName;
-    img.className = 'status-icon';
-    img.alt = '';
-    container.appendChild(img);
+    if (symbol) {
+      const symbolEl = document.createElement('span');
+      symbolEl.className = 'status-icon status-icon-symbol';
+      symbolEl.textContent = symbol;
+      container.appendChild(symbolEl);
+    } else {
+      const img = document.createElement('img');
+      img.src = effectsPath + fileName;
+      img.className = 'status-icon';
+      img.alt = '';
+      container.appendChild(img);
+    }
     return container;
   };
+  const mechanics = Array.isArray(card?.mechanics) ? card.mechanics : [];
 
-  cardDiv.appendChild(createIcon('status-icon-shield',  'shield.png',      'icon-top-left'));
-  cardDiv.appendChild(createIcon('status-icon-taunt',   'provocation.png', 'icon-bottom-right'));
+  layer.appendChild(createIcon('status-icon-shield',  'shield.png',      'icon-top-left'));
+  layer.appendChild(createIcon('status-icon-taunt',   'provocation.png', 'icon-side-right'));
 
   const frozenIcon = createIcon('status-icon-frozen', 'freeze.png', 'icon-top-right');
   if (card && card.is_frozen) {
@@ -2066,11 +4465,15 @@ function addStatusIcons(cardDiv, card) {
     counter.textContent = card.freeze_turns || "1";
     frozenIcon.appendChild(counter);
   }
-  cardDiv.appendChild(frozenIcon);
+  layer.appendChild(frozenIcon);
 
-  cardDiv.appendChild(createIcon('status-icon-asleep', 'asleep.png', 'icon-top-center'));
-  cardDiv.appendChild(createIcon('status-icon-target', 'target.png', 'icon-center'));
-  cardDiv.appendChild(createIcon('status-icon-heal',   'toHeal.png', 'icon-center'));
+  layer.appendChild(createIcon('status-icon-asleep', 'asleep.png', 'icon-top-center'));
+  if (mechanics.some(m => m === 'deathrattle' || m.startsWith('deathrattle_'))) {
+    layer.appendChild(createIcon('status-icon-deathrattle', '', 'icon-side-left', '💀'));
+  }
+  layer.appendChild(createIcon('status-icon-target', 'target.png', 'icon-center'));
+  layer.appendChild(createIcon('status-icon-heal',   'toHeal.png', 'icon-center'));
+  cardDiv.appendChild(layer);
 }
 
 // ============================================
@@ -2121,6 +4524,10 @@ function createBoardCardElement(card, side) {
   cardDiv.className = 'board-unit-card';
   cardDiv.dataset.instanceId = card.instance_id;
   cardDiv.dataset.ownerId = card.owner_id;
+  cardDiv.dataset.cardId = card.card_id || card.id;
+  cardDiv.dataset.onboardingCardId = card.card_id || card.id;
+  cardDiv.dataset.ownerSide = side;
+  cardDiv.dataset.onboardingTarget = 'board-card:' + (card.card_id || card.id);
   cardDiv.style.overflow = 'visible'; // Позволяем элементам выходить за границы
 
   const cardType = card.card_type || 'warrior';
@@ -2129,6 +4536,10 @@ function createBoardCardElement(card, side) {
   }
   if (isPowerMaxMode()) {
     cardDiv.classList.add('mode-powermax-card');
+  }
+  const unitHpValue = Math.max(0, Number(card.hp ?? card.hp_current ?? card.health ?? 0) || 0);
+  if (unitHpValue <= 0) {
+    cardDiv.classList.add('unit-defeated', 'card-disabled-board');
   }
   
   // LEGAL ACTIONS: Определяем, может ли юнит атаковать
@@ -2167,6 +4578,9 @@ function createBoardCardElement(card, side) {
     if (mechanics.includes('charge')) {
       cardDiv.classList.add('card-charge');
     }
+    if (mechanics.some(m => m === 'deathrattle' || m.startsWith('deathrattle_'))) {
+      cardDiv.classList.add('card-deathrattle', 'status-deathrattle');
+    }
   }
   
   // Враппер для арта
@@ -2187,24 +4601,6 @@ function createBoardCardElement(card, side) {
   }
   
   artWrapper.appendChild(img);
-
-  // Иконки механик — внутри artWrapper, чтобы не выходить за пределы арта
-  if (Array.isArray(mechanics)) {
-    if (mechanics.includes('deathrattle')) {
-      cardDiv.classList.add('card-deathrattle');
-      const drIcon = document.createElement('div');
-      drIcon.className = 'mechanic-icon deathrattle-icon';
-      drIcon.textContent = '💀';
-      artWrapper.appendChild(drIcon);
-    }
-    const hasBC = mechanics.some(m => m.startsWith('battlecry_'));
-    if (hasBC) {
-      const bcIcon = document.createElement('div');
-      bcIcon.className = 'mechanic-icon battlecry-icon';
-      bcIcon.textContent = '🔔';
-      artWrapper.appendChild(bcIcon);
-    }
-  }
 
   cardDiv.appendChild(artWrapper);
 
@@ -2235,7 +4631,7 @@ function createBoardCardElement(card, side) {
     
     const hpDiv = document.createElement('div');
     hpDiv.className = 'unit-stat health';
-    const hpValue = card.hp || card.hp_current || 0;
+    const hpValue = unitHpValue;
     hpDiv.textContent = hpValue;
     
     const instanceId = String(card.instance_id);
@@ -2257,15 +4653,6 @@ function createBoardCardElement(card, side) {
   nameLabel.textContent = card.name || 'Юнит';
   cardDiv.appendChild(nameLabel);
   
-  // Status overlay icons (attack target, freeze, etc.)
-  const soAttack = document.createElement('div');
-  soAttack.className = 'status-overlay-icon so-attack-target';
-  const soAttackImg = document.createElement('img');
-  soAttackImg.src = '../DesignAssets/Arena/CardEffects/target.png';
-  soAttackImg.alt = 'target';
-  soAttack.appendChild(soAttackImg);
-  cardDiv.appendChild(soAttack);
-
   // Если это карта игрока, разрешаем атаку
   if (side === 'player' && card.can_attack) {
     cardDiv.style.cursor = 'pointer';
@@ -2388,6 +4775,7 @@ function updateTurnTimer(state) {
   if (turnChanged || timeExpired) {
     console.log(`[ARENA] ⏰ Ход изменился: ${lastTurnNumber} -> ${state.turn}, или время истекло. НЕМЕДЛЕННЫЙ сброс таймера до ${turnDuration}с`);
     timeRemaining = turnDuration;
+    lastLowTimeTickSfxKey = '';
   }
   lastTurnNumber = state.turn;
   
@@ -2408,6 +4796,7 @@ function updateTurnTimer(state) {
   } else if (timeRemaining <= 10) {
     timerContainer.classList.add('timer-warning');
   }
+  maybePlayLowTimeTickSfx(state, timeRemaining);
   
   // Функция обновления таймера каждую секунду
   const updateTimer = () => {
@@ -2425,6 +4814,7 @@ function updateTurnTimer(state) {
     } else if (timeRemaining <= 10) {
       timerContainer.classList.add('timer-warning');
     }
+    maybePlayLowTimeTickSfx(state, timeRemaining);
     
     if (timeRemaining <= 0) {
       clearInterval(timerInterval);
@@ -2440,6 +4830,32 @@ function updateTurnTimer(state) {
 // DRAG & DROP КАРТ
 // ============================================
 
+function showArenaTargetHintForCard(card, index) {
+  const mechanics = Array.isArray(card?.mechanics) ? card.mechanics : [];
+  const cardContext = { ...card, handIndex: index };
+  for (const mechanic of mechanics) {
+    const text = resolveArenaCardText('targeting', cardContext, { mechanic });
+    if (text && text.type === 'targetHint') {
+      return showArenaTargetHint(text, { ...cardContext, mechanic });
+    }
+  }
+  hideArenaTargetHint();
+  return false;
+}
+
+function showArenaAttackHintForCard(card) {
+  const mechanics = Array.isArray(card?.mechanics) ? card.mechanics : [];
+  const cardContext = { ...card };
+  for (const mechanic of mechanics) {
+    const text = resolveArenaCardText('attackTargeting', cardContext, { mechanic });
+    if (text && text.type === 'targetHint') {
+      return showArenaTargetHint(text, { ...cardContext, mechanic });
+    }
+  }
+  hideArenaTargetHint();
+  return false;
+}
+
 function handleCardDragStart(e, card, index) {
   console.log('[ARENA] Начало перетаскивания карты:', card);
   if (!currentState?.is_my_turn || !canPlayCard(index) || !hasEnoughManaForCard(card)) {
@@ -2451,6 +4867,7 @@ function handleCardDragStart(e, card, index) {
   selectedCard = { card, index };
   arenaHaptic('selection', { key: 'card-pick', minInterval: 90 });
   playArenaSfx('cardSelected', { volume: 0.62 });
+  renderOnboardingTutorialLayer();
   e.currentTarget.classList.add('dragging');
   
   // Получаем возможные цели для этой карты
@@ -2470,6 +4887,7 @@ function handleCardDragStart(e, card, index) {
     };
     
     highlightValidTargets(playActions);
+    showArenaTargetHintForCard(card, index);
     
     // Добавляем обработчики для drop на валидные цели
     document.querySelectorAll('.targetable-enemy, .targetable-friendly').forEach(el => {
@@ -2573,6 +4991,7 @@ function handlePotionTargetDrop(e) {
   } else {
     playCard(card, null, targetId, false);
   }
+  hideArenaTargetHint();
   selectedCard = null;
 }
 
@@ -2596,6 +5015,7 @@ function handlePotionHeroDrop(e) {
   } else {
     playCard(card, null, heroId, true);
   }
+  hideArenaTargetHint();
   selectedCard = null;
 }
 
@@ -2620,6 +5040,7 @@ function handleCardClick(card, index, cardEl) {
   selectedCard = { card, index };
   arenaHaptic('selection', { key: 'card-pick', minInterval: 90 });
   playArenaSfx('cardSelected', { volume: 0.62 });
+  renderOnboardingTutorialLayer();
   
   // Получаем возможные цели для этой карты
   const playActions = getPlayCardTargets(index);
@@ -2641,6 +5062,7 @@ function handleCardClick(card, index, cardEl) {
     
     // Подсвечиваем валидные цели из legal_actions
     highlightValidTargets(playActions);
+    showArenaTargetHintForCard(card, index);
     
     // Если выбор цели НЕ обязателен (например, Геральт), разрешаем также клик по пустой клетке
     if (!requiresTarget) {
@@ -3056,6 +5478,8 @@ function handleAttackerClick(attackerCard) {
   
   // LEGAL ACTIONS: Подсвечиваем только валидные цели атаки
   highlightAttackTargets(attackerCard.instance_id);
+  showArenaAttackHintForCard(attackerCard);
+  renderOnboardingTutorialLayer();
   
   console.log('[ARENA] ⚔️ Режим атаки активирован - выберите цель');
 }
@@ -3068,6 +5492,7 @@ function resetInteractionMode() {
   
   // Убираем класс targeting-active с body
   document.body.classList.remove('targeting-active');
+  hideArenaTargetHint();
   
   interactionMode = { type: 'NONE', data: null };
   selectedCard = null;
@@ -3107,13 +5532,29 @@ async function playCard(card, position, targetId = null, targetIsHero = false) {
     // Определяем индекс карты в руке
     const handIndex = selectedCard?.index ?? card.handIndex ?? 0;
     console.log('[ARENA] Розыгрыш карты:', card.name, 'hand_index:', handIndex, 'на позицию:', position, 'цель:', targetId);
+
+    if (isOnboardingTutorialState()) {
+      const allowed = getOnboardingAllowedAction();
+      if (allowed.type !== 'play_card') {
+        showOnboardingTutorialFeedback(getOnboardingGenericFeedback());
+        return;
+      }
+      await sendOnboardingTutorialAction({
+        type: 'play_card',
+        hand_index: handIndex,
+        card_id: card.card_id || card.id || card.instance_id,
+        target_position: position,
+        target_id: targetId,
+        target_is_hero: Boolean(targetIsHero)
+      }, 'Не удалось разыграть учебную карту');
+      return;
+    }
     
-    const response = await fetch('/api/battle/play-card', {
+    const response = await fetch(buildArenaAuthUrl('/api/battle/play-card'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         match_id: matchId,
-        _auth: authToken,
         hand_index: handIndex,
         card_id: card.card_id || card.id || card.instance_id,
         target_position: position,
@@ -3133,18 +5574,22 @@ async function playCard(card, position, targetId = null, targetIsHero = false) {
     // Обновляем состояние
     if (result.state) {
       arenaHaptic('medium', { key: 'play-card-ok', minInterval: 140 });
+      processArenaSoundEvents(result.sound_events || result.result?.sound_events || []);
       currentState = result.state;
       renderBattleState(result.state);
       
       // Рендерим поля для обоих игроков
       renderBoard('player', (currentState.player || currentState).board || []);
       renderBoard('opponent', (currentState.opponent || currentState).board || []);
+      handleOnboardingActionPayload(result);
     }
     
   } catch (error) {
     console.error('[ARENA] Ошибка розыгрыша карты:', error);
     arenaHaptic('error', { key: 'play-card-error', minInterval: 220 });
-    alert('Не удалось разыграть карту: ' + error.message);
+    if (!handleOnboardingActionError(error)) {
+      alert('Не удалось разыграть карту: ' + error.message);
+    }
   }
 }
 
@@ -3168,12 +5613,11 @@ async function playPotionCard(card, targetId, targetIsHero) {
     // Находим карту в руке для анимации исчезновения
     const handCard = document.querySelector(`.hand-card[data-index="${handIndex}"]`);
     
-    const response = await fetch('/api/battle/play-card', {
+    const response = await fetch(buildArenaAuthUrl('/api/battle/play-card'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         match_id: matchId,
-        _auth: authToken,
         hand_index: handIndex,
         card_id: card.card_id || card.id || card.instance_id,
         target_id: targetId,
@@ -3212,18 +5656,22 @@ async function playPotionCard(card, targetId, targetIsHero) {
     setTimeout(() => {
       if (result.state) {
         arenaHaptic('medium', { key: 'play-card-ok', minInterval: 140 });
+        processArenaSoundEvents(result.sound_events || result.result?.sound_events || []);
         currentState = result.state;
         renderBattleState(result.state);
 
         // ДОБАВЛЕНО: Принудительная перерисовка для обновления статуса атаки
         renderBoard('player', (currentState.player || currentState).board || []);
+        handleOnboardingActionPayload(result);
       }
     }, 400);
     
   } catch (error) {
     console.error('[ARENA] Ошибка розыгрыша зелья:', error);
     arenaHaptic('error', { key: 'play-card-error', minInterval: 220 });
-    alert('Не удалось разыграть зелье: ' + error.message);
+    if (!handleOnboardingActionError(error)) {
+      alert('Не удалось разыграть зелье: ' + error.message);
+    }
   }
 }
 
@@ -3270,13 +5718,27 @@ async function attack(attackerId, targetId, targetIsHero) {
   
   try {
     console.log('[ARENA] Атака:', attackerId, '->', targetIsHero ? 'герой' : targetId);
+
+    if (isOnboardingTutorialState()) {
+      const allowed = getOnboardingAllowedAction();
+      if (allowed.type !== 'attack') {
+        showOnboardingTutorialFeedback(getOnboardingGenericFeedback());
+        return;
+      }
+      await sendOnboardingTutorialAction({
+        type: 'attack',
+        attacker_id: attackerId,
+        target_id: targetId,
+        target_is_hero: Boolean(targetIsHero)
+      }, 'Не удалось выполнить учебную атаку');
+      return;
+    }
     
-    const response = await fetch('/api/battle/attack', {
+    const response = await fetch(buildArenaAuthUrl('/api/battle/attack'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         match_id: matchId,
-        _auth: authToken,
         attacker_id: attackerId,
         target_id: targetId,
         target_is_hero: targetIsHero,
@@ -3294,18 +5756,22 @@ async function attack(attackerId, targetId, targetIsHero) {
     // Обновляем состояние
     if (result.state) {
       arenaHaptic('medium', { key: 'attack-ok', minInterval: 140 });
+      processArenaSoundEvents(result.sound_events || result.result?.sound_events || []);
       currentState = result.state;
       renderBattleState(result.state);
       
       // Рендерим поля для обоих игроков
       renderBoard('player', (currentState.player || currentState).board || []);
       renderBoard('opponent', (currentState.opponent || currentState).board || []);
+      handleOnboardingActionPayload(result);
     }
     
   } catch (error) {
     console.error('[ARENA] Ошибка атаки:', error);
     arenaHaptic('error', { key: 'attack-error', minInterval: 220 });
-    alert('Не удалось атаковать: ' + error.message);
+    if (!handleOnboardingActionError(error)) {
+      alert('Не удалось атаковать: ' + error.message);
+    }
   }
 }
 
@@ -3322,14 +5788,23 @@ async function endTurn() {
   try {
     console.log('[ARENA] Завершение хода');
     arenaHaptic('selection', { key: 'end-turn', minInterval: 120 });
+
+    if (isOnboardingTutorialState()) {
+      const allowed = getOnboardingAllowedAction();
+      if (allowed.type !== 'end_turn') {
+        showOnboardingTutorialFeedback(getOnboardingGenericFeedback());
+        return;
+      }
+      await sendOnboardingTutorialAction({ type: 'end_turn' }, 'Не удалось завершить учебный ход');
+      return;
+    }
     playArenaSfx('nextMove', { volume: 0.7 });
     
-    const response = await fetch('/api/battle/end-turn', {
+    const response = await fetch(buildArenaAuthUrl('/api/battle/end-turn'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         match_id: matchId,
-        _auth: authToken,
         client_action_id: makeClientActionId('end_turn')
       })
     });
@@ -3345,18 +5820,22 @@ async function endTurn() {
     if (result.state) {
       currentState = result.state;
       renderBattleState(result.state);
+      handleOnboardingActionPayload(result);
     }
     
   } catch (error) {
     console.error('[ARENA] Ошибка завершения хода:', error);
     arenaHaptic('error', { key: 'end-turn-error', minInterval: 220 });
-    alert('Не удалось завершить ход: ' + error.message);
+    if (!handleOnboardingActionError(error)) {
+      alert('Не удалось завершить ход: ' + error.message);
+    }
   }
 }
 
 async function surrender() {
   try {
     console.log('[ARENA] Сдача через Socket.IO');
+    window.__arenaSurrenderRequested = true;
     arenaHaptic('error', { key: 'surrender-confirm', minInterval: 260 });
     
     // Отправляем событие сдачи через Socket.IO
@@ -3412,8 +5891,15 @@ async function surrender() {
 // ЗАВЕРШЕНИЕ ИГРЫ
 // ============================================
 
+function handleMatchTerminated(data = {}) {
+  const state = data.state || data.state_p1 || null;
+  if (state) currentState = state;
+  handleGameOver(data);
+}
+
 function handleGameOver(data) {
   console.log('[ARENA] 🏁 Игра завершена:', data);
+  enterArenaTerminalState();
   
   // Останавливаем таймер
   if (timerInterval) {
@@ -3506,6 +5992,13 @@ function showBattleResult(outcome, trophyDelta, trophyTotal, coinsDelta, coinsTo
   if (!window.__arenaBattleResultHaptic) {
     window.__arenaBattleResultHaptic = true;
     arenaHaptic(isWinner ? 'success' : (isDraw ? 'warning' : 'error'), { key: 'battle-result-' + outcome, minInterval: 500 });
+  }
+  if (!window.__arenaBattleResultSfx) {
+    const resultSfx = getBattleResultSfx(outcome);
+    if (resultSfx) {
+      window.__arenaBattleResultSfx = true;
+      playArenaSfx(resultSfx, { volume: 0.72 });
+    }
   }
   console.log('[ARENA] 🎬 showBattleResult called:', {
     outcome, trophyDelta, trophyTotal, coinsDelta, coinsTotal, starsDelta, starsTotal,
@@ -3955,8 +6448,10 @@ function openCardInfo(card) {
 
   const mechEl = document.getElementById('card-info-mechanics');
   mechEl.innerHTML = '';
-  const mechanics = card.mechanics || [];
+  const mechanics = Array.isArray(card.mechanics) ? card.mechanics : [];
+  let hasMechanicDetails = false;
   const addMechanicDetail = function(title, description, kind, iconPath) {
+    hasMechanicDetails = true;
     const row = document.createElement('div');
     row.className = 'mechanic-detail-row';
 
@@ -3995,6 +6490,7 @@ function openCardInfo(card) {
       addMechanicDetail(parsed.label, parsed.description, parsed.kind, getMechanicIconPath(m, parsed));
     });
   }
+  modal.classList.toggle('no-mechanics', !hasMechanicDetails);
   
   openBattleModal('card-info');
 }
@@ -4051,6 +6547,10 @@ function initSurrenderHold() {
   function start(e) {
     e.preventDefault();
     e.stopPropagation(); // не даём всплыть до player-panel-root (режим TARGETING)
+    if (isOnboardingTutorialState()) {
+      showOnboardingTutorialFeedback(getOnboardingTutorial()?.wrong_action_feedback?.tutorial_lock || 'Этот бой учебный. Действуем по плану.');
+      return;
+    }
     triggered = false;
     holdStart = performance.now();
     btn.classList.add('holding');
@@ -4137,7 +6637,7 @@ function openOpponentInfo() {
 function initArenaMusic() {
   const urlParams = new URLSearchParams(location.search);
   window._musicEnabled = urlParams.get('music') !== '0';
-  window._sfxEnabled = urlParams.get('sfx') !== '0';
+  window._sfxEnabled = urlParams.has('sfx') ? urlParams.get('sfx') !== '0' : window._sfxEnabled !== false;
   initArenaSfx();
 
   const music = document.getElementById('arena-bg-music');
@@ -4253,7 +6753,7 @@ function initArenaMusic() {
  * Поддерживает форматы:
  *   - single: taunt, shield, charge, lifesteal, delete_target, ...
  *   - prefix_N: regen_1, armor_2, reflect_2, aura_atk_1, ...
- *   - prefix_X_Y: cleave_1_3, aura_atk_1_3, armor_1_3, battlecry_buff_2_3, ...
+ *   - prefix_X_Y: cleave_1_2, aura_atk_1_3, armor_1_3, battlecry_buff_2_3, ...
  *   - compound_word_N: deathrattle_aoe_damage_3, battlecry_heal_hero_2, ...
  * @param {string} mechanic
  * @returns {{label: string, value: string, description: string, kind: string}|null}
@@ -4369,8 +6869,10 @@ function parseMechanic(mechanic) {
   if (m === 'charge') return { label: 'Рывок', value: '', description: 'Может атаковать в первый ход', kind: 'status' };
   if (m === 'lifesteal') return { label: 'Вампиризм', value: '', description: 'Лечит героя на величину нанесённого урона', kind: 'passive' };
   if (m === 'freeze') return { label: 'Заморозка', value: '', description: 'Пропускает готовность к атаке', kind: 'status' };
-  if (m === 'aoe_freeze') return { label: 'Массовая заморозка', value: '', description: 'Замораживает всех врагов при розыгрыше', kind: 'battlecry' };
-  if (m === 'instant_kill') return { label: 'Мгновенное убийство', value: '', description: 'Уничтожает цель независимо от здоровья', kind: 'passive' };
+  if (m === 'aoe_freeze') return { label: 'Массовая заморозка', value: '', description: 'Замораживает до 3 врагов при розыгрыше', kind: 'battlecry' };
+  if (m === 'desk_freeze') return { label: 'Заморозка доски', value: '', description: 'Замораживает всю вражескую доску', kind: 'battlecry' };
+  if (m === 'instant_kill') return { label: 'Мгновенное убийство', value: '', description: 'Один раз уничтожает выбранную цель; щит блокирует удар', kind: 'passive' };
+  if (m === 'unit_killer') return { label: 'Убийца юнитов', value: '', description: 'Уничтожает каждого атакованного юнита; щит блокирует удар', kind: 'passive' };
   if (m === 'bypass_taunt') return { label: 'Обход провокации', value: '', description: 'Может игнорировать провокацию', kind: 'passive' };
   if (m === 'consume_ally') return { label: 'Поглощение союзника', value: '', description: 'Уничтожает союзника и получает его статы', kind: 'battlecry' };
   if (m === 'choose_shield_damage') return { label: 'Выбор: щит или урон', value: '', description: 'При розыгрыше: щит союзнику или урон врагу', kind: 'battlecry' };
@@ -5134,6 +7636,11 @@ function closeSurrenderModal() {
 }
 
 window.ExtraArenaAppBack = function() {
+  if (arenaLaunchBlocked) {
+    window.location.replace('/');
+    return true;
+  }
+
   const resultModal = document.getElementById('battle-result-modal');
   if (resultModal && resultModal.getAttribute('aria-hidden') !== 'true' && resultModal.style.display !== 'none') {
     window.location.replace('/');

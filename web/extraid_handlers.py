@@ -52,6 +52,32 @@ def _check_rate_limit(key: str, max_requests: int, window_seconds: int) -> bool:
     _rate_limit_store[key].append(now)
     return True
 
+
+async def _check_rate_limit_for_request(
+    request: web.Request,
+    key: str,
+    max_requests: int,
+    window_seconds: int,
+) -> bool:
+    extraid_db = _get_extraid_db(request)
+    shared_limiter = getattr(extraid_db, "check_rate_limit", None)
+    if shared_limiter is not None:
+        return bool(await shared_limiter(key, max_requests, window_seconds))
+    if get_settings().environment != "development":
+        raise RuntimeError("ExtraID shared rate limit backend is required outside development.")
+    return _check_rate_limit(key, max_requests, window_seconds)
+
+
+def _bearer_token_from_request(request: web.Request) -> str:
+    authorization = str((getattr(request, "headers", {}) or {}).get("Authorization") or "").strip()
+    if authorization.lower().startswith("bearer "):
+        return authorization[7:].strip()
+    return ""
+
+
+def _looks_like_jwt_bearer(value: str) -> bool:
+    return bool(re.fullmatch(r"[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+", str(value or "").strip()))
+
 # Import server auth utilities from the parent module
 # These will be set at registration time
 
@@ -134,11 +160,7 @@ async def _require_jwt_user_id_from_request(request: web.Request, data: dict[str
     extraid_db = _get_extraid_db(request)
     settings = get_settings()
     data = data or {}
-    headers = getattr(request, "headers", {}) or {}
-    auth_header = headers.get("Authorization", "")
-    bearer = ""
-    if auth_header.lower().startswith("bearer "):
-        bearer = auth_header[7:].strip()
+    bearer = _bearer_token_from_request(request)
     token = (
         bearer
         or str(data.get("auth") or "").strip()
@@ -218,15 +240,31 @@ async def extraid_register_handler(request: web.Request) -> web.Response:
             if existing_nick:
                 return web.json_response({"error": "nickname_taken"}, status=409)
 
+        bearer_auth = _bearer_token_from_request(request)
         tg_auth = request.rel_url.query.get("_auth")
         user_id = None
         auth_source = "email_registration"
-        if tg_auth:
+        if bearer_auth:
+            jwt_result = await _verify_jwt_token_async_fn(bearer_auth, extraid_db, settings)
+            if jwt_result:
+                user_id = jwt_result[0]
+                auth_source = "extraid_mobile" if client in {"android", "android_app", "mobile", "mobile_app"} else "email_registration"
+                existing_extra = await extraid_db.get_extra_account_by_user_id(user_id)
+                if existing_extra:
+                    return web.json_response({
+                        "error": "extraid_already_exists",
+                        "display_id": existing_extra["display_id"],
+                    }, status=409)
+            else:
+                return web.json_response({"error": "invalid_auth"}, status=401)
+        elif tg_auth:
             verified = _verify_init_data_fn(tg_auth, request.app["bot_token"])
             if verified and _validate_auth_date_fn(verified):
                 user_id = _extract_user_id_from_init_data_fn(verified)
                 if user_id:
                     auth_source = "telegram"
+            elif _looks_like_jwt_bearer(tg_auth):
+                return web.json_response({"error": "invalid_auth"}, status=401)
             else:
                 jwt_result = await _verify_jwt_token_async_fn(tg_auth, extraid_db, settings)
                 if jwt_result:
@@ -314,7 +352,7 @@ async def extraid_login_handler(request: web.Request) -> web.Response:
 
         client_key_email = hashlib.sha256(email.encode()).hexdigest()[:16] if email else "empty"
         client_key = f"extraid_login:{getattr(request, 'remote', None) or 'unknown'}:{client_key_email}"
-        if not _check_rate_limit(client_key, 10, 60):
+        if not await _check_rate_limit_for_request(request, client_key, 10, 60):
             return web.json_response({"error": "rate_limited"}, status=429)
 
         extra = await extraid_db.get_extra_account_by_email(email)
@@ -370,7 +408,7 @@ async def anonymous_auth_handler(request: web.Request) -> web.Response:
     settings = get_settings()
 
     client_key = f"anonymous:{getattr(request, 'remote', None) or 'unknown'}"
-    if not _check_rate_limit(client_key, 8, 60):
+    if not await _check_rate_limit_for_request(request, client_key, 8, 60):
         return web.json_response({"error": "rate_limited"}, status=429)
 
     try:
@@ -437,7 +475,7 @@ async def telegram_transfer_request_code_handler(request: web.Request) -> web.Re
         return web.json_response({"error": "invalid_telegram_id"}, status=400)
 
     client_key = f"telegram_transfer_code:{getattr(request, 'remote', None) or 'unknown'}:{telegram_id}"
-    if not _check_rate_limit(client_key, 4, 60):
+    if not await _check_rate_limit_for_request(request, client_key, 4, 60):
         return web.json_response({"error": "rate_limited"}, status=429)
 
     try:
@@ -479,7 +517,7 @@ async def telegram_transfer_complete_handler(request: web.Request) -> web.Respon
     settings = get_settings()
 
     client_key = f"telegram_transfer_complete:{getattr(request, 'remote', None) or 'unknown'}"
-    if not _check_rate_limit(client_key, 8, 60):
+    if not await _check_rate_limit_for_request(request, client_key, 8, 60):
         return web.json_response({"error": "rate_limited"}, status=429)
 
     try:
@@ -522,6 +560,10 @@ async def telegram_transfer_complete_handler(request: web.Request) -> web.Respon
         existing_email = await _get_any_extra_account_by_email(extraid_db, email)
         if existing_email:
             return web.json_response({"error": "email_taken"}, status=409)
+
+        auth_code = await extraid_db.consume_bot_auth_code(code)
+        if not auth_code or int(auth_code["user_id"]) != telegram_id:
+            return web.json_response({"error": "invalid_code"}, status=400)
 
         display_id = _display_id_generator_fn(lambda did: False)
         while await extraid_db.fetchval("SELECT 1 FROM extra_accounts WHERE display_id = $1", display_id):
@@ -588,9 +630,11 @@ async def extraid_link_handler(request: web.Request) -> web.Response:
         return web.json_response({"error": "invalid_json"}, status=400)
 
     try:
-        auth_token = request.rel_url.query.get("_auth") or ""
+        auth_token = _bearer_token_from_request(request)
         tg_init_data = data.get("tg_init_data") or ""
 
+        if not auth_token:
+            return web.json_response({"error": "auth_required"}, status=401)
         jw_result = await _verify_jwt_token_async_fn(auth_token, extraid_db, settings)
         if not jw_result:
             return web.json_response({"error": "invalid_jwt_session"}, status=401)
@@ -598,6 +642,8 @@ async def extraid_link_handler(request: web.Request) -> web.Response:
 
         verified = _verify_init_data_fn(tg_init_data, request.app["bot_token"])
         if not verified:
+            return web.json_response({"error": "invalid_tg_init_data"}, status=400)
+        if not _validate_auth_date_fn(verified):
             return web.json_response({"error": "invalid_tg_init_data"}, status=400)
         tg_user_id = _extract_user_id_from_init_data_fn(verified)
         if not tg_user_id:
@@ -612,6 +658,7 @@ async def extraid_link_handler(request: web.Request) -> web.Response:
         extra = await extraid_db.get_extra_account_by_user_id(jwt_user_id)
         if not extra:
             return web.json_response({"error": "extra_account_not_found"}, status=404)
+        old_user_id = int(extra.get("user_id") or jwt_user_id)
 
         tg_exists = await db.fetchval("SELECT 1 FROM users WHERE user_id = $1", tg_user_id)
         if not tg_exists:
@@ -619,6 +666,9 @@ async def extraid_link_handler(request: web.Request) -> web.Response:
 
         await extraid_db.execute("UPDATE extra_accounts SET user_id = $1 WHERE id = $2", tg_user_id, extra["id"])
         await db.execute("UPDATE users SET extra_account_id = $1, auth_source = 'telegram' WHERE user_id = $2", extra["id"], tg_user_id)
+        if old_user_id != tg_user_id:
+            await db.execute("UPDATE users SET extra_account_id = NULL WHERE user_id = $1", old_user_id)
+            await extraid_db.revoke_all_user_sessions(old_user_id)
 
         return web.json_response({"ok": True, "merged": False, "trophies_transferred": 0})
     except Exception:
@@ -729,7 +779,7 @@ async def auth_sessions_list_handler(request: web.Request) -> web.Response:
     user_id = await require_user_id_fn(request)
 
     current_session_id = None
-    auth_param = request.rel_url.query.get("_auth")
+    auth_param = _bearer_token_from_request(request)
     if auth_param:
         jw = await _verify_jwt_token_async_fn(auth_param, extraid_db, settings)
         if jw:
@@ -764,7 +814,7 @@ async def auth_session_revoke_handler(request: web.Request) -> web.Response:
     except (TypeError, ValueError):
         return web.json_response({"error": "invalid_session_id"}, status=400)
 
-    auth_param = request.rel_url.query.get("_auth")
+    auth_param = _bearer_token_from_request(request)
     if auth_param:
         jw = await _verify_jwt_token_async_fn(auth_param, extraid_db, settings)
         if jw and jw[1] == target_session_id:
@@ -785,7 +835,7 @@ async def auth_session_revoke_handler(request: web.Request) -> web.Response:
 async def auth_logout_handler(request: web.Request) -> web.Response:
     extraid_db = _get_extraid_db(request)
     settings = get_settings()
-    auth_param = request.rel_url.query.get("_auth")
+    auth_param = _bearer_token_from_request(request)
     if not auth_param:
         return web.json_response({"error": "auth_required"}, status=401)
 
@@ -833,7 +883,7 @@ async def analytics_device_handler(request: web.Request) -> web.Response:
     ip_hash = hashlib.sha256(client_ip.encode()).hexdigest()
 
     session_id = None
-    auth_param = request.rel_url.query.get("_auth")
+    auth_param = _bearer_token_from_request(request)
     if auth_param:
         jw = await _verify_jwt_token_async_fn(auth_param, extraid_db, settings)
         if jw:

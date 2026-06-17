@@ -96,7 +96,6 @@ const CASE_REWARD_ICONS = {
   card: "🃏",
   particles: "✨",
   gems: "💎",
-  limited_shards: "🧩",
 };
 
 const CASE_TAP_LIMIT = 4;
@@ -223,7 +222,10 @@ async function startMatchmaking(selectedDeckId = null, mode = 'classic', matchTy
       return;
     }
 
-    const targetUrl = `${window.location.origin}/arena?id=${encodeURIComponent(data.match_id)}&_auth=${encodeURIComponent(authData)}`;
+    const targetUrl = window.location.origin + buildMainArenaRedirectUrl(
+      `/arena?id=${encodeURIComponent(data.match_id)}`,
+      authData
+    );
     console.log(`Redirecting to Arena. Match: ${data.match_id}, url=${targetUrl}`);
 
       try {
@@ -294,6 +296,9 @@ function appendAuthParams(url, authData) {
   if (authData === undefined || authData === null) {
     return url;
   }
+  if (typeof authData === "string" && looksLikeMainJwtBearer(authData) && isSameOriginMainApiPath(url)) {
+    return url;
+  }
   const separator = url.includes("?") ? "&" : "?";
   if (typeof authData === "string") {
     return `${url}${separator}_auth=${encodeURIComponent(authData)}`;
@@ -304,6 +309,145 @@ function appendAuthParams(url, authData) {
   }
   return url;
 }
+
+const MAIN_EXTRA_TOKEN_SESSION_KEY = "extra_id_token";
+
+function looksLikeMainJwtBearer(value) {
+  return typeof value === "string"
+    && /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(value.trim());
+}
+
+function isSameOriginMainApiPath(path) {
+  try {
+    const url = new URL(path, window.location.origin);
+    return url.origin === window.location.origin && url.pathname.startsWith("/api/");
+  } catch (_) {
+    return false;
+  }
+}
+
+function getMainStoredExtraToken() {
+  try {
+    const token = sessionStorage.getItem(MAIN_EXTRA_TOKEN_SESSION_KEY);
+    if (token && token.trim()) return token;
+  } catch (_) {}
+  try {
+    const legacyToken = localStorage.getItem("extra_id_token");
+    if (legacyToken && legacyToken.trim()) {
+      try { sessionStorage.setItem(MAIN_EXTRA_TOKEN_SESSION_KEY, legacyToken); } catch (_) {}
+      try { localStorage.removeItem("extra_id_token"); } catch (_) {}
+      return legacyToken;
+    }
+  } catch (_) {}
+  return null;
+}
+
+function appendMainArenaAudioPreferenceParams(targetUrl) {
+  try {
+    const url = new URL(String(targetUrl || ""), window.location.origin);
+    const isArenaPath = url.pathname === "/arena" || url.pathname.endsWith("/arena");
+    if (!isArenaPath) return targetUrl;
+
+    const currentMusicEnabled = currentSettings && typeof currentSettings.sound_music === "boolean"
+      ? currentSettings.sound_music
+      : window._musicEnabled !== false;
+    const currentSfxEnabled = currentSettings && typeof currentSettings.sound_sfx === "boolean"
+      ? currentSettings.sound_sfx
+      : window._sfxEnabled !== false;
+
+    url.searchParams.set('music', currentMusicEnabled ? '1' : '0');
+    url.searchParams.set('sfx', currentSfxEnabled ? '1' : '0');
+    return url.pathname + url.search + url.hash;
+  } catch (_) {
+    return targetUrl;
+  }
+}
+
+function buildMainArenaRedirectUrl(path, authData) {
+  let targetUrl = String(path || "");
+  targetUrl = appendMainArenaAudioPreferenceParams(targetUrl);
+  if (typeof authData === "string" && authData) {
+    if (looksLikeMainJwtBearer(authData)) {
+      try { sessionStorage.setItem("arena_auth", authData); } catch (_) {}
+      try {
+        const clean = new URL(targetUrl, window.location.origin);
+        clean.searchParams.delete("_auth");
+        targetUrl = clean.pathname + clean.search + clean.hash;
+      } catch (_) {}
+      return targetUrl;
+    }
+    if (!/[?&]_auth=/.test(targetUrl)) {
+      const separator = targetUrl.includes("?") ? "&" : "?";
+      targetUrl += `${separator}_auth=${encodeURIComponent(authData)}`;
+    }
+    return targetUrl;
+  }
+  if (typeof authData === "number") {
+    const separator = targetUrl.includes("?") ? "&" : "?";
+    targetUrl += `${separator}user_id=${encodeURIComponent(authData)}`;
+  }
+  return targetUrl;
+}
+
+(function installMainJwtQueryAuthHeaderBridge() {
+  if (window.__eaMainJwtQueryAuthHeaderBridgeInstalled || typeof window.fetch !== "function") return;
+  window.__eaMainJwtQueryAuthHeaderBridgeInstalled = true;
+  const nativeFetch = window.fetch.bind(window);
+
+  function liftMainJwtAuthFromJsonBody(nextInit, headers) {
+    const body = nextInit.body;
+    if (typeof body !== "string") return null;
+    const contentType = headers.get("Content-Type") || headers.get("content-type") || "";
+    if (contentType && !contentType.toLowerCase().includes("application/json")) return null;
+
+    let payload;
+    try {
+      payload = JSON.parse(body);
+    } catch (_) {
+      return null;
+    }
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+
+    const bodyToken = looksLikeMainJwtBearer(payload._auth)
+      ? payload._auth
+      : looksLikeMainJwtBearer(payload.auth)
+        ? payload.auth
+        : null;
+    if (!bodyToken) return null;
+
+    const sanitized = {...payload};
+    if (looksLikeMainJwtBearer(sanitized._auth)) delete sanitized._auth;
+    if (looksLikeMainJwtBearer(sanitized.auth)) delete sanitized.auth;
+    nextInit.body = JSON.stringify(sanitized);
+    return bodyToken;
+  }
+
+  window.fetch = (input, init) => {
+    try {
+      const originalUrl = typeof input === "string" ? input : input?.url;
+      if (!originalUrl) return nativeFetch(input, init);
+      const url = new URL(originalUrl, window.location.origin);
+      const token = url.searchParams.get("_auth");
+      const nextInit = {...(init || {})};
+      const headers = new Headers(nextInit.headers || (typeof input !== "string" ? input.headers : undefined) || {});
+      const bodyToken = liftMainJwtAuthFromJsonBody(nextInit, headers);
+      const fallbackAuth = !token && !bodyToken ? resolveUserId() : null;
+      const fallbackToken = looksLikeMainJwtBearer(fallbackAuth) ? fallbackAuth : null;
+      const bearerToken = looksLikeMainJwtBearer(token) ? token : (bodyToken || fallbackToken);
+      if (url.origin !== window.location.origin || !url.pathname.startsWith("/api/") || !bearerToken) {
+        return nativeFetch(input, init);
+      }
+
+      if (token) url.searchParams.delete("_auth");
+      if (!headers.has("Authorization")) headers.set("Authorization", `Bearer ${bearerToken}`);
+      nextInit.headers = headers;
+      const nextUrl = url.pathname + url.search + url.hash;
+      return nativeFetch(nextUrl, nextInit);
+    } catch (_) {
+      return nativeFetch(input, init);
+    }
+  };
+})();
 
 // Инициализация Telegram WebApp
 if (tg) {
@@ -323,8 +467,12 @@ if (tg) {
 
 // Display-only: resolves identity for rendering/client use.
 // Auth for API calls should always be the string initData via _auth param.
+function allowLocalDevUserIdAuth() {
+  return ['localhost', '127.0.0.1', '::1'].includes(window.location.hostname);
+}
+
 function resolveUserId() {
-  const jwtToken = localStorage.getItem('extra_id_token');
+  const jwtToken = getMainStoredExtraToken();
   if (jwtToken) return jwtToken;
 
   const urlParams = new URLSearchParams(window.location.search);
@@ -341,7 +489,7 @@ function resolveUserId() {
 
   // Fallback for local testing without Telegram context
   const urlId = urlParams.get("user_id");
-  if (urlId) {
+  if (urlId && allowLocalDevUserIdAuth()) {
     console.log("Используем user_id из URL:", urlId);
     return urlId;
   }
@@ -422,14 +570,16 @@ async function collectDeviceData() {
 }
 
 function saveExtraToken(token) {
-  localStorage.setItem('extra_id_token', token);
+  try { sessionStorage.setItem(MAIN_EXTRA_TOKEN_SESSION_KEY, token); } catch (_) {}
+  try { localStorage.removeItem('extra_id_token'); } catch (_) {}
 }
 function clearExtraToken() {
-  localStorage.removeItem('extra_id_token');
+  try { sessionStorage.removeItem(MAIN_EXTRA_TOKEN_SESSION_KEY); } catch (_) {}
+  try { localStorage.removeItem('extra_id_token'); } catch (_) {}
 }
 async function loadExtraIDProfile(authData) {
   try {
-    const resp = await fetch(`/api/extraid/profile?_auth=${encodeURIComponent(authData)}`);
+    const resp = await fetch(appendAuthParams("/api/extraid/profile", authData));
     if (!resp.ok) return null;
     const data = await resp.json();
     return data.extra_id_bound ? data : null;
@@ -450,7 +600,7 @@ async function loadProfile(authData) {
     if (!response.ok) {
       if (response.status === 401) {
         const errorData = await response.json().catch(() => ({}));
-        if (errorData.error === 'auth_expired' && localStorage.getItem('extra_id_token')) {
+        if (errorData.error === 'auth_expired' && getMainStoredExtraToken()) {
           clearExtraToken();
           const fallbackAuth = resolveUserId();
           if (fallbackAuth && fallbackAuth !== authData) return loadProfile(fallbackAuth);
@@ -609,7 +759,6 @@ function getDefaultSettings() {
     notif_friend_requests: true,
     notif_events: true,
     notif_news: false,
-    notif_dice: false,
     notif_generator: true,
     notif_shop: false,
     notif_reminders: true,
@@ -680,22 +829,31 @@ function playResourcePurchaseSound() {
 
 // Воспроизведение звука показа наград кейса
 function playCaseRewardsSound() {
-  window._playSfx?.('case-reward-sound');
+  window._playCaseSfx?.('case-reward-resources-sound');
 }
 
 // Воспроизведение звука начала открытия кейса
 function playCaseOpenedSound() {
-  window._playSfx?.('case-open-sound');
+  window._playCaseSfx?.('case-open-init-sound');
 }
 
 // Воспроизведение звука тапа по кейсу
 function playCaseTapSound() {
-  window._playSfx?.('case-tap-sound');
+  window._playCaseSfx?.('case-tap-sound');
 }
 // Воспроизведение звука тапа при открытии кейса
 // Воспроизведение звука отправки сообщения в чат
 function playChatMessageSound() {
   window._playSfx?.('chat-sent-sound');
+}
+
+function isExtraPassActive(profile) {
+  if (!profile) return false;
+  const mode = String(profile.extra_pass || "").toLowerCase();
+  if (mode !== "active" && mode !== "ultra") return false;
+  if (!profile.extra_pass_expires_at) return true;
+  const expiresAt = Date.parse(profile.extra_pass_expires_at);
+  return Number.isNaN(expiresAt) || expiresAt > Date.now();
 }
 
 // Отображение профиля
@@ -771,7 +929,7 @@ function renderProfile(data) {
   }
 
   // ExtraPass
-  const hasExtraPass = data.extra_pass === "active";
+  const hasExtraPass = isExtraPassActive(data);
   if (hasExtraPass) {
     if (extrapassBadge) {
       extrapassBadge.style.display = "flex";
@@ -861,7 +1019,7 @@ function renderProfile(data) {
   }
   
   // Энергия (компактная версия слева от кнопки)
-  const maxEnergy = data.extra_pass === "active" ? 6 : 5;
+  const maxEnergy = hasExtraPass ? 6 : 5;
   const currentEnergy = data.energy || maxEnergy;
   const energyCurrentDisplay = document.getElementById("energy-current-display");
   const energyMaxDisplay = document.getElementById("energy-max-display");
@@ -874,7 +1032,7 @@ function renderProfile(data) {
     energyMaxDisplay.textContent = maxEnergy;
   }
   if (energyExtrapassHint) {
-    if (data.extra_pass !== "active") {
+    if (!hasExtraPass) {
       energyExtrapassHint.style.display = "flex";
     } else {
       energyExtrapassHint.style.display = "none";
@@ -886,7 +1044,7 @@ function renderProfile(data) {
   const premiumLockIcon = document.getElementById("premium-lock-icon");
   const premiumExtrapassPromo = document.getElementById("premium-extrapass-promo");
   if (premiumSlot) {
-    if (data.extra_pass !== "active") {
+    if (!hasExtraPass) {
       premiumSlot.classList.add("locked");
       premiumSlot.title = "Требуется ExtraPass";
       if (premiumLockIcon) {
@@ -979,6 +1137,37 @@ function updateShopExtraPassVisibility(hasExtraPass) {
   }
 }
 
+async function openExtraPassShopFromLegacy(source = "settings") {
+  try {
+    if (typeof window.__openExtraPassModal === "function") {
+      window.__openExtraPassModal("basic");
+      return true;
+    }
+  } catch (_) {}
+
+  const extrapassItem = document.getElementById("extrapass-shop-item");
+  if (extrapassItem) {
+    document.querySelectorAll(".modal-overlay").forEach(modal => {
+      modal.style.display = "none";
+    });
+    extrapassItem.style.display = "flex";
+    extrapassItem.scrollIntoView({ behavior: "smooth", block: "center" });
+    extrapassItem.classList.add("release-focus");
+    setTimeout(() => extrapassItem.classList.remove("release-focus"), 1200);
+    return true;
+  }
+
+  const message = source === "analytics"
+    ? "ExtraPass покупается в разделе «Магазин». Открой магазин и выбери карточку ExtraPass."
+    : "Открой раздел «Магазин» и выбери карточку ExtraPass.";
+  if (typeof showGameAlert === "function") {
+    await showGameAlert(message, "ℹ️");
+  } else {
+    showNotification(message, "info");
+  }
+  return false;
+}
+
 function showAvatarLetter(playerAvatar, data) {
   if (!playerAvatar) return;
   
@@ -1016,7 +1205,7 @@ function renderSettings(settings) {
   const mergedSettings = { ...defaultSettings, ...settings };
 
   const isAdmin = currentProfile?.user_id === 6803854304;
-  const hasExtraPass = currentProfile?.extra_pass === "active";
+  const hasExtraPass = isExtraPassActive(currentProfile);
   
   settingsContent.innerHTML = `
     <div class="setting-group">
@@ -1057,7 +1246,6 @@ function renderSettings(settings) {
         <span class="setting-label">Показывать рекламу${hasExtraPass ? " (отключено ExtraPass)" : ""}</span>
         <div class="toggle-switch ${mergedSettings.ads_enabled && !hasExtraPass ? "active" : ""}" data-setting="ads_enabled" ${hasExtraPass ? "style='cursor: not-allowed;'" : ""}></div>
       </div>
-      ${!hasExtraPass ? `<button class="ads-place-btn" id="ads-place-btn">Разместить</button>` : ""}
       ${!hasExtraPass ? `
         <div class="extrapass-promo">
           <div class="extrapass-promo-text">⚡ <b>Купите ExtraPass</b>, чтобы отключить рекламу и получить множество бонусов!</div>
@@ -1174,23 +1362,7 @@ function renderSettings(settings) {
   const extrapassShopBtn = document.getElementById("extrapass-shop-btn");
   if (extrapassShopBtn) {
     extrapassShopBtn.addEventListener("click", async () => {
-      // TODO: Открыть магазин ExtraPass
-      await showGameAlert("Магазин ExtraPass скоро будет доступен!", "ℹ️");
-      try {
-        if (tg?.HapticFeedback?.impactOccurred) {
-          tg.HapticFeedback.impactOccurred("light");
-        }
-      } catch (e) {
-        // Игнорируем ошибки HapticFeedback
-      }
-    });
-  }
-
-  // Кнопка размещения рекламы
-  const adsPlaceBtn = document.getElementById("ads-place-btn");
-  if (adsPlaceBtn) {
-    adsPlaceBtn.addEventListener("click", () => {
-      // TODO: Логика размещения рекламы
+      await openExtraPassShopFromLegacy("settings");
       try {
         if (tg?.HapticFeedback?.impactOccurred) {
           tg.HapticFeedback.impactOccurred("light");
@@ -1352,7 +1524,7 @@ const GLORY_PATH_MILESTONES = [
   // 600 - вход в Silver + кейс T2 + гарантированная Редкая карта
   { trophies: 600, rewards: [{ type: "case", tier: 2, icon: "💠" }, { type: "guaranteed_card", rarity: "rare", icon: "🃏" }], league: { name: "Silver", emoji: "🥈" } },
   // 900 - промежуточная награда Silver
-  { trophies: 900, rewards: [{ type: "case", tier: 3, icon: "💎" }, { type: "shards", amount: 50, icon: "🔮" }], league: null },
+  { trophies: 900, rewards: [{ type: "case", tier: 3, icon: "💎" }], league: null },
   // 1200 - вход в Gold + 3000 монет + 30 частиц Superrare
   { trophies: 1200, rewards: [{ type: "coins", amount: 3000, icon: "💰" }, { type: "particles", rarity: "superrare", amount: 30, icon: "✨" }], league: { name: "Gold", emoji: "🥇" } },
   // 1600 - промежуточная награда Gold
@@ -1364,7 +1536,7 @@ const GLORY_PATH_MILESTONES = [
   // 3000 - вход в Master + гарантированная Легендарная карта
   { trophies: 3000, rewards: [{ type: "guaranteed_card", rarity: "legendary", icon: "🃏" }], league: { name: "Master", emoji: "⭐" } },
   // 3750 - промежуточная награда Master
-  { trophies: 3750, rewards: [{ type: "case", tier: 4, icon: "🔥" }, { type: "shards", amount: 100, icon: "🔮" }], league: null },
+  { trophies: 3750, rewards: [{ type: "case", tier: 4, icon: "🔥" }], league: null },
   // 4500 - вход в Champion + 8000 монет + 50 частиц Epic
   { trophies: 4500, rewards: [{ type: "coins", amount: 8000, icon: "💰" }, { type: "particles", rarity: "epic", amount: 50, icon: "✨" }], league: { name: "Champion", emoji: "🏆" } },
   // 5250 - промежуточная награда Champion
@@ -1376,7 +1548,7 @@ const GLORY_PATH_MILESTONES = [
   // 7500 - вход в Legendary + гарантированная Мифическая карта
   { trophies: 7500, rewards: [{ type: "guaranteed_card", rarity: "mythic", icon: "🃏" }], league: { name: "Legendary", emoji: "👑" } },
   // 8250 - промежуточная награда Legendary
-  { trophies: 8250, rewards: [{ type: "case", tier: 5, icon: "👑" }, { type: "shards", amount: 200, icon: "🔮" }], league: null },
+  { trophies: 8250, rewards: [{ type: "case", tier: 5, icon: "👑" }], league: null },
   // 9000 - вход в Extra + 20000 монет
   { trophies: 9000, rewards: [{ type: "coins", amount: 20000, icon: "💰" }], league: { name: "Extra", emoji: "🏟️" } },
   // 10000 - финальная награда: Божественный кейс T5 + косметика
@@ -1396,8 +1568,6 @@ function formatRewardLabel(reward) {
   } else if (reward.type === "particles") {
     const rarityNames = { rare: "Редкой", superrare: "Сверхредкой", epic: "Эпической", legendary: "Легендарной" };
     return `${reward.amount} частиц ${rarityNames[reward.rarity] || reward.rarity}`;
-  } else if (reward.type === "shards") {
-    return `${reward.amount} осколков`;
   } else if (reward.type === "guaranteed_card") {
     const rarityNames = { rare: "Редкая", epic: "Эпическая", legendary: "Легендарная", mythic: "Мифическая" };
     return `Гарант. ${rarityNames[reward.rarity] || reward.rarity}`;
@@ -1486,8 +1656,7 @@ function renderGloryPath(data) {
             <div class="milestone-rewards-grid">
               ${milestone.rewards.map(reward => {
                 const label = formatRewardLabel(reward);
-                // Для частиц и осколков amount уже включен в label, для остальных показываем отдельно
-                const showAmount = reward.amount && reward.type !== "particles" && reward.type !== "shards";
+                const showAmount = reward.amount && reward.type !== "particles";
                 const amount = showAmount ? reward.amount.toLocaleString() : "";
                 return `
                 <div class="milestone-reward-card">
@@ -1535,7 +1704,7 @@ function renderAnalytics(data) {
 
   const isAdmin = data.user_id === 6803854304;
   const league = data.league != null ? getLeagueById(data.league) : getLeagueByTrophies(data.trophies || 0);
-  const hasExtraPass = data.extra_pass === "active";
+  const hasExtraPass = isExtraPassActive(data);
   
   // Данные для графика (примерная кривая прогресса)
   const maxTrophies = Math.max(data.max_trophies || 0, data.trophies || 0, 100);
@@ -1661,20 +1830,26 @@ function renderAnalytics(data) {
             return;
           }
           
-          playersList.innerHTML = players.map(p => `
-            <div class="admin-player-item">
-              <div class="player-info-admin">
-                <div class="player-name-admin">${p.first_name || p.username || `ID: ${p.user_id}`}</div>
-                <div class="player-stats-admin">
-                  🏆 ${p.trophies || 0} | ${p.extra_pass === "active" ? "⚡" : ""} | ${p.status || "active"}
+          playersList.innerHTML = players.map(p => {
+            const playerName = escapeHtml(p.first_name || p.username || `ID: ${p.user_id}`);
+            const playerStatus = escapeHtml(p.status || "active");
+            const playerTrophies = escapeHtml(p.trophies || 0);
+            const playerUserId = escapeHtml(p.user_id);
+            return `
+              <div class="admin-player-item">
+                <div class="player-info-admin">
+                  <div class="player-name-admin">${playerName}</div>
+                  <div class="player-stats-admin">
+                    🏆 ${playerTrophies} | ${p.extra_pass === "active" ? "⚡" : ""} | ${playerStatus}
+                  </div>
+                </div>
+                <div class="player-actions-admin">
+                  <button class="btn-small" data-action="warn" data-user="${playerUserId}">⚠️</button>
+                  <button class="btn-small" data-action="ban" data-user="${playerUserId}">🚫</button>
                 </div>
               </div>
-              <div class="player-actions-admin">
-                <button class="btn-small" data-action="warn" data-user="${p.user_id}">⚠️</button>
-                <button class="btn-small" data-action="ban" data-user="${p.user_id}">🚫</button>
-              </div>
-            </div>
-          `).join('');
+            `;
+          }).join('');
           
           // Переустанавливаем обработчики действий
           modal.querySelectorAll("[data-action]").forEach(btn => {
@@ -2050,7 +2225,7 @@ function renderAnalytics(data) {
   
   // Обработчик кнопки ExtraPass в аналитике
   document.getElementById("analytics-extrapass-btn")?.addEventListener("click", () => {
-    alert("Магазин ExtraPass скоро будет доступен!");
+    openExtraPassShopFromLegacy("analytics");
   });
 }
 
@@ -2132,7 +2307,7 @@ function initEventHandlers() {
     }
     
     // Пропускаем клики на overlay (фон модальных окон)
-    if (target.classList.contains("modal-overlay") || target.classList.contains("game-alert-modal") || target.classList.contains("game-confirm-modal") || target.classList.contains("dice-notification-prompt-overlay") || target.classList.contains("welcome-modal-overlay")) {
+    if (target.classList.contains("modal-overlay") || target.classList.contains("game-alert-modal") || target.classList.contains("game-confirm-modal") || target.classList.contains("welcome-modal-overlay")) {
       return;
     }
     
@@ -2141,7 +2316,7 @@ function initEventHandlers() {
     
     // Также проверяем элементы с классами кнопок
     if (!button) {
-      const buttonLike = target.closest(".btn-primary, .btn-secondary, .menu-item, .nav-item, .shop-category, .collection-tab, .community-tab, .friends-tab, .mail-filter-btn, .item-buy-btn, .card-item, .deck-slot, .case-open-btn, .case-skip-btn, .case-close-btn, .dice-modal-btn, .friend-action-btn, .friend-request-btn, .friend-add-btn, .chat-send-btn, .promocode-submit-btn, .post-submit-btn, .card-submit-btn, .welcome-btn, .battle-mode-item, .deck-item, .training-mode-item, .difficulty-item, .training-option, .play-battle-btn, .play-training-btn, .energy-reset-btn, .copy-btn, .info-btn, .arena-info-btn, .target-btn, .battle-btn, .cases-action-btn, .cases-shop-btn, .cases-open-btn, .deck-save-btn, .preset-create-btn, .sort-direction-btn, .filter-toggle-btn, .rarity-filter, .sort-option, .admin-create-card-btn, .admin-get-all-cards-btn, .admin-delete-all-cards-btn, .create-preset-btn, .create-post-btn, .chat-fullscreen-btn, .chat-fullscreen-close-btn, .dice-notification-prompt-btn");
+      const buttonLike = target.closest(".btn-primary, .btn-secondary, .menu-item, .nav-item, .shop-category, .collection-tab, .community-tab, .friends-tab, .mail-filter-btn, .item-buy-btn, .card-item, .deck-slot, .case-open-btn, .case-skip-btn, .case-close-btn, .friend-action-btn, .friend-request-btn, .friend-add-btn, .chat-send-btn, .promocode-submit-btn, .post-submit-btn, .card-submit-btn, .welcome-btn, .battle-mode-item, .deck-item, .training-mode-item, .difficulty-item, .training-option, .play-battle-btn, .play-training-btn, .energy-reset-btn, .copy-btn, .info-btn, .arena-info-btn, .target-btn, .battle-btn, .cases-action-btn, .cases-shop-btn, .cases-open-btn, .deck-save-btn, .preset-create-btn, .sort-direction-btn, .filter-toggle-btn, .rarity-filter, .sort-option, .admin-create-card-btn, .admin-get-all-cards-btn, .admin-delete-all-cards-btn, .create-preset-btn, .create-post-btn, .chat-fullscreen-btn, .chat-fullscreen-close-btn");
       if (buttonLike) {
         // Исключаем кнопки закрытия модальных окон и кнопку "В БОЙ" (у неё свой звук)
         const isStartBattleBtn = buttonLike.id === "start-battle";
@@ -2523,32 +2698,12 @@ function initEventHandlers() {
       });
     });
     
-    // Обработчики для кнопок друзей (заглушки)
     document.querySelectorAll(".friend-action-btn, .friend-request-btn, .friend-add-btn").forEach(btn => {
       btn.addEventListener("click", (e) => {
         e.preventDefault();
         e.stopPropagation();
-        try {
-          if (tg?.HapticFeedback?.impactOccurred) {
-            tg.HapticFeedback.impactOccurred("light");
-          }
-        } catch (e) {}
-        // Заглушка - просто визуальная обратная связь
-        btn.style.transform = "scale(0.95)";
-        setTimeout(() => {
-          btn.style.transform = "";
-        }, 100);
-      });
-    });
-    
-    // Обработчики для писем (заглушки)
-    document.querySelectorAll(".mail-item").forEach(item => {
-      item.addEventListener("click", () => {
-        // Убираем статус "непрочитано" при клике
-        item.classList.remove("unread");
-        const unreadDot = item.querySelector(".unread-dot");
-        if (unreadDot) {
-          unreadDot.style.display = "none";
+        if (typeof showGameAlert === "function") {
+          showGameAlert("Действие недоступно в этом интерфейсе. Открой актуальный раздел «Друзья» из основного меню.", "ℹ️");
         }
         try {
           if (tg?.HapticFeedback?.impactOccurred) {
@@ -2556,10 +2711,10 @@ function initEventHandlers() {
           }
         } catch (e) {}
       });
+      btn.classList.add("release-disabled");
+      btn.setAttribute("aria-disabled", "true");
+      btn.setAttribute("title", "Открой актуальный раздел «Друзья» из основного меню");
     });
-    
-    // Обработчики для фильтров почты (будут переустановлены в renderMail)
-    // Обработчики добавляются динамически в renderMail после рендеринга писем
   }
 
   // Копирование ID и версии
@@ -3234,11 +3389,7 @@ async function checkActiveBattleOnStartup(authData) {
       return false;
     }
 
-    const separator = data.redirect_url.includes("?") ? "&" : "?";
-    const authParam = typeof authData === "string"
-      ? `${separator}_auth=${encodeURIComponent(authData)}`
-      : `${separator}user_id=${encodeURIComponent(authData)}`;
-    window.location.replace(`${data.redirect_url}${authParam}`);
+    window.location.replace(buildMainArenaRedirectUrl(data.redirect_url, authData));
     return true;
   } catch (error) {
     console.warn("Не удалось проверить активный бой:", error);
@@ -3430,7 +3581,9 @@ function showWelcomeModal(startCard) {
       // Устанавливаем источник изображения
       if (startCard.id) {
         // Используем card_id для получения изображения через API
-        img.src = `/api/cards/image?card_id=${startCard.id}`;
+        img.src = `/api/cards/image?card_id=${startCard.id}&variant=preview`;
+        img.loading = "lazy";
+        img.decoding = "async";
         img.alt = startCard.name || "Карта";
       } else if (startCard.image_file_id) {
         // Если есть file_id, используем его
@@ -3658,7 +3811,15 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 });
 
-// Проверка платежа из URL параметров (когда пользователь возвращается с YooKassa)
+function paymentProviderFromId(paymentId) {
+  const id = String(paymentId || "");
+  if (id.startsWith("robokassa_")) return "robokassa";
+  if (id.startsWith("rustore_")) return "rustore";
+  if (id.startsWith("stars_")) return "stars";
+  return "yookassa";
+}
+
+// Проверка платежа из URL параметров (когда пользователь возвращается с платежной страницы)
 async function checkPaymentFromUrl(authData) {
   const urlParams = new URLSearchParams(window.location.search);
   const paymentId = urlParams.get("payment_id") || urlParams.get("paymentId");
@@ -3683,20 +3844,6 @@ async function checkPaymentFromUrl(authData) {
     console.log("Статус платежа из URL:", result);
     
     if (result.status === "succeeded" && result.paid) {
-      // Проверяем, были ли награды уже выданы
-      if (result.rewards_processed) {
-        console.log("Платеж уже обработан, награды уже выданы. Пропускаем уведомление.");
-        sessionStorage.removeItem('pending_payment_id');
-        sessionStorage.removeItem('pending_payment_item');
-        sessionStorage.removeItem('pending_payment_timestamp');
-        sessionStorage.removeItem('pending_payment_method');
-        
-        // Удаляем параметры из URL
-        const newUrl = window.location.pathname;
-        window.history.replaceState({}, document.title, newUrl);
-        return;
-      }
-      
       // Платеж успешен - обрабатываем
       sessionStorage.removeItem('pending_payment_id');
       sessionStorage.removeItem('pending_payment_item');
@@ -3708,7 +3855,7 @@ async function checkPaymentFromUrl(authData) {
       window.history.replaceState({}, document.title, newUrl);
       
       // Обрабатываем успешный платеж
-      sessionStorage.setItem('pending_payment_method', 'yookassa');
+      sessionStorage.setItem('pending_payment_method', result.provider || paymentProviderFromId(paymentId));
       await handleSuccessfulPayment(authData);
       
       // Показываем модальное окно успеха
@@ -3864,7 +4011,7 @@ async function createPayment(itemType, amount, description, metadata = {}) {
         sessionStorage.setItem("pending_payment_id", result.payment_id);
         sessionStorage.setItem("pending_payment_item", itemType || normalizedMetadata.package_type || "yookassa_purchase");
         sessionStorage.setItem("pending_payment_timestamp", Date.now().toString());
-        sessionStorage.setItem("pending_payment_method", "yookassa");
+        sessionStorage.setItem("pending_payment_method", result.provider || paymentProviderFromId(result.payment_id));
       }
       openExternalPaymentUrl(checkoutFullUrl);
       if (androidShell && result.payment_id) {
@@ -4339,25 +4486,6 @@ function startPaymentStatusCheck(paymentId) {
       const result = await response.json();
       
       if (result.status === "succeeded" && result.paid) {
-        // Проверяем, были ли награды уже выданы
-        if (result.rewards_processed) {
-          console.log("Платеж уже обработан, награды уже выданы. Пропускаем уведомление.");
-          clearInterval(checkInterval);
-          activePaymentChecks.delete(paymentId);
-          
-          // Очищаем sessionStorage
-          sessionStorage.removeItem('pending_payment_id');
-          sessionStorage.removeItem('pending_payment_item');
-          sessionStorage.removeItem('pending_payment_timestamp');
-          sessionStorage.removeItem('pending_payment_method');
-          
-          // Закрываем модальное окно, если открыто
-          closePaymentWaitingModal();
-          // Закрываем модальное окно инструкций Stars, если открыто
-          closeStarsPaymentInstructionModal();
-          return;
-        }
-        
         // Платеж успешен
         clearInterval(checkInterval);
         activePaymentChecks.delete(paymentId);
@@ -4697,7 +4825,7 @@ async function checkPendingPayment(authData) {
           if (jtiData.payment_id && jtiData.payment_status === "succeeded") {
             pendingPaymentId = jtiData.payment_id;
             sessionStorage.setItem("pending_payment_id", jtiData.payment_id);
-            sessionStorage.setItem("pending_payment_method", "yookassa");
+            sessionStorage.setItem("pending_payment_method", jtiData.provider || paymentProviderFromId(jtiData.payment_id));
             sessionStorage.setItem("pending_payment_timestamp", String(Date.now()));
           }
         }
@@ -4711,7 +4839,7 @@ async function checkPendingPayment(authData) {
           if (succData.payments && succData.payments.length > 0) {
             pendingPaymentId = succData.payments[0].payment_id;
             sessionStorage.setItem("pending_payment_id", pendingPaymentId);
-            sessionStorage.setItem("pending_payment_method", "yookassa");
+            sessionStorage.setItem("pending_payment_method", succData.payments[0].provider || paymentProviderFromId(pendingPaymentId));
             sessionStorage.setItem("pending_payment_timestamp", String(Date.now()));
           }
         }
@@ -5499,10 +5627,90 @@ async function updateMailNotificationBadge(authData) {
   }
 }
 
+let mailEventDelegationBound = false;
+let mailFilterDelegationBound = false;
+
+function ensureMailEventDelegation() {
+  const mailListElement = document.querySelector(".mail-list");
+  if (!mailListElement || mailEventDelegationBound) return;
+  mailEventDelegationBound = true;
+  mailListElement.addEventListener("click", async (event) => {
+    const mailItem = event.target.closest(".mail-item");
+    if (!mailItem || !mailListElement.contains(mailItem)) return;
+
+    const mailId = mailItem.dataset.mailId;
+    if (!mailId) return;
+
+    mailItem.classList.remove("unread");
+    const unreadDot = mailItem.querySelector(".mail-status.unread-dot");
+    if (unreadDot) {
+      unreadDot.style.display = "none";
+    }
+
+    const authData = resolveUserId();
+    if (authData) {
+      try {
+        let url = "/api/mail/read";
+        if (typeof authData === "string") {
+          url += `?_auth=${encodeURIComponent(authData)}`;
+        } else if (typeof authData === "number") {
+          url += `?user_id=${authData}`;
+        }
+
+        await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mail_id: parseInt(mailId) })
+        });
+
+        await updateMailNotificationBadge(authData);
+      } catch (error) {
+        console.error("Ошибка отметки письма как прочитанного:", error);
+      }
+    }
+
+    try {
+      if (tg?.HapticFeedback?.impactOccurred) {
+        tg.HapticFeedback.impactOccurred("light");
+      }
+    } catch (e) {}
+  });
+}
+
+function ensureMailFilterDelegation() {
+  const mailModal = document.getElementById("mail-modal");
+  if (!mailModal || mailFilterDelegationBound) return;
+  mailFilterDelegationBound = true;
+  mailModal.addEventListener("click", (event) => {
+    const btn = event.target.closest(".mail-filter-btn");
+    if (!btn || !mailModal.contains(btn)) return;
+
+    document.querySelectorAll(".mail-filter-btn").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+
+    const filter = btn.textContent.trim();
+    const authData = resolveUserId();
+    if (!authData) return;
+
+    let category = null;
+    if (filter === "Награды") {
+      category = "rewards";
+    } else if (filter === "Новости") {
+      category = "news";
+    } else if (filter === "События") {
+      category = "events";
+    }
+
+    loadMail(authData, category);
+  });
+}
+
 // Функция для отображения почты
 function renderMail(mailList) {
   const mailListElement = document.querySelector(".mail-list");
   if (!mailListElement) return;
+  ensureMailEventDelegation();
+  ensureMailFilterDelegation();
   
   if (mailList.length === 0) {
     mailListElement.innerHTML = "";
@@ -5523,6 +5731,12 @@ function renderMail(mailList) {
     const timeAgo = mail.created_at ? formatTimeAgo(new Date(mail.created_at)) : "";
     const mailId = mail.id || mail.mail_id; // Поддержка обоих вариантов
     const mailContent = mail.content || mail.body || mail.text || ""; // Поддержка обоих вариантов
+    const safeMailId = escapeHtml(mailId);
+    const mailIcon = escapeHtml(mail.icon || "📧");
+    const mailSender = escapeHtml(mail.sender || "Система");
+    const mailTimeAgo = escapeHtml(timeAgo);
+    const mailSubject = escapeHtml(mail.subject || "Без темы");
+    const mailPreview = escapeHtml(mailContent);
     
     // Форматируем attachments для отображения
     let attachmentsHtml = "";
@@ -5535,22 +5749,22 @@ function renderMail(mailList) {
       if (attList.length > 0) {
         attachmentsHtml = `
           <div class="mail-attachments">
-            ${attList.map(a => `<span class="attachment-badge">${a}</span>`).join("")}
+            ${attList.map(a => `<span class="attachment-badge">${escapeHtml(a)}</span>`).join("")}
           </div>
         `;
       }
     }
     
     return `
-      <div class="mail-item ${unreadClass}" data-mail-id="${mailId}">
-        <div class="mail-icon">${mail.icon || "📧"}</div>
+      <div class="mail-item ${unreadClass}" data-mail-id="${safeMailId}">
+        <div class="mail-icon">${mailIcon}</div>
         <div class="mail-content">
           <div class="mail-header">
-            <div class="mail-sender">${mail.sender || "Система"}</div>
-            <div class="mail-time">${timeAgo}</div>
+            <div class="mail-sender">${mailSender}</div>
+            <div class="mail-time">${mailTimeAgo}</div>
           </div>
-          <div class="mail-subject">${mail.subject || "Без темы"}</div>
-          <div class="mail-preview">${mailContent}</div>
+          <div class="mail-subject">${mailSubject}</div>
+          <div class="mail-preview">${mailPreview}</div>
           ${attachmentsHtml}
         </div>
         ${mail.is_read === false ? '<div class="mail-status unread-dot"></div>' : ''}
@@ -5558,82 +5772,6 @@ function renderMail(mailList) {
     `;
   }).join("");
   
-  // Добавляем обработчики для писем после рендеринга
-  setTimeout(() => {
-    document.querySelectorAll(".mail-item").forEach(item => {
-      // Удаляем старые обработчики, если есть
-      const newItem = item.cloneNode(true);
-      item.parentNode.replaceChild(newItem, item);
-      
-      newItem.addEventListener("click", async () => {
-        const mailId = newItem.dataset.mailId;
-        if (!mailId) return;
-        
-        // Убираем статус "непрочитано" при клике
-        newItem.classList.remove("unread");
-        const unreadDot = newItem.querySelector(".mail-status.unread-dot");
-        if (unreadDot) {
-          unreadDot.style.display = "none";
-        }
-        
-        // Отмечаем письмо как прочитанное
-        const authData = resolveUserId();
-        if (authData) {
-          try {
-            let url = "/api/mail/read";
-            if (typeof authData === "string") {
-              url += `?_auth=${encodeURIComponent(authData)}`;
-            } else if (typeof authData === "number") {
-              url += `?user_id=${authData}`;
-            }
-            
-            await fetch(url, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ mail_id: parseInt(mailId) })
-            });
-            
-            // Обновляем индикатор непрочитанных писем
-            await updateMailNotificationBadge(authData);
-          } catch (error) {
-            console.error("Ошибка отметки письма как прочитанного:", error);
-          }
-      }
-      
-      try {
-        if (tg?.HapticFeedback?.impactOccurred) {
-          tg.HapticFeedback.impactOccurred("light");
-        }
-      } catch (e) {}
-    });
-  });
-    
-    // Обработчики для фильтров почты
-    document.querySelectorAll(".mail-filter-btn").forEach(btn => {
-      btn.addEventListener("click", () => {
-        // Убираем активный класс со всех фильтров
-        document.querySelectorAll(".mail-filter-btn").forEach(b => b.classList.remove("active"));
-        // Добавляем активный класс к выбранному
-        btn.classList.add("active");
-        
-        const filter = btn.textContent.trim();
-        const authData = resolveUserId();
-        if (!authData) return;
-        
-        let category = null;
-        if (filter === "Награды") {
-          category = "rewards";
-        } else if (filter === "Новости") {
-          category = "news";
-        } else if (filter === "События") {
-          category = "events";
-        }
-        
-        // Загружаем письма с фильтром
-        loadMail(authData, category);
-      });
-    });
-  }, 100);
 }
 
 // Вспомогательная функция для форматирования времени
@@ -6783,13 +6921,6 @@ function renderCaseRewards(rewards) {
       description: "Премиальная валюта",
     }));
   }
-  if (rewards.limited_shards) {
-    items.push(buildRewardItemHtml({
-      icon: CASE_REWARD_ICONS.limited_shards,
-      title: `+${rewards.limited_shards} осколков`,
-      description: "Для лимитированных героев",
-    }));
-  }
   (rewards.cards || []).forEach(card => {
     items.push(buildRewardItemHtml({
       icon: CASE_REWARD_ICONS.card,
@@ -6983,6 +7114,16 @@ async function getCardImageUrl(imageFileId) {
   }
   
   return null;
+}
+
+async function getCardImageUrlForCard(card, options = {}) {
+  if (!card) return null;
+  const variant = options.variant || "preview";
+  const variantSuffix = variant && variant !== "full" ? `&variant=${encodeURIComponent(variant)}` : "";
+  if (card.id) {
+    return `/api/cards/image?card_id=${encodeURIComponent(card.id)}${variantSuffix}`;
+  }
+  return card.image_file_id ? await getCardImageUrl(card.image_file_id) : null;
 }
 
 // Сортировка карт
@@ -7315,7 +7456,7 @@ function renderCardsGrid() {
     const canUpgradeByParticles = !isMaxLevel && particles >= requiredParticles;
     
     // Получаем URL изображения
-    const imageUrl = card.image_file_id ? await getCardImageUrl(card.image_file_id) : null;
+    const imageUrl = await getCardImageUrlForCard(card);
     const imageSrc = imageUrl || "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='300' viewBox='0 0 200 300'%3E%3Crect fill='%232d1b4e' width='200' height='300'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' font-size='80' fill='%23c084fc'%3E🃏%3C/text%3E%3C/svg%3E";
     
     const cardElement = document.createElement("div");
@@ -7800,7 +7941,7 @@ async function renderCardInSlot(slot, card) {
   const canUpgradeByParticles = !isMaxLevel && particles >= requiredParticles;
   
   // Получаем URL изображения
-  const imageUrl = card.image_file_id ? await getCardImageUrl(card.image_file_id) : null;
+  const imageUrl = await getCardImageUrlForCard(card);
   const imageSrc = imageUrl || "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='300' viewBox='0 0 200 300'%3E%3Crect fill='%232d1b4e' width='200' height='300'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' font-size='80' fill='%23c084fc'%3E🃏%3C/text%3E%3C/svg%3E";
   
   slot.innerHTML = `
@@ -7955,6 +8096,7 @@ function showCardSlotMenu(slot, card) {
 
 // Детальный просмотр карты (как в Clash Royale)
 async function openCardDetail(card) {
+  window._playSfx?.('collection-card-detail-sound');
   const level = card.level || 1;
   const particles = card.particles || 0;
   const basePower = card.power || 0;
@@ -7970,7 +8112,7 @@ async function openCardDetail(card) {
   const canUpgrade = !isMaxLevel && particles >= requiredParticles && userCoins >= requiredCoins;
   
   // Получаем URL изображения
-  const imageUrl = card.image_file_id ? await getCardImageUrl(card.image_file_id) : null;
+  const imageUrl = await getCardImageUrlForCard(card, { variant: "full" });
   const imageSrc = imageUrl || "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='600' viewBox='0 0 400 600'%3E%3Crect fill='%232d1b4e' width='400' height='600'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' font-size='150' fill='%23c084fc'%3E🃏%3C/text%3E%3C/svg%3E";
   
   const modal = document.createElement("div");
@@ -8393,7 +8535,7 @@ async function renamePreset(presetNumber, newName) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         preset_number: presetNumber,
-        preset_name: newName
+        new_name: newName
       })
     });
 
@@ -9529,371 +9671,23 @@ function escapeHtml(text) {
   return div.innerHTML;
 }
 
-// Кубик
-let diceCooldownInterval = null;
-
-async function loadDiceStatus() {
-  try {
-    const authData = resolveUserId();
-    if (!authData) return;
-
-    let url = "/api/dice/status";
-    if (typeof authData === "string") {
-      url += `?_auth=${encodeURIComponent(authData)}`;
-    }
-
-    const response = await fetch(url);
-    if (!response.ok) return;
-
-    const status = await response.json();
-    updateDiceUI(status);
-    return status;
-  } catch (error) {
-    console.error("Ошибка загрузки статуса кубика:", error);
-  }
-}
-
-function updateDiceUI(status) {
-  const diceBtn = document.getElementById("dice-modal-btn");
-  const diceIcon = document.getElementById("dice-modal-icon");
-  const diceResult = document.getElementById("dice-modal-result");
-
-  if (!diceBtn) return;
-
-  if (status.can_roll) {
-    diceBtn.disabled = false;
-    if (diceIcon) diceIcon.style.display = "block";
-    if (diceResult) diceResult.style.display = "none";
-    if (diceCooldownInterval) {
-      clearInterval(diceCooldownInterval);
-      diceCooldownInterval = null;
-    }
-  } else {
-    diceBtn.disabled = true;
-  }
-  
-  // Проверяем, нужно ли показать модальное окно при первом входе
-  if (status.is_first_login_today) {
-    showDiceModal();
-  }
-}
-
-function startDiceCooldown(cooldownUntil) {
-  if (!cooldownUntil) return;
-
-  const updateCooldown = () => {
-    const now = new Date();
-    const until = new Date(cooldownUntil);
-    const diff = until - now;
-
-    if (diff <= 0) {
-      const diceCooldownOverlay = document.getElementById("dice-cooldown-overlay");
-      if (diceCooldownOverlay) diceCooldownOverlay.style.display = "none";
-      const diceBtn = document.getElementById("dice-btn");
-      if (diceBtn) {
-        diceBtn.disabled = false;
-      }
-      if (diceCooldownInterval) {
-        clearInterval(diceCooldownInterval);
-        diceCooldownInterval = null;
-      }
-      loadDiceStatus();
-        return;
-      }
-
-    // Форматируем время (компактный формат)
-    const totalSeconds = Math.floor(diff / 1000);
-    const hours = Math.floor(totalSeconds / 3600);
-    const minutes = Math.floor((totalSeconds % 3600) / 60);
-    const seconds = totalSeconds % 60;
-
-    const diceCooldownText = document.getElementById("dice-cooldown-text");
-    if (diceCooldownText) {
-      if (hours > 0) {
-        diceCooldownText.textContent = `${hours}:${String(minutes).padStart(2, '0')}`;
-      } else if (minutes > 0) {
-        diceCooldownText.textContent = `${minutes}:${String(seconds).padStart(2, '0')}`;
-      } else {
-        diceCooldownText.textContent = `${seconds}с`;
-      }
-    }
-  };
-
-  updateCooldown();
-  if (diceCooldownInterval) clearInterval(diceCooldownInterval);
-  diceCooldownInterval = setInterval(updateCooldown, 100);
-}
-
-async function rollDice() {
-      try {
-        const authData = resolveUserId();
-    if (!authData) return;
-
-    const diceBtn = document.getElementById("dice-modal-btn");
-    if (!diceBtn || diceBtn.disabled) return;
-
-    diceBtn.disabled = true;
-
-    let url = "/api/dice/roll";
-        if (typeof authData === "string") {
-          url += `?_auth=${encodeURIComponent(authData)}`;
-        } else if (typeof authData === "number") {
-          url += `?user_id=${authData}`;
-    }
-
-    const response = await fetch(url, { method: "POST" });
-        if (!response.ok) {
-          const error = await response.json();
-      if (error.error === "cooldown") {
-        await loadDiceStatus();
-      }
-      await showGameAlert("Ошибка при броске кубика", "❌");
-      return;
-        }
-
-        const result = await response.json();
-
-        if (result.success) {
-      // Анимация броска
-      const diceBtn = document.getElementById("dice-modal-btn");
-      const diceIcon = document.getElementById("dice-modal-icon");
-      const diceResult = document.getElementById("dice-modal-result");
-      
-      if (diceBtn) {
-        diceBtn.classList.add("rolling");
-      }
-      
-      // Скрываем иконку и показываем результат после анимации
-      setTimeout(() => {
-        if (diceIcon) diceIcon.style.display = "none";
-        if (diceResult) {
-          diceResult.textContent = result.dice_result;
-          diceResult.style.display = "block";
-        }
-        if (diceBtn) {
-          diceBtn.classList.remove("rolling");
-        }
-        
-        // Возвращаем иконку через 2 секунды
-        setTimeout(() => {
-          if (diceResult) diceResult.style.display = "none";
-          if (diceIcon) diceIcon.style.display = "block";
-        }, 2000);
-      }, 1000);
-
-      // Показываем награду с красивым эффектом
-      const rewardText = result.reward.gems > 0 
-        ? `+${result.reward.gems} 💎` 
-        : `+${result.reward.coins} 💰`;
-      
-      setTimeout(() => {
-        // Создаем красивое уведомление вместо alert
-        showDiceRewardNotification(result.dice_result, rewardText);
-        
-        // Обновляем статус и профиль
-        loadDiceStatus();
-        loadProfile(authData);
-      }, 1500);
-
-      // Тактильная отдача
-      if (tg?.HapticFeedback?.impactOccurred) {
-        tg.HapticFeedback.impactOccurred("heavy");
-      }
-        }
-      } catch (error) {
-    console.error("Ошибка броска кубика:", error);
-    await showGameAlert("Ошибка при броске кубика", "❌");
-    const diceBtn = document.getElementById("dice-modal-btn");
-    if (diceBtn) diceBtn.disabled = false;
-  }
-}
-
-// Показ уведомления о награде
-function showDiceRewardNotification(diceResult, rewardText) {
-  // Удаляем предыдущее уведомление, если есть
-  const existing = document.getElementById("dice-reward-notification");
-  if (existing) existing.remove();
-
-  const notification = document.createElement("div");
-  notification.id = "dice-reward-notification";
-  notification.className = "dice-reward-notification";
-  notification.innerHTML = `
-    <div class="dice-notification-content">
-      <div class="dice-notification-result">🎲 ${diceResult}</div>
-      <div class="dice-notification-reward">${rewardText}</div>
-    </div>
-  `;
-  
-  document.body.appendChild(notification);
-  
-  // Анимация появления
-  setTimeout(() => notification.classList.add("show"), 10);
-  
-  // Удаляем через 3 секунды
-  setTimeout(() => {
-    notification.classList.remove("show");
-    setTimeout(() => notification.remove(), 500);
-  }, 3000);
-}
-
-// Показ модального окна кубика
-function showDiceModal() {
-  const modal = document.getElementById("dice-modal");
-  if (!modal) return;
-  
-  modal.style.display = "flex";
-  
-  // Инициализируем кнопку
-  const diceBtn = document.getElementById("dice-modal-btn");
-  if (diceBtn) {
-    diceBtn.onclick = rollDice;
-  }
-  
-  // Загружаем статус кубика
-  loadDiceStatus();
-  
-  // Закрытие модального окна
-  const closeBtn = document.getElementById("dice-modal-close");
-  if (closeBtn) {
-    closeBtn.onclick = () => {
-      modal.style.display = "none";
-      // После закрытия проверяем, нужно ли предложить включить уведомления
-      checkDiceNotificationPrompt();
-    };
-  }
-  
-  // Закрытие по клику на overlay
-  modal.onclick = (e) => {
-    if (e.target === modal) {
-      modal.style.display = "none";
-      checkDiceNotificationPrompt();
-    }
-  };
-  
-  // Тактильная отдача
-  if (tg?.HapticFeedback?.impactOccurred) {
-    tg.HapticFeedback.impactOccurred("medium");
-  }
-}
-
-// Проверка и показ предложения включить уведомления
-async function checkDiceNotificationPrompt() {
-  try {
-    const authData = resolveUserId();
-    if (!authData) return;
-    
-    // Проверяем, показывалось ли уже предложение
-    let url = "/api/dice/notification-prompt-status";
-    if (typeof authData === "string") {
-      url += `?_auth=${encodeURIComponent(authData)}`;
-    }
-    
-    const response = await fetch(url);
-    if (!response.ok) return;
-    
-    const data = await response.json();
-    
-    // Если предложение еще не показывалось, показываем его
-    if (!data.prompt_shown) {
-      showDiceNotificationPrompt();
-    }
-  } catch (error) {
-    console.error("Ошибка проверки статуса предложения:", error);
-  }
-}
-
-// Показ предложения включить уведомления
-function showDiceNotificationPrompt() {
-  const promptModal = document.getElementById("dice-notification-prompt");
-  if (!promptModal) return;
-  
-  promptModal.style.display = "flex";
-  
-  const yesBtn = document.getElementById("dice-notification-prompt-yes");
-  const noBtn = document.getElementById("dice-notification-prompt-no");
-  
-  if (yesBtn) {
-    yesBtn.onclick = async () => {
-      try {
-        const authData = resolveUserId();
-        if (!authData) return;
-        
-        // Включаем уведомления
-        await updateSettings({ notif_dice: true });
-        
-        // Отмечаем, что предложение было показано
-        let url = "/api/dice/notification-prompt-mark";
-        if (typeof authData === "string") {
-          url += `?_auth=${encodeURIComponent(authData)}`;
-        } else if (typeof authData === "number") {
-          console.warn("auth: numeric userId unsupported, skipping auth param");
-        }
-        
-        await fetch(url, { method: "POST" });
-        
-        promptModal.style.display = "none";
-      } catch (error) {
-        console.error("Ошибка включения уведомлений:", error);
-      }
-    };
-  }
-  
-  if (noBtn) {
-    noBtn.onclick = async () => {
-      try {
-        const authData = resolveUserId();
-        if (!authData) return;
-        
-        // Отмечаем, что предложение было показано (но уведомления не включены)
-        let url = "/api/dice/notification-prompt-mark";
-        if (typeof authData === "string") {
-          url += `?_auth=${encodeURIComponent(authData)}`;
-        } else if (typeof authData === "number") {
-          console.warn("auth: numeric userId unsupported, skipping auth param");
-        }
-        
-        await fetch(url, { method: "POST" });
-        
-        promptModal.style.display = "none";
-      } catch (error) {
-        console.error("Ошибка:", error);
-      }
-    };
-  }
-  
-  // Закрытие по клику на overlay
-  promptModal.onclick = (e) => {
-    if (e.target === promptModal) {
-      promptModal.style.display = "none";
-    }
-  };
-}
-
-// Инициализация кубика при загрузке приложения (проверка первого входа)
-async function initDiceOnLoad() {
-  try {
-    const authData = resolveUserId();
-    if (!authData) return;
-    
-    // Загружаем статус кубика
-    await loadDiceStatus();
-  } catch (error) {
-    console.error("Ошибка инициализации кубика:", error);
-  }
-}
-
 // ═══ Фоновое обновление: профиль, почта, pending платежи ═══
 let _bgPollTimer = null;
 let _bgPollBusy = false;
 
+function runBackgroundPollingNow() {
+  if (_bgPollBusy) return;
+  const authData = resolveUserId();
+  if (!authData) return;
+  _backgroundPoll(authData);
+}
+
 function startBackgroundPolling() {
   if (_bgPollTimer) return;
   _bgPollTimer = setInterval(() => {
-    if (_bgPollBusy) return;
-    const authData = resolveUserId();
-    if (!authData) return;
-    _backgroundPoll(authData);
-  }, 15000); // каждые 15 секунд
+    runBackgroundPollingNow();
+  }, 5000);
+  runBackgroundPollingNow();
 }
 
 function stopBackgroundPolling() {
@@ -9919,7 +9713,7 @@ async function _backgroundPoll(authData) {
           var jtiData = await jtiRes.json();
           if (jtiData.payment_status === "succeeded" && !jtiData.rewards_processed) {
             sessionStorage.setItem("pending_payment_id", jtiData.payment_id || "");
-            sessionStorage.setItem("pending_payment_method", "yookassa");
+            sessionStorage.setItem("pending_payment_method", jtiData.provider || paymentProviderFromId(jtiData.payment_id));
             sessionStorage.setItem("pending_payment_timestamp", String(Date.now()));
             console.log("[BG-POLL] Сессия %s успешна, payment_id=%s", jti, jtiData.payment_id);
             await handleSuccessfulPayment(authData);
@@ -9928,7 +9722,7 @@ async function _backgroundPoll(authData) {
             sessionStorage.removeItem("pending_checkout_jti");
           } else if (jtiData.payment_status === "succeeded" && jtiData.rewards_processed && !jtiData.modal_shown) {
             sessionStorage.setItem("pending_payment_id", jtiData.payment_id || "");
-            sessionStorage.setItem("pending_payment_method", "yookassa");
+            sessionStorage.setItem("pending_payment_method", jtiData.provider || paymentProviderFromId(jtiData.payment_id));
             sessionStorage.setItem("pending_payment_timestamp", String(Date.now()));
             console.log("[BG-POLL] Платёж обработан, но модалка не показана");
             await handleSuccessfulPayment(authData);
@@ -9946,7 +9740,9 @@ async function _backgroundPoll(authData) {
         var payRes = await fetch(payUrl);
         if (payRes.ok) {
           var payData = await payRes.json();
-          if (payData.status === "succeeded" && payData.rewards_processed) {
+          if (payData.status === "succeeded" && payData.paid) {
+            sessionStorage.setItem("pending_payment_method", payData.provider || paymentProviderFromId(pendingPaymentId));
+            await handleSuccessfulPayment(authData);
             sessionStorage.removeItem("pending_payment_id");
             sessionStorage.removeItem("pending_payment_item");
             sessionStorage.removeItem("pending_payment_timestamp");
@@ -9966,7 +9762,7 @@ async function _backgroundPoll(authData) {
           var p = succData.payments[0];
           if (!sessionStorage.getItem("pending_payment_id")) {
             sessionStorage.setItem("pending_payment_id", p.payment_id);
-            sessionStorage.setItem("pending_payment_method", "yookassa");
+            sessionStorage.setItem("pending_payment_method", p.provider || paymentProviderFromId(p.payment_id));
             sessionStorage.setItem("pending_payment_timestamp", String(Date.now()));
             console.log("[BG-POLL] Найден неотмеченный succeeded платёж:", p.payment_id);
             await handleSuccessfulPayment(authData);
@@ -9979,7 +9775,7 @@ async function _backgroundPoll(authData) {
     try { await updateMailNotificationBadge(authData); } catch(_) {}
     try { await loadProfile(authData); } catch(_) {}
     try { await collectDeviceData(); } catch(_) {}
-    if (localStorage.getItem('extra_id_token')) {
+    if (getMainStoredExtraToken()) {
       try { window.__initExtraIDData?.(); } catch(_) {}
     }
   } finally {
@@ -9994,7 +9790,10 @@ document.addEventListener("DOMContentLoaded", () => {
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") {
     startBackgroundPolling();
+    runBackgroundPollingNow();
   } else {
     stopBackgroundPolling();
   }
 });
+window.addEventListener("focus", runBackgroundPollingNow);
+window.addEventListener("pageshow", runBackgroundPollingNow);

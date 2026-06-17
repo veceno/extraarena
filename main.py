@@ -6,6 +6,7 @@ from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from aiogram import Bot
+from aiogram.exceptions import TelegramNetworkError
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiohttp import web
 
@@ -14,12 +15,19 @@ from bot.constants import ADMIN_ID
 from infrastructure.config import get_settings
 from infrastructure.database import Database, SCHEMA_VERSION
 from infrastructure.extraid_database import ExtraIDDatabase
+from infrastructure.support_database import SupportDatabase
+from infrastructure.support_json_database import SupportJsonDatabase
 from infrastructure.notifications import (
     build_webapp_url,
-    format_notification_message,
+    format_telegram_notification_message,
     notification_section,
 )
 from infrastructure.push_notifications import FcmPushSender, build_android_push_payload
+from support.channels.max import MaxSupportClient
+from support.channels.telegram import create_support_bot
+from support.delivery import SupportDeliveryDispatcher
+from support.notifier import SupportAdminNotifier
+from support.service import SupportService
 from web.server import create_web_app
 
 logging.basicConfig(
@@ -110,10 +118,37 @@ async def main() -> None:
 
     db = Database(settings.database)
     await db.connect()
-    schema_changed = await db.init_schema()
+    if settings.auto_migrate_on_start:
+        schema_changed = await db.init_schema()
+    else:
+        await db.verify_schema_ready()
+        schema_changed = False
 
     extraid_db = ExtraIDDatabase(settings.extraid_database.dsn)
     await extraid_db.connect()
+
+    support_db = None
+    support_service = None
+    if settings.support_enabled:
+        try:
+            support_db = SupportDatabase(settings.support_database)
+            await support_db.connect()
+            await support_db.init_schema()
+            logger.info("Support storage initialized with PostgreSQL database %s", settings.support_database.database)
+        except Exception as exc:
+            logger.warning(
+                "Support PostgreSQL storage is unavailable (%s). Falling back to JSON storage.",
+                exc,
+            )
+            try:
+                if support_db:
+                    await support_db.disconnect()
+            except Exception:
+                pass
+            support_db = SupportJsonDatabase()
+            await support_db.connect()
+            await support_db.init_schema()
+        support_service = SupportService(support_db=support_db, game_db=db)
 
     # Инициализация платежного сервиса YooKassa
     payment_service = None
@@ -133,7 +168,22 @@ async def main() -> None:
         logger.warning("Добавьте в .env файл:")
         logger.warning("  YOOKASSA_SHOP_ID=ваш_shop_id")
         logger.warning("  YOOKASSA_SECRET_KEY=ваш_secret_key")
-        logger.warning("  YOOKASSA_TEST_MODE=true")
+        logger.warning("  YOOKASSA_TEST_MODE=%s", "true" if settings.environment == "development" else "false")
+
+    robokassa_payment_service = None
+    if settings.robokassa:
+        try:
+            from infrastructure.robokassa_payments import RobokassaPaymentService
+            robokassa_payment_service = RobokassaPaymentService(settings.robokassa)
+            logger.info(
+                "Robokassa платежный сервис инициализирован: merchant=%s test_mode=%s",
+                settings.robokassa.merchant_login,
+                settings.robokassa.test_mode,
+            )
+        except Exception as e:
+            logger.error("Ошибка инициализации Robokassa: %s", e, exc_info=True)
+    else:
+        logger.warning("Robokassa настройки не найдены. Telegram checkout будет использовать fallback.")
 
     rustore_payment_service = None
     if settings.rustore:
@@ -148,16 +198,42 @@ async def main() -> None:
         except Exception as e:
             logger.error("Ошибка инициализации RuStore verifier: %s", e, exc_info=True)
 
+    configured_payment_providers = {
+        "robokassa": bool(robokassa_payment_service),
+        "yookassa": bool(payment_service),
+        "rustore": bool(rustore_payment_service),
+        "stars": True,
+    }
+    logger.info(
+        "Payment providers: primary=%s fallback=%s order=%s configured=%s payments_required=%s",
+        settings.payment_primary_provider,
+        settings.payment_fallback_provider,
+        settings.payment_provider_order,
+        configured_payment_providers,
+        settings.payments_required,
+    )
+    if settings.payments_required and not configured_payment_providers.get(settings.payment_primary_provider, False):
+        logger.error(
+            "Primary payment provider %s is not configured while PAYMENTS_REQUIRED=true.",
+            settings.payment_primary_provider,
+        )
+
     push_sender = FcmPushSender()
+    support_max_client = MaxSupportClient(settings.support_max_bot_token) if settings.support_max_bot_token else None
+
     web_app = create_web_app(
         db,
         settings.bot_token,
         extraid_db=extraid_db,
         payment_service=payment_service,
+        robokassa_payment_service=robokassa_payment_service,
         rustore_payment_service=rustore_payment_service,
         rustore_console_app_id=settings.rustore.console_app_id if settings.rustore else "",
         rustore_app_url=settings.rustore_app_url,
         payment_provider_order=settings.payment_provider_order,
+        payment_primary_provider=settings.payment_primary_provider,
+        payment_fallback_provider=settings.payment_fallback_provider,
+        payments_required=settings.payments_required,
         webapp_url=settings.webapp_url,
         extra_shop_url=settings.extra_shop_url,
         stars_rate_rub=settings.stars_rate_rub,
@@ -168,6 +244,8 @@ async def main() -> None:
         android_min_supported_version_code=settings.android_min_supported_version_code,
         android_update_channel_url=settings.android_update_channel_url,
         android_apk_url=settings.android_apk_url,
+        support_service=support_service,
+        support_max_client=support_max_client,
     )
     web_app["push_sender"] = push_sender
     web_runner = web.AppRunner(web_app)
@@ -206,6 +284,31 @@ async def main() -> None:
     bot, dp = create_bot(settings.bot_token, webapp_url, db=db)
     web_app["telegram_bot"] = bot
 
+    support_telegram_bot = None
+    support_telegram_dp = None
+    if support_service is not None and settings.support_telegram_bot_token:
+        support_telegram_bot, support_telegram_dp = create_support_bot(
+            settings.support_telegram_bot_token,
+            support_service=support_service,
+        )
+        web_app["support_telegram_bot"] = support_telegram_bot
+
+    support_delivery_dispatcher = (
+        SupportDeliveryDispatcher(
+            support_db=support_db,
+            telegram_bot=support_telegram_bot,
+            max_client=support_max_client,
+        )
+        if support_db is not None
+        else None
+    )
+    web_app["support_admin_notifier"] = SupportAdminNotifier(
+        telegram_bot=support_telegram_bot,
+        telegram_admin_id=settings.support_telegram_admin_id,
+        max_client=support_max_client,
+        max_admin_id=settings.support_max_admin_id,
+    )
+
     logging.getLogger(__name__).info(
         "Бот запущен в окружении %s. WebApp: %s",
         settings.environment,
@@ -222,13 +325,14 @@ async def main() -> None:
 
     background_tasks: list[asyncio.Task[None]] = []
 
-    # Запускаем фоновую задачу для проверки уведомлений о кубике
-    background_tasks.append(asyncio.create_task(_dice_notifications_task(bot, db, push_sender=push_sender)))
-
     # Запускаем фоновые задачи для новой очереди уведомлений
     background_tasks.append(asyncio.create_task(_generator_notifications_task(db)))
     background_tasks.append(asyncio.create_task(_scheduled_notifications_task(db)))
     background_tasks.append(asyncio.create_task(_notification_outbox_task(bot, db, settings.webapp_url, push_sender=push_sender)))
+    if support_telegram_bot is not None and support_telegram_dp is not None:
+        background_tasks.append(asyncio.create_task(_support_bot_polling_task(support_telegram_bot, support_telegram_dp)))
+    if support_delivery_dispatcher is not None:
+        background_tasks.append(asyncio.create_task(_support_delivery_task(support_delivery_dispatcher)))
 
     # Запускаем фоновую задачу для экспирации инвайтов в дружеские игры
     background_tasks.append(asyncio.create_task(_expire_friend_invites_task(db)))
@@ -237,9 +341,17 @@ async def main() -> None:
     background_tasks.append(asyncio.create_task(_generated_inline_cleanup_task()))
 
     try:
-        await bot.delete_webhook(drop_pending_updates=True)
-        logger.info("Telegram webhook удалён перед запуском polling")
-        await dp.start_polling(bot)
+        while True:
+            try:
+                await bot.delete_webhook(drop_pending_updates=True, request_timeout=10)
+                logger.info("Telegram webhook удалён перед запуском polling")
+                await dp.start_polling(bot)
+            except TelegramNetworkError as e:
+                logger.warning("Telegram polling временно недоступен: %s. Повтор через 10 секунд.", e)
+                await asyncio.sleep(10)
+            except Exception:
+                logger.exception("Telegram polling упал. WebApp остаётся запущенным, повтор через 10 секунд.")
+                await asyncio.sleep(10)
     finally:
         # Останавливаем мониторинг TPS
         #try:
@@ -261,59 +373,45 @@ async def main() -> None:
         if extraid_db:
             await extraid_db.disconnect()
             logging.getLogger(__name__).info("Подключение к ExtraID БД закрыто")
+        if support_db:
+            await support_db.disconnect()
+            logging.getLogger(__name__).info("Подключение к Support БД закрыто")
+        if support_telegram_bot:
+            await support_telegram_bot.session.close()
         if web_runner:
             await web_runner.cleanup()
             logging.getLogger(__name__).info("WebApp сервер остановлен")
 
 
-async def _dice_notifications_task(
-    bot: Bot,
-    db: Database | None,
-    *,
-    push_sender: FcmPushSender | None = None,
-) -> None:
-    """Фоновая задача для проверки и отправки уведомлений о готовности кубика."""
-    if not db:
-        return
-    
-    from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest
-    
+async def _support_bot_polling_task(bot: Bot, dp) -> None:
+    """Run the separate Telegram support bot without touching the game bot dispatcher."""
     while True:
         try:
-            # Проверяем каждые 5 секунд для тестирования (было 300 секунд)
-            await asyncio.sleep(5)
-            
-            notifications = await db.check_dice_ready_notifications()
-            for notif in notifications:
-                _push_attempted, push_sent, _push_deferred = await _send_android_pushes(
-                    db,
-                    {"user_id": notif["user_id"]},
-                    category="reminders",
-                    event_type="dice_ready",
-                    payload={"section": "arena"},
-                    push_sender=push_sender,
-                )
-                if push_sent:
-                    await db.mark_dice_notification_sent(notif["user_id"])
-                    continue
+            await bot.delete_webhook(drop_pending_updates=True, request_timeout=10)
+            logger.info("Support Telegram webhook removed before polling")
+            await dp.start_polling(bot)
+        except TelegramNetworkError as e:
+            logger.warning("Support Telegram polling temporarily unavailable: %s. Retry in 10 seconds.", e)
+            await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Support Telegram polling crashed. Retry in 10 seconds.")
+            await asyncio.sleep(10)
 
-                telegram_done = False
-                try:
-                    await bot.send_message(
-                        chat_id=notif["user_id"],
-                        text="🎲 Эй! Самое время бросить кости!",
-                    )
-                    telegram_done = True
-                except (TelegramForbiddenError, TelegramBadRequest):
-                    # Игнорируем ошибки отправки (заблокированные пользователи и т.д.)
-                    telegram_done = True
-                except Exception as e:
-                    logger.debug(f"Не удалось отправить уведомление о кубике пользователю {notif['user_id']}: {e}")
-                if telegram_done:
-                    await db.mark_dice_notification_sent(notif["user_id"])
-        except Exception as e:
-            logger.error(f"Ошибка в задаче проверки уведомлений о кубике: {e}", exc_info=True)
-            await asyncio.sleep(10)  # Ждем 10 секунд перед повторной попыткой
+
+async def _support_delivery_task(dispatcher: SupportDeliveryDispatcher) -> None:
+    while True:
+        try:
+            delivered = await dispatcher.dispatch_once()
+            if delivered:
+                logger.info("Support delivery outbox sent %d message(s)", delivered)
+            await asyncio.sleep(5)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Support delivery outbox failed")
+            await asyncio.sleep(10)
 
 
 async def _generator_notifications_task(db: Database | None) -> None:
@@ -391,7 +489,7 @@ async def _deliver_notification(
     category = str(notif["category"])
     event_type = str(notif["event_type"])
     section = notification_section(category, payload)
-    body = format_notification_message(event_type, payload)
+    body = format_telegram_notification_message(event_type, payload)
     user_id = int(notif["user_id"])
     mobile_only = bool(payload.get("mobile_only"))
     delivery_mode = "app_then_telegram"
@@ -433,12 +531,13 @@ async def _deliver_notification(
         keyboard = InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(
                 text="Открыть ExtraArena",
-                url=build_webapp_url(webapp_url, section=section),
+                url=build_webapp_url(webapp_url, section=section, payload=payload),
             )
         ]])
         await bot.send_message(
             chat_id=user_id,
             text=body,
+            parse_mode="HTML",
             reply_markup=keyboard,
         )
         telegram_sent = True

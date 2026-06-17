@@ -18,11 +18,6 @@ SHOP_PRICES: dict[str, int] = {
     "coins_5000": 400,
     "coins_20000": 1400,
     "case": 10,
-    "case_tier_1": 5,
-    "case_tier_2": 15,
-    "case_tier_3": 40,
-    "case_tier_4": 100,
-    "case_tier_5": 250,
 }
 
 GEM_PACKAGES: dict[str, dict] = {

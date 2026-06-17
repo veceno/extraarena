@@ -185,7 +185,7 @@ class RuStoreInvoiceVerifier:
             public_token = self.token_provider.get_token()
         except Exception as exc:
             logger.warning("RuStore Public API auth failed: %s", exc, exc_info=True)
-            return self._error("public_token_request_failed", str(exc))
+            return self._error("public_token_request_failed", "RuStore Public API request failed")
         if not public_token:
             return self._error("missing_public_token", "RuStore Public API token/auth key is not configured")
         if not str(invoice_id or "").strip():
@@ -195,7 +195,7 @@ class RuStoreInvoiceVerifier:
             payload = self._fetch_invoice(str(invoice_id).strip(), public_token)
         except Exception as exc:
             logger.warning("RuStore invoice fetch failed for %s: %s", invoice_id, exc, exc_info=True)
-            return self._error("provider_request_failed", str(exc))
+            return self._error("provider_request_failed", "RuStore provider request failed")
 
         code = str(payload.get("code") or "").upper()
         if code not in {"OK", "ОК"}:
@@ -214,28 +214,35 @@ class RuStoreInvoiceVerifier:
         if expected_app_id and expected_app_id != "0" and app_id and app_id != expected_app_id:
             return self._error("app_id_mismatch", f"expected {expected_app_id}, got {app_id}")
 
-        order_id = str(order.get("orderId") or "").strip()
-        if order_id and order_id != str(expected_payment_id):
+        order_id = str(order.get("orderId") or body.get("developerPayload") or "").strip()
+        if not order_id:
+            return self._error("missing_order_id", "RuStore invoice does not contain orderId/developerPayload")
+        if order_id != str(expected_payment_id):
             return self._error("order_id_mismatch", f"expected {expected_payment_id}, got {order_id}")
 
         item_code = str(order.get("itemCode") or "").strip()
-        if item_code and item_code != str(expected_product_id):
+        if not item_code:
+            return self._error("missing_product_id", "RuStore invoice does not contain itemCode")
+        if item_code != str(expected_product_id):
             return self._error("product_id_mismatch", f"expected {expected_product_id}, got {item_code}")
 
         currency = str(order.get("currency") or "").upper()
         expected_currency = str(expected_currency or "RUB").upper()
-        if currency and currency != expected_currency:
+        if not currency:
+            return self._error("missing_currency", "RuStore invoice does not contain currency")
+        if currency != expected_currency:
             return self._error("currency_mismatch", f"expected {expected_currency}, got {currency}")
 
         provider_amount = order.get("amountCurrent", order.get("amountCreate"))
-        if provider_amount is not None:
-            try:
-                amount_kopeks = int(round(float(provider_amount)))
-            except (TypeError, ValueError):
-                return self._error("invalid_amount", f"invalid amountCurrent: {provider_amount}")
-            expected_kopeks = _kopeks(expected_amount_rub)
-            if amount_kopeks != expected_kopeks:
-                return self._error("amount_mismatch", f"expected {expected_kopeks}, got {amount_kopeks}")
+        if provider_amount is None:
+            return self._error("missing_amount", "RuStore invoice does not contain amountCurrent/amountCreate")
+        try:
+            amount_kopeks = int(round(float(provider_amount)))
+        except (TypeError, ValueError):
+            return self._error("invalid_amount", f"invalid amountCurrent: {provider_amount}")
+        expected_kopeks = _kopeks(expected_amount_rub)
+        if amount_kopeks != expected_kopeks:
+            return self._error("amount_mismatch", f"expected {expected_kopeks}, got {amount_kopeks}")
 
         invoice_status = str(body.get("invoiceStatus") or "").upper()
         mapped_status = self._map_invoice_status(invoice_status)
@@ -251,7 +258,7 @@ class RuStoreInvoiceVerifier:
             "purchase_id": str(body.get("purchaseId") or ""),
             "order_id": order_id,
             "product_id": item_code,
-            "amount_kopeks": int(round(float(provider_amount))) if provider_amount is not None else None,
+            "amount_kopeks": amount_kopeks,
             "currency": currency or expected_currency,
             "sandbox": bool(self.settings.sandbox),
             "raw": payload,
@@ -287,10 +294,12 @@ class RuStoreInvoiceVerifier:
         return "unknown"
 
     def _error(self, reason: str, message: str) -> dict[str, Any]:
+        retryable = reason in {"public_token_request_failed", "provider_request_failed"}
         return {
             "success": False,
             "paid": False,
             "status": "verification_failed",
             "reason": reason,
             "message": message,
+            "retryable": retryable,
         }

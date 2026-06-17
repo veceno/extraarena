@@ -3,11 +3,26 @@ import uuid
 
 import jwt
 import pytest
+from aiohttp import FormData
 from aiohttp.test_utils import TestClient, TestServer
 
 from bot.constants import ADMIN_ID
 from infrastructure.config import get_settings
 from web import server as web_server
+
+
+STRONG_TEST_JWT_SECRET = "test-admin-workflow-jwt-secret-that-is-long-enough-2026"
+
+
+@pytest.fixture(autouse=True)
+def _strong_jwt_secret(monkeypatch):
+    monkeypatch.setenv("BOT_TOKEN", "bot-token")
+    monkeypatch.setenv("JWT_SECRET", STRONG_TEST_JWT_SECRET)
+    monkeypatch.setenv("ADMIN_SESSION_SECRET", "test-admin-workflow-session-secret-that-is-long-enough-2026")
+    monkeypatch.setenv("WEBAPP_HOST", "127.0.0.1")
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
 
 
 class WorkflowExtraIDDB:
@@ -40,6 +55,10 @@ class AdminWorkflowDB:
                 "pass_track_type": "s1_pass",
                 "ultra_track_type": "s1_ultra",
                 "max_stars": 45,
+                "stage_cost_min": 3,
+                "stage_cost_growth": 0.07,
+                "stage_cost_exponent": 1.5,
+                "stage_cost_cap": 25,
                 "pass_end_position": 40,
                 "ultra_start_position": 41,
             }
@@ -47,6 +66,42 @@ class AdminWorkflowDB:
         self.reward_tracks = []
         self.next_reward_id = 1
         self.extra_pass_updates = []
+        self.promocodes = []
+        self.account_updates = []
+        self.resource_adjustments = []
+        self.reset_completed = False
+        self.reset_execute_kwargs = []
+        self.reset_preview = {
+            "season_id": 1,
+            "already_completed": False,
+            "summary": {
+                "players": 2,
+                "trophies_reduced": 299,
+                "keys_granted": 2,
+                "coins_granted": 400,
+                "stars_reset": 17,
+            },
+            "players": [
+                {
+                    "user_id": 1001,
+                    "old_trophies": 799,
+                    "new_trophies": 600,
+                    "old_stars": 8,
+                    "excess_trophies": 199,
+                    "granted_keys": 1,
+                    "granted_coins": 200,
+                },
+                {
+                    "user_id": 1002,
+                    "old_trophies": 1499,
+                    "new_trophies": 1200,
+                    "old_stars": 9,
+                    "excess_trophies": 299,
+                    "granted_keys": 2,
+                    "granted_coins": 400,
+                },
+            ],
+        }
 
     async def is_admin(self, user_id):
         return False
@@ -156,6 +211,13 @@ class AdminWorkflowDB:
     async def get_all_reward_tracks(self):
         return list(self.reward_tracks)
 
+    async def get_promocodes_list(self):
+        return list(self.promocodes)
+
+    async def create_promocode(self, **kwargs):
+        self.promocodes.append(kwargs)
+        return {"success": True, "code": kwargs["code"]}
+
     async def create_season_draft(self, preset_key="blank"):
         season_id = len(self.seasons) + 1
         season = {
@@ -171,6 +233,10 @@ class AdminWorkflowDB:
             "pass_track_type": f"s{season_id}_pass",
             "ultra_track_type": f"s{season_id}_ultra",
             "max_stars": 45,
+            "stage_cost_min": 3,
+            "stage_cost_growth": 0.07,
+            "stage_cost_exponent": 1.5,
+            "stage_cost_cap": 25,
             "pass_end_position": 40,
             "ultra_start_position": 41,
             "preset_key": preset_key,
@@ -179,6 +245,7 @@ class AdminWorkflowDB:
         return season
 
     async def update_season(self, season_id, **kwargs):
+        kwargs.pop("admin_user_id", None)
         season = await self.get_season_by_id(season_id)
         if not season:
             return {"error": "season_not_found"}
@@ -187,6 +254,48 @@ class AdminWorkflowDB:
 
     async def get_season_by_id(self, season_id):
         return next((season for season in self.seasons if int(season["id"]) == int(season_id)), None)
+
+    async def get_season_reset_summaries(self):
+        if not self.reset_completed:
+            return {}
+        return {
+            1: {
+                "id": 1,
+                "season_id": 1,
+                "status": "completed",
+                "trigger": "admin",
+                "processed_players": 2,
+                "total_trophies_reduced": 299,
+                "total_keys_granted": 2,
+                "total_coins_granted": 400,
+                "completed_at": "2026-06-07T00:00:00+00:00",
+            }
+        }
+
+    async def preview_season_reset(self, season_id):
+        preview = dict(self.reset_preview)
+        preview["season_id"] = int(season_id)
+        preview["already_completed"] = self.reset_completed and int(season_id) == 1
+        return preview
+
+    async def execute_season_reset(self, **kwargs):
+        self.reset_execute_kwargs.append(kwargs)
+        if self.reset_completed:
+            return {"error": "season_reset_already_completed"}
+        self.reset_completed = True
+        return {
+            "id": 1,
+            "season_id": int(kwargs["season_id"]),
+            "previous_season_id": kwargs.get("previous_season_id"),
+            "trigger": kwargs.get("trigger"),
+            "admin_user_id": kwargs.get("admin_user_id"),
+            "status": "completed",
+            "processed_players": 2,
+            "total_trophies_reduced": 299,
+            "total_keys_granted": 2,
+            "total_coins_granted": 400,
+            "completed_at": "2026-06-07T00:00:00+00:00",
+        }
 
     async def clear_reward_tracks(self, track_types):
         track_types = set(track_types)
@@ -211,8 +320,9 @@ class AdminWorkflowDB:
 
     async def delete_reward_track(self, reward_id):
         row = next((row for row in self.reward_tracks if int(row["id"]) == int(reward_id)), None)
-        if row:
-            row["is_active"] = False
+        if not row:
+            return {"error": "reward_not_found"}
+        row["is_active"] = False
         return {"success": True}
 
     async def admin_set_extra_pass(self, admin_id, target_user_id, mode, days=None, reason=None):
@@ -226,12 +336,47 @@ class AdminWorkflowDB:
         self.extra_pass_updates.append(update)
         return {"status": "ok", "action": "set_extra_pass", "mode": mode}
 
+    async def search_admin_players(self, **kwargs):
+        return {"players": [], "total": 0, "filters": kwargs}
+
+    async def admin_ban_user(self, admin_id, target_user_id, reason=None, until=None):
+        if int(target_user_id) == 404:
+            return {"error": "user_not_found"}
+        return {"success": True, "action": "ban"}
+
+    async def admin_update_user_account(self, admin_id, target_user_id, fields=None, reason=None):
+        self.account_updates.append(
+            {
+                "admin_id": admin_id,
+                "target_user_id": target_user_id,
+                "fields": fields,
+                "reason": reason,
+            }
+        )
+        return {"success": True, "action": "update"}
+
+    async def admin_adjust_resource(self, admin_id, target_user_id, resource, amount, reason=None):
+        self.resource_adjustments.append(
+            {
+                "admin_id": admin_id,
+                "target_user_id": target_user_id,
+                "resource": resource,
+                "amount": amount,
+                "reason": reason,
+            }
+        )
+        return {"success": True, "action": "resource"}
+
 
 def _admin_token(session_id: str) -> str:
+    return _token_for_user(session_id, ADMIN_ID)
+
+
+def _token_for_user(session_id: str, user_id: int) -> str:
     now = int(time.time())
     return jwt.encode(
         {
-            "user_id": ADMIN_ID,
+            "user_id": int(user_id),
             "session_id": session_id,
             "iat": now,
             "exp": now + 600,
@@ -359,10 +504,17 @@ async def test_admin_extra_pass_season_rewards_and_player_pass_workflow(monkeypa
                 "status": "scheduled",
                 "start_date": "2026-06-01T00:00:00+00:00",
                 "end_date": "2026-07-01T00:00:00+00:00",
+                "stage_cost_min": 4,
+                "stage_cost_growth": 0.2,
+                "stage_cost_exponent": 1.2,
+                "stage_cost_cap": 30,
             },
         )
         assert update_response.status == 200
-        assert (await db.get_season_by_id(draft_id))["status"] == "scheduled"
+        updated_season = await db.get_season_by_id(draft_id)
+        assert updated_season["status"] == "scheduled"
+        assert updated_season["stage_cost_min"] == 4
+        assert updated_season["stage_cost_cap"] == 30
 
         import_response = await client.post(
             f"/api/admin/seasons/{draft_id}/rewards/import",
@@ -379,6 +531,8 @@ async def test_admin_extra_pass_season_rewards_and_player_pass_workflow(monkeypa
         import_body = await import_response.json()
         assert import_response.status == 200
         assert import_body["data"]["imported"] == 3
+        returned_draft = next(season for season in import_body["data"]["seasons"] if int(season["id"]) == int(draft_id))
+        assert returned_draft["progression_preview"][0]["required_stars"] == 5
 
         tier_response = await client.post(
             "/api/admin/rewards/tracks/create",
@@ -394,6 +548,34 @@ async def test_admin_extra_pass_season_rewards_and_player_pass_workflow(monkeypa
         tier_body = await tier_response.json()
         assert tier_response.status == 200
         tier_id = tier_body["tier"]["id"]
+
+        invalid_reward_type = await client.post(
+            "/api/admin/rewards/tracks/create",
+            headers=headers,
+            json={
+                "track_type": f"s{draft_id}_pass",
+                "position": 3,
+                "reward_type": "particles",
+                "reward_amount": 1,
+                "extra_pass_required": True,
+            },
+        )
+        assert invalid_reward_type.status == 400
+        assert (await invalid_reward_type.json())["error"] == "unsupported_reward_type"
+
+        out_of_scope = await client.post(
+            "/api/admin/rewards/tracks/create",
+            headers=headers,
+            json={
+                "track_type": f"s{draft_id}_ultra",
+                "position": 1,
+                "reward_type": "gems",
+                "reward_amount": 1,
+                "extra_pass_required": True,
+            },
+        )
+        assert out_of_scope.status == 400
+        assert (await out_of_scope.json())["error"] == "position_out_of_track_scope"
 
         update_tier = await client.post(
             "/api/admin/rewards/tracks/update",
@@ -416,6 +598,172 @@ async def test_admin_extra_pass_season_rewards_and_player_pass_workflow(monkeypa
         )
         assert pass_response.status == 200
         assert db.extra_pass_updates[-1]["mode"] == "ultra"
+    finally:
+        await client.close()
+        get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_admin_season_reset_preview_execute_and_idempotency(monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    get_settings.cache_clear()
+    db = AdminWorkflowDB()
+    client, token = await _client(db)
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        unauthenticated_preview = await client.get("/api/admin/seasons/1/reset-preview")
+        assert unauthenticated_preview.status in {401, 403}
+        unauthenticated_execute = await client.post(
+            "/api/admin/seasons/1/reset",
+            json={"confirm": True},
+        )
+        assert unauthenticated_execute.status in {401, 403}
+
+        token_payload = jwt.decode(token, options={"verify_signature": False})
+        non_admin_headers = {"Authorization": f"Bearer {_token_for_user(token_payload['session_id'], 123456)}"}
+        non_admin_preview = await client.get("/api/admin/seasons/1/reset-preview", headers=non_admin_headers)
+        assert non_admin_preview.status == 403
+
+        preview = await client.get("/api/admin/seasons/1/reset-preview", headers=headers)
+        preview_body = await preview.json()
+        assert preview.status == 200
+        assert preview_body["data"]["summary"]["players"] == 2
+        assert preview_body["data"]["summary"]["keys_granted"] == 2
+        assert preview_body["data"]["players_limit"] == 200
+        assert preview_body["data"]["players_truncated"] is False
+
+        missing_confirm = await client.post(
+            "/api/admin/seasons/1/reset",
+            headers=headers,
+            json={"reason": "smoke"},
+        )
+        assert missing_confirm.status == 400
+        assert (await missing_confirm.json())["error"] == "confirm_required"
+
+        string_confirm = await client.post(
+            "/api/admin/seasons/1/reset",
+            headers=headers,
+            json={"confirm": "false"},
+        )
+        assert string_confirm.status == 400
+        assert (await string_confirm.json())["error"] == "confirm_required"
+
+        non_object_payload = await client.post(
+            "/api/admin/seasons/1/reset",
+            headers=headers,
+            json=[],
+        )
+        assert non_object_payload.status == 400
+        assert (await non_object_payload.json())["error"] == "invalid_reset_payload"
+
+        mismatched_season = await client.post(
+            "/api/admin/seasons/1/reset",
+            headers=headers,
+            json={"confirm": True, "confirm_season_id": 2},
+        )
+        assert mismatched_season.status == 400
+        assert (await mismatched_season.json())["error"] == "confirm_season_mismatch"
+
+        long_reason = await client.post(
+            "/api/admin/seasons/1/reset",
+            headers=headers,
+            json={"confirm": True, "reason": "x" * 501},
+        )
+        assert long_reason.status == 400
+        assert (await long_reason.json())["error"] == "reason_too_long"
+
+        missing_season = await client.post(
+            "/api/admin/seasons/999/reset",
+            headers=headers,
+            json={"confirm": True},
+        )
+        assert missing_season.status == 404
+        assert (await missing_season.json())["error"] == "season_not_found"
+
+        non_active = await client.post(
+            "/api/admin/seasons/create-draft",
+            headers=headers,
+            json={"preset_key": "blank"},
+        )
+        draft_id = (await non_active.json())["data"]["season"]["id"]
+        inactive_preview = await client.get(
+            f"/api/admin/seasons/{draft_id}/reset-preview",
+            headers=headers,
+        )
+        assert inactive_preview.status == 400
+        assert (await inactive_preview.json())["error"] == "season_reset_requires_active_season"
+
+        inactive_execute = await client.post(
+            f"/api/admin/seasons/{draft_id}/reset",
+            headers=headers,
+            json={"confirm": True},
+        )
+        assert inactive_execute.status == 400
+        assert (await inactive_execute.json())["error"] == "season_reset_requires_active_season"
+
+        execute = await client.post(
+            "/api/admin/seasons/1/reset",
+            headers=headers,
+            json={"confirm": True, "reason": "smoke reset"},
+        )
+        execute_body = await execute.json()
+        assert execute.status == 200
+        assert execute_body["data"]["reset"]["processed_players"] == 2
+        assert execute_body["data"]["seasons"][0]["reset"]["status"] == "completed"
+        assert db.reset_execute_kwargs[-1]["require_active"] is True
+        assert db.reset_execute_kwargs[-1]["admin_user_id"] == ADMIN_ID
+
+        duplicate = await client.post(
+            "/api/admin/seasons/1/reset",
+            headers=headers,
+            json={"confirm": True},
+        )
+        assert duplicate.status == 409
+        assert (await duplicate.json())["error"] == "season_reset_already_completed"
+    finally:
+        await client.close()
+        get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_admin_season_reset_preview_truncates_player_sample(monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    get_settings.cache_clear()
+    db = AdminWorkflowDB()
+    db.reset_preview = {
+        "season_id": 1,
+        "already_completed": False,
+        "summary": {
+            "players": 250,
+            "trophies_reduced": 25000,
+            "keys_granted": 250,
+            "coins_granted": 50000,
+            "stars_reset": 1000,
+        },
+        "players": [
+            {
+                "user_id": 10_000 + idx,
+                "old_trophies": 799,
+                "new_trophies": 600,
+                "old_stars": 4,
+                "excess_trophies": 199,
+                "granted_keys": 1,
+                "granted_coins": 200,
+            }
+            for idx in range(250)
+        ],
+    }
+    client, token = await _client(db)
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        preview = await client.get("/api/admin/seasons/1/reset-preview", headers=headers)
+        body = await preview.json()
+
+        assert preview.status == 200
+        assert body["data"]["summary"]["players"] == 250
+        assert len(body["data"]["players"]) == 200
+        assert body["data"]["players_limit"] == 200
+        assert body["data"]["players_truncated"] is True
     finally:
         await client.close()
         get_settings.cache_clear()
@@ -461,9 +809,43 @@ async def test_admin_product_options_and_validation(monkeypatch):
                 "package_type": "gems_100",
                 "name": "100 gems",
                 "price": 99,
+                "rustore_product_id": "ea.gems.100",
+                "image_url": "/extraShop/uploads/products/gems_100.webp",
             },
         )
         assert create_product.status == 200
+        assert db.products["gems_smoke"]["metadata"]["rustore_product_id"] == "ea.gems.100"
+        assert db.products["gems_smoke"]["image_url"] == "/extraShop/uploads/products/gems_100.webp"
+
+        update_rustore_id = await client.post(
+            "/api/admin/ruble-products/update",
+            headers=headers,
+            json={
+                "code": "gems_smoke",
+                "rustore_product_id": "ea.gems.100.v2",
+                "image_url": "https://cdn.example/products/gems-100.jpg",
+            },
+        )
+        assert update_rustore_id.status == 200
+        assert db.products["gems_smoke"]["metadata"]["rustore_product_id"] == "ea.gems.100.v2"
+        assert db.products["gems_smoke"]["image_url"] == "https://cdn.example/products/gems-100.jpg"
+
+        for unsafe_url in (
+            "javascript:alert(1)",
+            "data:image/svg+xml,<svg>",
+            "http://cdn.example/products/gems.jpg",
+            "/extraShop/uploads/products/../secret.png",
+            "/extraShop/uploads/products/nested/gems.png",
+            "/extraShop/uploads/products/bad.svg",
+            'https://cdn.example/products/gems.jpg" onerror="alert(1)',
+        ):
+            invalid_image = await client.post(
+                "/api/admin/ruble-products/update",
+                headers=headers,
+                json={"code": "gems_smoke", "image_url": unsafe_url},
+            )
+            assert invalid_image.status == 400
+            assert (await invalid_image.json())["error"] == "invalid_image_url"
 
         duplicate = await client.post(
             "/api/admin/ruble-products/create",
@@ -478,6 +860,24 @@ async def test_admin_product_options_and_validation(monkeypatch):
         )
         assert duplicate.status == 409
         assert (await duplicate.json())["error"] == "product_code_exists"
+
+        db.products["legacy_bad_image"] = {
+            "id": 999,
+            "code": "legacy_bad_image",
+            "item_type": "extrapass",
+            "package_type": None,
+            "name": "Legacy Bad Image",
+            "price": 179,
+            "currency": "rubles",
+            "is_active": True,
+            "show_in_shop": True,
+            "image_url": "javascript:alert(1)",
+        }
+        public_response = await client.get("/api/shop/ruble-products")
+        public_body = await public_response.json()
+        public_legacy = next(product for product in public_body["products"] if product["code"] == "legacy_bad_image")
+        assert public_response.status == 200
+        assert public_legacy["image_url"] is None
     finally:
         await client.close()
         get_settings.cache_clear()
@@ -498,7 +898,6 @@ async def test_admin_configs_summary_returns_partial_payload_when_blocks_fail(mo
         assert body["status"] == "ok"
         assert body["data"]["runtime_config"]["maintenance_mode"]["enabled"] is False
         assert body["data"]["promocodes_count"] == 0
-        assert "promocodes" in body["data"]["errors"]
         assert "cards" in body["data"]["errors"]
         assert "squads" in body["data"]["errors"]
     finally:
@@ -562,6 +961,10 @@ async def test_admin_season_update_normalizes_current_season_and_validation(monk
                 "start_date": "",
                 "end_date": "",
                 "max_stars": 45,
+                "stage_cost_min": 4,
+                "stage_cost_growth": 0.1,
+                "stage_cost_exponent": 1.0,
+                "stage_cost_cap": 20,
                 "pass_end_position": 40,
                 "ultra_start_position": 41,
             },
@@ -569,8 +972,292 @@ async def test_admin_season_update_normalizes_current_season_and_validation(monk
         body = await update_response.json()
         assert update_response.status == 200
         assert body["data"]["season"]["is_active"] is True
+        assert body["data"]["season"]["stage_cost_min"] == 4
+        assert body["data"]["season"]["stage_cost_cap"] == 20
         assert body["data"]["season"]["start_date"] is None
         assert body["data"]["season"]["end_date"] is None
+    finally:
+        await client.close()
+        get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_admin_season_update_rejects_duplicate_track_types(monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    get_settings.cache_clear()
+    db = AdminWorkflowDB()
+    client, token = await _client(db)
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        response = await client.post(
+            "/api/admin/seasons/1",
+            headers=headers,
+            json={
+                "free_track_type": "same_track",
+                "pass_track_type": "same_track",
+                "ultra_track_type": "s1_ultra",
+            },
+        )
+
+        assert response.status == 400
+        assert (await response.json())["error"] == "duplicate_season_track_types"
+    finally:
+        await client.close()
+        get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_admin_season_update_rejects_track_type_reused_by_another_season(monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    get_settings.cache_clear()
+    db = AdminWorkflowDB()
+    db.seasons.append(
+        {
+            "id": 2,
+            "slug": "season-2",
+            "name": "Season 2",
+            "season_number": 2,
+            "status": "draft",
+            "is_active": False,
+            "start_date": None,
+            "end_date": None,
+            "free_track_type": "s2_free",
+            "pass_track_type": "s2_pass",
+            "ultra_track_type": "s2_ultra",
+            "max_stars": 45,
+            "stage_cost_min": 3,
+            "stage_cost_growth": 0.07,
+            "stage_cost_exponent": 1.5,
+            "stage_cost_cap": 25,
+            "pass_end_position": 40,
+            "ultra_start_position": 41,
+        }
+    )
+    client, token = await _client(db)
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        response = await client.post(
+            "/api/admin/seasons/1",
+            headers=headers,
+            json={"pass_track_type": "s2_pass"},
+        )
+
+        assert response.status == 400
+        assert (await response.json())["error"] == "season_track_type_reused"
+    finally:
+        await client.close()
+        get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_admin_season_partial_update_validates_against_existing_season(monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    get_settings.cache_clear()
+    db = AdminWorkflowDB()
+    client, token = await _client(db)
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        invalid_start = await client.post(
+            "/api/admin/seasons/1",
+            headers=headers,
+            json={"start_date": "2026-06-02T00:00:00+00:00"},
+        )
+
+        assert invalid_start.status == 400
+        assert (await invalid_start.json())["error"] == "season_dates_invalid"
+
+        invalid_positions = await client.post(
+            "/api/admin/seasons/1",
+            headers=headers,
+            json={"max_stars": 30},
+        )
+
+        assert invalid_positions.status == 400
+        assert (await invalid_positions.json())["error"] == "invalid_season_positions"
+    finally:
+        await client.close()
+        get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_admin_endpoint_input_validation_and_player_error_mapping(monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    get_settings.cache_clear()
+    db = AdminWorkflowDB()
+    client, token = await _client(db)
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        invalid_limit = await client.get("/api/admin/players/list?limit=nope", headers=headers)
+        assert invalid_limit.status == 400
+        assert (await invalid_limit.json())["error"] == "invalid_limit"
+
+        invalid_days = await client.get("/api/admin/players/activity?days=abc", headers=headers)
+        assert invalid_days.status == 400
+        assert (await invalid_days.json())["error"] == "invalid_days"
+
+        not_found = await client.post(
+            "/api/admin/players/404/ban",
+            headers=headers,
+            json={"reason": "missing user"},
+        )
+        not_found_body = await not_found.json()
+        assert not_found.status == 404
+        assert not_found_body["error"] == "user_not_found"
+
+        invalid_amount = await client.post(
+            "/api/admin/players/4242/resource",
+            headers=headers,
+            json={"resource": "gems", "amount": "nan"},
+        )
+        assert invalid_amount.status == 400
+        assert (await invalid_amount.json())["error"] == "invalid_amount"
+
+        missing_fields = await client.post(
+            "/api/admin/players/4242/update",
+            headers=headers,
+            json={"status": "banned"},
+        )
+        assert missing_fields.status == 400
+        assert (await missing_fields.json())["error"] == "fields_required"
+
+        self_ban = await client.post(
+            f"/api/admin/players/{ADMIN_ID}/update",
+            headers=headers,
+            json={"fields": {"status": "banned"}},
+        )
+        assert self_ban.status == 400
+        assert (await self_ban.json())["error"] == "self_ban_requires_confirm"
+
+        invalid_extra_pass_days = await client.post(
+            "/api/admin/players/4242/extra-pass",
+            headers=headers,
+            json={"mode": "grant", "days": "abc"},
+        )
+        assert invalid_extra_pass_days.status == 400
+        assert (await invalid_extra_pass_days.json())["error"] == "invalid_days"
+    finally:
+        await client.close()
+        get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_admin_promocode_rewards_are_validated(monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    get_settings.cache_clear()
+    db = AdminWorkflowDB()
+    client, token = await _client(db)
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        invalid_payloads = [
+            {"code": "NEG", "reward_gems": -1},
+            {"code": "TXT", "reward_coins": "ten"},
+            {"code": "HUGE", "reward_keys": 1_000_000_001},
+            {"code": "EMPTY"},
+        ]
+        for payload in invalid_payloads:
+            response = await client.post(
+                "/api/admin/promocodes/create",
+                headers=headers,
+                json=payload,
+            )
+            assert response.status == 400
+            assert (await response.json())["error"]
+
+        valid = await client.post(
+            "/api/admin/promocodes/create",
+            headers=headers,
+            json={"code": "GOOD", "reward_gems": "25", "reward_extrapass": False},
+        )
+        body = await valid.json()
+        assert valid.status == 200
+        assert body["success"] is True
+        assert db.promocodes[-1]["reward_gems"] == 25
+    finally:
+        await client.close()
+        get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_admin_missing_shop_product_and_reward_targets_map_to_404(monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    get_settings.cache_clear()
+    db = AdminWorkflowDB()
+    client, token = await _client(db)
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        missing_set = await client.post(
+            "/api/admin/shop/sets/delete",
+            headers=headers,
+            json={"set_id": 999},
+        )
+        assert missing_set.status == 404
+        assert (await missing_set.json())["error"] == "set_not_found"
+
+        missing_product = await client.post(
+            "/api/admin/ruble-products/delete",
+            headers=headers,
+            json={"code": "missing"},
+        )
+        assert missing_product.status == 404
+        assert (await missing_product.json())["error"] == "product_not_found"
+
+        missing_reward_update = await client.post(
+            "/api/admin/rewards/tracks/update",
+            headers=headers,
+            json={"id": 999, "reward_amount": 2},
+        )
+        assert missing_reward_update.status == 404
+        assert (await missing_reward_update.json())["error"] == "reward_not_found"
+
+        missing_reward_delete = await client.post(
+            "/api/admin/rewards/tracks/delete",
+            headers=headers,
+            json={"id": 999},
+        )
+        assert missing_reward_delete.status == 404
+        assert (await missing_reward_delete.json())["error"] == "reward_not_found"
+    finally:
+        await client.close()
+        get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_admin_product_image_upload_rejects_mismatched_and_oversized_payloads(monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    get_settings.cache_clear()
+    db = AdminWorkflowDB()
+    client, token = await _client(db)
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        mismatched = FormData()
+        mismatched.add_field(
+            "file",
+            b"not actually a png",
+            filename="bad.png",
+            content_type="image/png",
+        )
+        mismatch_response = await client.post(
+            "/api/admin/uploads/product-image",
+            headers=headers,
+            data=mismatched,
+        )
+        assert mismatch_response.status == 400
+        assert (await mismatch_response.json())["error"] == "invalid_image_signature"
+
+        oversized = FormData()
+        oversized.add_field(
+            "file",
+            b"\x89PNG\r\n\x1a\n" + (b"x" * (5 * 1024 * 1024 + 1)),
+            filename="too-large.png",
+            content_type="image/png",
+        )
+        oversized_response = await client.post(
+            "/api/admin/uploads/product-image",
+            headers=headers,
+            data=oversized,
+        )
+        assert oversized_response.status == 400
+        assert (await oversized_response.json())["error"] == "file_too_large"
     finally:
         await client.close()
         get_settings.cache_clear()

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import re
+import logging
 from datetime import datetime
 from html import escape
 from typing import List, Optional
+from urllib.parse import urlparse
 
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
@@ -30,6 +32,7 @@ router = Router(name="basic")
 
 NEWS_FETCH_LIMIT = 20
 NEWS_MAX_CHARS = 1500
+NEWS_ENTRY_MAX_CHARS = 1200
 OPTION_PATTERN = re.compile(
     r'(?P<prefix>\s*)(?:--|-)(?P<key>[a-zA-Z_]+)\s*=\s*(?P<value>"[^"]*"|\'[^\']*\'|[^\s]+)'
 )
@@ -76,10 +79,6 @@ def register_basic_handlers(dp: Dispatcher, webapp_url: str, db: Database | None
         if created:
             await message.answer("✨ Учётная запись создана. Добро пожаловать в арену!")
         
-        # Проверяем готовность кубика
-        if db and message.from_user:
-            await _check_and_notify_dice_ready(message.from_user.id, bot)
-
         # Проверяем готовность ключей генератора
         if db and message.from_user:
             await _check_and_notify_generator_ready(message.from_user.id, bot)
@@ -291,6 +290,24 @@ def register_basic_handlers(dp: Dispatcher, webapp_url: str, db: Database | None
             button_url=news_payload["button_url"],
             photo_file_id=photo_id,
         )
+        if hasattr(db, "create_news_post"):
+            try:
+                safe_html = escape(news_payload["text"]).replace("\n", "<br>")
+                await db.create_news_post(
+                    author_id=message.from_user.id,
+                    title=CATEGORY_LABELS[news_payload["category"]],
+                    content=news_payload["text"],
+                    content_html=safe_html,
+                    tags=[CATEGORY_LABELS[news_payload["category"]]],
+                    cover_image_url=None,
+                    post_type="news",
+                )
+            except Exception as exc:
+                logging.getLogger(__name__).warning(
+                    "Failed to mirror Telegram news entry to community news: %s",
+                    exc,
+                    exc_info=True,
+                )
 
         preview = CATEGORY_LABELS[news_payload["category"]]
         await message.answer(
@@ -355,32 +372,6 @@ def register_basic_handlers(dp: Dispatcher, webapp_url: str, db: Database | None
                 f"❌ Ошибка создания поста: {result.get('error', 'неизвестная ошибка')}"
             )
 
-    async def _check_and_notify_dice_ready(user_id: int, bot: Bot) -> None:
-        """Проверить, готов ли кубик, и отправить уведомление."""
-        if not db:
-            return
-        
-        try:
-            status = await db.get_dice_status(user_id)
-            # Проверяем, можно ли бросать (значит, прошёл час)
-            if status.get("can_roll") and status.get("last_roll"):
-                # Проверяем, не отправляли ли уже уведомление
-                notifications = await db.check_dice_ready_notifications()
-                for notif in notifications:
-                    if notif["user_id"] == user_id:
-                        try:
-                            await bot.send_message(
-                                chat_id=user_id,
-                                text="🎲 Счастливый кубик снова доступен! Брось его в разделе «Арена» и получи награду!",
-                            )
-                            await db.mark_dice_notification_sent(user_id)
-                        except (TelegramForbiddenError, TelegramBadRequest):
-                            pass  # Пользователь заблокировал бота или не найден
-                        break
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).error(f"Ошибка проверки кубика: {e}", exc_info=True)
-
     async def _check_and_notify_generator_ready(user_id: int, bot: Bot) -> None:
         """Проверить, готовы ли ключи генератора, и отправить уведомление."""
         if not db:
@@ -409,9 +400,6 @@ def register_basic_handlers(dp: Dispatcher, webapp_url: str, db: Database | None
         if not message.from_user:
             return
         
-        # Проверяем готовность кубика
-        await _check_and_notify_dice_ready(message.from_user.id, bot)
-
         # Проверяем готовность ключей генератора
         await _check_and_notify_generator_ready(message.from_user.id, bot)
 
@@ -492,13 +480,8 @@ def register_basic_handlers(dp: Dispatcher, webapp_url: str, db: Database | None
             return
 
         pages = _build_news_pages(news_items)
-        text = pages[0]
         keyboard = _build_news_keyboard(current=0, total=len(pages))
-        await message.answer(
-            text,
-            reply_markup=keyboard,
-            parse_mode="HTML",
-        )
+        await _send_news_page(message, pages[0], keyboard)
 
     @router.callback_query(F.data.startswith("news_page:"))
     async def handle_news_page(callback: CallbackQuery) -> None:
@@ -525,11 +508,17 @@ def register_basic_handlers(dp: Dispatcher, webapp_url: str, db: Database | None
         total = len(pages)
         page_index = max(0, min(page_index, total - 1))
         keyboard = _build_news_keyboard(page_index, total)
-        await callback.message.edit_text(
-            pages[page_index],
-            reply_markup=keyboard,
-            parse_mode="HTML",
-        )
+        try:
+            await callback.message.edit_text(
+                pages[page_index]["text"],
+                reply_markup=keyboard,
+                parse_mode="HTML",
+            )
+        except TelegramBadRequest:
+            await callback.message.edit_text(
+                _plain_news_text(pages[page_index]["text"]),
+                reply_markup=keyboard,
+            )
         await callback.answer()
 
     @router.callback_query(F.data == "news_close")
@@ -770,27 +759,54 @@ def _extract_options(raw: str, allowed: set[str]) -> tuple[str, dict[str, str]]:
     return cleaned, options
 
 
-def _build_news_pages(news_items) -> List[str]:
-    pages: List[str] = []
+def _build_news_pages(news_items) -> List[dict[str, Optional[str]]]:
+    pages: List[dict[str, Optional[str]]] = []
     current_entries: List[str] = []
+    current_photo_id: Optional[str] = None
     current_len = 0
 
     for item in news_items:
         entry = _render_news_entry(item)
         entry_len = len(entry)
+        if entry_len > NEWS_MAX_CHARS:
+            if current_entries:
+                pages.append({"text": "\n\n".join(current_entries), "photo_file_id": current_photo_id})
+                current_entries = []
+                current_photo_id = None
+                current_len = 0
+            for start in range(0, entry_len, NEWS_ENTRY_MAX_CHARS):
+                chunk = entry[start:start + NEWS_ENTRY_MAX_CHARS]
+                pages.append({
+                    "text": chunk,
+                    "photo_file_id": item.get("photo_file_id") if start == 0 else None,
+                })
+            continue
         if current_entries and (
             current_len + entry_len > NEWS_MAX_CHARS or len(current_entries) >= 2
         ):
-            pages.append("\n\n".join(current_entries))
+            pages.append({"text": "\n\n".join(current_entries), "photo_file_id": current_photo_id})
             current_entries = []
+            current_photo_id = None
             current_len = 0
         current_entries.append(entry)
+        if not current_photo_id and item.get("photo_file_id"):
+            current_photo_id = item.get("photo_file_id")
         current_len += entry_len
 
     if current_entries:
-        pages.append("\n\n".join(current_entries))
+        pages.append({"text": "\n\n".join(current_entries), "photo_file_id": current_photo_id})
 
     return pages
+
+
+def _safe_news_url(url: Optional[str]) -> Optional[str]:
+    raw = (url or "").strip()
+    if not raw:
+        return None
+    parsed = urlparse(raw)
+    if parsed.scheme not in {"http", "https", "tg"}:
+        return None
+    return raw
 
 
 def _render_news_entry(item) -> str:
@@ -802,16 +818,47 @@ def _render_news_entry(item) -> str:
         date_str = str(created_at)
 
     text = escape(item["text"] or "")
+    if len(text) > NEWS_ENTRY_MAX_CHARS:
+        text = text[:NEWS_ENTRY_MAX_CHARS - 1] + "…"
     entry = f"<b>{category_label}</b> • {date_str}\n{text}"
 
     if item.get("photo_file_id"):
         entry += "\n📷 <i>В новости есть изображение</i>"
 
-    if item.get("button_url"):
+    safe_url = _safe_news_url(item.get("button_url"))
+    if safe_url:
         label = escape(item["button_text"] or "Подробнее")
-        entry += f'\n<a href="{item["button_url"]}">{label}</a>'
+        escaped_url = escape(item["button_url"], quote=True)
+        entry += f'\n<a href="{escaped_url}">{label}</a>'
 
     return entry
+
+
+def _plain_news_text(text: str) -> str:
+    return re.sub(r"<[^>]+>", "", text or "")[:NEWS_MAX_CHARS]
+
+
+async def _send_news_page(message: Message, page: dict[str, Optional[str]], keyboard: InlineKeyboardMarkup | None) -> None:
+    text = page["text"] or ""
+    try:
+        if page.get("photo_file_id") and len(text) <= 1024:
+            await message.answer_photo(
+                photo=page["photo_file_id"],
+                caption=text,
+                reply_markup=keyboard,
+                parse_mode="HTML",
+            )
+        else:
+            await message.answer(
+                text,
+                reply_markup=keyboard,
+                parse_mode="HTML",
+            )
+    except TelegramBadRequest:
+        await message.answer(
+            _plain_news_text(text),
+            reply_markup=keyboard,
+        )
 
 
 def _build_news_keyboard(current: int, total: int) -> InlineKeyboardMarkup | None:
@@ -846,4 +893,3 @@ def _build_broadcast_keyboard(
         rows.append([InlineKeyboardButton(text=button_text, url=button_url)])
     rows.append([InlineKeyboardButton(text="Закрыть", callback_data="broadcast_close")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
-

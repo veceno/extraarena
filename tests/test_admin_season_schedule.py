@@ -1,3 +1,5 @@
+import pytest
+
 from web import server
 
 
@@ -79,3 +81,118 @@ def test_extra_pass_json_import_maps_lanes_to_season_track_types():
     ]
     assert [row["extra_pass_required"] for row in rows] == [False, True, True]
     assert rows[2]["reward_meta"] == {"rarity": ["epic"]}
+
+
+def test_extra_pass_json_import_accepts_case_rewards():
+    season = server._normalize_extra_pass_season({
+        "free_track_type": "season_7_free",
+        "pass_track_type": "season_7_pass",
+        "ultra_track_type": "season_7_ultra",
+        "max_stars": 45,
+    })
+
+    rows = server._normalize_reward_track_import_payload(
+        {"free": [{"position": 10, "reward_type": "case", "reward_amount": 3}]},
+        season,
+    )
+
+    assert rows == [
+        {
+            "track_type": "season_7_free",
+            "position": 10,
+            "reward_type": "case",
+            "reward_amount": 3,
+            "reward_meta": None,
+            "extra_pass_required": False,
+        }
+    ]
+
+
+def test_extra_pass_json_import_splits_random_and_specific_card_rewards():
+    season = server._normalize_extra_pass_season({
+        "free_track_type": "season_7_free",
+        "pass_track_type": "season_7_pass",
+        "ultra_track_type": "season_7_ultra",
+        "max_stars": 45,
+    })
+
+    rows = server._normalize_reward_track_import_payload(
+        {
+            "premium": [{"position": 2, "reward_type": "card", "reward_amount": 1, "meta": {"rarity": ["rare"]}}],
+            "ultra": [{"position": 41, "reward_type": "specific_card", "reward_amount": 1, "meta": {"card_id": 46}}],
+        },
+        season,
+    )
+
+    assert rows[0]["reward_type"] == "card"
+    assert rows[0]["reward_meta"] == {"rarity": ["rare"]}
+    assert rows[1]["reward_type"] == "specific_card"
+    assert rows[1]["reward_meta"] == {"card_id": 46}
+
+
+@pytest.mark.parametrize(
+    "row,error",
+    [
+        ({"position": 1, "reward_type": "coins", "reward_amount": 0}, "invalid_reward_amount"),
+        ({"position": 1, "reward_type": "card", "reward_amount": 2, "meta": {"rarity": ["epic"]}}, "invalid_card_reward_amount"),
+        ({"position": 1, "reward_type": "specific_card", "reward_amount": 1}, "specific_card_id_required"),
+    ],
+)
+def test_extra_pass_json_import_rejects_invalid_reward_configs(row, error):
+    season = server._normalize_extra_pass_season({
+        "free_track_type": "season_7_free",
+        "pass_track_type": "season_7_pass",
+        "ultra_track_type": "season_7_ultra",
+        "max_stars": 45,
+    })
+
+    with pytest.raises(ValueError, match=error):
+        server._normalize_reward_track_import_payload({"free": [row]}, season)
+
+
+class _CardValidationDB:
+    def __init__(self, card):
+        self.card = card
+
+    async def get_card_info(self, card_id):
+        return self.card if int(card_id) == 46 else None
+
+
+@pytest.mark.asyncio
+async def test_admin_reward_validation_requires_existing_warrior_specific_card():
+    assert await server._admin_validate_reward_track_config(
+        _CardValidationDB({"id": 46, "card_type": "warrior"}),
+        {"reward_type": "specific_card", "reward_amount": 1, "reward_meta": {"card_id": 46}},
+    ) is None
+    assert await server._admin_validate_reward_track_config(
+        _CardValidationDB(None),
+        {"reward_type": "specific_card", "reward_amount": 1, "reward_meta": {"card_id": 46}},
+    ) == "specific_card_not_found"
+    assert await server._admin_validate_reward_track_config(
+        _CardValidationDB({"id": 46, "card_type": "hero"}),
+        {"reward_type": "specific_card", "reward_amount": 1, "reward_meta": {"card_id": 46}},
+    ) == "specific_card_must_be_warrior"
+
+
+def test_extra_pass_json_import_rejects_row_level_stage_costs():
+    season = server._normalize_extra_pass_season({
+        "free_track_type": "season_7_free",
+        "pass_track_type": "season_7_pass",
+        "ultra_track_type": "season_7_ultra",
+        "max_stars": 45,
+    })
+
+    with pytest.raises(ValueError, match="stage_cost_formula_owned"):
+        server._normalize_reward_track_import_payload(
+            {
+                "free": [
+                    {
+                        "position": 1,
+                        "reward_type": "coins",
+                        "reward_amount": 150,
+                        "required_stars": 25,
+                    }
+                ]
+            },
+            season,
+        )

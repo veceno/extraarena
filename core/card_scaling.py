@@ -1,8 +1,8 @@
 """
 Единая формула расчета статов карт (коллекция + арена).
 
-Формула роста: base * (1 + rarity_growth) ** (level - 1)
-- Warriors/Potions: exponential growth based on rarity
+Формула роста: base * (1 + growth) ** (level - 1)
+- Warriors/Potions: unified exponential growth
 - Heroes: +2 HP per level, no attack growth
 - Mechanics scaling: handled separately per card_type by scale_card_by_level
 """
@@ -20,13 +20,14 @@ logger = logging.getLogger(__name__)
 RARITY_STATS: dict[str, float] = {
     "common": 0.10,
     "rare": 0.10,
+    "start": 0.10,
     "superrare": 0.10,
-    "epic": 0.11,
-    "legendary": 0.12,
-    "mythic": 0.12,
-    "limited": 0.13,
-    "divine": 0.15,
-    "unique": 0.15,
+    "epic": 0.10,
+    "legendary": 0.10,
+    "mythic": 0.10,
+    "limited": 0.10,
+    "divine": 0.10,
+    "unique": 0.10,
 }
 
 
@@ -150,10 +151,10 @@ def _scale_warrior_mechanics(mechanics: List[str], level: int) -> List[str]:
             scaled.append(f"{prefix}{int(base_val) + ((level - 1) // 2)}")
             continue
 
-        target_match = re.match(r"(.*(?:heal_target|damage)_)(\d+)", mechanic)
+        target_match = re.match(r"(.*(?:heal_target|damage)_)(\d+)(_random)?$", mechanic)
         if target_match:
-            prefix, base_val = target_match.groups()
-            scaled.append(f"{prefix}{int(base_val) + ((level - 1) // 2)}")
+            prefix, base_val, suffix = target_match.groups()
+            scaled.append(f"{prefix}{int(base_val) + ((level - 1) // 2)}{suffix or ''}")
             continue
 
         buff_match = re.match(r"((?:battlecry_)?buff_all_|battlecry_buff_)(\d+)_(\d+)$", mechanic)

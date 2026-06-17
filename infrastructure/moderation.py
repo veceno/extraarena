@@ -94,6 +94,9 @@ async def moderate_content(
     local_reason = _local_policy_rejection(text, category)
     if local_reason:
         return {"decision": "reject", "reason": local_reason}
+    if not MODERATION_API_KEY:
+        logger.error("Moderation API key is not configured")
+        return {"decision": "reject", "reason": "Модерация не настроена"}
 
     # Build messages
     user_content: Any
@@ -194,10 +197,12 @@ async def check_rate_limit(db: Any, user_id: int) -> dict[str, Any]:
                 """
                 SELECT created_at FROM community_submissions
                 WHERE user_id = $1
+                  AND created_at > NOW() - ($2 || ' minutes')::INTERVAL
                 ORDER BY created_at ASC
                 LIMIT 1
                 """,
                 user_id,
+                str(SUBMISSION_RATE_WINDOW_MINUTES),
             )
             if oldest:
                 import datetime as _dt

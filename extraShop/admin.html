@@ -1658,6 +1658,7 @@
                 <div class="field"><label>Item type *</label><select id="pe-item-type"></select></div>
                 <div class="field" id="pe-package-field"><label>Package type</label><select id="pe-package-type"></select></div>
                 <div class="field" id="pe-shop-set-field"><label>Shop set</label><select id="pe-shop-set-id"></select></div>
+                <div class="field full"><label>RuStore product ID</label><input id="pe-rustore-product-id" placeholder="Optional Console productId override"></div>
                 <div class="field full"><label>Name *</label><input id="pe-name" placeholder="Product name"></div>
                 <div class="field full"><label>Description</label><textarea id="pe-desc" placeholder="Optional"></textarea></div>
               </div>
@@ -2178,6 +2179,7 @@
           <button class="season-tab active" type="button" data-season-tab="current">Текущий сезон</button>
           <button class="season-tab" type="button" data-season-tab="draft">Новый сезон</button>
           <button class="season-tab" type="button" data-season-tab="rewards">ExtraPass rewards</button>
+          <button class="season-tab" type="button" data-season-tab="reset">Season reset</button>
           <button class="season-tab" type="button" data-season-tab="schedule">Обзор сменяемости сезонов</button>
         </div>
 
@@ -2192,7 +2194,11 @@
                   <div class="field full"><label>Описание</label><textarea id="sc-description"></textarea></div>
                   <div class="field"><label>Дата начала</label><input id="sc-start" type="datetime-local"></div>
                   <div class="field"><label>Дата окончания</label><input id="sc-end" type="datetime-local"></div>
-                  <div class="field"><label>Max stars</label><input id="sc-max-stars" type="number" min="1" max="99"></div>
+                  <div class="field"><label>Этапов</label><input id="sc-max-stars" type="number" min="1" max="99"></div>
+                  <div class="field"><label>Мин. цена этапа</label><input id="sc-stage-cost-min" type="number" min="1" max="999" step="1"></div>
+                  <div class="field"><label>Рост цены</label><input id="sc-stage-cost-growth" type="number" min="0" max="100" step="0.01"></div>
+                  <div class="field"><label>Экспонента цены</label><input id="sc-stage-cost-exponent" type="number" min="0.01" max="10" step="0.01"></div>
+                  <div class="field"><label>Потолок цены</label><input id="sc-stage-cost-cap" type="number" min="1" max="999" step="1"></div>
                   <div class="field"><label>Pass до этапа</label><input id="sc-pass-end" type="number" min="1" max="99"></div>
                   <div class="field"><label>Ultra c этапа</label><input id="sc-ultra-start" type="number" min="1" max="99"></div>
                   <div class="field"><label>Status</label><select id="sc-status"><option value="draft">draft</option><option value="scheduled">scheduled</option><option value="active">active</option><option value="archived">archived</option></select></div>
@@ -2208,6 +2214,7 @@
             </div>
             <aside class="side-stack">
               <section class="side-panel"><div class="side-head"><strong>Все сезоны</strong><span id="season-list-count">—</span></div><div class="preview-body" id="season-list-preview">Loading...</div></section>
+              <section class="side-panel"><div class="side-head"><strong>Превью стоимости</strong><span>current</span></div><div class="preview-body" id="sc-stage-preview">—</div></section>
             </aside>
           </div>
         </section>
@@ -2225,7 +2232,11 @@
                   <div class="field full"><label>Описание</label><textarea id="sd-description"></textarea></div>
                   <div class="field"><label>Дата начала</label><input id="sd-start" type="datetime-local"></div>
                   <div class="field"><label>Дата окончания</label><input id="sd-end" type="datetime-local"></div>
-                  <div class="field"><label>Max stars</label><input id="sd-max-stars" type="number" min="1" max="99"></div>
+                  <div class="field"><label>Этапов</label><input id="sd-max-stars" type="number" min="1" max="99"></div>
+                  <div class="field"><label>Мин. цена этапа</label><input id="sd-stage-cost-min" type="number" min="1" max="999" step="1"></div>
+                  <div class="field"><label>Рост цены</label><input id="sd-stage-cost-growth" type="number" min="0" max="100" step="0.01"></div>
+                  <div class="field"><label>Экспонента цены</label><input id="sd-stage-cost-exponent" type="number" min="0.01" max="10" step="0.01"></div>
+                  <div class="field"><label>Потолок цены</label><input id="sd-stage-cost-cap" type="number" min="1" max="999" step="1"></div>
                   <div class="field"><label>Pass до этапа</label><input id="sd-pass-end" type="number" min="1" max="99"></div>
                   <div class="field"><label>Ultra c этапа</label><input id="sd-ultra-start" type="number" min="1" max="99"></div>
                   <div class="toggle"><span class="toggle-label">Автосмена по датам</span><span class="switch on" id="sd-auto-switch" data-on="1"></span></div>
@@ -2247,6 +2258,7 @@
             </div>
             <aside class="side-stack">
               <section class="side-panel"><div class="side-head"><strong>Pipeline</strong><span>auto-ready</span></div><div class="preview-body" id="season-pipeline-preview">Создание черновика -> дорожки -> инфо-поля -> даты -> scheduled.</div></section>
+              <section class="side-panel"><div class="side-head"><strong>Превью стоимости</strong><span>draft</span></div><div class="preview-body" id="sd-stage-preview">—</div></section>
             </aside>
           </div>
         </section>
@@ -2258,9 +2270,9 @@
               <div class="field"><label>Season</label><select id="sr-season-select"></select></div>
               <div class="field"><label>Lane</label><select id="sr-lane"><option value="free">Free</option><option value="premium">ExtraPass</option><option value="ultra">Ultra</option></select></div>
               <div class="field"><label>Position</label><input id="sr-position" type="number" min="1" value="1"></div>
-              <div class="field"><label>Reward type</label><select id="sr-reward-type"><option value="coins">coins</option><option value="gems">gems</option><option value="keys">keys</option><option value="case">case</option><option value="card">card</option><option value="particles">particles</option></select></div>
-              <div class="field"><label>Amount</label><input id="sr-reward-amount" type="number" min="0" value="0"></div>
-              <div class="field"><label>Meta JSON</label><input id="sr-reward-meta" placeholder='{"case_tier":4}'></div>
+              <div class="field"><label>Reward type</label><select id="sr-reward-type"><option value="coins">coins</option><option value="gems">gems</option><option value="keys">keys</option><option value="case">case</option><option value="card">random card by rarity</option><option value="specific_card">specific card</option></select></div>
+              <div class="field"><label>Amount</label><input id="sr-reward-amount" type="number" min="1" value="1"></div>
+              <div class="field"><label>Meta JSON</label><input id="sr-reward-meta" placeholder='{"rarity":["epic"]} или {"card_id":46}'></div>
             </div>
             <div class="top-actions" style="justify-content:flex-start;margin-top:10px">
               <button class="primary" type="button" id="btn-sr-upsert">Create / upsert reward</button>
@@ -2271,6 +2283,33 @@
             <div class="table-scroll"><table>
               <thead><tr><th>ID</th><th>Lane</th><th>Pos</th><th>Reward</th><th>Meta</th><th>Status</th><th>Actions</th></tr></thead>
               <tbody id="sr-tbody"><tr><td colspan="7" style="text-align:center;padding:24px;color:var(--muted)">Loading...</td></tr></tbody>
+            </table></div>
+          </section>
+        </section>
+
+        <section class="season-tab-panel" data-season-panel="reset">
+          <section class="metrics">
+            <article class="metric-card"><div class="metric-label"><span>Reset status</span></div><div class="metric-value" id="season-reset-status" style="color:var(--purple)">—</div><div class="metric-note" id="season-reset-season">active season</div></article>
+            <article class="metric-card"><div class="metric-label"><span>Players</span></div><div class="metric-value" id="season-reset-players" style="color:var(--green)">—</div><div class="metric-note">real users only</div></article>
+            <article class="metric-card"><div class="metric-label"><span>Keys / coins</span></div><div class="metric-value" id="season-reset-rewards" style="color:var(--gold)">—</div><div class="metric-note">from trophy excess</div></article>
+            <article class="metric-card"><div class="metric-label"><span>Trophies cut</span></div><div class="metric-value" id="season-reset-trophies" style="color:var(--orange)">—</div><div class="metric-note">to league boundary</div></article>
+          </section>
+          <section class="panel-card" style="margin-top:16px">
+            <h3>Сезонный сброс</h3>
+            <div class="form-grid">
+              <div class="field full"><label>Reason</label><input id="season-reset-reason" placeholder="Комментарий для аудита"></div>
+              <div class="toggle"><span class="toggle-label">Подтверждаю запуск вайпа активного сезона</span><span class="switch" id="season-reset-confirm" data-on="0"></span></div>
+            </div>
+            <div class="top-actions" style="justify-content:flex-start;margin-top:10px">
+              <button class="secondary" type="button" id="btn-season-reset-preview">Preview reset</button>
+              <button class="danger" type="button" id="btn-season-reset-execute">Execute reset</button>
+            </div>
+          </section>
+          <section class="table-shell" style="margin-top:16px">
+            <div class="table-head"><div><strong>Reset preview</strong><span id="season-reset-preview-count">not loaded</span></div></div>
+            <div class="table-scroll"><table>
+              <thead><tr><th>User</th><th>Trophies</th><th>Stars</th><th>Bonus</th></tr></thead>
+              <tbody id="season-reset-tbody"><tr><td colspan="4" style="text-align:center;padding:24px;color:var(--muted)">Click Preview reset</td></tr></tbody>
             </table></div>
           </section>
         </section>
@@ -2335,9 +2374,9 @@
           <div class="form-grid three">
             <div class="field"><label>Track</label><select id="rt-track-type"><option value="bp_free">bp_free</option><option value="bp_premium">bp_premium</option><option value="bp_ultra">bp_ultra</option></select></div>
             <div class="field"><label>Position</label><input id="rt-position" type="number" min="1" value="1"></div>
-            <div class="field"><label>Reward type</label><select id="rt-reward-type"><option value="coins">coins</option><option value="gems">gems</option><option value="keys">keys</option><option value="case">case</option><option value="card">card</option><option value="particles">particles</option></select></div>
-            <div class="field"><label>Amount</label><input id="rt-reward-amount" type="number" min="0" value="0"></div>
-            <div class="field"><label>Meta JSON</label><input id="rt-reward-meta" placeholder='{"case_tier":4}'></div>
+            <div class="field"><label>Reward type</label><select id="rt-reward-type"><option value="coins">coins</option><option value="gems">gems</option><option value="keys">keys</option><option value="case">case</option><option value="card">random card by rarity</option><option value="specific_card">specific card</option></select></div>
+            <div class="field"><label>Amount</label><input id="rt-reward-amount" type="number" min="1" value="1"></div>
+            <div class="field"><label>Meta JSON</label><input id="rt-reward-meta" placeholder='{"rarity":["epic"]} или {"card_id":46}'></div>
             <div class="toggle"><span class="toggle-label">ExtraPass required</span><span class="switch" id="rt-extra-pass-switch" data-on="0"></span></div>
           </div>
           <div class="top-actions" style="justify-content:flex-start;margin-top:10px">
@@ -2373,16 +2412,15 @@
     (function(){
       let AUTH_PARAM=null;
       (function r(){
-        var p=new URLSearchParams(location.search);
         if(window.Telegram&&window.Telegram.WebApp&&window.Telegram.WebApp.initData){var d=window.Telegram.WebApp.initData;if(new URLSearchParams(d).get('auth_date')){AUTH_PARAM={key:'_auth',value:d};return}}
-        if(p.get('_auth')){AUTH_PARAM={key:'_auth',value:p.get('_auth')};return}
       })();
-      if(AUTH_PARAM&&location.search){history.replaceState(null,'',location.pathname+location.hash)}
+      if(location.search){var clean=new URL(location.href);clean.searchParams.delete('_auth');clean.searchParams.delete('user_id');if(clean.href!==location.href)history.replaceState(null,'',clean.pathname+clean.search+clean.hash)}
 
       var shopSets=[],rubleProducts=[],editingProduct=null,editingSet=null,isDirty=!1,loadError=null,editorRewards=[];
       var productOptions={item_types:[],package_types:{},shop_sets:[]},
           seasonsState={seasons:[],reward_tracks:[],reward_counts:{},overview:[],active:null,drafts:[],scheduled:[],presets:[]},
           selectedDraftId=null,selectedRewardSeasonId=null,
+          seasonResetPreview=null,seasonResetBusy=!1,
           VALID_REWARD_TYPES=['gems','coins','keys','case','card','particles'],
           $=function(s){return document.querySelector(s)},
           $$=function(s){return [].slice.call(document.querySelectorAll(s))};
@@ -2400,7 +2438,11 @@
       $('#po-list-tbody').addEventListener('click',function(ev){var b=ev.target.closest('[data-player-open]');if(b)openPlayerDetail(b.dataset.playerOpen)});
 
       function toast(m,s){var e=document.createElement('div');e.className='toast '+s;e.textContent=m;document.body.appendChild(e);setTimeout(function(){e.remove()},3500)}
-      function escHtml(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
+      function escHtml(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;')}
+      function jsString(s){return JSON.stringify(String(s)).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'\\u003c')}
+      function showSessionExpired(){
+        toast('Session expired. Reopen admin panel from the game profile.','error');
+      }
       function setStatusClass(a){return(a===!0||a===void 0)?'active':'hidden'}
       function setStatusLabel(a){return(a===!0||a===void 0)?'active':'archived'}
       function fmtDate(i){if(!i)return'—';try{return new Date(i).toLocaleString()}catch(e){return i}}
@@ -2418,12 +2460,14 @@
       }
 
       async function api(method,path,body,ep){
-        var opts={method:method,headers:body instanceof FormData?{}:{'Content-Type':'application/json'}};
+        var opts={method:method,headers:body instanceof FormData?{}:{'Content-Type':'application/json'},credentials:'same-origin'};
         if(AUTH_PARAM)opts.headers.Authorization='Bearer '+AUTH_PARAM.value;
         if(body&&!(body instanceof FormData))opts.body=JSON.stringify(body);
         else if(body instanceof FormData)opts.body=body;
-        var r=await fetch(buildUrl(path,ep),opts),d=await r.json();
-        if(!r.ok)throw new Error(d.error||d.message||'HTTP '+r.status);
+        var r=await fetch(buildUrl(path,ep),opts),text=await r.text(),d={};
+        try{d=text?JSON.parse(text):{}}catch(_){d={message:text}}
+        if(r.status===401||r.status===403){showSessionExpired();throw new Error(d.error||d.message||(d.data&&d.data.error)||'session_expired')}
+        if(!r.ok)throw new Error(d.error||d.message||(d.data&&d.data.error)||text||'HTTP '+r.status);
         return d;
       }
 
@@ -2459,7 +2503,7 @@
         }catch(e){
           shopSets=[];rubleProducts=[];loadError=e.message;
           $('#metric-api').style.color='var(--red)';$('#metric-api').textContent='ERROR';$('#metric-api-note').textContent=e.message;
-          $('#products-status-bar').innerHTML='<div style="color:var(--red);font-size:12px;background:rgba(239,68,68,0.08);padding:8px 12px;border-radius:6px;border:1px solid rgba(239,68,68,0.22)">API error: '+escHtml(e.message)+' &mdash; check auth &amp; server</div>';
+          $('#products-status-bar').innerHTML='<div style="color:var(--red);font-size:12px;background:rgba(239,68,68,0.08);padding:8px 12px;border-radius:6px;border:1px solid rgba(239,68,68,0.22)">API error: '+escHtml(e.message)+' - check auth &amp; server</div>';
         }
         renderSetsTable();renderRubleTable();updateMetrics();
         $('#table-head-updated').textContent=new Date().toLocaleString();
@@ -2559,6 +2603,7 @@
         if(p){
           $('#pe-breadcrumb').textContent=p.name||p.code;$('#pe-title').textContent=p.name||p.code;
           $('#pe-code').value=p.code||'';$('#pe-code').readOnly=!0;fillProductSelectors(p);
+          $('#pe-rustore-product-id').value=(p.metadata&&p.metadata.rustore_product_id)||'';
           $('#pe-name').value=p.name||'';$('#pe-desc').value=p.description||'';$('#pe-price').value=p.price||0;
           $('#pe-currency').value=p.currency||'rubles';$('#pe-badge').value=p.badge||'';$('#pe-sort-order').value=p.sort_order||100;
           _ps('show-in-game',p.show_in_game!==!1);_ps('show-in-shop',p.show_in_shop!==!1);_ps('is-active',p.is_active!==!1);
@@ -2570,6 +2615,7 @@
           $('#pe-breadcrumb').textContent='New product';$('#pe-title').textContent='New Ruble Product';
           $('#pe-code').value='';$('#pe-code').readOnly=!1;$('#pe-item-type').disabled=!1;$('#pe-package-type').disabled=!1;$('#pe-shop-set-id').disabled=!1;
           fillProductSelectors(null);$('#pe-name').value='';$('#pe-desc').value='';
+          $('#pe-rustore-product-id').value='';
           $('#pe-price').value='0';$('#pe-currency').value='rubles';$('#pe-badge').value='';$('#pe-sort-order').value='100';
           _ps('show-in-game',!0);_ps('show-in-shop',!0);_ps('is-active',!0);
           $('#pe-img-preview').style.display='none';$('#pe-img-url').value='';$('#pe-delete-btn').style.display='none';applyProductDefaultsForSelection(!0)
@@ -2600,6 +2646,7 @@
         if(it==='shop_set'&&!$('#pe-shop-set-id').value){toast('Shop set required','error');_pf('Choose a shop set',!1);return}
         var price=parseFloat($('#pe-price').value)||0;if(price<0){toast('Price>=0','error');return}
         var body={code:code,item_type:it,name:name,description:$('#pe-desc').value.trim()||null,price:price,currency:$('#pe-currency').value||'rubles',badge:$('#pe-badge').value.trim()||null,sort_order:parseInt($('#pe-sort-order').value)||100,show_in_game:$('#pe-switch-show-in-game').dataset.on==='1',show_in_shop:$('#pe-switch-show-in-shop').dataset.on==='1',is_active:$('#pe-switch-is-active').dataset.on==='1'};
+        body.rustore_product_id=$('#pe-rustore-product-id').value.trim();
         if(it==='gems_package'){body.package_type=$('#pe-package-type').value.trim();body.shop_set_id=null}
         else if(it==='shop_set'){body.shop_set_id=parseInt($('#pe-shop-set-id').value)||null;body.package_type=null}
         else{body.package_type=null;body.shop_set_id=null}
@@ -2684,7 +2731,7 @@
         var pr=parseFloat($('#editor-price').value)||0;if(pr<0){toast('Price>=0','error');return}
         var cu=$('#editor-currency').value;if(['rubles','gems','coins'].indexOf(cu)===-1){toast('Invalid currency','error');return}
         var rv=editorRewards.map(_rv),iv=rv.filter(function(x){return!x.ok});
-        if(iv.length){toast(iv.length+' invalid reward(s) &mdash; fix before saving','error');_ef('Fix rewards before saving',!1);_rer();return}
+        if(iv.length){toast(iv.length+' invalid reward(s) - fix before saving','error');_ef('Fix rewards before saving',!1);_rer();return}
         var isA=pub?!0:$('#editor-active-switch').dataset.on==='1',body={name:nm,description:$('#editor-desc').value.trim()||null,image_file_id:$('#editor-image').value.trim()||null,price:pr,currency:cu,is_active:isA,rewards:editorRewards};
         _ef('Saving...',void 0);$('#editor-feedback').style.color='var(--gold)';
         try{
@@ -3267,7 +3314,7 @@
         $('#sq-config-tbody').innerHTML=keys.map(function(k){
           var v=cfg[k];
           var text=typeof v==='object'?JSON.stringify(v):String(v);
-          return'<tr><td><strong>'+escHtml(k)+'</strong></td><td><input id="sq-cfg-'+escHtml(k)+'" value="'+escHtml(text)+'" style="width:100%;background:var(--surface);border:1px solid var(--line);color:var(--fg);padding:4px 7px;border-radius:6px;font-size:12px"></td><td><button class="secondary" type="button" style="font-size:11px;padding:3px 8px" onclick="saveSquadConfig(&quot;'+escHtml(k)+'&quot;)">Save</button></td></tr>';
+          return'<tr><td><strong>'+escHtml(k)+'</strong></td><td><input id="sq-cfg-'+escHtml(k)+'" value="'+escHtml(text)+'" style="width:100%;background:var(--surface);border:1px solid var(--line);color:var(--fg);padding:4px 7px;border-radius:6px;font-size:12px"></td><td><button class="secondary" type="button" style="font-size:11px;padding:3px 8px" onclick="saveSquadConfig('+jsString(k)+')">Save</button></td></tr>';
         }).join('');
       }
 
@@ -3503,6 +3550,33 @@
         if(!s)return'—';
         return'Сезон '+fmtNum(s.season_number||s.id)+' · '+escHtml(s.name||'Без названия');
       }
+      function readStageFormula(prefix){
+        var stageCount=Math.max(1,Math.min(99,parseInt($('#'+prefix+'-max-stars').value)||45));
+        var minCost=Math.max(1,parseInt($('#'+prefix+'-stage-cost-min').value)||3);
+        var growth=Math.max(0,parseFloat($('#'+prefix+'-stage-cost-growth').value));
+        if(!isFinite(growth))growth=0.07;
+        var exponent=Math.max(0.01,parseFloat($('#'+prefix+'-stage-cost-exponent').value));
+        if(!isFinite(exponent))exponent=1.5;
+        var cap=Math.max(1,parseInt($('#'+prefix+'-stage-cost-cap').value)||25);
+        return{stage_count:stageCount,stage_cost_min:minCost,stage_cost_growth:growth,stage_cost_exponent:exponent,stage_cost_cap:cap};
+      }
+      function calcStageCost(stage,f){
+        return Math.max(1,Math.min(f.stage_cost_cap,Math.ceil(f.stage_cost_min+f.stage_cost_growth*Math.pow(stage,f.stage_cost_exponent))));
+      }
+      function renderStagePreview(prefix,serverPreview){
+        var box=$('#'+prefix+'-stage-preview');
+        if(!box)return;
+        var f=readStageFormula(prefix),rows=[],total=0,limit=Math.min(f.stage_count,12);
+        for(var i=1;i<=f.stage_count;i++){
+          var cost=calcStageCost(i,f);
+          total+=cost;
+          if(i<=limit)rows.push({stage:i,cost:cost,required_stars:total});
+        }
+        if(serverPreview&&serverPreview.length){
+          rows=serverPreview.slice(0,limit);
+        }
+        box.innerHTML='<div style="display:flex;justify-content:space-between;gap:8px;margin-bottom:8px;color:var(--soft);font-size:12px"><span>'+fmtNum(f.stage_count)+' этапов</span><strong>'+fmtNum(total)+' ⭐ всего</strong></div><table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr><th style="text-align:left;color:var(--muted);padding:4px 0">Этап</th><th style="text-align:right;color:var(--muted);padding:4px 0">Цена</th><th style="text-align:right;color:var(--muted);padding:4px 0">Порог</th></tr></thead><tbody>'+rows.map(function(r){return'<tr><td style="padding:4px 0">#'+fmtNum(r.stage)+'</td><td style="padding:4px 0;text-align:right">'+fmtNum(r.cost)+' ⭐</td><td style="padding:4px 0;text-align:right">'+fmtNum(r.required_stars)+' ⭐</td></tr>'}).join('')+'</tbody></table>';
+      }
       function fillSeasonForm(prefix,s){
         if(!s)return;
         $('#'+prefix+'-id').textContent='#'+s.id+' · '+(s.status||'draft');
@@ -3513,6 +3587,10 @@
         $('#'+prefix+'-start').value=dtLocal(s.start_date);
         $('#'+prefix+'-end').value=dtLocal(s.end_date);
         $('#'+prefix+'-max-stars').value=s.max_stars||45;
+        $('#'+prefix+'-stage-cost-min').value=s.stage_cost_min||3;
+        $('#'+prefix+'-stage-cost-growth').value=s.stage_cost_growth!=null?s.stage_cost_growth:0.07;
+        $('#'+prefix+'-stage-cost-exponent').value=s.stage_cost_exponent!=null?s.stage_cost_exponent:1.5;
+        $('#'+prefix+'-stage-cost-cap').value=s.stage_cost_cap||25;
         $('#'+prefix+'-pass-end').value=s.pass_end_position||40;
         $('#'+prefix+'-ultra-start').value=s.ultra_start_position||41;
         $('#'+prefix+'-status').value=s.status||'draft';
@@ -3522,8 +3600,10 @@
           $('#sc-pass-track').value=s.pass_track_type||'';
           $('#sc-ultra-track').value=s.ultra_track_type||'';
         }
+        renderStagePreview(prefix,s.progression_preview);
       }
       function readSeasonForm(prefix){
+        var formula=readStageFormula(prefix);
         var body={
           name:$('#'+prefix+'-name').value.trim(),
           season_number:parseInt($('#'+prefix+'-number').value)||1,
@@ -3531,7 +3611,11 @@
           description:$('#'+prefix+'-description').value.trim(),
           start_date:readDateTime(prefix+'-start'),
           end_date:readDateTime(prefix+'-end'),
-          max_stars:parseInt($('#'+prefix+'-max-stars').value)||45,
+          max_stars:formula.stage_count,
+          stage_cost_min:formula.stage_cost_min,
+          stage_cost_growth:formula.stage_cost_growth,
+          stage_cost_exponent:formula.stage_cost_exponent,
+          stage_cost_cap:formula.stage_cost_cap,
           pass_end_position:parseInt($('#'+prefix+'-pass-end').value)||40,
           ultra_start_position:parseInt($('#'+prefix+'-ultra-start').value)||41,
           status:$('#'+prefix+'-status').value||'draft',
@@ -3553,11 +3637,26 @@
         seasonsState.drafts=seasonsState.drafts||[];
         seasonsState.scheduled=seasonsState.scheduled||[];
       }
+      function activeSeasonForReset(){
+        return seasonsState.active||(seasonsState.seasons||[]).find(function(s){return s.is_active});
+      }
+      function setSeasonResetBusy(busy){
+        seasonResetBusy=!!busy;
+        ['btn-season-reset-preview','btn-season-reset-execute'].forEach(function(id){
+          var btn=$('#'+id);
+          if(btn)btn.disabled=seasonResetBusy;
+        });
+      }
+      function clearSeasonResetPreview(){
+        seasonResetPreview=null;
+        setSwitch($('#season-reset-confirm'),false);
+      }
       async function loadSeasons(){
         $('#seasons-status').innerHTML='';
         try{
           var res=await api('GET','/api/admin/seasons');
           updateSeasonsState(res.data||{});
+          clearSeasonResetPreview();
           renderSeasonsAdmin();
         }catch(e){
           $('#seasons-status').innerHTML='<div style="color:var(--red);font-size:12px;background:rgba(239,68,68,0.08);padding:8px 12px;border-radius:6px;border:1px solid rgba(239,68,68,0.22)">Seasons error: '+escHtml(e.message)+'</div>';
@@ -3584,6 +3683,7 @@
         renderSeasonRows();
         renderSeasonChain();
         renderSeasonRewards();
+        renderSeasonReset();
       }
       function renderSeasonSelectors(){
         var seasons=seasonsState.seasons||[],drafts=(seasonsState.drafts||[]).slice().sort(function(a,b){return(b.id||0)-(a.id||0)});
@@ -3636,6 +3736,73 @@
           return'<tr><td><code>'+Number(r.id)+'</code></td><td>'+laneLabel(lane)+'<br><span style="color:var(--muted);font-size:11px">'+escHtml(r.track_type)+'</span></td><td>'+fmtNum(r.position)+'</td><td>'+rewardToken(r)+'</td><td style="font-size:11px;color:var(--muted);max-width:260px;overflow:hidden;text-overflow:ellipsis">'+meta+'</td><td><span style="color:'+(active?'var(--green)':'var(--red)')+'">'+(active?'active':'hidden')+'</span></td><td><div class="actions"><button class="secondary" type="button" style="font-size:11px;padding:3px 8px" onclick="editSeasonReward('+Number(r.id)+')">Edit</button><button class="secondary" type="button" style="font-size:11px;padding:3px 8px" onclick="toggleSeasonReward('+Number(r.id)+','+(!active)+')">'+(active?'Hide':'Show')+'</button><button class="danger" type="button" style="font-size:11px;padding:3px 8px" onclick="deleteSeasonReward('+Number(r.id)+')">Delete</button></div></td></tr>';
         }).join(''):'<tr><td colspan="7" style="text-align:center;padding:24px;color:var(--muted)">No rewards for selected season</td></tr>';
       }
+      function renderSeasonReset(preview){
+        var active=activeSeasonForReset();
+        if(!preview&&seasonResetPreview&&active&&Number(seasonResetPreview.season_id)===Number(active.id)){
+          preview=seasonResetPreview;
+        }
+        if(preview&&active&&Number(preview.season_id)!==Number(active.id)){
+          preview=null;
+        }
+        var reset=active&&active.reset,summary=preview&&preview.summary;
+        if(!summary&&reset){
+          summary={players:reset.processed_players||0,trophies_reduced:reset.total_trophies_reduced||0,keys_granted:reset.total_keys_granted||0,coins_granted:reset.total_coins_granted||0,stars_reset:reset.total_stars_reset||0};
+        }
+        $('#season-reset-status').textContent=reset?(reset.status||'completed'):'not run';
+        $('#season-reset-season').textContent=active?compactSeasonTitle(active).replace(/&amp;/g,'&'):'No active season';
+        $('#season-reset-players').textContent=summary?fmtNum(summary.players||0):'—';
+        $('#season-reset-rewards').textContent=summary?(fmtNum(summary.keys_granted||0)+' / '+fmtNum(summary.coins_granted||0)):'—';
+        $('#season-reset-trophies').textContent=summary?fmtNum(summary.trophies_reduced||0):'—';
+        if(!preview){
+          $('#season-reset-preview-count').textContent=reset?'completed summary':'not loaded';
+          $('#season-reset-tbody').innerHTML=reset?'<tr><td colspan="4" style="text-align:center;padding:24px;color:var(--muted)">Reset already completed. Summary is shown above.</td></tr>':'<tr><td colspan="4" style="text-align:center;padding:24px;color:var(--muted)">Click Preview reset</td></tr>';
+          return;
+        }
+        var rows=preview.players||[];
+        var total=summary?Number(summary.players||0):rows.length;
+        $('#season-reset-preview-count').textContent=preview.players_truncated?(fmtNum(rows.length)+' shown of '+fmtNum(total)+' players'):(fmtNum(total)+' players');
+        $('#season-reset-tbody').innerHTML=rows.length?rows.map(function(r){
+          return'<tr><td><code>'+Number(r.user_id)+'</code></td><td>'+fmtNum(r.old_trophies)+' → '+fmtNum(r.new_trophies)+'</td><td>'+fmtNum(r.old_stars)+' → 0</td><td>'+fmtNum(r.granted_keys)+' keys / '+fmtNum(r.granted_coins)+' coins</td></tr>';
+        }).join(''):'<tr><td colspan="4" style="text-align:center;padding:24px;color:var(--muted)">No players to reset or reset already completed</td></tr>';
+      }
+      async function loadSeasonResetPreview(){
+        if(seasonResetBusy)return;
+        var active=activeSeasonForReset();
+        if(!active){toast('No active season','error');return}
+        var seasonId=active.id;
+        setSeasonResetBusy(!0);
+        try{
+          var res=await api('GET','/api/admin/seasons/'+Number(seasonId)+'/reset-preview');
+          seasonResetPreview=res.data||{};
+          seasonResetPreview.loaded_at=Date.now();
+          setSwitch($('#season-reset-confirm'),false);
+          renderSeasonReset(seasonResetPreview);
+          toast('Reset preview loaded','success');
+        }catch(e){toast('Reset preview: '+e.message,'error')}
+        finally{setSeasonResetBusy(!1)}
+      }
+      async function executeSeasonReset(){
+        if(seasonResetBusy)return;
+        var active=activeSeasonForReset();
+        if(!active){toast('No active season','error');return}
+        if(!seasonResetPreview||Number(seasonResetPreview.season_id)!==Number(active.id)){toast('Load a fresh reset preview first','error');return}
+        if(seasonResetPreview.already_completed){toast('Season reset already completed','error');return}
+        if($('#season-reset-confirm').dataset.on!=='1'){toast('Confirm reset first','error');return}
+        var summary=seasonResetPreview.summary||{},seasonLabel=compactSeasonTitle(active).replace(/&amp;/g,'&');
+        if(!confirm('Execute season reset for '+seasonLabel+'? Affected players: '+fmtNum(summary.players||0)+'.'))return;
+        var seasonId=active.id;
+        setSeasonResetBusy(!0);
+        try{
+          var res=await api('POST','/api/admin/seasons/'+Number(seasonId)+'/reset',{confirm:true,confirm_season_id:Number(seasonId),reason:$('#season-reset-reason').value.trim()});
+          seasonResetPreview=null;
+          updateSeasonsState(res.data||{});
+          renderSeasonsAdmin();
+          renderSeasonReset();
+          setSwitch($('#season-reset-confirm'),false);
+          toast('Season reset completed','success');
+        }catch(e){toast('Season reset: '+e.message,'error')}
+        finally{setSeasonResetBusy(!1)}
+      }
       async function saveSeason(prefix,id){
         if(!id){toast('Season not selected','error');return}
         try{
@@ -3660,6 +3827,8 @@
       });
       $('#btn-season-save-current').addEventListener('click',function(){var s=seasonsState.active;if(s)saveSeason('sc',s.id)});
       $('#btn-season-save-draft').addEventListener('click',function(){saveSeason('sd',selectedDraftId)});
+      $('#btn-season-reset-preview').addEventListener('click',loadSeasonResetPreview);
+      $('#btn-season-reset-execute').addEventListener('click',executeSeasonReset);
       $('#season-draft-select').addEventListener('change',function(){selectedDraftId=Number(this.value)||null;renderSeasonSelectors()});
       $('#sr-season-select').addEventListener('change',function(){selectedRewardSeasonId=Number(this.value)||null;renderSeasonRewards()});
       $('#season-json-file').addEventListener('change',function(){
@@ -3668,7 +3837,31 @@
         this.value='';
       });
       $('#btn-season-json-template').addEventListener('click',function(){
-        $('#season-json-import').value=JSON.stringify({free:[{position:1,reward_type:'coins',reward_amount:200}],premium:[{position:1,reward_type:'coins',reward_amount:400}],ultra:[{position:41,reward_type:'gems',reward_amount:120}]},null,2);
+        $('#season-json-import').value=JSON.stringify({free:[{position:1,reward_type:'coins',reward_amount:200}],premium:[{position:1,reward_type:'card',reward_amount:1,reward_meta:{rarity:['rare']}}],ultra:[{position:41,reward_type:'specific_card',reward_amount:1,reward_meta:{card_id:46}}]},null,2);
+      });
+      function normalizeRewardEditor(prefix){
+        var type=$('#'+prefix+'-reward-type').value;
+        var amount=$('#'+prefix+'-reward-amount');
+        var meta=$('#'+prefix+'-reward-meta');
+        if(type==='card'){
+          amount.value=1;
+          amount.disabled=true;
+          meta.placeholder='{"rarity":["epic"]}';
+          if(!meta.value.trim())meta.value='{"rarity":["epic"]}';
+        }else if(type==='specific_card'){
+          amount.value=1;
+          amount.disabled=true;
+          meta.placeholder='{"card_id":46}';
+          if(!meta.value.trim()||meta.value.indexOf('rarity')!==-1)meta.value='{"card_id":46}';
+        }else{
+          amount.disabled=false;
+          meta.placeholder=type==='case'?'{"case_tier":3}':'{}';
+        }
+      }
+      ['sr','rt'].forEach(function(prefix){
+        var typeEl=$('#'+prefix+'-reward-type');
+        if(typeEl)typeEl.addEventListener('change',function(){normalizeRewardEditor(prefix)});
+        normalizeRewardEditor(prefix);
       });
       $('#btn-season-import-json').addEventListener('click',async function(){
         if(!selectedDraftId){toast('Create or select draft first','error');return}
@@ -3685,14 +3878,21 @@
         var s=seasonById($('#sr-season-select').value);if(!s){toast('Season not selected','error');return}
         var lane=$('#sr-lane').value,metaRaw=$('#sr-reward-meta').value.trim(),meta=null;
         if(metaRaw){try{meta=JSON.parse(metaRaw)}catch(e){toast('Meta JSON invalid','error');return}}
-        var body={track_type:laneTrackType(s,lane),position:parseInt($('#sr-position').value)||1,reward_type:$('#sr-reward-type').value,reward_amount:parseInt($('#sr-reward-amount').value)||0,reward_meta:meta,extra_pass_required:lane!=='free'};
+        var type=$('#sr-reward-type').value;
+        var body={track_type:laneTrackType(s,lane),position:parseInt($('#sr-position').value)||1,reward_type:type,reward_amount:type==='card'||type==='specific_card'?1:(parseInt($('#sr-reward-amount').value)||0),reward_meta:meta,extra_pass_required:lane!=='free'};
         try{
           await api('POST','/api/admin/rewards/tracks/create',body);
           toast('Reward saved','success');
           await loadSeasons();
         }catch(e){toast('Reward save: '+escHtml(e.message),'error')}
       });
-      ['sc-auto-switch','sd-auto-switch'].forEach(function(id){$('#'+id).addEventListener('click',function(){setSwitch(this,this.dataset.on!=='1')})});
+      ['sc-auto-switch','sd-auto-switch','season-reset-confirm'].forEach(function(id){$('#'+id).addEventListener('click',function(){setSwitch(this,this.dataset.on!=='1')})});
+      ['sc','sd'].forEach(function(prefix){
+        ['max-stars','stage-cost-min','stage-cost-growth','stage-cost-exponent','stage-cost-cap'].forEach(function(suffix){
+          var el=$('#'+prefix+'-'+suffix);
+          if(el)el.addEventListener('input',function(){renderStagePreview(prefix)});
+        });
+      });
       $$('.season-tab').forEach(function(b){b.addEventListener('click',function(){
         var tab=this.dataset.seasonTab;
         $$('.season-tab').forEach(function(x){x.classList.toggle('active',x===b)});
@@ -3701,7 +3901,8 @@
       window.editSeasonReward=function(id){
         var r=(seasonsState.reward_tracks||[]).find(function(x){return Number(x.id)===Number(id)});if(!r)return;
         var s=seasonById($('#sr-season-select').value)||seasonsState.active,lane=s?laneForTrack(s,r.track_type):'free';
-        $('#sr-lane').value=lane;$('#sr-position').value=r.position||1;$('#sr-reward-type').value=r.reward_type||'coins';$('#sr-reward-amount').value=r.reward_amount||0;$('#sr-reward-meta').value=r.reward_meta?(typeof r.reward_meta==='string'?r.reward_meta:JSON.stringify(r.reward_meta)):'';
+        $('#sr-lane').value=lane;$('#sr-position').value=r.position||1;$('#sr-reward-type').value=r.reward_type||'coins';$('#sr-reward-amount').value=r.reward_amount||1;$('#sr-reward-meta').value=r.reward_meta?(typeof r.reward_meta==='string'?r.reward_meta:JSON.stringify(r.reward_meta)):'';
+        normalizeRewardEditor('sr');
       };
       window.toggleSeasonReward=async function(id,isActive){
         try{await api('POST','/api/admin/rewards/tracks/update',{id:id,is_active:!!isActive});toast('Reward updated','success');await loadSeasons()}catch(e){toast('Reward update: '+escHtml(e.message),'error')}
@@ -3744,7 +3945,7 @@
           return'<tr>'+
             '<td><strong>'+escHtml(featureLabels[key])+'</strong><br><span style="font-size:11px;color:var(--muted)">'+escHtml(key)+'</span></td>'+
             '<td><span style="color:'+(enabled?'var(--green)':'var(--red)')+'">'+(enabled?'available':'disabled')+'</span></td>'+
-            '<td style="text-align:right"><button class="'+(enabled?'danger':'primary')+'" type="button" style="font-size:11px;padding:3px 8px" onclick="toggleRuntimeFeature(\''+escHtml(key)+'\','+(!enabled)+')">'+(enabled?'Disable':'Enable')+'</button></td>'+
+            '<td style="text-align:right"><button class="'+(enabled?'danger':'primary')+'" type="button" style="font-size:11px;padding:3px 8px" onclick="toggleRuntimeFeature('+jsString(key)+','+(!enabled)+')">'+(enabled?'Disable':'Enable')+'</button></td>'+
           '</tr>';
         }).join('');
         $('#cfg-disabled-card-count').textContent=fmtNum(disabled.length)+' blocked';
@@ -3845,7 +4046,7 @@
                 '<td><span style="color:'+(enabled?'var(--green)':'var(--red)')+'">'+(enabled?'enabled':'disabled')+'</span></td>'+
                 '<td>'+((m.bot_allowed||m.bot_available)?'yes':'no')+'</td>'+
                 '<td style="font-size:12px;color:var(--muted)">'+escHtml(m.description||'—')+'</td>'+
-                '<td><button class="'+(enabled?'danger':'primary')+'" type="button" style="font-size:11px;padding:3px 8px" onclick="toggleMatchMode(\''+escHtml(String(m.mode_id))+'\','+(!enabled)+')">'+(enabled?'Disable':'Enable')+'</button></td>'+
+                '<td><button class="'+(enabled?'danger':'primary')+'" type="button" style="font-size:11px;padding:3px 8px" onclick="toggleMatchMode('+jsString(String(m.mode_id))+','+(!enabled)+')">'+(enabled?'Disable':'Enable')+'</button></td>'+
                 '</tr>';
             }).join('');
           }else{
@@ -3878,11 +4079,12 @@
         if(metaRaw){
           try{meta=JSON.parse(metaRaw)}catch(e){toast('Reward meta must be valid JSON','error');return}
         }
+        var type=$('#rt-reward-type').value;
         var body={
           track_type:$('#rt-track-type').value,
           position:parseInt($('#rt-position').value)||1,
-          reward_type:$('#rt-reward-type').value,
-          reward_amount:parseInt($('#rt-reward-amount').value)||0,
+          reward_type:type,
+          reward_amount:type==='card'||type==='specific_card'?1:(parseInt($('#rt-reward-amount').value)||0),
           reward_meta:meta,
           extra_pass_required:$('#rt-extra-pass-switch').dataset.on==='1'
         };

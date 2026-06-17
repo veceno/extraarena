@@ -19,10 +19,21 @@ class BotAI:
     """
 
     @staticmethod
+    def _action_dict(action: Any) -> Dict[str, Any]:
+        if isinstance(action, dict):
+            return action
+        to_dict = getattr(action, "to_dict", None)
+        if callable(to_dict):
+            value = to_dict()
+            if isinstance(value, dict):
+                return value
+        return {}
+
+    @staticmethod
     def decide_action(
-        legal_actions: List[Dict[str, Any]],
+        legal_actions: List[Any],
         state: Optional[Dict[str, Any]] = None,
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Optional[Any]:
         """
         Выбрать одно действие из списка легальных.
         
@@ -38,9 +49,9 @@ class BotAI:
             return None
         
         # Разделяем действия по типам
-        play_actions = [a for a in legal_actions if a.get("type") == "play_card"]
-        attack_actions = [a for a in legal_actions if a.get("type") == "attack"]
-        end_turn_actions = [a for a in legal_actions if a.get("type") == "end_turn"]
+        play_actions = [a for a in legal_actions if BotAI._action_dict(a).get("type") == "play_card"]
+        attack_actions = [a for a in legal_actions if BotAI._action_dict(a).get("type") == "attack"]
+        end_turn_actions = [a for a in legal_actions if BotAI._action_dict(a).get("type") == "end_turn"]
         
         logger.debug(
             "[BOT_AI] Доступно: play=%d, attack=%d, end_turn=%d",
@@ -50,7 +61,7 @@ class BotAI:
         # Приоритет 1: Атаки (если есть)
         if attack_actions:
             # Предпочитаем атаку героя, если доступна
-            hero_attacks = [a for a in attack_actions if a.get("target_is_hero")]
+            hero_attacks = [a for a in attack_actions if BotAI._action_dict(a).get("target_is_hero")]
             if hero_attacks:
                 chosen = random.choice(hero_attacks)
                 logger.info("[BOT_AI] Выбрана атака героя: %s", chosen)
@@ -76,7 +87,7 @@ class BotAI:
         return None
 
     @staticmethod
-    def decide_turn(engine: Any, bot_id: int) -> List[Dict[str, Any]]:
+    def decide_turn(engine: Any, bot_id: int) -> List[Any]:
         """
         Спланировать весь ход бота.
         
@@ -87,8 +98,7 @@ class BotAI:
         Returns:
             Список действий для выполнения
         """
-        actions: List[Dict[str, Any]] = []
-        max_actions = 20  # Защита от бесконечного цикла
+        actions: List[Any] = []
         
         logger.info("[BOT_AI] decide_turn: bot_id=%s", bot_id)
         
@@ -97,50 +107,14 @@ class BotAI:
             logger.info("[BOT_AI] Игра завершена, бот не планирует действия")
             return []
         
-        for i in range(max_actions):
-            # Получаем текущие легальные действия
-            legal_actions = engine.get_legal_actions(bot_id)
-            
-            if not legal_actions:
-                logger.info("[BOT_AI] Нет легальных действий, завершаем планирование")
-                break
-            
-            # Выбираем действие
-            action = BotAI.decide_action(legal_actions)
-            
-            if not action:
-                logger.info("[BOT_AI] decide_action вернул None, завершаем")
-                break
-            
+        legal_actions = engine.get_legal_actions(bot_id)
+        if not legal_actions:
+            logger.info("[BOT_AI] Нет легальных действий, завершаем планирование")
+            return []
+
+        action = BotAI.decide_action(legal_actions)
+        if action:
             actions.append(action)
-            
-            # Если это end_turn, завершаем планирование
-            if action.get("type") == "end_turn":
-                logger.info("[BOT_AI] Запланировано %d действий (включая end_turn)", len(actions))
-                break
-            
-            # Симулируем выполнение действия для обновления legal_actions
-            # (в реальности execute_bot_action будет вызван на сервере)
-            try:
-                result = engine.execute_bot_action(action)
-                if not result.get("success", True):
-                    logger.warning("[BOT_AI] Действие не выполнено: %s", result.get("error"))
-                    # Пробуем end_turn
-                    actions.append({"type": "end_turn"})
-                    break
-                    
-                # Проверяем game_over
-                if result.get("game_over"):
-                    logger.info("[BOT_AI] Игра завершена после действия")
-                    break
-            except Exception as exc:
-                logger.error("[BOT_AI] Ошибка выполнения действия: %s", exc)
-                actions.append({"type": "end_turn"})
-                break
-        
-        # Гарантируем end_turn в конце
-        if actions and actions[-1].get("type") != "end_turn":
-            actions.append({"type": "end_turn"})
         
         logger.info("[BOT_AI] Итого запланировано %d действий", len(actions))
         return actions

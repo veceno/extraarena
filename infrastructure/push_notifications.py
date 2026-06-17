@@ -9,7 +9,11 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
 
-from infrastructure.notifications import format_notification_message, notification_section
+from infrastructure.notifications import (
+    format_android_notification_title,
+    format_notification_message,
+    notification_section,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -84,18 +88,23 @@ def build_android_push_payload(
 
     body = format_notification_message(event_type, payload)
     section = notification_section(category, payload)
+    title = format_android_notification_title(category, event_type, payload)
+    data = {
+        "type": "game_notification",
+        "category": category,
+        "event_type": event_type,
+        "section": section,
+        "title": title,
+        "body": body,
+        "android_channel_id": ANDROID_GAME_CHANNEL_ID,
+    }
+    for key in ("invite_id", "invite_action", "request_id", "from_user_id"):
+        if payload.get(key) is not None:
+            data[key] = str(payload.get(key))
     return AndroidPushPayload(
-        title=str(payload.get("title") or "ExtraArena"),
+        title=title,
         body=body,
-        data={
-            "type": "game_notification",
-            "category": category,
-            "event_type": event_type,
-            "section": section,
-            "title": str(payload.get("title") or "ExtraArena"),
-            "body": body,
-            "android_channel_id": ANDROID_GAME_CHANNEL_ID,
-        },
+        data=data,
     )
 
 

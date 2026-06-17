@@ -60,21 +60,11 @@
 
   const syncSafeArea = () => {
     const tg = window.Telegram && window.Telegram.WebApp;
+    const currentHeight = usableViewportHeight();
 
     if (tg) {
       applyInsets('--ea-tg-safe-', tg.safeAreaInset);
       applyInsets('--ea-tg-content-safe-', tg.contentSafeAreaInset);
-
-      const stableHeight = Number(tg.viewportStableHeight || tg.viewportHeight);
-      if (Number.isFinite(stableHeight) && stableHeight > 0) {
-        setViewportHeight(stableHeight);
-        return;
-      }
-    }
-
-    const currentHeight = usableViewportHeight();
-    if (!currentHeight) {
-      return;
     }
 
     if (isKeyboardLikelyOpen()) {
@@ -82,6 +72,19 @@
         setViewportHeight(lastStableViewportHeight);
       }
       scheduleViewportRecovery();
+      return;
+    }
+
+    if (tg) {
+      const stableHeight = Number(tg.viewportStableHeight || tg.viewportHeight);
+      if (Number.isFinite(stableHeight) && stableHeight > 0) {
+        lastStableViewportHeight = Math.max(lastStableViewportHeight, stableHeight);
+        setViewportHeight(stableHeight);
+        return;
+      }
+    }
+
+    if (!currentHeight) {
       return;
     }
 

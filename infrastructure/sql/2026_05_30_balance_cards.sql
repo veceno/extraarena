@@ -1,0 +1,66 @@
+-- Repeatable balance patch for the cards table.
+-- Safe to run multiple times: existing ids are updated, missing ids are inserted.
+
+INSERT INTO cards (
+    id,
+    name,
+    description,
+    rarity,
+    power,
+    mana_cost,
+    base_attack,
+    base_hp,
+    mechanics,
+    card_type,
+    image_file_id,
+    created_by,
+    mechanics_desc,
+    simplified_levelup
+)
+VALUES
+    (1,  'Искатель',       'Начинающий герой, готовый к приключениям.',                                      'start',  30, 0,  0, 35, '[]'::jsonb,                 'hero',    NULL, NULL, NULL, FALSE),
+    (4,  'Аскеладд',       'Лидер наемников. Отражает часть полученного урона обратно.',                    'legendary', 60, 0, 0, 40, '["reflect_1"]'::jsonb,    'hero',    NULL, NULL, 'Отражает 1 урон обратно атакующему при каждом получении урона', FALSE),
+    (6,  'Росомаха',       'Мутант с регенерацией. Восстанавливает здоровье каждый ход.',                    'rare',   40, 0,  0, 37, '["regen_1"]'::jsonb,        'hero',    NULL, NULL, 'Восстанавливает 1 HP в конце каждого своего хода', FALSE),
+    (7,  'Олег Тиньков',   'Капитализм работает. Вы начинаете бой с дополнительным запасом маны.',           'mythic', 70, 0,  0, 23, '["start_mana_1_5"]'::jsonb, 'hero',    NULL, NULL, 'Даёт дополнительную ману и увеличивает максимум маны в начале боя', FALSE),
+    (18, 'П.Е.К.К.А.',     'Тяжелая броня. Получает сниженный урон от всех атак.',                           'epic',   50, 5,  5,  5, '["armor_1"]'::jsonb,       'warrior', NULL, NULL, 'Броня: уменьшает каждый входящий урон ровно на 1', FALSE),
+    (20, 'Канеки Кен',     'Поглощение. Съедает союзника, чтобы забрать его характеристики.',                'legendary', 55, 3, 2, 2, '["consume_ally"]'::jsonb, 'warrior', NULL, NULL, 'Уничтожает выбранного союзника и прибавляет его атаку и здоровье к своим характеристикам', FALSE),
+    (22, 'Дио Брандо',     'ZA WARUDO! Останавливает время (замораживает) для врагов.',                      'mythic', 80, 8,  6,  6, '["aoe_freeze"]'::jsonb,     'warrior', NULL, NULL, 'При выходе замораживает до 3 вражеских существ на доске', FALSE),
+    (23, 'Сукуна',         'Рассечение. Атаки наносят урон цели и соседним юнитам.',                         'mythic', 75, 7,  7,  5, '["cleave_1_2"]'::jsonb,     'warrior', NULL, NULL, 'При атаке наносит дополнительный урон до 2 соседним существам противника', FALSE),
+    (24, 'Годжо Сатору',   'Бесконечность. Восстанавливает одноразовый щит каждый ход.',                     'divine', 95, 9,  5,  6, '["shield", "shield_refresh"]'::jsonb, 'warrior', NULL, NULL, 'В начале каждого своего хода получает одноразовый щит, если щита ещё нет', FALSE),
+    (25, 'Сайтама',        'Один удар. На первом своем ходу уничтожает выбранного противника один раз.',     'divine', 100, 10, 10, 10, '["instant_kill"]'::jsonb,  'warrior', NULL, NULL, 'При первом ходе Сайтамы уничтожает выбранного противника. Срабатывает один раз; щит блокирует удар', FALSE),
+    (27, 'Скелет',         'Просто кости. Слабый, но дешевый юнит.',                                         'common',  5, 1,  2,  1, '[]'::jsonb,                 'warrior', NULL, NULL, NULL, FALSE),
+    (29, 'Штурмовик',      'Пехотинец Империи. Стандартный боец поддержки.',                                'common', 10, 3,  3,  4, '[]'::jsonb,                 'warrior', NULL, NULL, NULL, FALSE),
+    (30, 'Наофуми',        'Герой Щита. Обладает Провокацией, защищая остальных собой.',                     'epic',   40, 3,  1,  5, '["taunt"]'::jsonb,          'warrior', NULL, NULL, 'Провокация: противник обязан атаковать это существо в первую очередь', FALSE),
+    (31, 'Наемник',        'Опытный боец. Сбалансированные характеристики.',                                 'rare',   25, 4,  4,  5, '[]'::jsonb,                 'warrior', NULL, NULL, NULL, FALSE),
+    (34, 'Крипер',         'Тссс... БУМ! Взрывается после смерти, нанося урон всем врагам.',                 'rare',   35, 3,  2,  2, '["deathrattle_aoe_damage_2"]'::jsonb, 'warrior', NULL, NULL, 'При смерти наносит 2 урона всем вражеским существам и герою', FALSE),
+    (36, 'Юни',            'Кибер-кот. Восстанавливает здоровье союзнику при появлении.',                    'start',  15, 2,  1,  2, '["battlecry_heal_target_3"]'::jsonb, 'warrior', NULL, NULL, 'При выходе на поле лечит выбранного союзника на 3 HP', FALSE),
+    (37, 'Слайм',          'Слабый монстр. Хорош для начала приключения.',                                    'start',   5, 1,  1,  2, '[]'::jsonb,                 'warrior', NULL, NULL, NULL, FALSE),
+    (38, 'Хиличурл',       'Базовый противник. Просто танцует и бьет.',                                      'start',  10, 2,  2,  2, '[]'::jsonb,                 'warrior', NULL, NULL, NULL, FALSE),
+    (39, 'Альфонс Элрик',  'Душа в доспехах. Обладает Провокацией и защищает слабых.',                       'start',  15, 2,  1,  3, '["taunt"]'::jsonb,          'warrior', NULL, NULL, 'Провокация: противник обязан атаковать это существо в первую очередь', FALSE),
+    (40, 'Стив',           'Мастер выживания. Надежный квадратный боец.',                                    'start',  20, 3,  3,  3, '[]'::jsonb,                 'warrior', NULL, NULL, NULL, FALSE),
+    (41, 'Довакин',        'Драконорожденный. Сильный воин севера.',                                         'start',  25, 4,  4,  4, '[]'::jsonb,                 'warrior', NULL, NULL, NULL, FALSE),
+    (42, 'Атакующий Титан','Колосс. Огромная сила и здоровье для поздней игры.',                            'start',  35, 6,  6,  6, '[]'::jsonb,                 'warrior', NULL, NULL, NULL, FALSE),
+    (43, 'Лара Крофт',     'Расхитительница гробниц. Игнорирует Провокацию и выбирает цель сама.',           'epic',   30, 2,  3,  1, '["bypass_taunt"]'::jsonb,   'warrior', NULL, NULL, 'Игнорирует Провокацию: может атаковать любую цель даже при наличии вражеских юнитов с taunt', FALSE),
+    (44, 'Леви Аккерман',  'Капитан разведкорпуса. Может атаковать сразу после выхода на поле.',             'epic',   35, 2,  3,  1, '["charge"]'::jsonb,         'warrior', NULL, NULL, 'Рывок: может атаковать в тот же ход, когда был выставлен на доску', FALSE),
+    (45, 'Солид Снейк',    'Легендарный оперативник. Принимает удар на себя благодаря Провокации.',          'epic',   45, 5,  5,  4, '["taunt"]'::jsonb,          'warrior', NULL, NULL, 'Провокация: противник обязан атаковать это существо в первую очередь', FALSE),
+    (46, 'Уссоп',          'Снайпер команды. Простая и надежная карта для ранней игры.',                     'common', 10, 2,  3,  1, '[]'::jsonb,                 'warrior', NULL, NULL, NULL, FALSE)
+ON CONFLICT (id) DO UPDATE SET
+    name = EXCLUDED.name,
+    description = EXCLUDED.description,
+    rarity = EXCLUDED.rarity,
+    power = EXCLUDED.power,
+    mana_cost = EXCLUDED.mana_cost,
+    base_attack = EXCLUDED.base_attack,
+    base_hp = EXCLUDED.base_hp,
+    mechanics = EXCLUDED.mechanics,
+    card_type = EXCLUDED.card_type,
+    image_file_id = EXCLUDED.image_file_id,
+    created_by = EXCLUDED.created_by,
+    mechanics_desc = EXCLUDED.mechanics_desc,
+    simplified_levelup = EXCLUDED.simplified_levelup;
+
+SELECT setval(
+    pg_get_serial_sequence('cards', 'id'),
+    GREATEST(COALESCE((SELECT MAX(id) FROM cards), 1), 1),
+    TRUE
+);

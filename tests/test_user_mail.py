@@ -99,6 +99,7 @@ async def test_user_mail_is_serialized_for_clients():
     query, args = db.fetch_args
     assert "is_read = FALSE" in query
     assert "category = $2" in query
+    assert "attachments ? 'event_type'" in query
     assert args == (42, "rewards", 10)
 
 
@@ -132,7 +133,7 @@ async def test_create_mail_fills_legacy_content_column_when_present():
 
 
 @pytest.mark.asyncio
-async def test_enqueue_notification_creates_in_game_mail():
+async def test_enqueue_notification_does_not_create_in_game_mail_for_regular_notifications():
     db = NotificationMailHarness(inserted=True)
 
     enqueued = await db.enqueue_notification(
@@ -144,12 +145,7 @@ async def test_enqueue_notification_creates_in_game_mail():
     )
 
     assert enqueued is True
-    assert db.mail_kwargs["user_id"] == 42
-    assert db.mail_kwargs["subject"] == "Генератор ключей"
-    assert db.mail_kwargs["category"] == "system"
-    assert db.mail_kwargs["icon"] == "🔑"
-    assert db.mail_kwargs["text"] == "Новый ключ готов! В генераторе уже 1 ключ(ей)."
-    assert db.mail_kwargs["attachments"]["event_type"] == "generator_new_key"
+    assert db.mail_kwargs is None
 
 
 @pytest.mark.asyncio

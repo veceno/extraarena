@@ -1,0 +1,451 @@
+{
+  "generated_at": "2026-06-12",
+  "root": "assets/audio/characters",
+  "assets": [
+    {
+      "id": 3,
+      "character": "Жанна д'Арк",
+      "event": "aura_noble_phantasm",
+      "file": "assets/audio/characters/003_jeanne_darc/jeanne_aura_noble_phantasm.mp3",
+      "source_url": "https://www.myinstants.com/media/sounds/jeanne_darc_voice_noble_phantasm.mp3",
+      "note": "Fate-style Jeanne d'Arc noble phantasm cue",
+      "duration": 6.090862,
+      "size": 49337,
+      "format": "mp3"
+    },
+    {
+      "id": 4,
+      "character": "Аскеладд",
+      "event": "war_call",
+      "file": "assets/audio/characters/004_askeladd/askeladd_war_call.mp3",
+      "source_url": "https://www.myinstants.com/media/sounds/askeladd-war-sound.mp3",
+      "note": "Vinland Saga / Askeladd voice cue",
+      "duration": 5.412,
+      "size": 218925,
+      "format": "mp3"
+    },
+    {
+      "id": 6,
+      "character": "Росомаха",
+      "event": "claw_attack",
+      "file": "assets/audio/characters/006_wolverine/wolverine_claw_attack.mp3",
+      "source_url": "https://www.myinstants.com/media/sounds/drill-claw-wolverine-mvc2.mp3",
+      "note": "Marvel vs Capcom-style Wolverine claw attack",
+      "duration": 0.888,
+      "size": 36620,
+      "format": "mp3"
+    },
+    {
+      "id": 6,
+      "character": "Росомаха",
+      "event": "berserker_barrage",
+      "file": "assets/audio/characters/006_wolverine/wolverine_berserker_barrage.mp3",
+      "source_url": "https://www.myinstants.com/media/sounds/berserker-barrage-wolverine-mvc2.mp3",
+      "note": "Wolverine Berserker Barrage voice/attack cue",
+      "duration": 1.512,
+      "size": 61580,
+      "format": "mp3"
+    },
+    {
+      "id": 7,
+      "character": "Олег Тиньков",
+      "event": "quote",
+      "file": "assets/audio/characters/007_oleg_tinkov/oleg_tinkov_quote.mp3",
+      "source_url": "https://www.myinstants.com/media/sounds/tinkov-ia-oshibsia-ia-mogu-odin-raz-oshibitsia.mp3",
+      "note": "Recognizable Oleg Tinkov quote",
+      "duration": 2.182676,
+      "size": 36080,
+      "format": "mp3"
+    },
+    {
+      "id": 14,
+      "character": "Сакура",
+      "event": "shannaro",
+      "file": "assets/audio/characters/014_sakura/sakura_shannaro.mp3",
+      "source_url": "https://www.myinstants.com/media/sounds/shannaro-sakura.mp3",
+      "note": "Naruto Sakura iconic shout",
+      "duration": 1.633719,
+      "size": 27095,
+      "format": "mp3"
+    },
+    {
+      "id": 15,
+      "character": "Тока Киришима",
+      "event": "voice",
+      "file": "assets/audio/characters/015_touka_kirishima/touka_voice.mp3",
+      "source_url": "https://www.myinstants.com/media/sounds/touka-good-grief.mp3",
+      "note": "Touka voice cue from soundboard",
+      "duration": 3.797333,
+      "size": 61785,
+      "format": "mp3"
+    },
+    {
+      "id": 16,
+      "character": "Хог Райдер",
+      "event": "deploy",
+      "file": "assets/audio/characters/016_hog_rider/hog_rider_deploy.mp3",
+      "source_url": "https://www.myinstants.com/media/sounds/clash-royale-hog-rider-scream.mp3",
+      "note": "Clash Royale Hog Rider deploy scream",
+      "duration": 2.424,
+      "size": 38829,
+      "format": "mp3"
+    },
+    {
+      "id": 17,
+      "character": "Танджиро",
+      "event": "sword",
+      "file": "assets/audio/characters/017_tanjiro/tanjiro_sword.mp3",
+      "source_url": "https://www.myinstants.com/media/sounds/tanjiroswrd.mp3",
+      "note": "Tanjiro sword cue",
+      "duration": 3.160816,
+      "size": 51337,
+      "format": "mp3"
+    },
+    {
+      "id": 18,
+      "character": "П.Е.К.К.А.",
+      "event": "deploy",
+      "file": "assets/audio/characters/018_pekka/pekka_deploy.mp3",
+      "source_url": "https://www.myinstants.com/media/sounds/pekka-deploy.mp3",
+      "note": "Clash Royale PEKKA deploy cue",
+      "duration": 4.0,
+      "size": 66487,
+      "format": "mp3"
+    },
+    {
+      "id": 18,
+      "character": "П.Е.К.К.А.",
+      "event": "hit",
+      "file": "assets/audio/characters/018_pekka/pekka_hit.mp3",
+      "source_url": "https://www.myinstants.com/media/sounds/mini-pekka-hit.mp3",
+      "note": "PEKKA/Mini-PEKKA metal hit cue",
+      "duration": 1.17551,
+      "size": 23322,
+      "format": "mp3"
+    },
+    {
+      "id": 20,
+      "character": "Канеки Кен",
+      "event": "voice",
+      "file": "assets/audio/characters/020_kaneki_ken/kaneki_voice.mp3",
+      "source_url": "https://www.myinstants.com/media/sounds/kaneki_HBegg8E.mp3",
+      "note": "Kaneki voice cue",
+      "duration": 2.043356,
+      "size": 33782,
+      "format": "mp3"
+    },
+    {
+      "id": 21,
+      "character": "Геральт",
+      "event": "hmm",
+      "file": "assets/audio/characters/021_geralt/geralt_hmm.mp3",
+      "source_url": "https://www.myinstants.com/media/sounds/geralt-making-hmm-sound-for-2-minutes-straight-in-season-1-of-netflixs-thewitcher-mp3cut.mp3",
+      "note": "Geralt iconic hmm cue",
+      "duration": 1.032902,
+      "size": 17601,
+      "format": "mp3"
+    },
+    {
+      "id": 22,
+      "character": "Дио Брандо",
+      "event": "za_warudo",
+      "file": "assets/audio/characters/022_dio_brando/dio_za_warudo.mp3",
+      "source_url": "https://www.myinstants.com/media/sounds/dio-za-warudo.mp3",
+      "note": "DIO Za Warudo voice cue",
+      "duration": 1.333311,
+      "size": 22404,
+      "format": "mp3"
+    },
+    {
+      "id": 22,
+      "character": "Дио Брандо",
+      "event": "time_stop",
+      "file": "assets/audio/characters/022_dio_brando/dio_time_stop.mp3",
+      "source_url": "https://www.myinstants.com/media/sounds/time-stop-sound-effect-eyes-of-heaven_128k-mp3cut.mp3",
+      "note": "JoJo Eyes of Heaven-style time stop SFX",
+      "duration": 3.122698,
+      "size": 50919,
+      "format": "mp3"
+    },
+    {
+      "id": 23,
+      "character": "Сукуна",
+      "event": "domain",
+      "file": "assets/audio/characters/023_sukuna/sukuna_malevolent_shrine.mp3",
+      "source_url": "https://www.myinstants.com/media/sounds/malevolent-shrine.mp3",
+      "note": "Sukuna Malevolent Shrine cue",
+      "duration": 7.781333,
+      "size": 193959,
+      "format": "mp3"
+    },
+    {
+      "id": 24,
+      "character": "Годжо Сатору",
+      "event": "hollow_purple",
+      "file": "assets/audio/characters/024_gojo_satoru/gojo_hollow_purple.mp3",
+      "source_url": "https://www.myinstants.com/media/sounds/hollow-purple.mp3",
+      "note": "Gojo Hollow Purple cue",
+      "duration": 11.4155,
+      "size": 182648,
+      "format": "mp3"
+    },
+    {
+      "id": 25,
+      "character": "Сайтама",
+      "event": "serious_punch",
+      "file": "assets/audio/characters/025_saitama/saitama_serious_punch.mp3",
+      "source_url": "https://www.myinstants.com/media/sounds/saitama-serious-punch.mp3",
+      "note": "Saitama Serious Punch cue",
+      "duration": 15.934688,
+      "size": 254955,
+      "format": "mp3"
+    },
+    {
+      "id": 26,
+      "character": "Мидория",
+      "event": "one_for_all_smash",
+      "file": "assets/audio/characters/026_midoriya/midoriya_one_for_all_smash.mp3",
+      "source_url": "https://www.myinstants.com/media/sounds/deku-one-for-all-smash.mp3",
+      "note": "Deku One For All Smash cue",
+      "duration": 14.512472,
+      "size": 249279,
+      "format": "mp3"
+    },
+    {
+      "id": 28,
+      "character": "Торфинн",
+      "event": "no_enemies",
+      "file": "assets/audio/characters/028_thorfinn/thorfinn_no_enemies.mp3",
+      "source_url": "https://www.myinstants.com/media/sounds/i-have-no-enemies.mp3",
+      "note": "Thorfinn I have no enemies cue",
+      "duration": 8.80325,
+      "size": 211415,
+      "format": "mp3"
+    },
+    {
+      "id": 29,
+      "character": "Штурмовик",
+      "event": "e11_blaster",
+      "file": "assets/audio/characters/029_stormtrooper/stormtrooper_e11_blaster.mp3",
+      "source_url": "https://www.myinstants.com/media/sounds/e-11.mp3",
+      "note": "Stormtrooper E-11 blaster cue",
+      "duration": 1.273651,
+      "size": 11943,
+      "format": "mp3"
+    },
+    {
+      "id": 29,
+      "character": "Штурмовик",
+      "event": "death",
+      "file": "assets/audio/characters/029_stormtrooper/stormtrooper_death.mp3",
+      "source_url": "https://www.myinstants.com/media/sounds/lego-star-wars-stormtrooper-death.mp3",
+      "note": "LEGO Star Wars stormtrooper death cue",
+      "duration": 0.399819,
+      "size": 1298,
+      "format": "mp3"
+    },
+    {
+      "id": 30,
+      "character": "Наофуми",
+      "event": "shield",
+      "file": "assets/audio/characters/030_naofumi/naofumi_iron_maiden.mp3",
+      "source_url": "https://www.myinstants.com/media/sounds/iron-maiden-shield-hero.mp3",
+      "note": "Shield Hero Iron Maiden cue",
+      "duration": 3.456,
+      "size": 86733,
+      "format": "mp3"
+    },
+    {
+      "id": 43,
+      "character": "Лара Крофт",
+      "event": "classic_aha",
+      "file": "assets/audio/characters/043_lara_croft/lara_croft_aha.mp3",
+      "source_url": "https://www.myinstants.com/media/sounds/lara-croft-a-haaa.mp3",
+      "note": "Classic Lara Croft voice cue",
+      "duration": 5.01551,
+      "size": 133238,
+      "format": "mp3"
+    },
+    {
+      "id": 44,
+      "character": "Леви Аккерман",
+      "event": "attack",
+      "file": "assets/audio/characters/044_levi_ackerman/levi_attack.mp3",
+      "source_url": "https://www.myinstants.com/media/sounds/levi-ackerman-screaming-kenny.mp3",
+      "note": "Levi Ackerman attack/voice cue",
+      "duration": 8.777143,
+      "size": 141198,
+      "format": "mp3"
+    },
+    {
+      "id": 45,
+      "character": "Солид Снейк",
+      "event": "alert",
+      "file": "assets/audio/characters/045_solid_snake/solid_snake_alert.mp3",
+      "source_url": "https://www.myinstants.com/media/sounds/metalgearsolidalert.mp3",
+      "note": "Metal Gear Solid alert cue",
+      "duration": 1.567347,
+      "size": 25771,
+      "format": "mp3"
+    },
+    {
+      "id": 46,
+      "character": "Уссоп",
+      "event": "eyecatcher",
+      "file": "assets/audio/characters/046_usopp/usopp_eyecatcher.mp3",
+      "source_url": "https://www.myinstants.com/media/sounds/usopps-eyecatcher.mp3",
+      "note": "One Piece Usopp eyecatcher cue",
+      "duration": 6.106848,
+      "size": 98775,
+      "format": "mp3"
+    },
+    {
+      "id": 27,
+      "character": "Скелет",
+      "event": "ambient",
+      "file": "assets/audio/characters/027_skeleton/skeleton_ambient.mp3",
+      "source_url": "https://resources.download.minecraft.net/82/82a837074ebb499c05a8ec9258190288ddcb5cbe",
+      "source_asset": "minecraft/sounds/mob/skeleton/say1.ogg",
+      "note": "Official Minecraft asset converted from OGG to MP3",
+      "duration": 0.666122,
+      "size": 8619,
+      "format": "mp3"
+    },
+    {
+      "id": 27,
+      "character": "Скелет",
+      "event": "hurt",
+      "file": "assets/audio/characters/027_skeleton/skeleton_hurt.mp3",
+      "source_url": "https://resources.download.minecraft.net/6d/6df446a07ce7f7aa292e8eeeab9f96543acd805b",
+      "source_asset": "minecraft/sounds/mob/skeleton/hurt1.ogg",
+      "note": "Official Minecraft asset converted from OGG to MP3",
+      "duration": 0.747098,
+      "size": 10399,
+      "format": "mp3"
+    },
+    {
+      "id": 27,
+      "character": "Скелет",
+      "event": "death",
+      "file": "assets/audio/characters/027_skeleton/skeleton_death.mp3",
+      "source_url": "https://resources.download.minecraft.net/32/324bdca11921a46b0c87e61bf7a93047e70eb750",
+      "source_asset": "minecraft/sounds/mob/skeleton/death.ogg",
+      "note": "Official Minecraft asset converted from OGG to MP3",
+      "duration": 1.5,
+      "size": 20774,
+      "format": "mp3"
+    },
+    {
+      "id": 19,
+      "character": "Саб-Зиро",
+      "event": "announce",
+      "file": "assets/audio/characters/019_sub_zero/sub_zero_announce.mp3",
+      "source_url": "https://www.myinstants.com/media/sounds/sub-zero-announce.mp3",
+      "note": "Sub-Zero fallback from MyInstants; specialized freeze URL was unavailable during download",
+      "duration": 1.253875,
+      "size": 20062,
+      "format": "mp3"
+    },
+    {
+      "id": 19,
+      "character": "Саб-Зиро",
+      "event": "voice",
+      "file": "assets/audio/characters/019_sub_zero/sub_zero_voice.mp3",
+      "source_url": "https://www.myinstants.com/media/sounds/iamsubzero.mp3",
+      "note": "Sub-Zero fallback from MyInstants; specialized freeze URL was unavailable during download",
+      "duration": 3.932494,
+      "size": 63885,
+      "format": "mp3"
+    },
+    {
+      "id": 19,
+      "character": "Саб-Зиро",
+      "event": "mk3_sound_1",
+      "file": "assets/audio/characters/019_sub_zero/sub_zero_mk3_sound_1.mp3",
+      "source_url": "https://www.myinstants.com/media/sounds/umk3-sub-zero-sound-1.mp3",
+      "note": "Sub-Zero fallback from MyInstants; specialized freeze URL was unavailable during download",
+      "duration": 0.339563,
+      "size": 5433,
+      "format": "mp3"
+    },
+    {
+      "id": 19,
+      "character": "Саб-Зиро",
+      "event": "mk3_sound_2",
+      "file": "assets/audio/characters/019_sub_zero/sub_zero_mk3_sound_2.mp3",
+      "source_url": "https://www.myinstants.com/media/sounds/umk3-sub-zero-sound-2.mp3",
+      "note": "Sub-Zero fallback from MyInstants; specialized freeze URL was unavailable during download",
+      "duration": 0.417938,
+      "size": 6687,
+      "format": "mp3"
+    },
+    {
+      "id": 19,
+      "character": "Саб-Зиро",
+      "event": "mk",
+      "file": "assets/audio/characters/019_sub_zero/sub_zero_mk.mp3",
+      "source_url": "https://www.myinstants.com/media/sounds/sub-zero-mk.mp3",
+      "note": "Sub-Zero fallback from MyInstants; specialized freeze URL was unavailable during download",
+      "duration": 2.272653,
+      "size": 18617,
+      "format": "mp3"
+    },
+    {
+      "id": null,
+      "character": "Крипер",
+      "event": "spawn_hiss",
+      "file": "assets/audio/characters/creeper/creeper_spawn_hiss.mp3",
+      "source_url": "https://resources.download.minecraft.net/",
+      "note": "Minecraft creeper spawn/ambient say cue; alias of creeper_spawn_say_1.mp3",
+      "duration": 0.458594,
+      "size": 8571,
+      "format": "mp3"
+    },
+    {
+      "id": null,
+      "character": "Крипер",
+      "event": "death_explosion",
+      "file": "assets/audio/characters/creeper/creeper_death_explosion.mp3",
+      "source_url": "https://resources.download.minecraft.net/",
+      "note": "Minecraft explosion cue for creeper death",
+      "duration": 3.25,
+      "size": 31463,
+      "format": "mp3"
+    }
+  ],
+  "skipped": [
+    {
+      "id": 1,
+      "character": "Искатель",
+      "status": "skipped_no_external_canon",
+      "reason": "Original/generic card, no obvious canonical external sound."
+    },
+    {
+      "id": 5,
+      "character": "Даркнесс",
+      "status": "needs_manual_pick",
+      "reason": "No clean direct KonoSuba Darkness MP3 found; avoided unrelated darkness sounds."
+    },
+    {
+      "id": 31,
+      "character": "Наемник",
+      "status": "skipped_no_external_canon",
+      "reason": "Generic card, no obvious canonical external sound."
+    },
+    {
+      "id": 19,
+      "character": "Саб-Зиро",
+      "event": "freeze",
+      "status": "download_failed",
+      "source_url": "https://soundfxcenter.com/video-games/mortal-kombat/8d82b5_Sub_Zero_Freeze_Sound_Effect.mp3",
+      "reason": "Command '['curl', '--http1.1', '-fsSL', '--retry', '4', '--retry-delay', '1', '-A', 'Mozilla/5.0', 'https://soundfxcenter.com/video-games/mortal-kombat/8d82b5_Sub_Zero_Freeze_Sound_Effect.mp3', '-o', 'assets/audio/characters/019_sub_zero/sub_zero_freeze.mp3.tmp']' returned non-zero exit status 52."
+    },
+    {
+      "id": 19,
+      "character": "Саб-Зиро",
+      "event": "freeze",
+      "status": "source_unavailable_fallback_added",
+      "reason": "SoundFXCenter direct freeze URL returned empty reply; added MyInstants MK/Sub-Zero candidates instead."
+    }
+  ]
+}

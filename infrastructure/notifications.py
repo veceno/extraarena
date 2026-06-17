@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import random
 from typing import Any
+from html import escape
 from urllib.parse import urlencode
 
 from infrastructure.config import LEAGUE_CONFIG, LEAGUE_NEXT_TROPHIES
@@ -16,6 +17,8 @@ WEBAPP_SECTION_BY_CATEGORY = {
     "squad_disbanded": "squads",
     "squad_boost": "squads",
     "extra_arena_modifier": "arena",
+    "game_invites": "friends",
+    "friend_requests": "friends",
 }
 
 NOTIFICATION_SETTING_BY_CATEGORY = {
@@ -27,6 +30,8 @@ NOTIFICATION_SETTING_BY_CATEGORY = {
     "squad_disbanded": "notif_squad_disbanded",
     "squad_boost": "notif_squad_boost",
     "extra_arena_modifier": "notif_extra_arena_modifiers",
+    "game_invites": "notif_game_invites",
+    "friend_requests": "notif_friend_requests",
 }
 
 NOTIFICATION_DEFAULTS = {
@@ -37,9 +42,12 @@ NOTIFICATION_DEFAULTS = {
     "notif_squad_disbanded": True,
     "notif_squad_boost": True,
     "notif_extra_arena_modifiers": True,
+    "notif_game_invites": True,
+    "notif_friend_requests": True,
 }
 
 REMINDER_DUSTY_WEIGHT = 1
+REMINDER_TITLES = ("Вперед в бой", "Задай им тряски!")
 
 
 def wins_required_for_case(extra_pass: str | None) -> int:
@@ -133,29 +141,36 @@ def choose_reminder_payload(profile: dict[str, Any], *, rng: random.Random | Non
     for weight, payload in candidates:
         upto += weight
         if pick <= upto:
-            return payload
-    return candidates[-1][1]
+            return _with_reminder_title(payload, rng)
+    return _with_reminder_title(candidates[-1][1], rng)
+
+
+def _with_reminder_title(payload: dict[str, Any], rng: random.Random) -> dict[str, Any]:
+    return {**payload, "title": rng.choice(REMINDER_TITLES)}
 
 
 def format_notification_message(event_type: str, payload: dict[str, Any] | None = None) -> str:
     payload = payload or {}
     if event_type in {"app_update", "app_update_required"}:
         return str(payload.get("body") or "Хорошие новости! Вышло обновление, скачай новую версию, чтобы продолжить игру")
-    if event_type == "dice_ready":
-        return "🎲 Эй! Самое время бросить кости!"
     if event_type == "generator_new_key":
         count = int(payload.get("keys") or 1)
-        return f"Новый ключ готов! В генераторе уже {count} ключ(ей)."
+        return f"Новый ключ уже готов! - скорее открой кейс! В генераторе уже {count} ключ(ей)."
     if event_type == "generator_full_on_new_key":
-        cap = int(payload.get("cap") or payload.get("keys") or 0)
-        return f"Новый ключ готов, и генератор переполнился! Забери ключи, максимум сейчас: {cap}."
+        return "Генератор уже переполнен - собери ключ и открой кейс, чтобы генератор заработал!"
     if event_type == "generator_full_blocked_key":
-        return "Щас бы был новый ключ, но генератор уже переполнен!"
+        return "Ты бы мог получить новый ключ, но генератор уже переполнен!"
     if event_type == "shop_particles":
         return "Новые частицы карт уже в магазине!"
     if event_type == "extra_arena_modifier_changed":
         label = payload.get("label") or payload.get("mode_name") or "новый модификатор"
-        return f"В ExtraArena сменился режим: {label}. Самое время проверить колоду!"
+        return f"В ExtraArena сменился модификатор: {label}! Ну что, задашь им жару?"
+    if event_type == "friendly_battle_invite":
+        from_name = payload.get("from_name") or "Друг"
+        return f"{from_name} вызывает тебя на дружеский бой!"
+    if event_type == "friend_request_received":
+        from_name = payload.get("from_name") or "Игрок"
+        return f"{from_name} отправил заявку в друзья."
     if event_type == "daily_reminder":
         return str(payload.get("text") or "Пора вернуться на арену!")
     if event_type == "squad_member_role":
@@ -175,11 +190,85 @@ def format_notification_message(event_type: str, payload: dict[str, Any] | None 
     return str(payload.get("text") or "В ExtraArena новое событие!")
 
 
+def format_telegram_notification_message(event_type: str, payload: dict[str, Any] | None = None) -> str:
+    payload = payload or {}
+    if event_type == "generator_new_key":
+        count = int(payload.get("keys") or 1)
+        return f"<b>Новый ключ уже готов!</b> - скорее открой кейс! В генераторе уже {count} ключ(ей)."
+    if event_type == "generator_full_on_new_key":
+        return "<b>Генератор уже переполнен</b> - собери ключ и открой кейс, чтобы генератор заработал!"
+    if event_type == "extra_arena_modifier_changed":
+        label = escape(str(payload.get("label") or payload.get("mode_name") or "новый модификатор"))
+        return f"В ExtraArena сменился модификатор: {label}! Ну что, задашь им жару?"
+    if event_type == "friendly_battle_invite":
+        from_name = escape(str(payload.get("from_name") or "Друг"))
+        return f"{from_name} вызывает тебя на дружеский бой!"
+    if event_type == "friend_request_received":
+        from_name = escape(str(payload.get("from_name") or "Игрок"))
+        return f"{from_name} отправил заявку в друзья."
+    if event_type == "daily_reminder":
+        return escape(str(payload.get("text") or "Пора вернуться на арену!"))
+    if event_type == "squad_member_role":
+        nick = escape(str(payload.get("nick") or "Участник"))
+        action = escape(str(payload.get("action") or "изменил роль"))
+        return f"{nick}: {action} в твоем скваде."
+    if event_type == "squad_new_member":
+        nick = escape(str(payload.get("nick") or "Новый игрок"))
+        squad = escape(str(payload.get("squad_name") or "сквад"))
+        return f"{nick} вступил в {squad}!"
+    if event_type == "squad_disbanded":
+        squad = escape(str(payload.get("squad_name") or "Твой сквад"))
+        return f"{squad} расформирован."
+    if event_type == "squad_boost":
+        squad = escape(str(payload.get("squad_name") or "У сквада"))
+        return f"{squad} активировал Boost!"
+    return escape(format_notification_message(event_type, payload))
+
+
+def format_android_notification_title(category: str, event_type: str, payload: dict[str, Any] | None = None) -> str:
+    payload = payload or {}
+    if payload.get("title"):
+        return str(payload.get("title"))
+    if event_type == "generator_new_key":
+        return "Новый ключ готов!"
+    if event_type == "generator_full_on_new_key":
+        return "Новый ключ готов!"
+    if event_type == "generator_full_blocked_key":
+        return "Генератор переполнен!"
+    if event_type == "shop_particles":
+        return "Новые частицы карт в магазине!"
+    if event_type == "extra_arena_modifier_changed":
+        label = payload.get("label") or payload.get("mode_name") or "ExtraArena"
+        return f"{label} в ExtraArena!"
+    if event_type == "friendly_battle_invite":
+        from_name = payload.get("from_name") or "Друг"
+        return f"{from_name} вызвал тебя на бой!"
+    if event_type == "friend_request_received":
+        return "Заявка в друзья"
+    if event_type == "daily_reminder":
+        return random.choice(REMINDER_TITLES)
+    if category.startswith("squad_") or event_type.startswith("squad_"):
+        squad = payload.get("squad_name") or "Сквад"
+        event_labels = {
+            "squad_new_member": "новый участник!",
+            "squad_member_role": "роль изменена!",
+            "squad_disbanded": "расформирован!",
+            "squad_boost": "Boost!",
+        }
+        return f"{squad}: {event_labels.get(event_type, 'событие!')}"
+    return "ExtraArena"
+
+
 def notification_section(category: str, payload: dict[str, Any] | None = None) -> str:
     payload = payload or {}
     return str(payload.get("section") or WEBAPP_SECTION_BY_CATEGORY.get(category) or "arena")
 
 
-def build_webapp_url(base_url: str, *, section: str) -> str:
+def build_webapp_url(base_url: str, *, section: str, payload: dict[str, Any] | None = None) -> str:
+    payload = payload or {}
+    query = {"section": section}
+    for key in ("invite_id", "invite_action", "request_id"):
+        if payload.get(key) is not None:
+            query[key] = str(payload.get(key))
     sep = "&" if "?" in base_url else "?"
-    return f"{base_url}{sep}{urlencode({'section': section})}"
+    return f"{base_url}{sep}{urlencode(query)}"

@@ -4,6 +4,7 @@
 """
 import pytest
 from uuid import uuid4
+from pathlib import Path
 
 from core.state import CardInstance, CardType, GameState, GameStatus, PlayerState
 from core.engine import ArenaEnvironment
@@ -147,6 +148,23 @@ def test_sukuna_cleave_legacy_db_format_on_attack():
 
     assert left.hp == 4, f"Left должен получить 1 cleave урона, HP={left.hp}"
     assert right.hp == 4, f"Right должен получить 1 cleave урона, HP={right.hp}"
+
+
+def test_cleave_description_matches_neighbor_damage():
+    """Cleave text should describe adjacent target damage, not random targets."""
+    state = create_minimal_game_state()
+    env = ArenaEnvironment(state)
+
+    text = env._describe_card_effect(
+        "Сукуна",
+        ["cleave_1_2"],
+        target_id=None,
+        owner=state.p1,
+        opponent=state.p2,
+    )
+
+    assert "сосед" in text
+    assert "случайн" not in text
 
 
 def test_sukuna_cleave_does_not_trigger_on_hero_attack():
@@ -652,6 +670,13 @@ def test_turn_time_history_records_completed_turns():
     ]
 
 
+def test_starting_hand_cheapest_warriors_is_documented_design_rule():
+    doc = Path("docs/BATTLE_SYSTEM.md").read_text(encoding="utf-8").lower()
+
+    assert "starting hand" in doc
+    assert "cheapest three warriors" in doc
+
+
 # ============================================================================
 # 8. PER-CARD BOT LEVELS
 # ============================================================================
@@ -772,6 +797,23 @@ def test_get_player_deck_max_level_missing_card():
     assert val == 5
 
 
+def test_get_player_deck_max_level_logs_fallback_on_error(caplog):
+    import asyncio
+    import logging
+    from infrastructure.database import Database
+
+    class BrokenDeckDB(_FakeMaxDB):
+        async def get_user_deck_presets(self, user_id):
+            raise RuntimeError("deck preset lookup failed")
+
+    db = BrokenDeckDB()
+    caplog.set_level(logging.WARNING, logger="infrastructure.database")
+    val = asyncio.run(Database.get_player_deck_max_level(db, 123, selected_deck_id=2))
+
+    assert val == 1
+    assert "get_player_deck_max_level failed for user_id=123 selected_deck_id=2" in caplog.text
+
+
 def test_get_player_deck_avg_level_with_data():
     import asyncio
     from infrastructure.database import Database
@@ -812,6 +854,29 @@ def test_slot_levels_handle_duplicate_cards():
     assert deck[0].level == 4
     assert deck[1].level == 6
     assert deck[2].level == 8
+
+
+def test_deck_from_card_ids_rejects_unknown_card_ids():
+    """Unknown cards should fail fast instead of silently creating a short deck."""
+    from core.converter import deck_from_card_ids
+
+    cards_data = {
+        10: {
+            'id': 10, 'name': 'Known', 'card_type': 'warrior',
+            'base_attack': 3, 'current_attack': 3, 'base_hp': 3, 'current_hp': 3,
+            'mana_cost': 2, 'rarity': 'common', 'mechanics': [],
+        },
+    }
+
+    with pytest.raises(ValueError, match="unknown_card_id:99"):
+        deck_from_card_ids([10, 99], cards_data)
+
+
+def test_consume_ally_board_full_check_does_not_keep_unreachable_condition():
+    """The old len(board) - 1 >= 7 branch was unreachable at the board limit."""
+    source = Path("core/engine.py").read_text(encoding="utf-8")
+
+    assert "len(player.board) - 1 >= 7" not in source
 
 
 # ============================================================================

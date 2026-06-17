@@ -23,6 +23,25 @@ class ShopSetDBHarness(Database):
         return self.row
 
 
+class AdminSearchHarness(Database):
+    def __init__(self):
+        self._pool = object()
+        self.count_query = ""
+        self.count_args = ()
+        self.data_query = ""
+        self.data_args = ()
+
+    async def fetchval(self, query, *args):
+        self.count_query = query
+        self.count_args = args
+        return 0
+
+    async def fetch(self, query, *args):
+        self.data_query = query
+        self.data_args = args
+        return []
+
+
 @pytest.mark.asyncio
 async def test_shop_sets_are_json_safe():
     created_at = datetime(2026, 5, 24, 12, 30, tzinfo=timezone.utc)
@@ -50,6 +69,21 @@ async def test_shop_sets_are_json_safe():
     assert sets[0]["rewards"][0]["amount"] == 5.0
     assert one_set["price"] == 10.0
     assert one_set["updated_at"] == created_at.isoformat()
+
+
+@pytest.mark.asyncio
+async def test_admin_player_search_uses_unified_sql_params_for_activity_filters():
+    db = AdminSearchHarness()
+
+    result = await db.search_admin_players(query="alice", activity="active_7d", limit=25, offset=5)
+
+    assert result == {"players": [], "total": 0}
+    assert "started_at >= $2" in db.count_query
+    assert len(db.count_args) == 2
+    assert "started_at >= $2" in db.data_query
+    assert "started_at >= $3" in db.data_query
+    assert "LIMIT $4 OFFSET $5" in db.data_query
+    assert db.data_args[-2:] == (25, 5)
 
 
 def test_hidden_admin_frontend_uses_stable_set_editor_state():
@@ -90,6 +124,7 @@ def test_hidden_admin_frontend_keeps_auth_out_of_api_urls():
     assert "opts.headers.Authorization='Bearer '+AUTH_PARAM.value" in html
     assert "history.replaceState" in html
     assert "u.searchParams.set(AUTH_PARAM.key,AUTH_PARAM.value)" not in html
+    assert "p.get('_auth')" not in html
     assert "p.get('user_id')" not in html
     assert "if(!AUTH_PARAM)" not in html
 
@@ -110,9 +145,43 @@ def test_product_editor_uses_guided_product_selectors():
     assert '<input id="pe-item-type"' not in html
     assert '<select id="pe-package-type"' in html
     assert '<select id="pe-shop-set-id"' in html
+    assert '<input id="pe-rustore-product-id"' in html
+    assert "rustore_product_id" in html
     assert "var productOptions=" in html
     assert "loadProductOptions" in html
     assert "/api/admin/ruble-products/options" in html
+
+
+def test_extra_pass_admin_reward_type_selectors_include_case_rewards():
+    html = (ROOT / "extraShop" / "admin.html").read_text(encoding="utf-8")
+
+    for select_id in ("sr-reward-type", "rt-reward-type"):
+        select_markup = html.split(f'<select id="{select_id}">', 1)[1].split("</select>", 1)[0]
+        for reward_type in ("coins", "gems", "keys", "case", "card", "specific_card"):
+            assert f'<option value="{reward_type}"' in select_markup
+
+
+def test_extra_pass_admin_exposes_season_reset_controls():
+    html = (ROOT / "extraShop" / "admin.html").read_text(encoding="utf-8")
+    server = (ROOT / "web" / "server.py").read_text(encoding="utf-8")
+
+    assert 'data-season-tab="reset"' in html
+    assert 'data-season-panel="reset"' in html
+    assert 'id="btn-season-reset-preview"' in html
+    assert 'id="btn-season-reset-execute"' in html
+    assert "/api/admin/seasons/'+Number(seasonId)+'/reset-preview" in html
+    assert "/api/admin/seasons/'+Number(seasonId)+'/reset" in html
+    assert "seasonResetPreview=null" in html
+    assert "confirm_season_id:Number(seasonId)" in html
+    assert "Load a fresh reset preview first" in html
+    assert "setSeasonResetBusy" in html
+    assert "btn.disabled=seasonResetBusy" in html
+    assert "shown of '+fmtNum(total)+' players" in html
+    assert "setSwitch($('#season-reset-confirm'),false)" in html
+    assert "Reset preview: '+escHtml(e.message)" not in html
+    assert "Season reset: '+escHtml(e.message)" not in html
+    assert 'app.router.add_get("/api/admin/seasons/{season_id:\\\\d+}/reset-preview", admin_season_reset_preview_handler)' in server
+    assert 'app.router.add_post("/api/admin/seasons/{season_id:\\\\d+}/reset", admin_season_reset_execute_handler)' in server
 
 
 def test_admin_frontend_displays_partial_block_warnings():
@@ -121,6 +190,41 @@ def test_admin_frontend_displays_partial_block_warnings():
     assert "renderAdminBlockWarnings" in html
     assert "cfg-partial-warnings" in html
     assert "sq-partial-warnings" in html
+
+
+def test_profile_admin_entry_bootstraps_cookie_session_without_auth_query():
+    index = (ROOT / "webapp" / "index.html").read_text(encoding="utf-8")
+
+    assert "openAdminPanel" in index
+    assert "'/api/admin/session'" in index
+    assert "buildUiAuthUrl('/extraShop/admin')" not in index
+    assert "/extraShop/admin?_auth" not in index
+
+
+def test_admin_frontend_api_handles_expired_session_and_non_json_errors():
+    html = (ROOT / "extraShop" / "admin.html").read_text(encoding="utf-8")
+
+    assert "await r.text()" in html
+    assert "JSON.parse(text)" in html
+    assert "showSessionExpired" in html
+    assert "r.status===401||r.status===403" in html
+    assert "d.data&&d.data.error" in html
+
+
+def test_admin_frontend_escapes_single_quotes_and_uses_js_string_callbacks():
+    html = (ROOT / "extraShop" / "admin.html").read_text(encoding="utf-8")
+
+    assert "replace(/'/g,'&#39;')" in html
+    assert "function jsString" in html
+    assert "saveSquadConfig('+jsString(k)+')" in html
+    assert "toggleRuntimeFeature('+jsString(key)+'," in html
+    assert "toggleMatchMode('+jsString(String(m.mode_id))+'" in html
+
+
+def test_admin_frontend_toasts_do_not_render_literal_html_entities():
+    html = (ROOT / "extraShop" / "admin.html").read_text(encoding="utf-8")
+
+    assert "&mdash;" not in html
 
 
 def test_legacy_admin_players_post_route_is_not_registered():
@@ -134,7 +238,9 @@ def test_admin_routes_have_central_auth_middleware():
     server = (ROOT / "web" / "server.py").read_text(encoding="utf-8")
 
     assert "async def admin_auth_middleware" in server
-    assert 'request.path.startswith("/api/admin/")' in server
+    assert "def _is_admin_api_path" in server
+    assert 'path.startswith("/api/admin/")' in server
+    assert "COMMUNITY_ADMIN_API_PATHS" in server
     assert "app.middlewares.append(admin_auth_middleware)" in server
 
 

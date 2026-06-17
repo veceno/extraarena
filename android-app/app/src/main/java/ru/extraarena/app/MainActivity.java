@@ -714,7 +714,15 @@ public class MainActivity extends Activity {
         if (cardId == null || !cardId.matches("\\d+")) {
             return null;
         }
-        return servePackagedAsset("DesignAssets/Cards/" + cardId + ".png");
+        WebResourceResponse response = servePackagedAsset("DesignAssets/Cards/" + cardId + ".png");
+        if (response != null) return response;
+        response = servePackagedAsset("DesignAssets/Cards/" + cardId + ".jpg");
+        if (response != null) return response;
+        response = servePackagedAsset("DesignAssets/Cards/" + cardId + ".jpeg");
+        if (response != null) return response;
+        response = servePackagedAsset("DesignAssets/Cards/" + cardId + ".webp");
+        if (response != null) return response;
+        return null;
     }
 
     private WebResourceResponse servePackagedVendorAsset(String assetPath) {
@@ -1193,13 +1201,25 @@ public class MainActivity extends Activity {
         setLoadingDevHotspotVisible(true);
         errorView.setVisibility(View.GONE);
         String section = intent == null ? null : intent.getStringExtra("section");
+        String inviteId = intent == null ? null : intent.getStringExtra("invite_id");
+        String inviteAction = intent == null ? null : intent.getStringExtra("invite_action");
         if (section == null && intent != null && intent.getData() != null) {
             section = intent.getData().getQueryParameter("section");
         }
-        probeAndLoadArena(buildLaunchUrl(section));
+        if (inviteId == null && intent != null && intent.getData() != null) {
+            inviteId = intent.getData().getQueryParameter("invite_id");
+        }
+        if (inviteAction == null && intent != null && intent.getData() != null) {
+            inviteAction = intent.getData().getQueryParameter("invite_action");
+        }
+        probeAndLoadArena(buildLaunchUrl(section, inviteId, inviteAction));
     }
 
     private String buildLaunchUrl(String section) {
+        return buildLaunchUrl(section, null, null);
+    }
+
+    private String buildLaunchUrl(String section, String inviteId, String inviteAction) {
         Uri.Builder builder = Uri.parse(BaseUrlStore.getBaseUrl(this)).buildUpon()
                 .appendQueryParameter("_auth", DeviceRegistrar.getAuthToken(this))
                 .appendQueryParameter("ea_platform", "android_app")
@@ -1213,6 +1233,16 @@ public class MainActivity extends Activity {
         }
         if (section != null && !section.trim().isEmpty()) {
             builder.appendQueryParameter("section", section);
+        }
+        Map<String, String> query = new HashMap<>();
+        if (inviteId != null && !inviteId.trim().isEmpty()) {
+            query.put("invite_id", inviteId);
+        }
+        if (inviteAction != null && !inviteAction.trim().isEmpty()) {
+            query.put("invite_action", inviteAction);
+        }
+        for (Map.Entry<String, String> entry : query.entrySet()) {
+            builder.appendQueryParameter(entry.getKey(), entry.getValue());
         }
         return builder.build().toString();
     }
@@ -2091,9 +2121,19 @@ public class MainActivity extends Activity {
 
     private String legalUrlForTarget(String target) {
         if (target != null && target.toLowerCase().contains("политик")) {
-            return BuildConfig.LEGAL_PRIVACY_URL;
+            return configuredLegalUrlOrDefault(BuildConfig.LEGAL_PRIVACY_URL, "/legal/privacy");
         }
-        return BuildConfig.LEGAL_OFFER_URL;
+        if (target != null && target.toLowerCase().contains("возврат")) {
+            return configuredLegalUrlOrDefault(BuildConfig.LEGAL_REFUND_URL, "/legal/refund");
+        }
+        return configuredLegalUrlOrDefault(BuildConfig.LEGAL_OFFER_URL, "/legal/offer");
+    }
+
+    private String configuredLegalUrlOrDefault(String configuredUrl, String path) {
+        if (configuredUrl != null && !configuredUrl.trim().isEmpty()) {
+            return configuredUrl.trim();
+        }
+        return BaseUrlStore.join(BaseUrlStore.getBaseUrl(this), path);
     }
 
     private EditText createInput(String hint, int inputType) {

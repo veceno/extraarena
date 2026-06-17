@@ -41,7 +41,7 @@ public class ExtraArenaMessagingService extends FirebaseMessagingService {
         String body = data.containsKey("body")
                 ? data.get("body")
                 : notification != null ? notification.getBody() : "На арене новое событие";
-        showGameNotification(title, body, data.get("section"));
+        showGameNotification(title, body, data);
     }
 
     private void showUpdateNotification(Map<String, String> data) {
@@ -77,13 +77,22 @@ public class ExtraArenaMessagingService extends FirebaseMessagingService {
         notify(UPDATE_NOTIFICATION_ID, builder.build());
     }
 
-    private void showGameNotification(String title, String body, String section) {
+    private void showGameNotification(String title, String body, Map<String, String> data) {
+        String section = data == null ? null : data.get("section");
+        String inviteId = data == null ? null : data.get("invite_id");
+        String inviteAction = data == null ? null : data.get("invite_action");
         Intent intent = new Intent(this, MainActivity.class);
         intent.setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
         intent.setAction("ru.extraarena.app.PUSH");
         intent.setPackage(getPackageName());
         if (section != null && !section.trim().isEmpty()) {
             intent.putExtra("section", section);
+        }
+        if (inviteId != null && !inviteId.trim().isEmpty()) {
+            intent.putExtra("invite_id", inviteId);
+        }
+        if (inviteAction != null && !inviteAction.trim().isEmpty()) {
+            intent.putExtra("invite_action", inviteAction);
         }
         int notificationId = makeGameNotificationId(title, body, section);
         PendingIntent pendingIntent = PendingIntent.getActivity(

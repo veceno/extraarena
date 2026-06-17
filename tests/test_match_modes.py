@@ -1,4 +1,5 @@
 from battle_engine import BattleEngine
+from types import SimpleNamespace
 from infrastructure.match_modes import (
     ClassicParams,
     EXTRA_ARENA_ROTATING_IDS,
@@ -61,6 +62,20 @@ def test_new_modes_resolve_to_classic_ruleset():
         cfg = resolve_mode_config(mid)
         assert cfg.ruleset == "classic", f"{mid} should be classic"
         assert cfg.available is True, f"{mid} should be available"
+
+
+def test_train_v2_bot_safe_mode_only_allows_classic_and_training():
+    from infrastructure import match_modes
+
+    assert match_modes.is_train_v2_bot_safe_mode("classic") is True
+    assert match_modes.is_train_v2_bot_safe_mode("training") is True
+    assert match_modes.is_train_v2_bot_safe_mode(None) is True
+    assert match_modes.is_train_v2_bot_safe_mode("ranked") is True
+    assert match_modes.is_train_v2_bot_safe_mode("extra_arena:spellstorm") is False
+    assert match_modes.is_train_v2_bot_safe_mode("extraarena:powermax") is False
+    assert match_modes.is_train_v2_bot_safe_mode("friendly") is False
+    assert match_modes.is_train_v2_bot_safe_mode("extra_arena:draft") is False
+    assert match_modes.is_train_v2_bot_safe_mode("unknown") is False
 
 
 def test_classic_has_no_new_flags():
@@ -176,6 +191,19 @@ def test_resolve_canonical_classic_passthrough():
     assert resolve_canonical_mode_id("friendly") == "friendly"
 
 
+def test_unknown_and_case_variant_modes_are_rejected_not_classic():
+    assert resolve_mode_config("training").mode_id == "training"
+    assert resolve_mode_config("TRAINING").available is False
+    assert resolve_mode_config("clasisc").available is False
+    assert resolve_mode_config("clasisc").mode_id == "clasisc"
+
+
+def test_legacy_aliases_still_map_to_classic():
+    assert resolve_mode_config("").mode_id == "classic"
+    assert resolve_mode_config("normal").mode_id == "classic"
+    assert resolve_mode_config("ranked").mode_id == "classic"
+
+
 def test_powermax_sets_card_level_mode_max():
     cfg = resolve_mode_config("extra_arena:powermax")
     assert cfg.classic.card_level_mode == "max"
@@ -195,6 +223,26 @@ def test_blitzkrieg_has_summon_ready():
 def test_sudden_death_enabled():
     cfg = resolve_mode_config("extra_arena:sudden_death")
     assert cfg.classic.sudden_death_enabled is True
+
+
+def test_sudden_death_serializes_current_turn_damage_for_active_player_only():
+    engine = BattleEngine(game_mode="extra_arena:sudden_death")
+    engine._arena = SimpleNamespace(
+        state=SimpleNamespace(
+            current_turn_owner_id=101,
+            sudden_death_turns_by_player={101: 3, 202: 2},
+        )
+    )
+
+    payload = engine._serialize_sudden_death_state(
+        SimpleNamespace(user_id=101),
+        SimpleNamespace(user_id=202),
+    )
+
+    assert payload["player_turn_damage"] == 3
+    assert payload["opponent_turn_damage"] is None
+    assert payload["player_next_damage"] == 4
+    assert payload["opponent_next_damage"] == 3
 
 
 def test_extra_arena_widget_payload_uses_minimal_public_contract():

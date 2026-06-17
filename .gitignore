@@ -20,11 +20,45 @@ android-app/Google Firebase/google-services.json
 # AI model checkpoints
 ai/train/checkpoints/
 ai/train_v2/runs/
+ai/train_v2/releases/
+ai/model_benchmark/
+ai/model_benchmark/results/
+*.onnx
+
+# Local research/workflow scratch
+.codex/
+.graphifyignore
+.workflow/
+TrainV3/
+work/
+output/
+outputs/
+DesignAssets/Cards copy/
+DesignAssets/*.zip
+DesignAssets/PlayerCosmetics/*.zip
+DesignAssets/Arena/Sounds/*legacy*
+DesignAssets/Arena/Sounds/arena_theme_v2_loop.wav
+stickers/
+Арты Мидория/
+docs/GRAPHIFY.md
+docs/EXTRA_LR_*
+docs/FRONTIER_*
+docs/frontier_llm_*
+docs/superpowers/plans/
+COMMUNITY_AUDIT_REPORT.md
+scripts/graphify_project.sh
+tests/test_model_benchmark_*.py
+tests/test_train_v2_legacy_cleanup.py
+tests/test_train_v3_*.py
+calibration_*_manifest.json
+pool_modes_*_manifest.json
 
 # Runtime data
 infrastructure/data/
+data/support/
 generated/
 uploads/
+graphify-out/
 *.log
 *.pid
 .pytest_cache/

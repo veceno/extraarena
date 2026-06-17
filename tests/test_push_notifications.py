@@ -15,8 +15,9 @@ from infrastructure.push_notifications import (
 def test_android_push_payload_reuses_telegram_notification_text():
     payload = build_android_push_payload("generator", "generator_new_key", {"keys": 2})
 
-    assert payload.title == "ExtraArena"
+    assert payload.title == "Новый ключ готов!"
     assert payload.body == format_notification_message("generator_new_key", {"keys": 2})
+    assert "<b>" not in payload.body
     assert payload.data["type"] == "game_notification"
     assert payload.data["section"] == "generator"
     assert payload.data["body"] == payload.body
@@ -41,11 +42,38 @@ def test_android_update_push_keeps_mobile_update_links_when_env_is_stale(monkeyp
     assert payload.data["apk_url"] == "https://apk.laveqox.ru"
 
 
-def test_legacy_dice_push_uses_same_text_as_telegram():
-    payload = build_android_push_payload("reminders", "dice_ready", {"section": "arena"})
+def test_android_friendly_invite_push_preserves_accept_metadata():
+    payload = build_android_push_payload(
+        "game_invites",
+        "friendly_battle_invite",
+        {"from_name": "Alice", "invite_id": 77, "invite_action": "accept"},
+    )
 
-    assert payload.body == "🎲 Эй! Самое время бросить кости!"
-    assert payload.data["section"] == "arena"
+    assert payload.data["section"] == "friends"
+    assert payload.title == "Alice вызвал тебя на бой!"
+    assert payload.data["invite_id"] == "77"
+    assert payload.data["invite_action"] == "accept"
+    assert payload.data["event_type"] == "friendly_battle_invite"
+
+
+def test_android_titles_are_event_specific():
+    assert build_android_push_payload("generator", "generator_full_blocked_key", {}).title == "Генератор переполнен!"
+    assert build_android_push_payload("shop", "shop_particles", {}).title == "Новые частицы карт в магазине!"
+    assert build_android_push_payload(
+        "extra_arena_modifier",
+        "extra_arena_modifier_changed",
+        {"label": "Двойная энергия"},
+    ).title == "Двойная энергия в ExtraArena!"
+    assert build_android_push_payload(
+        "friend_requests",
+        "friend_request_received",
+        {"from_name": "Alice"},
+    ).title == "Заявка в друзья"
+    assert build_android_push_payload(
+        "squad_new_member",
+        "squad_new_member",
+        {"squad_name": "Squad1"},
+    ).title == "Squad1: новый участник!"
 
 
 @pytest.mark.asyncio
@@ -56,8 +84,8 @@ async def test_outbox_delivery_prefers_android_push_without_telegram_when_device
         def __init__(self):
             self.messages = []
 
-        async def send_message(self, *, chat_id, text, reply_markup):
-            self.messages.append({"chat_id": chat_id, "text": text, "reply_markup": reply_markup})
+        async def send_message(self, *, chat_id, text, parse_mode=None, reply_markup=None):
+            self.messages.append({"chat_id": chat_id, "text": text, "parse_mode": parse_mode, "reply_markup": reply_markup})
 
     class FakeDb:
         def __init__(self):
@@ -103,7 +131,8 @@ async def test_outbox_delivery_prefers_android_push_without_telegram_when_device
     await _deliver_notification(bot, db, "https://example.com/game", notif, push_sender=sender)
 
     assert sender.calls[0]["token"] == "fcm-token"
-    assert sender.calls[0]["body"] == "Новый ключ готов! В генераторе уже 2 ключ(ей)."
+    assert sender.calls[0]["title"] == "Новый ключ готов!"
+    assert sender.calls[0]["body"] == "Новый ключ уже готов! - скорее открой кейс! В генераторе уже 2 ключ(ей)."
     assert sender.calls[0]["data"]["section"] == "generator"
     assert bot.messages == []
     assert db.sent == [77]
@@ -118,8 +147,8 @@ async def test_outbox_delivery_falls_back_to_telegram_when_no_android_device():
         def __init__(self):
             self.messages = []
 
-        async def send_message(self, *, chat_id, text, reply_markup):
-            self.messages.append({"chat_id": chat_id, "text": text, "reply_markup": reply_markup})
+        async def send_message(self, *, chat_id, text, parse_mode=None, reply_markup=None):
+            self.messages.append({"chat_id": chat_id, "text": text, "parse_mode": parse_mode, "reply_markup": reply_markup})
 
     class FakeDb:
         def __init__(self):
@@ -153,8 +182,58 @@ async def test_outbox_delivery_falls_back_to_telegram_when_no_android_device():
 
     await _deliver_notification(bot, db, "https://example.com/game", notif, push_sender=FakeSender())
 
-    assert bot.messages[0]["text"] == "Новый ключ готов! В генераторе уже 1 ключ(ей)."
+    assert bot.messages[0]["text"] == "<b>Новый ключ уже готов!</b> - скорее открой кейс! В генераторе уже 1 ключ(ей)."
+    assert bot.messages[0]["parse_mode"] == "HTML"
     assert db.sent == [78]
+
+
+@pytest.mark.asyncio
+async def test_friendly_invite_telegram_fallback_uses_accept_deep_link():
+    from main import _deliver_notification
+
+    class FakeBot:
+        def __init__(self):
+            self.messages = []
+
+        async def send_message(self, *, chat_id, text, parse_mode=None, reply_markup=None):
+            self.messages.append({"chat_id": chat_id, "text": text, "parse_mode": parse_mode, "reply_markup": reply_markup})
+
+    class FakeDb:
+        def __init__(self):
+            self.sent = []
+
+        async def get_push_devices(self, user_id, *, platform="android"):
+            return []
+
+        async def mark_notification_sent(self, notification_id):
+            self.sent.append(notification_id)
+
+        async def mark_notification_blocked(self, notification_id):
+            raise AssertionError("notification should not be blocked")
+
+        async def mark_notification_failed(self, notification_id):
+            raise AssertionError("notification should not fail")
+
+    class FakeSender:
+        async def send(self, *, token, title, body, data):
+            raise AssertionError("push should not be sent without devices")
+
+    bot = FakeBot()
+    db = FakeDb()
+    notif = {
+        "id": 81,
+        "user_id": 42,
+        "category": "game_invites",
+        "event_type": "friendly_battle_invite",
+        "payload": {"from_name": "Alice", "invite_id": 77, "invite_action": "accept", "section": "friends"},
+    }
+
+    await _deliver_notification(bot, db, "https://example.com/game?foo=bar", notif, push_sender=FakeSender())
+
+    button = bot.messages[0]["reply_markup"].inline_keyboard[0][0]
+    assert button.url == "https://example.com/game?foo=bar&section=friends&invite_id=77&invite_action=accept"
+    assert "Alice" in bot.messages[0]["text"]
+    assert db.sent == [81]
 
 
 @pytest.mark.asyncio
@@ -165,8 +244,8 @@ async def test_outbox_delivery_respects_telegram_only_mode():
         def __init__(self):
             self.messages = []
 
-        async def send_message(self, *, chat_id, text, reply_markup):
-            self.messages.append({"chat_id": chat_id, "text": text, "reply_markup": reply_markup})
+        async def send_message(self, *, chat_id, text, parse_mode=None, reply_markup=None):
+            self.messages.append({"chat_id": chat_id, "text": text, "parse_mode": parse_mode, "reply_markup": reply_markup})
 
     class FakeDb:
         def __init__(self):
@@ -203,7 +282,8 @@ async def test_outbox_delivery_respects_telegram_only_mode():
 
     await _deliver_notification(bot, db, "https://example.com/game", notif, push_sender=FakeSender())
 
-    assert bot.messages[0]["text"] == "Новый ключ готов! В генераторе уже 1 ключ(ей)."
+    assert bot.messages[0]["text"] == "<b>Новый ключ уже готов!</b> - скорее открой кейс! В генераторе уже 1 ключ(ей)."
+    assert bot.messages[0]["parse_mode"] == "HTML"
     assert db.sent == [79]
 
 

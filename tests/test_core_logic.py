@@ -1,12 +1,13 @@
 """
 Комплексные тесты: баг-фиксы, краевые случаи, новые механики.
 """
+import copy
 import pytest
 from uuid import uuid4
 
 from core.state import CardInstance, CardType, GameState, GameStatus, PlayerState
 from core.engine import ArenaEnvironment, scale_card_by_level
-from core.actions import PlayCardAction, AttackAction, EndTurnAction
+from core.actions import PlayCardAction, AttackAction, EndTurnAction, BaseAction
 from core.effects import apply_damage, process_effects, requires_target
 from core.converter import _normalize_mechanic, card_from_db
 from battle_engine import BattleEngine
@@ -120,6 +121,109 @@ class TestHeroesCantBeFrozen:
         success, _ = env.step(1, PlayCardAction(hand_index=0, target_id=None, position=None))
         assert success
         assert not state.p2.hero.is_frozen, "Герой не должен быть заморожен AOE"
+
+    def test_dynamic_freeze_cannot_target_hero(self):
+        state = create_minimal_game_state()
+
+        freeze_card = CardInstance(
+            instance_id=uuid4(), card_id=23, name="Точечная заморозка",
+            card_type=CardType.POTION, hp=0, max_hp=0, attack=0,
+            mana_cost=2, mechanics=["freeze_1"], is_ready=False,
+        )
+        process_effects(
+            state,
+            freeze_card,
+            state.p1,
+            state.p2,
+            target_id=str(state.p2.hero.instance_id),
+        )
+
+        assert not state.p2.hero.is_frozen, "freeze_X не должен замораживать героя"
+
+    def test_aoe_freeze_is_limited_to_three_board_targets(self):
+        state = create_minimal_game_state()
+        env = ArenaEnvironment(state)
+
+        aoe_freeze = CardInstance(
+            instance_id=uuid4(), card_id=22, name="ZA WARUDO",
+            card_type=CardType.POTION, hp=0, max_hp=0, attack=0,
+            mana_cost=8, mechanics=["aoe_freeze"], is_ready=False,
+        )
+        state.p1.hand.append(aoe_freeze)
+
+        enemy_units = []
+        for index in range(4):
+            unit = CardInstance(
+                instance_id=uuid4(), card_id=300 + index, name=f"Enemy {index}",
+                card_type=CardType.WARRIOR, hp=5, max_hp=5, attack=2, mana_cost=2,
+                mechanics=[], is_ready=True,
+            )
+            state.p2.board.append(unit)
+            enemy_units.append(unit)
+
+        success, error = env.step(1, PlayCardAction(hand_index=0, target_id=None, position=None))
+
+        assert success, error
+        assert sum(unit.is_frozen for unit in enemy_units) == 3
+        assert enemy_units[3].is_frozen is False
+
+    def test_aoe_freeze_shielded_target_counts_toward_three_target_cap(self):
+        state = create_minimal_game_state()
+        env = ArenaEnvironment(state)
+
+        aoe_freeze = CardInstance(
+            instance_id=uuid4(), card_id=22, name="ZA WARUDO",
+            card_type=CardType.POTION, hp=0, max_hp=0, attack=0,
+            mana_cost=8, mechanics=["aoe_freeze"], is_ready=False,
+        )
+        state.p1.hand.append(aoe_freeze)
+
+        enemy_units = []
+        for index in range(4):
+            mechanics = ["shield"] if index == 1 else []
+            unit = CardInstance(
+                instance_id=uuid4(), card_id=320 + index, name=f"Enemy {index}",
+                card_type=CardType.WARRIOR, hp=5, max_hp=5, attack=2, mana_cost=2,
+                mechanics=mechanics, is_ready=True,
+            )
+            state.p2.board.append(unit)
+            enemy_units.append(unit)
+
+        success, error = env.step(1, PlayCardAction(hand_index=0, target_id=None, position=None))
+
+        assert success, error
+        assert enemy_units[0].is_frozen is True
+        assert enemy_units[1].is_frozen is False
+        assert "shield" not in enemy_units[1].mechanics
+        assert enemy_units[2].is_frozen is True
+        assert enemy_units[3].is_frozen is False
+
+    def test_desk_freeze_freezes_all_board_targets(self):
+        state = create_minimal_game_state()
+        env = ArenaEnvironment(state)
+
+        desk_freeze = CardInstance(
+            instance_id=uuid4(), card_id=122, name="Full Board Freeze",
+            card_type=CardType.POTION, hp=0, max_hp=0, attack=0,
+            mana_cost=8, mechanics=["desk_freeze"], is_ready=False,
+        )
+        state.p1.hand.append(desk_freeze)
+
+        enemy_units = []
+        for index in range(4):
+            unit = CardInstance(
+                instance_id=uuid4(), card_id=400 + index, name=f"Enemy {index}",
+                card_type=CardType.WARRIOR, hp=5, max_hp=5, attack=2, mana_cost=2,
+                mechanics=[], is_ready=True,
+            )
+            state.p2.board.append(unit)
+            enemy_units.append(unit)
+
+        success, error = env.step(1, PlayCardAction(hand_index=0, target_id=None, position=None))
+
+        assert success, error
+        assert all(unit.is_frozen for unit in enemy_units)
+        assert state.p2.hero.is_frozen is False
 
 
 # ============================================================================
@@ -322,7 +426,22 @@ class TestFrierenHealTarget:
 # ============================================================================
 
 class TestToukaRandomBattlecry:
-    def test_touka_plays_without_target_and_hits_random_enemy(self, monkeypatch):
+    def test_touka_random_battlecry_stays_random_after_scaling(self):
+        touka_data = {
+            "id": 15,
+            "name": "Тоука",
+            "type": "warrior",
+            "rarity": "common",
+            "base_attack": 2,
+            "base_hp": 1,
+            "mana_cost": 2,
+            "mechanics": '["battlecry_damage_1_random"]',
+        }
+
+        assert card_from_db(touka_data, level=1).mechanics == ["battlecry_damage_1_random"]
+        assert card_from_db(touka_data, level=5).mechanics == ["battlecry_damage_3_random"]
+
+    def test_random_battlecry_damage_mechanic_plays_without_target_and_hits_random_enemy(self, monkeypatch):
         state = create_minimal_game_state()
         env = ArenaEnvironment(state)
 
@@ -333,12 +452,12 @@ class TestToukaRandomBattlecry:
         )
         state.p2.board.append(enemy)
 
-        touka = CardInstance(
-            instance_id=uuid4(), card_id=15, name="Тока Киришима",
+        random_damage = CardInstance(
+            instance_id=uuid4(), card_id=415, name="Renamed Random Damage Unit",
             card_type=CardType.WARRIOR, hp=1, max_hp=1, attack=2, mana_cost=2,
-            mechanics=["battlecry_damage_1"], is_ready=False,
+            mechanics=["battlecry_damage_1_random"], is_ready=False,
         )
-        state.p1.hand.append(touka)
+        state.p1.hand.append(random_damage)
 
         legal = [
             action for action in env.get_legal_actions(1)
@@ -352,6 +471,29 @@ class TestToukaRandomBattlecry:
 
         assert success, f"Тока должна разыгрываться без выбора цели: {error}"
         assert enemy.hp == 4, f"Случайный враг должен получить 1 урон: {enemy.hp}"
+
+    def test_plain_battlecry_damage_card_id_15_still_requires_target(self):
+        state = create_minimal_game_state()
+        env = ArenaEnvironment(state)
+
+        enemy = CardInstance(
+            instance_id=uuid4(), card_id=99, name="Enemy",
+            card_type=CardType.WARRIOR, hp=5, max_hp=5, attack=1, mana_cost=1,
+            mechanics=[], is_ready=False,
+        )
+        state.p2.board.append(enemy)
+
+        targeted_damage = CardInstance(
+            instance_id=uuid4(), card_id=15, name="Any Renamed Card",
+            card_type=CardType.WARRIOR, hp=1, max_hp=1, attack=2, mana_cost=2,
+            mechanics=["battlecry_damage_1"], is_ready=False,
+        )
+        state.p1.hand.append(targeted_damage)
+
+        success, error = env.step(1, PlayCardAction(hand_index=0, target_id=None, position=0))
+
+        assert success is False
+        assert error == "target_required"
 
 
 # ============================================================================
@@ -621,7 +763,8 @@ class TestWarriorPassiveScaling:
         potion_data = {
             'id': 13, 'name': 'Black Hole', 'card_type': 'potion',
             'base_attack': 0, 'current_attack': 0, 'base_hp': 0, 'current_hp': 0,
-            'mana_cost': 5, 'rarity': 'legendary', 'mechanics': ['delete_target']
+            'mana_cost': 5, 'rarity': 'legendary', 'mechanics': ['delete_target'],
+            'simplified_levelup': True,
         }
         lvl10 = card_from_db(potion_data, level=10)
 
@@ -836,6 +979,56 @@ class TestCoreRegressionHardening:
         assert history[1]["type"] == "player"
         assert history[1]["text"].startswith("Вы ")
 
+    def test_full_state_without_viewer_hides_both_hands(self):
+        state = create_minimal_game_state()
+        state.p1.hand.append(CardInstance(
+            instance_id=uuid4(), card_id=91, name="P1 Secret",
+            card_type=CardType.WARRIOR, hp=3, max_hp=3, attack=2, mana_cost=2,
+        ))
+        state.p2.hand.append(CardInstance(
+            instance_id=uuid4(), card_id=92, name="P2 Secret",
+            card_type=CardType.WARRIOR, hp=3, max_hp=3, attack=2, mana_cost=2,
+        ))
+        engine = BattleEngine(match_id="safe-state", player_ids=[1, 2])
+        engine._arena = ArenaEnvironment(state)
+
+        public_state = engine.get_full_state()
+        unknown_viewer_state = engine.get_full_state(viewer_id=999)
+
+        assert public_state["player"]["hand"] == [{"hidden": True}]
+        assert public_state["opponent"]["hand"] == [{"hidden": True}]
+        assert public_state["legal_actions"] == []
+        assert unknown_viewer_state["player"]["hand"] == [{"hidden": True}]
+        assert unknown_viewer_state["opponent"]["hand"] == [{"hidden": True}]
+        assert unknown_viewer_state["legal_actions"] == []
+
+    def test_get_player_state_returns_none_for_unknown_user(self):
+        state = create_minimal_game_state()
+        engine = BattleEngine(match_id="unknown-player", player_ids=[1, 2])
+        engine._arena = ArenaEnvironment(state)
+
+        assert engine.get_player_state(999) is None
+
+    def test_attack_history_reports_actual_damage_after_armor(self):
+        state = create_minimal_game_state()
+        attacker = CardInstance(
+            instance_id=uuid4(), card_id=93, name="Attacker",
+            card_type=CardType.WARRIOR, hp=5, max_hp=5, attack=5, mana_cost=2,
+            mechanics=[], is_ready=True,
+        )
+        state.p2.hero.mechanics = ["armor_2"]
+        state.p1.board = [attacker]
+        env = ArenaEnvironment(state)
+
+        success, error = env.step(1, AttackAction(
+            attacker_id=str(attacker.instance_id),
+            target_id=str(state.p2.hero.instance_id),
+            target_is_hero=True,
+        ))
+
+        assert success, error
+        assert state.action_history[-1][1] == "Attacker наносит 3 урона по Герою"
+
     def test_battle_engine_rolls_back_state_on_action_exception(self):
         state = create_minimal_game_state()
         env = ArenaEnvironment(state)
@@ -855,3 +1048,723 @@ class TestCoreRegressionHardening:
         assert engine._arena.state.p1.mana == 10
         assert engine.current_player_id == 1
         assert engine.turn == 1
+
+    def test_battle_engine_preflight_wrong_turn_skips_deepcopy(self, monkeypatch):
+        state = create_minimal_game_state()
+        engine = BattleEngine(match_id="preflight-wrong-turn", player_ids=[1, 2])
+        engine._arena = ArenaEnvironment(state)
+
+        def fail_deepcopy(_value):
+            raise AssertionError("deepcopy should not run for preflight failures")
+
+        monkeypatch.setattr(copy, "deepcopy", fail_deepcopy)
+
+        result = engine.execute_action(2, EndTurnAction())
+
+        assert result == {"success": False, "error": "not_your_turn"}
+        assert state.current_turn_owner_id == 1
+        assert state.turn_number == 1
+
+    def test_battle_engine_preflight_preserves_error_order_before_validation(self, monkeypatch):
+        state = create_minimal_game_state()
+        engine = BattleEngine(match_id="preflight-error-order", player_ids=[1, 2])
+        engine._arena = ArenaEnvironment(state)
+
+        def fail_deepcopy(_value):
+            raise AssertionError("deepcopy should not run for preflight failures")
+
+        monkeypatch.setattr(copy, "deepcopy", fail_deepcopy)
+
+        result = engine.execute_action(
+            999,
+            AttackAction(attacker_id="", target_id=None, target_is_hero=False),
+        )
+
+        assert result == {"success": False, "error": "unknown_player"}
+
+    def test_battle_engine_preflight_invalid_attack_validation_skips_deepcopy(self, monkeypatch):
+        state = create_minimal_game_state()
+        engine = BattleEngine(match_id="preflight-invalid-attack", player_ids=[1, 2])
+        engine._arena = ArenaEnvironment(state)
+
+        def fail_deepcopy(_value):
+            raise AssertionError("deepcopy should not run for preflight failures")
+
+        monkeypatch.setattr(copy, "deepcopy", fail_deepcopy)
+
+        result = engine.execute_action(
+            1,
+            AttackAction(attacker_id="", target_id=None, target_is_hero=True),
+        )
+
+        assert result == {"success": False, "error": "attacker_id обязателен"}
+
+    def test_battle_engine_preflight_missing_attacker_skips_deepcopy(self, monkeypatch):
+        state = create_minimal_game_state()
+        engine = BattleEngine(match_id="preflight-missing-attacker", player_ids=[1, 2])
+        engine._arena = ArenaEnvironment(state)
+
+        def fail_deepcopy(_value):
+            raise AssertionError("deepcopy should not run for preflight failures")
+
+        monkeypatch.setattr(copy, "deepcopy", fail_deepcopy)
+
+        result = engine.execute_action(
+            1,
+            AttackAction(attacker_id=str(uuid4()), target_id=None, target_is_hero=True),
+        )
+
+        assert result == {"success": False, "error": "attacker_not_found"}
+        assert state.p2.hero.hp == 30
+        assert state.history == []
+
+    def test_battle_engine_preflight_taunt_violation_skips_deepcopy(self, monkeypatch):
+        state = create_minimal_game_state()
+        attacker = CardInstance(
+            instance_id=uuid4(), card_id=91, name="Attacker",
+            card_type=CardType.WARRIOR, hp=5, max_hp=5, attack=3, mana_cost=2,
+            mechanics=[], is_ready=True,
+        )
+        taunt = CardInstance(
+            instance_id=uuid4(), card_id=92, name="Taunt",
+            card_type=CardType.WARRIOR, hp=5, max_hp=5, attack=1, mana_cost=2,
+            mechanics=["taunt"], is_ready=False,
+        )
+        state.p1.board = [attacker]
+        state.p2.board = [taunt]
+        engine = BattleEngine(match_id="preflight-taunt", player_ids=[1, 2])
+        engine._arena = ArenaEnvironment(state)
+
+        def fail_deepcopy(_value):
+            raise AssertionError("deepcopy should not run for preflight failures")
+
+        monkeypatch.setattr(copy, "deepcopy", fail_deepcopy)
+
+        result = engine.execute_action(
+            1,
+            AttackAction(
+                attacker_id=str(attacker.instance_id),
+                target_id=str(state.p2.hero.instance_id),
+                target_is_hero=True,
+            ),
+        )
+
+        assert result == {"success": False, "error": "must_attack_taunt"}
+        assert state.p2.hero.hp == 30
+        assert attacker.is_ready is True
+
+    def test_battle_engine_valid_actions_still_take_snapshot(self, monkeypatch):
+        original_deepcopy = copy.deepcopy
+        calls = {"count": 0}
+
+        def counting_deepcopy(value):
+            calls["count"] += 1
+            return original_deepcopy(value)
+
+        monkeypatch.setattr(copy, "deepcopy", counting_deepcopy)
+
+        attack_state = create_minimal_game_state()
+        attacker = CardInstance(
+            instance_id=uuid4(), card_id=93, name="Attacker",
+            card_type=CardType.WARRIOR, hp=5, max_hp=5, attack=3, mana_cost=2,
+            mechanics=[], is_ready=True,
+        )
+        target = CardInstance(
+            instance_id=uuid4(), card_id=94, name="Target",
+            card_type=CardType.WARRIOR, hp=5, max_hp=5, attack=1, mana_cost=2,
+            mechanics=[], is_ready=False,
+        )
+        attack_state.p1.board = [attacker]
+        attack_state.p2.board = [target]
+        attack_engine = BattleEngine(match_id="snapshot-attack", player_ids=[1, 2])
+        attack_engine._arena = ArenaEnvironment(attack_state)
+
+        attack_result = attack_engine.execute_action(
+            1,
+            AttackAction(
+                attacker_id=str(attacker.instance_id),
+                target_id=str(target.instance_id),
+                target_is_hero=False,
+            ),
+        )
+
+        end_turn_state = create_minimal_game_state()
+        end_turn_engine = BattleEngine(match_id="snapshot-end-turn", player_ids=[1, 2])
+        end_turn_engine._arena = ArenaEnvironment(end_turn_state)
+
+        end_turn_result = end_turn_engine.execute_action(1, EndTurnAction())
+
+        play_state = create_minimal_game_state()
+        play_state.p1.hand.append(CardInstance(
+            instance_id=uuid4(), card_id=95, name="Warrior",
+            card_type=CardType.WARRIOR, hp=3, max_hp=3, attack=2, mana_cost=2,
+            mechanics=[], is_ready=False,
+        ))
+        play_engine = BattleEngine(match_id="snapshot-play-card", player_ids=[1, 2])
+        play_engine._arena = ArenaEnvironment(play_state)
+
+        play_result = play_engine.execute_action(1, PlayCardAction(hand_index=0, position=0))
+
+        assert attack_result["success"], attack_result
+        assert end_turn_result["success"], end_turn_result
+        assert play_result["success"], play_result
+        assert calls["count"] == 3
+
+    def test_battle_engine_play_card_returns_deploy_and_mechanic_sound_events(self):
+        state = create_minimal_game_state()
+        yuni = CardInstance(
+            instance_id=uuid4(), card_id=36, name="Юни",
+            card_type=CardType.WARRIOR, hp=2, max_hp=2, attack=1, mana_cost=2,
+            mechanics=["battlecry_heal_target_3"], is_ready=False,
+        )
+        wounded = CardInstance(
+            instance_id=uuid4(), card_id=90, name="Wounded",
+            card_type=CardType.WARRIOR, hp=1, max_hp=5, attack=1, mana_cost=1,
+            mechanics=[], is_ready=False,
+        )
+        state.p1.hand.append(yuni)
+        state.p1.board.append(wounded)
+        engine = BattleEngine(match_id="sound-play-card", player_ids=[1, 2])
+        engine._arena = ArenaEnvironment(state)
+
+        result = engine.execute_action(
+            1,
+            PlayCardAction(hand_index=0, position=1, target_id=str(wounded.instance_id)),
+        )
+
+        assert result["success"], result
+        sound_events = result["sound_events"]
+        assert [event["event"] for event in sound_events] == ["deploy", "mechanic"]
+        assert {event["card_id"] for event in sound_events} == {36}
+        assert {event["instance_id"] for event in sound_events} == {str(yuni.instance_id)}
+        assert sound_events[1]["mechanic"] == "battlecry_heal_target_3"
+        assert all(event["source"] == "action" for event in sound_events)
+
+    def test_battle_engine_midoriya_sound_event_includes_random_spell_effect_code(self, monkeypatch):
+        state = create_minimal_game_state()
+        midoriya = CardInstance(
+            instance_id=uuid4(), card_id=26, name="Мидория",
+            card_type=CardType.WARRIOR, hp=5, max_hp=5, attack=5, mana_cost=5,
+            mechanics=["cast_random_spell"], level=1, is_ready=False,
+        )
+        target = CardInstance(
+            instance_id=uuid4(), card_id=90, name="Target",
+            card_type=CardType.WARRIOR, hp=3, max_hp=3, attack=1, mana_cost=1,
+            mechanics=[], is_ready=False,
+        )
+        state.p1.hand.append(midoriya)
+        state.p2.board.append(target)
+        monkeypatch.setattr("core.effects.random.randint", lambda _low, _high: 3)
+        engine = BattleEngine(match_id="midoriya-text-feedback", player_ids=[1, 2])
+        engine._arena = ArenaEnvironment(state)
+
+        result = engine.execute_action(1, PlayCardAction(hand_index=0, position=0))
+
+        assert result["success"], result
+        mechanic_event = result["sound_events"][1]
+        assert mechanic_event["event"] == "mechanic"
+        assert mechanic_event["mechanic"] == "cast_random_spell"
+        assert mechanic_event["effect_code"] == "midoriya_blackwhip"
+        assert engine._arena.state.pending_card_feedback_events == []
+
+    def test_battle_engine_attack_returns_attacker_sound_event(self):
+        state = create_minimal_game_state()
+        attacker = CardInstance(
+            instance_id=uuid4(), card_id=44, name="Леви Аккерман",
+            card_type=CardType.WARRIOR, hp=3, max_hp=3, attack=3, mana_cost=2,
+            mechanics=["charge"], is_ready=True,
+        )
+        target = CardInstance(
+            instance_id=uuid4(), card_id=90, name="Target",
+            card_type=CardType.WARRIOR, hp=5, max_hp=5, attack=1, mana_cost=1,
+            mechanics=[], is_ready=False,
+        )
+        state.p1.board.append(attacker)
+        state.p2.board.append(target)
+        engine = BattleEngine(match_id="sound-attack", player_ids=[1, 2])
+        engine._arena = ArenaEnvironment(state)
+
+        result = engine.execute_action(
+            1,
+            AttackAction(
+                attacker_id=str(attacker.instance_id),
+                target_id=str(target.instance_id),
+                target_is_hero=False,
+            ),
+        )
+
+        assert result["success"], result
+        assert result["sound_events"] == [{
+            "event_id": f"sound-attack:1:attack:{attacker.instance_id}:attack",
+            "card_id": 44,
+            "instance_id": str(attacker.instance_id),
+            "card_name": "Леви Аккерман",
+            "event": "attack",
+            "mechanic": None,
+            "side": "player",
+            "source": "action",
+        }]
+
+    def test_battle_engine_unknown_action_still_uses_snapshot_before_validate(self, monkeypatch):
+        class MutatingUnknownAction(BaseAction):
+            def to_dict(self):
+                return {"type": "mutating_unknown"}
+
+            def validate(self, state):
+                state.p1.mana = 0
+
+        original_deepcopy = copy.deepcopy
+        calls = {"count": 0}
+
+        def counting_deepcopy(value):
+            calls["count"] += 1
+            return original_deepcopy(value)
+
+        monkeypatch.setattr(copy, "deepcopy", counting_deepcopy)
+        state = create_minimal_game_state()
+        engine = BattleEngine(match_id="snapshot-unknown-action", player_ids=[1, 2])
+        engine._arena = ArenaEnvironment(state)
+
+        result = engine.execute_action(1, MutatingUnknownAction())
+
+        assert result == {"success": False, "error": "unknown_action"}
+        assert engine._arena.state.p1.mana == 10
+        assert calls["count"] == 1
+
+    def test_shield_refresh_mechanic_restores_one_time_shield_at_start_of_owner_turn(self):
+        state = create_minimal_game_state()
+        gojo = CardInstance(
+            instance_id=uuid4(), card_id=4242, name="Renamed Shield Refresh Unit",
+            card_type=CardType.WARRIOR, hp=8, max_hp=8, attack=5, mana_cost=9,
+            mechanics=["shield_refresh"], is_ready=False,
+        )
+        state.p2.board = [gojo]
+        env = ArenaEnvironment(state)
+
+        success, error = env.step(1, EndTurnAction())
+
+        assert success, error
+        assert "shield" in gojo.mechanics
+
+    def test_card_id_24_without_shield_refresh_does_not_restore_shield(self):
+        state = create_minimal_game_state()
+        non_gojo = CardInstance(
+            instance_id=uuid4(), card_id=24, name="Any Renamed Card",
+            card_type=CardType.WARRIOR, hp=8, max_hp=8, attack=5, mana_cost=9,
+            mechanics=[], is_ready=False,
+        )
+        state.p2.board = [non_gojo]
+        env = ArenaEnvironment(state)
+
+        success, error = env.step(1, EndTurnAction())
+
+        assert success, error
+        assert "shield" not in non_gojo.mechanics
+
+    def test_shield_blocks_delete_target_and_is_consumed(self):
+        state = create_minimal_game_state()
+        env = ArenaEnvironment(state)
+        shielded = CardInstance(
+            instance_id=uuid4(), card_id=100, name="Shielded Target",
+            card_type=CardType.WARRIOR, hp=5, max_hp=5, attack=1, mana_cost=2,
+            mechanics=["shield"], is_ready=False,
+        )
+        delete_spell = CardInstance(
+            instance_id=uuid4(), card_id=13, name="Черная Дыра",
+            card_type=CardType.POTION, hp=0, max_hp=0, attack=0, mana_cost=1,
+            mechanics=["delete_target"], is_ready=False,
+        )
+        state.p2.board = [shielded]
+        state.p1.hand = [delete_spell]
+
+        success, error = env.step(1, PlayCardAction(
+            hand_index=0,
+            target_id=str(shielded.instance_id),
+        ))
+
+        assert success, error
+        assert state.p2.board == [shielded]
+        assert "shield" not in shielded.mechanics
+
+    def test_delete_target_moves_destroyed_unit_to_graveyard(self):
+        state = create_minimal_game_state()
+        env = ArenaEnvironment(state)
+        target = CardInstance(
+            instance_id=uuid4(), card_id=100, name="Delete Target",
+            card_type=CardType.WARRIOR, hp=5, max_hp=5, attack=1, mana_cost=2,
+            mechanics=[], is_ready=False,
+        )
+        delete_spell = CardInstance(
+            instance_id=uuid4(), card_id=13, name="Черная Дыра",
+            card_type=CardType.POTION, hp=0, max_hp=0, attack=0, mana_cost=1,
+            mechanics=["delete_target"], is_ready=False,
+        )
+        state.p2.board = [target]
+        state.p1.hand = [delete_spell]
+
+        success, error = env.step(1, PlayCardAction(
+            hand_index=0,
+            target_id=str(target.instance_id),
+        ))
+
+        assert success, error
+        assert state.p2.board == []
+        assert [card.instance_id for card in state.p2.graveyard] == [target.instance_id]
+
+    def test_shield_blocks_freeze_effects_and_is_consumed(self):
+        state = create_minimal_game_state()
+        env = ArenaEnvironment(state)
+        shielded = CardInstance(
+            instance_id=uuid4(), card_id=101, name="Shielded Freeze Target",
+            card_type=CardType.WARRIOR, hp=5, max_hp=5, attack=1, mana_cost=2,
+            mechanics=["shield"], is_ready=False,
+        )
+        freeze_spell = CardInstance(
+            instance_id=uuid4(), card_id=11, name="Заморозка",
+            card_type=CardType.POTION, hp=0, max_hp=0, attack=0, mana_cost=1,
+            mechanics=["freeze"], is_ready=False,
+        )
+        state.p2.board = [shielded]
+        state.p1.hand = [freeze_spell]
+
+        success, error = env.step(1, PlayCardAction(
+            hand_index=0,
+            target_id=str(shielded.instance_id),
+        ))
+
+        assert success, error
+        assert shielded.is_frozen is False
+        assert "shield" not in shielded.mechanics
+
+    def test_shield_blocks_aoe_freeze_and_dynamic_freeze(self):
+        state = create_minimal_game_state()
+        env = ArenaEnvironment(state)
+        aoe_target = CardInstance(
+            instance_id=uuid4(), card_id=102, name="AOE Shield",
+            card_type=CardType.WARRIOR, hp=5, max_hp=5, attack=1, mana_cost=2,
+            mechanics=["shield"], is_ready=False,
+        )
+        state.p2.board = [aoe_target]
+
+        process_effects(
+            state,
+            CardInstance(card_type=CardType.POTION, mechanics=["aoe_freeze"]),
+            state.p1,
+            state.p2,
+        )
+        assert aoe_target.is_frozen is False
+        assert "shield" not in aoe_target.mechanics
+
+        dynamic_target = CardInstance(
+            instance_id=uuid4(), card_id=103, name="Dynamic Shield",
+            card_type=CardType.WARRIOR, hp=5, max_hp=5, attack=1, mana_cost=2,
+            mechanics=["shield"], is_ready=False,
+        )
+        state.p2.board = [dynamic_target]
+        process_effects(
+            state,
+            CardInstance(card_type=CardType.POTION, mechanics=["freeze_1"]),
+            state.p1,
+            state.p2,
+            target_id=str(dynamic_target.instance_id),
+        )
+
+        assert dynamic_target.is_frozen is False
+        assert "shield" not in dynamic_target.mechanics
+
+    def test_shield_blocks_dynamic_freeze_on_hero(self):
+        state = create_minimal_game_state()
+        state.p2.hero.mechanics = ["shield"]
+
+        process_effects(
+            state,
+            CardInstance(card_type=CardType.POTION, mechanics=["freeze_1"]),
+            state.p1,
+            state.p2,
+            target_id=str(state.p2.hero.instance_id),
+        )
+
+        assert state.p2.hero.is_frozen is False
+        assert "shield" in state.p2.hero.mechanics
+
+    def test_shield_blocks_blackwhip_freeze_and_is_consumed(self, monkeypatch):
+        state = create_minimal_game_state()
+        shielded = CardInstance(
+            instance_id=uuid4(), card_id=204, name="Shielded Blackwhip Target",
+            card_type=CardType.WARRIOR, hp=5, max_hp=5, attack=1, mana_cost=2,
+            mechanics=["shield"], is_ready=False,
+        )
+        state.p2.board = [shielded]
+        midoriya = CardInstance(
+            instance_id=uuid4(), card_id=26, name="Мидория",
+            card_type=CardType.WARRIOR, hp=4, max_hp=4, attack=3, mana_cost=4,
+            mechanics=["cast_random_spell"], level=1, is_ready=False,
+        )
+        monkeypatch.setattr("core.effects.random.randint", lambda _low, _high: 3)
+
+        process_effects(state, midoriya, state.p1, state.p2)
+
+        assert shielded.is_frozen is False
+        assert "shield" not in shielded.mechanics
+
+    def test_saitama_instant_kill_only_first_unit_per_turn(self):
+        state = create_minimal_game_state()
+        env = ArenaEnvironment(state)
+        saitama = CardInstance(
+            instance_id=uuid4(), card_id=25, name="Сайтама",
+            card_type=CardType.WARRIOR, hp=10, max_hp=10, attack=1, mana_cost=10,
+            mechanics=["instant_kill"], is_ready=True,
+        )
+        first = CardInstance(
+            instance_id=uuid4(), card_id=201, name="First Target",
+            card_type=CardType.WARRIOR, hp=5, max_hp=5, attack=0, mana_cost=1,
+            mechanics=[], is_ready=False,
+        )
+        second = CardInstance(
+            instance_id=uuid4(), card_id=202, name="Second Target",
+            card_type=CardType.WARRIOR, hp=5, max_hp=5, attack=0, mana_cost=1,
+            mechanics=[], is_ready=False,
+        )
+        state.p1.board = [saitama]
+        state.p2.board = [first, second]
+
+        success, error = env.step(1, AttackAction(
+            attacker_id=str(saitama.instance_id),
+            target_id=str(first.instance_id),
+            target_is_hero=False,
+        ))
+        assert success, error
+        assert first.hp == 0
+
+        saitama.is_ready = True
+        success, error = env.step(1, AttackAction(
+            attacker_id=str(saitama.instance_id),
+            target_id=str(second.instance_id),
+            target_is_hero=False,
+        ))
+
+        assert success, error
+        assert second.hp == 4
+
+    def test_shield_blocks_saitama_instant_kill_and_is_consumed(self):
+        state = create_minimal_game_state()
+        env = ArenaEnvironment(state)
+        saitama = CardInstance(
+            instance_id=uuid4(), card_id=25, name="Сайтама",
+            card_type=CardType.WARRIOR, hp=10, max_hp=10, attack=1, mana_cost=10,
+            mechanics=["instant_kill"], is_ready=True,
+        )
+        shielded = CardInstance(
+            instance_id=uuid4(), card_id=203, name="Shielded Target",
+            card_type=CardType.WARRIOR, hp=5, max_hp=5, attack=0, mana_cost=1,
+            mechanics=["shield"], is_ready=False,
+        )
+        state.p1.board = [saitama]
+        state.p2.board = [shielded]
+
+        success, error = env.step(1, AttackAction(
+            attacker_id=str(saitama.instance_id),
+            target_id=str(shielded.instance_id),
+            target_is_hero=False,
+        ))
+
+        assert success, error
+        assert shielded.hp == 5
+        assert "shield" not in shielded.mechanics
+
+    def test_saitama_instant_kill_only_once_for_lifetime(self):
+        state = create_minimal_game_state()
+        env = ArenaEnvironment(state)
+        saitama = CardInstance(
+            instance_id=uuid4(), card_id=25, name="Сайтама",
+            card_type=CardType.WARRIOR, hp=10, max_hp=10, attack=1, mana_cost=10,
+            mechanics=["instant_kill"], is_ready=True,
+        )
+        first = CardInstance(
+            instance_id=uuid4(), card_id=205, name="First Lifetime Target",
+            card_type=CardType.WARRIOR, hp=5, max_hp=5, attack=0, mana_cost=1,
+            mechanics=[], is_ready=False,
+        )
+        second = CardInstance(
+            instance_id=uuid4(), card_id=206, name="Second Lifetime Target",
+            card_type=CardType.WARRIOR, hp=5, max_hp=5, attack=0, mana_cost=1,
+            mechanics=[], is_ready=False,
+        )
+        state.p1.board = [saitama]
+        state.p2.board = [first, second]
+
+        success, error = env.step(1, AttackAction(
+            attacker_id=str(saitama.instance_id),
+            target_id=str(first.instance_id),
+            target_is_hero=False,
+        ))
+        assert success, error
+        assert first.hp == 0
+
+        success, error = env.step(1, EndTurnAction())
+        assert success, error
+        success, error = env.step(2, EndTurnAction())
+        assert success, error
+
+        success, error = env.step(1, AttackAction(
+            attacker_id=str(saitama.instance_id),
+            target_id=str(second.instance_id),
+            target_is_hero=False,
+        ))
+
+        assert success, error
+        assert second.hp == 4
+
+    def test_saitama_instant_kill_spent_when_shield_blocks_it(self):
+        state = create_minimal_game_state()
+        env = ArenaEnvironment(state)
+        saitama = CardInstance(
+            instance_id=uuid4(), card_id=25, name="Сайтама",
+            card_type=CardType.WARRIOR, hp=10, max_hp=10, attack=1, mana_cost=10,
+            mechanics=["instant_kill"], is_ready=True,
+        )
+        shielded = CardInstance(
+            instance_id=uuid4(), card_id=207, name="Shielded Lifetime Target",
+            card_type=CardType.WARRIOR, hp=5, max_hp=5, attack=0, mana_cost=1,
+            mechanics=["shield"], is_ready=False,
+        )
+        unshielded = CardInstance(
+            instance_id=uuid4(), card_id=208, name="Unshielded Lifetime Target",
+            card_type=CardType.WARRIOR, hp=5, max_hp=5, attack=0, mana_cost=1,
+            mechanics=[], is_ready=False,
+        )
+        state.p1.board = [saitama]
+        state.p2.board = [shielded, unshielded]
+
+        success, error = env.step(1, AttackAction(
+            attacker_id=str(saitama.instance_id),
+            target_id=str(shielded.instance_id),
+            target_is_hero=False,
+        ))
+        assert success, error
+        assert shielded.hp == 5
+        assert "shield" not in shielded.mechanics
+
+        success, error = env.step(1, EndTurnAction())
+        assert success, error
+        success, error = env.step(2, EndTurnAction())
+        assert success, error
+
+        success, error = env.step(1, AttackAction(
+            attacker_id=str(saitama.instance_id),
+            target_id=str(unshielded.instance_id),
+            target_is_hero=False,
+        ))
+
+        assert success, error
+        assert unshielded.hp == 4
+
+    def test_saitama_hero_attack_does_not_spend_instant_kill(self):
+        state = create_minimal_game_state()
+        env = ArenaEnvironment(state)
+        saitama = CardInstance(
+            instance_id=uuid4(), card_id=25, name="Сайтама",
+            card_type=CardType.WARRIOR, hp=10, max_hp=10, attack=1, mana_cost=10,
+            mechanics=["instant_kill"], is_ready=True,
+        )
+        target = CardInstance(
+            instance_id=uuid4(), card_id=213, name="First Unit After Hero",
+            card_type=CardType.WARRIOR, hp=5, max_hp=5, attack=0, mana_cost=1,
+            mechanics=[], is_ready=False,
+        )
+        state.p1.board = [saitama]
+        state.p2.board = [target]
+
+        success, error = env.step(1, AttackAction(
+            attacker_id=str(saitama.instance_id),
+            target_id=None,
+            target_is_hero=True,
+        ))
+        assert success, error
+        assert state.p2.hero.hp == 29
+        assert saitama.instant_kill_used is False
+
+        saitama.is_ready = True
+        success, error = env.step(1, AttackAction(
+            attacker_id=str(saitama.instance_id),
+            target_id=str(target.instance_id),
+            target_is_hero=False,
+        ))
+
+        assert success, error
+        assert target.hp == 0
+        assert saitama.instant_kill_used is True
+
+    def test_unit_killer_kills_every_attacked_unit_without_usage_limit(self):
+        state = create_minimal_game_state()
+        env = ArenaEnvironment(state)
+        killer = CardInstance(
+            instance_id=uuid4(), card_id=209, name="Unit Killer",
+            card_type=CardType.WARRIOR, hp=10, max_hp=10, attack=1, mana_cost=10,
+            mechanics=["unit_killer"], is_ready=True,
+        )
+        first = CardInstance(
+            instance_id=uuid4(), card_id=210, name="First Unit Killer Target",
+            card_type=CardType.WARRIOR, hp=5, max_hp=5, attack=0, mana_cost=1,
+            mechanics=[], is_ready=False,
+        )
+        shielded = CardInstance(
+            instance_id=uuid4(), card_id=211, name="Shielded Unit Killer Target",
+            card_type=CardType.WARRIOR, hp=5, max_hp=5, attack=0, mana_cost=1,
+            mechanics=["shield"], is_ready=False,
+        )
+        second = CardInstance(
+            instance_id=uuid4(), card_id=212, name="Second Unit Killer Target",
+            card_type=CardType.WARRIOR, hp=5, max_hp=5, attack=0, mana_cost=1,
+            mechanics=[], is_ready=False,
+        )
+        state.p1.board = [killer]
+        state.p2.board = [first, shielded, second]
+
+        success, error = env.step(1, AttackAction(
+            attacker_id=str(killer.instance_id),
+            target_id=str(first.instance_id),
+            target_is_hero=False,
+        ))
+        assert success, error
+        assert first.hp == 0
+
+        killer.is_ready = True
+        success, error = env.step(1, AttackAction(
+            attacker_id=str(killer.instance_id),
+            target_id=str(shielded.instance_id),
+            target_is_hero=False,
+        ))
+        assert success, error
+        assert shielded.hp == 5
+        assert "shield" not in shielded.mechanics
+
+        killer.is_ready = True
+        success, error = env.step(1, AttackAction(
+            attacker_id=str(killer.instance_id),
+            target_id=str(second.instance_id),
+            target_is_hero=False,
+        ))
+
+        assert success, error
+        assert second.hp == 0
+
+    def test_unit_killer_deals_only_normal_damage_to_hero(self):
+        state = create_minimal_game_state()
+        env = ArenaEnvironment(state)
+        killer = CardInstance(
+            instance_id=uuid4(), card_id=213, name="Unit Killer",
+            card_type=CardType.WARRIOR, hp=10, max_hp=10, attack=3, mana_cost=10,
+            mechanics=["unit_killer"], is_ready=True,
+        )
+        state.p1.board = [killer]
+
+        success, error = env.step(1, AttackAction(
+            attacker_id=str(killer.instance_id),
+            target_id=str(state.p2.hero.instance_id),
+            target_is_hero=True,
+        ))
+
+        assert success, error
+        assert state.p2.hero.hp == 27
+        assert state.p2.hero.hp > 0

@@ -13,6 +13,17 @@ logger = logging.getLogger(__name__)
 SYNTHETIC_USER_ID_MIN = 9_100_000_000_000
 
 
+def _validate_schema_identifier(identifier: str) -> str:
+    identifier = str(identifier or "")
+    if (
+        not identifier
+        or identifier[0].isdigit()
+        or not all(char.isascii() and (char.isalnum() or char == "_") for char in identifier)
+    ):
+        raise ValueError(f"invalid_schema_identifier:{identifier!r}")
+    return identifier
+
+
 def _coerce_uuid(value):
     if value is None or isinstance(value, uuid.UUID):
         return value
@@ -82,6 +93,8 @@ class ExtraIDDatabase:
         self, table: str, existing_columns: set[str], column_definition: str
     ) -> bool:
         column_name = column_definition.split()[0]
+        table = _validate_schema_identifier(table)
+        column_name = _validate_schema_identifier(column_name)
         if column_name in existing_columns:
             return False
         await self.execute(f"ALTER TABLE {table} ADD COLUMN {column_definition}")
@@ -90,6 +103,7 @@ class ExtraIDDatabase:
     async def _initialize(self) -> None:
         await self._ensure_extra_accounts_table()
         await self._ensure_auth_sessions_table()
+        await self._ensure_rate_limits_table()
         await self._ensure_bot_auth_codes_table()
         await self._ensure_device_analytics_table()
         await self._ensure_synthetic_user_id_seq()
@@ -134,6 +148,13 @@ class ExtraIDDatabase:
         await self._add_column_if_missing("extra_accounts", columns, "created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
         await self._add_column_if_missing("extra_accounts", columns, "updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
         await self._add_column_if_missing("extra_accounts", columns, "deleted_at TIMESTAMPTZ")
+        await self.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_extra_accounts_active_user_id_unique
+            ON extra_accounts(user_id)
+            WHERE user_id IS NOT NULL AND deleted_at IS NULL
+            """
+        )
 
     async def _ensure_auth_sessions_table(self) -> None:
         if not await self.fetchval("SELECT to_regclass('public.auth_sessions')"):
@@ -165,6 +186,43 @@ class ExtraIDDatabase:
         await self._add_column_if_missing("auth_sessions", columns, "revoked BOOLEAN NOT NULL DEFAULT FALSE")
         await self._add_column_if_missing("auth_sessions", columns, "revoked_at TIMESTAMPTZ")
         await self._add_column_if_missing("auth_sessions", columns, "device_label TEXT")
+
+    async def _ensure_rate_limits_table(self) -> None:
+        if not await self.fetchval("SELECT to_regclass('public.extraid_rate_limits')"):
+            await self.execute("""
+                CREATE TABLE extraid_rate_limits (
+                    key      TEXT PRIMARY KEY,
+                    count    INTEGER NOT NULL DEFAULT 0,
+                    reset_at TIMESTAMPTZ NOT NULL
+                )
+            """)
+            await self.execute("CREATE INDEX IF NOT EXISTS idx_extraid_rate_limits_reset_at ON extraid_rate_limits(reset_at)")
+
+    async def check_rate_limit(self, key: str, max_requests: int, window_seconds: int) -> bool:
+        allowed = await self.fetchval(
+            """
+            WITH upsert AS (
+                INSERT INTO extraid_rate_limits (key, count, reset_at)
+                VALUES ($1, 1, NOW() + make_interval(secs => $3::int))
+                ON CONFLICT (key) DO UPDATE SET
+                    count = CASE
+                        WHEN extraid_rate_limits.reset_at <= NOW() THEN 1
+                        ELSE extraid_rate_limits.count + 1
+                    END,
+                    reset_at = CASE
+                        WHEN extraid_rate_limits.reset_at <= NOW()
+                            THEN NOW() + make_interval(secs => $3::int)
+                        ELSE extraid_rate_limits.reset_at
+                    END
+                RETURNING count
+            )
+            SELECT count <= $2 FROM upsert
+            """,
+            key,
+            int(max_requests),
+            int(window_seconds),
+        )
+        return bool(allowed)
 
     async def _ensure_bot_auth_codes_table(self) -> None:
         if not await self.fetchval("SELECT to_regclass('public.bot_auth_codes')"):
@@ -436,11 +494,27 @@ class ExtraIDDatabase:
         )
         return dict(row) if row else None
 
+    async def consume_bot_auth_code(self, code: str) -> dict | None:
+        if not self._pool:
+            raise RuntimeError("ExtraID DB not connected")
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    """
+                    UPDATE bot_auth_codes
+                    SET used_at = NOW()
+                    WHERE code = $1 AND used_at IS NULL AND expires_at > NOW()
+                    RETURNING *
+                    """,
+                    code,
+                )
+                return dict(row) if row else None
+
     async def mark_bot_code_used(self, code: str, session_id) -> None:
         await self.execute(
             """
-            UPDATE bot_auth_codes SET used_at = NOW(), session_id = $1
-            WHERE code = $2
+            UPDATE bot_auth_codes SET session_id = $1
+            WHERE code = $2 AND used_at IS NOT NULL
             """,
             _coerce_uuid(session_id), code
         )

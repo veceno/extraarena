@@ -5,7 +5,7 @@ import os
 # ── PolzaAI moderation ──────────────────────────────────────────────────────
 MODERATION_API_BASE_URL: str = "https://polza.ai/api/v1"
 MODERATION_MODEL: str = "google/gemini-2.5-flash-lite"
-MODERATION_API_KEY: str = os.environ.get("POLZA_AI_KEY", "pza_oS78EjLzys3JSnpjIZ1MkaSxasq2NaRb")
+MODERATION_API_KEY: str = os.environ.get("POLZA_AI_KEY", "")
 
 SUBMISSION_RATE_LIMIT: int = 3
 SUBMISSION_RATE_WINDOW_MINUTES: int = 10
@@ -123,16 +123,20 @@ def calc_announcement_price(
     duration_key: str,
     is_pinned: bool,
     has_boost: bool,
+    pin_price: int | None = None,
 ) -> dict:
     """Calculate gem cost for an announcement. Returns full breakdown."""
     word_count = len(text.strip().split()) if text.strip() else 0
     word_extra = max(0, ((word_count - 100 + 99) // 100)) * ANNOUNCE_WORD_EXTRA_COST if word_count > 100 else 0
     image_extra = ANNOUNCE_IMAGE_COST if has_image else 0
     duration_extra = ANNOUNCE_DURATION_COSTS.get(duration_key, 0)
-    pin_extra = ANNOUNCE_PIN_BASE_COST if is_pinned else 0
-    subtotal = ANNOUNCE_BASE_COST + word_extra + image_extra + duration_extra + pin_extra
+    pin_base = ANNOUNCE_PIN_BASE_COST if is_pinned else 0
+    actual_pin_price = max(0, int(pin_price or pin_base)) if is_pinned else 0
+    pin_extra = actual_pin_price if is_pinned else 0
+    extra_pin = max(0, actual_pin_price - ANNOUNCE_PIN_BASE_COST) if is_pinned else 0
+    subtotal = ANNOUNCE_BASE_COST + word_extra + image_extra + duration_extra + pin_base
     discount = int(subtotal * ANNOUNCE_BOOST_DISCOUNT) if has_boost else 0
-    total = subtotal - discount
+    total = subtotal - discount + extra_pin
     return {
         "base": ANNOUNCE_BASE_COST,
         "word_extra": word_extra,
@@ -140,6 +144,8 @@ def calc_announcement_price(
         "image_extra": image_extra,
         "duration_extra": duration_extra,
         "pin_extra": pin_extra,
+        "pin_base": pin_base,
+        "pin_overbid_extra": extra_pin,
         "subtotal": subtotal,
         "discount": discount,
         "total": total,

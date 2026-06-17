@@ -232,8 +232,6 @@ class ArenaEnvironment:
             consumed_unit = self._find_unit_by_id(player.board, action.target_id)
             if not consumed_unit:
                 return False, "consume_target_not_found"
-            if len(player.board) >= 7 and len(player.board) - 1 >= 7:
-                return False, "board_full"
 
         # Списываем ману и убираем карту из руки только после всех preflight-проверок.
         player.mana -= effective_mana_cost
@@ -261,11 +259,17 @@ class ArenaEnvironment:
                     card.hp,
                 )
 
-            # Вставляем на указанную позицию или в конец
-            if action.position is not None and 0 <= action.position <= len(player.board):
-                player.board.insert(action.position, card)
-            else:
-                player.board.append(card)
+            # Модельный action-space шире текущей доски: наружу должна уходить
+            # фактическая позиция, а не сырой индекс кандидата.
+            insert_position = len(player.board)
+            if action.position is not None:
+                try:
+                    insert_position = int(action.position)
+                except (TypeError, ValueError):
+                    insert_position = len(player.board)
+                insert_position = max(0, min(insert_position, len(player.board)))
+            action.position = insert_position
+            player.board.insert(insert_position, card)
 
             # SUMMONING SICKNESS: Существо спит в первый ход (если нет Charge)
             if "charge" in card.mechanics:
@@ -345,6 +349,14 @@ class ArenaEnvironment:
         if action.target_is_hero:
             # Атака героя
             damage_dealt = apply_damage(opponent.hero, effective_attack, attacker)
+            self._last_attack_result = {
+                "attacker_name": attacker.name,
+                "target_name": "Герой",
+                "target_is_hero": True,
+                "effective_attack": effective_attack,
+                "damage_dealt": damage_dealt,
+                "lifesteal": "lifesteal" in attacker.mechanics,
+            }
             
             # Применяем Lifesteal
             if damage_dealt > 0:
@@ -375,7 +387,21 @@ class ArenaEnvironment:
             target_effective_attack = self._apply_aura_bonuses(target, opponent)
 
             # Обмен ударами (с передачей атакующего для reflect)
+            target_had_shield = "shield" in target.mechanics
             damage_dealt = apply_damage(target, effective_attack, attacker)
+            self._last_attack_result = {
+                "attacker_name": attacker.name,
+                "target_name": target.name,
+                "target_is_hero": False,
+                "effective_attack": effective_attack,
+                "damage_dealt": damage_dealt,
+                "lifesteal": "lifesteal" in attacker.mechanics,
+            }
+            target_shield_blocked = (
+                target_had_shield
+                and "shield" not in target.mechanics
+                and damage_dealt == 0
+            )
             apply_damage(attacker, target_effective_attack, target)
             self._apply_attack_cleave(attacker, opponent, target_index)
             
@@ -383,10 +409,36 @@ class ArenaEnvironment:
             if damage_dealt > 0:
                 apply_lifesteal(attacker, damage_dealt, player.hero)
             
-            # Проверка instant_kill
-            if "instant_kill" in attacker.mechanics and target.hp > 0:
-                target.hp = 0
-                logger.debug("[CORE] INSTANT KILL: %s убил %s мгновенно!", attacker.name, target.name)
+            # Проверка unit_killer: убивает каждый атакованный юнит без лимита срабатываний.
+            if "unit_killer" in attacker.mechanics:
+                if target_shield_blocked:
+                    logger.debug(
+                        "[CORE] UNIT KILLER: щит %s заблокировал убийство %s",
+                        target.name,
+                        attacker.name,
+                    )
+                elif target.hp > 0:
+                    target.hp = 0
+                    logger.debug("[CORE] UNIT KILLER: %s убил %s мгновенно!", attacker.name, target.name)
+
+            # Проверка instant_kill: первый выбранный вражеский юнит за жизнь Сайтамы.
+            elif "instant_kill" in attacker.mechanics:
+                if not attacker.instant_kill_used:
+                    attacker.instant_kill_used = True
+                    if target_shield_blocked:
+                        logger.debug(
+                            "[CORE] INSTANT KILL: щит %s заблокировал ваншот %s",
+                            target.name,
+                            attacker.name,
+                        )
+                    elif target.hp > 0:
+                        target.hp = 0
+                        logger.debug("[CORE] INSTANT KILL: %s убил %s мгновенно!", attacker.name, target.name)
+                else:
+                    logger.debug(
+                        "[CORE] INSTANT KILL: %s уже использовал ваншот",
+                        attacker.name,
+                    )
             else:
                 logger.debug(
                     "[CORE] %s атакует %s: обмен ударами %d <-> %d",
@@ -443,6 +495,10 @@ class ArenaEnvironment:
                 # Пробуждаем существо (is_asleep=False)
                 unit.is_ready = True
 
+            if "shield_refresh" in unit.mechanics and "shield" not in unit.mechanics:
+                unit.mechanics.append("shield")
+                logger.debug("[CORE] %s восстанавливает одноразовый щит", unit.name)
+
             # Проверка регенерации regen_X
             for mechanic in unit.mechanics:
                 if mechanic.startswith("regen_"):
@@ -492,12 +548,19 @@ class ArenaEnvironment:
             drawn_card = opponent.deck.pop(0)
             opponent.hand.append(drawn_card)
         else:
-            # Карта сгорает при переполнении руки
-            burned_card = opponent.deck.pop(0)
+            if self.classic_params.overdraw_to_discard:
+                overdrawn_card = opponent.deck.pop(0)
+                opponent.graveyard.append(overdrawn_card)
+                logger.info(
+                    "[OVERDRAW_DISCARD] Hand limit reached for %s, card %s moved to graveyard",
+                    opponent.user_id,
+                    overdrawn_card.name,
+                )
+                return
             logger.info(
-                "[BURN] Hand limit reached for %s, card %s destroyed",
+                "[OVERDRAW_SKIP] Hand limit reached for %s, top deck card remains in deck: %s",
                 opponent.user_id,
-                burned_card.name,
+                opponent.deck[0].name if opponent.deck else "none",
             )
 
     def _apply_start_turn_mode_effects(self) -> None:
@@ -1165,10 +1228,10 @@ class ArenaEnvironment:
         
         # Battlecry Damage
         for mechanic in mechanics:
-            match = re.match(r"battlecry_damage_(\d+)", mechanic)
+            match = re.match(r"battlecry_damage_(\d+)(?:_random)?$", mechanic)
             if match:
                 damage = match.group(1)
-                if "тока киришима" in card_name.casefold() or "тоука киришима" in card_name.casefold():
+                if mechanic.endswith("_random"):
                     return f"наносит {damage} урона случайному врагу"
                 target_name = self._get_target_name(target_id, owner, opponent)
                 return f"наносит {damage} урона по {target_name}"
@@ -1222,8 +1285,11 @@ class ArenaEnvironment:
                 return f"заморозил {target_name} на 1 ход"
         
         # AOE Freeze
+        if "desk_freeze" in mechanics:
+            return "заморозил всю вражескую доску на 1 ход"
+
         if "aoe_freeze" in mechanics:
-            return "заморозил всех вражеских существ на 1 ход"
+            return "заморозил до 3 вражеских существ на 1 ход"
         
         # Spell Damage
         for mechanic in mechanics:
@@ -1283,10 +1349,10 @@ class ArenaEnvironment:
         
         # Cleave
         for mechanic in mechanics:
-            match = re.match(r"cleave_(\d+)_(\d+)", mechanic)
+            match = re.match(r"cleave_(\d+)(?:_\d+)?$", mechanic)
             if match:
-                damage, times = match.group(1), match.group(2)
-                return f"наносит {damage} урона {times} случайным целям"
+                damage = match.group(1)
+                return f"наносит {damage} урона соседям цели"
         
         # Cast Random Spell
         if "cast_random_spell" in mechanics:
@@ -1311,8 +1377,11 @@ class ArenaEnvironment:
             return f"поглотил {target_name} (получил его характеристики)"
         
         # Instant Kill
+        if "unit_killer" in mechanics:
+            return "мгновенно убивает атакованную цель-юнита"
+
         if "instant_kill" in mechanics:
-            return "мгновенно убивает цель при атаке"
+            return "один раз мгновенно убивает выбранную цель при атаке"
         
         # Bypass Taunt
         if "bypass_taunt" in mechanics:
@@ -1451,18 +1520,30 @@ class ArenaEnvironment:
         
         # Вычисляем эффективную атаку с учетом аур
         effective_attack = self._apply_aura_bonuses(attacker, player) if attacker else 0
+        attack_result = getattr(self, "_last_attack_result", None)
+        damage_dealt = (
+            attack_result.get("damage_dealt", effective_attack)
+            if isinstance(attack_result, dict)
+            else effective_attack
+        )
         
         if action.target_is_hero:
             # Атака героя
-            text = f"{attacker_name} наносит {effective_attack} урона по Герою"
+            text = f"{attacker_name} наносит {damage_dealt} урона по Герою"
         else:
             # Атака существа
-            target = self._find_unit_by_id(opponent.board, action.target_id)
-            target_name = target.name if target else "существо"
-            text = f"{attacker_name} атакует {target_name}"
+            target_name = (
+                attack_result.get("target_name")
+                if isinstance(attack_result, dict)
+                else None
+            )
+            if not target_name:
+                target = self._find_unit_by_id(opponent.board, action.target_id)
+                target_name = target.name if target else "существо"
+            text = f"{attacker_name} атакует {target_name} и наносит {damage_dealt} урона"
         
         # Проверка Lifesteal
-        if attacker and "lifesteal" in attacker.mechanics and effective_attack > 0:
+        if attacker and "lifesteal" in attacker.mechanics and damage_dealt > 0:
             text += "...и восстанавливает здоровье герою"
         
         return (log_type, text)

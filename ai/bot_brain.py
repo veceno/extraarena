@@ -61,7 +61,13 @@ class BerserkInference:
                 return {}
             config = data.get("config")
             if isinstance(config, dict):
-                for key in ("include_preview_features", "verify_mask", "placement_mode"):
+                for key in (
+                    "include_preview_features",
+                    "verify_mask",
+                    "placement_mode",
+                    "action_codec",
+                    "observation_codec",
+                ):
                     if key not in data and key in config:
                         data[key] = config[key]
             return data
@@ -81,6 +87,37 @@ class BerserkInference:
         if temp_min <= 0 or temp_max <= 0 or temp_min > temp_max:
             raise ValueError(f"{difficulty}: invalid temperature_range={raw}")
         return temp_min, temp_max
+
+    @staticmethod
+    def _validate_selection(difficulty: str, profile: dict[str, Any]) -> str:
+        selection = str(profile.get("selection", "argmax"))
+        if selection not in {"argmax", "softmax"}:
+            raise ValueError(f"{difficulty}: invalid selection={selection!r}")
+        return selection
+
+    @staticmethod
+    def _validate_placement_mode(difficulty: str, profile: dict[str, Any]) -> str:
+        placement_mode = str(profile.get("placement_mode", "append_only"))
+        if placement_mode not in {"append_only", "full"}:
+            raise ValueError(f"{difficulty}: invalid placement_mode={placement_mode!r}")
+        return placement_mode
+
+    @staticmethod
+    def _validate_verify_mask(difficulty: str, profile: dict[str, Any]) -> bool:
+        verify_mask = profile.get("verify_mask", True)
+        if not isinstance(verify_mask, bool):
+            raise ValueError(f"{difficulty}: verify_mask must be boolean, got {verify_mask!r}")
+        return verify_mask
+
+    @staticmethod
+    def _validate_codec_options(difficulty: str, profile: dict[str, Any]) -> tuple[str, str]:
+        action_codec = str(profile.get("action_codec", "classic_actions_v1"))
+        observation_codec = str(profile.get("observation_codec", "classic_obs_v1"))
+        if action_codec != "classic_actions_v1":
+            raise ValueError(f"{difficulty}: invalid action_codec={action_codec!r}")
+        if observation_codec != "classic_obs_v1":
+            raise ValueError(f"{difficulty}: invalid observation_codec={observation_codec!r}")
+        return action_codec, observation_codec
 
     @staticmethod
     def _shape_dim(shape: list[Any] | tuple[Any, ...] | None, index: int) -> int | None:
@@ -144,20 +181,17 @@ class BerserkInference:
         if logits_actions is not None and logits_actions != max_candidate_actions:
             raise ValueError(f"{difficulty}: logits output shape {logits_meta.shape} != {max_candidate_actions}")
 
-        include_preview = bool(profile.get("include_preview_features", True))
+        include_preview = bool(profile.get("include_preview_features", False))
         return input_names, output_names, action_feature_dim, max_candidate_actions, include_preview
 
     def __init__(
         self,
         profiles: Optional[Dict[str, Dict[str, Any]]] = None,
-        action_dim: int = 200,
     ):
         """
         Args:
             profiles: Словарь профилей вида {difficulty: {model_path, obs_dim, temperature_range}}
-            action_dim: Размерность вектора действий (200 макс. действий)
         """
-        self.action_dim = action_dim
         self.sessions: Dict[str, Dict[str, Any]] = {}
         
         if profiles is None:
@@ -169,15 +203,15 @@ class BerserkInference:
         session_cache: Dict[str, ort.InferenceSession] = {}
         load_errors: list[tuple[str, Exception]] = []
         for difficulty, profile in profiles.items():
-            model_path = self._resolve_model_path(profile["model_path"])
-            
-            if not model_path.exists():
-                exc = FileNotFoundError(f"{difficulty}: model not found: {model_path}")
-                logger.error("[BerserkInference] %s", exc)
-                load_errors.append((difficulty, exc))
-                continue
-            
             try:
+                model_path = self._resolve_model_path(profile["model_path"])
+
+                if not model_path.exists():
+                    exc = FileNotFoundError(f"{difficulty}: model not found: {model_path}")
+                    logger.error("[BerserkInference] %s", exc)
+                    load_errors.append((difficulty, exc))
+                    continue
+
                 sidecar = self._load_sidecar(model_path)
                 merged_profile = dict(sidecar)
                 merged_profile.update(profile)
@@ -192,6 +226,10 @@ class BerserkInference:
 
                 temp_range = self._validate_temperature_range(difficulty, merged_profile)
                 merged_profile["temperature_range"] = temp_range
+                selection = self._validate_selection(difficulty, merged_profile)
+                placement_mode = self._validate_placement_mode(difficulty, merged_profile)
+                verify_mask = self._validate_verify_mask(difficulty, merged_profile)
+                action_codec, observation_codec = self._validate_codec_options(difficulty, merged_profile)
 
                 cache_key = str(model_path.resolve())
                 session = session_cache.get(cache_key)
@@ -218,9 +256,11 @@ class BerserkInference:
                     "max_candidate_actions": max_acts,
                     "include_preview_features": include_preview,
                     "temperature_range": temp_range,
-                    "selection": merged_profile.get("selection", "argmax"),
-                    "placement_mode": merged_profile.get("placement_mode", "append_only"),
-                    "verify_mask": merged_profile.get("verify_mask", True),
+                    "selection": selection,
+                    "placement_mode": placement_mode,
+                    "verify_mask": verify_mask,
+                    "action_codec": action_codec,
+                    "observation_codec": observation_codec,
                     "input_names": input_names,
                     "output_names": output_names,
                 }
@@ -245,6 +285,10 @@ class BerserkInference:
             logger.error("[BerserkInference] Ошибка загрузки профилей: %s", details)
         if not self.sessions:
             logger.warning("[BerserkInference] Ни одна TrainV2 v4 модель не загружена; бот уйдет в rule-based fallback")
+
+    def has_profile(self, difficulty: str) -> bool:
+        """Return whether a difficulty profile is loaded and ready for inference."""
+        return str(difficulty) in self.sessions
 
     def get_action(
         self,
@@ -353,6 +397,8 @@ class BerserkInference:
 
         if "logits" in output_names and "value" in output_names:
             outputs = ["logits", "value"]
+        elif "logits" in output_names:
+            outputs = ["logits"]
         else:
             outputs = output_names[:2] if len(output_names) >= 2 else None
 
@@ -388,7 +434,7 @@ class BerserkInference:
         obs = encode_observation(game_state, player_id).reshape(1, obs_dim).astype(np.float32)
         placement_mode = profile.get("placement_mode", "append_only")
         verify_mask = bool(profile.get("verify_mask", True))
-        include_preview = bool(profile.get("include_preview_features", True))
+        include_preview = bool(profile.get("include_preview_features", False))
         mask = build_action_mask(
             game_state,
             player_id,
@@ -427,15 +473,15 @@ class BerserkInference:
             return _legal_fallback(legal_actions)
 
         mlogits = np.where(mask.astype(bool), logits, -1e9).astype(np.float32)
+        legal_mask = mask.astype(bool)
+        if not np.any(legal_mask):
+            logger.warning("[BerserkInference] TrainV2 mask has no legal actions, fallback")
+            return _legal_fallback(legal_actions)
 
         if selection_mode == "argmax":
             action_id = int(np.argmax(mlogits))
         else:
             temperature = random.uniform(temp_min, temp_max)
-            legal_mask = mask.astype(bool)
-            if not np.any(legal_mask):
-                logger.warning("[BerserkInference] TrainV2 mask has no legal actions, fallback")
-                return _legal_fallback(legal_actions)
             scaled = mlogits / temperature
             legal_scaled = scaled[legal_mask]
             legal_max = np.max(legal_scaled)
@@ -475,8 +521,18 @@ class BerserkInference:
         return idx
 
 def _legal_fallback(legal_actions: list) -> int:
-    for i, a in enumerate(legal_actions):
-        if a.to_dict().get("type") == "end_turn":
+    for i, action in enumerate(legal_actions):
+        action_dict = action.to_dict()
+        if action_dict.get("type") == "attack" and action_dict.get("target_is_hero") is True:
+            return i
+    for i, action in enumerate(legal_actions):
+        if action.to_dict().get("type") == "attack":
+            return i
+    for i, action in enumerate(legal_actions):
+        if action.to_dict().get("type") == "play_card":
+            return i
+    for i, action in enumerate(legal_actions):
+        if action.to_dict().get("type") == "end_turn":
             return i
     return 0
 

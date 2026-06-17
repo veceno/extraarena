@@ -3631,6 +3631,21 @@ body.case-opening-active #app {
   transform: scale(1.1);
 }
 
+.friend-action-btn.release-disabled,
+.friend-request-btn.release-disabled,
+.friend-add-btn.release-disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  filter: grayscale(0.35);
+}
+
+.friend-action-btn.release-disabled:hover,
+.friend-request-btn.release-disabled:hover,
+.friend-add-btn.release-disabled:hover {
+  transform: none;
+  box-shadow: none;
+}
+
 .friend-request-list {
   display: flex;
   flex-direction: column;
@@ -3725,6 +3740,12 @@ body.case-opening-active #app {
 .friend-add-btn:hover {
   transform: scale(1.05);
   box-shadow: 0 4px 12px rgba(192, 132, 252, 0.4);
+}
+
+.shop-item-card.release-focus {
+  outline: 2px solid var(--chibi-gold);
+  outline-offset: 3px;
+  box-shadow: 0 0 22px rgba(251, 191, 36, 0.5);
 }
 
 /* Аналитика */

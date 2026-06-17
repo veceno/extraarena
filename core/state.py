@@ -9,7 +9,7 @@ from typing import Dict, List, Optional
 from uuid import UUID, uuid4
 
 
-# Фиксированный список всех механик для ML observation (33 механики)
+# Фиксированный список всех механик для ML observation (34 механики)
 MECHANICS_LIST = [
     "taunt",
     "shield",
@@ -44,6 +44,7 @@ MECHANICS_LIST = [
     "deathrattle",
     "charge",
     "lifesteal",
+    "desk_freeze",
 ]
 
 
@@ -90,6 +91,7 @@ class CardInstance:
     base_max_hp: Optional[int] = None
     base_mana_cost: Optional[int] = None
     base_mechanics: Optional[List[str]] = None
+    instant_kill_used: bool = False
     
     @property
     def is_asleep(self) -> bool:
@@ -116,6 +118,7 @@ class CardInstance:
         self.mechanics = list(self.base_mechanics or [])
         self.is_ready = False
         self.is_frozen = False
+        self.instant_kill_used = False
 
 
 @dataclass
@@ -152,6 +155,7 @@ class GameState:
     sudden_death_turns_by_player: Dict[int, int] = field(default_factory=dict)
     sudden_death_last_applied_turn_by_player: Dict[int, int] = field(default_factory=dict)
     pending_mana_drain_by_player: Dict[int, int] = field(default_factory=dict)
+    pending_card_feedback_events: List[Dict] = field(default_factory=list)
 
     def _card_features(self, prefix: str, card: CardInstance) -> Dict[str, int]:
         """Извлечь фичи карты включая вектор механик."""

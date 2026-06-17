@@ -12,12 +12,34 @@ import time
 from core.actions import AttackAction, BaseAction, EndTurnAction, PlayCardAction
 from core.classic_setup import create_classic_game_state
 from core.engine import ArenaEnvironment
-from core.state import CardInstance, CardType, GameState, GameStatus, PlayerState as CorePlayerState
+from core.effects import get_taunt_targets, has_taunt
+from core.state import CardInstance, CardType, GameState, GameStatus, PlayerState as CorePlayerState, ReplacementStatus
+from infrastructure.card_assets import card_asset_url
 from infrastructure.match_modes import ModeConfig, resolve_mode_config, serialize_mode_config
 
 
 # Глобальный словарь активных матчей
 ACTIVE_MATCHES: Dict[str, "BattleEngine"] = {}
+
+TRAIN_V3_CARD_PARAMS_SCHEMA = "train_v3_card_params_v1"
+TRAIN_V3_ACTION_CONTEXT_SCHEMA = "train_v3_action_context_v1"
+TRAIN_V3_DECK_PARAMS_SCHEMA = "train_v3_deck_params_v1"
+
+TALKIE_CATALOG: dict[str, dict[str, str]] = {
+    "1": {"sound": "neutral"},
+    "2": {"sound": "sad"},
+    "3": {"sound": "rude"},
+    "4": {"sound": "rude"},
+    "5": {"sound": "happy"},
+    "6": {"sound": "neutral"},
+    "7": {"sound": "happy"},
+}
+
+TALKIE_TIER_LIMITS: dict[str, dict[str, float | int | None]] = {
+    "inactive": {"max_per_turn": 1, "cooldown_seconds": None},
+    "active": {"max_per_turn": 2, "cooldown_seconds": 1.0},
+    "ultra": {"max_per_turn": 3, "cooldown_seconds": 1.0},
+}
 
 
 class BattleEventEmitter:
@@ -86,7 +108,9 @@ class BattleEngine:
         self.game_over_processed = False
         self.rewards_granted = False
         self.turn_start_time: Optional[float] = None
+        self.turn_start_monotonic: Optional[float] = None
         self.match_start_time: Optional[float] = None
+        self.match_start_monotonic: Optional[float] = None
         self.mode_config: ModeConfig = resolve_mode_config(game_mode)
         self.game_mode = self.mode_config.mode_id
         self.ruleset = self.mode_config.ruleset
@@ -119,20 +143,29 @@ class BattleEngine:
         self._p2_rarity: str = ""
         self._p1_extra_pass: Optional[str] = None
         self._p1_background_url: Optional[str] = None
+        self._p1_nickname_glow_disabled: bool = False
+        self._p1_hide_player_id_public: bool = False
         self._p2_extra_pass: Optional[str] = None
         self._p2_background_url: Optional[str] = None
+        self._p2_nickname_glow_disabled: bool = False
+        self._p2_hide_player_id_public: bool = False
         
         # Для совместимости со старым кодом (минимальные заглушки)
         p1_id = player_ids[0] if player_ids and len(player_ids) > 0 else 1
         p2_id = player_ids[1] if player_ids and len(player_ids) > 1 else 2
         self._p1_id = p1_id
         self._p2_id = p2_id
+        self._talkie_enabled_by_user: dict[int, bool] = {}
+        self._talkie_usage_by_turn: dict[tuple[int, int], list[float]] = {}
+        self._talkie_event_seq: int = 0
 
         # Analytics data collection
         self._analytics_actions: list[dict[str, Any]] = []
         self._analytics_flushed: bool = False
         self._p1_initial_deck_ids: list[int] = []
         self._p2_initial_deck_ids: list[int] = []
+        self._p1_initial_deck_params: dict[str, Any] = {}
+        self._p2_initial_deck_params: dict[str, Any] = {}
     
     # =========================================================================
     # СОЗДАНИЕ МАТЧА
@@ -199,6 +232,8 @@ class BattleEngine:
             self._p1_title = p1_data.get("title", "")
             self._p1_rarity = p1_data.get("rarity", "")
             self._p1_extra_pass = p1_data.get("extra_pass")
+            self._p1_nickname_glow_disabled = bool(p1_data.get("nickname_glow_disabled", False))
+            self._p1_hide_player_id_public = bool(p1_data.get("hide_player_id_public", False))
             self._p1_background_url = p1_data.get("background_url")
             self._p2_name = p2_data.get("name", "Игрок 2")
             self._p2_avatar_url = p2_data.get("avatar_url")
@@ -207,6 +242,8 @@ class BattleEngine:
             self._p2_title = p2_data.get("title", "")
             self._p2_rarity = p2_data.get("rarity", "")
             self._p2_extra_pass = p2_data.get("extra_pass")
+            self._p2_nickname_glow_disabled = bool(p2_data.get("nickname_glow_disabled", False))
+            self._p2_hide_player_id_public = bool(p2_data.get("hide_player_id_public", False))
             self._p2_background_url = p2_data.get("background_url")
             
             # Загружаем данные карт из БД
@@ -251,6 +288,8 @@ class BattleEngine:
             # Store initial deck IDs for analytics
             self._p1_initial_deck_ids = [int(c) for c in (p1_data.get("deck_ids") or [])]
             self._p2_initial_deck_ids = [int(c) for c in (p2_data.get("deck_ids") or [])]
+            self._p1_initial_deck_params = self._deck_param_snapshot(p1_deck)
+            self._p2_initial_deck_params = self._deck_param_snapshot(p2_deck)
 
             self._logger.debug(
                 "[ADAPTER] match=%s: собраны колоды (p1=%d карт, p2=%d карт)",
@@ -311,7 +350,9 @@ class BattleEngine:
             self.current_player_id = game_state.current_turn_owner_id
             self.turn = 1
             self.turn_start_time = time.time()
-            self.match_start_time = time.time()
+            self.turn_start_monotonic = time.monotonic()
+            self.match_start_time = self.turn_start_time
+            self.match_start_monotonic = self.turn_start_monotonic
             
             # Регистрируем в глобальном словаре
             self._active_matches[match_id] = self
@@ -343,7 +384,11 @@ class BattleEngine:
                 continue
             
             if cid in self._card_cache:
-                cards_data[cid] = self._card_cache[cid]
+                cached = self._card_cache[cid]
+                if hasattr(cached, "to_dict"):
+                    cached = cached.to_dict()
+                    self._card_cache[cid] = cached
+                cards_data[cid] = cached
                 continue
             
             try:
@@ -425,6 +470,228 @@ class BattleEngine:
     # =========================================================================
     # ВЫПОЛНЕНИЕ ДЕЙСТВИЙ (ГЛАВНЫЙ МЕТОД ИНТЕГРАЦИИ)
     # =========================================================================
+
+    @staticmethod
+    def _sound_card_snapshot(card: Optional[CardInstance]) -> Optional[dict[str, Any]]:
+        """Capture stable card identity before an action mutates hand/board zones."""
+        if card is None:
+            return None
+        card_id_raw = getattr(card, "card_id", None)
+        try:
+            card_id = int(card_id_raw) if card_id_raw is not None else None
+        except (TypeError, ValueError):
+            card_id = None
+        instance_id_raw = getattr(card, "instance_id", None)
+        return {
+            "card_id": card_id,
+            "instance_id": str(instance_id_raw) if instance_id_raw is not None else None,
+            "card_name": str(getattr(card, "name", "") or ""),
+            "mechanics": [str(value) for value in (getattr(card, "mechanics", None) or []) if value],
+        }
+
+    def _sound_card_snapshot_for_action(
+        self,
+        user_id: int,
+        action: BaseAction,
+    ) -> Optional[dict[str, Any]]:
+        if not self._arena:
+            return None
+        player, _opponent = self._arena._resolve_player_pair(user_id)
+        if player is None:
+            return None
+        if isinstance(action, PlayCardAction):
+            if 0 <= int(action.hand_index) < len(player.hand):
+                return self._sound_card_snapshot(player.hand[int(action.hand_index)])
+        if isinstance(action, AttackAction):
+            attacker = self._arena._find_unit_by_id(player.board, action.attacker_id)
+            return self._sound_card_snapshot(attacker)
+        return None
+
+    @staticmethod
+    def _is_play_sound_mechanic(mechanic: str) -> bool:
+        value = str(mechanic or "")
+        if not value or value.startswith("deathrattle"):
+            return False
+        active_exact = {
+            "aoe_freeze",
+            "desk_freeze",
+            "choose_shield_damage",
+            "cast_random_spell",
+            "consume_ally",
+            "delete_target",
+        }
+        if value in active_exact:
+            return True
+        active_prefixes = (
+            "battlecry_",
+            "spell_",
+            "aoe_damage_",
+            "damage_",
+            "heal_",
+            "damage_all",
+            "heal_all",
+            "buff_all_",
+            "summon_",
+            "mana_gain_",
+            "mana_drain_",
+        )
+        return value.startswith(active_prefixes)
+
+    @staticmethod
+    def _sound_event_id_part(value: Any) -> str:
+        text = str(value or "unknown")
+        return text.replace(":", "_")
+
+    def _make_sound_event(
+        self,
+        *,
+        turn_number: int,
+        action_kind: str,
+        card_snapshot: dict[str, Any],
+        event: str,
+        mechanic: Optional[str] = None,
+    ) -> dict[str, Any]:
+        instance_id = card_snapshot.get("instance_id")
+        event_id_parts = [
+            self._sound_event_id_part(self.match_id),
+            self._sound_event_id_part(turn_number),
+            self._sound_event_id_part(action_kind),
+            self._sound_event_id_part(instance_id or card_snapshot.get("card_id")),
+            self._sound_event_id_part(event),
+        ]
+        if mechanic:
+            event_id_parts.append(self._sound_event_id_part(mechanic))
+        return {
+            "event_id": ":".join(event_id_parts),
+            "card_id": card_snapshot.get("card_id"),
+            "instance_id": instance_id,
+            "card_name": str(card_snapshot.get("card_name") or ""),
+            "event": event,
+            "mechanic": mechanic,
+            "side": "player",
+            "source": "action",
+        }
+
+    @staticmethod
+    def _consume_card_feedback_events(state: GameState) -> list[dict[str, Any]]:
+        events = list(getattr(state, "pending_card_feedback_events", []) or [])
+        if hasattr(state, "pending_card_feedback_events"):
+            state.pending_card_feedback_events.clear()
+        return events
+
+    @staticmethod
+    def _find_card_feedback_event(
+        card_snapshot: dict[str, Any],
+        mechanic: Optional[str],
+        feedback_events: list[dict[str, Any]],
+    ) -> Optional[dict[str, Any]]:
+        instance_id = card_snapshot.get("instance_id")
+        card_id = card_snapshot.get("card_id")
+        for event in feedback_events:
+            if mechanic and str(event.get("mechanic") or "") != str(mechanic):
+                continue
+            if instance_id and str(event.get("instance_id") or "") == str(instance_id):
+                return event
+            if card_id is not None and event.get("card_id") == card_id:
+                return event
+        return None
+
+    def _sound_events_for_action(
+        self,
+        *,
+        action: BaseAction,
+        card_snapshot: Optional[dict[str, Any]],
+        turn_number: int,
+        card_feedback_events: Optional[list[dict[str, Any]]] = None,
+    ) -> list[dict[str, Any]]:
+        if not card_snapshot:
+            return []
+        feedback_events = card_feedback_events or []
+        if isinstance(action, PlayCardAction):
+            events = [
+                self._make_sound_event(
+                    turn_number=turn_number,
+                    action_kind="play_card",
+                    card_snapshot=card_snapshot,
+                    event="deploy",
+                )
+            ]
+            for mechanic in card_snapshot.get("mechanics", []):
+                if self._is_play_sound_mechanic(mechanic):
+                    event = self._make_sound_event(
+                        turn_number=turn_number,
+                        action_kind="play_card",
+                        card_snapshot=card_snapshot,
+                        event="mechanic",
+                        mechanic=mechanic,
+                    )
+                    feedback = self._find_card_feedback_event(card_snapshot, mechanic, feedback_events)
+                    if feedback and feedback.get("effect_code"):
+                        event["effect_code"] = feedback["effect_code"]
+                    events.append(event)
+            return events
+        if isinstance(action, AttackAction):
+            return [
+                self._make_sound_event(
+                    turn_number=turn_number,
+                    action_kind="attack",
+                    card_snapshot=card_snapshot,
+                    event="attack",
+                )
+            ]
+        return []
+
+    def _preflight_action_error(self, user_id: int, action: BaseAction) -> Optional[str]:
+        """Return read-only early errors that happen before core state mutations."""
+        if not self._arena:
+            return "arena_not_initialized"
+
+        state = self._arena.state
+        if state.status != GameStatus.ONGOING:
+            return "game_over"
+
+        player, opponent = self._arena._resolve_player_pair(user_id)
+        if player is None or opponent is None:
+            return "unknown_player"
+
+        if state.current_turn_owner_id != user_id:
+            return "not_your_turn"
+
+        known_action = isinstance(action, (PlayCardAction, AttackAction, EndTurnAction))
+        if not known_action:
+            return None
+
+        try:
+            action.validate(state)
+        except ValueError as exc:
+            return str(exc)
+        except Exception:  # noqa: BLE001 - malformed direct actions should stay non-fatal.
+            return "invalid_action"
+
+        if isinstance(action, AttackAction):
+            attacker = self._arena._find_unit_by_id(player.board, action.attacker_id)
+            if not attacker:
+                return "attacker_not_found"
+
+            if not attacker.is_ready:
+                return "unit_not_ready"
+
+            effective_attack = self._arena._apply_aura_bonuses(attacker, player)
+            if effective_attack <= 0:
+                return "no_attack"
+
+            if "bypass_taunt" not in attacker.mechanics and has_taunt(opponent.board):
+                if action.target_is_hero:
+                    return "must_attack_taunt"
+
+                taunt_units = get_taunt_targets(opponent.board)
+                if not any(str(unit.instance_id) == action.target_id for unit in taunt_units):
+                    return "must_attack_taunt"
+
+            if not action.target_is_hero and not self._arena._find_unit_by_id(opponent.board, action.target_id):
+                return "target_not_found"
+
+        return None
     
     def execute_action(self, user_id: int, action: BaseAction) -> Dict[str, Any]:
         """
@@ -439,6 +706,10 @@ class BattleEngine:
         """
         if not self._arena:
             return {"success": False, "error": "arena_not_initialized"}
+
+        preflight_error = self._preflight_action_error(user_id, action)
+        if preflight_error is not None:
+            return {"success": False, "error": preflight_error}
         
         import copy
 
@@ -446,6 +717,8 @@ class BattleEngine:
         previous_turn_number = self._arena.state.turn_number
         previous_turn_owner_id = self._arena.state.current_turn_owner_id
         previous_turn_start_time = self.turn_start_time
+        previous_turn_start_monotonic = self.turn_start_monotonic
+        sound_card_snapshot = self._sound_card_snapshot_for_action(user_id, action)
 
         # Выполняем действие
         try:
@@ -455,6 +728,7 @@ class BattleEngine:
             self.current_player_id = previous_turn_owner_id
             self.turn = previous_turn_number
             self.turn_start_time = previous_turn_start_time
+            self.turn_start_monotonic = previous_turn_start_monotonic
             self._logger.error("execute_action failed: %s", exc, exc_info=True)
             return {"success": False, "error": "action_failed"}
         
@@ -463,24 +737,35 @@ class BattleEngine:
             self.current_player_id = previous_turn_owner_id
             self.turn = previous_turn_number
             self.turn_start_time = previous_turn_start_time
+            self.turn_start_monotonic = previous_turn_start_monotonic
             return {"success": False, "error": error}
         
         # Обновляем метаданные
         state = self._arena.state
         self.current_player_id = state.current_turn_owner_id
         self.turn = state.turn_number
+        card_feedback_events = self._consume_card_feedback_events(state)
         
         # Если был EndTurn, сбрасываем таймер
         if isinstance(action, EndTurnAction):
             self._record_completed_turn(
                 previous_turn_number,
                 previous_turn_owner_id,
-                previous_turn_start_time,
+                previous_turn_start_monotonic,
             )
             self.turn_start_time = time.time()
+            self.turn_start_monotonic = time.monotonic()
         
         # Проверяем завершение игры
         result: Dict[str, Any] = {"success": True}
+        sound_events = self._sound_events_for_action(
+            action=action,
+            card_snapshot=sound_card_snapshot,
+            turn_number=previous_turn_number,
+            card_feedback_events=card_feedback_events,
+        )
+        if sound_events:
+            result["sound_events"] = sound_events
         
         if state.status != GameStatus.ONGOING:
             self.is_ended = True
@@ -496,14 +781,14 @@ class BattleEngine:
         
         # Рассылаем событие обновления (если есть эмиттер)
         if self._event_emitter:
-            # КРИТИЧНО: emit_to_match ожидает state_p1, а не state
-            full_state = self.get_full_state()
             event_data = {
                 "event_type": "state_changed",
                 "match_id": self.match_id,
                 "action": action.to_dict(),
-                "state_p1": full_state,  # Исправлено: было "state", теперь "state_p1"
+                "actor_user_id": user_id,
             }
+            if sound_events:
+                event_data["sound_events"] = sound_events
             self._event_emitter.emit("state_changed", self.match_id, event_data)
         
         return result
@@ -584,6 +869,97 @@ class BattleEngine:
         result = self.execute_action(user_id, action)
         result["action"] = "end_turn"
         return result
+
+    def _talkie_extra_pass_for_user(self, user_id: int) -> str:
+        if int(user_id) == int(self._p1_id):
+            mode = self._p1_extra_pass
+        elif int(user_id) == int(self._p2_id):
+            mode = self._p2_extra_pass
+        else:
+            mode = None
+        normalized = str(mode or "inactive").lower()
+        return normalized if normalized in TALKIE_TIER_LIMITS else "inactive"
+
+    def _talkie_limits_for_user(self, user_id: int) -> dict[str, float | int | None]:
+        return TALKIE_TIER_LIMITS[self._talkie_extra_pass_for_user(user_id)]
+
+    def set_talkie_enabled(self, user_id: int, enabled: bool) -> dict[str, Any]:
+        user_id_int = int(user_id)
+        self._talkie_enabled_by_user[user_id_int] = bool(enabled)
+        return {
+            "success": True,
+            "user_id": user_id_int,
+            "enabled": self.talkie_enabled_for(user_id_int),
+        }
+
+    def talkie_enabled_for(self, user_id: int) -> bool:
+        return self._talkie_enabled_by_user.get(int(user_id), True)
+
+    def should_deliver_talkie_to(self, user_id: int) -> bool:
+        return self.talkie_enabled_for(user_id)
+
+    def register_talkie(
+        self,
+        user_id: int,
+        talkie_id: Any,
+        now: Optional[float] = None,
+    ) -> dict[str, Any]:
+        user_id_int = int(user_id)
+        talkie_id_str = str(talkie_id)
+
+        catalog_entry = TALKIE_CATALOG.get(talkie_id_str)
+        if catalog_entry is None:
+            return {"success": False, "error": "invalid_talkie"}
+
+        if not self.talkie_enabled_for(user_id_int):
+            return {"success": False, "error": "talkie_disabled"}
+
+        if int(self.current_player_id or 0) != user_id_int:
+            return {"success": False, "error": "not_your_turn"}
+
+        current_time = float(time.monotonic() if now is None else now)
+        limits = self._talkie_limits_for_user(user_id_int)
+        max_per_turn = int(limits["max_per_turn"] or 0)
+        cooldown_seconds = limits["cooldown_seconds"]
+        turn_number = int(self.turn)
+        usage_key = (user_id_int, turn_number)
+        usage = self._talkie_usage_by_turn.setdefault(usage_key, [])
+        remaining = max(0, max_per_turn - len(usage))
+
+        if len(usage) >= max_per_turn:
+            return {
+                "success": False,
+                "error": "talkie_limit_reached",
+                "remaining": 0,
+            }
+
+        if cooldown_seconds is not None and usage:
+            elapsed = current_time - usage[-1]
+            retry_after = float(cooldown_seconds) - elapsed
+            if retry_after > 0:
+                return {
+                    "success": False,
+                    "error": "talkie_cooldown",
+                    "retry_after": round(retry_after, 3),
+                    "remaining": remaining,
+                }
+
+        usage.append(current_time)
+        self._talkie_event_seq += 1
+        remaining = max(0, max_per_turn - len(usage))
+        return {
+            "success": True,
+            "remaining": remaining,
+            "event": {
+                "event_id": f"{self.match_id}:{turn_number}:{user_id_int}:{self._talkie_event_seq}",
+                "match_id": self.match_id,
+                "sender_id": user_id_int,
+                "talkie_id": talkie_id_str,
+                "sound": catalog_entry["sound"],
+                "turn": turn_number,
+                "remaining": remaining,
+            },
+        }
     
     def _resolve_hand_index(self, hand: List[CardInstance], card_ref: Any) -> int:
         """
@@ -626,44 +1002,48 @@ class BattleEngine:
         p1 = state.p1
         p2 = state.p2
         
-        # Определяем, кто player, кто opponent относительно viewer
-        if viewer_id is not None:
-            if p1.user_id == viewer_id:
-                player_state, opponent_state = p1, p2
-                player_name, opponent_name = self._p1_name, self._p2_name
-                player_avatar, opponent_avatar = self._p1_avatar_url, self._p2_avatar_url
-                player_title, opponent_title = self._p1_title, self._p2_title
-                player_rarity, opponent_rarity = self._p1_rarity, self._p2_rarity
-                player_extra_pass, opponent_extra_pass = self._p1_extra_pass, self._p2_extra_pass
-                player_background, opponent_background = self._p1_background_url, self._p2_background_url
-            else:
-                player_state, opponent_state = p2, p1
-                player_name, opponent_name = self._p2_name, self._p1_name
-                player_avatar, opponent_avatar = self._p2_avatar_url, self._p1_avatar_url
-                player_title, opponent_title = self._p2_title, self._p1_title
-                player_rarity, opponent_rarity = self._p2_rarity, self._p1_rarity
-                player_extra_pass, opponent_extra_pass = self._p2_extra_pass, self._p1_extra_pass
-                player_background, opponent_background = self._p2_background_url, self._p1_background_url
+        viewer_is_p1 = viewer_id is not None and p1.user_id == viewer_id
+        viewer_is_p2 = viewer_id is not None and p2.user_id == viewer_id
+        known_viewer = viewer_is_p1 or viewer_is_p2
+
+        # Определяем, кто player, кто opponent относительно viewer.
+        # Без распознанного viewer_id сохраняем стабильную p1-perspective, но скрываем обе руки.
+        if viewer_is_p2:
+            player_state, opponent_state = p2, p1
+            player_name, opponent_name = self._p2_name, self._p1_name
+            player_avatar, opponent_avatar = self._p2_avatar_url, self._p1_avatar_url
+            player_title, opponent_title = self._p2_title, self._p1_title
+            player_rarity, opponent_rarity = self._p2_rarity, self._p1_rarity
+            player_extra_pass, opponent_extra_pass = self._p2_extra_pass, self._p1_extra_pass
+            player_glow_disabled, opponent_glow_disabled = self._p2_nickname_glow_disabled, self._p1_nickname_glow_disabled
+            player_hide_id, opponent_hide_id = self._p2_hide_player_id_public, self._p1_hide_player_id_public
+            player_background, opponent_background = self._p2_background_url, self._p1_background_url
         else:
-            # Без viewer_id отдаем p1 как player
             player_state, opponent_state = p1, p2
             player_name, opponent_name = self._p1_name, self._p2_name
             player_avatar, opponent_avatar = self._p1_avatar_url, self._p2_avatar_url
             player_title, opponent_title = self._p1_title, self._p2_title
             player_rarity, opponent_rarity = self._p1_rarity, self._p2_rarity
             player_extra_pass, opponent_extra_pass = self._p1_extra_pass, self._p2_extra_pass
+            player_glow_disabled, opponent_glow_disabled = self._p1_nickname_glow_disabled, self._p2_nickname_glow_disabled
+            player_hide_id, opponent_hide_id = self._p1_hide_player_id_public, self._p2_hide_player_id_public
             player_background, opponent_background = self._p1_background_url, self._p2_background_url
         
         waiting_for_players = self.is_waiting_for_players()
+        viewer_can_control = (
+            known_viewer
+            and getattr(player_state, "replacement_status", ReplacementStatus.ACTIVE) == ReplacementStatus.ACTIVE
+        )
         is_my_turn = (
-            viewer_id is not None
+            known_viewer
             and state.current_turn_owner_id == viewer_id
             and not waiting_for_players
+            and viewer_can_control
         )
         
         # Сериализуем legal_actions для viewer (если это его ход)
         legal_actions_json = []
-        if viewer_id is not None and is_my_turn:
+        if known_viewer and is_my_turn:
             legal_actions = self._arena.get_legal_actions(viewer_id)
             legal_actions_json = [self._serialize_action(a) for a in legal_actions]
 
@@ -703,11 +1083,15 @@ class BattleEngine:
             
             # Состояние viewer'а (player)
             "player": self._serialize_player_state(player_state, player_name, player_avatar, player_title, player_rarity,
-                                                    player_extra_pass, player_background, show_hand=True),
+                                                    player_extra_pass, player_background, show_hand=known_viewer,
+                                                    nickname_glow_disabled=player_glow_disabled,
+                                                    hide_player_id_public=player_hide_id),
             
             # Состояние оппонента (скрываем содержимое руки)
             "opponent": self._serialize_player_state(opponent_state, opponent_name, opponent_avatar, opponent_title, opponent_rarity,
-                                                      opponent_extra_pass, opponent_background, show_hand=False),
+                                                      opponent_extra_pass, opponent_background, show_hand=False,
+                                                      nickname_glow_disabled=opponent_glow_disabled,
+                                                      hide_player_id_public=opponent_hide_id),
             
             # КРИТИЧНО: Список доступных действий
             "legal_actions": legal_actions_json,
@@ -734,6 +1118,15 @@ class BattleEngine:
         def _next_damage(turn_count: int) -> int:
             return classic.sudden_death_damage_start + turn_count * classic.sudden_death_damage_step
 
+        def _turn_damage(ps: CorePlayerState, turn_count: int) -> int | None:
+            if int(ps.user_id) != int(getattr(state, "current_turn_owner_id", 0) or 0):
+                return None
+            applied_turn_count = max(1, turn_count)
+            return (
+                classic.sudden_death_damage_start
+                + (applied_turn_count - 1) * classic.sudden_death_damage_step
+            )
+
         player_turns = _turn_count(player_state)
         opponent_turns = _turn_count(opponent_state)
         return {
@@ -742,6 +1135,8 @@ class BattleEngine:
             "damage_step": classic.sudden_death_damage_step,
             "player_turn_count": player_turns,
             "opponent_turn_count": opponent_turns,
+            "player_turn_damage": _turn_damage(player_state, player_turns),
+            "opponent_turn_damage": _turn_damage(opponent_state, opponent_turns),
             "player_next_damage": _next_damage(player_turns),
             "opponent_next_damage": _next_damage(opponent_turns),
         }
@@ -755,7 +1150,9 @@ class BattleEngine:
         rarity: str = "",
         extra_pass: Optional[str] = None,
         background_url: Optional[str] = None,
-        show_hand: bool = True
+        show_hand: bool = True,
+        nickname_glow_disabled: bool = False,
+        hide_player_id_public: bool = False,
     ) -> Dict[str, Any]:
         """Сериализация состояния игрока."""
         hand_data = []
@@ -772,6 +1169,8 @@ class BattleEngine:
             "title": title,
             "rarity": rarity,
             "extra_pass": extra_pass,
+            "nickname_glow_disabled": bool(nickname_glow_disabled),
+            "hide_player_id_public": bool(hide_player_id_public),
             "background_url": background_url,
             "is_bot": ps.is_bot,
             "replacement_status": getattr(ps.replacement_status, "value", str(ps.replacement_status)),
@@ -809,7 +1208,7 @@ class BattleEngine:
             "is_frozen": card.is_frozen,
             "mechanics_desc": card.mechanics_desc,
             "owner_id": owner_id,
-            "image": f"/DesignAssets/Cards/{card.card_id}.png" if card.card_id else "/DesignAssets/Cards/9.png",
+            "image": card_asset_url(card.card_id) if card.card_id else card_asset_url(9),
         }
     
     def _serialize_action(self, action: BaseAction) -> Dict[str, Any]:
@@ -946,7 +1345,8 @@ class BattleEngine:
             return float(self.turn_duration)
         if self.turn_start_time is None:
             return float(self.turn_duration)
-        elapsed = time.time() - self.turn_start_time
+        start = self.turn_start_monotonic if self.turn_start_monotonic is not None else self.turn_start_time
+        elapsed = time.monotonic() - start if self.turn_start_monotonic is not None else time.time() - start
         remaining = max(0, self.turn_duration - elapsed)
         return remaining
 
@@ -960,7 +1360,7 @@ class BattleEngine:
     ) -> None:
         if player_id is None or started_at is None:
             return
-        current_time = time.time() if now is None else now
+        current_time = time.monotonic() if now is None else now
         elapsed = max(0.0, min(float(self.turn_duration), current_time - started_at))
         self.turn_time_history.append({
             "turn": int(turn_number or 0),
@@ -1141,7 +1541,10 @@ class BattleEngine:
         state = self._arena.state
         required: set[int] = set()
         for player in (state.p1, state.p2):
-            if not getattr(player, "is_bot", False):
+            if (
+                not getattr(player, "is_bot", False)
+                and getattr(player, "replacement_status", ReplacementStatus.ACTIVE) == ReplacementStatus.ACTIVE
+            ):
                 try:
                     required.add(int(player.user_id))
                 except (TypeError, ValueError):
@@ -1168,7 +1571,9 @@ class BattleEngine:
         elif required_ids.issubset(self.client_ready_users):
             if not self.client_ready:
                 self.turn_start_time = time.time()
+                self.turn_start_monotonic = time.monotonic()
                 self.match_start_time = self.match_start_time or self.turn_start_time
+                self.match_start_monotonic = self.match_start_monotonic or self.turn_start_monotonic
             self.client_ready = True
         else:
             self.client_ready = False
@@ -1249,7 +1654,9 @@ class BattleEngine:
         if self._arena:
             if self._arena.state.p1.user_id == user_id:
                 return self.p1_state
-            return self.p2_state
+            if self._arena.state.p2.user_id == user_id:
+                return self.p2_state
+            return None
         return _EmptyLegacyState(user_id, "Игрок")
     
     def get_opponent_state(self, user_id: int) -> Any:
@@ -1289,21 +1696,71 @@ class BattleEngine:
     # ── Analytics helpers ──
 
     @staticmethod
+    def _card_params_payload(card: CardInstance) -> dict[str, Any]:
+        return {
+            "schema": TRAIN_V3_CARD_PARAMS_SCHEMA,
+            "type": getattr(card.card_type, "value", str(card.card_type)),
+            "mana_cost": int(getattr(card, "mana_cost", 0) or 0),
+            "attack": int(getattr(card, "attack", 0) or 0),
+            "hp": int(getattr(card, "hp", 0) or 0),
+            "max_hp": int(getattr(card, "max_hp", 0) or 0),
+            "mechanics": list(getattr(card, "mechanics", None) or []),
+            "is_ready": bool(getattr(card, "is_ready", False)),
+            "is_frozen": bool(getattr(card, "is_frozen", False)),
+            "level": int(getattr(card, "level", 1) or 1),
+        }
+
+    @classmethod
+    def _card_params_slot_payload(
+        cls,
+        card: CardInstance,
+        *,
+        slot: int,
+        zone: str,
+        hand_index: Optional[int] = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "slot": int(slot),
+            "zone": zone,
+            "card": cls._card_params_payload(card),
+        }
+        if hand_index is not None:
+            payload["hand_index"] = int(hand_index)
+        return payload
+
+    @classmethod
+    def _deck_param_snapshot(cls, cards: list[CardInstance]) -> dict[str, Any]:
+        return {
+            "schema": TRAIN_V3_DECK_PARAMS_SCHEMA,
+            "card_params_schema": TRAIN_V3_CARD_PARAMS_SCHEMA,
+            "cards": [
+                cls._card_params_slot_payload(card, slot=idx, zone="initial_deck")
+                for idx, card in enumerate(cards)
+            ],
+        }
+
+    @staticmethod
     def _snapshot_card(card: CardInstance) -> dict:
+        card_params = BattleEngine._card_params_payload(card)
         return {
             "instance_id": str(card.instance_id),
             "id": card.card_id,
+            "card_id": card.card_id,
             "name": card.name,
             "type": getattr(card.card_type, "value", str(card.card_type)),
+            "card_type": getattr(card.card_type, "value", str(card.card_type)),
             "rarity": card.rarity,
             "level": card.level,
             "mana": getattr(card, "mana_cost", 0),
+            "mana_cost": card_params["mana_cost"],
             "atk": card.attack,
+            "attack": card_params["attack"],
             "hp": card.hp,
             "max_hp": card.max_hp,
             "is_ready": card.is_ready,
             "is_frozen": card.is_frozen,
             "mechanics": list(card.mechanics or []),
+            "card_params": card_params,
         }
 
     def build_analytics_snapshot(self) -> Optional[dict]:
@@ -1318,6 +1775,8 @@ class BattleEngine:
                 "max_mana": p.max_mana,
                 "hand": [self._snapshot_card(c) for c in p.hand],
                 "board": [self._snapshot_card(c) for c in p.board],
+                "deck": [self._snapshot_card(c) for c in p.deck],
+                "graveyard": [self._snapshot_card(c) for c in p.graveyard],
                 "hero": self._snapshot_card(p.hero),
             }
         return {
@@ -1325,6 +1784,65 @@ class BattleEngine:
             "current_player": st.current_turn_owner_id,
             "p1": _player(st.p1),
             "p2": _player(st.p2),
+        }
+
+    def _build_analytics_action_context(
+        self,
+        user_id: int,
+        acting_player: int,
+        action_json: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not self._arena:
+            return {}
+        st = self._arena.state
+        player = st.p1 if acting_player == 1 else st.p2
+        acting_hand = [
+            self._card_params_slot_payload(card, slot=idx, zone="hand", hand_index=idx)
+            for idx, card in enumerate(player.hand)
+        ]
+
+        playable_indexes: set[int] = set()
+        legal_action_count = 0
+        try:
+            legal_actions = self._arena.get_legal_actions(user_id)
+            legal_action_count = len(legal_actions)
+            for action in legal_actions:
+                if isinstance(action, PlayCardAction):
+                    playable_indexes.add(int(action.hand_index))
+        except Exception:
+            legal_actions = []
+
+        available_hand = [
+            item for item in acting_hand
+            if int(item.get("hand_index", -1)) in playable_indexes
+        ]
+
+        selected_card = None
+        if str(action_json.get("type") or "") == "play_card":
+            card_ref = action_json.get("card_ref", action_json.get("hand_index", 0))
+            hand_index = self._resolve_hand_index(player.hand, card_ref)
+            if 0 <= hand_index < len(player.hand):
+                selected_card = self._card_params_slot_payload(
+                    player.hand[hand_index],
+                    slot=hand_index,
+                    zone="hand",
+                    hand_index=hand_index,
+                )
+
+        return {
+            "schema": TRAIN_V3_ACTION_CONTEXT_SCHEMA,
+            "card_params_schema": TRAIN_V3_CARD_PARAMS_SCHEMA,
+            "deck_params_schema": TRAIN_V3_DECK_PARAMS_SCHEMA,
+            "acting_player": acting_player,
+            "game_mode": self.game_mode,
+            "ruleset": self.ruleset,
+            "turn_number": st.turn_number,
+            "turn_start_mana": player.mana,
+            "legal_action_count": legal_action_count,
+            "acting_hand": acting_hand,
+            "available_hand_cards": available_hand,
+            "selected_card": selected_card,
+            "deck_snapshot_ref": "battle_summary.metadata.deck_param_snapshots",
         }
 
     def record_analytics_action(
@@ -1338,6 +1856,7 @@ class BattleEngine:
         st = self._arena.state
         acting_player = 1 if user_id == st.p1.user_id else 2
         snapshot = self.build_analytics_snapshot()
+        context = self._build_analytics_action_context(user_id, acting_player, action_json)
         self._analytics_actions.append({
             "turn_number": st.turn_number,
             "acting_player": acting_player,
@@ -1345,6 +1864,7 @@ class BattleEngine:
             "is_bot": self.is_bot(user_id),
             "state_json": snapshot or {},
             "action_json": action_json,
+            "context_json": context,
             "quality_score": quality_score,
         })
 

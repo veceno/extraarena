@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import random
 import time
@@ -10,9 +11,32 @@ from typing import Any, Dict, List, Optional
 
 from ai.bot_factory import BotGenerator
 from infrastructure.database import Database
-from infrastructure.match_config import MM_BOT_TIMEOUT, QUEUE_POLL_INTERVAL, SEARCH_WINDOWS
+from infrastructure.match_config import (
+    MM_BOT_TIMEOUT,
+    MM_SOFT_START_BOT_DELAY_RANGE,
+    QUEUE_POLL_INTERVAL,
+    SEARCH_WINDOWS,
+)
 from infrastructure.config import DECK_SIZE, MM_TROPHY_LIMIT_CLASSIC
 import infrastructure.match_modes as match_modes
+
+
+@dataclass
+class StreakAdjustment:
+    """One-shot streak pressure for matchmaking and bot difficulty."""
+
+    active: bool = False
+    direction: str | None = None
+    n: int = 0
+
+
+@dataclass(frozen=True)
+class TrophySearchWindow:
+    """Directional trophy window relative to the seeker."""
+
+    min_delta: int
+    max_delta: int
+    magnitude: int
 
 
 @dataclass
@@ -28,6 +52,11 @@ class QueueEntry:
     matched: bool = False
     game_mode: str = "classic"
     canonical_mode: str = "classic"
+    search_generation: int = 0
+    streak_adjustment: StreakAdjustment = field(default_factory=StreakAdjustment)
+    active_window: TrophySearchWindow = field(
+        default_factory=lambda: TrophySearchWindow(-SEARCH_WINDOWS[0], SEARCH_WINDOWS[0], SEARCH_WINDOWS[0])
+    )
 
 
 class Matchmaker:
@@ -40,10 +69,21 @@ class Matchmaker:
     - Хранилище - оперативное: рестарт процесса очистит очередь и кеш.
     """
 
-    def __init__(self, db: Database, bot_factory: Any, battle_engine: Any | None = None) -> None:
+    def __init__(
+        self,
+        db: Database,
+        bot_factory: Any,
+        battle_engine: Any | None = None,
+        soft_start_bot_delay_range: tuple[float, float] | None = None,
+    ) -> None:
         self._db = db
         self._bot_factory = bot_factory
         self._battle_engine = battle_engine
+        self._soft_start_bot_delay_range = (
+            soft_start_bot_delay_range
+            if soft_start_bot_delay_range is not None
+            else MM_SOFT_START_BOT_DELAY_RANGE
+        )
 
         self._queue: List[QueueEntry] = []
         self._matches: Dict[str, Dict[str, Any]] = {}
@@ -51,7 +91,8 @@ class Matchmaker:
         self._match_updated_at: Dict[str, float] = {}
         self._lock = asyncio.Lock()
         self._tasks: Dict[str, asyncio.Task] = {}
-        self._soft_start_tasks: Dict[tuple[int, str], asyncio.Task] = {}
+        self._soft_start_tasks: Dict[tuple[Any, ...], asyncio.Task] = {}
+        self._user_search_generations: Dict[int, int] = {}
         self._logger = logging.getLogger(__name__)
         self._logger.warning(
             "Matchmaker uses process-local in-memory queue/state; run a single web process "
@@ -103,9 +144,160 @@ class Matchmaker:
     def _poll_interval_for_window(window_seconds: float) -> float:
         return max(0.25, min(float(QUEUE_POLL_INTERVAL), float(window_seconds) / 4.0))
 
+    @staticmethod
+    def _streak_adjustment_for(
+        trophies: int,
+        kind: str | None,
+        length: int,
+    ) -> StreakAdjustment:
+        trophies_value = max(0, int(trophies or 0))
+        streak_length = max(0, int(length or 0))
+        if kind not in {"win", "loss", "lose"} or streak_length <= 0:
+            return StreakAdjustment()
+
+        normalized_kind = "loss" if kind == "lose" else kind
+        if trophies_value < MM_TROPHY_LIMIT_CLASSIC:
+            loss_threshold = 2
+            win_threshold = 5
+        elif trophies_value >= 5000:
+            loss_threshold = None
+            win_threshold = 3
+        else:
+            loss_threshold = 5
+            win_threshold = 3
+
+        threshold = win_threshold if normalized_kind == "win" else loss_threshold
+        if threshold is None or streak_length < threshold or streak_length % threshold != 0:
+            return StreakAdjustment()
+
+        n = streak_length // threshold
+        return StreakAdjustment(
+            active=True,
+            direction="up" if normalized_kind == "win" else "down",
+            n=n,
+        )
+
+    @staticmethod
+    def _search_window_for_adjustment(
+        window: int,
+        adjustment: StreakAdjustment | None = None,
+    ) -> TrophySearchWindow:
+        magnitude = int(window)
+        if adjustment and adjustment.active and adjustment.direction == "down":
+            return TrophySearchWindow(-magnitude, 0, magnitude)
+        if adjustment and adjustment.active and adjustment.direction == "up":
+            return TrophySearchWindow(0, magnitude, magnitude)
+        return TrophySearchWindow(-magnitude, magnitude, magnitude)
+
+    @staticmethod
+    def _windows_for_adjustment(adjustment: StreakAdjustment | None = None) -> tuple[int, ...]:
+        if not adjustment or not adjustment.active or adjustment.n <= 1:
+            return SEARCH_WINDOWS
+        start_idx = min(len(SEARCH_WINDOWS) - 1, max(0, int(adjustment.n) - 1))
+        return SEARCH_WINDOWS[start_idx:]
+
+    async def _load_streak_adjustment(self, user_id: int, trophies: int) -> StreakAdjustment:
+        streak_reader = getattr(self._db, "get_current_result_streak", None)
+        if not callable(streak_reader):
+            return StreakAdjustment()
+        try:
+            maybe_streak = streak_reader(user_id)
+            streak = await maybe_streak if asyncio.iscoroutine(maybe_streak) else maybe_streak
+        except Exception as exc:  # noqa: BLE001
+            self._logger.warning("Failed to load result streak for user_id=%s: %s", user_id, exc, exc_info=True)
+            return StreakAdjustment()
+        if not isinstance(streak, dict):
+            return StreakAdjustment()
+        return self._streak_adjustment_for(
+            trophies,
+            streak.get("kind") or streak.get("current_streak_result"),
+            int(streak.get("length") or streak.get("current_streak_count") or 0),
+        )
+
     def _choose_starting_player_id(self, player_ids: list[int]) -> int:
         """Choose the first turn owner independently from p1/p2 ordering."""
         return int(random.choice(player_ids))
+
+    def _soft_start_delay_seconds(self) -> float:
+        try:
+            lo_raw, hi_raw = self._soft_start_bot_delay_range
+            lo = max(0.0, float(lo_raw))
+            hi = max(0.0, float(hi_raw))
+        except (TypeError, ValueError):
+            return 0.0
+        if hi < lo:
+            lo, hi = hi, lo
+        if hi <= 0:
+            return 0.0
+        if hi == lo:
+            return lo
+        return random.uniform(lo, hi)
+
+    def _advance_user_generation_locked(self, user_id: int) -> int:
+        user_id_int = int(user_id)
+        generation = int(self._user_search_generations.get(user_id_int, 0) or 0) + 1
+        self._user_search_generations[user_id_int] = generation
+        return generation
+
+    def _current_user_generation_locked(self, user_id: int) -> int:
+        return int(self._user_search_generations.get(int(user_id), 0) or 0)
+
+    def _is_current_seeker_locked(self, seeker: QueueEntry) -> bool:
+        if seeker.matched:
+            return False
+        if self._current_user_generation_locked(seeker.user_id) != int(seeker.search_generation or 0):
+            return False
+        return any(entry is seeker or entry.match_id == seeker.match_id for entry in self._queue)
+
+    async def _create_soft_start_bot_match(
+        self,
+        user_id: int,
+        trophies: int,
+        user_max_level: int,
+        selected_deck_id: int | None = None,
+        game_mode: str = "classic",
+        search_generation: int = 0,
+        streak_adjustment: StreakAdjustment | None = None,
+    ) -> Dict[str, Any]:
+        delay = self._soft_start_delay_seconds()
+        if delay > 0:
+            self._logger.debug(
+                "PvE soft-start delay %.2fs for user_id=%s mode=%s",
+                delay,
+                user_id,
+                game_mode,
+            )
+            await asyncio.sleep(delay)
+        async with self._lock:
+            if self._current_user_generation_locked(user_id) != int(search_generation or 0):
+                return {
+                    "status": "canceled",
+                    "user_id": user_id,
+                    "selected_deck_id": selected_deck_id,
+                    "game_mode": game_mode,
+                    "error": "search_replaced",
+                }
+        payload = await self._create_bot_match(
+            user_id,
+            trophies,
+            user_max_level,
+            selected_deck_id,
+            game_mode=game_mode,
+            streak_adjustment=streak_adjustment,
+        )
+        async with self._lock:
+            if self._current_user_generation_locked(user_id) != int(search_generation or 0):
+                match_id = str(payload.get("match_id") or "")
+                if match_id:
+                    self._delete_match_aliases(match_id)
+                return {
+                    "status": "canceled",
+                    "user_id": user_id,
+                    "selected_deck_id": selected_deck_id,
+                    "game_mode": game_mode,
+                    "error": "search_replaced",
+                }
+        return payload
 
     async def find_match(
         self,
@@ -125,13 +317,23 @@ class Matchmaker:
         if not mode_config.available:
             return {"status": "error", **match_modes.mode_unavailable_payload(canonical)}
 
+        streak_adjustment = await self._load_streak_adjustment(user_id, trophies)
+
         # Soft Start: only if bots_allowed and trophies < threshold
         if mode_config.classic.bots_allowed and trophies < MM_TROPHY_LIMIT_CLASSIC:
             self._logger.info(
                 "PvE soft-start: user_id=%s trophies=%s max_level=%s deck=%s",
                 user_id, trophies, user_max_level, selected_deck_id,
             )
-            soft_key = (int(user_id), canonical)
+            soft_key = (
+                int(user_id),
+                canonical,
+                selected_deck_id,
+                int(trophies or 0),
+                int(user_max_level or 0),
+                streak_adjustment.direction,
+                int(streak_adjustment.n or 0),
+            )
             try:
                 async with self._lock:
                     existing = self._find_active_match_for_user_locked(user_id, canonical)
@@ -140,6 +342,7 @@ class Matchmaker:
                     task = self._soft_start_tasks.get(soft_key)
                     if task is None:
                         self._drop_existing(user_id)
+                        search_generation = self._current_user_generation_locked(user_id)
                         self._logger.debug(
                             "Calling bot_factory.create_match user_id=%s trophies=%s max_level=%s",
                             user_id,
@@ -147,12 +350,14 @@ class Matchmaker:
                             user_max_level,
                         )
                         task = asyncio.create_task(
-                            self._create_bot_match(
+                            self._create_soft_start_bot_match(
                                 user_id,
                                 trophies,
                                 user_max_level,
                                 selected_deck_id,
                                 game_mode=canonical,
+                                search_generation=search_generation,
+                                streak_adjustment=streak_adjustment,
                             )
                         )
                         self._soft_start_tasks[soft_key] = task
@@ -163,6 +368,14 @@ class Matchmaker:
                         self._soft_start_tasks.pop(soft_key, None)
                 self._logger.debug("Bot factory returned payload: %s", match_payload)
                 return match_payload
+            except asyncio.CancelledError:
+                return {
+                    "status": "canceled",
+                    "user_id": user_id,
+                    "selected_deck_id": selected_deck_id,
+                    "game_mode": canonical,
+                    "error": "search_replaced",
+                }
             except Exception as exc:  # noqa: BLE001
                 async with self._lock:
                     task = self._soft_start_tasks.get(soft_key)
@@ -182,13 +395,20 @@ class Matchmaker:
             selected_deck_id=selected_deck_id,
             game_mode=game_mode,
             canonical_mode=canonical,
+            streak_adjustment=streak_adjustment,
         )
 
         async with self._lock:
             # Если игрок уже в очереди, очищаем старую запись, чтобы не было дублей
             self._drop_existing(user_id)
+            seeker.search_generation = self._current_user_generation_locked(user_id)
             # Мгновенно пытаемся найти соперника в уже существующей очереди
-            opponent = self._find_candidate(seeker, SEARCH_WINDOWS[0])
+            first_window = self._search_window_for_adjustment(
+                self._windows_for_adjustment(seeker.streak_adjustment)[0],
+                seeker.streak_adjustment,
+            )
+            seeker.active_window = first_window
+            opponent = self._find_candidate(seeker, first_window)
             if opponent:
                 return await self._pair_players(seeker, opponent, game_mode=canonical)
 
@@ -233,6 +453,8 @@ class Matchmaker:
         async with self._lock:
             match = self._matches.get(match_id)
             if match:
+                if match.get("status") == "found":
+                    self._touch_matches(self._aliases_for(str(match_id)))
                 return dict(match)
 
         # Если матча нет в кеше - считаем, что он не найден/просрочен.
@@ -305,8 +527,19 @@ class Matchmaker:
                 "game_mode": game_mode or existing.get("game_mode"),
                 "terminal_at": time.monotonic(),
             }
-            if existing.get("user_id") is not None:
-                payload["user_id"] = existing.get("user_id")
+            for key in (
+                "user_id",
+                "opponent_id",
+                "player_ids",
+                "player_decks",
+                "starting_player_id",
+                "is_bot",
+                "bot_info",
+                "selected_deck_id",
+                "mode_config",
+            ):
+                if existing.get(key) is not None:
+                    payload[key] = existing.get(key)
             for alias in aliases:
                 alias_payload = dict(payload)
                 if alias != payload["match_id"]:
@@ -364,9 +597,15 @@ class Matchmaker:
         """
         effective_max_wait = max_wait_seconds or MM_BOT_TIMEOUT
         search_deadline = time.monotonic() + effective_max_wait
-        per_window_timeout = effective_max_wait / len(SEARCH_WINDOWS)
+        search_windows = self._windows_for_adjustment(seeker.streak_adjustment)
+        per_window_timeout = effective_max_wait / len(search_windows)
 
-        for window in SEARCH_WINDOWS:
+        for raw_window in search_windows:
+            window = self._search_window_for_adjustment(raw_window, seeker.streak_adjustment)
+            async with self._lock:
+                if not self._is_current_seeker_locked(seeker):
+                    return
+                seeker.active_window = window
             window_deadline = min(time.monotonic() + per_window_timeout, search_deadline)
             while time.monotonic() < window_deadline:
                 async with self._lock:
@@ -395,7 +634,7 @@ class Matchmaker:
     async def _handle_cancel_timeout(self, seeker: QueueEntry, game_mode: str = "classic") -> None:
         """Отмена поиска по таймауту в режимах без ботов."""
         async with self._lock:
-            if seeker.matched:
+            if not self._is_current_seeker_locked(seeker):
                 return
             self._queue = [entry for entry in self._queue if entry.match_id != seeker.match_id]
             self._tasks.pop(seeker.match_id, None)
@@ -412,7 +651,7 @@ class Matchmaker:
     async def _handle_bot_timeout(self, seeker: QueueEntry, game_mode: str = "classic") -> None:
         """Выдача бота по истечении дедлайна."""
         async with self._lock:
-            if seeker.matched:
+            if not self._is_current_seeker_locked(seeker):
                 return
             # Убираем из очереди, чтобы не мешал будущим подборам
             self._queue = [entry for entry in self._queue if entry.match_id != seeker.match_id]
@@ -429,6 +668,7 @@ class Matchmaker:
                 seeker.max_level,
                 selected_deck_id=seeker.selected_deck_id,
                 game_mode=game_mode,
+                streak_adjustment=seeker.streak_adjustment,
             )
         except Exception as exc:
             self._logger.error(
@@ -451,20 +691,38 @@ class Matchmaker:
                 self._register_match_aliases({seeker.match_id})
             return
         async with self._lock:
+            if self._current_user_generation_locked(seeker.user_id) != int(seeker.search_generation or 0):
+                stale_match_id = str(bot_match.get("match_id") or "")
+                if stale_match_id:
+                    self._delete_match_aliases(stale_match_id)
+                return
             self._matches[seeker.match_id] = bot_match
             aliases = {seeker.match_id, str(bot_match.get("match_id", seeker.match_id))}
             self._register_match_aliases(aliases)
 
-    def _find_candidate(self, seeker: QueueEntry, window: int) -> Optional[QueueEntry]:
+    @staticmethod
+    def _window_allows_pair(seeker: QueueEntry, opponent: QueueEntry, window: TrophySearchWindow) -> bool:
+        delta = int(opponent.trophies) - int(seeker.trophies)
+        return int(window.min_delta) <= delta <= int(window.max_delta)
+
+    def _find_candidate(self, seeker: QueueEntry, window: int | TrophySearchWindow) -> Optional[QueueEntry]:
         """Поиск соперника в очереди по допуску по трофеям."""
+        seeker_window = (
+            self._search_window_for_adjustment(window, seeker.streak_adjustment)
+            if isinstance(window, int)
+            else window
+        )
         candidates: list[QueueEntry] = []
         for entry in self._queue:
             if entry.user_id == seeker.user_id or entry.matched:
                 continue
             if entry.canonical_mode != seeker.canonical_mode:
                 continue
-            if abs(entry.trophies - seeker.trophies) <= window:
-                candidates.append(entry)
+            if not self._window_allows_pair(seeker, entry, seeker_window):
+                continue
+            if not self._window_allows_pair(entry, seeker, entry.active_window):
+                continue
+            candidates.append(entry)
         if not candidates:
             return None
         return min(candidates, key=lambda entry: (abs(entry.trophies - seeker.trophies), entry.enqueued_at))
@@ -555,6 +813,9 @@ class Matchmaker:
         user_max_level: int,
         selected_deck_id: int | None = None,
         game_mode: str = "classic",
+        difficulty_override: str | None = None,
+        difficulty: str | None = None,
+        streak_adjustment: StreakAdjustment | None = None,
     ) -> Dict[str, Any]:
         """
         Генерация боя против бота.
@@ -570,6 +831,57 @@ class Matchmaker:
         if not mode_config.available:
             return {"status": "error", **match_modes.mode_unavailable_payload(game_mode)}
         game_mode = mode_config.mode_id
+        requested_difficulty = difficulty_override if difficulty_override is not None else difficulty
+        base_difficulty = BotGenerator._calc_difficulty(trophies)
+
+        def _bot_match_create_failed(message: str = "Не удалось подготовить бой с ботом. Попробуйте начать поиск заново.") -> Dict[str, Any]:
+            return {
+                "status": "canceled",
+                "match_id": str(uuid.uuid4()),
+                "user_id": user_id,
+                "is_bot": True,
+                "game_mode": game_mode,
+                "mode_config": match_modes.serialize_mode_config(mode_config),
+                "selected_deck_id": selected_deck_id,
+                "error": "bot_match_create_failed",
+                "message": message,
+                "terminal_at": time.monotonic(),
+            }
+
+        try:
+            normalized_requested_difficulty = (
+                BotGenerator._normalize_difficulty(requested_difficulty)
+                if requested_difficulty is not None
+                else None
+            )
+        except KeyError:
+            return _bot_match_create_failed()
+
+        streak_difficulty: str | None = None
+        if normalized_requested_difficulty is None and streak_adjustment and streak_adjustment.active:
+            shifted = BotGenerator._shift_difficulty_by_streak(
+                base_difficulty,
+                streak_adjustment.direction,
+                streak_adjustment.n,
+            )
+            if shifted != base_difficulty:
+                streak_difficulty = shifted
+        effective_difficulty_override = normalized_requested_difficulty or streak_difficulty
+
+        def _difficulty_for_bot() -> str:
+            if normalized_requested_difficulty is not None:
+                return normalized_requested_difficulty
+            if streak_difficulty is not None:
+                return BotGenerator._normalize_difficulty(streak_difficulty)
+            return base_difficulty
+
+        def _normalize_bot_info(bot_info: dict[str, Any]) -> dict[str, Any]:
+            return BotGenerator.normalize_bot_info(
+                bot_info,
+                player_trophies=trophies,
+                user_max_level=user_max_level,
+                difficulty=requested_difficulty or _difficulty_for_bot(),
+            )
 
         # Если колода не выбрана, берем случайную из доступных пресетов игрока
         if not selected_deck_id:
@@ -589,16 +901,40 @@ class Matchmaker:
         factory_callable = getattr(self._bot_factory, "create_match", None)
         if callable(factory_callable):
             try:
-                maybe_result = factory_callable(user_id=user_id, trophies=trophies)
+                factory_kwargs: dict[str, Any] = {
+                    "user_id": user_id,
+                    "trophies": trophies,
+                    "user_max_level": user_max_level,
+                    "difficulty": effective_difficulty_override,
+                    "difficulty_override": effective_difficulty_override,
+                }
+                try:
+                    signature = inspect.signature(factory_callable)
+                    accepts_kwargs = any(
+                        param.kind == inspect.Parameter.VAR_KEYWORD
+                        for param in signature.parameters.values()
+                    )
+                    if not accepts_kwargs:
+                        factory_kwargs = {
+                            key: value
+                            for key, value in factory_kwargs.items()
+                            if key in signature.parameters
+                        }
+                except (TypeError, ValueError):
+                    factory_kwargs = {"user_id": user_id, "trophies": trophies}
+
+                maybe_result = factory_callable(**factory_kwargs)
                 result = await maybe_result if asyncio.iscoroutine(maybe_result) else maybe_result
                 if not isinstance(result, dict) or not result:
                     # Если фабрика вернула пустоту, логируем и переходим на fallback
                     raise ValueError("bot_factory.create_match вернула пустой результат")
-                # Гарантируем минимальный набор ключей
+                opponent_id = result.get("opponent_id")
+                bot_info = result.get("bot_info")
+                bot_deck_ids = (bot_info or {}).get("deck_ids") if isinstance(bot_info, dict) else None
+                if opponent_id is None or not isinstance(bot_info, dict) or len(bot_deck_ids or []) != DECK_SIZE:
+                    raise ValueError("bot_factory.create_match вернула неполный bot payload")
+                bot_info = _normalize_bot_info(bot_info)
                 match_id = str(result.get("match_id") or uuid.uuid4())
-                opponent_id = result.get("opponent_id", result.get("bot_id"))
-                if opponent_id is None:
-                    opponent_id = -1
                 player_ids = [user_id, opponent_id]
                 starting_player_id = self._choose_starting_player_id(player_ids)
                 payload = {
@@ -615,17 +951,23 @@ class Matchmaker:
                     "player_decks": {
                         str(user_id): selected_deck_id,
                     },
-                    "bot_info": result.get("bot_info", {}),
+                    "bot_info": bot_info,
                 }
                 # Сохраняем для поллинга
                 async with self._lock:
                     self._matches[match_id] = payload
                     self._register_match_aliases({match_id})
                 return payload
+            except ValueError as exc:
+                self._logger.warning("bot_factory.create_match returned unusable payload: %s", exc)
             except Exception as exc:  # noqa: BLE001 - нам нужно логировать любые сбои фабрики
                 self._logger.error("bot_factory.create_match упал: %s", exc, exc_info=True)
 
         # Fallback: строим бота сами через BotGenerator
+        if not isinstance(self._bot_factory, BotGenerator):
+            self._logger.error("Bot match cannot be created: no BotGenerator fallback is configured")
+            return _bot_match_create_failed()
+
         opponent_id = -1
         bot_name = None
         bot_avatar_url = None
@@ -642,32 +984,41 @@ class Matchmaker:
         bot_card_level_policy = None
         bot_deck_policy = None
         try:
-            if isinstance(self._bot_factory, BotGenerator):
-                bot_profile = await self._bot_factory.get_or_create_bot(
-                    player_id=user_id,
-                    player_trophies=trophies,
-                )
-                opponent_id = bot_profile.get("user_id", -1)
-                bot_name = bot_profile.get("name")
-                bot_avatar_url = bot_profile.get("avatar_url")
-                bot_difficulty = bot_profile.get("difficulty", "lite")
-                bot_deck_ids = bot_profile.get("deck_ids", [])
-                bot_cosmetics = bot_profile.get("cosmetics", {})
-                bot_extra_pass = bot_profile.get("extra_pass")
-                bot_trophies = bot_profile.get("trophies", 0)
-                bot_difficulty_label = bot_profile.get("difficulty_label", bot_difficulty)
-                bot_strength_tier = bot_profile.get("strength_tier", bot_difficulty)
-                bot_brain_profile = bot_profile.get("brain_profile")
-                bot_selection = bot_profile.get("selection")
-                bot_temperature = bot_profile.get("temperature")
-                bot_card_level_policy = bot_profile.get("card_level_policy")
-                bot_deck_policy = bot_profile.get("deck_policy")
+            bot_profile = await self._bot_factory.get_or_create_bot(
+                player_id=user_id,
+                player_trophies=trophies,
+                difficulty_override=effective_difficulty_override,
+            )
+            opponent_id = bot_profile.get("user_id", -1)
+            bot_name = bot_profile.get("name")
+            bot_avatar_url = bot_profile.get("avatar_url")
+            bot_difficulty = bot_profile.get("difficulty", "lite")
+            bot_deck_ids = bot_profile.get("deck_ids", [])
+            bot_cosmetics = bot_profile.get("cosmetics", {})
+            bot_extra_pass = bot_profile.get("extra_pass")
+            bot_trophies = bot_profile.get("trophies", 0)
+            bot_difficulty_label = bot_profile.get("difficulty_label", bot_difficulty)
+            bot_strength_tier = bot_profile.get("strength_tier", bot_difficulty)
+            bot_brain_profile = bot_profile.get("brain_profile")
+            bot_selection = bot_profile.get("selection")
+            bot_temperature = bot_profile.get("temperature")
+            bot_card_level_policy = bot_profile.get("card_level_policy")
+            bot_deck_policy = bot_profile.get("deck_policy")
         except Exception as exc:
             self._logger.error("BotGenerator fallback не удался: %s", exc, exc_info=True)
+            return _bot_match_create_failed()
+
+        if len(bot_deck_ids or []) != DECK_SIZE:
+            self._logger.error(
+                "BotGenerator returned invalid bot deck size for user=%s bot=%s size=%s",
+                user_id,
+                opponent_id,
+                len(bot_deck_ids or []),
+            )
+            return _bot_match_create_failed()
 
         # Per-card levels from difficulty table (match-scoped, на основе player_max_level)
-        from ai.bot_factory import BotGenerator as _BG
-        card_levels = _BG._build_bot_card_levels(
+        card_levels = BotGenerator._build_bot_card_levels(
             bot_difficulty, user_max_level, len(bot_deck_ids)
         )
 
@@ -756,12 +1107,12 @@ class Matchmaker:
         now: float | None = None,
         ttl_seconds: float = 600.0,
     ) -> int:
-        """Drop terminal matchmaking records and their aliases after TTL."""
+        """Drop terminal or stale found matchmaking records and their aliases after TTL."""
         now_value = time.monotonic() if now is None else float(now)
         removed_groups = 0
         async with self._lock:
             for match_id, payload in list(self._matches.items()):
-                if payload.get("status") not in {"canceled", "error", "finished"}:
+                if payload.get("status") not in {"canceled", "error", "finished", "found"}:
                     continue
                 updated_at = self._match_updated_at.get(match_id, payload.get("terminal_at", now_value))
                 if now_value - float(updated_at) < ttl_seconds:
@@ -774,6 +1125,14 @@ class Matchmaker:
 
     def _drop_existing(self, user_id: int) -> None:
         """Удаляет старые записи игрока из очереди/кеша статусов и отменяет фоновые задачи."""
+        self._advance_user_generation_locked(user_id)
+        user_id_int = int(user_id)
+        for soft_key, task in list(self._soft_start_tasks.items()):
+            if int(soft_key[0]) != user_id_int:
+                continue
+            self._soft_start_tasks.pop(soft_key, None)
+            if task and not task.done():
+                task.cancel()
         match_ids_to_drop = [entry.match_id for entry in self._queue if entry.user_id == user_id]
         self._queue = [entry for entry in self._queue if entry.user_id != user_id]
 

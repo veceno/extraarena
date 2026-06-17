@@ -26,8 +26,11 @@ def mocker():
     return mock
 
 
-
-
-
-
-
+@pytest.fixture(autouse=True)
+def _allow_existing_local_payment_test_env(monkeypatch):
+    """
+    Local developer .env files may contain sandbox payment credentials.
+    Production-specific tests that assert payment test modes are rejected
+    explicitly delete this override.
+    """
+    monkeypatch.setenv("ALLOW_PAYMENT_TEST_MODE", "true")

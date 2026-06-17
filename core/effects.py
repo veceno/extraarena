@@ -37,16 +37,31 @@ def register_effect(name: str) -> Callable[[EffectHandler], EffectHandler]:
     return decorator
 
 
-def is_random_battlecry_damage_card(card: "CardInstance") -> bool:
-    """Тока Киришима использует battlecry_damage_X как случайный, а не целевой урон."""
-    try:
-        if int(getattr(card, "card_id", 0) or 0) == 15:
-            return True
-    except (TypeError, ValueError):
-        pass
+def record_card_feedback_event(
+    state: "GameState",
+    card: "CardInstance",
+    *,
+    mechanic: str,
+    effect_code: str,
+) -> None:
+    events = getattr(state, "pending_card_feedback_events", None)
+    if events is None:
+        events = []
+        state.pending_card_feedback_events = events
+    events.append({
+        "card_id": getattr(card, "card_id", None),
+        "instance_id": str(getattr(card, "instance_id", "")),
+        "mechanic": mechanic,
+        "effect_code": effect_code,
+    })
 
-    name = str(getattr(card, "name", "") or "").casefold()
-    return "тока киришима" in name or "тоука киришима" in name or "touka" in name
+
+def is_random_battlecry_damage_card(card: "CardInstance") -> bool:
+    """Cards opt into random battlecry damage through battlecry_damage_X_random."""
+    return any(
+        re.match(r"battlecry_damage_\d+_random$", mechanic)
+        for mechanic in getattr(card, "mechanics", [])
+    )
 
 
 def _apply_random_battlecry_damage(
@@ -418,11 +433,30 @@ def effect_aoe_freeze(
     opponent: PlayerState,
     target_id: Optional[str] = None,
 ) -> None:
-    """AOE: заморозить всех вражеских существ."""
-    for unit in opponent.board:
+    """AOE: заморозить до 3 вражеских существ."""
+    for unit in opponent.board[:3]:
+        if consume_shield(unit, "aoe_freeze"):
+            continue
         if not unit.is_frozen:
             unit.is_frozen = True
             logger.debug("[EFFECTS] Юнит %s заморожен", unit.name)
+
+
+@register_effect("desk_freeze")
+def effect_desk_freeze(
+    state: GameState,
+    card: CardInstance,
+    owner: PlayerState,
+    opponent: PlayerState,
+    target_id: Optional[str] = None,
+) -> None:
+    """Заморозить всех вражеских существ на доске."""
+    for unit in opponent.board:
+        if consume_shield(unit, "desk_freeze"):
+            continue
+        if not unit.is_frozen:
+            unit.is_frozen = True
+            logger.debug("[EFFECTS] Юнит %s заморожен desk_freeze", unit.name)
 
 
 @register_effect("freeze")
@@ -440,6 +474,8 @@ def effect_freeze(
     # Ищем цель на доске противника
     for unit in opponent.board:
         if str(unit.instance_id) == target_id:
+            if consume_shield(unit, "freeze"):
+                return
             if not unit.is_frozen:
                 unit.is_frozen = True
                 logger.debug("[EFFECTS] Юнит %s заморожен", unit.name)
@@ -758,7 +794,10 @@ def effect_delete_target(
     # Ищем цель на доске противника
     for unit in opponent.board[:]:  # Копия списка для безопасного удаления
         if str(unit.instance_id) == target_id:
+            if consume_shield(unit, "delete_target"):
+                return
             opponent.board.remove(unit)
+            opponent.graveyard.append(unit)
             logger.debug("[EFFECTS] %s мгновенно удален с доски", unit.name)
             return
 
@@ -793,6 +832,12 @@ def effect_cast_random_spell(
     log_type = "player" if owner.user_id == state.p1.user_id else "opponent"
     
     if spell_choice == 1:
+        record_card_feedback_event(
+            state,
+            card,
+            mechanic="cast_random_spell",
+            effect_code="midoriya_texas_smash",
+        )
         # Texas Smash: Урон случайному врагу
         dmg = 4 + (level - 1)
         
@@ -811,6 +856,12 @@ def effect_cast_random_spell(
             logger.debug("[EFFECTS] Мидория: Texas Smash - нет целей")
     
     elif spell_choice == 2:
+        record_card_feedback_event(
+            state,
+            card,
+            mechanic="cast_random_spell",
+            effect_code="midoriya_recovery",
+        )
         # Recovery: Хил своему герою
         heal = 5 + (level - 1)
         apply_heal(owner.hero, heal)
@@ -821,6 +872,12 @@ def effect_cast_random_spell(
         logger.debug("[EFFECTS] Мидория (lvl %d): Recovery %d HP", level, heal)
     
     elif spell_choice == 3:
+        record_card_feedback_event(
+            state,
+            card,
+            mechanic="cast_random_spell",
+            effect_code="midoriya_blackwhip",
+        )
         # Blackwhip: Заморозка врагов
         freeze_count = 2 if level >= 5 else 1
         
@@ -832,6 +889,8 @@ def effect_cast_random_spell(
             targets_to_freeze = random.sample(unfrozen_enemies, min(freeze_count, len(unfrozen_enemies)))
             
             for target in targets_to_freeze:
+                if consume_shield(target, "blackwhip"):
+                    continue
                 target.is_frozen = True
             
             target_names = ", ".join([t.name for t in targets_to_freeze])
@@ -844,6 +903,12 @@ def effect_cast_random_spell(
             logger.debug("[EFFECTS] Мидория: Blackwhip - нет незамороженных целей")
     
     else:  # spell_choice == 4
+        record_card_feedback_event(
+            state,
+            card,
+            mechanic="cast_random_spell",
+            effect_code="midoriya_full_cowl",
+        )
         # Full Cowl: Бафф себе
         buff = 2 + ((level - 1) // 2)
         card.attack += buff
@@ -913,11 +978,7 @@ def apply_damage_modifiers(target: CardInstance, damage: int) -> int:
         return 0
     
     # Проверка обычного щита - блокирует весь урон один раз
-    if "shield" in target.mechanics:
-        mechanics = list(target.mechanics)
-        mechanics.remove("shield")
-        target.mechanics = mechanics
-        logger.debug("[EFFECTS] Щит поглотил %d урона", damage)
+    if consume_shield(target, f"{damage} урона"):
         return 0
     
     # Проверка брони - уменьшает урон
@@ -953,6 +1014,21 @@ def apply_damage_modifiers(target: CardInstance, damage: int) -> int:
         logger.debug("[EFFECTS] Броня поглотила %d урона, осталось %d", armor_value, damage)
     
     return damage
+
+
+def consume_shield(target: CardInstance, source: str = "") -> bool:
+    """Снять одноразовый щит, если он блокирует входящий эффект."""
+    if "shield" not in target.mechanics:
+        return False
+
+    mechanics = list(target.mechanics)
+    mechanics.remove("shield")
+    target.mechanics = mechanics
+    if source:
+        logger.debug("[EFFECTS] Щит %s поглотил эффект: %s", target.name, source)
+    else:
+        logger.debug("[EFFECTS] Щит %s поглотил эффект", target.name)
+    return True
 
 
 def apply_damage(target: CardInstance, damage: int, attacker: Optional[CardInstance] = None) -> int:
@@ -1066,7 +1142,7 @@ def process_effects(
         if mechanic.startswith("cleave_") and card.card_type.value == "warrior":
             continue
 
-        random_battlecry_damage = re.match(r"battlecry_damage_(\d+)", mechanic)
+        random_battlecry_damage = re.match(r"battlecry_damage_(\d+)_random$", mechanic)
         if random_battlecry_damage and is_random_battlecry_damage_card(card):
             _apply_random_battlecry_damage(
                 card,
@@ -1187,12 +1263,14 @@ def process_effects(
             # Ищем цель на доске противника
             for unit in opponent.board:
                 if str(unit.instance_id) == target_id:
+                    if consume_shield(unit, mechanic):
+                        break
                     unit.is_frozen = True
                     break
             
             # Проверяем героя противника
             if str(opponent.hero.instance_id) == target_id:
-                opponent.hero.is_frozen = True
+                logger.debug("[CORE] freeze_X не применяется к героям: %s", opponent.hero.name)
             continue
         
         # reflect_X (динамическое отражение - пассивная механика, обрабатывается в apply_damage)

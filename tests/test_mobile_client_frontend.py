@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 
@@ -29,6 +30,14 @@ SHOP_PARTICLES_INFO = Path("android-app/app/src/main/res/xml/shop_particles_widg
 STRINGS = Path("android-app/app/src/main/res/values/strings.xml")
 
 
+def _battle_history_sheet_source():
+    source = INDEX.read_text(encoding="utf-8")
+    return source.split("const BattleHistorySheet", 1)[1].split(
+        "// ── Analytics Controller ──",
+        1,
+    )[0]
+
+
 def test_android_external_links_are_forced_outside_webview():
     source = INDEX.read_text(encoding="utf-8")
     native = MAIN_ACTIVITY.read_text(encoding="utf-8")
@@ -58,6 +67,20 @@ def test_mobile_client_has_afk_disconnect_and_bad_ping_ui():
     assert "fetchWithTimeout" in source
 
 
+def test_league_info_sheet_uses_handoff_redesign():
+    source = INDEX.read_text(encoding="utf-8")
+    sheet = source.split("const LeagueInfoSheet", 1)[1].split(
+        "ReactDOM.createRoot",
+        1,
+    )[0]
+
+    assert "league-redesign-screen" in source
+    assert "ExtraArena Glory Path" in sheet
+    assert "LEAGUE_ART_BY_ID[l.id]" in sheet
+    assert "Награды в этой лиге" in sheet
+    assert "onOpenGloryPath" in sheet
+
+
 def test_arena_page_monitors_disconnect_and_runtime_maintenance():
     source = ARENA.read_text(encoding="utf-8")
 
@@ -78,8 +101,70 @@ def test_android_welcome_screen_uses_legal_links_instead_of_create_extraid_cta()
     assert "Продолжая, ты соглашаешься" in native
     assert "офертой" in native
     assert "политикой конфиденциальности" in native
-    assert "https://google.com" in native
+    assert "BuildConfig.LEGAL_OFFER_URL" in native
+    assert "BuildConfig.LEGAL_PRIVACY_URL" in native
+    assert "openExternal(legalUrlForTarget(target))" in native
     assert "authSecondaryAction.setVisibility(step == AuthStep.WELCOME ? View.GONE : View.VISIBLE)" in native
+
+
+def test_webapp_info_sheet_links_existing_legal_docs_and_is_scrollable():
+    source = INDEX.read_text(encoding="utf-8")
+    sheet = source.split("const InfoSheet = ({onClose}) =>", 1)[1].split(
+        "// ═══════════════════════════════════════════\n// SUPPORT SHEET",
+        1,
+    )[0]
+
+    assert "Запроси документ через поддержку" not in sheet
+    assert "/legal/offer" in sheet
+    assert "/legal/privacy" in sheet
+    assert "/legal/refund" in sheet
+    assert "window.openExternalLink?.(href)" in sheet
+    assert "new URL(url, location.origin).href" in sheet
+    assert "openTelegramLink?.(url)" not in sheet
+    assert "maxHeight:'calc(var(--ea-viewport-height, 100dvh) - var(--ea-safe-top))'" in sheet
+    assert "overflowY:'auto'" in sheet
+    assert "WebkitOverflowScrolling:'touch'" in sheet
+
+
+def test_webapp_info_and_support_sheets_use_current_public_links():
+    source = INDEX.read_text(encoding="utf-8")
+    info_sheet = source.split("const InfoSheet = ({onClose}) =>", 1)[1].split(
+        "// ═══════════════════════════════════════════\n// SUPPORT SHEET",
+        1,
+    )[0]
+    support_sheet = source.split("const SupportSheet = ({onClose}) =>", 1)[1].split(
+        "// ═══════════════════════════════════════════\n// ARENA SCREEN",
+        1,
+    )[0]
+
+    assert "https://t.me/extraarena" in info_sheet
+    assert "t.me/extraarena" in info_sheet
+    assert "https://max.ru/se13279035_biz" in info_sheet
+    assert "max.ru/se13279035_biz" in info_sheet
+    assert "https://t.me/extraarena_supbot" in support_sheet
+    assert "t.me/extraarena_supbot" in support_sheet
+    assert "https://max.ru/se13279035_1_bot" in support_sheet
+    assert "max.ru/se13279035_1_bot" in support_sheet
+    assert "support.laveqox.ru" in support_sheet
+    assert "скоро" in support_sheet.lower()
+    assert "openLink('https://support.laveqox.ru')" not in support_sheet
+    assert "openLink('http://support.laveqox.ru')" not in support_sheet
+    assert "t.me/extracards" not in info_sheet
+    assert "t.me/extracards_chat" not in info_sheet
+    assert "t.me/lqsup" not in source
+
+
+def test_android_legal_links_are_derived_from_current_base_url():
+    native = MAIN_ACTIVITY.read_text(encoding="utf-8")
+    build = APP_BUILD.read_text(encoding="utf-8")
+
+    assert "clumsily-deft-guan.cloudpub.ru/legal" not in build
+    assert 'propOrEnv("EXTRAARENA_OFFER_URL", "")' in build
+    assert 'propOrEnv("EXTRAARENA_PRIVACY_URL", "")' in build
+    assert 'propOrEnv("EXTRAARENA_REFUND_URL", "")' in build
+    assert "configuredLegalUrlOrDefault(BuildConfig.LEGAL_OFFER_URL, \"/legal/offer\")" in native
+    assert "configuredLegalUrlOrDefault(BuildConfig.LEGAL_PRIVACY_URL, \"/legal/privacy\")" in native
+    assert "BaseUrlStore.join(BaseUrlStore.getBaseUrl(this), path)" in native
 
 
 def test_android_haptics_can_be_disabled_from_mobile_settings():
@@ -145,6 +230,53 @@ def test_android_push_notification_intents_are_hardened():
     assert "intent.setPackage(getPackageName())" in service
     assert "PendingIntent.getActivity(\n                this,\n                notificationId" in service
     assert "Math.floorMod(seed.hashCode(), 100000)" in service
+
+
+def test_legacy_collection_card_images_use_card_id_when_file_id_missing():
+    source = Path("webapp/main.js").read_text(encoding="utf-8")
+
+    assert "async function getCardImageUrlForCard(card, options = {})" in source
+    assert 'const variant = options.variant || "preview"' in source
+    assert "`/api/cards/image?card_id=${encodeURIComponent(card.id)}${variantSuffix}`" in source
+    assert "getCardImageUrlForCard(card)" in source
+    assert 'getCardImageUrlForCard(card, { variant: "full" })' in source
+
+
+def test_collection_card_detail_uses_clean_open_sfx():
+    index = INDEX.read_text(encoding="utf-8")
+    main = Path("webapp/main.js").read_text(encoding="utf-8")
+
+    assert 'id="collection-card-detail-sound"' in index
+    assert "/DesignAssets/Sounds/collection/card_detail_open.wav" in index
+    assert "playCollectionCardDetailSfx()" in index
+    assert "window._playSfx?.('collection-card-detail-sound');" in index
+    assert "window._playSfx?.('collection-card-detail-sound');" in main
+
+
+def test_android_packaged_card_image_lookup_allows_jpg_assets():
+    native = MAIN_ACTIVITY.read_text(encoding="utf-8")
+    block = native.split("private WebResourceResponse servePackagedCardImage", 1)[1].split(
+        "private WebResourceResponse servePackagedVendorAsset",
+        1,
+    )[0]
+
+    assert '"DesignAssets/Cards/" + cardId + ".png"' in block
+    assert '"DesignAssets/Cards/" + cardId + ".jpg"' in block
+    assert '"DesignAssets/Cards/" + cardId + ".jpeg"' in block
+    assert '"DesignAssets/Cards/" + cardId + ".webp"' in block
+
+
+def test_android_friendly_invite_notification_forwards_accept_link_metadata():
+    service = MESSAGING_SERVICE.read_text(encoding="utf-8")
+    native = MAIN_ACTIVITY.read_text(encoding="utf-8")
+
+    assert 'data.get("invite_id")' in service
+    assert 'intent.putExtra("invite_id", inviteId)' in service
+    assert 'intent.putExtra("invite_action", inviteAction)' in service
+    assert 'getStringExtra("invite_id")' in native
+    assert 'getStringExtra("invite_action")' in native
+    assert 'query.put("invite_id", inviteId)' in native
+    assert 'query.put("invite_action", inviteAction)' in native
 
 
 def test_android_native_email_validation_uses_android_patterns():
@@ -249,6 +381,125 @@ def test_android_app_declares_shop_particles_widget_and_russian_widget_names():
     assert "Новые частицы карт в магазине" in strings
 
 
+def test_profile_extra_pass_card_lifts_text_above_subscription_bar():
+    source = INDEX.read_text(encoding="utf-8")
+    profile_block = source.split("const ProfileScreen", 1)[1].split(
+        "const ConnectionHealthOverlay",
+        1,
+    )[0]
+
+    assert "const passCardLift = hasExtraPass || isUltra ? 18 : 0" in profile_block
+    assert "bottom: passCardLift ? '28px' : '10px'" in profile_block
+    assert "bottom: passCardLift ? '51px' : '33px'" in profile_block
+    assert "bottom: passCardLift ? '34px' : '16px'" in profile_block
+
+
+def test_battle_history_upsell_is_hidden_for_empty_history_and_mentions_hidden_modes():
+    history_block = _battle_history_sheet_source()
+
+    assert "isLimited && battles.length > 0" in history_block
+    assert "включая скрытые тренировки и дружеские бои" in history_block
+    assert "расширенную историю до 50 боёв" in history_block
+    assert "полную историю (50 боёв)" not in history_block
+
+
+def test_battle_history_load_error_has_dedicated_retry_state():
+    history_block = _battle_history_sheet_source()
+    compact = "".join(history_block.split())
+
+    assert "loadError" in history_block
+    assert "setLoadError" in history_block
+    assert "catch(e)" in history_block
+    assert "setLoadError(" in history_block
+    assert "data-battle-history-load-error" in history_block
+    assert "Повторить" in history_block
+    assert "onClick={load}" in compact
+
+
+def test_collection_potion_cards_use_normal_tile_height():
+    source = INDEX.read_text(encoding="utf-8")
+    card_tile = source.split("const CardTile = ({card", 1)[1].split(
+        "const GeneratorScreen",
+        1,
+    )[0]
+
+    assert "aspectRatio: isPotion ? '3/4'" not in card_tile
+    assert "inset:'-7% -6% -9%'" not in card_tile
+    assert "borderRadius: outerRadius" in card_tile
+    assert "aspectRatio: '3/4'" in card_tile
+
+
+def test_collection_uses_preview_images_but_detail_uses_full_images():
+    source = INDEX.read_text(encoding="utf-8")
+    card_tile = source.split("const CardTile = ({card", 1)[1].split("const GeneratorScreen", 1)[0]
+    detail_block = source.split("const CardArtLightbox", 1)[1].split("const DeckPreviewSlot", 1)[0]
+    deck_block = source.split("const DeckPreviewSlot", 1)[1].split("/* ──── Deck Metrics", 1)[0]
+
+    assert "const cardPreviewUrl" in source
+    assert "const cardFullUrl" in source
+    assert "variant:'preview'" in source
+    assert "cardPreviewUrl(card)" in card_tile
+    assert "fallbackPreviewToFull" in card_tile
+    assert "cardPreviewUrl(card)" in deck_block
+    assert "cardFullUrl(cardId)" in detail_block
+    assert "cardFullUrl(localCard)" in detail_block
+    assert "cardPreviewUrl(localCard)" not in detail_block
+
+
+def test_collection_deck_validity_blocks_draft_primary_and_battle_autoselect():
+    source = INDEX.read_text(encoding="utf-8")
+
+    assert "const getDeckPresetValidity" in source
+    assert "canSetPrimary = deckValidity.isCompletePlayable" in source
+    assert "ДРАФТ" in source
+    assert "onNewbieTaskComplete?.('save_first_deck')" in source
+    assert "if (draftValidity.isCompletePlayable)" in source
+    assert "p.is_primary && getDeckPresetValidity(p).isCompletePlayable" in source
+
+
+def test_safe_zone_covers_rating_generator_and_extrapass_controls():
+    source = INDEX.read_text(encoding="utf-8")
+
+    assert "height:'var(--ea-viewport-height, 100dvh)'" in source
+    assert "padding:'0 12px calc(16px + var(--ea-safe-bottom-soft))'" in source
+    assert "padding:'calc(24px + var(--ea-safe-top)) calc(24px + var(--ea-safe-right)) calc(24px + var(--ea-safe-bottom-soft)) calc(24px + var(--ea-safe-left))'" in source
+    assert "height: var(--ea-viewport-height, 100dvh);" in source
+    assert "padding:'calc(18px + var(--ea-safe-top)) calc(12px + var(--ea-safe-right)) calc(18px + var(--ea-safe-bottom-soft)) calc(12px + var(--ea-safe-left))'" in source
+
+
+def test_generator_screen_uses_safe_json_and_http_status_for_api_mutations():
+    source = INDEX.read_text(encoding="utf-8")
+    generator_block = source.split("const GeneratorScreen", 1)[1].split(
+        "const CardDetailScreen",
+        1,
+    )[0]
+    fetch_status = generator_block.split("const fetchStatus", 1)[1].split(
+        "React.useEffect",
+        1,
+    )[0]
+    claim = generator_block.split("const doClaim", 1)[1].split(
+        "const doUpgrade",
+        1,
+    )[0]
+    upgrade = generator_block.split("const doUpgrade", 1)[1].split(
+        "const fmtTimer",
+        1,
+    )[0]
+
+    for request_block in (fetch_status, claim, upgrade):
+        assert "const data = await res.json();" not in request_block
+        assert "res.ok" in request_block
+        assert (
+            ".json().catch" in request_block
+            or "readJsonOrError" in request_block
+            or "readGeneratorJsonOrError" in request_block
+        )
+
+    assert "apiUrl('/api/generator/status')" in fetch_status
+    assert "apiUrl('/api/generator/claim')" in claim
+    assert "apiUrl('/api/generator/upgrade')" in upgrade
+
+
 def test_android_app_packages_heavy_local_shell_assets():
     build = APP_BUILD.read_text(encoding="utf-8")
 
@@ -315,12 +566,28 @@ def test_android_webview_auth_prefers_native_session_after_apk_update():
 
     assert "function getNativeAuthToken()" in source
     assert "getAndroidBridge()?.getAuthToken?.()" in source
-    assert "getUrlAuthToken() || getNativeAuthToken() || localStorage.getItem('extra_id_token')" in source
+    assert "getUrlAuthToken() || getNativeAuthToken() || getStoredExtraToken()" in source
     assert "add('auth', getNativeAuthToken(), 'native_extra_id')" in source
     assert "clearExtraToken({native: auth.source === 'native_extra_id'})" in source
-    assert "const token = getNativeAuthToken() || localStorage.getItem('extra_id_token')" in source
+    assert "const token = getNativeAuthToken() || getStoredExtraToken()" in source
+    assert "sessionStorage.getItem(EXTRA_ID_TOKEN_SESSION_KEY)" in source
     assert "public String getAuthToken()" in native
     assert "new URL(location.href).searchParams.get('_auth')" in native
+
+
+def test_webapp_moves_jwt_auth_query_params_to_authorization_header():
+    source = Path("webapp/index.html").read_text(encoding="utf-8")
+    arena = ARENA.read_text(encoding="utf-8")
+    native = MAIN_ACTIVITY.read_text(encoding="utf-8")
+
+    assert "function installJwtQueryAuthHeaderBridge()" in source
+    assert "Authorization" in source
+    assert "looksLikeJwtBearer" in source
+    assert "url.origin !== window.location.origin" in source
+    assert "Telegram initData stays in _auth" in source
+    assert "function installArenaJwtQueryAuthHeaderBridge()" in arena
+    assert "looksLikeArenaJwtBearer" in arena
+    assert "Telegram initData stays in _auth" in arena
     assert "localStorage.getItem('extra_id_token')||''" in native
     assert "eaJsonCache:" in native
 
@@ -343,6 +610,30 @@ def test_android_webview_recovers_viewport_after_keyboard_closes():
     assert "InputMethodManager" in native
     assert "imm.hideSoftInputFromWindow" in native
     assert "focused.clearFocus()" in native
+
+
+def test_safe_area_ignores_telegram_viewport_while_keyboard_or_transition_is_unstable():
+    safe_area = SAFE_AREA.read_text(encoding="utf-8")
+
+    keyboard_guard = safe_area.index("if (isKeyboardLikelyOpen())")
+    telegram_height = safe_area.index("const stableHeight = Number(tg.viewportStableHeight || tg.viewportHeight)")
+    assert keyboard_guard < telegram_height
+    assert "lastStableViewportHeight = Math.max(lastStableViewportHeight, stableHeight);" in safe_area
+
+
+def test_profile_display_name_uses_telegram_fetched_name_before_generic_fallback():
+    source = INDEX.read_text(encoding="utf-8")
+
+    assert "profile?.custom_nickname || profile?.display_name || profile?.first_name || profile?.username || 'ExtraArena'" in source
+
+
+def test_collection_upgrade_errors_are_user_facing_not_raw_codes():
+    source = INDEX.read_text(encoding="utf-8")
+    detail_block = source.split("const CardDetailScreen", 1)[1].split("const DeckPreviewSlot", 1)[0]
+
+    assert "formatCardUpgradeError" in detail_block
+    assert "data.message" in detail_block
+    assert "insufficient_coins" in detail_block
 
 
 def test_battle_deck_picker_has_retry_and_no_infinite_spinner_on_auth_errors():
@@ -388,6 +679,160 @@ def test_mobile_profile_mutations_invalidate_stale_cached_profile():
     assert "onDone={()=>{invalidateInventoryCaches();setShowCaseOpen(false);window.reloadFreshProfile()" in source
 
 
+def test_case_open_reveal_spotlights_new_cards_above_resource_rewards():
+    source = INDEX.read_text(encoding="utf-8")
+    case_block = source.split("const CaseOpenScreen", 1)[1].split(
+        "// ═══════════════════════════════════════════\n// BATTLE PICK SHEET",
+        1,
+    )[0]
+
+    assert "const revealedCards = result?.rewards?.cards || [];" in case_block
+    assert "const hasResourceRewards" in case_block
+    assert "case-card-spotlight" in case_block
+    assert "Новая карта в коллекции" in case_block
+    assert "case-resource-rewards" in case_block
+    assert case_block.index("case-card-spotlight") < case_block.index("case-resource-rewards")
+
+
+def test_case_open_ultra_manual_reroll_uses_pending_claim_flow():
+    source = INDEX.read_text(encoding="utf-8")
+    case_block = source.split("const CaseOpenScreen", 1)[1].split(
+        "// ═══════════════════════════════════════════\n// BATTLE PICK SHEET",
+        1,
+    )[0]
+
+    assert "const [openingToken, setOpeningToken]" in case_block
+    assert "const [rerollToken, setRerollToken]" in case_block
+    assert "const [canReroll, setCanReroll]" in case_block
+    assert "apiUrl('/api/cases/reroll-from-keys')" in case_block
+    assert "apiUrl('/api/cases/open-reroll-from-keys')" in case_block
+    assert "apiUrl('/api/cases/claim-from-keys')" in case_block
+    assert "Реролл ULTRA" in case_block
+    assert "claimCurrentOpening({closeAfter:true, notifyDone:true})" in case_block
+    assert "Текущие награды сохранены" in case_block
+    assert "<button onClick={closeCaseScreen} disabled={claiming}" in case_block
+    assert case_block.count("setSkipping(false);") >= 4
+    assert "openAnotherCase" in case_block
+
+
+def test_case_open_uses_new_compressed_case_sfx_without_global_click_overlap():
+    source = INDEX.read_text(encoding="utf-8")
+    case_block = source.split("const CaseOpenScreen", 1)[1].split(
+        "// ═══════════════════════════════════════════\n// BATTLE PICK SHEET",
+        1,
+    )[0]
+    sound_dir = Path("DesignAssets/Sounds/cases")
+    expected = [
+        "case-open-init",
+        "case-tap",
+        "case-reroll-ultra",
+        "case-reward-resources",
+        "case-reward-card-start",
+        "case-reward-card-common",
+        "case-reward-card-rare",
+        "case-reward-card-superrare",
+        "case-reward-card-epic",
+        "case-reward-card-legendary",
+        "case-reward-card-mythic",
+        "case-reward-card-divine",
+        "case-reward-card-limited",
+    ]
+
+    assert "window._playCaseSfx = function(id, options)" in source
+    assert "if (!window._sfxEnabled) return;" in source
+    assert "window._stopCaseSfx(id);" in source
+    assert "data-no-global-click-sound" in case_block
+    assert "caseRewardSfxId(d.rewards)" in case_block
+    assert "CASE_REWARD_RARITY_WEIGHT" in source
+    assert "case-open-sound" not in case_block
+    assert "case-reward-sound" not in case_block
+
+    for name in expected:
+        asset = sound_dir / f"{name}.mp3"
+        assert asset.exists(), f"missing case SFX asset: {asset}"
+        assert 1_000 < asset.stat().st_size < 45_000
+        assert f"/DesignAssets/Sounds/cases/{name}.mp3" in source
+
+
+def test_real_money_payment_success_publishes_fresh_profile_to_react_state():
+    source = INDEX.read_text(encoding="utf-8")
+    status_block = source.split("async function triggerPaymentSuccessFromStatus", 1)[1].split(
+        "async function triggerPaymentSuccessFromRecent",
+        1,
+    )[0]
+    recent_block = source.split("async function triggerPaymentSuccessFromRecent", 1)[1].split(
+        "function normalizeRuStorePaymentEvent",
+        1,
+    )[0]
+
+    assert "async function refreshProfileStateAfterPaymentSuccess" in source
+    assert "const profile = await window.reloadFreshProfile?.(authData)" in source
+    assert "if (profile && window.__updateProfile) window.__updateProfile(profile);" in source
+    assert "await refreshProfileStateAfterPaymentSuccess();" in status_block
+    assert "await refreshProfileStateAfterPaymentSuccess(authData);" in recent_block
+
+
+def test_legacy_main_js_treats_ultra_and_expiry_as_effective_extrapass():
+    source = Path("webapp/main.js").read_text(encoding="utf-8")
+
+    assert "function isExtraPassActive(profile)" in source
+    assert 'mode !== "active" && mode !== "ultra"' in source
+    assert "profile.extra_pass_expires_at" in source
+    assert "const hasExtraPass = isExtraPassActive(data);" in source
+    assert "const hasExtraPass = isExtraPassActive(currentProfile);" in source
+
+
+def test_battle_pass_load_error_has_retry_state_and_disables_purchase_cta_without_payload():
+    source = INDEX.read_text(encoding="utf-8")
+    sheet_block = source.split("const BattlePassSheet", 1)[1].split(
+        "// ═══════════════════════════════════════════\n// LEAGUE INFO SHEET",
+        1,
+    )[0]
+
+    assert "const [battlePassLoadError, setBattlePassLoadError]" in sheet_block
+    assert "setBattlePassLoadError(null);" in sheet_block
+    assert "setBattlePassLoadError(e?.message || 'load_failed');" in sheet_block
+    assert "const canUseBattlePassCta = !!payload && !battlePassLoadError;" in sheet_block
+    assert "disabled={!canUseBattlePassCta}" in sheet_block
+    assert "data-extra-pass-load-error" in sheet_block
+    assert "onClick={load}" in sheet_block
+    assert "Не удалось загрузить ExtraPass" in sheet_block
+
+
+def test_battle_pass_sheet_distinguishes_specific_cards_and_highlights_ultra_zone():
+    source = INDEX.read_text(encoding="utf-8")
+    sheet_block = source.split("const BattlePassSheet", 1)[1].split(
+        "// ═══════════════════════════════════════════\n// LEAGUE INFO SHEET",
+        1,
+    )[0]
+
+    assert "reward?.reward_type === 'specific_card'" in sheet_block
+    assert "Случайная карта" in sheet_block
+    assert "Конкретная карта" in sheet_block
+    assert "fetch(_buildAuthUrl('/api/rewards/extra-pass'), {cache:'no-store'})" in sheet_block
+    assert "data-extra-pass-ultra-header" in sheet_block
+    assert "data-extra-pass-ultra-divider" in sheet_block
+    assert "Ultra-финал {ultraStart}-{ultraEnd}" in sheet_block
+    assert "summary.claimable_with_ultra && !summary.claimable_with_extra_pass" in sheet_block
+    assert ") : detail.access_locked ? (" in sheet_block
+
+
+def test_shop_basic_pass_cta_blocks_ultra_downgrade():
+    source = INDEX.read_text(encoding="utf-8")
+    shop_block = source.split("const ShopScreen", 1)[1].split(
+        "// ═══════════════════════════════════════════\n// ARENA MAIN",
+        1,
+    )[0]
+
+    assert "var isPassPurchaseDisabled = function(tab)" in shop_block
+    assert "if (hasUltraPass && tab === 'basic') return true;" in shop_block
+    assert "var passPurchaseLabel = function(tab)" in shop_block
+    assert "if (hasUltraPass && tab === 'basic') return 'Ultra уже активен';" in shop_block
+    assert "openPassPurchase('basic', true)" in shop_block
+    assert "disabled={isPassPurchaseDisabled('basic')}" in shop_block
+    assert "disabled={buying!=null || isPassPurchaseDisabled(passTab)}" in shop_block
+
+
 def test_mobile_extraid_account_manager_is_exposed_in_menu():
     source = INDEX.read_text(encoding="utf-8")
     native = MAIN_ACTIVITY.read_text(encoding="utf-8")
@@ -419,6 +864,74 @@ def test_mobile_extraid_account_manager_is_exposed_in_menu():
     assert "static void saveAccount(" in account_store
 
 
+def test_browser_user_id_auth_fallback_is_local_dev_only():
+    source = INDEX.read_text(encoding="utf-8")
+    legacy = Path("webapp/main.js").read_text(encoding="utf-8")
+    server = WEB_SERVER.read_text(encoding="utf-8")
+    start_battle_block = source.split("window.startBattle = async function", 1)[1].split(
+        "// ── VS Bot Search",
+        1,
+    )[0]
+    start_vs_bot_block = source.split("window.startVsBot = async function", 1)[1].split(
+        "var overlayText =",
+        1,
+    )[0]
+    prebattle_block = source.split("window._openPreBattle = function", 1)[1].split(
+        "window.__analytics?.battlePlayed",
+        1,
+    )[0]
+    friendly_battle_block = source.split("function openFriendlyInviteBattle", 1)[1].split(
+        "const authData = resolveExtraIDAuthData()",
+        1,
+    )[0]
+    send_friend_invite_block = source.split("const sendFriendInvite = async", 1)[1].split(
+        "const selectedFriendlyDeckId",
+        1,
+    )[0]
+    send_invite_block = source.split("const sendInvite = async", 1)[1].split(
+        "setSending(true); setError(null);",
+        1,
+    )[0]
+    incoming_invite_respond_block = source.split("var respond = async (action) =>", 1)[1].split(
+        "setResponding(true);",
+        1,
+    )[0]
+    onboarding_start_block = source.split("const startOnboardingBattle = React.useCallback", 1)[1].split(
+        "const auth = resolveUiAuth();",
+        1,
+    )[0]
+
+    assert "function allowLocalDevUserIdAuth()" in source
+    assert "['localhost', '127.0.0.1', '::1'].includes(location.hostname)" in source
+    assert "function canLaunchArenaBattleHere()" in source
+    assert "return isAndroidAppShell() || !!getTelegramInitData() || allowLocalDevUserIdAuth();" in source
+    assert "function showBrowserArenaUnavailable()" in source
+    assert "Арена недоступна в обычном браузере" in source
+    assert "const allowUserIdFallback = allowLocalDevUserIdAuth();" in source
+    assert "add(allowUserIdFallback && urlId && explicitValue === urlId ? 'user_id' : 'auth'" in source
+    assert "if (allowUserIdFallback) {" in source
+    assert "add('user_id', urlId, 'url');" in source
+    assert "add('user_id', window._getUserId?.() || tg?.initDataUnsafe?.user?.id, 'unsafe_user');" in source
+    assert "allowLocalDevUserIdAuth() && urlId ? parseInt(urlId) : null" in source
+    assert "if (!canLaunchArenaBattleHere())" in start_battle_block
+    assert start_battle_block.index("if (!canLaunchArenaBattleHere())") < start_battle_block.index("var body =")
+    assert "if (!canLaunchArenaBattleHere())" in start_vs_bot_block
+    assert "if (!canLaunchArenaBattleHere())" in prebattle_block
+    assert "if (!canLaunchArenaBattleHere())" in friendly_battle_block
+    assert "if (!canLaunchArenaBattleHere())" in send_friend_invite_block
+    assert "if (!canLaunchArenaBattleHere())" in send_invite_block
+    assert "if (action === 'accept' && !canLaunchArenaBattleHere())" in incoming_invite_respond_block
+    assert "if (!canLaunchArenaBattleHere())" in onboarding_start_block
+
+    assert "function allowLocalDevUserIdAuth()" in legacy
+    assert "['localhost', '127.0.0.1', '::1'].includes(window.location.hostname)" in legacy
+    assert "if (urlId && allowLocalDevUserIdAuth())" in legacy
+
+    assert "def _allow_dev_user_id_auth" in server
+    assert "settings.environment == \"development\"" in server
+    assert "request.remote in {\"127.0.0.1\", \"::1\", \"localhost\"}" in server
+
+
 def test_mobile_web_client_uses_persistent_stale_while_revalidate_cache():
     source = INDEX.read_text(encoding="utf-8")
 
@@ -444,6 +957,10 @@ def test_mobile_mutable_inventory_and_decks_are_loaded_network_first():
 
 def test_mobile_inventory_and_deck_mutations_invalidate_dependent_caches():
     source = INDEX.read_text(encoding="utf-8")
+    claim_block = source.split("const claimCurrentOpening", 1)[1].split(
+        "const openAnotherCase",
+        1,
+    )[0]
 
     assert "function invalidateInventoryCaches()" in source
     assert "function invalidateDeckCaches()" in source
@@ -451,7 +968,8 @@ def test_mobile_inventory_and_deck_mutations_invalidate_dependent_caches():
     assert "window.eaInvalidateJson?.('/api/mobile/battle-bootstrap')" in source
     assert "window.eaInvalidateJson?.('/api/cards/collection')" in source
     assert "window.eaInvalidateJson?.('/api/deck/presets')" in source
-    assert "invalidateInventoryCaches();\n        setResult(d);" in source
+    assert "invalidateInventoryCaches();" in claim_block
+    assert claim_block.index("invalidateInventoryCaches();") < claim_block.index("setResult(d);", claim_block.index("invalidateInventoryCaches();"))
     assert "const handleCardUpgraded = React.useCallback(() => { invalidateInventoryCaches(); loadCards(); }" in source
     assert "invalidateDeckCaches();\n      await onReload();" in source
     assert "onDone={()=>{invalidateInventoryCaches();setShowCaseOpen(false);window.reloadFreshProfile()" in source
@@ -465,8 +983,7 @@ def test_mobile_shop_mutations_use_network_first_data_and_invalidate_caches():
     assert "window.eaInvalidateJson?.('/api/mobile/shop-bootstrap')" in source
     assert "window.eaInvalidateJson?.('/api/shop/sets')" in source
     assert "window.eaInvalidateJson?.('/api/shop/particles/daily')" in source
-    assert "invalidateShopCaches();\n            invalidateInventoryCaches();" in source
-    assert "invalidateShopCaches();\n        invalidateInventoryCaches();" in source
+    assert len(re.findall(r"invalidateShopCaches\(\);\s*invalidateInventoryCaches\(\);", source)) >= 2
     assert source.count("await loadData();") >= 2
 
 
@@ -474,6 +991,12 @@ def test_mobile_squad_mutations_use_network_first_data_and_invalidate_caches():
     source = INDEX.read_text(encoding="utf-8")
 
     assert "function invalidateSquadCaches()" in source
+    assert "const getSquadAvatarUrl = (s) => s?.avatar_url || s?.clan_avatar_url || null" in source
+    assert "const getSquadBannerUrl = (s) => s?.banner_url || s?.clan_banner_url || null" in source
+    assert "url={getSquadAvatarUrl(clan)}" in source
+    assert "getSquadBannerUrl(clan)" in source
+    assert "url={getSquadAvatarUrl(squadPreview.clan)}" in source
+    assert "getSquadBannerUrl(squadPreview.clan)" in source
     assert "window.loadMobileSquadsBootstrap({forceFresh: true})" in source
     assert "window.eaInvalidateJson?.('/api/mobile/squads-bootstrap')" in source
     assert "window.eaInvalidateJson?.('/api/squads/me')" in source
@@ -487,6 +1010,10 @@ def test_mobile_social_and_community_fetches_bypass_browser_cache_after_mutation
 
     assert "function invalidateFriendsCaches()" in source
     assert "function invalidateCommunityCaches()" in source
+    assert "const ANNOUNCE_PIN_BASE_COST = 1500" in source
+    assert "Math.max(0, pinPrice - ANNOUNCE_PIN_BASE_COST)" in source
+    assert "const sub = 500 + wExtra + iExtra + dExtra + pBase" in source
+    assert "total:sub-disc+extraPin" in source
     assert "fetch(_buildAuthUrl('/api/friends/list'), {cache:'no-store'})" in source
     assert "fetch(_buildAuthUrl('/api/recent-opponents'), {cache:'no-store'})" in source
     assert "fetch(_buildAuthUrl('/api/friends/requests'), {cache:'no-store'})" in source

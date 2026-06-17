@@ -5,9 +5,14 @@ import pytest
 from infrastructure.config import DatabaseSettings
 from infrastructure.database import Database
 from infrastructure.notifications import (
+    NOTIFICATION_DEFAULTS,
+    NOTIFICATION_SETTING_BY_CATEGORY,
     REMINDER_DUSTY_WEIGHT,
     choose_reminder_payload,
     classify_generator_event,
+    format_notification_message,
+    format_telegram_notification_message,
+    notification_section,
     next_league_trophies,
     wins_to_next_case,
 )
@@ -57,6 +62,33 @@ def test_dusty_reminder_has_lower_weight():
     assert REMINDER_DUSTY_WEIGHT == 1
 
 
+def test_social_notification_categories_have_settings_messages_and_sections():
+    assert NOTIFICATION_SETTING_BY_CATEGORY["game_invites"] == "notif_game_invites"
+    assert NOTIFICATION_SETTING_BY_CATEGORY["friend_requests"] == "notif_friend_requests"
+    assert NOTIFICATION_DEFAULTS["notif_game_invites"] is True
+    assert NOTIFICATION_DEFAULTS["notif_friend_requests"] is True
+    assert notification_section("game_invites", {"invite_id": 77}) == "friends"
+    assert notification_section("friend_requests", {"request_id": 12}) == "friends"
+    assert "вызывает" in format_notification_message("friendly_battle_invite", {"from_name": "Alice"})
+    assert "друз" in format_notification_message("friend_request_received", {"from_name": "Alice"})
+
+
+def test_telegram_notification_message_uses_html_formatting_where_configured():
+    assert format_telegram_notification_message("generator_new_key", {"keys": 3}) == (
+        "<b>Новый ключ уже готов!</b> - скорее открой кейс! В генераторе уже 3 ключ(ей)."
+    )
+    assert format_telegram_notification_message("generator_full_on_new_key", {"cap": 5}) == (
+        "<b>Генератор уже переполнен</b> - собери ключ и открой кейс, чтобы генератор заработал!"
+    )
+
+
+def test_plain_notification_message_does_not_include_telegram_html():
+    assert format_notification_message("generator_new_key", {"keys": 3}) == (
+        "Новый ключ уже готов! - скорее открой кейс! В генераторе уже 3 ключ(ей)."
+    )
+    assert "<b>" not in format_notification_message("generator_full_on_new_key", {"cap": 5})
+
+
 @pytest.mark.asyncio
 async def test_update_user_settings_accepts_new_notification_flags():
     class FakeDB(Database):
@@ -75,6 +107,7 @@ async def test_update_user_settings_accepts_new_notification_flags():
         notif_reminders=False,
         notif_squad_member_role=False,
         notification_delivery_mode="app_only",
+        social_disable_talkies=True,
         unknown_key=True,
     )
 
@@ -83,5 +116,6 @@ async def test_update_user_settings_accepts_new_notification_flags():
     assert "notif_reminders" in query
     assert "notif_squad_member_role" in query
     assert "notification_delivery_mode" in query
+    assert "social_disable_talkies" in query
     assert "unknown_key" not in query
-    assert args == (True, False, False, "app_only", 42)
+    assert args == (True, False, False, "app_only", True, 42)

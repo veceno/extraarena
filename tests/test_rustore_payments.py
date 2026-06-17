@@ -190,6 +190,54 @@ def test_verify_invoice_rejects_mismatched_invoice_fields(payload, reason):
     assert result["reason"] == reason
 
 
+@pytest.mark.parametrize(
+    "payload, reason",
+    [
+        (
+            confirmed_invoice_payload(
+                developerPayload="",
+                order={"amountCurrent": 9900, "currency": "RUB", "itemCode": "gems_100"},
+            ),
+            "missing_order_id",
+        ),
+        (
+            confirmed_invoice_payload(
+                order={"orderId": "rustore_payment", "amountCurrent": 9900, "currency": "RUB"}
+            ),
+            "missing_product_id",
+        ),
+        (
+            confirmed_invoice_payload(
+                order={"orderId": "rustore_payment", "amountCurrent": 9900, "itemCode": "gems_100"}
+            ),
+            "missing_currency",
+        ),
+        (
+            confirmed_invoice_payload(
+                order={"orderId": "rustore_payment", "currency": "RUB", "itemCode": "gems_100"}
+            ),
+            "missing_amount",
+        ),
+    ],
+)
+def test_verify_invoice_requires_identity_fields(payload, reason):
+    verifier = RuStoreInvoiceVerifier(
+        RuStorePaymentSettings(public_token="token", console_app_id="42"),
+        http_get=lambda *args, **kwargs: FakeResponse(payload),
+    )
+
+    result = verifier.verify_invoice(
+        invoice_id="123456",
+        expected_payment_id="rustore_payment",
+        expected_amount_rub=99,
+        expected_currency="RUB",
+        expected_product_id="gems_100",
+    )
+
+    assert result["success"] is False
+    assert result["reason"] == reason
+
+
 def test_verify_invoice_requires_public_token():
     verifier = RuStoreInvoiceVerifier(RuStorePaymentSettings(public_token=""))
 
@@ -203,3 +251,52 @@ def test_verify_invoice_requires_public_token():
 
     assert result["success"] is False
     assert result["reason"] == "missing_public_token"
+
+
+def test_verify_invoice_marks_provider_request_failure_retryable():
+    def failing_get(*args, **kwargs):
+        raise RuntimeError("temporary rustore outage")
+
+    verifier = RuStoreInvoiceVerifier(
+        RuStorePaymentSettings(public_token="token"),
+        http_get=failing_get,
+    )
+
+    result = verifier.verify_invoice(
+        invoice_id="123456",
+        expected_payment_id="rustore_payment",
+        expected_amount_rub=99,
+        expected_currency="RUB",
+        expected_product_id="gems_100",
+    )
+
+    assert result["success"] is False
+    assert result["reason"] == "provider_request_failed"
+    assert result["retryable"] is True
+    assert result["message"] == "RuStore provider request failed"
+    assert "temporary rustore outage" not in str(result)
+
+
+def test_verify_invoice_hides_public_token_exception_text():
+    class FailingTokenProvider:
+        def get_token(self):
+            raise RuntimeError("secret rustore private key path")
+
+    verifier = RuStoreInvoiceVerifier(
+        RuStorePaymentSettings(public_token=""),
+        token_provider=FailingTokenProvider(),
+    )
+
+    result = verifier.verify_invoice(
+        invoice_id="123456",
+        expected_payment_id="rustore_payment",
+        expected_amount_rub=99,
+        expected_currency="RUB",
+        expected_product_id="gems_100",
+    )
+
+    assert result["success"] is False
+    assert result["reason"] == "public_token_request_failed"
+    assert result["retryable"] is True
+    assert result["message"] == "RuStore Public API request failed"
+    assert "secret rustore private key path" not in str(result)

@@ -318,7 +318,7 @@
       background: rgba(245,146,30,.12);
     }
 
-    .catalog-grid { display: grid; gap: 7px; }
+    .catalog-grid { display: grid; gap: 10px; }
     .category-head {
       margin-top: 8px;
       display: flex;
@@ -337,8 +337,8 @@
     .product {
       position: relative;
       display: grid;
-      gap: 7px;
-      padding: 9px;
+      gap: 8px;
+      padding: 10px;
       border-radius: 10px;
       border: 1px solid rgba(74,61,106,.82);
       background: linear-gradient(180deg, rgba(45,31,82,.72), rgba(26,16,48,.86));
@@ -363,10 +363,11 @@
     }
     .product .price { font-size: 18px; }
     .product.bundle-card {
-      grid-template-columns: minmax(138px, 46%) 1fr;
+      grid-template-columns: minmax(128px, 36%) minmax(0, 1fr);
       align-items: stretch;
-      gap: 9px;
-      padding: 8px;
+      gap: 10px;
+      min-height: 176px;
+      padding: 10px;
     }
     .bundle-card .badge-stack {
       top: 12px;
@@ -376,7 +377,8 @@
     }
     .bundle-art {
       width: 100%;
-      aspect-ratio: 1 / 1;
+      height: 100%;
+      min-height: 156px;
       border-radius: 12px;
       border: 1px solid rgba(167,139,250,.35);
       background:
@@ -394,12 +396,15 @@
     .bundle-content {
       min-width: 0;
       display: grid;
-      gap: 7px;
+      gap: 8px;
       align-content: space-between;
     }
     .bundle-content .product-top {
-      grid-template-columns: 1fr auto;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
     }
+    .bundle-content .product-top p { max-width: 40ch; }
+    .bundle-content .price { justify-self: end; }
     .rewards {
       display: flex;
       flex-wrap: wrap;
@@ -496,6 +501,7 @@
     }
     .gem-card h3 { font-size: 15px; }
     .gem-card p { display: none; }
+    .gem-card .price { justify-self: end; align-self: end; }
     .gem-card .price { font-size: 17px; }
     .gem-main {
       display: grid;
@@ -522,7 +528,7 @@
     }
     .benefit-grid {
       display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(142px, 1fr));
       gap: 6px;
     }
     .benefit {
@@ -770,7 +776,7 @@
       .gem-card .price { font-size: 16px; }
     }
 
-    /* ===== Checkout modal overlay for ?checkout=TOKEN ===== */
+    /* ===== Checkout modal overlay for checkout token ===== */
     body.checkout-overlay-mode .shell,
     body.checkout-overlay-mode .topbar,
     body.checkout-overlay-mode .bottom-nav { display: none; }
@@ -889,7 +895,6 @@
       <a class="nav-btn" href="#catalog" data-route="catalog">Каталог</a>
       <a class="nav-btn" href="#checkout" data-route="checkout">Оплата</a>
       <a class="nav-btn" href="#subscription" data-route="subscription">Тарифы</a>
-      <a class="nav-btn" href="#gifts" data-route="gifts">Подарки</a>
       <a class="nav-btn" href="#history" data-route="history">История</a>
     </nav>
   </div>
@@ -908,7 +913,7 @@
           </div>
         </div>
         <div class="panel-body">
-          <p>Покупка оформляется на сайте магазина через ЮKassa.</p>
+          <p>Покупка оформляется на сайте магазина через Robokassa.</p>
           <div class="picked-line" id="checkout-picked" style="display:none">
             <div class="art" id="checkout-emoji">💎</div>
             <div>
@@ -964,9 +969,8 @@
             <a class="tab active" href="#bundles" data-anchor="bundles">Наборы</a>
             <a class="tab" href="#pass" data-anchor="pass">Подписки</a>
             <a class="tab" href="#gems" data-anchor="gems">Гемы</a>
-            <a class="tab" href="#gifts" data-route="gifts">Подарки</a>
           </div>
-          <div class="notice">Все товары оплачиваются в ₽ через ЮKassa и автоматически зачисляются на аккаунт игрока в Telegram.</div>
+          <div class="notice">Все товары оплачиваются в ₽ через Robokassa и автоматически зачисляются на аккаунт игрока в Telegram.</div>
         </div>
       </article>
 
@@ -976,40 +980,37 @@
           <p>Пассы, бусты и стартовые предложения.</p>
         </div>
 
-        <article class="product bundle-card" data-item="extrapass" data-item-type="extrapass" data-item-name="ExtraPass" data-item-price="179" data-item-emoji="🎟️" data-item-desc="Без рекламы, премиальная дорожка Battle Pass, +2 пресета колод, x1.2 монет, оформление профиля, кланы, история боёв.">
+        <article class="product bundle-card" data-item="extrapass" data-item-type="extrapass" data-item-name="ExtraPass" data-item-price="179" data-item-emoji="🎟️" data-item-desc="Без рекламы, премиальная дорожка Battle Pass, +2 пресета колод, x1.2 монет в боях.">
           <div class="bundle-art">EP</div>
           <div class="bundle-content">
-            <div class="product-top"><div><h3>ExtraPass</h3><p>Без рекламы и премиум-возможности на 30 дней.</p></div><div class="price">179 ₽</div></div>
+            <div class="product-top"><div><h3>ExtraPass</h3><p>Без рекламы, премиальная дорожка Battle Pass, +2 пресета колод, x1.2 монет в боях.</p></div><div class="price">179 ₽</div></div>
             <div class="rewards"><span class="reward">⭐ ExtraPass · 30 дней</span></div>
             <div class="product-actions">
               <button class="cta buy-btn" type="button">Купить</button>
-              <button class="secondary-btn gift-btn" type="button">Подарить</button>
             </div>
           </div>
         </article>
 
-        <article class="product bundle-card" data-item="extrapass_ultra" data-item-type="extrapass_ultra" data-item-name="ExtraPass Ultra" data-item-price="349" data-item-emoji="👑" data-item-desc="Всё из ExtraPass, золотой ник, повышенные шансы, реролл кейсов, расширенная статистика, уникальные позиции Battle Pass, подарок соклановцам.">
+        <article class="product bundle-card" data-item="extrapass_ultra" data-item-type="extrapass_ultra" data-item-name="ExtraPass Ultra" data-item-price="349" data-item-emoji="👑" data-item-desc="Всё из ExtraPass + золотой ник, реролл кейсов, расширенная статистика.">
           <div class="badge-stack"><span class="tag hot">популярно</span></div>
           <div class="bundle-art">UL</div>
           <div class="bundle-content">
-            <div class="product-top"><div><h3>ExtraPass Ultra</h3><p>Максимальный премиум на 30 дней.</p></div><div class="price">349 ₽</div></div>
+            <div class="product-top"><div><h3>ExtraPass Ultra</h3><p>Всё из ExtraPass + золотой ник, реролл кейсов, расширенная статистика.</p></div><div class="price">349 ₽</div></div>
             <div class="rewards"><span class="reward">💫 ExtraPass Ultra · 30 дней</span></div>
             <div class="product-actions">
               <button class="cta buy-btn" type="button">Купить</button>
-              <button class="secondary-btn gift-btn" type="button">Подарить</button>
             </div>
           </div>
         </article>
 
-        <article class="product bundle-card" data-item="starter_boost" data-item-type="starter_boost" data-item-name="Starter Boost" data-item-price="499" data-item-emoji="🚀" data-item-desc="ExtraPass на 30 дней, гемы, монеты и кейсы T2/T3. С активным ExtraPass — больше гемов.">
+        <article class="product bundle-card" data-item="starter_boost" data-item-type="starter_boost" data-item-name="Starter Boost" data-item-price="499" data-item-emoji="🚀" data-item-desc="ExtraPass на 30 дней, гемы, монеты и кейсы.">
           <div class="badge-stack"><span class="tag sale">набор</span></div>
           <div class="bundle-art">SB</div>
           <div class="bundle-content">
-            <div class="product-top"><div><h3>Starter Boost</h3><p>ExtraPass + гемы + кейсы — максимальный старт.</p></div><div class="price">499 ₽</div></div>
-            <div class="rewards"><span class="reward">⭐ ExtraPass · 30 дней</span><span class="reward">💎 500–1200 гемов</span><span class="reward">📦 T2 + T3 кейсы</span></div>
+            <div class="product-top"><div><h3>Starter Boost</h3><p>ExtraPass на 30 дней, гемы, монеты и кейсы.</p></div><div class="price">499 ₽</div></div>
+            <div class="rewards"><span class="reward">⭐ Pass · 💎 гемы · 🪙 монеты · 📦 кейсы</span></div>
             <div class="product-actions">
               <button class="cta buy-btn" type="button">Купить</button>
-              <button class="secondary-btn gift-btn" type="button">Подарить</button>
             </div>
           </div>
         </article>
@@ -1030,7 +1031,7 @@
                 <div class="art">🎟️</div>
                 <div>
                   <h3>ExtraPass</h3>
-                  <p>Без рекламы, премиальная дорожка Battle Pass, +2 пресета колод, x1.2 монет в боях, оформление профиля, кланы, история боёв и приоритетная поддержка.</p>
+                  <p>Без рекламы, премиальная дорожка Battle Pass, +2 пресета колод, x1.2 монет в боях.</p>
                 </div>
                 <div class="price">179 ₽</div>
               </div>
@@ -1039,17 +1040,12 @@
                 <span class="benefit">Премиальная дорожка Battle Pass</span>
                 <span class="benefit">+2 пресета колод</span>
                 <span class="benefit">x1.2 монет в боях</span>
-                <span class="benefit">Оформление профиля</span>
-                <span class="benefit">Создание кланов</span>
-                <span class="benefit">История боёв</span>
-                <span class="benefit">Приоритетная поддержка</span>
               </div>
               <div class="purchase-modes">
                 <strong>Покупка на 30 дней</strong>
                 <span>Разовая покупка даёт 30 дней ExtraPass. Автопродление — в будущем.</span>
                 <div class="purchase-actions">
                   <button class="cta buy-btn" type="button" data-item="extrapass">Купить 30 дней</button>
-                  <button class="secondary-btn gift-btn" type="button" data-item="extrapass">Подарить</button>
                 </div>
               </div>
             </div>
@@ -1059,25 +1055,21 @@
                 <div class="art">👑</div>
                 <div>
                   <h3>ExtraPass Ultra</h3>
-                  <p>Всё из ExtraPass, золотой ник, повышенные шансы, реролл кейсов, расширенная статистика, уникальные позиции Battle Pass и подарок соклановцам.</p>
+                  <p>Всё из ExtraPass + золотой ник, реролл кейсов, расширенная статистика.</p>
                 </div>
                 <div class="price">349 ₽</div>
               </div>
               <div class="benefit-grid" aria-label="Преимущества ExtraPass Ultra">
                 <span class="benefit">Всё из ExtraPass</span>
                 <span class="benefit">Золотой ник</span>
-                <span class="benefit">Повышенные шансы</span>
                 <span class="benefit">Реролл кейсов</span>
                 <span class="benefit">Расширенная статистика</span>
-                <span class="benefit">Уникальные позиции Battle Pass</span>
-                <span class="benefit">Подарок соклановцам</span>
               </div>
               <div class="purchase-modes">
                 <strong>Покупка на 30 дней</strong>
                 <span>Разовая покупка даёт 30 дней Ultra. Автопродление — в будущем.</span>
                 <div class="purchase-actions">
                   <button class="cta buy-btn" type="button" data-item="extrapass_ultra">Купить 30 дней</button>
-                  <button class="secondary-btn gift-btn" type="button" data-item="extrapass_ultra">Подарить</button>
                 </div>
               </div>
             </div>
@@ -1122,21 +1114,6 @@
       </div>
     </section>
 
-    <!-- ==================== GIFTS PAGE ==================== -->
-    <section class="page" id="gifts" data-title="Подарки">
-      <article class="panel">
-        <div class="panel-head">
-          <div><div class="eyebrow">Подарки</div><h1>Подарить товар игроку</h1></div>
-        </div>
-        <div class="panel-body checkout-grid">
-          <div class="field"><label for="giftId">Telegram ID получателя</label><input id="giftId" type="text" inputmode="numeric" placeholder="Например, 913552"></div>
-          <div class="notice">Подарки доступны для ExtraPass и ExtraPass Ultra. Выберите товар в каталоге и укажите получателя.</div>
-          <div class="notice">Поддержка подарков для других товаров появится позже.</div>
-          <a class="cta" href="#catalog" data-route="catalog" style="display:inline-grid;place-items:center">Перейти в каталог</a>
-        </div>
-      </article>
-    </section>
-
     <!-- ==================== HISTORY PAGE ==================== -->
     <section class="page" id="history" data-title="История">
       <article class="panel">
@@ -1164,7 +1141,7 @@
             <tr><td>Поддержка</td><td>обычная</td><td>приоритетная</td><td>приоритетная</td></tr>
             <tr><td>Повышенные шансы</td><td>—</td><td>—</td><td>✓</td></tr>
             <tr><td>Реролл кейсов</td><td>—</td><td>—</td><td>✓</td></tr>
-            <tr><td>Подарок соклановцам</td><td>—</td><td>—</td><td>✓</td></tr>
+            <tr><td>Бонус соклановцам</td><td>—</td><td>—</td><td>✓</td></tr>
           </table>
         </div>
       </article>
@@ -1190,7 +1167,7 @@
           <a class="legal-link" href="/extraShop/privacy" target="_blank" rel="noopener noreferrer"><strong>Политика конфиденциальности</strong><p>Как используются данные при оплате.</p></a>
           <a class="legal-link" href="/extraShop/refund" target="_blank" rel="noopener noreferrer"><strong>Политика возврата</strong><p>Условия возврата цифровых товаров.</p></a>
           <div class="legal-link"><strong>Получение цифрового товара</strong><p>Зачисление идёт автоматически на аккаунт ExtraArena через Telegram после успешной оплаты, обычно мгновенно, в редких случаях до 24 часов.</p></div>
-          <div class="legal-link"><strong>Контакты поддержки</strong><p>personal@laveqox.ru · Telegram @lqsup</p></div>
+          <div class="legal-link"><strong>Контакты поддержки</strong><p>Email support@laveqox.ru · Telegram <a href="https://t.me/extraarena_supbot" target="_blank" rel="noopener noreferrer">@extraarena_supbot</a> · MAX <a href="https://max.ru/se13279035_1_bot" target="_blank" rel="noopener noreferrer">se13279035_1_bot</a> · Онлайн support.laveqox.ru (скоро)</p></div>
           <div class="legal-link"><strong>Реквизиты</strong><p>Самозанятый Корпусов Дмитрий Дмитриевич · ИНН 781301929373</p></div>
         </div>
       </article>
@@ -1203,7 +1180,7 @@
         <a href="/extraShop/refund" target="_blank" rel="noopener noreferrer">Возвраты</a>
       </div>
       <p>Самозанятый Корпусов Дмитрий Дмитриевич · ИНН 781301929373</p>
-      <p>ExtraShop · цифровые товары зачисляются на аккаунт ExtraArena после успешной оплаты через ЮKassa.</p>
+      <p>ExtraShop · цифровые товары зачисляются на аккаунт ExtraArena после успешной оплаты через Robokassa.</p>
     </footer>
   </main>
 
@@ -1225,7 +1202,6 @@
 
 <nav class="bottom-nav" aria-label="Нижняя навигация">
   <a href="#catalog" data-route="catalog"><b>▦</b>Каталог</a>
-  <a href="#gifts" data-route="gifts"><b>◇</b>Подарки</a>
   <a href="#checkout" data-route="checkout"><b>₽</b>Оплата</a>
   <a href="#subscription" data-route="subscription"><b>★</b>Тарифы</a>
 </nav>
@@ -1233,11 +1209,39 @@
 <script>
 (function() {
   var params = new URLSearchParams(location.search);
+  var hashParams = new URLSearchParams((location.hash || '').replace(/^#/, ''));
+  var CHECKOUT_JTI_STORAGE_KEY = 'extra_shop_checkout_jti';
+  var CHECKOUT_LEGACY_TOKEN_STORAGE_KEY = 'extra_shop_checkout_legacy_token';
+  var CHECKOUT_SUMMARY_STORAGE_KEY = 'extra_shop_checkout_summary';
+  var checkoutJti = params.get('checkout_jti') || hashParams.get('checkout_jti') || hashParams.get('checkout');
   var token = params.get('checkout');
+  if (checkoutJti || token) {
+    try {
+      if (checkoutJti) sessionStorage.setItem(CHECKOUT_JTI_STORAGE_KEY, checkoutJti);
+      if (token) sessionStorage.setItem(CHECKOUT_LEGACY_TOKEN_STORAGE_KEY, token);
+    } catch (_) {}
+    try {
+      params.delete('checkout_jti');
+      params.delete('checkout');
+      hashParams.delete('checkout_jti');
+      hashParams.delete('checkout');
+      var cleanSearch = params.toString();
+      var cleanHash = hashParams.toString();
+      var cleanUrl = location.pathname
+        + (cleanSearch ? '?' + cleanSearch : '')
+        + (cleanHash ? '#' + cleanHash : '');
+      history.replaceState(null, '', cleanUrl || location.pathname);
+    } catch (_) {}
+  } else {
+    try {
+      checkoutJti = sessionStorage.getItem(CHECKOUT_JTI_STORAGE_KEY) || '';
+      token = sessionStorage.getItem(CHECKOUT_LEGACY_TOKEN_STORAGE_KEY) || '';
+    } catch (_) {}
+  }
   var historyToken = params.get('history');
 
-  // ==================== CHECKOUT OVERLAY (has ?checkout=) ====================
-  if (token) {
+  // ==================== CHECKOUT OVERLAY (has checkout session) ====================
+  if (checkoutJti || token) {
     document.body.className = 'checkout-overlay-mode';
     var overlay = document.getElementById('checkout-overlay');
 
@@ -1263,17 +1267,22 @@
     var payload = null;
     var error = null;
 
-    var parts = token.split('.');
-    if (parts.length !== 2) {
-      error = 'Некорректный токен оплаты.';
-    } else {
-      payload = dec(parts[0]);
-      if (!payload) {
-        error = 'Не удалось прочитать данные токена.';
-      } else if (Date.now() / 1000 > (payload.exp || 0)) {
-        payload = null;
-        error = 'Время сессии истекло. Пожалуйста, выберите товар заново.';
+    if (token) {
+      var parts = token.split('.');
+      if (parts.length !== 2) {
+        error = 'Некорректный токен оплаты.';
+      } else {
+        payload = dec(parts[0]);
+        if (!payload) {
+          error = 'Не удалось прочитать данные токена.';
+        } else if (Date.now() / 1000 > (payload.exp || 0)) {
+          payload = null;
+          error = 'Время сессии истекло. Пожалуйста, выберите товар заново.';
+        }
       }
+    }
+    if (!payload) {
+      try { payload = JSON.parse(sessionStorage.getItem(CHECKOUT_SUMMARY_STORAGE_KEY) || '{}'); } catch (_) { payload = {}; }
     }
 
     if (error) {
@@ -1287,8 +1296,8 @@
       return;
     }
 
-    var itemName = payload.item_name || payload.item_type || 'Товар';
-    var amountRub = (payload.amount_rub || 0).toFixed(2);
+    var itemName = payload.item_name || payload.item_type || 'Товар ExtraArena';
+    var amountRub = Number(payload.amount_rub || payload.amount || 0).toFixed(2);
     var emoji = '💎';
     if (payload.item_type === 'extrapass') emoji = '🎟️';
     else if (payload.item_type === 'extrapass_ultra') emoji = '👑';
@@ -1300,7 +1309,7 @@
       overlay.innerHTML =
         '<div class="header">' +
           '<div class="logo"><span class="logo-mark">ES</span>ExtraShop</div>' +
-          '<p class="eyebrow">Оплата через ЮKassa</p>' +
+          '<p class="eyebrow">Оплата через Robokassa</p>' +
         '</div>' +
         '<div class="divider"></div>' +
         '<div class="picked-line">' +
@@ -1340,14 +1349,14 @@
           '<span>3. Выключите VPN.</span>' +
           '<span>4. Вернитесь на эту страницу и продолжите.</span>' +
         '</div>' +
-        '<div class="notice" style="border-color:rgba(245,146,30,.3);background:rgba(245,146,30,.06)">Это не прихоть ExtraArena: ЮKassa и банки часто не принимают оплату через VPN и встроенный браузер Telegram.</div>' +
+        '<div class="notice" style="border-color:rgba(245,146,30,.3);background:rgba(245,146,30,.06)">Это не прихоть ExtraArena: Robokassa и банки могут не принимать оплату через VPN и встроенный браузер Telegram.</div>' +
         '<div class="steps">' +
           '<strong>Когда VPN выключен:</strong>' +
           '<span>1. Вернитесь на эту страницу.</span>' +
-          '<span>2. Нажмите кнопку ниже, чтобы подготовить ссылку ЮKassa.</span>' +
+          '<span>2. Нажмите кнопку ниже, чтобы подготовить ссылку Robokassa.</span>' +
         '</div>' +
         '<button class="cta" id="vpn-ready-btn" type="button">VPN отключен, продолжить</button>' +
-        '<div class="notice">Ссылка ЮKassa создастся только после подтверждения. Если вы всё ещё внутри Telegram-браузера, сначала откройте внешний браузер через меню ⋯.</div>';
+        '<div class="notice">Ссылка Robokassa создастся только после подтверждения. Если вы всё ещё внутри Telegram-браузера, сначала откройте внешний браузер через меню ⋯.</div>';
 
       var btn = document.getElementById('vpn-ready-btn');
       if (btn) btn.addEventListener('click', createPayment);
@@ -1379,12 +1388,12 @@
           '<span>Согласен с <a href=\"/extraShop/oferta\" target=\"_blank\" rel=\"noopener noreferrer\">офертой</a>, <a href=\"/extraShop/privacy\" target=\"_blank\" rel=\"noopener noreferrer\">политикой конфиденциальности</a>, <a href=\"/extraShop/refund\" target=\"_blank\" rel=\"noopener noreferrer\">правилами возврата</a>.</span>' +
         '</label>' +
         '<button class="cta" id="open-pay-btn" type="button">Открыть оплату во внешнем браузере</button>' +
-        '<button class="copy-btn" id="copy-pay-btn" type="button">Скопировать прямую ссылку ЮKassa</button>' +
+        '<button class="copy-btn" id="copy-pay-btn" type="button">Скопировать прямую ссылку Robokassa</button>' +
         '<div class="payment-link-wrap">' +
-          '<label for="payment-link">Прямая ссылка ЮKassa</label>' +
+          '<label for="payment-link">Прямая ссылка Robokassa</label>' +
           '<input class="payment-link" id="payment-link" type="text" readonly value="' + escAttr(confirmationUrl) + '">' +
         '</div>' +
-        '<div class="steps"><strong>Дальше:</strong><span>1. Нажмите «Открыть оплату».</span><span>2. Оплатите на стороне ЮKassa.</span><span>3. Если браузер попросит VPN — он должен быть выключен.</span></div>' +
+        '<div class="steps"><strong>Дальше:</strong><span>1. Нажмите «Открыть оплату».</span><span>2. Оплатите на стороне Robokassa.</span><span>3. Если браузер попросит VPN — он должен быть выключен.</span></div>' +
         '<div class="notice">После оплаты вы будете перенаправлены обратно в игру. Награды зачисляются автоматически.</div>';
 
       var openBtn = document.getElementById('open-pay-btn');
@@ -1399,7 +1408,7 @@
       overlay.innerHTML =
         '<div class="header">' +
           '<div class="logo"><span class="logo-mark">ES</span>ExtraShop</div>' +
-          '<p class="eyebrow">Оплата через ЮKassa</p>' +
+          '<p class="eyebrow">Оплата через Robokassa</p>' +
         '</div>' +
         '<div class="divider"></div>' +
         '<div class="picked-line">' +
@@ -1421,13 +1430,6 @@
 
     function openExternalPayment(url) {
       if (!url) return;
-      var link = document.createElement('a');
-      link.href = url;
-      link.target = '_blank';
-      link.rel = 'noopener noreferrer';
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
       var opened = window.open(url, '_blank', 'noopener,noreferrer');
       if (!opened) window.location.href = url;
     }
@@ -1435,10 +1437,10 @@
     function setCopyState(ok) {
       var cb = document.getElementById('copy-pay-btn');
       if (!cb) return;
-      cb.textContent = ok ? 'Ссылка ЮKassa скопирована' : 'Не удалось скопировать: выделите поле ниже';
+      cb.textContent = ok ? 'Ссылка Robokassa скопирована' : 'Не удалось скопировать: выделите поле ниже';
       cb.classList.toggle('copied', ok);
       setTimeout(function() {
-        cb.textContent = 'Скопировать прямую ссылку ЮKassa';
+        cb.textContent = 'Скопировать прямую ссылку Robokassa';
         cb.classList.remove('copied');
       }, 2800);
     }
@@ -1483,7 +1485,7 @@
       var fetchOptions = {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token: token })
+        body: JSON.stringify(checkoutJti ? { checkout_jti: checkoutJti } : { token: token })
       };
       if (window.AbortController) {
         controller = new AbortController();
@@ -1514,7 +1516,7 @@
       .catch(function(err) {
         if (timeoutId) clearTimeout(timeoutId);
         if (err && err.name === 'AbortError') {
-          renderError('ЮKassa слишком долго отвечает. Проверьте, что VPN выключен, и попробуйте ещё раз.', true);
+          renderError('Robokassa слишком долго отвечает. Проверьте, что VPN выключен, и попробуйте ещё раз.', true);
         } else {
           renderError('Ошибка сети. Проверьте соединение и попробуйте снова.', true);
         }
@@ -1604,7 +1606,9 @@
   }
 
   // ==================== PUBLIC SHOP (no ?checkout) ====================
-  var routes = ["checkout", "catalog", "gifts", "history", "subscription", "legal"];
+  var GIFTS_BETA_ENABLED = false;
+  var routes = ["checkout", "catalog", "history", "subscription", "legal"];
+  if (GIFTS_BETA_ENABLED) routes.splice(2, 0, "gifts");
 
   var selectedItemType = null;
   var selectedPackageType = null;
@@ -1690,7 +1694,7 @@
       if (summaryEl) summaryEl.innerHTML =
         '<div class="summary-row"><span>Товар</span><strong>' + esc(selectedItemName) + '</strong></div>' +
         '<div class="summary-row"><span>Тип покупки</span><strong>Разово</strong></div>' +
-        '<div class="summary-row"><span>Способ оплаты</span><strong>ЮKassa · карта / СБП</strong></div>' +
+        '<div class="summary-row"><span>Способ оплаты</span><strong>Robokassa · карта / СБП</strong></div>' +
         '<div class="summary-row"><span>Итого</span><strong class="price">' + selectedItemPrice + ' ₽</strong></div>';
       if (payBtn) { payBtn.disabled = false; payBtn.textContent = 'Оплатить ' + selectedItemPrice + ' ₽'; }
     } else {
@@ -1719,10 +1723,19 @@
     return d.innerHTML;
   }
 
+  function escAttr(s) {
+    return String(s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
   function productElementFor(dataItem, fallback) {
     if (!dataItem) return fallback || null;
     var el = document.querySelector('[data-item="' + dataItem + '"][data-item-name]');
     return el || fallback || null;
+  }
+
+  function catalogSelectionNeedsCheckoutRoute() {
+    var side = document.querySelector('.side');
+    return !side || window.getComputedStyle(side).display === 'none';
   }
 
   function startPublicCheckout() {
@@ -1771,10 +1784,18 @@
     .then(function(result) {
       if (payBtn) { payBtn.disabled = false; payBtn.textContent = 'Оплатить ' + selectedItemPrice + ' ₽'; }
 
-      if (result.data.success && result.data.checkout_url) {
+      if (result.data.success && result.data.checkout_jti) {
+        try {
+          sessionStorage.setItem(CHECKOUT_JTI_STORAGE_KEY, result.data.checkout_jti);
+          sessionStorage.setItem(CHECKOUT_SUMMARY_STORAGE_KEY, JSON.stringify({
+            item_type: selectedItemType,
+            item_name: selectedItemName,
+            amount_rub: selectedItemPrice,
+          }));
+        } catch (_) {}
+        window.location.href = result.data.checkout_url || ('/extraShop#checkout_jti=' + encodeURIComponent(result.data.checkout_jti));
+      } else if (result.data.success && result.data.checkout_url) {
         window.location.href = result.data.checkout_url;
-      } else if (result.data.success && result.data.token) {
-        window.location.href = '/extraShop?checkout=' + encodeURIComponent(result.data.token);
       } else {
         showCheckoutError(result.data.message || result.data.error || 'Ошибка создания платежа');
       }
@@ -1814,6 +1835,7 @@
     var giftBtn = event.target.closest('.gift-btn');
     if (giftBtn && !event.target.closest('[data-route]')) {
       event.preventDefault();
+      if (!GIFTS_BETA_ENABLED) return;
       // In the future, we can set the selected product as a gift target
       setRoute('gifts');
       return;
@@ -1834,6 +1856,7 @@
         '',
         gemCard.getAttribute('data-product-code') || ''
       );
+      if (catalogSelectionNeedsCheckoutRoute()) setRoute('checkout');
       return;
     }
   });
@@ -1900,13 +1923,31 @@
           var badgesHtml = '';
           if (p.badge) badgesHtml += '<div class="badge-stack"><span class="tag sale">' + esc(p.badge) + '</span></div>';
 
-          var imageHtml = p.image_url
-            ? '<img src="' + esc(p.image_url) + '" style="width:48px;height:48px;border-radius:8px;object-fit:cover" alt="">'
-            : '<div class="art">💎</div>';
-
           card.innerHTML = badgesHtml +
-            '<div class="gem-main">' + imageHtml + '<div><h3>' + esc(p.name) + '</h3>' + (p.description ? '<p style="font-size:11px;color:var(--sub);margin:2px 0 0">' + esc(p.description.substring(0, 80)) + '</p>' : '') + '</div></div>' +
-            '<div class="price">' + p.price + ' ₽</div>';
+            '<div class="gem-main"></div>' +
+            '<div class="price">' + p.price + ' ₽</div>' +
+            '<button class="buy-btn" type="button" data-item="' + escAttr(p.code) + '">Купить</button>';
+
+          var gemMain = card.querySelector('.gem-main');
+          if (p.image_url) {
+            var image = document.createElement('img');
+            image.width = 48;
+            image.height = 48;
+            image.style.borderRadius = '8px';
+            image.style.objectFit = 'cover';
+            image.alt = '';
+            image.src = p.image_url;
+            gemMain.appendChild(image);
+          } else {
+            var art = document.createElement('div');
+            art.className = 'art';
+            art.textContent = '💎';
+            gemMain.appendChild(art);
+          }
+
+          var textWrap = document.createElement('div');
+          textWrap.innerHTML = '<h3>' + esc(p.name) + '</h3>' + (p.description ? '<p style="font-size:11px;color:var(--sub);margin:2px 0 0">' + esc(p.description.substring(0, 80)) + '</p>' : '');
+          gemMain.appendChild(textWrap);
 
           gemsGrid.appendChild(card);
         });
@@ -1916,8 +1957,9 @@
         catalogGrid.insertBefore(section, firstChild);
         catalogGrid.insertBefore(gemsGrid, firstChild);
       })
-      .catch(function() {
-        // Fallback to static catalog — silently ignore
+      .catch(function(error) {
+        console.warn('[ExtraShop] Dynamic products unavailable:', error);
+        // Fallback to static catalog.
       });
   })();
 })();

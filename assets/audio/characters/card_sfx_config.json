@@ -1,0 +1,337 @@
+{
+  "version": 1,
+  "cards": {
+    "8": {
+      "name": "Глитч-Удар",
+      "texts": {
+        "targeting:damage_1_5": {
+          "type": "targetHint",
+          "text": "Выбери цель для глитч-удара"
+        }
+      }
+    },
+    "10": {
+      "name": "Импульс Бездны",
+      "texts": {
+        "mechanic:aoe_damage_2": {
+          "type": "screenText",
+          "text": "Импульс Бездны",
+          "durationMs": 1500
+        }
+      }
+    },
+    "13": {
+      "name": "Черная Дыра",
+      "texts": {
+        "targeting:delete_target": {
+          "type": "targetHint",
+          "text": "Выбери врага для Чёрной Дыры"
+        }
+      }
+    },
+    "18": {
+      "name": "П.Е.К.К.А.",
+      "sounds": {
+        "deploy": {
+          "src": "/assets/audio/characters/018_pekka/pekka_deploy.mp3",
+          "basePolicy": "replace",
+          "volume": 0.82
+        },
+        "attack": {
+          "src": "/assets/audio/characters/018_pekka/pekka_hit.mp3",
+          "basePolicy": "replace",
+          "volume": 0.82
+        },
+        "damage": {
+          "src": "/assets/audio/characters/018_pekka/pekka_hit.mp3",
+          "basePolicy": "replace",
+          "volume": 0.82
+        }
+      },
+      "visuals": {
+        "deploy": {
+          "type": "backgroundFlash",
+          "color": "#a78bfa",
+          "durationMs": 3000,
+          "intensity": 0.32
+        }
+      }
+    },
+    "19": {
+      "name": "Саб-Зиро",
+      "visuals": {
+        "deploy": {
+          "type": "backgroundFlash",
+          "color": "#38bdf8",
+          "durationMs": 3300,
+          "intensity": 0.62
+        },
+        "mechanic:battlecry_freeze": {
+          "type": "backgroundFlash",
+          "color": "#0ea5e9",
+          "durationMs": 3300,
+          "intensity": 0.68
+        },
+        "mechanic:freeze": {
+          "type": "backgroundFlash",
+          "color": "#0ea5e9",
+          "durationMs": 3300,
+          "intensity": 0.68
+        }
+      },
+      "texts": {
+        "targeting:battlecry_freeze": {
+          "type": "targetHint",
+          "text": "Выбери врага для ледяного захвата"
+        }
+      }
+    },
+    "20": {
+      "name": "Канеки Кен",
+      "texts": {
+        "targeting:consume_ally": {
+          "type": "targetHint",
+          "text": "Выбери союзника для поглощения"
+        }
+      }
+    },
+    "21": {
+      "name": "Геральт",
+      "texts": {
+        "targeting:choose_shield_damage": {
+          "type": "targetHint",
+          "text": "Выбери цель для ведьмачьего знака"
+        }
+      }
+    },
+    "22": {
+      "name": "Дио Брандо",
+      "texts": {
+        "mechanic:aoe_freeze": {
+          "type": "screenText",
+          "text": "Время остановлено",
+          "durationMs": 1500
+        }
+      }
+    },
+    "25": {
+      "name": "Сайтама",
+      "visuals": {
+        "mechanic:instant_kill": {
+          "type": "backgroundFlash",
+          "color": "#ef4444",
+          "durationMs": 3400,
+          "intensity": 0.76
+        }
+      },
+      "texts": {
+        "attack": {
+          "type": "screenText",
+          "text": "Один удар",
+          "durationMs": 1400
+        },
+        "attacktargeting:instant_kill": {
+          "type": "targetHint",
+          "text": "Выбери цель для ваншота"
+        }
+      }
+    },
+    "26": {
+      "name": "Мидория",
+      "visuals": {
+        "deploy": {
+          "type": "backgroundFlash",
+          "color": "#d946ef",
+          "durationMs": 3400,
+          "intensity": 0.6
+        }
+      },
+      "texts": {
+        "mechanic:cast_random_spell": {
+          "type": "screenText",
+          "defaultText": "Случайная суперспособность",
+          "durationMs": 1600,
+          "detailText": {
+            "midoriya_texas_smash": "Техасский удар",
+            "midoriya_recovery": "Восстановление",
+            "midoriya_blackwhip": "Чёрный кнут",
+            "midoriya_full_cowl": "Полный покров"
+          }
+        }
+      }
+    },
+    "27": {
+      "name": "Скелет",
+      "sounds": {
+        "deploy": {
+          "src": "/assets/audio/characters/027_skeleton/skeleton_ambient.mp3",
+          "basePolicy": "replace",
+          "volume": 0.82
+        },
+        "damage": {
+          "src": "/assets/audio/characters/027_skeleton/skeleton_hurt.mp3",
+          "basePolicy": "replace",
+          "volume": 0.82
+        },
+        "death": {
+          "src": "/assets/audio/characters/027_skeleton/skeleton_death.mp3",
+          "basePolicy": "replace",
+          "volume": 0.82
+        }
+      },
+      "visuals": {
+        "death": {
+          "type": "backgroundFlash",
+          "color": "#e5e7eb",
+          "durationMs": 2400,
+          "intensity": 0.42
+        }
+      }
+    },
+    "29": {
+      "name": "Штурмовик",
+      "sounds": {
+        "attack": {
+          "src": "/assets/audio/characters/029_stormtrooper/stormtrooper_e11_blaster.mp3",
+          "basePolicy": "replace",
+          "volume": 0.82
+        },
+        "death": {
+          "src": "/assets/audio/characters/029_stormtrooper/stormtrooper_death.mp3",
+          "basePolicy": "replace",
+          "volume": 0.82
+        }
+      },
+      "visuals": {
+        "attack": {
+          "type": "backgroundFlash",
+          "color": "#ef4444",
+          "centerColor": "#f8fafc",
+          "durationMs": 1800,
+          "intensity": 0.48
+        }
+      }
+    },
+    "33": {
+      "name": "Маления",
+      "visuals": {
+        "deploy": {
+          "type": "backgroundFlash",
+          "color": "#4ade80",
+          "durationMs": 3200,
+          "intensity": 0.52
+        },
+        "attack": {
+          "type": "backgroundFlash",
+          "color": "#10b981",
+          "durationMs": 3600,
+          "intensity": 0.58
+        },
+        "mechanic:lifesteal": {
+          "type": "backgroundFlash",
+          "color": "#10b981",
+          "durationMs": 3600,
+          "intensity": 0.58
+        }
+      }
+    },
+    "34": {
+      "name": "Крипер",
+      "sounds": {
+        "deploy": {
+          "src": "/assets/audio/characters/creeper/creeper_spawn_hiss.mp3",
+          "basePolicy": "replace",
+          "volume": 0.82
+        },
+        "death": {
+          "src": "/assets/audio/characters/creeper/creeper_death_explosion.mp3",
+          "basePolicy": "replace",
+          "volume": 0.82
+        },
+        "mechanic:deathrattle_aoe_damage_2": {
+          "src": "/assets/audio/characters/creeper/creeper_death_explosion.mp3",
+          "basePolicy": "replace",
+          "volume": 0.82
+        }
+      },
+      "visuals": {
+        "deploy": {
+          "type": "backgroundFlash",
+          "color": "#22c55e",
+          "durationMs": 2800,
+          "intensity": 0.48
+        },
+        "death": {
+          "type": "backgroundFlash",
+          "color": "#ef4444",
+          "durationMs": 3600,
+          "intensity": 0.82
+        },
+        "mechanic:deathrattle_aoe_damage_2": {
+          "type": "backgroundFlash",
+          "color": "#ef4444",
+          "durationMs": 3600,
+          "intensity": 0.82
+        }
+      }
+    },
+    "35": {
+      "name": "Фрирен",
+      "visuals": {
+        "deploy": {
+          "type": "backgroundFlash",
+          "color": "#5eead4",
+          "durationMs": 3200,
+          "intensity": 0.5
+        },
+        "mechanic:battlecry_heal_target_5": {
+          "type": "backgroundFlash",
+          "color": "#86efac",
+          "durationMs": 3200,
+          "intensity": 0.54
+        },
+        "mechanic:heal": {
+          "type": "backgroundFlash",
+          "color": "#86efac",
+          "durationMs": 3200,
+          "intensity": 0.54
+        }
+      },
+      "texts": {
+        "targeting:battlecry_heal_target_5": {
+          "type": "targetHint",
+          "text": "Выбери цель для заклинания Фрирен"
+        }
+      }
+    },
+    "36": {
+      "name": "Юни",
+      "visuals": {
+        "deploy": {
+          "type": "backgroundFlash",
+          "color": "#5eead4",
+          "durationMs": 3200,
+          "intensity": 0.5
+        },
+        "mechanic:battlecry_heal_target_3": {
+          "type": "backgroundFlash",
+          "color": "#86efac",
+          "durationMs": 3200,
+          "intensity": 0.54
+        },
+        "mechanic:heal": {
+          "type": "backgroundFlash",
+          "color": "#86efac",
+          "durationMs": 3200,
+          "intensity": 0.54
+        }
+      },
+      "texts": {
+        "targeting:battlecry_heal_target_3": {
+          "type": "targetHint",
+          "text": "Выбери цель для исцеления"
+        }
+      }
+    }
+  }
+}

@@ -39,6 +39,7 @@ class ClassicParams:
     sudden_death_enabled: bool = False
     sudden_death_damage_start: int = 1
     sudden_death_damage_step: int = 1
+    overdraw_to_discard: bool = False
     bots_allowed: bool = True
 
 
@@ -210,7 +211,16 @@ def normalize_mode_id(mode_id: str | None) -> str:
 
 def resolve_mode_config(mode_id: str | None) -> ModeConfig:
     normalized = normalize_mode_id(mode_id)
-    return MODE_CONFIGS.get(normalized, MODE_CONFIGS["classic"])
+    config = MODE_CONFIGS.get(normalized)
+    if config is not None:
+        return config
+    return ModeConfig(
+        mode_id=normalized,
+        ruleset="classic",
+        label=f"Unknown mode: {normalized}",
+        available=False,
+        rewards=NO_REWARDS,
+    )
 
 
 def is_mode_available(mode_id: str | None) -> bool:
@@ -228,6 +238,11 @@ def mode_unavailable_payload(mode_id: str | None) -> dict[str, str]:
 
 def should_apply_rewards(mode_id: str | None) -> bool:
     return resolve_mode_config(mode_id).rewards.enabled
+
+
+def is_train_v2_bot_safe_mode(mode_id: str | None) -> bool:
+    config = resolve_mode_config(mode_id)
+    return config.mode_id in {"classic", "training"}
 
 
 def serialize_mode_config(config: ModeConfig) -> dict[str, object]:

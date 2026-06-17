@@ -1,0 +1,718 @@
+import json
+
+import pytest
+from aiohttp.test_utils import TestClient, TestServer
+
+from infrastructure.config import DatabaseSettings
+from infrastructure.database import Database
+from onboarding_tutorial import ONBOARDING_MIDORIA_ASSET, TUTORIAL_FINAL_STEP, TutorialBattleEngine
+from web import server as web_server
+
+
+USER_ID = 12_345
+
+
+class _AsyncContext:
+    def __init__(self, value=None):
+        self.value = value
+
+    async def __aenter__(self):
+        return self.value
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
+class _NewbiePathClaimConn:
+    def __init__(self, progress, *, row_exists=True):
+        self.progress = progress
+        self.row_exists = row_exists
+        self.fetches = []
+        self.executed = []
+        self.coins_granted = 0
+
+    def transaction(self):
+        return _AsyncContext()
+
+    async def fetchrow(self, query, *args):
+        self.fetches.append((query, args))
+        if "SELECT newbie_path_progress" in query:
+            if not self.row_exists:
+                return None
+            return {"newbie_path_progress": self.progress}
+        raise AssertionError(f"unexpected fetchrow: {query}")
+
+    async def execute(self, query, *args):
+        self.executed.append((query, args))
+        if "SET newbie_path_progress" in query:
+            self.progress = args[1]
+        if "UPDATE users SET coins" in query:
+            self.coins_granted += int(args[1])
+        return "OK"
+
+
+class _NewbiePathClaimPool:
+    def __init__(self, conn):
+        self.conn = conn
+
+    def acquire(self):
+        return _AsyncContext(self.conn)
+
+
+class _NewbiePathClaimDB(Database):
+    def __init__(self, conn):
+        super().__init__(DatabaseSettings("localhost", 5432, "user", "pass", "db"))
+        self._pool = _NewbiePathClaimPool(conn)
+
+    async def get_onboarding_state(self, user_id):
+        progress = self._pool.conn.progress
+        if isinstance(progress, str):
+            progress = json.loads(progress)
+        return {"newbie_path_progress": progress}
+
+
+class _TutorialRouteDB:
+    def __init__(self, initial_state=None):
+        self.state = {
+            "status": "welcome",
+            "current_step": "welcome",
+            "tutorial_step": 0,
+            "tutorial_match_id": None,
+            "menu_step": "arena",
+            "newbie_path_progress": {},
+            "completed": False,
+            **(initial_state or {}),
+        }
+        self.ensure_user_calls = []
+        self.events = []
+        self.coins_granted = 0
+
+    async def ensure_user(self, *, user_id, username, first_name, last_name):
+        self.ensure_user_calls.append(int(user_id))
+        return True
+
+    async def fetchval(self, query, *args):
+        if "SELECT 1 FROM users" in query:
+            return None
+        return None
+
+    async def get_onboarding_state(self, user_id):
+        state = dict(self.state)
+        state["user_id"] = int(user_id)
+        state["completed"] = state.get("status") == "completed"
+        return state
+
+    async def set_onboarding_state(self, user_id, **updates):
+        self.state.update({key: value for key, value in updates.items() if value is not None})
+        self.state["user_id"] = int(user_id)
+        return await self.get_onboarding_state(user_id)
+
+    async def claim_newbie_path_task(self, user_id, task_id, *, reward_coins=0, require_completed=True):
+        progress = dict(self.state.get("newbie_path_progress") or {})
+        tasks = dict(progress.get("tasks") or {})
+        entry = dict(tasks.get(task_id) or {})
+        if require_completed and not entry.get("completed"):
+            return {"success": False, "error": "task_not_completed"}
+        already_claimed = bool(entry.get("claimed"))
+        entry["completed"] = True
+        entry["claimed"] = True
+        entry["completed_at"] = entry.get("completed_at") or "2026-06-10T00:00:00+00:00"
+        tasks[str(task_id)] = entry
+        progress["tasks"] = tasks
+        self.state["newbie_path_progress"] = progress
+        granted_amount = int(reward_coins or 0) if not already_claimed else 0
+        self.coins_granted += granted_amount
+        return {
+            "success": True,
+            "already_claimed": already_claimed,
+            "granted_amount": granted_amount,
+            "state": await self.get_onboarding_state(user_id),
+        }
+
+    async def track_onboarding_event(self, user_id, event_name, completed=False, metadata=None):
+        self.events.append((int(user_id), event_name, completed, metadata or {}))
+
+    async def get_user_info(self, user_id):
+        return {"extra_pass": "inactive"}
+
+
+async def _onboarding_route_client(monkeypatch, db):
+    monkeypatch.setenv("ENVIRONMENT", "development")
+    monkeypatch.setenv("WEBAPP_HOST", "127.0.0.1")
+    monkeypatch.setenv("BOT_TOKEN", "bot-token")
+    web_server.get_settings.cache_clear()
+    app = web_server.create_web_app(db, bot_token="bot-token")
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    return client
+
+
+def _tutorial(engine: TutorialBattleEngine) -> dict:
+    return engine.tutorial_payload()
+
+
+def _attack_opponent_hero(engine: TutorialBattleEngine) -> dict:
+    attacker_id = _tutorial(engine)["attacker_instance_id"]
+    assert attacker_id
+    return engine.apply_tutorial_action(
+        {
+            "type": "attack",
+            "attacker_id": attacker_id,
+            "target_is_hero": True,
+        }
+    )
+
+
+def test_tutorial_battle_engine_advances_through_scripted_victory():
+    engine = TutorialBattleEngine(user_id=USER_ID)
+
+    assert _tutorial(engine)["step_index"] == 0
+
+    assert engine.apply_tutorial_action({"type": "continue"}) == {
+        "success": True,
+        "tutorial_step": 1,
+    }
+    assert _tutorial(engine)["hand_attacker_instance_id"]
+
+    play_attacker = engine.apply_tutorial_action(
+        {"type": "play_card", "card_id": 37, "hand_index": 0}
+    )
+    assert play_attacker["success"] is True
+    assert play_attacker["tutorial_step"] == 2
+    assert _tutorial(engine)["attacker_instance_id"]
+
+    end_turn = engine.apply_tutorial_action({"type": "end_turn"})
+    assert end_turn["success"] is True
+    assert end_turn["tutorial_step"] == 3
+
+    first_attack = _attack_opponent_hero(engine)
+    assert first_attack["success"] is True
+    assert first_attack["tutorial_step"] == 4
+    assert engine._arena.state.p2.hero.hp == 4
+
+    play_alphonse = engine.apply_tutorial_action(
+        {"type": "play_card", "card_id": 39, "hand_index": 0}
+    )
+    assert play_alphonse["success"] is True
+    assert play_alphonse["tutorial_step"] == 5
+    assert _tutorial(engine)["step_id"] == "taunt_demo"
+    assert _tutorial(engine)["alphonse_instance_id"]
+    assert any(card.card_id == 39 for card in engine._arena.state.p1.board)
+
+    taunt_demo = engine.apply_tutorial_action({"type": "auto_continue"})
+    assert taunt_demo["success"] is True
+    assert taunt_demo["tutorial_step"] == 6
+    assert taunt_demo["after_message"] == "Видишь? Это Провокация. Враг обязан сначала ударить Альфонса."
+    assert _tutorial(engine)["step_id"] == "taunt_hit"
+    assert any(card.card_id == 39 and card.hp == 0 for card in engine._arena.state.p1.board)
+
+    taunt_hit = engine.apply_tutorial_action({"type": "auto_continue"})
+    assert taunt_hit["success"] is True
+    assert taunt_hit["tutorial_step"] == 7
+
+    lethal_attack = _attack_opponent_hero(engine)
+    assert lethal_attack["success"] is True
+    assert lethal_attack["tutorial_step"] == TUTORIAL_FINAL_STEP
+    assert lethal_attack["game_over"] is True
+    assert lethal_attack["winner_id"] == USER_ID
+    assert engine.is_ended is True
+    assert _tutorial(engine)["step_id"] == "victory"
+
+
+def test_tutorial_battle_engine_rejects_wrong_card_on_alphonse_step():
+    engine = TutorialBattleEngine(user_id=USER_ID, tutorial_step=4)
+
+    result = engine.apply_tutorial_action(
+        {"type": "play_card", "card_id": 37, "hand_index": 0}
+    )
+
+    assert result == {
+        "success": False,
+        "error": "tutorial_wrong_action",
+        "feedback": "Сейчас нужен Альфонс. Он примет удар на себя.",
+        "tutorial_step": 4,
+    }
+
+
+def test_tutorial_payload_uses_onboarding_midoria_asset():
+    engine = TutorialBattleEngine(user_id=USER_ID)
+
+    assert _tutorial(engine)["midoria_asset"] == ONBOARDING_MIDORIA_ASSET
+
+
+def test_tutorial_card_ids_survive_step_rebuild_before_attack():
+    engine = TutorialBattleEngine(user_id=USER_ID, tutorial_step=3)
+    attacker_id_from_rendered_state = _tutorial(engine)["attacker_instance_id"]
+
+    engine.set_tutorial_step(3)
+    result = engine.apply_tutorial_action(
+        {
+            "type": "attack",
+            "attacker_id": attacker_id_from_rendered_state,
+            "target_is_hero": True,
+        }
+    )
+
+    assert result["success"] is True
+    assert result["tutorial_step"] == 4
+    assert engine._arena.state.p2.hero.hp == 4
+
+
+def test_tutorial_battle_uses_tutorial_only_names_and_long_timer():
+    state = TutorialBattleEngine(user_id=USER_ID).get_full_state(viewer_id=USER_ID)
+
+    assert state["player"]["name"] == "Ты"
+    assert state["opponent"]["name"] == "Кто-то злой"
+    assert state["turn_duration"] == 99
+    assert state["turn_time_remaining"] == 99
+
+
+def test_tutorial_payload_exposes_screen_progress_and_previous_message():
+    end_turn_payload = TutorialBattleEngine(user_id=USER_ID, tutorial_step=2).tutorial_payload()
+    taunt_payload = TutorialBattleEngine(user_id=USER_ID, tutorial_step=5).tutorial_payload()
+    taunt_hit_payload = TutorialBattleEngine(user_id=USER_ID, tutorial_step=6).tutorial_payload()
+    lethal_payload = TutorialBattleEngine(user_id=USER_ID, tutorial_step=7).tutorial_payload()
+
+    assert end_turn_payload["display_step"] == 2
+    assert end_turn_payload["display_steps_total"] == TUTORIAL_FINAL_STEP
+    assert end_turn_payload["player_step"] == end_turn_payload["display_step"]
+    assert end_turn_payload["player_steps_total"] == TUTORIAL_FINAL_STEP
+    assert end_turn_payload["previous_message"] == "Он спит до следующего хода. Нормально: только вышел на поле."
+    assert taunt_payload["display_step"] == 5
+    assert taunt_payload["display_steps_total"] == TUTORIAL_FINAL_STEP
+    assert taunt_payload["player_step"] == taunt_payload["display_step"]
+    assert taunt_payload["player_steps_total"] == TUTORIAL_FINAL_STEP
+    assert taunt_payload["auto_advance_delay_ms"] >= 5000
+    assert taunt_payload["previous_message"] == "Теперь Альфонс. Он закрывает проход к герою."
+    assert taunt_hit_payload["display_step"] == 6
+    assert taunt_hit_payload["display_steps_total"] == TUTORIAL_FINAL_STEP
+    assert taunt_hit_payload["player_step"] == taunt_hit_payload["display_step"]
+    assert taunt_hit_payload["player_steps_total"] == TUTORIAL_FINAL_STEP
+    assert taunt_hit_payload["auto_advance_delay_ms"] >= 5000
+    assert taunt_hit_payload["previous_message"] == "Видишь? Это Провокация. Враг обязан сначала ударить Альфонса."
+    assert lethal_payload["display_step"] == 7
+    assert lethal_payload["display_steps_total"] == TUTORIAL_FINAL_STEP
+    assert lethal_payload["player_step"] == lethal_payload["display_step"]
+    assert lethal_payload["player_steps_total"] == TUTORIAL_FINAL_STEP
+    assert lethal_payload["previous_message"] == "Стив ударил Альфонса. Провокация сработала — путь к герою открыт."
+
+
+def test_tutorial_alphonse_step_preserves_card_before_scripted_opponent_attack():
+    engine = TutorialBattleEngine(user_id=USER_ID, tutorial_step=4)
+
+    result = engine.apply_tutorial_action(
+        {"type": "play_card", "card_id": 39, "hand_index": 0}
+    )
+    state = engine.get_full_state(viewer_id=USER_ID)
+
+    assert result["success"] is True
+    assert result["tutorial_step"] == 5
+    assert state["tutorial"]["step_id"] == "taunt_demo"
+    assert state["tutorial"]["is_auto_step"] is True
+    assert state["tutorial"]["player_step"] == 5
+    assert state["tutorial"]["auto_advance_delay_ms"] >= 5000
+    assert [card["card_id"] for card in state["player"]["board"]] == [37, 39]
+    assert state["current_player_id"] == engine.bot_id
+    assert state["is_my_turn"] is False
+
+
+def test_tutorial_auto_taunt_demo_shows_visible_opponent_attack_before_lethal():
+    engine = TutorialBattleEngine(user_id=USER_ID, tutorial_step=5)
+
+    result = engine.apply_tutorial_action({"type": "auto_continue"})
+    state = engine.get_full_state(viewer_id=USER_ID)
+
+    assert result["success"] is True
+    assert result["tutorial_step"] == 6
+    assert result["after_message"] == "Видишь? Это Провокация. Враг обязан сначала ударить Альфонса."
+    assert state["tutorial"]["step_id"] == "taunt_hit"
+    assert state["tutorial"]["player_step"] == 6
+    assert state["tutorial"]["is_auto_step"] is True
+    assert state["tutorial"]["auto_advance_delay_ms"] >= 5000
+    assert [card["card_id"] for card in state["player"]["board"]] == [37, 39]
+    assert next(card for card in state["player"]["board"] if card["card_id"] == 39)["hp"] == 0
+    assert state["current_player_id"] == engine.bot_id
+    assert state["is_my_turn"] is False
+
+    result = engine.apply_tutorial_action({"type": "auto_continue"})
+    state = engine.get_full_state(viewer_id=USER_ID)
+
+    assert result["success"] is True
+    assert result["tutorial_step"] == 7
+    assert result["after_message"] == "Стив ударил Альфонса. Провокация сработала — путь к герою открыт."
+    assert state["tutorial"]["step_id"] == "lethal"
+    assert state["tutorial"]["player_step"] == 7
+    assert [card["card_id"] for card in state["player"]["board"]] == [37]
+    assert state["is_my_turn"] is True
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_tutorial_battle_state_recovers_after_deleted_user(monkeypatch):
+    db = _TutorialRouteDB()
+    match_id = f"tutorial-{USER_ID}"
+    client = await _onboarding_route_client(monkeypatch, db)
+
+    try:
+        response = await client.get(f"/api/battle/state?match_id={match_id}&user_id={USER_ID}")
+        body = await response.json()
+
+        assert response.status == 200
+        assert body["is_onboarding_tutorial"] is True
+        assert body["tutorial"]["step_index"] == 0
+        assert db.ensure_user_calls == [USER_ID]
+        assert db.state["status"] == "tutorial_battle"
+        assert db.state["tutorial_match_id"] == match_id
+    finally:
+        await client.close()
+        web_server.ACTIVE_MATCHES.pop(match_id, None)
+        web_server.MATCH_LOCKS.pop(match_id, None)
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_tutorial_battle_action_recovers_engine_from_onboarding_state(monkeypatch):
+    match_id = f"tutorial-{USER_ID}"
+    db = _TutorialRouteDB({
+        "status": "tutorial_battle",
+        "current_step": "tutorial_battle",
+        "tutorial_step": 1,
+        "tutorial_match_id": match_id,
+    })
+    client = await _onboarding_route_client(monkeypatch, db)
+
+    try:
+        response = await client.post(
+            "/api/battle/play-card",
+            json={
+                "match_id": match_id,
+                "user_id": USER_ID,
+                "hand_index": 0,
+                "client_action_id": "tutorial-play-card-1",
+            },
+        )
+        body = await response.json()
+
+        assert response.status == 200
+        assert body["result"]["success"] is True
+        assert body["result"]["tutorial_step"] == 2
+        assert body["state"]["is_onboarding_tutorial"] is True
+        assert db.state["tutorial_step"] == 2
+    finally:
+        await client.close()
+        web_server.ACTIVE_MATCHES.pop(match_id, None)
+        web_server.MATCH_LOCKS.pop(match_id, None)
+        web_server.ACTION_RESULT_CACHE.clear()
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_tutorial_final_attack_waits_for_victory_cta(monkeypatch):
+    match_id = f"tutorial-{USER_ID}"
+    db = _TutorialRouteDB({
+        "status": "tutorial_battle",
+        "current_step": "tutorial_battle",
+        "tutorial_step": TUTORIAL_FINAL_STEP - 1,
+        "tutorial_match_id": match_id,
+    })
+    client = await _onboarding_route_client(monkeypatch, db)
+
+    try:
+        state_response = await client.get(f"/api/battle/state?match_id={match_id}&user_id={USER_ID}")
+        state_body = await state_response.json()
+        attacker_id = state_body["tutorial"]["attacker_instance_id"]
+
+        response = await client.post(
+            "/api/battle/attack",
+            json={
+                "match_id": match_id,
+                "user_id": USER_ID,
+                "attacker_id": attacker_id,
+                "target_is_hero": True,
+                "client_action_id": "tutorial-lethal-attack-1",
+            },
+        )
+        body = await response.json()
+
+        assert response.status == 200
+        assert body["result"]["success"] is True
+        assert body["result"]["tutorial_step"] == TUTORIAL_FINAL_STEP
+        assert body["result"]["game_over"] is True
+        assert body["state"]["is_onboarding_tutorial"] is True
+        assert body["state"]["tutorial"]["step_index"] == TUTORIAL_FINAL_STEP
+        assert db.state["status"] == "tutorial_battle"
+        assert db.state["tutorial_step"] == TUTORIAL_FINAL_STEP
+        assert all(event[1] != "menu_tour_started" for event in db.events)
+    finally:
+        await client.close()
+        web_server.ACTIVE_MATCHES.pop(match_id, None)
+        web_server.MATCH_LOCKS.pop(match_id, None)
+        web_server.ACTION_RESULT_CACHE.clear()
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_tutorial_final_complete_endpoint_moves_to_menu_tour(monkeypatch):
+    match_id = f"tutorial-{USER_ID}"
+    db = _TutorialRouteDB({
+        "status": "tutorial_battle",
+        "current_step": "tutorial_battle",
+        "tutorial_step": TUTORIAL_FINAL_STEP,
+        "tutorial_match_id": match_id,
+    })
+    client = await _onboarding_route_client(monkeypatch, db)
+
+    try:
+        response = await client.post(
+            "/api/onboarding/tutorial/action",
+            json={
+                "match_id": match_id,
+                "user_id": USER_ID,
+                "type": "complete",
+                "client_action_id": "tutorial-complete-menu-1",
+            },
+        )
+        body = await response.json()
+
+        assert response.status == 200
+        assert body["result"]["success"] is True
+        assert body["result"]["tutorial_step"] == TUTORIAL_FINAL_STEP
+        assert body["onboarding"]["status"] == "menu_tour"
+        assert body["redirect_url"] == "/?onboarding_menu=1"
+        assert "state" not in body
+        assert db.state["status"] == "menu_tour"
+        assert db.state["menu_step"] == "arena"
+        handoff_events_after_first_complete = [
+            event for event in db.events
+            if event[1] in {"tutorial_battle_completed", "menu_tour_started"}
+        ]
+
+        repeat = await client.post(
+            "/api/onboarding/tutorial/action",
+            json={
+                "match_id": match_id,
+                "user_id": USER_ID,
+                "type": "complete",
+                "client_action_id": "tutorial-complete-menu-2",
+            },
+        )
+        repeat_body = await repeat.json()
+
+        assert repeat.status == 200
+        assert repeat_body["onboarding"]["status"] == "menu_tour"
+        assert repeat_body["redirect_url"] == "/?onboarding_menu=1"
+        assert "state" not in repeat_body
+        assert db.state["status"] == "menu_tour"
+        assert [
+            event for event in db.events
+            if event[1] in {"tutorial_battle_completed", "menu_tour_started"}
+        ] == handoff_events_after_first_complete
+    finally:
+        await client.close()
+        web_server.ACTIVE_MATCHES.pop(match_id, None)
+        web_server.MATCH_LOCKS.pop(match_id, None)
+        web_server.ACTION_RESULT_CACHE.clear()
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_tutorial_complete_preserves_completed_onboarding(monkeypatch):
+    match_id = f"tutorial-{USER_ID}"
+    db = _TutorialRouteDB({
+        "status": "completed",
+        "current_step": "completed",
+        "tutorial_step": TUTORIAL_FINAL_STEP,
+        "tutorial_match_id": match_id,
+        "completed_at": "2026-06-09T09:00:00+00:00",
+    })
+    client = await _onboarding_route_client(monkeypatch, db)
+
+    try:
+        response = await client.post(
+            "/api/onboarding/tutorial/action",
+            json={
+                "match_id": match_id,
+                "user_id": USER_ID,
+                "type": "complete",
+                "client_action_id": "tutorial-complete-after-done",
+            },
+        )
+        body = await response.json()
+
+        assert response.status == 200
+        assert body["result"]["success"] is True
+        assert body["onboarding"]["status"] == "completed"
+        assert body["redirect_url"] == "/?onboarding_menu=1"
+        assert "state" not in body
+        assert db.state["status"] == "completed"
+        assert all(
+            event[1] not in {"tutorial_battle_completed", "menu_tour_started"}
+            for event in db.events
+        )
+    finally:
+        await client.close()
+        web_server.ACTIVE_MATCHES.pop(match_id, None)
+        web_server.MATCH_LOCKS.pop(match_id, None)
+        web_server.ACTION_RESULT_CACHE.clear()
+
+
+@pytest.mark.asyncio
+async def test_newbie_path_claim_accepts_jsonb_progress_returned_as_string():
+    progress = {
+        "tasks": {
+            "view_new_card": {
+                "completed": True,
+                "completed_at": "2026-06-09T09:00:00+00:00",
+            }
+        }
+    }
+    conn = _NewbiePathClaimConn(json.dumps(progress))
+    db = _NewbiePathClaimDB(conn)
+
+    result = await db.claim_newbie_path_task(
+        USER_ID,
+        "view_new_card",
+        reward_coins=50,
+        require_completed=True,
+    )
+
+    assert result["success"] is True
+    assert result["granted_amount"] == 50
+    saved_progress = json.loads(conn.progress)
+    assert saved_progress["tasks"]["view_new_card"]["completed"] is True
+    assert saved_progress["tasks"]["view_new_card"]["claimed"] is True
+
+
+@pytest.mark.asyncio
+async def test_newbie_path_duplicate_claim_is_idempotent_without_second_grant():
+    progress = {
+        "tasks": {
+            "view_new_card": {
+                "completed": True,
+                "claimed": True,
+                "completed_at": "2026-06-09T09:00:00+00:00",
+            }
+        }
+    }
+    conn = _NewbiePathClaimConn(json.dumps(progress))
+    db = _NewbiePathClaimDB(conn)
+
+    result = await db.claim_newbie_path_task(
+        USER_ID,
+        "view_new_card",
+        reward_coins=50,
+        require_completed=True,
+    )
+
+    assert result["success"] is True
+    assert result["already_claimed"] is True
+    assert result["granted_amount"] == 0
+    assert conn.coins_granted == 0
+
+
+@pytest.mark.asyncio
+async def test_newbie_path_claim_without_onboarding_row_does_not_grant_reward():
+    conn = _NewbiePathClaimConn(None, row_exists=False)
+    db = _NewbiePathClaimDB(conn)
+
+    result = await db.claim_newbie_path_task(
+        USER_ID,
+        "claim_newbie_reward",
+        reward_coins=150,
+        require_completed=False,
+    )
+
+    assert result["success"] is False
+    assert result["error"] == "onboarding_not_found"
+    assert conn.coins_granted == 0
+    assert all("UPDATE users SET coins" not in query for query, _args in conn.executed)
+
+
+@pytest.mark.asyncio
+async def test_newbie_path_mark_task_locks_row_and_preserves_claimed_state():
+    progress = {
+        "tasks": {
+            "view_new_card": {
+                "completed": True,
+                "claimed": True,
+                "completed_at": "2026-06-09T09:00:00+00:00",
+            }
+        }
+    }
+    conn = _NewbiePathClaimConn(json.dumps(progress))
+    db = _NewbiePathClaimDB(conn)
+
+    result = await db.mark_newbie_path_task(USER_ID, "view_new_card", claimed=False)
+
+    assert result["newbie_path_progress"]["tasks"]["view_new_card"]["claimed"] is True
+    saved_progress = json.loads(conn.progress)
+    assert saved_progress["tasks"]["view_new_card"]["claimed"] is True
+    assert any("FOR UPDATE" in query for query, _args in conn.fetches)
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_newbie_path_route_duplicate_claim_reports_no_grant_without_claim_event(monkeypatch):
+    db = _TutorialRouteDB({
+        "status": "completed",
+        "current_step": "completed",
+        "tutorial_step": TUTORIAL_FINAL_STEP,
+        "newbie_path_progress": {
+            "tasks": {
+                "view_new_card": {
+                    "completed": True,
+                    "claimed": True,
+                    "completed_at": "2026-06-09T09:00:00+00:00",
+                }
+            }
+        },
+    })
+    client = await _onboarding_route_client(monkeypatch, db)
+
+    try:
+        response = await client.post(
+            f"/api/onboarding/newbie-path?user_id={USER_ID}",
+            json={"task_id": "view_new_card"},
+        )
+        body = await response.json()
+
+        assert response.status == 200
+        assert body["already_claimed"] is True
+        assert body["granted_amount"] == 0
+        assert db.coins_granted == 0
+        assert all(event[1] != "newbie_path_task_claimed" for event in db.events)
+    finally:
+        await client.close()
+
+
+def test_tutorial_battle_engine_rejects_malformed_hand_index_without_500():
+    engine = TutorialBattleEngine(user_id=USER_ID, tutorial_step=1)
+
+    result = engine.apply_tutorial_action(
+        {"type": "play_card", "hand_index": "not-a-number"}
+    )
+
+    assert result["success"] is False
+    assert result["error"] == "tutorial_wrong_action"
+    assert result["tutorial_step"] == 1
+
+
+def test_tutorial_state_exposes_only_current_guided_battle_action():
+    expected = {
+        0: [],
+        1: [("play_card", 0, None, False)],
+        2: [("end_turn", None, None, False)],
+        3: [("attack", None, None, True)],
+        4: [("play_card", 0, None, False)],
+        5: [],
+        6: [],
+        7: [("attack", None, None, True)],
+    }
+
+    for step, expected_actions in expected.items():
+        engine = TutorialBattleEngine(user_id=USER_ID, tutorial_step=step)
+        state = engine.get_full_state(viewer_id=USER_ID)
+        actions = [
+            (
+                action.get("type"),
+                action.get("hand_index"),
+                action.get("target_id"),
+                bool(action.get("target_is_hero")),
+            )
+            for action in state["legal_actions"]
+        ]
+        assert actions == expected_actions

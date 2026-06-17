@@ -3,12 +3,15 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import html
 import hmac
 import json as _stdlib_json
 import logging
 import math
+import mimetypes
 import os
 import random
+import re
 import string
 import time
 import uuid
@@ -22,7 +25,9 @@ import jwt as pyjwt
 from aiohttp import web
 import socketio
 
-from bot.constants import ADMIN_ID
+from bot.constants import ADMIN_ID, DEFAULT_CATEGORY
+from infrastructure import card_assets
+from infrastructure.card_assets import card_asset_url, resolve_card_asset_path
 from infrastructure.config import DECK_SIZE, LEAGUE_CONFIG, get_settings
 from infrastructure.database import Card, Database, RUNTIME_FEATURE_DEFAULTS, SQUAD_SETTINGS_DEFAULTS
 from ai.bot_factory import BotGenerator
@@ -30,6 +35,19 @@ from ai.bot_ai import BotAI
 from ai.bot_brain import BerserkInference
 from battle_engine import BattleEngine, BattleEventEmitter
 from core.state import ReplacementStatus
+from onboarding_tutorial import (
+    NEWBIE_PATH_TASKS,
+    ONBOARDING_MIDORIA_ASSET,
+    ONBOARDING_MENU_STEPS,
+    ONBOARDING_STATUS_COMPLETED,
+    ONBOARDING_STATUS_MENU_TOUR,
+    ONBOARDING_STATUS_TUTORIAL_BATTLE,
+    ONBOARDING_STATUS_WELCOME,
+    TUTORIAL_FINAL_STEP,
+    TUTORIAL_STEPS,
+    TutorialBattleEngine,
+    tutorial_match_id_for_user,
+)
 from infrastructure.matchmaking import Matchmaker
 from infrastructure.match_modes import (
     EXTRA_ARENA_ROTATING_IDS,
@@ -39,6 +57,7 @@ from infrastructure.match_modes import (
     build_extra_arena_widget_payload,
     get_current_extra_arena_mode,
     get_extra_arena_mode_list,
+    is_train_v2_bot_safe_mode,
     mode_unavailable_payload,
     resolve_canonical_mode_id,
     resolve_mode_config,
@@ -63,12 +82,16 @@ from infrastructure.shop_config import (
     order_particles_for_shop,
 )
 from web.extraid_handlers import register_handlers as register_extraid_handlers
+from web.mcp_routes import register_admin_mcp_routes
+from support.web import register_support_routes
 from infrastructure.extraid_database import ExtraIDDatabase
 
 WEBAPP_DIR = Path(__file__).resolve().parents[1] / "webapp"
 DESIGN_ASSETS_DIR = Path(__file__).resolve().parents[1] / "DesignAssets"
 EXTRA_SHOP_DIR = Path(__file__).resolve().parents[1] / "extraShop"
 STATIC_ASSET_CACHE_HEADERS = {"Cache-Control": "public, max-age=31536000, immutable"}
+NO_STORE_CACHE_HEADERS = {"Cache-Control": "no-store, no-cache, must-revalidate"}
+BATTLE_SHELL_STATIC_FILES = {"arena.js", "arena-styles.css", "safe-area.js"}
 COMMUNITY_UPLOADS_DIR = Path(__file__).resolve().parents[1] / "uploads" / "community"
 COMMUNITY_UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 SQUAD_UPLOADS_DIR = Path(__file__).resolve().parents[1] / "uploads" / "squads"
@@ -97,15 +120,128 @@ MATCH_DISCONNECT_STATES: dict[tuple[str, int], dict[str, Any]] = {}
 MATCH_DISCONNECT_TASKS: dict[tuple[str, int], asyncio.Task] = {}
 BOT_TASKS: dict[str, asyncio.Task] = {}
 BOT_TASK_KEYS: dict[str, tuple[str, int]] = {}
-BOT_VS_BOT_MARKERS: dict[str, int] = {}
+BOT_VS_BOT_MARKERS: dict[str, dict[str, Any]] = {}
 ENDED_MATCH_IDS: set[str] = set()
 ENDED_MATCH_TIMES: dict[str, float] = {}
 FINISHED_MATCH_TTL_SECONDS = 600
 ONLINE_USER_TTL_SECONDS = 45
 CASE_KEY_ROLL_TTL_SECONDS = 300
 CASE_KEY_ROLLS: dict[str, dict[str, Any]] = {}
+CASE_KEY_OPEN_RESULTS: dict[str, dict[str, Any]] = {}
+CASE_KEY_PENDING_OPENINGS: dict[str, dict[str, Any]] = {}
+CASE_KEY_REROLL_ROLLS: dict[str, dict[str, Any]] = {}
 ACTION_RESULT_TTL_SECONDS = 120
 ACTION_RESULT_CACHE: dict[tuple[str, int, str], dict[str, Any]] = {}
+COMPRESSIBLE_CONTENT_TYPES = (
+    "application/javascript",
+    "application/json",
+    "application/xml",
+    "image/svg+xml",
+    "text/",
+)
+COMPRESSIBLE_STATIC_SUFFIXES = {".css", ".html", ".js", ".json", ".mjs", ".svg", ".txt", ".xml"}
+
+
+def _safe_internal_error_payload() -> dict[str, str]:
+    return {"error": "internal_server_error", "message": "Internal server error"}
+
+
+def _safe_socket_error_payload() -> dict[str, str]:
+    return {"message": "internal_server_error"}
+
+
+def _static_text_response(file_path: Path, *, headers: dict[str, str] | None = None) -> web.Response:
+    content_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
+    return web.Response(
+        body=file_path.read_bytes(),
+        content_type=content_type,
+        headers=headers,
+    )
+
+
+@web.middleware
+async def compression_middleware(request: web.Request, handler) -> web.StreamResponse:
+    response = await handler(request)
+    content_type = str(response.content_type or "").lower()
+    if (
+        response.status < 400
+        and "gzip" in request.headers.get("Accept-Encoding", "").lower()
+        and any(content_type.startswith(prefix) for prefix in COMPRESSIBLE_CONTENT_TYPES)
+    ):
+        response.enable_compression()
+    return response
+
+
+def _validate_local_upload_url(url: Any, prefix: str) -> bool:
+    if url in (None, ""):
+        return True
+    text = str(url or "").strip()
+    if not text.startswith(prefix):
+        return False
+    filename = text[len(prefix):]
+    if "/" in filename or ".." in filename:
+        return False
+    community_pattern = r"[a-f0-9]{32}\.(?:png|jpg|jpeg|webp)"
+    squad_pattern = r"\d+_(?:avatar|banner)_[a-f0-9]{32}\.(?:png|jpg|jpeg|webp)"
+    return bool(re.fullmatch(community_pattern, filename) or re.fullmatch(squad_pattern, filename))
+
+
+RUBLE_PRODUCT_IMAGE_URL_PREFIX = "/extraShop/uploads/products/"
+RUBLE_PRODUCT_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
+
+
+def _safe_ruble_product_image_url(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in text):
+        return None
+    if any(ch in text for ch in ("'", '"', "`", "<", ">")):
+        return None
+    if text.startswith(RUBLE_PRODUCT_IMAGE_URL_PREFIX):
+        filename = text[len(RUBLE_PRODUCT_IMAGE_URL_PREFIX):]
+        suffix = Path(filename).suffix.lower()
+        if (
+            filename
+            and "/" not in filename
+            and "\\" not in filename
+            and ".." not in filename
+            and suffix in RUBLE_PRODUCT_IMAGE_EXTENSIONS
+            and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", filename)
+        ):
+            return text
+        return None
+    try:
+        parts = urlsplit(text)
+    except ValueError:
+        return None
+    if parts.scheme != "https" or not parts.netloc:
+        return None
+    if "\\" in text:
+        return None
+    return text
+
+
+def _validate_ruble_product_image_url(value: Any) -> bool:
+    return value in (None, "") or _safe_ruble_product_image_url(value) is not None
+
+
+def _sanitize_ruble_product_payload(product: Any) -> dict[str, Any]:
+    normalized = dict(product)
+    normalized["image_url"] = _safe_ruble_product_image_url(normalized.get("image_url"))
+    return normalized
+
+
+def _image_signature_matches(data: bytes, content_type: str) -> bool:
+    if content_type == "image/png":
+        return data.startswith(b"\x89PNG\r\n\x1a\n")
+    if content_type == "image/jpeg":
+        return data.startswith(b"\xff\xd8")
+    if content_type == "image/webp":
+        return len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP"
+    return False
 
 
 def _mark_match_ended(match_id: Any) -> None:
@@ -151,6 +287,7 @@ def _prune_finished_match_runtime(now: float | None = None) -> None:
         ACTIVE_MATCHES.pop(match_id, None)
         MATCH_SESSIONS.pop(match_id, None)
         MATCH_LOCKS.pop(match_id, None)
+        MATCH_INIT_LOCKS.pop(match_id, None)
         ENDED_MATCH_IDS.discard(match_id)
         ENDED_MATCH_TIMES.pop(match_id, None)
         for sid, session_data in list(SID_TO_MATCH.items()):
@@ -169,6 +306,18 @@ def _prune_finished_match_runtime(now: float | None = None) -> None:
             bot_task.cancel()
         BOT_TASK_KEYS.pop(match_id, None)
         BOT_VS_BOT_MARKERS.pop(match_id, None)
+
+
+async def _prune_matchmaker_cache(app: web.Application, *, ttl_seconds: float = FINISHED_MATCH_TTL_SECONDS) -> int:
+    matchmaker = app.get("matchmaker")
+    prune_expired_matches = getattr(matchmaker, "prune_expired_matches", None)
+    if not callable(prune_expired_matches):
+        return 0
+    try:
+        return int(await prune_expired_matches(ttl_seconds=ttl_seconds) or 0)
+    except Exception:
+        logging.getLogger(__name__).warning("Failed to prune matchmaker cache", exc_info=True)
+        return 0
 
 
 def _training_bot_profile_payload() -> dict[str, Any]:
@@ -219,6 +368,311 @@ def _decorate_training_bot_info(bot_info: dict[str, Any] | None) -> dict[str, An
         "cosmetics": cosmetics,
     })
     return decorated
+
+
+def _decorate_training_history_battle(battle: dict[str, Any]) -> dict[str, Any]:
+    row = dict(battle or {})
+    if str(row.get("mode") or "").lower() != "training" or not bool(row.get("opponent_is_bot")):
+        return row
+
+    profile = _training_bot_profile_payload()
+    row.update({
+        "opponent_name": profile["name"],
+        "opponent_avatar_url": profile["avatar_url"],
+        "opponent_avatar": profile["avatar_url"],
+        "avatar_url": profile["avatar_url"],
+        "opponent_trophies": profile["trophies"],
+        "opponent_clan": profile["clan"],
+        "opponent_title": profile["title"],
+        "opponent_title_class": profile["title_class"],
+        "opponent_title_rarity": profile["title_class"],
+        "opponent_background_url": profile["background_url"],
+        "opponent_extra_pass": profile["extra_pass"],
+    })
+    return row
+
+
+def _sanitize_public_battle_history_row(battle: dict[str, Any]) -> dict[str, Any]:
+    row = dict(battle or {})
+    if bool(row.get("opponent_is_bot")):
+        row["opponent_id"] = None
+        row["opponent_hide_player_id_public"] = True
+    row.pop("opponent_is_bot", None)
+    return row
+
+
+def _is_ranked_history_mode(mode: Any) -> bool:
+    return str(mode or "classic").lower() not in {"friendly", "training"}
+
+
+def _build_battle_history_stats(all_battles: list[dict[str, Any]]) -> dict[str, Any]:
+    ranked_battles = [b for b in all_battles if _is_ranked_history_mode(b.get("mode"))]
+    wins = sum(1 for b in ranked_battles if b.get("result") == "win")
+    losses = sum(1 for b in ranked_battles if b.get("result") == "lose")
+    draws = sum(1 for b in ranked_battles if b.get("result") == "draw")
+    decided = wins + losses
+    avg_turns_values = [int(b.get("turns_count") or 0) for b in ranked_battles if int(b.get("turns_count") or 0) > 0]
+    avg_duration_values = [int(b.get("duration_seconds") or 0) for b in ranked_battles if int(b.get("duration_seconds") or 0) > 0]
+    mode_counts: dict[str, int] = {}
+    for b in ranked_battles:
+        mode = str(b.get("mode") or "classic")
+        mode_counts[mode] = mode_counts.get(mode, 0) + 1
+
+    current_streak_result = None
+    current_streak_count = 0
+    for b in ranked_battles:
+        result = b.get("result")
+        if result not in ("win", "lose"):
+            if current_streak_count == 0:
+                continue
+            break
+        if current_streak_result is None:
+            current_streak_result = result
+            current_streak_count = 1
+        elif current_streak_result == result:
+            current_streak_count += 1
+        else:
+            break
+
+    return {
+        "total": len(ranked_battles),
+        "wins": wins,
+        "losses": losses,
+        "draws": draws,
+        "win_rate": round((wins / decided) * 100, 1) if decided else 0,
+        "trophy_delta": sum(int(b.get("trophies_change") or 0) for b in ranked_battles),
+        "avg_turns": round(sum(avg_turns_values) / len(avg_turns_values), 1) if avg_turns_values else None,
+        "avg_duration_seconds": round(sum(avg_duration_values) / len(avg_duration_values)) if avg_duration_values else None,
+        "favorite_mode": max(mode_counts.items(), key=lambda item: item[1])[0] if mode_counts else None,
+        "current_streak_result": current_streak_result,
+        "current_streak_count": current_streak_count,
+    }
+
+
+def _build_newbie_path_payload(progress: dict[str, Any] | None = None) -> dict[str, Any]:
+    progress = _json_dict(progress)
+    task_progress = _json_dict(progress.get("tasks"))
+    required_task_ids = [task["id"] for task in NEWBIE_PATH_TASKS if task["id"] != "claim_newbie_reward"]
+    required_claimed = all(bool((task_progress.get(task_id) or {}).get("claimed")) for task_id in required_task_ids)
+    action_text = {
+        "open_starter_case": "Открыть кейс",
+        "view_new_card": "К коллекции",
+        "save_first_deck": "К колодам",
+        "play_regular_battle": "На арену",
+        "claim_newbie_reward": "Забрать",
+    }
+    tasks: list[dict[str, Any]] = []
+    for task in NEWBIE_PATH_TASKS:
+        state = dict(task_progress.get(task["id"]) or {})
+        completed = bool(state.get("completed"))
+        if task["id"] == "claim_newbie_reward":
+            completed = completed or required_claimed
+        claimed = bool(state.get("claimed"))
+        tasks.append({
+            **task,
+            "completed": completed,
+            "claimed": claimed,
+            "claimable": bool(completed and not claimed),
+            "completed_at": state.get("completed_at"),
+            "action_text": action_text.get(task["id"], "Перейти"),
+        })
+    return {
+        "title": "Путь новичка",
+        "description": "Короткий маршрут без лишней лекции. Делай задачи, забирай награды, усиливай колоду.",
+        "tasks": tasks,
+        "completed_count": sum(1 for task in tasks if task["completed"]),
+        "total_count": len(tasks),
+    }
+
+
+def _build_onboarding_payload(state: dict[str, Any] | None) -> dict[str, Any]:
+    state = dict(state or {})
+    status = state.get("status") or ONBOARDING_STATUS_WELCOME
+    return {
+        "status": status,
+        "current_step": state.get("current_step") or status,
+        "tutorial_step": int(state.get("tutorial_step") or 0),
+        "tutorial_match_id": state.get("tutorial_match_id"),
+        "menu_step": state.get("menu_step") or "arena",
+        "completed": bool(state.get("completed") or status == ONBOARDING_STATUS_COMPLETED),
+        "need_registration": bool(state.get("need_registration")),
+        "midoria_asset": ONBOARDING_MIDORIA_ASSET,
+        "menu_steps": [
+            {
+                "id": "arena",
+                "target": "arena",
+                "text": "Арена — сюда за боями. Хочешь прогресс — возвращайся сюда.",
+                "button": "Дальше",
+            },
+            {
+                "id": "collection",
+                "target": "collection",
+                "text": "Коллекция — здесь все твои карты. Нажимай на карту, чтобы увидеть, что она умеет.",
+                "button": "Дальше",
+            },
+            {
+                "id": "decks",
+                "target": "decks",
+                "text": "Колоды — здесь собирается твой отряд. Сильные карты сами себя не выберут.",
+                "button": "Дальше",
+            },
+        ],
+        "newbie_path": _build_newbie_path_payload(state.get("newbie_path_progress") or {}),
+    }
+
+
+def _onboarding_gate_payload(state: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "error": "onboarding_required",
+        "message": "Сначала завершите обучение.",
+        "onboarding": _build_onboarding_payload(state),
+    }
+
+
+def _is_onboarding_tutorial_engine(engine: Any) -> bool:
+    return bool(getattr(engine, "is_onboarding_tutorial", False))
+
+
+async def _handle_onboarding_tutorial_action(
+    request: web.Request,
+    *,
+    match_id: Any,
+    engine: TutorialBattleEngine,
+    user_id: int,
+    client_action_id: str | None,
+    action: dict[str, Any],
+) -> web.Response:
+    cached_action = _action_cache_get(match_id, user_id, client_action_id)
+    if cached_action:
+        return web.json_response(cached_action["payload"], status=cached_action["status"])
+
+    db_inst = request.app.get("db")
+    action_type = str(action.get("type") or "")
+    onboarding_state_before = await db_inst.get_onboarding_state(int(user_id)) if db_inst else {}
+
+    if action_type == "complete" and db_inst:
+        before_status = str(onboarding_state_before.get("status") or "")
+        before_step = int(onboarding_state_before.get("tutorial_step") or getattr(engine, "tutorial_step", 0) or 0)
+        if onboarding_state_before.get("completed") or before_status in (
+            ONBOARDING_STATUS_MENU_TOUR,
+            ONBOARDING_STATUS_COMPLETED,
+        ):
+            payload = {
+                "match_id": str(match_id),
+                "result": {
+                    "success": True,
+                    "tutorial_step": max(before_step, TUTORIAL_FINAL_STEP),
+                    "game_over": True,
+                    "winner_id": int(user_id),
+                },
+                "redirect_url": "/?onboarding_menu=1",
+                "onboarding": _build_onboarding_payload(onboarding_state_before),
+            }
+            _action_cache_set(match_id, user_id, client_action_id, payload, status=200)
+            return web.json_response(payload, status=200)
+
+    result = engine.apply_tutorial_action(action)
+    status_code = 200
+
+    if result.get("success") is False:
+        status_code = 409
+        if db_inst:
+            await db_inst.track_onboarding_event(
+                int(user_id),
+                "tutorial_wrong_action",
+                False,
+                metadata={
+                    "tutorial_step": getattr(engine, "tutorial_step", 0),
+                    "action": action,
+                    "feedback": result.get("feedback"),
+                },
+            )
+    else:
+        tutorial_step = int(result.get("tutorial_step", getattr(engine, "tutorial_step", 0)) or 0)
+        if db_inst:
+            if tutorial_step >= TUTORIAL_FINAL_STEP:
+                if action_type == "complete":
+                    await db_inst.set_onboarding_state(
+                        int(user_id),
+                        status=ONBOARDING_STATUS_MENU_TOUR,
+                        current_step=ONBOARDING_STATUS_MENU_TOUR,
+                        tutorial_step=TUTORIAL_FINAL_STEP,
+                        tutorial_match_id=str(match_id),
+                        menu_step="arena",
+                    )
+                    await db_inst.track_onboarding_event(
+                        int(user_id),
+                        "tutorial_battle_completed",
+                        True,
+                        metadata={"tutorial_step": tutorial_step},
+                    )
+                    await db_inst.track_onboarding_event(
+                        int(user_id),
+                        "menu_tour_started",
+                        False,
+                        metadata={"source": "tutorial_victory"},
+                    )
+                else:
+                    await db_inst.set_onboarding_state(
+                        int(user_id),
+                        status=ONBOARDING_STATUS_TUTORIAL_BATTLE,
+                        current_step=ONBOARDING_STATUS_TUTORIAL_BATTLE,
+                        tutorial_step=TUTORIAL_FINAL_STEP,
+                        tutorial_match_id=str(match_id),
+                    )
+                    if action_type != "continue":
+                        await db_inst.track_onboarding_event(
+                            int(user_id),
+                            "tutorial_step_completed",
+                            True,
+                            metadata={
+                                "tutorial_step": tutorial_step,
+                                "step_id": TUTORIAL_STEPS.get(max(0, tutorial_step - 1), {}).get("id"),
+                                "action": action_type,
+                            },
+                        )
+            else:
+                await db_inst.set_onboarding_state(
+                    int(user_id),
+                    status=ONBOARDING_STATUS_TUTORIAL_BATTLE,
+                    current_step=ONBOARDING_STATUS_TUTORIAL_BATTLE,
+                    tutorial_step=tutorial_step,
+                    tutorial_match_id=str(match_id),
+                )
+                if action.get("type") != "continue":
+                    await db_inst.track_onboarding_event(
+                        int(user_id),
+                        "tutorial_step_completed",
+                        True,
+                        metadata={
+                            "tutorial_step": tutorial_step,
+                            "step_id": TUTORIAL_STEPS.get(max(0, tutorial_step - 1), {}).get("id"),
+                            "action": action.get("type"),
+                        },
+                    )
+
+    onboarding_state = await db_inst.get_onboarding_state(int(user_id)) if db_inst else {}
+    if result.get("success") is not False and action_type == "complete":
+        payload = {
+            "match_id": str(match_id),
+            "result": result,
+            "redirect_url": "/?onboarding_menu=1",
+            "onboarding": _build_onboarding_payload(onboarding_state),
+        }
+        _action_cache_set(match_id, user_id, client_action_id, payload, status=status_code)
+        return web.json_response(payload, status=status_code)
+
+    state = engine.get_full_state(viewer_id=user_id)
+    payload = {
+        "match_id": str(match_id),
+        "result": result,
+        "state": state,
+        "onboarding": _build_onboarding_payload(onboarding_state),
+    }
+    if result.get("feedback"):
+        payload["feedback"] = result.get("feedback")
+    _action_cache_set(match_id, user_id, client_action_id, payload, status=status_code)
+    return web.json_response(payload, status=status_code)
 
 
 async def _resolve_battle_profile(
@@ -302,6 +756,20 @@ async def _resolve_battle_profile(
         except Exception:
             extra_pass = None
 
+    nickname_glow_disabled = False
+    hide_player_id_public = False
+    try:
+        settings = await db_instance.get_user_settings(user_id)
+        if settings:
+            nickname_glow_disabled = bool(settings.get("nickname_glow_disabled", False))
+            hide_player_id_public = bool(settings.get("hide_player_id_public", False))
+    except Exception:
+        logging.getLogger(__name__).debug(
+            "Failed to load battle personalization settings for user_id=%s",
+            user_id,
+            exc_info=True,
+        )
+
     return {
         "name": name,
         "avatar_url": avatar_url,
@@ -309,15 +777,33 @@ async def _resolve_battle_profile(
         "title": title,
         "title_class": title_class,
         "extra_pass": extra_pass,
+        "nickname_glow_disabled": nickname_glow_disabled,
+        "hide_player_id_public": hide_player_id_public,
         "trophies": trophies,
         "clan": clan,
-        "raw_profile": profile,
     }
 
 
-def _extra_pass_access(extra_pass: Any) -> dict[str, bool | str]:
+def _extra_pass_access(extra_pass: Any, expires_at: Any = None) -> dict[str, bool | str]:
     """Normalize ExtraPass tier checks for reward tracks and claims."""
     mode = str(extra_pass or "inactive").lower()
+    if expires_at:
+        parsed_expiry: datetime | None = None
+        if isinstance(expires_at, datetime):
+            parsed_expiry = expires_at
+        else:
+            try:
+                text = str(expires_at).strip()
+                if text.endswith("Z"):
+                    text = text[:-1] + "+00:00"
+                parsed_expiry = datetime.fromisoformat(text)
+            except (TypeError, ValueError):
+                parsed_expiry = None
+        if parsed_expiry is not None:
+            if parsed_expiry.tzinfo is None:
+                parsed_expiry = parsed_expiry.replace(tzinfo=timezone.utc)
+            if parsed_expiry.astimezone(timezone.utc) <= datetime.now(timezone.utc):
+                mode = "inactive"
     has_ultra = mode == "ultra"
     has_extra_pass = mode in {"active", "ultra"}
     if not has_extra_pass:
@@ -329,10 +815,125 @@ def _extra_pass_access(extra_pass: Any) -> dict[str, bool | str]:
     }
 
 
+SUPPORTED_REWARD_TYPES = {"coins", "gems", "keys", "card", "specific_card", "case"}
+REWARD_CONFIG_ERROR_MESSAGES = {
+    "unsupported_reward_type": "Этот тип награды пока не поддерживается.",
+    "invalid_reward_amount": "Количество награды должно быть больше нуля.",
+    "invalid_card_reward_amount": "Карточная награда выдается по одной карте.",
+    "invalid_case_tier": "Кейс должен быть от T1 до T5.",
+    "specific_card_id_required": "Для конкретной карты укажите card_id.",
+    "specific_card_not_found": "Карта для награды не найдена.",
+    "specific_card_must_be_warrior": "В ExtraPass можно выдавать только карты бойцов.",
+    "invalid_reward_meta": "Meta JSON награды заполнен некорректно.",
+}
+ADMIN_SEASON_RESET_PREVIEW_PLAYER_LIMIT = 200
+ADMIN_SEASON_RESET_REASON_MAX_LENGTH = 500
+STAGE_COST_OVERRIDE_FIELDS = {
+    "required_stars",
+    "required_star",
+    "cost_stars",
+    "stage_cost",
+    "stars_required",
+}
+
+
+def _truncate_season_reset_preview(preview: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(preview or {})
+    players = list(payload.get("players") or [])
+    limit = ADMIN_SEASON_RESET_PREVIEW_PLAYER_LIMIT
+    if payload.get("already_completed"):
+        payload["players"] = []
+        payload["players_limit"] = limit
+        payload["players_truncated"] = False
+        return payload
+    shown_players = players[:limit]
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    try:
+        total_players = int(summary.get("players") if summary else len(players))
+    except (TypeError, ValueError):
+        total_players = len(players)
+    payload["players"] = shown_players
+    payload["players_limit"] = limit
+    payload["players_truncated"] = bool(payload.get("players_truncated")) or len(players) > limit or total_players > len(shown_players)
+    return payload
+
+
 def _reward_track_pass_unlocked(track_type: str, access: dict[str, bool | str]) -> bool:
     if track_type == "bp_ultra":
         return bool(access.get("has_ultra"))
     return bool(access.get("has_extra_pass"))
+
+
+def _reward_error_message(error: str) -> str:
+    return REWARD_CONFIG_ERROR_MESSAGES.get(str(error or ""), "Награда временно недоступна из-за настройки сезона.")
+
+
+def _normalize_reward_meta_value(value: Any) -> dict[str, Any] | None:
+    if isinstance(value, str):
+        if not value.strip():
+            return None
+        try:
+            value = _stdlib_json.loads(value)
+        except Exception as exc:
+            raise ValueError("invalid_reward_meta") from exc
+    if value in ("", None):
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("invalid_reward_meta")
+    return value
+
+
+def _specific_card_id_from_meta(reward_meta: Any) -> int | None:
+    meta = _normalize_reward_meta_value(reward_meta) or {}
+    raw_card_id = meta.get("card_id", meta.get("id"))
+    try:
+        card_id = int(raw_card_id)
+    except (TypeError, ValueError):
+        return None
+    return card_id if card_id > 0 else None
+
+
+def _validate_reward_entry_config(
+    reward_type: Any,
+    reward_amount: Any,
+    reward_meta: Any = None,
+) -> dict[str, Any]:
+    reward_type_text = str(reward_type or "").strip()
+    if reward_type_text not in SUPPORTED_REWARD_TYPES:
+        raise ValueError(f"unsupported_reward_type:{reward_type_text or 'empty'}")
+    try:
+        amount = int(reward_amount or 0)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("invalid_reward_amount") from exc
+
+    meta = _normalize_reward_meta_value(reward_meta)
+    if reward_type_text in {"coins", "gems", "keys"} and amount <= 0:
+        raise ValueError("invalid_reward_amount")
+    if reward_type_text == "case" and not 1 <= amount <= 5:
+        raise ValueError("invalid_case_tier")
+    if reward_type_text == "card" and amount != 1:
+        raise ValueError("invalid_card_reward_amount")
+    if reward_type_text == "specific_card":
+        if amount != 1:
+            raise ValueError("invalid_card_reward_amount")
+        if _specific_card_id_from_meta(meta) is None:
+            raise ValueError("specific_card_id_required")
+    return {"reward_type": reward_type_text, "reward_amount": amount, "reward_meta": meta}
+
+
+def _reward_config_error_code(exc: Exception) -> str:
+    text = str(exc or "")
+    return text.split(":", 1)[0] if text else "invalid_reward_config"
+
+
+def _extra_pass_profile_fields(record: dict[str, Any]) -> dict[str, Any]:
+    access = _extra_pass_access(record.get("extra_pass", "inactive"), record.get("extra_pass_expires_at"))
+    expires_at = record.get("extra_pass_expires_at")
+    return {
+        "extra_pass": access["mode"],
+        "extra_pass_expires_at": _iso_or_none(expires_at),
+        "extra_pass_access": access,
+    }
 
 
 DEFAULT_EXTRA_PASS_SEASON: dict[str, Any] = {
@@ -349,6 +950,10 @@ DEFAULT_EXTRA_PASS_SEASON: dict[str, Any] = {
     "auto_switch": True,
     "preset_key": "default",
     "max_stars": 45,
+    "stage_cost_min": 3,
+    "stage_cost_growth": 0.07,
+    "stage_cost_exponent": 1.5,
+    "stage_cost_cap": 25,
     "free_track_type": "bp_free",
     "pass_track_type": "bp_premium",
     "ultra_track_type": "bp_ultra",
@@ -385,6 +990,22 @@ def _normalize_extra_pass_season(record: Any) -> dict[str, Any]:
     max_stars = int(season.get("max_stars") or DEFAULT_EXTRA_PASS_SEASON["max_stars"])
     pass_end = int(season.get("pass_end_position") or min(40, max_stars))
     ultra_start = int(season.get("ultra_start_position") or pass_end + 1)
+    try:
+        stage_cost_min = int(season.get("stage_cost_min") or DEFAULT_EXTRA_PASS_SEASON["stage_cost_min"])
+    except (TypeError, ValueError):
+        stage_cost_min = DEFAULT_EXTRA_PASS_SEASON["stage_cost_min"]
+    try:
+        stage_cost_growth = float(season.get("stage_cost_growth") if season.get("stage_cost_growth") is not None else DEFAULT_EXTRA_PASS_SEASON["stage_cost_growth"])
+    except (TypeError, ValueError):
+        stage_cost_growth = float(DEFAULT_EXTRA_PASS_SEASON["stage_cost_growth"])
+    try:
+        stage_cost_exponent = float(season.get("stage_cost_exponent") if season.get("stage_cost_exponent") is not None else DEFAULT_EXTRA_PASS_SEASON["stage_cost_exponent"])
+    except (TypeError, ValueError):
+        stage_cost_exponent = float(DEFAULT_EXTRA_PASS_SEASON["stage_cost_exponent"])
+    try:
+        stage_cost_cap = int(season.get("stage_cost_cap") or DEFAULT_EXTRA_PASS_SEASON["stage_cost_cap"])
+    except (TypeError, ValueError):
+        stage_cost_cap = DEFAULT_EXTRA_PASS_SEASON["stage_cost_cap"]
 
     return {
         "id": season.get("id"),
@@ -400,12 +1021,204 @@ def _normalize_extra_pass_season(record: Any) -> dict[str, Any]:
         "auto_switch": bool(season.get("auto_switch", DEFAULT_EXTRA_PASS_SEASON["auto_switch"])),
         "preset_key": season.get("preset_key") or DEFAULT_EXTRA_PASS_SEASON["preset_key"],
         "max_stars": max(1, max_stars),
+        "stage_count": max(1, max_stars),
+        "stage_cost_min": max(1, stage_cost_min),
+        "stage_cost_growth": max(0.0, stage_cost_growth),
+        "stage_cost_exponent": max(0.01, stage_cost_exponent),
+        "stage_cost_cap": max(1, stage_cost_cap),
         "free_track_type": str(season.get("free_track_type") or "bp_free"),
         "pass_track_type": str(season.get("pass_track_type") or "bp_premium"),
         "ultra_track_type": str(season.get("ultra_track_type") or "bp_ultra"),
         "pass_end_position": max(1, pass_end),
         "ultra_start_position": max(1, ultra_start),
         "theme": _json_dict(season.get("theme")),
+    }
+
+
+def _extra_pass_stage_count(season: Any) -> int:
+    normalized = _normalize_extra_pass_season(season)
+    return max(1, int(normalized.get("stage_count") or normalized.get("max_stars") or 1))
+
+
+def _extra_pass_stage_cost(stage: int, season: Any) -> int:
+    normalized = _normalize_extra_pass_season(season)
+    stage_number = max(1, int(stage or 1))
+    base = int(normalized["stage_cost_min"])
+    growth = float(normalized["stage_cost_growth"])
+    exponent = float(normalized["stage_cost_exponent"])
+    cap = int(normalized["stage_cost_cap"])
+    raw_cost = math.ceil(base + growth * (stage_number ** exponent))
+    return max(1, min(cap, raw_cost))
+
+
+def _extra_pass_progression(season: Any) -> dict[str, Any]:
+    normalized = _normalize_extra_pass_season(season)
+    stage_count = _extra_pass_stage_count(normalized)
+    costs = [_extra_pass_stage_cost(stage, normalized) for stage in range(1, stage_count + 1)]
+    thresholds: list[int] = []
+    running = 0
+    for cost in costs:
+        running += int(cost)
+        thresholds.append(running)
+    preview_limit = min(stage_count, 60)
+    preview = [
+        {"stage": index + 1, "cost": costs[index], "required_stars": thresholds[index]}
+        for index in range(preview_limit)
+    ]
+    return {
+        "stage_count": stage_count,
+        "total_required_stars": thresholds[-1] if thresholds else 0,
+        "stage_costs": costs,
+        "stage_thresholds": thresholds,
+        "preview": preview,
+        "formula": {
+            "stage_cost_min": normalized["stage_cost_min"],
+            "stage_cost_growth": normalized["stage_cost_growth"],
+            "stage_cost_exponent": normalized["stage_cost_exponent"],
+            "stage_cost_cap": normalized["stage_cost_cap"],
+        },
+    }
+
+
+def _extra_pass_required_stars_for_position(position: int, season: Any) -> int:
+    progression = _extra_pass_progression(season)
+    stage = int(position or 0)
+    thresholds = progression["stage_thresholds"]
+    if 1 <= stage <= len(thresholds):
+        return int(thresholds[stage - 1])
+    return int(progression["total_required_stars"])
+
+
+def _extra_pass_progress_for_stars(stars: Any, season: Any) -> dict[str, Any]:
+    progression = _extra_pass_progression(season)
+    thresholds = progression["stage_thresholds"]
+    total_required = int(progression["total_required_stars"] or 0)
+    stage_count = int(progression["stage_count"] or 1)
+    star_balance = max(0, int(stars or 0))
+    capped_value = min(star_balance, total_required) if total_required else star_balance
+    unlocked_stage = 0
+    for threshold in thresholds:
+        if star_balance >= int(threshold):
+            unlocked_stage += 1
+        else:
+            break
+    next_stage = unlocked_stage + 1 if unlocked_stage < stage_count else None
+    previous_threshold = int(thresholds[unlocked_stage - 1]) if unlocked_stage > 0 and thresholds else 0
+    next_threshold = int(thresholds[next_stage - 1]) if next_stage is not None and thresholds else total_required
+    stage_span = max(1, next_threshold - previous_threshold)
+    stage_progress = max(0, min(stage_span, capped_value - previous_threshold))
+    stage_percent = 100 if next_stage is None else round((stage_progress / stage_span) * 100)
+    season_percent = round((capped_value / total_required) * 100) if total_required else 100
+    stars_to_next = 0 if next_stage is None else max(0, next_threshold - star_balance)
+    return {
+        "value": star_balance,
+        "stars": star_balance,
+        "capped_value": capped_value,
+        "max": total_required,
+        "percent": min(100, season_percent),
+        "stage_count": stage_count,
+        "total_required_stars": total_required,
+        "unlocked_stage": unlocked_stage,
+        "next_stage": next_stage,
+        "stars_to_next": stars_to_next,
+        "stage_percent": min(100, stage_percent),
+        "season_percent": min(100, season_percent),
+        "stage_required_stars": next_threshold,
+        "stage_previous_required_stars": previous_threshold,
+        "stage_cost": stage_span,
+    }
+
+
+def _hero_health_ratio(state: Any) -> float:
+    hero = getattr(state, "hero", None)
+    if hero is None:
+        core_state = getattr(state, "_core", None)
+        hero = getattr(core_state, "hero", None)
+    if hero is None:
+        current = getattr(state, "hero_hp", None)
+        maximum = (
+            getattr(state, "hero_max_hp", None)
+            or getattr(state, "max_hero_hp", None)
+            or getattr(state, "hero_max_health", None)
+        )
+    else:
+        current = None
+        for attr in ("health", "hp", "current_health", "current_hp"):
+            value = getattr(hero, attr, None)
+            if value is not None:
+                current = value
+                break
+        maximum = None
+        for attr in ("max_health", "max_hp", "maximum_health", "maximum_hp"):
+            value = getattr(hero, attr, None)
+            if value is not None:
+                maximum = value
+                break
+    if maximum is None:
+        core_state = getattr(state, "_core", None)
+        core_hero = getattr(core_state, "hero", None)
+        if core_hero is not None:
+            maximum = getattr(core_hero, "max_hp", None) or getattr(core_hero, "max_health", None)
+    try:
+        current_num = float(current)
+        maximum_num = float(maximum)
+    except (TypeError, ValueError):
+        return 0.0
+    if maximum_num <= 0:
+        return 0.0
+    return max(0.0, min(1.0, current_num / maximum_num))
+
+
+def _calculate_battle_star_awards(
+    *,
+    winner_is_active_human: bool,
+    loser_is_active_human: bool,
+    is_bot_match: bool,
+    turns_count: int,
+    did_surrender: bool,
+    did_afk: bool,
+    winner_state: Any,
+) -> dict[str, Any]:
+    winner_reasons: list[str] = []
+    loser_reasons: list[str] = []
+    winner_award = 0
+    loser_award = 0
+    active_human_pvp = bool(winner_is_active_human and loser_is_active_human and not is_bot_match)
+    clean_finish = not did_surrender and not did_afk
+    turns = max(0, int(turns_count or 0))
+
+    if winner_is_active_human:
+        winner_award = 3
+        winner_reasons.append("win")
+        if active_human_pvp:
+            winner_award += 1
+            winner_reasons.append("active_human_pvp")
+        if clean_finish and turns <= 15:
+            winner_award += 1
+            winner_reasons.append("fast_win")
+        winner_award = min(5, winner_award)
+
+    if loser_is_active_human:
+        loser_award = 1
+        loser_reasons.append("loss")
+
+    special = (
+        winner_is_active_human
+        and active_human_pvp
+        and clean_finish
+        and turns <= 12
+        and _hero_health_ratio(winner_state) >= 0.8
+    )
+    if special:
+        winner_award = 10
+        winner_reasons.append("dominant_fast_pvp")
+
+    return {
+        "winner": winner_award,
+        "loser": loser_award,
+        "special": special,
+        "winner_reasons": winner_reasons,
+        "loser_reasons": loser_reasons,
     }
 
 
@@ -465,6 +1278,27 @@ def _season_track_types(season: dict[str, Any]) -> list[str]:
         normalized["pass_track_type"],
         normalized["ultra_track_type"],
     ]
+
+
+def _season_track_types_unique(season: dict[str, Any]) -> bool:
+    track_types = [track_type for track_type in _season_track_types(season) if track_type]
+    return len(track_types) == len(set(track_types))
+
+
+def _season_track_type_reuse_conflict(
+    candidate: dict[str, Any],
+    seasons: list[dict[str, Any]],
+    *,
+    current_season_id: Any = None,
+) -> bool:
+    candidate_types = set(_season_track_types(candidate))
+    current_id = str(current_season_id or candidate.get("id") or "")
+    for season in seasons or []:
+        if current_id and str(season.get("id") or "") == current_id:
+            continue
+        if candidate_types.intersection(_season_track_types(season)):
+            return True
+    return False
 
 
 def _season_schedule_relation(current: dict[str, Any], next_season: dict[str, Any] | None) -> dict[str, Any]:
@@ -564,6 +1398,9 @@ def _normalize_reward_track_import_payload(payload: Any, season: dict[str, Any])
         raise ValueError("extra_pass_tracks_json_must_be_object_or_array")
 
     for lane, raw in source_rows:
+        if any(field in raw for field in STAGE_COST_OVERRIDE_FIELDS):
+            raise ValueError("stage_cost_formula_owned")
+
         lane_id = str(raw.get("lane") or raw.get("track") or lane or "").strip().lower()
         track_type = str(raw.get("track_type") or "").strip()
         track_def = track_defs.get(lane_id)
@@ -579,25 +1416,20 @@ def _normalize_reward_track_import_payload(payload: Any, season: dict[str, Any])
         if position < int(track_def["start_position"]) or position > int(track_def["end_position"]):
             raise ValueError(f"position_out_of_track_scope:{track_def['id']}:{position}")
 
-        reward_type = str(raw.get("reward_type") or raw.get("type") or "").strip()
-        if not reward_type:
-            raise ValueError("reward_type_required")
         reward_amount = int(raw.get("reward_amount") if raw.get("reward_amount") is not None else raw.get("amount", 0))
-        if reward_amount < 0:
-            raise ValueError("reward_amount_must_be_non_negative")
-
         reward_meta = raw.get("reward_meta", raw.get("meta"))
-        if isinstance(reward_meta, str) and reward_meta.strip():
-            reward_meta = _stdlib_json.loads(reward_meta)
-        elif reward_meta in ("", None):
-            reward_meta = None
+        reward_config = _validate_reward_entry_config(
+            raw.get("reward_type") or raw.get("type") or "",
+            reward_amount,
+            reward_meta,
+        )
 
         rows.append({
             "track_type": track_def["track_type"],
             "position": position,
-            "reward_type": reward_type,
-            "reward_amount": reward_amount,
-            "reward_meta": reward_meta,
+            "reward_type": reward_config["reward_type"],
+            "reward_amount": reward_config["reward_amount"],
+            "reward_meta": reward_config["reward_meta"],
             "extra_pass_required": track_def["access"] != "free",
         })
 
@@ -639,7 +1471,72 @@ def _entry_in_track_scope(entry: dict[str, Any], track_def: dict[str, Any]) -> b
     return int(track_def["start_position"]) <= position <= int(track_def["end_position"])
 
 
+def _normalize_reward_entry_case_alias(entry: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(entry)
+    reward_meta = _json_dict(normalized.get("reward_meta")) if normalized.get("reward_meta") is not None else {}
+    original = str(reward_meta.get("original") or "")
+    case_tier = reward_meta.get("case_tier")
+    if normalized.get("reward_type") == "gems" and (case_tier or original.startswith("case_tier_")):
+        try:
+            tier = int(case_tier or original.rsplit("_", 1)[-1])
+        except (TypeError, ValueError):
+            tier = 1
+        normalized["reward_type"] = "case"
+        normalized["reward_amount"] = max(1, min(5, tier))
+        normalized["reward_meta"] = None
+    return normalized
+
+
+def _admin_reward_track_scope_error(
+    *,
+    track_type: str,
+    position: int,
+    reward_type: str | None,
+    seasons: list[dict[str, Any]],
+) -> str | None:
+    if reward_type and reward_type not in SUPPORTED_REWARD_TYPES:
+        return "unsupported_reward_type"
+    normalized_seasons = [_normalize_extra_pass_season(season) for season in seasons or []]
+    matching_defs: list[dict[str, Any]] = []
+    for season in normalized_seasons:
+        matching_defs.extend(
+            track_def for track_def in _extra_pass_track_defs(season)
+            if track_def["track_type"] == track_type
+        )
+    if matching_defs and not any(int(track_def["start_position"]) <= int(position) <= int(track_def["end_position"]) for track_def in matching_defs):
+        return "position_out_of_track_scope"
+    return None
+
+
+async def _admin_validate_reward_track_config(db: Any, row: dict[str, Any]) -> str | None:
+    try:
+        reward_config = _validate_reward_entry_config(
+            row.get("reward_type"),
+            row.get("reward_amount"),
+            row.get("reward_meta"),
+        )
+    except ValueError as exc:
+        return _reward_config_error_code(exc)
+
+    if reward_config["reward_type"] != "specific_card":
+        return None
+
+    card_id = _specific_card_id_from_meta(reward_config.get("reward_meta"))
+    if card_id is None:
+        return "specific_card_id_required"
+    get_card_info = getattr(db, "get_card_info", None)
+    if not get_card_info:
+        return None
+    card = await get_card_info(card_id)
+    if not card:
+        return "specific_card_not_found"
+    if str(card.get("card_type") or "warrior") != "warrior":
+        return "specific_card_must_be_warrior"
+    return None
+
+
 def _serialize_reward_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    entry = _normalize_reward_entry_case_alias(entry)
     return {
         "id": entry.get("id"),
         "reward_type": entry.get("reward_type"),
@@ -656,9 +1553,10 @@ def _build_extra_pass_payload(
     claimed_by_type: dict[str, set[int]],
 ) -> dict[str, Any]:
     normalized_season = _normalize_extra_pass_season(season)
-    access = _extra_pass_access(profile.get("extra_pass", "inactive"))
+    access = _extra_pass_access(profile.get("extra_pass", "inactive"), profile.get("extra_pass_expires_at"))
     progress_value = int(profile.get("stars") or 0)
-    capped_progress = min(progress_value, normalized_season["max_stars"])
+    progression = _extra_pass_progression(normalized_season)
+    progress = _extra_pass_progress_for_stars(progress_value, normalized_season)
     track_defs = _extra_pass_track_defs(normalized_season)
 
     grouped: dict[str, dict[int, list[dict[str, Any]]]] = {}
@@ -680,6 +1578,7 @@ def _build_extra_pass_payload(
     tiers = []
 
     for position in sorted(all_positions):
+        required_stars = _extra_pass_required_stars_for_position(position, normalized_season)
         tier_tracks: dict[str, Any] = {}
         for track_def in track_defs:
             track_type = track_def["track_type"]
@@ -689,12 +1588,19 @@ def _build_extra_pass_payload(
                 continue
 
             claimed = position in claimed_by_type.get(track_type, set())
-            progress_locked = progress_value < position
+            progress_locked = progress_value < required_stars
             access_locked = not _track_def_unlocked(track_def, access)
             extra_pass_required = track_def["access"] != "free" or any(bool(e.get("extra_pass_required")) for e in entries)
             locked = progress_locked or access_locked
             available = not claimed and not locked
             progress_unlocked = not progress_locked and not claimed
+            lock_reason = None
+            if claimed:
+                lock_reason = "claimed"
+            elif access_locked:
+                lock_reason = "ultra_required" if track_def["access"] == "ultra" else "extra_pass_required"
+            elif progress_locked:
+                lock_reason = "progress_required"
 
             if available:
                 summary["available_now"] += 1
@@ -714,12 +1620,14 @@ def _build_extra_pass_payload(
                 "claimed": claimed,
                 "available": available,
                 "locked": locked,
+                "lock_reason": lock_reason,
                 "progress_locked": progress_locked,
                 "access_locked": access_locked,
                 "extra_pass_required": extra_pass_required,
+                "required_stars": required_stars,
             }
 
-        tiers.append({"position": position, "tracks": tier_tracks})
+        tiers.append({"position": position, "required_stars": required_stars, "tracks": tier_tracks})
 
     now = datetime.now(timezone.utc)
     end_date_raw = (dict(season) if season else {}).get("end_date") if season else None
@@ -727,12 +1635,8 @@ def _build_extra_pass_payload(
 
     return {
         "season": {**normalized_season, "days_left": days_left},
-        "progress": {
-            "value": progress_value,
-            "capped_value": capped_progress,
-            "max": normalized_season["max_stars"],
-            "percent": min(100, (progress_value / normalized_season["max_stars"]) * 100),
-        },
+        "progression": progression,
+        "progress": progress,
         "access": access,
         "tracks": track_defs,
         "tiers": tiers,
@@ -749,7 +1653,7 @@ BERSERK_BRAIN: Optional[BerserkInference] = None
 # Socket.io сервер для WebSocket подключений
 sio = socketio.AsyncServer(
     async_mode='aiohttp',
-    cors_allowed_origins='*',
+    cors_allowed_origins=[],
     logger=False,
     engineio_logger=False
 )
@@ -847,6 +1751,18 @@ async def join_match(sid: str, data: dict[str, Any]) -> None:
             return
 
         engine = ACTIVE_MATCHES.get(match_id)
+        if not engine and app:
+            ensure_friendly_match_engine = app.get("ensure_friendly_match_engine")
+            if ensure_friendly_match_engine:
+                try:
+                    engine = await ensure_friendly_match_engine(match_id, user_id)
+                except Exception as exc:
+                    logging.getLogger(__name__).warning(
+                        "join_match: failed to rehydrate friendly match %s: %s",
+                        match_id,
+                        exc,
+                        exc_info=True,
+                    )
         if not engine:
             await sio.emit("error", {"message": "match_not_found"}, to=sid)
             return
@@ -860,6 +1776,7 @@ async def join_match(sid: str, data: dict[str, Any]) -> None:
         room_name = str(match_id)
         await sio.enter_room(sid, room_name)
 
+        _detach_sid_from_previous_match(sid, next_match_id=match_id, next_user_id=int(user_id))
         SID_TO_MATCH[sid] = {"match_id": match_id, "user_id": int(user_id)}
 
         _register_session(match_id, user_id, sid)
@@ -873,7 +1790,7 @@ async def join_match(sid: str, data: dict[str, Any]) -> None:
 
     except Exception as exc:
         logging.error("join_match error: %s", exc, exc_info=True)
-        await sio.emit("error", {"message": str(exc)}, to=sid)
+        await sio.emit("error", _safe_socket_error_payload(), to=sid)
 
 
 @sio.event
@@ -890,11 +1807,17 @@ async def leave_match(sid: str, data: dict[str, Any]) -> None:
         await sio.leave_room(sid, room_name)
         session_data = SID_TO_MATCH.pop(sid, None)
         if session_data:
-            _unregister_session(
-                str(session_data.get("match_id") or match_id),
-                session_data.get("user_id"),
-                sid,
-            )
+            session_match_id = str(session_data.get("match_id") or match_id)
+            session_user_id = session_data.get("user_id")
+            if session_user_id is not None:
+                is_last_session = _unregister_session(
+                    session_match_id,
+                    int(session_user_id),
+                    sid,
+                )
+                engine = ACTIVE_MATCHES.get(session_match_id)
+                if engine and is_last_session:
+                    _mark_player_disconnected(session_match_id, int(session_user_id), engine)
 
         logging.info("[SOCKET] leave_match sid=%s match_id=%s", sid, match_id)
 
@@ -967,7 +1890,103 @@ async def client_ready(sid: str, data: dict[str, Any]) -> None:
 
     except Exception as exc:
         logger.error("client_ready: ошибка обработки: %s", exc, exc_info=True)
-        await sio.emit("error", {"message": str(exc)}, to=sid)
+        await sio.emit("error", _safe_socket_error_payload(), to=sid)
+
+
+@sio.event
+async def battle_talkie_settings(sid: str, data: dict[str, Any]) -> None:
+    """Update the sid-bound user's Talkie delivery preference for the current match."""
+    logger = logging.getLogger(__name__)
+    try:
+        session = SID_TO_MATCH.get(sid)
+        if not session:
+            await sio.emit("battle_talkie_settings_ack", {"success": False, "error": "not_authenticated"}, to=sid)
+            return
+
+        match_id = str(session.get("match_id", ""))
+        user_id = session.get("user_id")
+        engine = ACTIVE_MATCHES.get(match_id)
+        if not match_id or user_id is None or not engine:
+            await sio.emit(
+                "battle_talkie_settings_ack",
+                {"success": False, "match_id": match_id, "error": "match_not_found"},
+                to=sid,
+            )
+            return
+        if not hasattr(engine, "set_talkie_enabled"):
+            await sio.emit(
+                "battle_talkie_settings_ack",
+                {"success": False, "match_id": match_id, "error": "talkie_unavailable"},
+                to=sid,
+            )
+            return
+
+        enabled = bool((data or {}).get("enabled", True))
+        result = engine.set_talkie_enabled(int(user_id), enabled)
+        await sio.emit(
+            "battle_talkie_settings_ack",
+            {
+                "success": bool(result.get("success")),
+                "match_id": match_id,
+                "enabled": bool(result.get("enabled", enabled)),
+                **({"error": result.get("error")} if result.get("error") else {}),
+            },
+            to=sid,
+        )
+    except Exception as exc:
+        logger.error("battle_talkie_settings: ошибка обработки: %s", exc, exc_info=True)
+        await sio.emit("battle_talkie_settings_ack", {"success": False, "error": "internal_server_error"}, to=sid)
+
+
+@sio.event
+async def battle_talkie(sid: str, data: dict[str, Any]) -> None:
+    """Register a sid-bound Talkie emote and deliver it to enabled match sessions."""
+    logger = logging.getLogger(__name__)
+    try:
+        session = SID_TO_MATCH.get(sid)
+        if not session:
+            await sio.emit("battle_talkie_ack", {"success": False, "error": "not_authenticated"}, to=sid)
+            return
+
+        match_id = str(session.get("match_id", ""))
+        user_id = session.get("user_id")
+        engine = ACTIVE_MATCHES.get(match_id)
+        if not match_id or user_id is None or not engine:
+            await sio.emit(
+                "battle_talkie_ack",
+                {"success": False, "match_id": match_id, "error": "match_not_found"},
+                to=sid,
+            )
+            return
+        if not hasattr(engine, "register_talkie"):
+            await sio.emit(
+                "battle_talkie_ack",
+                {"success": False, "match_id": match_id, "error": "talkie_unavailable"},
+                to=sid,
+            )
+            return
+
+        talkie_id = (data or {}).get("talkie_id")
+        result = engine.register_talkie(int(user_id), talkie_id)
+        event = result.get("event") if isinstance(result, dict) else None
+        ack_payload = {
+            "success": bool(result.get("success")) if isinstance(result, dict) else False,
+            "match_id": match_id,
+        }
+        if isinstance(result, dict):
+            for key in ("error", "remaining", "retry_after"):
+                if key in result:
+                    ack_payload[key] = result[key]
+        if isinstance(event, dict) and event.get("event_id") is not None:
+            ack_payload["event_id"] = event.get("event_id")
+
+        await sio.emit("battle_talkie_ack", ack_payload, to=sid)
+
+        if ack_payload["success"] and isinstance(event, dict):
+            await _emit_talkie_event(sio, match_id, engine, event)
+    except Exception as exc:
+        logger.error("battle_talkie: ошибка обработки: %s", exc, exc_info=True)
+        await sio.emit("battle_talkie_ack", {"success": False, "error": "internal_server_error"}, to=sid)
 
 
 def calculate_trophy_delta(
@@ -1097,20 +2116,20 @@ async def _process_battle_end(
     match_id: str,
     engine: Any,
     winner_id: Optional[int]
-) -> None:
+) -> bool:
     """Finalize a battle once, using battle_summary as the reward idempotency gate."""
     logger = logging.getLogger(__name__)
     db = app.get("db")
 
     if not db:
         logger.error("Database not available for processing battle end")
-        return
+        return False
 
     if getattr(engine, 'battle_end_processed', False) or getattr(engine, 'rewards_granted', False):
         _mark_match_ended(match_id)
         await _mark_matchmaker_finished(app, match_id, winner_id)
         logger.info("Battle end already processed for match %s", match_id)
-        return
+        return True
 
     p1_raw = getattr(engine.p1_state, "user_id", None)
     p2_raw = getattr(engine.p2_state, "user_id", None)
@@ -1141,7 +2160,7 @@ async def _process_battle_end(
         app.get("match_game_modes", {}).pop(match_id, None)
         if match_id in ACTIVE_MATCHES:
             del ACTIVE_MATCHES[match_id]
-        return
+        return True
 
     p1_is_bot = False
     p2_is_bot = False
@@ -1165,6 +2184,7 @@ async def _process_battle_end(
     p2_status = getattr(engine.p2_state, "replacement_status", ReplacementStatus.ACTIVE)
     did_surrender = p1_status == ReplacementStatus.SURRENDERED or p2_status == ReplacementStatus.SURRENDERED
     did_afk = p1_status == ReplacementStatus.AFK or p2_status == ReplacementStatus.AFK
+    turns = getattr(engine, "turn", 0)
 
     winner_trophy_delta = 0
     loser_trophy_delta = 0
@@ -1230,18 +2250,36 @@ async def _process_battle_end(
                 plan["trophies"] = winner_trophy_delta
             if winner_coins_delta > 0:
                 plan["coins"] = winner_coins_delta
-            if rewards.stars:
-                plan["stars"] = int(plan.get("stars", 0) or 0) + 3
             if rewards.win_counter:
-                winner_extra_pass = (winner_info or {}).get("extra_pass", "inactive")
+                winner_access = _extra_pass_access(
+                    (winner_info or {}).get("extra_pass", "inactive"),
+                    (winner_info or {}).get("extra_pass_expires_at"),
+                )
+                winner_extra_pass = str(winner_access.get("mode") or "inactive")
                 plan["wins_for_case"] = 3 if winner_extra_pass == "ultra" else (4 if winner_extra_pass == "active" else 5)
 
         if not loser_is_bot:
             plan = reward_plans.setdefault(int(loser_id), {"old_league": (loser_info or {}).get("league", 1) if loser_info else 1})
             if loser_trophy_delta < 0:
                 plan["trophies"] = loser_trophy_delta
-            if rewards.stars and loser_is_active_human:
-                plan["stars"] = int(plan.get("stars", 0) or 0) + 1
+
+        star_awards = _calculate_battle_star_awards(
+            winner_is_active_human=winner_is_active_human,
+            loser_is_active_human=loser_is_active_human,
+            is_bot_match=is_bot_match,
+            turns_count=turns,
+            did_surrender=did_surrender or bool(winner_surrender_processed) or bool(loser_surrender_processed),
+            did_afk=did_afk,
+            winner_state=winner_state,
+        ) if rewards.stars else {"winner": 0, "loser": 0, "special": False, "winner_reasons": [], "loser_reasons": []}
+        winner_stars_delta = int(star_awards.get("winner", 0) or 0)
+        loser_stars_delta = int(star_awards.get("loser", 0) or 0)
+        if winner_stars_delta > 0 and winner_is_active_human:
+            plan = reward_plans.setdefault(winner_id_int, {"old_league": (winner_info or {}).get("league", 1)})
+            plan["stars"] = int(plan.get("stars", 0) or 0) + winner_stars_delta
+        if loser_stars_delta > 0 and loser_is_active_human:
+            plan = reward_plans.setdefault(int(loser_id), {"old_league": (loser_info or {}).get("league", 1) if loser_info else 1})
+            plan["stars"] = int(plan.get("stars", 0) or 0) + loser_stars_delta
 
         eco_meta = {
             "match_id": match_id,
@@ -1249,18 +2287,19 @@ async def _process_battle_end(
             "p1_user_id": p1_id_int,
             "p2_user_id": p2_id_int,
             "is_bot_match": is_bot_match,
+            "turns_count": turns,
         }
         if winner_is_active_human:
             if winner_trophy_delta > 0:
                 economy_events.append({"user_id": winner_id_int, "event_type": "earn", "resource": "trophies", "amount": winner_trophy_delta, "source": "battle", "metadata": {**eco_meta, "result": "win"}})
             if winner_coins_delta > 0:
                 economy_events.append({"user_id": winner_id_int, "event_type": "earn", "resource": "coins", "amount": winner_coins_delta, "source": "battle", "metadata": {**eco_meta, "result": "win"}})
-            if rewards.stars:
-                economy_events.append({"user_id": winner_id_int, "event_type": "earn", "resource": "stars", "amount": 3, "source": "battle", "metadata": {**eco_meta, "result": "win"}})
+            if winner_stars_delta > 0:
+                economy_events.append({"user_id": winner_id_int, "event_type": "earn", "resource": "stars", "amount": winner_stars_delta, "source": "battle", "metadata": {**eco_meta, "result": "win", "star_reasons": star_awards.get("winner_reasons", []), "special_star_award": bool(star_awards.get("special"))}})
         if loser_trophy_delta < 0 and not loser_is_bot:
             economy_events.append({"user_id": int(loser_id), "event_type": "spend", "resource": "trophies", "amount": abs(loser_trophy_delta), "source": "battle", "metadata": {**eco_meta, "result": "loss"}})
-        if loser_is_active_human and rewards.stars:
-            economy_events.append({"user_id": int(loser_id), "event_type": "earn", "resource": "stars", "amount": 1, "source": "battle", "metadata": {**eco_meta, "result": "loss"}})
+        if loser_is_active_human and loser_stars_delta > 0:
+            economy_events.append({"user_id": int(loser_id), "event_type": "earn", "resource": "stars", "amount": loser_stars_delta, "source": "battle", "metadata": {**eco_meta, "result": "loss", "star_reasons": star_awards.get("loser_reasons", [])}})
 
     try:
         if winner_id_int is not None:
@@ -1293,7 +2332,6 @@ async def _process_battle_end(
                 elif a.get("acting_player") == 2:
                     p2_cards_played += 1
 
-        turns = getattr(engine, "turn", 0)
         tx_result = await db.apply_battle_end_rewards_transaction(
             match_id=match_id,
             p1_user_id=p1_id_int,
@@ -1320,6 +2358,12 @@ async def _process_battle_end(
                 "is_bot_match": is_bot_match,
                 "p1_is_bot": p1_is_bot,
                 "p2_is_bot": p2_is_bot,
+                "schema_version": "battle_summary_metadata_v2",
+                "card_params_schema": "train_v3_card_params_v1",
+                "deck_param_snapshots": {
+                    "p1": getattr(engine, "_p1_initial_deck_params", {}) or {},
+                    "p2": getattr(engine, "_p2_initial_deck_params", {}) or {},
+                },
             },
             battle_result={
                 "winner_score": 0,
@@ -1332,7 +2376,7 @@ async def _process_battle_end(
         )
     except Exception as exc:
         logger.error("Battle end transaction failed for match %s: %s", match_id, exc, exc_info=True)
-        return
+        return False
 
     def _merge_engine_map(attr: str, values: Any) -> None:
         if not isinstance(values, dict):
@@ -1371,14 +2415,14 @@ async def _process_battle_end(
                     "p1_trophy_change": p1_trophy_change,
                     "p2_trophy_change": p2_trophy_change,
                 }
-                if not p1_is_bot and p1_status == ReplacementStatus.ACTIVE:
+                if p1_status == ReplacementStatus.ACTIVE:
                     await db.award_squad_cbrp(
                         p1_id_int,
                         "battle_win" if winner_id_int == p1_id_int else "battle_loss",
                         source_id=f"battle:{match_id}:p1",
                         metadata={**battle_meta, "result": "win" if winner_id_int == p1_id_int else "loss"},
                     )
-                if not p2_is_bot and p2_status == ReplacementStatus.ACTIVE:
+                if p2_status == ReplacementStatus.ACTIVE:
                     await db.award_squad_cbrp(
                         p2_id_int,
                         "battle_win" if winner_id_int == p2_id_int else "battle_loss",
@@ -1388,6 +2432,16 @@ async def _process_battle_end(
         except Exception:
             logger.warning("Failed to award squad CBRP for battle match_id=%s", match_id, exc_info=True)
 
+        try:
+            eligible_newbie_mode = str(game_mode or "").lower() not in ("training", "friendly", "tutorial")
+            if tx_result.get("applied") and eligible_newbie_mode and not did_surrender and not did_afk:
+                if p1_status == ReplacementStatus.ACTIVE and not p1_is_bot:
+                    await db.mark_newbie_path_task(p1_id_int, "play_regular_battle", claimed=False)
+                if p2_status == ReplacementStatus.ACTIVE and not p2_is_bot:
+                    await db.mark_newbie_path_task(p2_id_int, "play_regular_battle", claimed=False)
+        except Exception:
+            logger.debug("newbie path battle completion failed for match %s", match_id, exc_info=True)
+
         if not getattr(engine, "_analytics_flushed", False):
             actions = getattr(engine, "_analytics_actions", []) or []
             if actions:
@@ -1396,6 +2450,7 @@ async def _process_battle_end(
             engine._analytics_flushed = True
     except Exception as exc:
         logger.error("Analytics flush failed for match %s: %s", match_id, exc, exc_info=True)
+    return True
 
 
 def _engine_economy_value(values: Any, user_id: Any) -> Any:
@@ -1450,18 +2505,39 @@ def _build_game_over_payload(engine: Any, winner_id: Any, *, reason: str) -> dic
 
 def _is_finished_match(match_id: Any, engine: Any = None) -> bool:
     match_id_str = str(match_id or "")
-    return bool(
+    finalized = bool(
         (match_id_str and match_id_str in ENDED_MATCH_IDS)
-        or getattr(engine, "is_ended", False)
         or getattr(engine, "rewards_granted", False)
         or getattr(engine, "battle_end_processed", False)
+    )
+    if finalized:
+        return True
+    if getattr(engine, "is_ended", False):
+        return not callable(getattr(engine, "check_game_over", None))
+    return False
+
+
+def _is_terminal_unfinalized(engine: Any) -> bool:
+    return bool(
+        getattr(engine, "is_ended", False)
+        and not getattr(engine, "rewards_granted", False)
+        and not getattr(engine, "battle_end_processed", False)
+        and callable(getattr(engine, "check_game_over", None))
     )
 
 
 def _client_action_id(payload: dict[str, Any]) -> str | None:
-    raw = payload.get("client_action_id") or payload.get("action_id") or payload.get("nonce")
-    value = str(raw or "").strip()
+    raw = None
+    for key in ("client_action_id", "nonce", "action_id"):
+        if key in payload and payload.get(key) is not None:
+            raw = payload.get(key)
+            break
+    value = str(raw).strip() if raw is not None else ""
     return value[:128] if value else None
+
+
+def _client_action_id_required_response() -> web.Response:
+    return web.json_response({"error": "client_action_id_required"}, status=400)
 
 
 def _prune_action_result_cache(now: float | None = None) -> None:
@@ -1549,12 +2625,19 @@ async def _auto_end_expired_turn_response(
     engine: Any,
     viewer_id: int,
     client_action_id: str | None,
+    *,
+    lock_already_held: bool = False,
 ) -> web.Response | None:
     if _is_match_waiting_for_players(engine):
         return None
     if not hasattr(engine, "is_turn_expired") or not engine.is_turn_expired():
         return None
-    handled = await _handle_natural_turn_timeout(app, str(match_id), engine)
+    handled = await _handle_natural_turn_timeout(
+        app,
+        str(match_id),
+        engine,
+        lock_already_held=lock_already_held,
+    )
     if not handled:
         return None
     state = engine.get_full_state(viewer_id=viewer_id) if hasattr(engine, "get_full_state") else {}
@@ -1594,6 +2677,66 @@ def _build_finished_match_action_payload(
     return payload
 
 
+async def _terminal_action_payload_if_needed(
+    app: web.Application,
+    match_id: Any,
+    engine: Any,
+    viewer_id: Any = None,
+    *,
+    reason: str,
+) -> tuple[dict[str, Any] | None, int]:
+    if _is_finished_match(match_id, engine):
+        return _build_finished_match_action_payload(match_id, engine, viewer_id), 200
+    if _is_terminal_unfinalized(engine):
+        terminal_result = await _finalize_terminal_match_if_needed(
+            app,
+            str(match_id),
+            engine,
+            reason=reason,
+        )
+        if terminal_result and terminal_result.get("game_over"):
+            return _build_finished_match_action_payload(match_id, engine, viewer_id), 200
+        return {"error": "battle_finalization_failed", "match_id": str(match_id)}, 503
+    return None, 200
+
+
+async def _finalize_terminal_match_if_needed(
+    app: web.Application,
+    match_id: str,
+    engine: Any,
+    *,
+    reason: str = "terminal_state",
+) -> dict[str, Any] | None:
+    """Finalize a terminal engine state once. Call while holding the match lock."""
+    if engine is None:
+        return None
+    checker = getattr(engine, "check_game_over", None)
+    if not callable(checker):
+        return None
+    try:
+        game_over_result = checker()
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "Failed to check terminal state for match %s after %s",
+            match_id,
+            reason,
+            exc_info=True,
+        )
+        return None
+    if not isinstance(game_over_result, dict) or not game_over_result.get("game_over"):
+        return None
+
+    winner_id = game_over_result.get("winner_id", game_over_result.get("winner"))
+    if not getattr(engine, "battle_end_processed", False) and not getattr(engine, "rewards_granted", False):
+        processed = await _process_battle_end(app, str(match_id), engine, winner_id)
+        if not processed:
+            return None
+    else:
+        _mark_match_ended(match_id)
+        await _mark_matchmaker_finished(app, match_id, winner_id)
+    return game_over_result
+
+
 async def _emit_personalized_match_state(
     sio_inst: Any,
     match_id: str,
@@ -1617,25 +2760,79 @@ async def _emit_personalized_match_state(
     for sid, user_id in participants:
         try:
             personalized_state = engine.get_full_state(viewer_id=user_id)
+            raw_sound_events = (event_data or {}).get("sound_events")
+            sound_events = None
+            if isinstance(raw_sound_events, list):
+                actor_user_id = (event_data or {}).get("actor_user_id")
+                sound_events = []
+                for event in raw_sound_events:
+                    if not isinstance(event, dict):
+                        continue
+                    event_copy = dict(event)
+                    if actor_user_id is not None:
+                        try:
+                            event_copy["side"] = "player" if int(actor_user_id) == int(user_id) else "opponent"
+                        except (TypeError, ValueError):
+                            pass
+                    sound_events.append(event_copy)
             event_extra = {
                 key: value
                 for key, value in (event_data or {}).items()
-                if key not in {"event_type", "match_id", "state", "state_p1", "data"}
+                if key not in {"event_type", "match_id", "state", "state_p1", "data", "sound_events", "actor_user_id"}
             }
+            payload = {
+                "match_id": match_id_str,
+                "state": personalized_state,
+                "data": (event_data or {}).get("data", {}),
+                **event_extra,
+            }
+            if sound_events is not None:
+                payload["sound_events"] = sound_events
             await sio_inst.emit(
                 event_type,
-                {
-                    "match_id": match_id_str,
-                    "state": personalized_state,
-                    "data": (event_data or {}).get("data", {}),
-                    **event_extra,
-                },
+                payload,
                 to=sid,
             )
         except Exception as exc:
             logger.error(
                 "[SOCKET_EMIT] Failed personalized emit event=%s match=%s sid=%s user=%s: %s",
                 event_type,
+                match_id_str,
+                sid,
+                user_id,
+                exc,
+                exc_info=True,
+            )
+
+
+async def _emit_talkie_event(
+    sio_inst: Any,
+    match_id: str,
+    engine: Any,
+    event: dict[str, Any],
+) -> None:
+    """Emit a Talkie cosmetic event to every enabled sid connected to this match."""
+    logger = logging.getLogger(__name__)
+    match_id_str = str(match_id)
+    if not sio_inst or not engine or not isinstance(event, dict):
+        return
+
+    participants: list[tuple[str, Any]] = []
+    for sid, session_data in list(SID_TO_MATCH.items()):
+        if str(session_data.get("match_id")) == match_id_str and session_data.get("user_id") is not None:
+            participants.append((sid, session_data.get("user_id")))
+
+    for sid, user_id in participants:
+        try:
+            should_deliver = True
+            if hasattr(engine, "should_deliver_talkie_to"):
+                should_deliver = bool(engine.should_deliver_talkie_to(int(user_id)))
+            if not should_deliver:
+                continue
+            await sio_inst.emit("battle_talkie", event, to=sid)
+        except Exception as exc:
+            logger.error(
+                "[SOCKET_EMIT] Failed Talkie emit match=%s sid=%s user=%s: %s",
                 match_id_str,
                 sid,
                 user_id,
@@ -1655,6 +2852,8 @@ async def _apply_surrender_penalty_once(
     from core.state import ReplacementStatus
 
     player_state = engine.get_player_state(user_id_int)
+    if player_state is None:
+        return {"success": False, "error": "player_not_in_match", "status": 403}
     existing_changes = getattr(engine, "_trophy_changes", {}) or {}
     existing_totals = getattr(engine, "_trophy_totals", {}) or {}
 
@@ -1694,6 +2893,36 @@ async def _apply_surrender_penalty_once(
         is_winner=False,
         status=ReplacementStatus.SURRENDERED,
     )
+
+    db_apply_once = getattr(db, "apply_surrender_penalty_once", None)
+    if callable(db_apply_once):
+        try:
+            tx_result = await db_apply_once(
+                match_id=str(match_id),
+                user_id=user_id_int,
+                reason="surrender",
+                penalty_delta=penalty_delta,
+            )
+        except Exception as exc:
+            logger.error("Failed to apply surrender penalty idempotently: %s", exc, exc_info=True)
+            return {"success": False, "error": "trophy_update_failed", "status": 500}
+
+        already_processed = bool(tx_result.get("already_processed")) or not bool(tx_result.get("applied"))
+        new_trophies = int(tx_result.get("new_trophies", current_trophies) or 0)
+        applied_delta = 0 if already_processed else int(tx_result.get("trophy_penalty", penalty_delta) or 0)
+        player_state.surrender_processed = True
+        engine._trophy_changes = getattr(engine, "_trophy_changes", {}) or {}
+        engine._trophy_totals = getattr(engine, "_trophy_totals", {}) or {}
+        if not already_processed:
+            engine._trophy_changes[user_id_int] = applied_delta
+        engine._trophy_totals[user_id_int] = new_trophies
+        return {
+            "success": True,
+            "already_processed": already_processed,
+            "surrender_processed": True,
+            "trophy_penalty": int(engine._trophy_changes.get(user_id_int, applied_delta) or 0),
+            "new_trophies": new_trophies,
+        }
 
     try:
         result = await db.update_user_trophies(user_id_int, penalty_delta)
@@ -1751,6 +2980,19 @@ async def surrender(sid: str, data: dict[str, Any]) -> None:
 
         engine = ACTIVE_MATCHES.get(match_id)
         if not engine:
+            if _is_finished_match(match_id):
+                await sio.emit(
+                    "surrender_ack",
+                    {
+                        "match_id": match_id,
+                        "user_id": int(user_id),
+                        "already_ended": True,
+                        "already_processed": True,
+                        "trophy_penalty": 0,
+                    },
+                    to=sid,
+                )
+                return
             logger.warning("surrender: engine not found for match_id=%s", match_id)
             await sio.emit("error", {"message": "Match not found"}, to=sid)
             return
@@ -1762,18 +3004,69 @@ async def surrender(sid: str, data: dict[str, Any]) -> None:
             await sio.emit("error", {"message": "User not in match"}, to=sid)
             return
 
-        engine.mark_surrender(user_id_int)
-
         app = getattr(sio, 'app', None)
         if not app:
             logger.error("surrender: не удалось получить app для начисления трофеев")
             await sio.emit("error", {"message": "Database unavailable"}, to=sid)
             return
 
-        penalty_result = await _apply_surrender_penalty_once(app, match_id, engine, user_id_int)
-        if not penalty_result.get("success"):
-            await sio.emit("error", {"message": penalty_result.get("error", "surrender_failed")}, to=sid)
-            return
+        pve_surrender_finished = False
+        lock = _get_match_lock(match_id)
+        async with lock:
+            if _is_terminal_unfinalized(engine):
+                terminal_result = await _finalize_terminal_match_if_needed(
+                    app,
+                    match_id,
+                    engine,
+                    reason="socket_surrender_retry",
+                )
+                if not terminal_result:
+                    await sio.emit("error", {"message": "battle_finalization_failed"}, to=sid)
+                    return
+
+            if _is_finished_match(match_id, engine):
+                await sio.emit(
+                    "surrender_ack",
+                    {
+                        "match_id": match_id,
+                        "user_id": user_id_int,
+                        "already_ended": True,
+                        "already_processed": True,
+                        "trophy_penalty": 0,
+                    },
+                    to=sid,
+                )
+                return
+
+            engine.mark_surrender(user_id_int)
+
+            penalty_result = await _apply_surrender_penalty_once(app, match_id, engine, user_id_int)
+            if not penalty_result.get("success"):
+                await sio.emit("error", {"message": penalty_result.get("error", "surrender_failed")}, to=sid)
+                return
+
+            if _is_single_human_bot_match(engine, user_id_int):
+                await _terminate_match_without_rewards(
+                    match_id,
+                    ACTIVE_MATCHES,
+                    reason="human_surrendered_pve",
+                    message="Матч завершён: игрок сдался в бою против бота",
+                )
+                await _mark_matchmaker_finished(app, match_id)
+                game_over_result = {
+                    "game_over": True,
+                    "winner_id": None,
+                    "reason": "human_surrendered_pve",
+                }
+                winner_id = None
+                pve_surrender_finished = True
+            else:
+                game_over_result = engine.check_game_over()
+                if game_over_result.get("game_over"):
+                    winner_id = game_over_result.get("winner_id")
+                    await _finalize_terminal_match_if_needed(app, match_id, engine, reason="socket_surrender")
+                else:
+                    winner_id = None
 
         await sio.emit(
             "surrender_ack",
@@ -1783,20 +3076,15 @@ async def surrender(sid: str, data: dict[str, Any]) -> None:
                 "trophy_penalty": penalty_result.get("trophy_penalty", 0),
                 "new_trophies": penalty_result.get("new_trophies", 0),
                 "already_processed": bool(penalty_result.get("already_processed")),
+                "game_over": bool(game_over_result.get("game_over")),
+                "reason": game_over_result.get("reason"),
             },
             to=sid
         )
 
-        # СРАЗУ вызываем проверку окончания игры (согласно правилам)
-        game_over_result = engine.check_game_over()
-
         # Явно отправляем game_over текущему сокету, если матч завершился
         if game_over_result.get("game_over"):
             logger.info("surrender: матч %s завершен после сдачи (game_over=True)", match_id)
-            winner_id = game_over_result.get("winner_id")
-
-            # Начисляем награды победителю и сохраняем результат
-            await _process_battle_end(app, match_id, engine, winner_id)
 
             # Отправляем game_over именно сдавшемуся игроку (sid) перед тем как он уйдет
             await sio.emit(
@@ -1813,13 +3101,17 @@ async def surrender(sid: str, data: dict[str, Any]) -> None:
             )
 
         # Запускаем бота, если сейчас ход сдавшегося игрока и игра НЕ закончена
-        if not game_over_result.get("game_over") and engine.current_player_id == user_id_int:
+        if (
+            not pve_surrender_finished
+            and not game_over_result.get("game_over")
+            and engine.current_player_id == user_id_int
+        ):
             logger.info("surrender: запускаем бота для сдавшегося игрока %s", user_id_int)
             await check_and_run_bot(match_id, ACTIVE_MATCHES)
 
     except Exception as exc:
         logger.error("surrender: ошибка обработки: %s", exc, exc_info=True)
-        await sio.emit("error", {"message": str(exc)}, to=sid)
+        await sio.emit("error", _safe_socket_error_payload(), to=sid)
 
 
 def setup_battle_events() -> None:
@@ -1922,7 +3214,7 @@ def _verify_init_data(init_data: str, bot_token: str) -> dict[str, str] | None:
             digestmod=hashlib.sha256,
         ).hexdigest()
 
-        if calculated_hash != received_hash:
+        if not hmac.compare_digest(calculated_hash, received_hash):
             return None
 
         return data_dict
@@ -1953,9 +3245,15 @@ AUTH_MAX_AGE_SECONDS = 86400
 AUTH_CLOCK_SKEW_SECONDS = 300
 ADMIN_SESSION_COOKIE_NAME = "ea_admin_session"
 ADMIN_SESSION_MAX_AGE_SECONDS = 4 * 60 * 60
+COMMUNITY_ADMIN_API_PATHS = frozenset({
+    "/api/community/ideas/admin/approve",
+    "/api/community/ideas/admin/status",
+    "/api/community/bugs",
+})
 
 MATCH_SESSIONS: dict[str, dict[int, set[str]]] = {}
 MATCH_LOCKS: dict[str, asyncio.Lock] = {}
+MATCH_INIT_LOCKS: dict[str, asyncio.Lock] = {}
 
 # Кеш IP-геолокации: {ip: (country, expiry_timestamp)}
 _ip_geo_cache: dict[str, tuple[str, float]] = {}
@@ -2046,7 +3344,7 @@ def _make_admin_session_token(user_id: int) -> str:
             "iat": now,
             "exp": now + ADMIN_SESSION_MAX_AGE_SECONDS,
         },
-        settings.jwt_secret,
+        settings.admin_session_secret,
         algorithm="HS256",
     )
 
@@ -2056,7 +3354,7 @@ def _verify_admin_session_token(token: str) -> int | None:
         settings = get_settings()
         payload = pyjwt.decode(
             token,
-            settings.jwt_secret,
+            settings.admin_session_secret,
             algorithms=["HS256"],
             options={"require": ["typ", "user_id", "exp", "iat"]},
         )
@@ -2071,6 +3369,10 @@ def _hash_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
+def _looks_like_jwt_bearer(value: str) -> bool:
+    return bool(re.fullmatch(r"[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+", str(value or "").strip()))
+
+
 def _is_dev_local(request) -> bool:
     settings = get_settings()
     return (
@@ -2079,9 +3381,21 @@ def _is_dev_local(request) -> bool:
     )
 
 
+def _is_admin_api_path(path: str) -> bool:
+    return path.startswith("/api/admin/") or path in COMMUNITY_ADMIN_API_PATHS
+
+
+def _is_mcp_endpoint_path(path: str) -> bool:
+    try:
+        endpoint_path = str(get_settings().mcp_endpoint_path or "").rstrip("/") or "/"
+    except Exception:
+        return False
+    return (path.rstrip("/") or "/") == endpoint_path
+
+
 def _is_admin_surface_request(request: web.Request) -> bool:
     path = request.path
-    return path.startswith("/api/admin/") or path in {"/extraShop/admin", "/extraShop/admin/"}
+    return _is_admin_api_path(path) or path in {"/extraShop/admin", "/extraShop/admin/"}
 
 
 def _allow_dev_user_id_auth(request: web.Request) -> bool:
@@ -2105,13 +3419,35 @@ def _validate_auth_date(data_dict: dict[str, str]) -> bool:
 
 
 def _request_auth_token(request: web.Request) -> str:
-    auth_param = str(request.rel_url.query.get("_auth") or "").strip()
-    if auth_param:
-        return auth_param
     authorization = str(request.headers.get("Authorization") or "").strip()
     if authorization.lower().startswith("bearer "):
-        return authorization[7:].strip()
+        token = authorization[7:].strip()
+        if token:
+            return token
+
+    if not _is_admin_surface_request(request):
+        auth_param = str(request.rel_url.query.get("_auth") or "").strip()
+        if auth_param:
+            if _looks_like_jwt_bearer(auth_param) and get_settings().environment != "development":
+                raise web.HTTPUnauthorized(
+                    reason="query_auth_jwt_not_allowed",
+                    text='{"error":"query_auth_jwt_not_allowed"}',
+                    content_type="application/json",
+                )
+            return auth_param
     return ""
+
+
+def _set_admin_session_cookie(request: web.Request, response: web.StreamResponse, user_id: int) -> None:
+    response.set_cookie(
+        ADMIN_SESSION_COOKIE_NAME,
+        _make_admin_session_token(user_id),
+        max_age=ADMIN_SESSION_MAX_AGE_SECONDS,
+        httponly=True,
+        secure=bool(request.secure or str(request.headers.get("X-Forwarded-Proto", "")).lower() == "https"),
+        samesite="Lax",
+        path="/",
+    )
 
 
 async def require_user_id(request) -> int:
@@ -2173,7 +3509,7 @@ async def require_user_id(request) -> int:
 
 
 async def require_user_id_from_payload(request, payload: dict) -> int:
-    auth_token = payload.get("_auth") or payload.get("auth")
+    auth_token = payload.get("_auth") or payload.get("auth") or _request_auth_token(request)
     if auth_token:
         # 1. Попытаться верифицировать как JWT
         settings = get_settings()
@@ -2195,9 +3531,12 @@ async def require_user_id_from_payload(request, payload: dict) -> int:
                 return uid
 
     if _allow_dev_user_id_auth(request):
-        if "user_id" in payload:
+        user_id_value = payload.get("user_id")
+        if user_id_value is None:
+            user_id_value = request.rel_url.query.get("user_id")
+        if user_id_value is not None:
             try:
-                return int(payload["user_id"])
+                return int(user_id_value)
             except (ValueError, TypeError):
                 pass
 
@@ -2232,6 +3571,11 @@ async def _require_user_id_from_auth_token_str(auth_token: str, app: web.Applica
     return None
 
 
+def _configure_socketio_cors(settings) -> None:
+    origins = list(getattr(settings, "cors_allowed_origins", ("*",)) or ())
+    sio.eio.cors_allowed_origins = "*" if origins == ["*"] else origins
+
+
 def _verify_participant(engine, user_id: int) -> None:
     p1_uid = getattr(engine.p1_state, "user_id", None)
     p2_uid = getattr(engine.p2_state, "user_id", None)
@@ -2249,6 +3593,82 @@ def _get_match_lock(match_id: str) -> asyncio.Lock:
     return MATCH_LOCKS[match_id]
 
 
+def _get_match_init_lock(match_id: str) -> asyncio.Lock:
+    match_id_str = str(match_id)
+    if match_id_str not in MATCH_INIT_LOCKS:
+        MATCH_INIT_LOCKS[match_id_str] = asyncio.Lock()
+    return MATCH_INIT_LOCKS[match_id_str]
+
+
+def _clear_bot_vs_bot_marker(match_id: str) -> None:
+    BOT_VS_BOT_MARKERS.pop(str(match_id), None)
+
+
+def _detach_sid_from_previous_match(sid: str, *, next_match_id: str, next_user_id: int) -> None:
+    previous = SID_TO_MATCH.get(sid)
+    if not previous:
+        return
+
+    previous_match_id = str(previous.get("match_id") or "")
+    previous_user_id = previous.get("user_id")
+    if previous_match_id == str(next_match_id) and int(previous_user_id or 0) == int(next_user_id):
+        return
+
+    SID_TO_MATCH.pop(sid, None)
+    if not previous_match_id or previous_user_id is None:
+        return
+
+    is_last_session = _unregister_session(previous_match_id, int(previous_user_id), sid)
+    previous_engine = ACTIVE_MATCHES.get(previous_match_id)
+    if previous_engine and is_last_session:
+        _mark_player_disconnected(previous_match_id, int(previous_user_id), previous_engine)
+
+
+def _active_match_payload_for_user(
+    app: web.Application,
+    user_id: int,
+    *,
+    active_existing_match: bool = False,
+) -> dict[str, Any] | None:
+    seen_match_ids: set[str] = set()
+    active_maps = [app.get("active_matches", {}), ACTIVE_MATCHES]
+    for active_matches in active_maps:
+        for active_match_id, engine in list(active_matches.items()):
+            match_id = str(active_match_id)
+            if match_id in seen_match_ids:
+                continue
+            seen_match_ids.add(match_id)
+            if getattr(engine, "is_ended", False):
+                continue
+            p1_uid = getattr(engine.p1_state, "user_id", None)
+            p2_uid = getattr(engine.p2_state, "user_id", None)
+            try:
+                participant_ids = {int(p1_uid), int(p2_uid)}
+            except (TypeError, ValueError):
+                participant_ids = {p1_uid, p2_uid}
+            if int(user_id) not in participant_ids:
+                continue
+
+            status = _player_replacement_status(engine, int(user_id))
+            if getattr(status, "value", str(status)) == "surrendered":
+                continue
+
+            game_mode = _resolve_match_game_mode(app, match_id, engine)
+            payload = {
+                "active": True,
+                "status": "found",
+                "match_id": match_id,
+                "game_mode": game_mode,
+                "current_player_id": engine.get_current_player_id() if hasattr(engine, "get_current_player_id") else None,
+                "replacement_status": getattr(status, "value", str(status)),
+                "redirect_url": f"/arena?id={match_id}",
+            }
+            if active_existing_match:
+                payload["active_existing_match"] = True
+            return payload
+    return None
+
+
 def _register_session(match_id: str, user_id: int, sid: str) -> None:
     pending_key = (str(match_id), int(user_id))
     pending_task = MATCH_DISCONNECT_TASKS.pop(pending_key, None)
@@ -2256,11 +3676,12 @@ def _register_session(match_id: str, user_id: int, sid: str) -> None:
         pending_task.cancel()
 
     MATCH_DISCONNECT_STATES.pop(pending_key, None)
-    _cancel_replacement_bot_task(str(match_id), int(user_id))
+    _clear_bot_vs_bot_marker(str(match_id))
     engine = ACTIVE_MATCHES.get(str(match_id))
     if engine and hasattr(engine, "restore_player_control"):
         restored = engine.restore_player_control(int(user_id))
         if restored:
+            _cancel_replacement_bot_task(str(match_id), int(user_id))
             logging.getLogger(__name__).info(
                 "[SOCKET] Player %s restored control in match %s on reconnect.",
                 user_id, match_id,
@@ -2303,6 +3724,8 @@ def _mark_player_disconnected(match_id: str, user_id: int, engine: BattleEngine)
         "[SOCKET] Last session for player %s in match %s disconnected. Waiting for timed turns before bot takeover.",
         user_id, match_id,
     )
+    if _is_match_waiting_for_players(engine):
+        _schedule_preready_disconnect_takeover(str(match_id), int(user_id), engine)
 
 
 def _is_player_disconnected(match_id: str, user_id: int) -> bool:
@@ -2310,6 +3733,65 @@ def _is_player_disconnected(match_id: str, user_id: int) -> bool:
     return bool(MATCH_DISCONNECT_STATES.get(key)) and not bool(
         (MATCH_SESSIONS.get(str(match_id)) or {}).get(int(user_id))
     )
+
+
+def _schedule_preready_disconnect_takeover(match_id: str, user_id: int, engine: BattleEngine) -> None:
+    """Let a prebattle disconnect stop blocking readiness after one turn-duration grace."""
+    key = (str(match_id), int(user_id))
+    existing = MATCH_DISCONNECT_TASKS.get(key)
+    if existing and not existing.done():
+        return
+
+    delay = max(1.0, float(getattr(engine, "turn_duration", 25) or 25))
+
+    async def _takeover_if_preready_player_still_gone() -> None:
+        try:
+            await asyncio.sleep(delay)
+            if not _is_player_disconnected(str(match_id), int(user_id)):
+                return
+            current_engine = ACTIVE_MATCHES.get(str(match_id))
+            if not current_engine or getattr(current_engine, "is_ended", False):
+                return
+            if not _is_match_waiting_for_players(current_engine):
+                return
+
+            from core.state import ReplacementStatus
+
+            status = _player_replacement_status(current_engine, int(user_id))
+            if status == ReplacementStatus.SURRENDERED:
+                return
+            if status == ReplacementStatus.ACTIVE:
+                if not await _replacement_bot_allowed(str(match_id), current_engine):
+                    await _terminate_match_without_rewards(
+                        str(match_id),
+                        ACTIVE_MATCHES,
+                        reason="opponent_disconnected",
+                        message="Противник отключился",
+                    )
+                    return
+                current_engine.set_player_replacement_status(int(user_id), ReplacementStatus.AFK)
+                disconnect_state = MATCH_DISCONNECT_STATES.get(key)
+                if disconnect_state is not None:
+                    disconnect_state["takeover_started"] = True
+                    disconnect_state["pre_ready_takeover"] = True
+                if hasattr(current_engine, "mark_client_ready"):
+                    current_engine.mark_client_ready(int(user_id))
+            await check_and_run_bot(str(match_id), ACTIVE_MATCHES)
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            logging.getLogger(__name__).error(
+                "Pre-ready disconnect takeover failed for match=%s user=%s: %s",
+                match_id,
+                user_id,
+                exc,
+                exc_info=True,
+            )
+        finally:
+            if MATCH_DISCONNECT_TASKS.get(key) is asyncio.current_task():
+                MATCH_DISCONNECT_TASKS.pop(key, None)
+
+    MATCH_DISCONNECT_TASKS[key] = asyncio.create_task(_takeover_if_preready_player_still_gone())
 
 
 def _record_disconnected_turn_timeout(match_id: str, user_id: int) -> int:
@@ -2346,9 +3828,15 @@ def _mark_user_activity_for_match(match_id: str, user_id: int, engine: BattleEng
     if task and not task.done():
         task.cancel()
     MATCH_DISCONNECT_STATES.pop(key, None)
-    _cancel_replacement_bot_task(str(match_id), int(user_id))
-    if hasattr(engine, "mark_player_activity"):
+    _clear_bot_vs_bot_marker(str(match_id))
+    restored = False
+    if hasattr(engine, "restore_player_control"):
+        restored = bool(engine.restore_player_control(int(user_id)))
+    elif hasattr(engine, "mark_player_activity"):
         engine.mark_player_activity(int(user_id))
+        restored = _player_replacement_status(engine, int(user_id)) == ReplacementStatus.ACTIVE
+    if restored:
+        _cancel_replacement_bot_task(str(match_id), int(user_id))
 
 
 def _schedule_disconnect_takeover(match_id: str, user_id: int, engine: BattleEngine) -> None:
@@ -2406,6 +3894,14 @@ def _schedule_disconnect_takeover(match_id: str, user_id: int, engine: BattleEng
             await check_and_run_bot(str(match_id), ACTIVE_MATCHES)
         except asyncio.CancelledError:
             return
+        except Exception as exc:
+            logging.getLogger(__name__).error(
+                "Disconnected takeover failed for match=%s user=%s: %s",
+                match_id,
+                user_id,
+                exc,
+                exc_info=True,
+            )
         finally:
             if MATCH_DISCONNECT_TASKS.get(key) is asyncio.current_task():
                 MATCH_DISCONNECT_TASKS.pop(key, None)
@@ -2455,6 +3951,10 @@ def _player_replacement_status(engine: BattleEngine, user_id: int) -> Any:
 
     if hasattr(engine, "get_player_replacement_status"):
         return engine.get_player_replacement_status(user_id)
+    for attr in ("p1_state", "p2_state"):
+        player = getattr(engine, attr, None)
+        if player is not None and int(getattr(player, "user_id", 0) or 0) == int(user_id):
+            return getattr(player, "replacement_status", ReplacementStatus.ACTIVE)
     if hasattr(engine, "_arena") and engine._arena:
         state = engine._arena.state
         if state.p1.user_id == user_id:
@@ -2462,6 +3962,20 @@ def _player_replacement_status(engine: BattleEngine, user_id: int) -> Any:
         if state.p2.user_id == user_id:
             return getattr(state.p2, "replacement_status", ReplacementStatus.ACTIVE)
     return ReplacementStatus.ACTIVE
+
+
+def _surrendered_action_response(engine: Any, user_id: int) -> web.Response | None:
+    from core.state import ReplacementStatus
+
+    if _player_replacement_status(engine, int(user_id)) != ReplacementStatus.SURRENDERED:
+        return None
+    return web.json_response(
+        {
+            "error": "player_replaced",
+            "result": {"success": False, "error": "player_replaced"},
+        },
+        status=403,
+    )
 
 
 async def _get_user_squad_id(db: Any, user_id: int) -> int:
@@ -2531,6 +4045,33 @@ def _both_players_bot_controlled(engine: BattleEngine) -> bool:
     return _is_bot_controlled_player(engine, state.p1) and _is_bot_controlled_player(engine, state.p2)
 
 
+def _is_single_human_bot_match(engine: BattleEngine, user_id: int | str) -> bool:
+    try:
+        surrendered_uid = int(user_id)
+    except (TypeError, ValueError):
+        return False
+
+    if hasattr(engine, "_arena") and getattr(engine, "_arena", None):
+        state = engine._arena.state
+        players = [state.p1, state.p2]
+    else:
+        players = [getattr(engine, "p1_state", None), getattr(engine, "p2_state", None)]
+
+    players = [player for player in players if player is not None]
+    if len(players) != 2:
+        return False
+
+    human_players = [player for player in players if not bool(getattr(player, "is_bot", False))]
+    bot_players = [player for player in players if bool(getattr(player, "is_bot", False))]
+    if len(human_players) != 1 or len(bot_players) != 1:
+        return False
+
+    try:
+        return int(getattr(human_players[0], "user_id", 0) or 0) == surrendered_uid
+    except (TypeError, ValueError):
+        return False
+
+
 def _replacement_human_is_active_again(engine: BattleEngine, user_id: int | str) -> bool:
     from core.state import ReplacementStatus
 
@@ -2558,6 +4099,8 @@ async def _terminate_match_without_rewards(
         engine.rewards_granted = False
     _mark_match_ended(match_id)
     active_matches.pop(str(match_id), None)
+    if active_matches is not ACTIVE_MATCHES:
+        ACTIVE_MATCHES.pop(str(match_id), None)
     for key, task in list(MATCH_DISCONNECT_TASKS.items()):
         if key[0] != str(match_id):
             continue
@@ -2568,7 +4111,7 @@ async def _terminate_match_without_rewards(
         if key[0] == str(match_id):
             MATCH_DISCONNECT_STATES.pop(key, None)
     MATCH_SESSIONS.pop(str(match_id), None)
-    MATCH_LOCKS.pop(str(match_id), None)
+    MATCH_INIT_LOCKS.pop(str(match_id), None)
     for sid, session_data in list(SID_TO_MATCH.items()):
         if str(session_data.get("match_id")) == str(match_id):
             SID_TO_MATCH.pop(sid, None)
@@ -2579,6 +4122,7 @@ async def _terminate_match_without_rewards(
     BOT_VS_BOT_MARKERS.pop(str(match_id), None)
     app_ref = getattr(sio, "app", None)
     if app_ref:
+        app_ref.get("active_matches", {}).pop(str(match_id), None)
         app_ref.get("match_game_modes", {}).pop(str(match_id), None)
     try:
         await sio.emit(
@@ -2593,19 +4137,24 @@ async def _terminate_match_without_rewards(
 async def _handle_bot_vs_bot_policy(match_id: str, engine: BattleEngine, active_matches: dict[str, BattleEngine]) -> bool:
     """Return True when bot-vs-bot policy consumed the check."""
     if not _both_players_bot_controlled(engine):
-        BOT_VS_BOT_MARKERS.pop(str(match_id), None)
+        _clear_bot_vs_bot_marker(str(match_id))
         return False
 
     current_turn = int(getattr(engine, "turn", 0) or 0)
     marker = BOT_VS_BOT_MARKERS.get(str(match_id))
-    if marker is None:
-        BOT_VS_BOT_MARKERS[str(match_id)] = current_turn
+    if not isinstance(marker, dict):
+        BOT_VS_BOT_MARKERS[str(match_id)] = {
+            "entered_turn": current_turn,
+            "entered_at": time.time(),
+        }
         logging.getLogger(__name__).warning(
             "[BOT_VS_BOT] Match %s entered bot-controlled state at turn %s. Allowing one full turn.",
             match_id, current_turn,
         )
         return False
-    if current_turn > marker:
+
+    entered_turn = int(marker.get("entered_turn", current_turn) or current_turn)
+    if current_turn - entered_turn >= 2:
         await _terminate_match_without_rewards(
             str(match_id),
             active_matches,
@@ -2655,26 +4204,20 @@ def _start_guarded_bot_task(match_id: str, engine: BattleEngine, bot_id: int | s
     current_task = asyncio.create_task(_guarded())
     BOT_TASKS[match_id] = current_task
 
-def _create_ssl_disabled_session():
-    """Создать aiohttp сессию с отключенной проверкой SSL для локальной разработки."""
+def _create_telegram_api_session():
+    """Create a Telegram Bot API session with TLS verification enabled by default."""
     import aiohttp
+
+    settings = get_settings()
+    if not settings.telegram_api_insecure_ssl:
+        return aiohttp.ClientSession()
+
     import ssl
+
     ssl_context = ssl.create_default_context()
     ssl_context.check_hostname = False
     ssl_context.verify_mode = ssl.CERT_NONE
-    connector = aiohttp.TCPConnector(ssl=ssl_context)
-    return aiohttp.ClientSession(connector=connector)
-
-
-def _create_ssl_disabled_session():
-    """Создать aiohttp сессию с отключенной проверкой SSL для локальной разработки."""
-    import aiohttp
-    import ssl
-    ssl_context = ssl.create_default_context()
-    ssl_context.check_hostname = False
-    ssl_context.verify_mode = ssl.CERT_NONE
-    connector = aiohttp.TCPConnector(ssl=ssl_context)
-    return aiohttp.ClientSession(connector=connector)
+    return aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_context))
 
 
 # ============================================================================
@@ -2858,14 +4401,42 @@ async def run_bot_routine(engine: BattleEngine, bot_id: int | str) -> None:
             logger.info("run_bot_routine: engine.is_ended=True before actions, bot aborting")
             return
 
-        # Определяем тип бота: ONNX Берсерк для любого bot-match бота с is_bot=True
+        # Определяем тип бота: ONNX Берсерк для реальных ботов и replacement-controlled игроков.
+        from core.state import ReplacementStatus
         is_bot_player = engine.is_bot(bot_id) if hasattr(engine, "is_bot") else True
-        use_berserk = is_bot_player and BERSERK_BRAIN is not None
+        replacement_status = _player_replacement_status(engine, int(bot_id))
+        train_v2_safe_mode = is_train_v2_bot_safe_mode(getattr(mode_config, "mode_id", getattr(engine, "game_mode", "classic")))
+        berserk_eligible = (
+            BERSERK_BRAIN is not None
+            and train_v2_safe_mode
+            and (is_bot_player or replacement_status != ReplacementStatus.ACTIVE)
+        )
+        berserk_profile_ready = False
+        if berserk_eligible:
+            has_profile = getattr(BERSERK_BRAIN, "has_profile", None)
+            if callable(has_profile):
+                berserk_profile_ready = bool(has_profile(difficulty))
+            else:
+                sessions = getattr(BERSERK_BRAIN, "sessions", None)
+                berserk_profile_ready = not isinstance(sessions, dict) or difficulty in sessions
+        use_berserk = berserk_eligible and berserk_profile_ready
 
         if use_berserk:
             logger.info("[SERVER] ONNX Берсерк для bot_id=%s (difficulty=%s)", bot_id, difficulty)
         else:
-            reason = "no ONNX session" if BERSERK_BRAIN is None else "not bot player"
+            if BERSERK_BRAIN is None:
+                reason = "no ONNX session"
+            elif not train_v2_safe_mode:
+                reason = f"mode not TrainV2-safe: {getattr(mode_config, 'mode_id', getattr(engine, 'game_mode', 'classic'))}"
+            elif not berserk_eligible:
+                reason = "not bot player"
+            else:
+                reason = f"missing ONNX profile: {difficulty}"
+                logger.warning(
+                    "[SERVER] ONNX Берсерк profile missing for bot_id=%s difficulty=%s; using rule-based fallback",
+                    bot_id,
+                    difficulty,
+                )
             logger.info("[SERVER] Rule-based BotAI для bot_id=%s (reason=%s)", bot_id, reason)
 
         # Пошаговое выполнение действий
@@ -2873,6 +4444,80 @@ async def run_bot_routine(engine: BattleEngine, bot_id: int | str) -> None:
         action_count = 0
         total_action_delays = 0.0  # Суммарное время на технические паузы
         bot_aborted_for_reconnect = False
+
+        async def _emit_turn_switched_after_bot_end() -> None:
+            try:
+                new_current_player = engine.get_current_player_id() if hasattr(engine, "get_current_player_id") else engine.current_player_id
+                full_state = engine.get_full_state(viewer_id=new_current_player)
+                event_data = {
+                    "event_type": "turn_switched",
+                    "match_id": match_id,
+                    "state_p1": full_state,
+                }
+                BATTLE_EVENT_EMITTER.emit("turn_switched", match_id, event_data)
+            except Exception as emit_exc:
+                logger.error("[SERVER] Ошибка отправки turn_switched: %s", emit_exc)
+
+        async def _force_end_bot_turn(reason: str) -> bool:
+            nonlocal bot_aborted_for_reconnect
+            finalized_terminal = False
+
+            mutation_lock = _get_match_lock(str(match_id))
+            async with mutation_lock:
+                if _replacement_human_is_active_again(engine, bot_id):
+                    logger.info(
+                        "run_bot_routine: player %s restored control before forced end_turn (%s)",
+                        bot_id,
+                        reason,
+                    )
+                    bot_aborted_for_reconnect = True
+                    return False
+                if hasattr(engine, 'is_ended') and engine.is_ended:
+                    logger.info("run_bot_routine: game ended before forced end_turn (%s)", reason)
+                    return False
+                if engine.current_player_id != bot_id:
+                    logger.info("run_bot_routine: not bot's turn before forced end_turn (%s)", reason)
+                    return False
+
+                try:
+                    engine.record_analytics_action(bot_id, {
+                        "type": "end_turn", "forced": True, "reason": reason
+                    })
+                except Exception:
+                    pass
+
+                try:
+                    result = engine.end_turn(bot_id)
+                except Exception as exc:
+                    logger.error("[SERVER] Ошибка принудительного end_turn (%s): %s", reason, exc)
+                    return False
+
+                if isinstance(result, dict) and result.get("success") is False:
+                    logger.warning(
+                        "[SERVER] Принудительный end_turn не выполнен (%s): %s",
+                        reason,
+                        result.get("error"),
+                    )
+                    return False
+                terminal = await _finalize_terminal_match_if_needed(
+                    getattr(sio, "app", None) or {},
+                    str(match_id),
+                    engine,
+                    reason=f"bot_forced_end_turn:{reason}",
+                )
+                finalized_terminal = bool(terminal and terminal.get("game_over"))
+
+            if finalized_terminal:
+                await sio.emit(
+                    "game_over",
+                    _build_game_over_payload(engine, getattr(engine, "_get_winner_id", lambda: None)(), reason="bot_end_turn"),
+                    room=match_id,
+                )
+                return True
+            if _is_terminal_unfinalized(engine):
+                return True
+            await _emit_turn_switched_after_bot_end()
+            return True
 
         for step in range(max_actions):
             if _replacement_human_is_active_again(engine, bot_id):
@@ -2905,27 +4550,7 @@ async def run_bot_routine(engine: BattleEngine, bot_id: int | str) -> None:
 
                 if not legal_actions_dict:
                     logger.info("[SERVER] Нет легальных действий, завершаем ход")
-                    if engine.current_player_id == bot_id:
-                        try:
-                            engine.record_analytics_action(bot_id, {
-                                "type": "end_turn", "forced": True, "reason": "no_legal_actions"
-                            })
-                        except Exception:
-                            pass
-                        engine.end_turn(bot_id)
-
-                        # Отправляем обновленное состояние (для нового текущего игрока)
-                        try:
-                            new_current_player = engine.get_current_player_id() if hasattr(engine, "get_current_player_id") else engine.current_player_id
-                            full_state = engine.get_full_state(viewer_id=new_current_player)
-                            event_data = {
-                                "event_type": "turn_switched",
-                                "match_id": match_id,
-                                "state_p1": full_state,
-                            }
-                            BATTLE_EVENT_EMITTER.emit("turn_switched", match_id, event_data)
-                        except Exception as emit_exc:
-                            logger.error("[SERVER] Ошибка отправки turn_switched: %s", emit_exc)
+                    await _force_end_bot_turn("no_legal_actions")
                     break
 
                 logger.debug("[SERVER] Доступно %d действий на шаге %d", len(legal_actions_dict), step)
@@ -2969,27 +4594,7 @@ async def run_bot_routine(engine: BattleEngine, bot_id: int | str) -> None:
                 # Проверка валидности
                 if action_id < 0 or action_id >= len(legal_actions_dict):
                     logger.warning("[SERVER] Невалидный action_id=%d, принудительный end_turn", action_id)
-                    if engine.current_player_id == bot_id:
-                        try:
-                            engine.record_analytics_action(bot_id, {
-                                "type": "end_turn", "forced": True, "reason": "invalid_action_id"
-                            })
-                        except Exception:
-                            pass
-                        engine.end_turn(bot_id)
-
-                        # Отправляем обновленное состояние (для нового текущего игрока)
-                        try:
-                            new_current_player = engine.get_current_player_id() if hasattr(engine, "get_current_player_id") else engine.current_player_id
-                            full_state = engine.get_full_state(viewer_id=new_current_player)
-                            event_data = {
-                                "event_type": "turn_switched",
-                                "match_id": match_id,
-                                "state_p1": full_state,
-                            }
-                            BATTLE_EVENT_EMITTER.emit("turn_switched", match_id, event_data)
-                        except Exception as emit_exc:
-                            logger.error("[SERVER] Ошибка отправки turn_switched: %s", emit_exc)
+                    await _force_end_bot_turn("invalid_action_id")
                     break
 
                 action_dict = legal_actions_dict[action_id]
@@ -2997,14 +4602,25 @@ async def run_bot_routine(engine: BattleEngine, bot_id: int | str) -> None:
 
                 logger.info("[SERVER] Executing action: %s", action_dict)
 
-                try:
-                    engine.record_analytics_action(bot_id, action_dict)
-                except Exception:
-                    pass
-
-                # Выполнение действия через execute_bot_action
-                result = engine.execute_bot_action(action_dict)
-                action_count += 1
+                # Выполнение действия через execute_bot_action сериализуем с HTTP actions/timeouts.
+                mutation_lock = _get_match_lock(str(match_id))
+                async with mutation_lock:
+                    if _replacement_human_is_active_again(engine, bot_id):
+                        logger.info("run_bot_routine: player %s restored control before locked mutation", bot_id)
+                        bot_aborted_for_reconnect = True
+                        break
+                    if hasattr(engine, 'is_ended') and engine.is_ended:
+                        logger.info("run_bot_routine: game ended before locked mutation")
+                        break
+                    if engine.current_player_id != bot_id:
+                        logger.info("run_bot_routine: not bot's turn before locked mutation")
+                        break
+                    try:
+                        engine.record_analytics_action(bot_id, action_dict)
+                    except Exception:
+                        pass
+                    result = engine.execute_bot_action(action_dict)
+                    action_count += 1
 
                 # Минимальная техническая пауза для анимаций UI.
                 if not emergency_mode:
@@ -3020,27 +4636,7 @@ async def run_bot_routine(engine: BattleEngine, bot_id: int | str) -> None:
                 if not result.get("success", True):
                     logger.warning("[SERVER] Действие не выполнено: %s", result.get("error"))
                     # Пытаемся завершить ход
-                    if engine.current_player_id == bot_id:
-                        try:
-                            engine.record_analytics_action(bot_id, {
-                                "type": "end_turn", "forced": True, "reason": "invalid_action"
-                            })
-                        except Exception:
-                            pass
-                        engine.end_turn(bot_id)
-
-                        # Отправляем обновленное состояние (для нового текущего игрока)
-                        try:
-                            new_current_player = engine.get_current_player_id() if hasattr(engine, "get_current_player_id") else engine.current_player_id
-                            full_state = engine.get_full_state(viewer_id=new_current_player)
-                            event_data = {
-                                "event_type": "turn_switched",
-                                "match_id": match_id,
-                                "state_p1": full_state,
-                            }
-                            BATTLE_EVENT_EMITTER.emit("turn_switched", match_id, event_data)
-                        except Exception as emit_exc:
-                            logger.error("[SERVER] Ошибка отправки turn_switched: %s", emit_exc)
+                    await _force_end_bot_turn("invalid_action")
                     break
 
                 # Проверка game_over
@@ -3071,28 +4667,8 @@ async def run_bot_routine(engine: BattleEngine, bot_id: int | str) -> None:
             except Exception as exc:
                 logger.error("[SERVER] Ошибка на шаге %d: %s", step, exc, exc_info=True)
                 try:
-                    if engine.current_player_id == bot_id:
-                        try:
-                            engine.record_analytics_action(bot_id, {
-                                "type": "end_turn", "forced": True, "reason": "exception"
-                            })
-                        except Exception:
-                            pass
-                        engine.end_turn(bot_id)
-
-                        # Отправляем обновленное состояние (для нового текущего игрока)
-                        try:
-                            new_current_player = engine.get_current_player_id() if hasattr(engine, "get_current_player_id") else engine.current_player_id
-                            full_state = engine.get_full_state(viewer_id=new_current_player)
-                            event_data = {
-                                "event_type": "turn_switched",
-                                "match_id": match_id,
-                                "state_p1": full_state,
-                            }
-                            BATTLE_EVENT_EMITTER.emit("turn_switched", match_id, event_data)
-                        except Exception as emit_exc:
-                            logger.error("[SERVER] Ошибка отправки turn_switched: %s", emit_exc)
-                except:
+                    await _force_end_bot_turn("exception")
+                except Exception:
                     pass
                 break
 
@@ -3142,27 +4718,8 @@ async def run_bot_routine(engine: BattleEngine, bot_id: int | str) -> None:
         ):
             logger.warning("[SERVER] Бот не завершил ход явно, принудительный end_turn")
             try:
-                try:
-                    engine.record_analytics_action(bot_id, {
-                        "type": "end_turn", "forced": True, "reason": "max_actions_or_fallback"
-                    })
-                except Exception:
-                    pass
-                engine.end_turn(bot_id)
-
-                # КРИТИЧНО: Отправляем обновленное состояние после принудительного end_turn (для нового текущего игрока)
-                try:
-                    new_current_player = engine.get_current_player_id() if hasattr(engine, "get_current_player_id") else engine.current_player_id
-                    full_state = engine.get_full_state(viewer_id=new_current_player)
-                    event_data = {
-                        "event_type": "turn_switched",
-                        "match_id": match_id,
-                        "state_p1": full_state,
-                    }
-                    BATTLE_EVENT_EMITTER.emit("turn_switched", match_id, event_data)
+                if await _force_end_bot_turn("max_actions_or_fallback"):
                     logger.info("[SERVER] Отправлено событие turn_switched после принудительного end_turn")
-                except Exception as emit_exc:
-                    logger.error("[SERVER] Ошибка отправки turn_switched: %s", emit_exc)
 
             except Exception as exc:
                 logger.error("[SERVER] Ошибка принудительного end_turn: %s", exc)
@@ -3208,7 +4765,13 @@ async def trigger_bot_move(match_id: str) -> None:
         logger.debug("[trigger_bot_move] Текущий игрок %s не является ботом", current_player)
 
 
-async def _handle_natural_turn_timeout(app: web.Application, match_id: str, engine: BattleEngine) -> bool:
+async def _handle_natural_turn_timeout(
+    app: web.Application,
+    match_id: str,
+    engine: BattleEngine,
+    *,
+    lock_already_held: bool = False,
+) -> bool:
     """Auto-end one naturally expired turn and update AFK/disconnect accounting."""
     logger = logging.getLogger(__name__)
     if _is_match_waiting_for_players(engine):
@@ -3216,19 +4779,21 @@ async def _handle_natural_turn_timeout(app: web.Application, match_id: str, engi
     if not hasattr(engine, "is_turn_expired") or not engine.is_turn_expired() or getattr(engine, "is_ended", False):
         return False
 
-    current_player = engine.get_current_player_id() if hasattr(engine, "get_current_player_id") else getattr(engine, "current_player_id", None)
-    if current_player is None:
-        return False
-
-    try:
-        current_player_int = int(current_player)
-    except (TypeError, ValueError):
-        return False
-
-    lock = _get_match_lock(str(match_id))
     auto_ended = False
-    async with lock:
+    terminal_result: dict[str, Any] | None = None
+
+    async def _handle_locked_timeout() -> bool:
+        nonlocal auto_ended, terminal_result
         if not engine.is_turn_expired() or getattr(engine, "is_ended", False):
+            return False
+
+        current_player = engine.get_current_player_id() if hasattr(engine, "get_current_player_id") else getattr(engine, "current_player_id", None)
+        if current_player is None:
+            return False
+
+        try:
+            current_player_int = int(current_player)
+        except (TypeError, ValueError):
             return False
 
         is_bot_turn = engine.is_current_player_bot() if hasattr(engine, "is_current_player_bot") else False
@@ -3266,7 +4831,10 @@ async def _handle_natural_turn_timeout(app: web.Application, match_id: str, engi
                 )
             else:
                 try:
-                    engine.end_turn(current_player_int)
+                    result = engine.end_turn(current_player_int)
+                    if result.get("success") is False:
+                        logger.warning("Failed to auto-end turn on timer expiry: %s", result.get("error"))
+                        return False
                     auto_ended = True
                 except Exception as exc:
                     logger.warning("Failed to auto-end turn on timer expiry: %s", exc)
@@ -3274,20 +4842,58 @@ async def _handle_natural_turn_timeout(app: web.Application, match_id: str, engi
         elif not is_bot_turn and getattr(status, "value", "active") == "active" and hasattr(engine, "mark_timeout"):
             engine.mark_timeout(current_player_int)
             try:
-                engine.end_turn(current_player_int)
+                result = engine.end_turn(current_player_int)
+                if result.get("success") is False:
+                    logger.warning("Failed to auto-end turn on timer expiry: %s", result.get("error"))
+                    return False
                 auto_ended = True
             except Exception as exc:
                 logger.warning("Failed to auto-end turn on timer expiry: %s", exc)
                 return False
         else:
             try:
-                engine.end_turn(current_player_int)
+                result = engine.end_turn(current_player_int)
+                if result.get("success") is False:
+                    logger.warning("Failed to auto-end turn on timer expiry: %s", result.get("error"))
+                    return False
                 auto_ended = True
             except Exception as exc:
                 logger.warning("Failed to auto-end turn on timer expiry: %s", exc)
                 return False
+        if auto_ended:
+            terminal_result = await _finalize_terminal_match_if_needed(
+                app,
+                str(match_id),
+                engine,
+                reason="natural_timeout",
+            )
+        return True
+
+    if lock_already_held:
+        handled = await _handle_locked_timeout()
+    else:
+        lock = _get_match_lock(str(match_id))
+        async with lock:
+            handled = await _handle_locked_timeout()
+
+    if not handled:
+        return False
 
     sio_inst = app.get("socketio")
+    if terminal_result and terminal_result.get("game_over"):
+        if sio_inst:
+            try:
+                await sio_inst.emit(
+                    "game_over",
+                    _build_game_over_payload(engine, terminal_result.get("winner_id"), reason="timeout"),
+                    room=str(match_id),
+                )
+            except Exception as emit_exc:
+                logger.warning("Failed to emit timeout game_over for match %s: %s", match_id, emit_exc)
+        return True
+    if auto_ended and _is_terminal_unfinalized(engine):
+        return True
+
     if sio_inst and auto_ended:
         try:
             event_name = "turn_end"
@@ -3314,10 +4920,14 @@ def create_web_app(
     bot_token: str,
     extraid_db: ExtraIDDatabase | None = None,
     payment_service=None,
+    robokassa_payment_service=None,
     rustore_payment_service=None,
     rustore_console_app_id: str = "",
     rustore_app_url: str = "https://www.rustore.ru/catalog/app/ru.extraarena.app",
-    payment_provider_order: str = "yookassa,rustore,stars",
+    payment_provider_order: str = "robokassa,yookassa,rustore,stars",
+    payment_primary_provider: str = "yookassa",
+    payment_fallback_provider: str = "yookassa",
+    payments_required: bool = False,
     webapp_url: str | None = None,
     extra_shop_url: str | None = None,
     stars_rate_rub: float = 1.5,
@@ -3328,21 +4938,31 @@ def create_web_app(
     android_min_supported_version_code: int | None = None,
     android_update_channel_url: str = "https://t.me/extraarenamobile",
     android_apk_url: str = "https://apk.laveqox.ru",
+    shop_allow_max_level_particles: bool = False,
     battle_engine=None,
+    support_service=None,
+    support_admin_notifier=None,
+    support_max_client=None,
 ) -> web.Application:
     logging.getLogger('aiohttp.access').setLevel(logging.WARNING)
     logging.getLogger('engineio').setLevel(logging.WARNING)
     logging.getLogger('socketio').setLevel(logging.WARNING)
+    settings = get_settings()
+    _configure_socketio_cors(settings)
 
-    app = web.Application()
+    app = web.Application(middlewares=[compression_middleware])
     app["db"] = db
     app["extraid_db"] = extraid_db
     app["bot_token"] = bot_token
     app["payment_service"] = payment_service
+    app["robokassa_payment_service"] = robokassa_payment_service
     app["rustore_payment_service"] = rustore_payment_service
     app["rustore_console_app_id"] = str(rustore_console_app_id or "")
     app["rustore_app_url"] = str(rustore_app_url or "https://www.rustore.ru/catalog/app/ru.extraarena.app")
-    app["payment_provider_order"] = str(payment_provider_order or "yookassa,rustore,stars")
+    app["payment_provider_order"] = str(payment_provider_order or "robokassa,yookassa,rustore,stars")
+    app["payment_primary_provider"] = str(payment_primary_provider or "yookassa").strip().lower()
+    app["payment_fallback_provider"] = str(payment_fallback_provider or "yookassa").strip().lower()
+    app["payments_required"] = bool(payments_required)
     app["webapp_url"] = webapp_url or "https://t.me/your_bot"
     app["extra_shop_url"] = extra_shop_url or webapp_url or "https://t.me/your_bot"
     app["stars_rate_rub"] = stars_rate_rub
@@ -3357,6 +4977,12 @@ def create_web_app(
     )
     app["android_update_channel_url"] = str(android_update_channel_url or "https://t.me/extraarenamobile")
     app["android_apk_url"] = str(android_apk_url or "https://apk.laveqox.ru")
+    app["shop_allow_max_level_particles"] = bool(shop_allow_max_level_particles)
+    app["support_service"] = support_service
+    app["support_admin_notifier"] = support_admin_notifier
+    app["support_max_client"] = support_max_client
+    app["cors_allowed_origins"] = tuple(settings.cors_allowed_origins)
+    app["payment_webhook_diagnostics_enabled"] = bool(settings.payment_webhook_diagnostics_enabled)
     app["admin_ids"] = {ADMIN_ID}
     # Инициализируем игровые сервисы и прокладываем их в контекст приложения
     services = initialize_game_services(db, battle_engine=battle_engine)
@@ -3367,6 +4993,7 @@ def create_web_app(
     app["event_emitter"] = services["event_emitter"]
     app["socketio"] = sio
     app["match_game_modes"] = {}
+    app["battle_init_errors"] = {}
     app["online_users"] = {}
     logging.getLogger(__name__).warning(
         "PvP matchmaking and active battle state are process-local. Use one web process "
@@ -3452,13 +5079,234 @@ def create_web_app(
 
     @web.middleware
     async def admin_auth_middleware(request: web.Request, handler):
-        if not request.path.startswith("/api/admin/"):
+        if _is_mcp_endpoint_path(request.path):
+            return await handler(request)
+        if not _is_admin_api_path(request.path):
+            return await handler(request)
+        if request.path == "/api/admin/session":
             return await handler(request)
         user_id = await require_user_id(request)
         if not await _is_admin_user(request.app["db"], user_id):
             return web.json_response({"error": "admin_access_required"}, status=403)
         request["admin_user_id"] = user_id
         return await handler(request)
+
+    async def admin_session_handler(request: web.Request) -> web.Response:
+        auth_token = _request_auth_token(request)
+        body: dict[str, Any] = {}
+        if not auth_token:
+            try:
+                parsed = await request.json()
+                body = parsed if isinstance(parsed, dict) else {}
+            except Exception:
+                body = {}
+            auth_token = str(
+                body.get("_auth")
+                or body.get("auth")
+                or body.get("token")
+                or ""
+            ).strip()
+        if not auth_token:
+            return web.json_response({"error": "authentication_required"}, status=401)
+
+        user_id = await _require_user_id_from_auth_token_str(auth_token, request.app)
+        if not user_id:
+            return web.json_response({"error": "invalid_auth"}, status=401)
+        if not await _is_admin_user(request.app["db"], user_id):
+            return web.json_response({"error": "admin_access_required"}, status=403)
+
+        response = web.json_response({"status": "ok", "admin_url": "/extraShop/admin"})
+        _set_admin_session_cookie(request, response, user_id)
+        return response
+
+    class AdminInputError(ValueError):
+        def __init__(self, error: str, status: int = 400):
+            super().__init__(error)
+            self.error = error
+            self.status = status
+
+    def _admin_json_error(error: str, status: int = 400, **extra: Any) -> web.Response:
+        payload = {"error": error}
+        payload.update(extra)
+        return web.json_response(payload, status=status)
+
+    def _admin_int_query(
+        request: web.Request,
+        name: str,
+        default: int,
+        *,
+        min_value: int | None = None,
+        max_value: int | None = None,
+        error: str | None = None,
+    ) -> int:
+        raw = request.rel_url.query.get(name)
+        if raw is None or raw == "":
+            value = default
+        else:
+            try:
+                value = int(raw)
+            except (TypeError, ValueError):
+                raise AdminInputError(error or f"invalid_{name}")
+        if min_value is not None and value < min_value:
+            raise AdminInputError(error or f"invalid_{name}")
+        if max_value is not None and value > max_value:
+            raise AdminInputError(error or f"invalid_{name}")
+        return value
+
+    def _community_clamped_int_query(
+        request: web.Request,
+        name: str,
+        default: int,
+        *,
+        min_value: int,
+        max_value: int,
+        error: str,
+    ) -> int:
+        raw = request.rel_url.query.get(name)
+        if raw is None or raw == "":
+            value = default
+        else:
+            try:
+                value = int(raw)
+            except (TypeError, ValueError):
+                raise AdminInputError(error)
+        return max(min_value, min(value, max_value))
+
+    def _community_pagination_query(
+        request: web.Request,
+        *,
+        default_limit: int,
+        max_limit: int,
+        include_offset: bool = True,
+    ) -> tuple[int, int]:
+        limit = _community_clamped_int_query(
+            request,
+            "limit",
+            default_limit,
+            min_value=1,
+            max_value=max_limit,
+            error="invalid_limit",
+        )
+        if not include_offset:
+            return limit, 0
+        offset = _community_clamped_int_query(
+            request,
+            "offset",
+            0,
+            min_value=0,
+            max_value=10000,
+            error="invalid_offset",
+        )
+        return limit, offset
+
+    def _community_required_int_field(data: dict[str, Any], name: str) -> int:
+        try:
+            value = int(data.get(name))
+        except (TypeError, ValueError):
+            raise AdminInputError(f"{name}_required")
+        if value <= 0:
+            raise AdminInputError(f"{name}_required")
+        return value
+
+    def _admin_body_int(
+        body: dict[str, Any],
+        name: str,
+        *,
+        default: int | None = None,
+        min_value: int | None = None,
+        max_value: int | None = None,
+        error: str | None = None,
+    ) -> int | None:
+        raw = body.get(name)
+        if raw is None or raw == "":
+            return default
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            raise AdminInputError(error or f"invalid_{name}")
+        if min_value is not None and value < min_value:
+            raise AdminInputError(error or f"invalid_{name}")
+        if max_value is not None and value > max_value:
+            raise AdminInputError(error or f"invalid_{name}")
+        return value
+
+    def _admin_body_float(
+        body: dict[str, Any],
+        name: str,
+        *,
+        default: float = 0.0,
+        allow_zero: bool = True,
+        error: str | None = None,
+    ) -> float:
+        raw = body.get(name, default)
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            raise AdminInputError(error or f"invalid_{name}")
+        if not math.isfinite(value):
+            raise AdminInputError(error or f"invalid_{name}")
+        if not allow_zero and value == 0:
+            raise AdminInputError(error or f"invalid_{name}")
+        return value
+
+    def _admin_match_int(
+        request: web.Request,
+        name: str,
+        *,
+        min_value: int | None = 1,
+        error: str | None = None,
+    ) -> int:
+        try:
+            value = int(request.match_info[name])
+        except (KeyError, TypeError, ValueError):
+            raise AdminInputError(error or f"invalid_{name}")
+        if min_value is not None and value < min_value:
+            raise AdminInputError(error or f"invalid_{name}")
+        return value
+
+    def _admin_result_error_status(error: str) -> int:
+        if error in {
+            "user_not_found",
+            "player_not_found",
+            "set_not_found",
+            "product_not_found",
+            "reward_not_found",
+            "shop_set_not_found",
+            "clan_not_found",
+        }:
+            return 404
+        return 400
+
+    def _admin_action_response(result: dict[str, Any]) -> web.Response:
+        if result.get("error"):
+            error = str(result.get("error") or "unknown")
+            return web.json_response(
+                {"status": "error", "error": error, "data": result},
+                status=_admin_result_error_status(error),
+            )
+        return web.json_response({"status": "ok", "data": result})
+
+    @web.middleware
+    async def api_json_error_middleware(request: web.Request, handler):
+        try:
+            return await handler(request)
+        except web.HTTPException:
+            raise
+        except Exception as exc:
+            path = request.path or ""
+            if not path.startswith("/api/"):
+                raise
+            logging.getLogger(__name__).error(
+                "Unhandled API error: method=%s path=%s error=%s",
+                request.method,
+                path,
+                exc,
+                exc_info=True,
+            )
+            return web.json_response(
+                {"error": "internal_server_error", "message": "Internal server error"},
+                status=500,
+            )
 
     @web.middleware
     async def runtime_gate_middleware(request: web.Request, handler):
@@ -3503,6 +5351,7 @@ def create_web_app(
             ("shop", ("/api/shop/", "/api/payments/", "/api/cases/")),
             ("collection", ("/api/cards", "/api/deck/")),
             ("squads", ("/api/squads",)),
+            ("rating", ("/api/community/rating",)),
         )
         availability = config.get("feature_availability") or {}
         if not is_admin:
@@ -3532,18 +5381,82 @@ def create_web_app(
                 )
             return response
 
-        # Добавляем CORS headers только если response существует
-        response.headers["Access-Control-Allow-Origin"] = "*"
+        origin = str(request.headers.get("Origin") or "").strip()
+        allowed_origins = tuple(request.app.get("cors_allowed_origins") or ())
+        if "*" in allowed_origins:
+            response.headers["Access-Control-Allow-Origin"] = "*"
+        elif origin and origin in allowed_origins:
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Vary"] = "Origin"
         response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
         response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
         return response
 
+    app.middlewares.append(api_json_error_middleware)
     app.middlewares.append(admin_auth_middleware)
     app.middlewares.append(runtime_gate_middleware)
     app.middlewares.append(cors_middleware)
 
     async def health_check(_: web.Request) -> web.Response:
-        return web.json_response({"status": "ok", "service": "extracards-webapp"})
+        return web.json_response({"status": "ok", "service": "extraarena-webapp"})
+
+    async def favicon_handler(_: web.Request) -> web.Response:
+        return web.Response(status=204, headers=NO_STORE_CACHE_HEADERS)
+
+    async def _readiness_component(name: str, component: Any, query: str = "SELECT 1") -> dict[str, Any]:
+        if component is None:
+            return {"name": name, "status": "missing", "configured": False}
+        fetchval = getattr(component, "fetchval", None)
+        if not callable(fetchval):
+            return {"name": name, "status": "unknown", "configured": True}
+        try:
+            await fetchval(query)
+            return {"name": name, "status": "ok", "configured": True}
+        except Exception as exc:
+            return {
+                "name": name,
+                "status": "error",
+                "configured": True,
+                "error": exc.__class__.__name__,
+            }
+
+    async def readiness_check(request: web.Request) -> web.Response:
+        primary_provider = str(request.app.get("payment_primary_provider") or "").strip().lower()
+        payment_service_configured = {
+            "robokassa": bool(request.app.get("robokassa_payment_service")),
+            "yookassa": bool(request.app.get("payment_service")),
+            "rustore": bool(request.app.get("rustore_payment_service")),
+            "stars": True,
+        }
+        payment_primary_configured = payment_service_configured.get(primary_provider, False)
+        payments_required = bool(request.app.get("payments_required"))
+        components = {
+            "database": await _readiness_component("database", request.app.get("db")),
+            "extraid_database": await _readiness_component("extraid_database", request.app.get("extraid_db")),
+            "bot": {
+                "name": "bot",
+                "status": "ok" if bool(request.app.get("bot_token")) else "missing",
+                "configured": bool(request.app.get("bot_token")),
+            },
+            "payments": {
+                "name": "payments",
+                "status": "ok" if payment_primary_configured else "not_configured",
+                "configured": payment_primary_configured,
+                "required": payments_required,
+                "primary_provider": primary_provider,
+                "providers": payment_service_configured,
+            },
+        }
+        required = ("database", "extraid_database", "bot", *(() if not payments_required else ("payments",)))
+        ok = all(components[name]["status"] in {"ok", "unknown"} for name in required)
+        return web.json_response(
+            {
+                "status": "ok" if ok else "degraded",
+                "service": "extraarena-webapp",
+                "components": components,
+            },
+            status=200 if ok else 503,
+        )
 
     async def mobile_client_version_handler(request: web.Request) -> web.Response:
         def as_int(value: Any, fallback: int = 0) -> int:
@@ -3589,11 +5502,11 @@ def create_web_app(
             "is_admin": await _is_admin_user(db_instance, user_id),
         })
 
-    async def index(_: web.Request) -> web.FileResponse:
+    async def index(_: web.Request) -> web.Response:
         index_path = WEBAPP_DIR / "index.html"
         if not index_path.exists():
             raise web.HTTPInternalServerError(text="index.html not found")
-        return web.FileResponse(index_path, headers={"Cache-Control": "no-store, no-cache, must-revalidate"})
+        return _static_text_response(index_path, headers=NO_STORE_CACHE_HEADERS)
 
     async def battle_page_handler(_: web.Request) -> web.Response:
         """
@@ -3607,13 +5520,15 @@ def create_web_app(
         return web.Response(
             text=arena_path.read_text(encoding="utf-8"),
             content_type="text/html",
-            headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
+            headers=NO_STORE_CACHE_HEADERS,
         )
 
-    async def static_handler(request: web.Request) -> web.FileResponse:
+    async def static_handler(request: web.Request) -> web.Response:
         relative_path = request.match_info["path"]
         if ".." in relative_path:
             raise web.HTTPForbidden()
+        if relative_path in {"extraid-mockup.html"}:
+            raise web.HTTPNotFound()
 
         # Если путь начинается с DesignAssets, ищем в DesignAssets
         if relative_path.startswith("DesignAssets/"):
@@ -3625,10 +5540,19 @@ def create_web_app(
         if not file_path.exists() or not file_path.is_file():
             raise web.HTTPNotFound()
 
-        cache_headers = STATIC_ASSET_CACHE_HEADERS
+        if relative_path in BATTLE_SHELL_STATIC_FILES:
+            return _static_text_response(file_path, headers=NO_STORE_CACHE_HEADERS)
+
+        if file_path.suffix.lower() in COMPRESSIBLE_STATIC_SUFFIXES:
+            headers = (
+                NO_STORE_CACHE_HEADERS
+                if relative_path.endswith(".css")
+                else STATIC_ASSET_CACHE_HEADERS
+            )
+            return _static_text_response(file_path, headers=headers)
         if relative_path.endswith(".css"):
-            cache_headers = {"Cache-Control": "no-store, no-cache, must-revalidate"}
-        return web.FileResponse(file_path, headers=cache_headers)
+            return web.FileResponse(file_path, headers=NO_STORE_CACHE_HEADERS)
+        return web.FileResponse(file_path, headers=STATIC_ASSET_CACHE_HEADERS)
 
     def _serialize_settings_record(settings_record) -> dict[str, Any]:
         settings_dict = dict(settings_record)
@@ -3636,6 +5560,33 @@ def create_web_app(
             if hasattr(value, "isoformat"):
                 settings_dict[key] = value.isoformat()
         return settings_dict
+
+    PUBLIC_USER_SETTINGS_FIELDS = {
+        "notif_cases",
+        "notif_daily_rewards",
+        "notif_game_invites",
+        "notif_friend_requests",
+        "notif_events",
+        "notif_news",
+        "notif_generator",
+        "notif_shop",
+        "notif_reminders",
+        "notif_squad_member_role",
+        "notif_squad_new_member",
+        "notif_squad_disbanded",
+        "notif_squad_boost",
+        "notif_extra_arena_modifiers",
+        "notification_delivery_mode",
+        "ads_enabled",
+        "sound_music",
+        "sound_sfx",
+        "social_block_friend_requests",
+        "social_block_friendly_invites_from_friends",
+        "social_block_friendly_invites_from_non_friends",
+        "social_disable_talkies",
+        "nickname_glow_disabled",
+        "hide_player_id_public",
+    }
 
     async def profile_handler(request: web.Request) -> web.Response:
         photo_url = None
@@ -3665,7 +5616,7 @@ def create_web_app(
 
         if user_id and not photo_url:
             try:
-                async with _create_ssl_disabled_session() as session:
+                async with _create_telegram_api_session() as session:
                     url = f"https://api.telegram.org/bot{request.app['bot_token']}/getUserProfilePhotos"
                     async with session.get(url, params={"user_id": user_id, "limit": 1}) as resp:
                         if resp.status == 200:
@@ -3716,10 +5667,15 @@ def create_web_app(
                 "notification_delivery_mode": settings_record.get("notification_delivery_mode", "app_then_telegram"),
                 "ads_enabled": settings_record["ads_enabled"],
                 "sound_music": settings_record["sound_music"],
-                "sound_sfx": settings_record["sound_sfx"],
-                "social_block_friend_requests": settings_record["social_block_friend_requests"],
-                "wins_since_last_case": settings_record.get("wins_since_last_case", 0),
-            }
+	                "sound_sfx": settings_record["sound_sfx"],
+	                "social_block_friend_requests": settings_record["social_block_friend_requests"],
+	                "social_block_friendly_invites_from_friends": settings_record.get("social_block_friendly_invites_from_friends", False),
+	                "social_block_friendly_invites_from_non_friends": settings_record.get("social_block_friendly_invites_from_non_friends", True),
+	                "social_disable_talkies": settings_record.get("social_disable_talkies", False),
+	                "nickname_glow_disabled": settings_record.get("nickname_glow_disabled", False),
+	                "hide_player_id_public": settings_record.get("hide_player_id_public", False),
+	                "wins_since_last_case": settings_record.get("wins_since_last_case", 0),
+	            }
 
         # Убеждаемся, что title есть (по умолчанию "Игрок")
         title = record.get("title") or "Игрок"
@@ -3746,13 +5702,15 @@ def create_web_app(
             except Exception:
                 extraid_linked_telegram = False
 
+        extra_pass_fields = _extra_pass_profile_fields(dict(record))
+
         payload: dict[str, Any] = {
             "user_id": record["user_id"],
             "is_admin": await _is_admin_user(db, user_id),
             "username": record.get("username"),
             "first_name": first_name or record.get("first_name"),
             "photo_url": photo_url,
-            "extra_pass": record.get("extra_pass", "inactive"),
+            **extra_pass_fields,
             "equipped_avatar_url": equipped_avatar_url,
             "trophies": record.get("trophies", 0),
             "max_trophies": record.get("max_trophies", 0),
@@ -3779,6 +5737,11 @@ def create_web_app(
             "avg_level": avg_level,
             "max_level": max_level,
         }
+
+        try:
+            payload["onboarding"] = _build_onboarding_payload(await db.get_onboarding_state(user_id))
+        except Exception:
+            logging.getLogger(__name__).debug("profile_handler: onboarding payload failed", exc_info=True)
 
         return web.json_response(payload)
 
@@ -3809,9 +5772,14 @@ def create_web_app(
                         "notification_delivery_mode": "app_then_telegram",
                         "ads_enabled": False,
                         "sound_music": True,
-                        "sound_sfx": True,
-                        "social_block_friend_requests": False,
-                    })
+	                        "sound_sfx": True,
+	                        "social_block_friend_requests": False,
+	                        "social_block_friendly_invites_from_friends": False,
+	                        "social_block_friendly_invites_from_non_friends": True,
+	                        "social_disable_talkies": False,
+	                        "nickname_glow_disabled": False,
+	                        "hide_player_id_public": False,
+	                    })
 
                 settings_record = await db.get_user_settings(user_id)
                 if not settings_record:
@@ -3843,9 +5811,17 @@ def create_web_app(
             try:
                 data = await request.json()
                 import logging
+                if not isinstance(data, dict):
+                    return web.json_response({"error": "invalid_settings_payload"}, status=400)
                 logging.getLogger(__name__).info(
-                    "Сохранение настроек для user_id %s: %s", user_id, data
+                    "Сохранение настроек для user_id %s: fields=%s", user_id, sorted(data.keys())
                 )
+                forbidden_fields = sorted(set(data) - PUBLIC_USER_SETTINGS_FIELDS)
+                if forbidden_fields:
+                    return web.json_response(
+                        {"error": "invalid_settings_fields", "fields": forbidden_fields},
+                        status=400,
+                    )
                 await db.update_user_settings(user_id, **data)
 
                 # Проверяем, что настройки сохранились
@@ -3863,7 +5839,7 @@ def create_web_app(
                     "Ошибка сохранения настроек для user_id %s: %s", user_id, e, exc_info=True
                 )
                 return web.json_response(
-                    {"error": "internal_server_error", "message": str(e)}, status=500
+                    {"error": "internal_server_error"}, status=500
                 )
 
     async def admin_players_handler(request: web.Request) -> web.Response:
@@ -4042,10 +6018,10 @@ def create_web_app(
             data = await request.json()
             code = data.get("code", "").strip().upper()
             type = data.get("type", "permanent")
-            reward_gems = data.get("reward_gems", 0)
-            reward_coins = data.get("reward_coins", 0)
-            reward_keys = data.get("reward_keys", 0)
-            reward_extrapass = data.get("reward_extrapass", False)
+            reward_gems = _admin_body_int(data, "reward_gems", default=0, min_value=0, max_value=1_000_000, error="invalid_reward_gems")
+            reward_coins = _admin_body_int(data, "reward_coins", default=0, min_value=0, max_value=1_000_000, error="invalid_reward_coins")
+            reward_keys = _admin_body_int(data, "reward_keys", default=0, min_value=0, max_value=1_000_000, error="invalid_reward_keys")
+            reward_extrapass = bool(data.get("reward_extrapass", False))
             expires_at = data.get("expires_at")
 
             if not code:
@@ -4053,6 +6029,9 @@ def create_web_app(
 
             if type not in ["permanent", "personal", "welcome"]:
                 return web.json_response({"error": "invalid_type"}, status=400)
+
+            if not any((reward_gems, reward_coins, reward_keys, reward_extrapass)):
+                return web.json_response({"error": "promocode_reward_required"}, status=400)
 
             expires_datetime = None
             if expires_at:
@@ -4084,6 +6063,8 @@ def create_web_app(
                 }, status=400)
 
             return web.json_response(result)
+        except AdminInputError as e:
+            return _admin_json_error(e.error, status=e.status)
         except Exception as e:
             import logging
             logging.getLogger(__name__).error(
@@ -4359,9 +6340,14 @@ def create_web_app(
                     "message": "Ошибка сохранения пресета"
                 }, status=400)
 
+            if result.get("playable"):
+                try:
+                    await db.mark_newbie_path_task(user_id, "save_first_deck", claimed=False)
+                except Exception:
+                    logging.getLogger(__name__).debug("newbie path deck completion failed", exc_info=True)
+
             return web.json_response(result)
         except Exception as e:
-            import logging
             logging.getLogger(__name__).error(
                 "Ошибка сохранения пресета для user_id %s: %s", user_id, e, exc_info=True
             )
@@ -4489,9 +6475,16 @@ def create_web_app(
             if clear:
                 result = await db.set_primary_deck(user_id, None)
             else:
-                try: preset_number = int(preset_number)
-                except (TypeError, ValueError): return web.json_response({"error": "invalid_preset_number"}, status=400)
+                try:
+                    preset_number = int(preset_number)
+                except (TypeError, ValueError):
+                    return web.json_response(
+                        {"success": False, "error": "invalid_preset_number"},
+                        status=400,
+                    )
                 result = await db.set_primary_deck(user_id, preset_number)
+            if not result.get("success"):
+                return web.json_response(result, status=400)
             return web.json_response(result)
         except Exception as e:
             import logging
@@ -4686,7 +6679,9 @@ def create_web_app(
         user_id = await require_user_id(request)
 
         try:
-            limit = int(request.rel_url.query.get("limit", 50))
+            limit, _offset = _community_pagination_query(
+                request, default_limit=50, max_limit=50, include_offset=False
+            )
             posts = await db.get_community_posts(limit=limit, user_id=user_id)
             # Преобразуем datetime в строки для JSON
             for post in posts:
@@ -4723,7 +6718,7 @@ def create_web_app(
                     try:
                         # Используем семафор для ограничения параллельных запросов
                         async with photo_semaphore:
-                            async with _create_ssl_disabled_session() as session:
+                            async with _create_telegram_api_session() as session:
                                 # Увеличиваем таймаут до 15 секунд для медленных соединений
                                 timeout = aiohttp.ClientTimeout(total=15, connect=10)
 
@@ -4796,13 +6791,15 @@ def create_web_app(
                 if post.get("author_id") and post["author_id"] in photo_map:
                     post["author_photo_url"] = photo_map[post["author_id"]]
             return web.json_response({"posts": posts})
+        except AdminInputError as e:
+            return _admin_json_error(e.error, status=e.status)
         except Exception as e:
             import logging
             logging.getLogger(__name__).error(
                 "Ошибка получения постов коммьюнити: %s", e, exc_info=True
             )
             return web.json_response(
-                {"error": "internal_server_error", "message": str(e)}, status=500
+                {"error": "internal_server_error"}, status=500
             )
 
     async def community_post_create_handler(request: web.Request) -> web.Response:
@@ -4847,13 +6844,16 @@ def create_web_app(
                 "Ошибка создания поста для user_id %s: %s", user_id, e, exc_info=True
             )
             return web.json_response(
-                {"error": "internal_server_error", "message": str(e)}, status=500
+                {"error": "internal_server_error"}, status=500
             )
 
     async def global_chat_messages_handler(request: web.Request) -> web.Response:
         """Обработчик получения сообщений глобального чата."""
+        await require_user_id(request)
         try:
-            limit = int(request.rel_url.query.get("limit", 100))
+            limit, _offset = _community_pagination_query(
+                request, default_limit=100, max_limit=100, include_offset=False
+            )
             messages = await db.get_chat_messages(limit=limit)
             # Преобразуем datetime в строки для JSON
             for msg in messages:
@@ -4885,7 +6885,7 @@ def create_web_app(
                     try:
                         # Используем семафор для ограничения параллельных запросов
                         async with photo_semaphore:
-                            async with _create_ssl_disabled_session() as session:
+                            async with _create_telegram_api_session() as session:
                                 # Увеличиваем таймаут до 15 секунд для медленных соединений
                                 timeout = aiohttp.ClientTimeout(total=15, connect=10)
 
@@ -4958,13 +6958,15 @@ def create_web_app(
                 if msg.get("user_id") and msg["user_id"] in photo_map:
                     msg["user_photo_url"] = photo_map[msg["user_id"]]
             return web.json_response({"messages": messages})
+        except AdminInputError as e:
+            return _admin_json_error(e.error, status=e.status)
         except Exception as e:
             import logging
             logging.getLogger(__name__).error(
                 "Ошибка получения сообщений чата: %s", e, exc_info=True
             )
             return web.json_response(
-                {"error": "internal_server_error", "message": str(e)}, status=500
+                {"error": "internal_server_error"}, status=500
             )
 
     async def global_chat_send_handler(request: web.Request) -> web.Response:
@@ -5056,7 +7058,7 @@ def create_web_app(
                 "Ошибка отправки сообщения для user_id %s: %s", user_id, e, exc_info=True
             )
             return web.json_response(
-                {"error": "internal_server_error", "message": str(e)}, status=500
+                {"error": "internal_server_error"}, status=500
             )
 
     # ========== Хэндлеры дружеских матчей ==========
@@ -5122,6 +7124,11 @@ def create_web_app(
         }
         if status != "accepted" or not invite.get("battle_id"):
             return payload
+        active_invite = await db.get_friend_invite_by_battle_id_for_user(str(invite.get("battle_id")), int(viewer_id))
+        if not active_invite:
+            payload["status"] = "completed"
+            return payload
+        invite = active_invite
 
         from_user_id = int(invite["from_user_id"])
         to_user_id = int(invite["to_user_id"])
@@ -5145,24 +7152,98 @@ def create_web_app(
             "player_avatar_url": player_profile["avatar_url"],
             "player_trophies": player_profile["trophies"],
             "player_clan": player_profile["clan"],
-            "player_title": player_profile["title"],
-            "player_title_rarity": player_profile["title_class"],
-            "player_extra_pass": player_profile["extra_pass"],
-            "player_background": player_profile["background_url"],
+	            "player_title": player_profile["title"],
+	            "player_title_rarity": player_profile["title_class"],
+	            "player_extra_pass": player_profile["extra_pass"],
+	            "player_nickname_glow_disabled": player_profile.get("nickname_glow_disabled", False),
+	            "player_hide_player_id_public": player_profile.get("hide_player_id_public", False),
+	            "player_background": player_profile["background_url"],
             "opponent_name": opponent_profile["name"],
             "opponent_avatar_url": opponent_profile["avatar_url"],
             "opponent_trophies": opponent_profile["trophies"],
             "opponent_clan": opponent_profile["clan"],
-            "opponent_title": opponent_profile["title"],
-            "opponent_title_rarity": opponent_profile["title_class"],
-            "opponent_extra_pass": opponent_profile["extra_pass"],
-            "opponent_background": opponent_profile["background_url"],
-            "players": {
-                str(from_user_id): await _resolve_battle_profile(db, from_user_id, fallback_name="Игрок 1"),
-                str(to_user_id): await _resolve_battle_profile(db, to_user_id, fallback_name="Игрок 2"),
-            },
+	            "opponent_title": opponent_profile["title"],
+	            "opponent_title_rarity": opponent_profile["title_class"],
+	            "opponent_extra_pass": opponent_profile["extra_pass"],
+	            "opponent_nickname_glow_disabled": opponent_profile.get("nickname_glow_disabled", False),
+	            "opponent_hide_player_id_public": opponent_profile.get("hide_player_id_public", False),
+	            "opponent_background": opponent_profile["background_url"],
         })
         return payload
+
+    async def _friendly_invite_active_battle_conflict(
+        request: web.Request,
+        *user_ids: int,
+        exclude_invite_id: int | None = None,
+    ) -> dict[str, Any] | None:
+        normalized_user_ids: list[int] = []
+        for raw_user_id in user_ids:
+            try:
+                normalized_user_ids.append(int(raw_user_id))
+            except (TypeError, ValueError):
+                continue
+        if not normalized_user_ids:
+            return None
+
+        for active_user_id in normalized_user_ids:
+            active_payload = _active_match_payload_for_user(
+                request.app,
+                active_user_id,
+                active_existing_match=True,
+            )
+            if active_payload:
+                match_id = active_payload.get("match_id")
+                return {
+                    "success": False,
+                    "error": "active_battle_exists",
+                    "battle_id": match_id,
+                    "match_id": match_id,
+                    "active_user_id": active_user_id,
+                }
+
+        matchmaker = request.app.get("matchmaker")
+        if matchmaker and hasattr(matchmaker, "get_active_match_for_user"):
+            for active_user_id in normalized_user_ids:
+                try:
+                    status = await matchmaker.get_active_match_for_user(active_user_id)
+                except Exception:
+                    logging.getLogger(__name__).debug(
+                        "Friendly invite active matchmaker lookup failed for user_id=%s",
+                        active_user_id,
+                        exc_info=True,
+                    )
+                    continue
+                if status.get("status") == "found" and status.get("match_id"):
+                    match_id = str(status["match_id"])
+                    if match_id in ENDED_MATCH_IDS:
+                        continue
+                    existing_engine = request.app["active_matches"].get(match_id)
+                    if existing_engine is not None and getattr(existing_engine, "is_ended", False):
+                        _mark_match_ended(match_id)
+                        continue
+                    return {
+                        "success": False,
+                        "error": "active_battle_exists",
+                        "battle_id": match_id,
+                        "match_id": match_id,
+                        "active_user_id": active_user_id,
+                    }
+
+        if hasattr(db, "get_active_friend_battle_for_users"):
+            active_invite = await db.get_active_friend_battle_for_users(
+                normalized_user_ids,
+                exclude_invite_id=exclude_invite_id,
+            )
+            if active_invite:
+                match_id = active_invite.get("battle_id")
+                return {
+                    "success": False,
+                    "error": "active_battle_exists",
+                    "battle_id": match_id,
+                    "match_id": match_id,
+                    "invite_id": active_invite.get("id"),
+                }
+        return None
 
     async def battle_history_handler(request: web.Request) -> web.Response:
         user_id = await require_user_id(request)
@@ -5172,62 +7253,21 @@ def create_web_app(
         is_ultra = extra_pass == "ultra"
         limit = 50 if is_ultra else 25
 
-        all_battles = await db.get_battle_history(user_id, 100000)
-        battles = all_battles[:limit]
-        ranked_battles = [b for b in all_battles if b.get("mode") not in ("friendly", "training")]
-        wins = sum(1 for b in all_battles if b.get("result") == "win")
-        losses = sum(1 for b in all_battles if b.get("result") == "lose")
-        draws = sum(1 for b in all_battles if b.get("result") == "draw")
-        decided = wins + losses
-        avg_turns_values = [int(b.get("turns_count") or 0) for b in all_battles if int(b.get("turns_count") or 0) > 0]
-        avg_duration_values = [int(b.get("duration_seconds") or 0) for b in all_battles if int(b.get("duration_seconds") or 0) > 0]
-        mode_counts: dict[str, int] = {}
-        for b in all_battles:
-            mode = str(b.get("mode") or "classic")
-            mode_counts[mode] = mode_counts.get(mode, 0) + 1
-        current_streak_result = None
-        current_streak_count = 0
-        for b in all_battles:
-            result = b.get("result")
-            if result not in ("win", "lose"):
-                if current_streak_count == 0:
-                    continue
-                break
-            if current_streak_result is None:
-                current_streak_result = result
-                current_streak_count = 1
-            elif current_streak_result == result:
-                current_streak_count += 1
-            else:
-                break
-        stats = {
-            "total": len(all_battles),
-            "wins": wins,
-            "losses": losses,
-            "draws": draws,
-            "win_rate": round((wins / decided) * 100, 1) if decided else 0,
-            "trophy_delta": sum(int(b.get("trophies_change") or 0) for b in ranked_battles),
-            "avg_turns": round(sum(avg_turns_values) / len(avg_turns_values), 1) if avg_turns_values else None,
-            "avg_duration_seconds": round(sum(avg_duration_values) / len(avg_duration_values)) if avg_duration_values else None,
-            "favorite_mode": max(mode_counts.items(), key=lambda item: item[1])[0] if mode_counts else None,
-            "current_streak_result": current_streak_result,
-            "current_streak_count": current_streak_count,
-        }
-        # ── DEBUG ──
-        logger_dbg = logging.getLogger(__name__)
-        logger_dbg.info(
-            "[BATTLE_HISTORY] user_id=%s limit=%s total=%s",
-            user_id, limit, len(all_battles),
-        )
-        for b in battles[:5]:
-            logger_dbg.info(
-                "[BATTLE_HISTORY]   match_id=%s created_at=%s opponent_id=%s mode=%s result=%s",
-                b.get("battle_id"), b.get("created_at"), b.get("opponent_id"),
-                b.get("mode"), b.get("result"),
-            )
+        page_loader = getattr(db, "get_battle_history_page", None)
+        if callable(page_loader):
+            raw_battles = await page_loader(user_id, limit)
+        else:
+            raw_battles = await db.get_battle_history(user_id, limit)
+        battles = [
+            _sanitize_public_battle_history_row(_decorate_training_history_battle(b))
+            for b in raw_battles
+        ]
+        stats_loader = getattr(db, "get_battle_history_stats", None)
+        stats = await stats_loader(user_id) if callable(stats_loader) else _build_battle_history_stats(raw_battles)
+        total = int(stats.get("history_total", len(battles)) if isinstance(stats, dict) else len(battles))
         return web.json_response({
             "battles": battles,
-            "total": len(all_battles),
+            "total": total,
             "stats": stats,
             "limit": limit,
             "is_limited": not is_ultra,
@@ -5246,6 +7286,25 @@ def create_web_app(
         except Exception:
             return web.json_response({"error": "invalid_json"}, status=400)
 
+        unsupported_mode_fields = {
+            "game_mode",
+            "mode_id",
+            "mode_config",
+            "ruleset",
+            "modifiers",
+            "classic_params",
+            "turn_duration_seconds",
+        }
+        if any(field in data for field in unsupported_mode_fields):
+            return web.json_response(
+                {
+                    "success": False,
+                    "error": "unsupported_friendly_mode_modifiers",
+                    "supports_mode_modifiers": False,
+                },
+                status=400,
+            )
+
         to_user_id = data.get("to_user_id")
         try:
             to_user_id = int(to_user_id)
@@ -5260,24 +7319,83 @@ def create_web_app(
             selected_deck_id = int(selected_deck_id) if selected_deck_id is not None else None
         except (TypeError, ValueError):
             return web.json_response({"error": "invalid_deck_id"}, status=400)
+
+        target_record = await db.fetchrow(
+            "SELECT COALESCE(is_bot, FALSE) AS is_bot FROM users WHERE user_id = $1",
+            to_user_id,
+        )
+        if not target_record:
+            return web.json_response({"error": "user_not_found"}, status=404)
+        if bool(target_record.get("is_bot", False)):
+            await asyncio.sleep(random.uniform(7, 10))
+            return web.json_response(
+                {
+                    "success": False,
+                    "status": "declined",
+                    "error": "invite_declined",
+                    "message": "Вызов отклонён",
+                }
+            )
+
         selected_deck_id = await _resolve_match_deck_id(db, user_id, selected_deck_id)
 
-        target_exists = await db.fetchval("SELECT 1 FROM users WHERE user_id = $1", to_user_id)
-        if not target_exists:
-            return web.json_response({"error": "user_not_found"}, status=404)
+        are_friends = False
+        if hasattr(db, "are_friends"):
+            are_friends = await db.are_friends(user_id, to_user_id)
 
-        if hasattr(db, "are_friends") and not await db.are_friends(user_id, to_user_id):
-            return web.json_response({"error": "not_friends"}, status=403)
+        target_settings = await db.get_user_settings(to_user_id)
+        privacy_error = None
+        if are_friends:
+            if target_settings and target_settings.get("social_block_friendly_invites_from_friends", False):
+                privacy_error = "friendly_invites_blocked_by_friend"
+        else:
+            block_non_friend_invites = True
+            if target_settings:
+                block_non_friend_invites = bool(target_settings.get("social_block_friendly_invites_from_non_friends", True))
+            if block_non_friend_invites:
+                privacy_error = "friendly_invites_blocked_by_non_friend"
 
-        has_active = await db.has_active_pending_invite(user_id, to_user_id)
-        if has_active:
-            return web.json_response({"error": "invite_already_sent"}, status=409)
+        if privacy_error:
+            return web.json_response(
+                {
+                    "success": False,
+                    "error": privacy_error,
+                    "message": "Игрок запретил входящие вызовы на дружеские бои.",
+                },
+                status=403,
+            )
+
+        active_conflict = await _friendly_invite_active_battle_conflict(request, user_id, to_user_id)
+        if active_conflict:
+            return web.json_response(active_conflict, status=409)
 
         blocked_card = await _find_disabled_card_in_deck(db, user_id, selected_deck_id)
         if blocked_card:
             return _disabled_card_response(blocked_card)
 
         result = await db.create_friend_invite(user_id, to_user_id, selected_deck_id)
+        if result.get("error") == "active_battle_exists":
+            return web.json_response(
+                {
+                    "success": False,
+                    "error": "active_battle_exists",
+                    "battle_id": result.get("battle_id"),
+                    "match_id": result.get("battle_id"),
+                    "invite_id": result.get("invite_id"),
+                },
+                status=409,
+            )
+        if result.get("error") == "invite_already_sent":
+            return web.json_response(
+                {
+                    "success": False,
+                    "error": "invite_already_sent",
+                    "invite_id": result.get("id"),
+                    "created_at": result.get("created_at"),
+                    "expires_at": result.get("expires_at"),
+                },
+                status=409,
+            )
         if not result.get("success"):
             return web.json_response({"error": "invite_create_failed"}, status=500)
 
@@ -5296,8 +7414,29 @@ def create_web_app(
                 or str(user_id)
             )
 
+        notification_enqueued = False
+        notification_outbox_used = hasattr(db, "enqueue_notification")
+        if notification_outbox_used:
+            try:
+                notification_enqueued = await db.enqueue_notification(
+                    to_user_id,
+                    category="game_invites",
+                    event_type="friendly_battle_invite",
+                    payload={
+                        "from_user_id": user_id,
+                        "from_name": from_name,
+                        "invite_id": invite_id,
+                        "invite_action": "accept",
+                        "section": "friends",
+                    },
+                    dedupe_key=f"friendly_invite:{invite_id}",
+                )
+            except Exception as e:
+                notification_outbox_used = False
+                logger.warning("Failed to enqueue friendly invite notification: %s", e, exc_info=True)
+
         telegram_sent = False
-        if not target_online:
+        if not target_online and not notification_outbox_used:
             try:
                 bot = app.get("telegram_bot") or app.get("bot")
                 if bot:
@@ -5323,9 +7462,11 @@ def create_web_app(
             "invite_id": invite_id,
             "created_at": result.get("created_at"),
             "expires_at": result.get("expires_at"),
-            "delivery": "in_app" if target_online else "telegram",
+            "delivery": "in_app" if target_online else "notification_outbox",
             "target_online": target_online,
+            "notification_enqueued": notification_enqueued,
             "telegram_sent": telegram_sent,
+            "supports_mode_modifiers": False,
         })
 
     async def friend_invite_status_handler(request: web.Request) -> web.Response:
@@ -5395,7 +7536,9 @@ def create_web_app(
             return web.json_response({"error": "invite_already_responded"}, status=409)
 
         if action == "decline":
-            await db.update_invite_status(invite_id, "declined")
+            declined = await db.update_invite_status(invite_id, "declined")
+            if not declined:
+                return web.json_response({"error": "invite_already_responded"}, status=409)
             return web.json_response({"success": True, "status": "declined"})
 
         async def _fail_friend_invite_accept(
@@ -5407,7 +7550,11 @@ def create_web_app(
             to_selected_deck_id: int | None = None,
         ) -> web.Response:
             try:
-                await db.update_invite_status(invite_id, "failed", to_selected_deck_id=to_selected_deck_id)
+                await db.fail_friend_invite_accept(
+                    invite_id,
+                    error,
+                    to_selected_deck_id=to_selected_deck_id,
+                )
             except Exception as exc:
                 logger.warning(
                     "Failed to mark friend invite %s as failed after accept error %s: %s",
@@ -5428,6 +7575,15 @@ def create_web_app(
             return web.json_response(payload, status=status)
 
         from_user_id = int(invite["from_user_id"])
+        active_conflict = await _friendly_invite_active_battle_conflict(
+            request,
+            user_id,
+            from_user_id,
+            exclude_invite_id=invite_id,
+        )
+        if active_conflict:
+            return web.json_response(active_conflict, status=409)
+
         to_selected_deck_id_raw = data.get("selected_deck_id") or data.get("deck_id")
         try:
             to_selected_deck_id = int(to_selected_deck_id_raw) if to_selected_deck_id_raw is not None else None
@@ -5476,6 +7632,45 @@ def create_web_app(
                 message="Не удалось принять вызов: у соперника не готова колода.",
                 to_selected_deck_id=to_selected_deck_id,
             )
+
+        claimed_invite = await db.claim_friend_invite_accept(
+            invite_id,
+            user_id,
+            to_selected_deck_id,
+        )
+        if not claimed_invite:
+            latest_invite = await db.get_friend_invite_by_id(invite_id)
+            if latest_invite and latest_invite.get("status") == "accepted" and latest_invite.get("battle_id"):
+                return web.json_response(await _friend_invite_status_payload(latest_invite, user_id))
+            if latest_invite and latest_invite.get("status") == "accepting":
+                return web.json_response(
+                    {"success": False, "error": "invite_accept_in_progress", "status": "accepting"},
+                    status=409,
+                )
+            active_conflict = await _friendly_invite_active_battle_conflict(
+                request,
+                user_id,
+                from_user_id,
+                exclude_invite_id=invite_id,
+            )
+            if active_conflict:
+                return web.json_response(active_conflict, status=409)
+            return web.json_response({"error": "invite_already_responded"}, status=409)
+        invite = claimed_invite
+
+        active_conflict = await _friendly_invite_active_battle_conflict(
+            request,
+            user_id,
+            from_user_id,
+            exclude_invite_id=invite_id,
+        )
+        if active_conflict:
+            await db.fail_friend_invite_accept(
+                invite_id,
+                "active_battle_exists",
+                to_selected_deck_id=to_selected_deck_id,
+            )
+            return web.json_response(active_conflict, status=409)
 
         admin_bypass = await _is_admin_user(db, user_id) or await _is_admin_user(db, from_user_id)
         if not admin_bypass and not await _is_runtime_feature_enabled(db, "friendly"):
@@ -5546,11 +7741,35 @@ def create_web_app(
         except Exception:
             card_cache = {}
 
-        p1_deck_ids = _normalize_deck_with_cache(p1_raw_deck or [], card_cache)
-        p2_deck_ids = _normalize_deck_with_cache(p2_raw_deck or [], card_cache)
+        p1_deck_ids = _normalize_deck_with_cache(
+            p1_raw_deck or [],
+            card_cache,
+            allow_cache_fallback=False,
+        )
+        p2_deck_ids = _normalize_deck_with_cache(
+            p2_raw_deck or [],
+            card_cache,
+            allow_cache_fallback=False,
+        )
 
-        p1_deck_int = [int(str(d).split(":")[0]) for d in p1_deck_ids if d]
-        p2_deck_int = [int(str(d).split(":")[0]) for d in p2_deck_ids if d]
+        try:
+            p1_deck_int = [int(str(d).split(":")[0]) for d in p1_deck_ids if d]
+            p2_deck_int = [int(str(d).split(":")[0]) for d in p2_deck_ids if d]
+        except (TypeError, ValueError):
+            return await _fail_friend_invite_accept(
+                "deck_load_failed",
+                status=500,
+                message="Не удалось подготовить бой: ошибка загрузки колод.",
+                to_selected_deck_id=to_selected_deck_id,
+            )
+        if len(p1_deck_int) != DECK_SIZE or len(p2_deck_int) != DECK_SIZE:
+            return await _fail_friend_invite_accept(
+                "deck_incomplete",
+                status=400,
+                message="Не удалось принять вызов: одна из выбранных колод неполная.",
+                details={"player_deck_size": len(p1_deck_int), "opponent_deck_size": len(p2_deck_int)},
+                to_selected_deck_id=to_selected_deck_id,
+            )
 
         engine = BattleEngine(
             db=db,
@@ -5575,10 +7794,12 @@ def create_web_app(
                     "is_bot": False,
                     "trophies": p1_profile["trophies"],
                     "clan": p1_profile["clan"],
-                    "title": p1_profile["title"],
-                    "rarity": p1_profile["title_class"],
-                    "extra_pass": p1_profile["extra_pass"],
-                    "background_url": p1_profile["background_url"],
+	                    "title": p1_profile["title"],
+	                    "rarity": p1_profile["title_class"],
+	                    "extra_pass": p1_profile["extra_pass"],
+	                    "nickname_glow_disabled": p1_profile.get("nickname_glow_disabled", False),
+	                    "hide_player_id_public": p1_profile.get("hide_player_id_public", False),
+	                    "background_url": p1_profile["background_url"],
                 },
                 p2_data={
                     "user_id": from_user_id,
@@ -5588,14 +7809,17 @@ def create_web_app(
                     "is_bot": False,
                     "trophies": p2_profile["trophies"],
                     "clan": p2_profile["clan"],
-                    "title": p2_profile["title"],
-                    "rarity": p2_profile["title_class"],
-                    "extra_pass": p2_profile["extra_pass"],
-                    "background_url": p2_profile["background_url"],
+	                    "title": p2_profile["title"],
+	                    "rarity": p2_profile["title_class"],
+	                    "extra_pass": p2_profile["extra_pass"],
+	                    "nickname_glow_disabled": p2_profile.get("nickname_glow_disabled", False),
+	                    "hide_player_id_public": p2_profile.get("hide_player_id_public", False),
+	                    "background_url": p2_profile["background_url"],
                 },
             )
         except Exception as e:
             logger.error("Friendly match create failed: %s", e, exc_info=True)
+            request.app["active_matches"].pop(match_id, None)
             return await _fail_friend_invite_accept(
                 "match_create_failed",
                 status=500,
@@ -5605,6 +7829,7 @@ def create_web_app(
             )
 
         if not create_result.get("success"):
+            request.app["active_matches"].pop(match_id, None)
             return await _fail_friend_invite_accept(
                 "match_create_failed",
                 status=500,
@@ -5613,14 +7838,31 @@ def create_web_app(
                 to_selected_deck_id=to_selected_deck_id,
             )
 
+        try:
+            completed = await db.complete_friend_invite_accept(
+                invite_id,
+                match_id,
+                to_selected_deck_id=to_selected_deck_id,
+                from_deck_card_ids=p2_deck_int,
+                to_deck_card_ids=p1_deck_int,
+                mode_id="friendly",
+            )
+        except Exception as e:
+            logger.error("Friendly invite accept commit failed: %s", e, exc_info=True)
+            completed = False
+
+        if not completed:
+            request.app["active_matches"].pop(match_id, None)
+            return await _fail_friend_invite_accept(
+                "match_create_failed",
+                status=500,
+                message="Не удалось создать бой. Отправь вызов еще раз.",
+                details="invite_accept_commit_failed",
+                to_selected_deck_id=to_selected_deck_id,
+            )
+
         request.app["active_matches"][match_id] = engine
         request.app["match_game_modes"][match_id] = "friendly"
-        await db.update_invite_status(
-            invite_id,
-            "accepted",
-            battle_id=match_id,
-            to_selected_deck_id=to_selected_deck_id,
-        )
 
         return web.json_response({
             "success": True,
@@ -5632,22 +7874,22 @@ def create_web_app(
             "opponent_avatar_url": p2_avatar,
             "opponent_trophies": p2_profile["trophies"],
             "opponent_clan": p2_profile["clan"],
-            "opponent_title": p2_profile["title"],
-            "opponent_title_rarity": p2_profile["title_class"],
-            "opponent_extra_pass": p2_profile["extra_pass"],
-            "opponent_background": p2_profile["background_url"],
+	            "opponent_title": p2_profile["title"],
+	            "opponent_title_rarity": p2_profile["title_class"],
+	            "opponent_extra_pass": p2_profile["extra_pass"],
+	            "opponent_nickname_glow_disabled": p2_profile.get("nickname_glow_disabled", False),
+	            "opponent_hide_player_id_public": p2_profile.get("hide_player_id_public", False),
+	            "opponent_background": p2_profile["background_url"],
             "player_name": p1_name,
             "player_avatar_url": p1_avatar,
             "player_trophies": p1_profile["trophies"],
             "player_clan": p1_profile["clan"],
-            "player_title": p1_profile["title"],
-            "player_title_rarity": p1_profile["title_class"],
-            "player_extra_pass": p1_profile["extra_pass"],
-            "player_background": p1_profile["background_url"],
-            "players": {
-                str(from_user_id): p2_profile,
-                str(user_id): p1_profile,
-            },
+	            "player_title": p1_profile["title"],
+	            "player_title_rarity": p1_profile["title_class"],
+	            "player_extra_pass": p1_profile["extra_pass"],
+	            "player_nickname_glow_disabled": p1_profile.get("nickname_glow_disabled", False),
+	            "player_hide_player_id_public": p1_profile.get("hide_player_id_public", False),
+	            "player_background": p1_profile["background_url"],
         })
 
     async def friend_invite_pending_handler(request: web.Request) -> web.Response:
@@ -5683,7 +7925,9 @@ def create_web_app(
         if invite["status"] != "pending":
             return web.json_response({"error": "invite_not_pending"}, status=409)
 
-        await db.update_invite_status(invite_id, "cancelled")
+        cancelled = await db.update_invite_status(invite_id, "cancelled")
+        if not cancelled:
+            return web.json_response({"error": "invite_not_pending"}, status=409)
         return web.json_response({"success": True, "status": "cancelled"})
 
     # ========== Хэндлеры раздела "Друзья" (friend requests) ==========
@@ -5709,13 +7953,61 @@ def create_web_app(
         if not target_exists:
             return web.json_response({"success": False, "error": "user_not_found"}, status=404)
 
+        if hasattr(db, "are_friends") and await db.are_friends(user_id, addressee_id):
+            return web.json_response({"success": False, "error": "already_friends"}, status=409)
+
+        try:
+            target_settings = await db.get_user_settings(addressee_id)
+            social_block_friend_requests = False
+            if target_settings:
+                try:
+                    social_block_friend_requests = bool(target_settings["social_block_friend_requests"])
+                except Exception:
+                    social_block_friend_requests = bool(getattr(target_settings, "get", lambda _key, _default=None: _default)(
+                        "social_block_friend_requests",
+                        False,
+                    ))
+            if social_block_friend_requests:
+                return web.json_response({"success": False, "error": "friend_requests_blocked"}, status=403)
+        except Exception:
+            logging.getLogger(__name__).debug(
+                "Failed to load social_block_friend_requests for user_id=%s",
+                addressee_id,
+                exc_info=True,
+            )
+
         has_pending = await db.has_pending_friend_request_pair(user_id, addressee_id)
         if has_pending:
             return web.json_response({"success": False, "error": "request_already_exists"}, status=409)
 
-        result = await db.create_friend_request(user_id, addressee_id)
+        result = await db.create_or_reopen_friend_request(user_id, addressee_id)
         if not result.get("success"):
-            return web.json_response({"success": False, "error": result.get("error", "request_create_failed")}, status=500)
+            error = result.get("error", "request_create_failed")
+            return web.json_response(
+                {"success": False, "error": error},
+                status=409 if error == "request_already_exists" else 500,
+            )
+
+        from_profile = await _resolve_battle_profile(db, user_id, fallback_name="Игрок")
+        try:
+            await db.enqueue_notification(
+                addressee_id,
+                category="friend_requests",
+                event_type="friend_request_received",
+                payload={
+                    "from_user_id": user_id,
+                    "from_name": from_profile["name"],
+                    "request_id": result["id"],
+                    "section": "friends",
+                },
+                dedupe_key=f"friend_request:{result['id']}",
+            )
+        except Exception:
+            logging.getLogger(__name__).debug(
+                "Failed to enqueue friend request notification request_id=%s",
+                result.get("id"),
+                exc_info=True,
+            )
 
         return web.json_response({"success": True, "request_id": result["id"]})
 
@@ -5762,7 +8054,9 @@ def create_web_app(
             return web.json_response({"success": False, "error": "request_already_processed"}, status=409)
 
         new_status = "accepted" if action == "accept" else "declined"
-        await db.update_friend_request_status(request_id, new_status)
+        updated = await db.update_friend_request_status(request_id, new_status)
+        if not updated:
+            return web.json_response({"success": False, "error": "request_already_processed"}, status=409)
         return web.json_response({"success": True, "status": action})
 
     async def friend_request_cancel_handler(request: web.Request) -> web.Response:
@@ -5789,7 +8083,9 @@ def create_web_app(
         if fr["status"] != "pending":
             return web.json_response({"success": False, "error": "request_not_pending"}, status=409)
 
-        await db.update_friend_request_status(request_id, "cancelled")
+        updated = await db.update_friend_request_status(request_id, "cancelled")
+        if not updated:
+            return web.json_response({"success": False, "error": "request_not_pending"}, status=409)
         return web.json_response({"success": True})
 
     async def friend_list_handler(request: web.Request) -> web.Response:
@@ -5797,7 +8093,15 @@ def create_web_app(
 
         try:
             friends = await db.get_friend_list(user_id)
-            return web.json_response({"friends": friends})
+            for friend in friends:
+                try:
+                    friend["online"] = _is_user_online(int(friend.get("user_id")))
+                except Exception:
+                    friend["online"] = False
+            return web.json_response({
+                "friends": friends,
+                "online_ttl_seconds": ONLINE_USER_TTL_SECONDS,
+            })
         except Exception as e:
             import logging
             logging.getLogger(__name__).error(
@@ -5835,10 +8139,10 @@ def create_web_app(
         user_id = await require_user_id(request)
 
         try:
-            # Система кейсов удалена, возвращаем пустой список
-            # await db.sync_user_key_cases(user_id)
-            # cases = await db.get_user_cases(user_id)
-            return web.json_response({"success": True, "cases": []})
+            if hasattr(db, "sync_user_key_cases"):
+                await db.sync_user_key_cases(user_id)
+            cases = await db.get_user_cases(user_id)
+            return web.json_response({"success": True, "cases": cases})
         except Exception as e:
             import logging
             logging.getLogger(__name__).error(
@@ -5855,7 +8159,8 @@ def create_web_app(
             return web.json_response({"error": "user_case_id_required"}, status=400)
 
         try:
-            await db.sync_user_key_cases(user_id)
+            if hasattr(db, "sync_user_key_cases"):
+                await db.sync_user_key_cases(user_id)
             user_case_id = int(user_case_id)
             user_case = await db.get_user_case(user_case_id, user_id)
             if not user_case:
@@ -5887,7 +8192,8 @@ def create_web_app(
                 return web.json_response({"error": "invalid_parameters"}, status=400)
 
             # Проверяем, что кейс принадлежит пользователю
-            await db.sync_user_key_cases(user_id)
+            if hasattr(db, "sync_user_key_cases"):
+                await db.sync_user_key_cases(user_id)
             user_case = await db.get_user_case(user_case_id, user_id)
             if not user_case:
                 return web.json_response({"error": "case_not_found"}, status=404)
@@ -5937,7 +8243,8 @@ def create_web_app(
                 return web.json_response({"error": "invalid_parameters"}, status=400)
 
             # Обрабатываем открытие кейса
-            await db.sync_user_key_cases(user_id)
+            if hasattr(db, "sync_user_key_cases"):
+                await db.sync_user_key_cases(user_id)
             result = await process_case_opening(db, user_id, user_case_id, tap_results)
 
             if not result.get("success"):
@@ -5945,10 +8252,13 @@ def create_web_app(
 
             # Economy tracking for case open rewards
             _track_case_rewards(db, user_id, result.get("rewards") or {}, result)
+            try:
+                await db.mark_newbie_path_task(user_id, "open_starter_case", claimed=False)
+            except Exception:
+                logging.getLogger(__name__).debug("newbie path case completion failed", exc_info=True)
 
             return web.json_response(result)
         except Exception as e:
-            import logging
             logging.getLogger(__name__).error(
                 "Ошибка открытия кейса для user_id %s: %s", user_id, e, exc_info=True
             )
@@ -5963,13 +8273,17 @@ def create_web_app(
 
         try:
             data = await request.json()
-            user_case_id = int(data.get("user_case_id"))
+            try:
+                user_case_id = int(data.get("user_case_id") or 0)
+            except (TypeError, ValueError):
+                return web.json_response({"error": "invalid_parameters"}, status=400)
 
             if not user_case_id:
                 return web.json_response({"error": "invalid_parameters"}, status=400)
 
             # Получаем текущий тир кейса
-            await db.sync_user_key_cases(user_id)
+            if hasattr(db, "sync_user_key_cases"):
+                await db.sync_user_key_cases(user_id)
             user_case = await db.get_user_case(user_case_id, user_id)
             if not user_case:
                 return web.json_response({"error": "case_not_found"}, status=404)
@@ -5993,10 +8307,13 @@ def create_web_app(
                 return web.json_response(result, status=400)
 
             _track_case_rewards(db, user_id, result.get("rewards") or {}, result)
+            try:
+                await db.mark_newbie_path_task(user_id, "open_starter_case", claimed=False)
+            except Exception:
+                logging.getLogger(__name__).debug("newbie path case-skip completion failed", exc_info=True)
 
             return web.json_response(result)
         except Exception as e:
-            import logging
             logging.getLogger(__name__).error(
                 "Ошибка пропуска анимации для user_id %s: %s", user_id, e, exc_info=True
             )
@@ -6011,15 +8328,193 @@ def create_web_app(
         ]
         for token in expired_tokens:
             CASE_KEY_ROLLS.pop(token, None)
+        expired_results = [
+            token
+            for token, result in CASE_KEY_OPEN_RESULTS.items()
+            if result.get("expires_at") and result["expires_at"] < now
+        ]
+        for token in expired_results:
+            CASE_KEY_OPEN_RESULTS.pop(token, None)
+        expired_openings = [
+            token
+            for token, opening in CASE_KEY_PENDING_OPENINGS.items()
+            if opening.get("expires_at") and opening["expires_at"] < now
+        ]
+        for token in expired_openings:
+            CASE_KEY_PENDING_OPENINGS.pop(token, None)
+        expired_rerolls = [
+            token
+            for token, roll in CASE_KEY_REROLL_ROLLS.items()
+            if roll.get("expires_at") and roll["expires_at"] < now
+        ]
+        for token in expired_rerolls:
+            CASE_KEY_REROLL_ROLLS.pop(token, None)
+
+    def _case_key_opening_response(opening: dict[str, Any]) -> dict[str, Any]:
+        rewards = opening.get("rewards") or {}
+        return {
+            "success": True,
+            "opening_token": opening.get("opening_token"),
+            "final_tier": int(opening.get("final_tier") or 1),
+            "tap_results": list(opening.get("tap_results") or []),
+            "rewards": rewards,
+            "extra_pass_bonus": rewards.get("extra_pass_bonus"),
+            "remaining_keys": int(opening.get("remaining_keys") or 0),
+            "can_reroll": bool(
+                opening.get("extra_pass") == "ultra"
+                and not opening.get("reroll_used")
+                and not opening.get("claimed")
+            ),
+            "reroll_used": bool(opening.get("reroll_used")),
+            "claimed": bool(opening.get("claimed")),
+        }
+
+    def _store_case_key_opening(opening: dict[str, Any]) -> dict[str, Any]:
+        response_payload = _case_key_opening_response(opening)
+        opening["response"] = response_payload
+        CASE_KEY_PENDING_OPENINGS[str(opening["opening_token"])] = opening
+        roll_token = str(opening.get("roll_token") or "")
+        if roll_token:
+            CASE_KEY_OPEN_RESULTS[roll_token] = {
+                "user_id": opening.get("user_id"),
+                "response": response_payload,
+                "opening_token": opening.get("opening_token"),
+                "expires_at": opening.get("expires_at"),
+            }
+        return response_payload
+
+    async def _claim_case_key_opening(user_id: int, opening_token: str) -> tuple[dict[str, Any], int]:
+        _cleanup_expired_case_key_rolls()
+        opening = CASE_KEY_PENDING_OPENINGS.get(opening_token)
+        if not opening or opening.get("user_id") != user_id:
+            return {"success": False, "error": "opening_not_found", "message": "Открытие не найдено"}, 404
+        if opening.get("claimed"):
+            return opening.get("claim_response") or _case_key_opening_response(opening), 200
+
+        rewards = opening.get("rewards") or {}
+        final_tier = int(opening.get("final_tier") or 1)
+        tap_results = list(opening.get("tap_results") or [])
+        opening_id = str(opening.get("opening_id") or opening_token)
+
+        if rewards.get("coins", 0) > 0:
+            await db.update_user_coins(user_id, rewards["coins"])
+        for card_reward in rewards.get("cards", []):
+            await db.add_card_to_user(user_id, card_reward["card_id"])
+        for particle_reward in rewards.get("particles", []):
+            await db.add_particles_to_card(
+                user_id,
+                particle_reward["card_id"],
+                particle_reward["particles"],
+            )
+        if rewards.get("gems", 0) > 0:
+            await db.add_gems(user_id, rewards["gems"])
+
+        await _track_economy_safe(
+            db,
+            user_id=user_id,
+            event_type="spend",
+            resource="keys",
+            amount=1,
+            source="case_open",
+            metadata={"final_tier": final_tier, "opening_token": opening_token},
+        )
+        _track_case_rewards(db, user_id, rewards, {"final_tier": final_tier, "tap_results": tap_results, "opening_token": opening_token})
+
+        try:
+            event_source = f"case_open_key:{user_id}:{opening_id}"
+            squad_award = await db.award_squad_cbrp(
+                user_id,
+                "case_open",
+                source_id=event_source,
+                metadata={"tier": final_tier, "source": "keys"},
+            )
+            for card_reward in rewards.get("cards", []):
+                card_id = card_reward.get("card_id")
+                rarity = str(card_reward.get("rarity") or "").lower()
+                await db.award_squad_cbrp(
+                    user_id,
+                    "new_card",
+                    source_id=f"{event_source}:new_card:{card_id}",
+                    metadata={
+                        "tier": final_tier,
+                        "card_id": card_id,
+                        "rarity": rarity,
+                        "source": "keys",
+                    },
+                )
+                if rarity in ("epic", "legendary"):
+                    await db.award_squad_cbrp(
+                        user_id,
+                        "new_epic_plus_card_bonus",
+                        source_id=f"{event_source}:epic_plus:{card_id}",
+                        metadata={
+                            "tier": final_tier,
+                            "card_id": card_id,
+                            "rarity": rarity,
+                            "source": "keys",
+                        },
+                    )
+        except Exception:
+            logging.getLogger(__name__).warning(
+                "Failed to award squad CBRP for key case opening: user_id=%s",
+                user_id,
+                exc_info=True,
+            )
+            squad_award = {"awarded": False, "reason": "award_failed"}
+
+        try:
+            await db.mark_newbie_path_task(user_id, "open_starter_case", claimed=False)
+        except Exception:
+            logging.getLogger(__name__).debug("newbie path key-case completion failed", exc_info=True)
+
+        for token, reroll in list(CASE_KEY_REROLL_ROLLS.items()):
+            if reroll.get("opening_token") == opening_token:
+                CASE_KEY_REROLL_ROLLS.pop(token, None)
+
+        opening["claimed"] = True
+        opening["claimed_at"] = datetime.now(timezone.utc)
+        opening["squad_cbrp"] = squad_award
+        response_payload = {
+            **_case_key_opening_response(opening),
+            "squad_cbrp": squad_award,
+        }
+        opening["claim_response"] = response_payload
+        opening["response"] = response_payload
+        roll_token = str(opening.get("roll_token") or "")
+        if roll_token and roll_token in CASE_KEY_OPEN_RESULTS:
+            CASE_KEY_OPEN_RESULTS[roll_token]["response"] = response_payload
+        return response_payload, 200
 
     async def case_roll_from_keys_handler(request: web.Request) -> web.Response:
         """Сгенерировать серверную последовательность тапов для открытия кейса из ключа."""
         user_id = await require_user_id(request)
         try:
             _cleanup_expired_case_key_rolls()
-            keys = await db.fetchval("SELECT COALESCE(keys,0) FROM users WHERE user_id=$1", user_id)
-            if not keys or keys < 1:
+            for existing_token, existing_roll in CASE_KEY_ROLLS.items():
+                if existing_roll.get("user_id") == user_id:
+                    return web.json_response({
+                        "success": True,
+                        "roll_token": existing_token,
+                        "tap_results": list(existing_roll.get("tap_results") or []),
+                        "final_tier": int(existing_roll.get("final_tier") or 1),
+                        "extra_pass_bonus": {"tier": "ultra"} if existing_roll.get("extra_pass") == "ultra" else None,
+                        "remaining_keys": existing_roll.get("remaining_keys"),
+                        "reserved": True,
+                    })
+
+            key_row = await db.fetchrow(
+                """
+                UPDATE users
+                SET keys = GREATEST(0, COALESCE(keys, 0) - 1),
+                    updated_at = NOW()
+                WHERE user_id = $1 AND COALESCE(keys, 0) > 0
+                RETURNING keys
+                """,
+                user_id,
+            )
+            if not key_row:
                 return web.json_response({"success": False, "error": "no_keys", "message": "Нет ключей"}, status=400)
+            remaining_keys = key_row["keys"]
 
             extra_pass = await get_user_case_pass_status(db, user_id)
             tap_results = simulate_case_tap_results(1, extra_pass)
@@ -6030,6 +8525,8 @@ def create_web_app(
                 "tap_results": tap_results,
                 "final_tier": final_tier,
                 "extra_pass": extra_pass,
+                "remaining_keys": remaining_keys,
+                "reserved": True,
                 "expires_at": datetime.now(timezone.utc) + timedelta(seconds=CASE_KEY_ROLL_TTL_SECONDS),
             }
             return web.json_response({
@@ -6038,6 +8535,8 @@ def create_web_app(
                 "tap_results": tap_results,
                 "final_tier": final_tier,
                 "extra_pass_bonus": {"tier": "ultra"} if extra_pass == "ultra" else None,
+                "remaining_keys": remaining_keys,
+                "reserved": True,
             })
         except Exception as e:
             logging.getLogger(__name__).error("case_roll_from_keys error uid=%s: %s", user_id, e, exc_info=True)
@@ -6053,20 +8552,33 @@ def create_web_app(
                     data = await request.json()
                 except Exception:
                     data = {}
-
-            keys = await db.fetchval("SELECT COALESCE(keys,0) FROM users WHERE user_id=$1", user_id)
-            if not keys or keys < 1:
-                return web.json_response({"success": False, "error": "no_keys", "message": "Нет ключей"}, status=400)
-
             _cleanup_expired_case_key_rolls()
             roll_token = str(data.get("roll_token") or "").strip()
+            completed_opening = CASE_KEY_OPEN_RESULTS.get(roll_token) if roll_token else None
+            if completed_opening and completed_opening.get("user_id") == user_id:
+                return web.json_response(completed_opening["response"])
+
             stored_roll = CASE_KEY_ROLLS.get(roll_token) if roll_token else None
             if stored_roll and stored_roll.get("user_id") == user_id:
                 tap_results = list(stored_roll.get("tap_results") or [])
                 final_tier = int(stored_roll.get("final_tier") or (tap_results[-1] if tap_results else 1))
                 extra_pass = str(stored_roll.get("extra_pass") or "inactive")
+                new_keys = int(stored_roll.get("remaining_keys") or 0)
                 CASE_KEY_ROLLS.pop(roll_token, None)
             else:
+                key_row = await db.fetchrow(
+                    """
+                    UPDATE users
+                    SET keys = GREATEST(0, COALESCE(keys, 0) - 1),
+                        updated_at = NOW()
+                    WHERE user_id = $1 AND COALESCE(keys, 0) > 0
+                    RETURNING keys
+                    """,
+                    user_id,
+                )
+                if not key_row:
+                    return web.json_response({"success": False, "error": "no_keys", "message": "Нет ключей"}, status=400)
+                new_keys = key_row["keys"]
                 extra_pass = await get_user_case_pass_status(db, user_id)
                 tap_results = simulate_case_tap_results(1, extra_pass)
                 final_tier = tap_results[-1] if tap_results else 1
@@ -6080,99 +8592,170 @@ def create_web_app(
             # Генерируем награды
             rewards = await generate_case_rewards(db, final_tier, user_id, user_card_ids, extra_pass)
 
-            key_row = await db.fetchrow(
-                """
-                UPDATE users
-                SET keys = GREATEST(0, COALESCE(keys, 0) - 1)
-                WHERE user_id = $1 AND COALESCE(keys, 0) > 0
-                RETURNING keys
-                """,
-                user_id,
-            )
-            if not key_row:
-                return web.json_response({"success": False, "error": "no_keys", "message": "Нет ключей"}, status=400)
-            new_keys = key_row["keys"]
-
-            # Выдаём
-            if rewards["coins"] > 0:
-                await db.update_user_coins(user_id, rewards["coins"])
-            for c in rewards.get("cards", []):
-                await db.add_card_to_user(user_id, c["card_id"])
-            for p2 in rewards.get("particles", []):
-                await db.add_particles_to_card(user_id, p2["card_id"], p2["particles"])
-            if rewards.get("gems", 0) > 0:
-                await db.add_gems(user_id, rewards["gems"])
-
-            await _track_economy_safe(db, user_id=user_id, event_type="spend",
-                resource="keys", amount=1, source="case_open",
-                metadata={"final_tier": final_tier})
-
-            _track_case_rewards(db, user_id, rewards, {"final_tier": final_tier, "tap_results": tap_results})
-
-            try:
-                event_source = f"case_open_key:{user_id}:{uuid.uuid4().hex}"
-                squad_award = await db.award_squad_cbrp(
-                    user_id,
-                    "case_open",
-                    source_id=event_source,
-                    metadata={"tier": final_tier, "source": "keys"},
-                )
-                for card_reward in rewards.get("cards", []):
-                    card_id = card_reward.get("card_id")
-                    rarity = str(card_reward.get("rarity") or "").lower()
-                    await db.award_squad_cbrp(
-                        user_id,
-                        "new_card",
-                        source_id=f"{event_source}:new_card:{card_id}",
-                        metadata={
-                            "tier": final_tier,
-                            "card_id": card_id,
-                            "rarity": rarity,
-                            "source": "keys",
-                        },
-                    )
-                    if rarity in ("epic", "legendary"):
-                        await db.award_squad_cbrp(
-                            user_id,
-                            "new_epic_plus_card_bonus",
-                            source_id=f"{event_source}:epic_plus:{card_id}",
-                            metadata={
-                                "tier": final_tier,
-                                "card_id": card_id,
-                                "rarity": rarity,
-                                "source": "keys",
-                            },
-                        )
-            except Exception:
-                logging.getLogger(__name__).warning(
-                    "Failed to award squad CBRP for key case opening: user_id=%s",
-                    user_id,
-                    exc_info=True,
-                )
-                squad_award = {"awarded": False, "reason": "award_failed"}
-
-            return web.json_response({
-                "success": True,
+            opening_seed = f"{user_id}:{int(new_keys or 0)}:{final_tier}:{','.join(str(t) for t in tap_results)}"
+            opening_id = roll_token or hashlib.sha256(opening_seed.encode("utf-8")).hexdigest()[:32]
+            opening_token = uuid.uuid4().hex
+            opening = {
+                "opening_token": opening_token,
+                "opening_id": opening_id,
+                "roll_token": roll_token,
+                "user_id": user_id,
                 "final_tier": final_tier,
                 "tap_results": tap_results,
                 "rewards": rewards,
-                "extra_pass_bonus": rewards.get("extra_pass_bonus"),
                 "remaining_keys": new_keys,
-                "squad_cbrp": squad_award,
-            })
+                "extra_pass": extra_pass,
+                "reroll_used": False,
+                "claimed": False,
+                "expires_at": datetime.now(timezone.utc) + timedelta(seconds=CASE_KEY_ROLL_TTL_SECONDS),
+            }
+            response_payload = _store_case_key_opening(opening)
+            if roll_token:
+                CASE_KEY_ROLLS.pop(roll_token, None)
+            return web.json_response(response_payload)
         except Exception as e:
             logging.getLogger(__name__).error("case_open_from_keys error uid=%s: %s", user_id, e, exc_info=True)
             return web.json_response({"error": "internal_server_error"}, status=500)
 
+    async def case_reroll_from_keys_handler(request: web.Request) -> web.Response:
+        """Начать ручной бесплатный Ultra-реролл для pending key-case opening."""
+        user_id = await require_user_id(request)
+        try:
+            data = {}
+            if request.can_read_body:
+                try:
+                    data = await request.json()
+                except Exception:
+                    data = {}
+            _cleanup_expired_case_key_rolls()
+            opening_token = str(data.get("opening_token") or "").strip()
+            opening = CASE_KEY_PENDING_OPENINGS.get(opening_token)
+            if not opening or opening.get("user_id") != user_id:
+                return web.json_response({"success": False, "error": "opening_not_found", "message": "Открытие не найдено"}, status=404)
+            if opening.get("claimed"):
+                return web.json_response({"success": False, "error": "opening_claimed", "message": "Награды уже забраны"}, status=400)
+            if opening.get("extra_pass") != "ultra":
+                return web.json_response({"success": False, "error": "ultra_required", "message": "Нужен ExtraPass ULTRA"}, status=403)
+
+            for existing_token, existing_roll in CASE_KEY_REROLL_ROLLS.items():
+                if existing_roll.get("opening_token") == opening_token and existing_roll.get("user_id") == user_id:
+                    return web.json_response({
+                        "success": True,
+                        "opening_token": opening_token,
+                        "reroll_token": existing_token,
+                        "tap_results": list(existing_roll.get("tap_results") or []),
+                        "final_tier": int(existing_roll.get("final_tier") or 1),
+                        "reroll_used": True,
+                        "reserved": True,
+                    })
+
+            if opening.get("reroll_used"):
+                return web.json_response({"success": False, "error": "reroll_already_used", "message": "Реролл уже использован"}, status=400)
+
+            extra_pass = str(opening.get("extra_pass") or "inactive")
+            tap_results = simulate_case_tap_results(1, extra_pass)
+            final_tier = tap_results[-1] if tap_results else 1
+            reroll_token = uuid.uuid4().hex
+            opening["reroll_used"] = True
+            opening["reroll_started_at"] = datetime.now(timezone.utc)
+            opening["response"] = _case_key_opening_response(opening)
+            CASE_KEY_REROLL_ROLLS[reroll_token] = {
+                "user_id": user_id,
+                "opening_token": opening_token,
+                "tap_results": tap_results,
+                "final_tier": final_tier,
+                "extra_pass": extra_pass,
+                "expires_at": datetime.now(timezone.utc) + timedelta(seconds=CASE_KEY_ROLL_TTL_SECONDS),
+            }
+            return web.json_response({
+                "success": True,
+                "opening_token": opening_token,
+                "reroll_token": reroll_token,
+                "tap_results": tap_results,
+                "final_tier": final_tier,
+                "reroll_used": True,
+                "reserved": True,
+            })
+        except Exception as e:
+            logging.getLogger(__name__).error("case_reroll_from_keys error uid=%s: %s", user_id, e, exc_info=True)
+            return web.json_response({"success": False, "error": "internal_server_error"}, status=500)
+
+    async def case_open_reroll_from_keys_handler(request: web.Request) -> web.Response:
+        """Завершить ручной Ultra-реролл и заменить pending rewards новым результатом."""
+        user_id = await require_user_id(request)
+        try:
+            data = {}
+            if request.can_read_body:
+                try:
+                    data = await request.json()
+                except Exception:
+                    data = {}
+            _cleanup_expired_case_key_rolls()
+            opening_token = str(data.get("opening_token") or "").strip()
+            reroll_token = str(data.get("reroll_token") or "").strip()
+            opening = CASE_KEY_PENDING_OPENINGS.get(opening_token)
+            reroll_roll = CASE_KEY_REROLL_ROLLS.get(reroll_token)
+            if not opening or opening.get("user_id") != user_id:
+                return web.json_response({"success": False, "error": "opening_not_found", "message": "Открытие не найдено"}, status=404)
+            if opening.get("claimed"):
+                return web.json_response({"success": False, "error": "opening_claimed", "message": "Награды уже забраны"}, status=400)
+            if not reroll_roll or reroll_roll.get("user_id") != user_id or reroll_roll.get("opening_token") != opening_token:
+                return web.json_response({"success": False, "error": "reroll_not_found", "message": "Реролл не найден"}, status=404)
+
+            tap_results = list(reroll_roll.get("tap_results") or [])
+            final_tier = max(1, min(int(reroll_roll.get("final_tier") or (tap_results[-1] if tap_results else 1)), 5))
+            extra_pass = str(reroll_roll.get("extra_pass") or "inactive")
+            user_cards = await db.get_user_cards(user_id)
+            user_card_ids = {card["id"] for card in (user_cards or [])}
+            rewards = await generate_case_rewards(db, final_tier, user_id, user_card_ids, extra_pass)
+            if opening.get("claimed"):
+                CASE_KEY_REROLL_ROLLS.pop(reroll_token, None)
+                return web.json_response({"success": False, "error": "opening_claimed", "message": "Награды уже забраны"}, status=400)
+
+            opening["final_tier"] = final_tier
+            opening["tap_results"] = tap_results
+            opening["rewards"] = rewards
+            opening["reroll_completed"] = True
+            opening["reroll_completed_at"] = datetime.now(timezone.utc)
+            opening["response"] = _case_key_opening_response(opening)
+            CASE_KEY_REROLL_ROLLS.pop(reroll_token, None)
+            roll_token = str(opening.get("roll_token") or "")
+            if roll_token and roll_token in CASE_KEY_OPEN_RESULTS:
+                CASE_KEY_OPEN_RESULTS[roll_token]["response"] = opening["response"]
+            return web.json_response(opening["response"])
+        except Exception as e:
+            logging.getLogger(__name__).error("case_open_reroll_from_keys error uid=%s: %s", user_id, e, exc_info=True)
+            return web.json_response({"success": False, "error": "internal_server_error"}, status=500)
+
+    async def case_claim_from_keys_handler(request: web.Request) -> web.Response:
+        """Начислить последние завершённые pending-награды key-case opening."""
+        user_id = await require_user_id(request)
+        try:
+            data = {}
+            if request.can_read_body:
+                try:
+                    data = await request.json()
+                except Exception:
+                    data = {}
+            opening_token = str(data.get("opening_token") or "").strip()
+            response_payload, status = await _claim_case_key_opening(user_id, opening_token)
+            return web.json_response(response_payload, status=status)
+        except Exception as e:
+            logging.getLogger(__name__).error("case_claim_from_keys error uid=%s: %s", user_id, e, exc_info=True)
+            return web.json_response({"success": False, "error": "internal_server_error"}, status=500)
+
     async def debug_add_key_handler(request: web.Request) -> web.Response:
         """Admin-only: добавить +1 ключ пользователю."""
-        user_id = await require_user_id(request)
+        user_id = request.get("admin_user_id") or await require_user_id(request)
+        if not await _is_admin_user(db, int(user_id)):
+            return web.json_response({"error": "admin_access_required"}, status=403)
         try:
             await db.execute("UPDATE users SET keys = COALESCE(keys,0)+1 WHERE user_id=$1", user_id)
             new_keys = await db.fetchval("SELECT COALESCE(keys,0) FROM users WHERE user_id=$1", user_id)
             return web.json_response({"success": True, "keys": new_keys})
-        except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+        except Exception:
+            logging.getLogger(__name__).exception("debug_add_key_handler error uid=%s", user_id)
+            return web.json_response({"error": "internal_server_error"}, status=500)
 
     async def _get_enabled_extra_arena_mode_ids(db_instance: Database) -> list[str]:
         try:
@@ -6289,6 +8872,7 @@ def create_web_app(
         player_decks: dict[str, int | None] | None = None,
         starting_player_id: int | str | None = None,
         game_mode: str = "classic",
+        init_lock_held: bool = False,
     ) -> bool:
         """
         Собирает и кеширует BattleEngine для match_id.
@@ -6296,11 +8880,33 @@ def create_web_app(
         """
         logger = logging.getLogger(__name__)
         db_instance: Database = request.app["db"]
+        init_lock = _get_match_init_lock(str(match_id))
+        if not init_lock_held:
+            async with init_lock:
+                if request.app["active_matches"].get(match_id) is not None:
+                    return True
+                return await _prepare_and_cache_engine(
+                    request,
+                    match_id=match_id,
+                    player_ids=player_ids,
+                    is_bot=is_bot,
+                    bot_info=bot_info,
+                    player_decks=player_decks,
+                    starting_player_id=starting_player_id,
+                    game_mode=game_mode,
+                    init_lock_held=True,
+                )
+        if request.app["active_matches"].get(match_id) is not None:
+            return True
         mode_config = resolve_mode_config(game_mode)
         if not mode_config.available:
             logger.warning("Battle init rejected unavailable mode=%s", mode_config.mode_id)
             return False
         game_mode = mode_config.mode_id
+
+        def _fail_battle_init(error: str) -> bool:
+            request.app.setdefault("battle_init_errors", {})[str(match_id)] = str(error)
+            return False
 
         # ------------------------------------------------------------------
         # Нормализация идентификаторов игроков (совместимость int <-> str)
@@ -6631,12 +9237,14 @@ def create_web_app(
                         return False
         except asyncio.TimeoutError:
             logger.warning(
-                "Battle init: deck load timed out, falling back to empty seeds (p1=%s, p2=%s)",
+                "Battle init: deck load timed out (p1=%s, p2=%s)",
                 p1_id,
                 p2_id,
             )
+            if mode_config.rewards.enabled:
+                return _fail_battle_init("deck_load_timeout")
             p1_raw_deck, p2_raw_deck, p1_hero_hp, p2_hero_hp = [], [], None, None
-        except Exception as deck_exc:  # noqa: BLE001 - не блокируем бой при сбоях загрузки
+        except Exception as deck_exc:  # noqa: BLE001
             logger.warning(
                 "Battle init: deck load failed (%s / %s): %s",
                 p1_id,
@@ -6644,6 +9252,8 @@ def create_web_app(
                 deck_exc,
                 exc_info=True,
             )
+            if mode_config.rewards.enabled:
+                return _fail_battle_init("deck_unavailable")
             p1_raw_deck, p2_raw_deck, p1_hero_hp, p2_hero_hp = [], [], None, None
 
         try:
@@ -6656,8 +9266,34 @@ def create_web_app(
             logger.warning("Battle init: card cache load failed: %s", cache_exc, exc_info=True)
             card_cache = {}
 
-        p1_deck_ids = _normalize_deck_with_cache(p1_raw_deck, card_cache)
-        p2_deck_ids = _normalize_deck_with_cache(p2_raw_deck, card_cache)
+        allow_human_cache_fallback = not mode_config.rewards.enabled
+        p1_deck_ids = _normalize_deck_with_cache(
+            p1_raw_deck,
+            card_cache,
+            allow_cache_fallback=allow_human_cache_fallback,
+        )
+        p2_deck_ids = _normalize_deck_with_cache(
+            p2_raw_deck,
+            card_cache,
+            allow_cache_fallback=(not is_bot and allow_human_cache_fallback),
+        )
+        if mode_config.rewards.enabled and (
+            len(p1_deck_ids) != DECK_SIZE or (not is_bot and len(p2_deck_ids) != DECK_SIZE)
+        ):
+            logger.warning(
+                "Battle init rejected incomplete human deck match_id=%s p1_size=%s p2_size=%s",
+                match_id,
+                len(p1_deck_ids),
+                len(p2_deck_ids),
+            )
+            return _fail_battle_init("deck_incomplete")
+        if is_bot and len(p2_deck_ids) != DECK_SIZE:
+            logger.warning(
+                "Battle init rejected bot match with invalid bot deck match_id=%s size=%s",
+                match_id,
+                len(p2_deck_ids),
+            )
+            return False
 
         try:
             deck_cache = getattr(db_instance, "deck_presets_cache", None)
@@ -6717,14 +9353,16 @@ def create_web_app(
                     "deck_ids": p1_deck_int_ids,
                     "name": p1_name,
                     "avatar_url": p1_avatar_url,
-                    "is_bot": False,
-                    "trophies": p1_trophies,
-                    "clan": p1_clan,
-                    "title": p1_title,
-                    "rarity": p1_title_class,
-                    "extra_pass": p1_extra_pass,
-                    "background_url": p1_background_url,
-                },
+	                    "is_bot": False,
+	                    "trophies": p1_trophies,
+	                    "clan": p1_clan,
+	                    "title": p1_title,
+	                    "rarity": p1_title_class,
+	                    "extra_pass": p1_extra_pass,
+	                    "nickname_glow_disabled": p1_battle_profile.get("nickname_glow_disabled", False) if "p1_battle_profile" in locals() else False,
+	                    "hide_player_id_public": p1_battle_profile.get("hide_player_id_public", False) if "p1_battle_profile" in locals() else False,
+	                    "background_url": p1_background_url,
+	                },
                 p2_data={
                     "user_id": p2_id_int,
                     "deck_ids": p2_deck_int_ids,
@@ -6740,13 +9378,15 @@ def create_web_app(
                     "selection": bot_selection,
                     "temperature": bot_temperature,
                     "card_level_policy": bot_card_level_policy,
-                    "deck_policy": bot_deck_policy,
-                    "card_levels": bot_card_levels,
-                    "title": p2_title,
-                    "rarity": p2_title_class,
-                    "extra_pass": p2_extra_pass,
-                    "background_url": p2_background_url,
-                },
+	                    "deck_policy": bot_deck_policy,
+	                    "card_levels": bot_card_levels,
+	                    "title": p2_title,
+	                    "rarity": p2_title_class,
+	                    "extra_pass": p2_extra_pass,
+	                    "nickname_glow_disabled": p2_battle_profile.get("nickname_glow_disabled", False) if "p2_battle_profile" in locals() else False,
+	                    "hide_player_id_public": p2_battle_profile.get("hide_player_id_public", False) if "p2_battle_profile" in locals() else False,
+	                    "background_url": p2_background_url,
+	                },
             )
 
             if not create_result.get("success"):
@@ -6907,7 +9547,7 @@ def create_web_app(
                 )
 
         card_ids = preset.get("card_ids") or []
-        if len(card_ids) < DECK_SIZE:
+        if ("is_playable" in preset and not preset.get("is_playable")) or len(card_ids) < DECK_SIZE:
             raise web.HTTPBadRequest(
                 reason="deck_incomplete",
                 text='{"error":"deck_incomplete"}',
@@ -6936,6 +9576,18 @@ def create_web_app(
                 selected_deck_id = int(selected_deck_id)
         except Exception:
             return web.json_response({"error": "invalid_parameters"}, status=400)
+
+        onboarding_state = await db_instance.get_onboarding_state(user_id)
+        if not onboarding_state.get("completed"):
+            return web.json_response(_onboarding_gate_payload(onboarding_state), status=403)
+
+        existing_active = _active_match_payload_for_user(
+            request.app,
+            user_id,
+            active_existing_match=True,
+        )
+        if existing_active is not None:
+            return web.json_response(existing_active)
 
         selected_deck_id = await _resolve_match_deck_id(db_instance, user_id, selected_deck_id)
         profile = await _load_authoritative_match_profile(db_instance, user_id)
@@ -6991,24 +9643,31 @@ def create_web_app(
                             result.get("is_bot"),
                             bot_info
                         )
-                        ok = await asyncio.wait_for(
-                            _prepare_and_cache_engine(
-                                request,
-                                match_id=match_id,
-                                player_ids=player_ids,
-                                is_bot=bool(result.get("is_bot")),
-                                bot_info=bot_info,
-                                player_decks=result.get("player_decks"),
-                                starting_player_id=result.get("starting_player_id"),
-                                game_mode=game_mode,
-                            ),
-                            timeout=6.0,
-                        )
+                        init_lock = _get_match_init_lock(match_id)
+                        async with init_lock:
+                            if request.app["active_matches"].get(match_id) is not None:
+                                ok = True
+                            else:
+                                ok = await asyncio.wait_for(
+                                    _prepare_and_cache_engine(
+                                        request,
+                                        match_id=match_id,
+                                        player_ids=player_ids,
+                                        is_bot=bool(result.get("is_bot")),
+                                        bot_info=bot_info,
+                                        player_decks=result.get("player_decks"),
+                                        starting_player_id=result.get("starting_player_id"),
+                                        game_mode=game_mode,
+                                        init_lock_held=True,
+                                    ),
+                                    timeout=6.0,
+                                )
                         logger.info("match_find_handler battle init result: %s (match_id=%s)", ok, match_id)
                         if not ok:
                             cancel_payload = await matchmaker.cancel_match(
                                 match_id,
                                 game_mode=game_mode,
+                                error=request.app.setdefault("battle_init_errors", {}).pop(match_id, "battle_init_failed"),
                                 message="Выбранный режим сейчас недоступен. Попробуйте позже.",
                             )
                             return web.json_response(cancel_payload, status=200)
@@ -7056,14 +9715,17 @@ def create_web_app(
             return web.json_response({"error": "invalid_json"}, status=400)
 
         user_id = await require_user_id_from_payload(request, data)
-        difficulty = data.get("difficulty", "medium")
+        from infrastructure.config import BOT_DIFFICULTY_ALIASES, BOT_DIFFICULTY_PROFILES
+
+        difficulty = str(data.get("difficulty", "medium") or "medium")
+        difficulty = BOT_DIFFICULTY_ALIASES.get(difficulty, difficulty)
         selected_deck_id = data.get("selected_deck_id") or data.get("deck_id")
         raw_game_mode = data.get("game_mode") or data.get("mode") or "classic"
         db_instance: Database = request.app["db"]
 
-        valid_difficulties = ("lite", "easy", "medium", "hard", "max")
+        valid_difficulties = tuple(BOT_DIFFICULTY_PROFILES.keys())
         if difficulty not in valid_difficulties:
-            difficulty = "medium"
+            difficulty = BOT_DIFFICULTY_ALIASES.get("medium", "tier_medium_1200")
 
         try:
             user_id = int(user_id)
@@ -7071,6 +9733,10 @@ def create_web_app(
                 selected_deck_id = int(selected_deck_id)
         except (TypeError, ValueError):
             return web.json_response({"error": "invalid_user_id"}, status=400)
+
+        onboarding_state = await db_instance.get_onboarding_state(user_id)
+        if not onboarding_state.get("completed"):
+            return web.json_response(_onboarding_gate_payload(onboarding_state), status=403)
 
         selected_deck_id = await _resolve_match_deck_id(db_instance, user_id, selected_deck_id)
         profile = await _load_authoritative_match_profile(db_instance, user_id)
@@ -7090,9 +9756,6 @@ def create_web_app(
         # Backend-источник истины: max уровень колоды и трофеи из БД
         user_max_level = await db_instance.get_player_deck_max_level(user_id, selected_deck_id)
 
-        # Per-card уровни по выбранной difficulty
-        from ai.bot_factory import BotGenerator as _BG
-
         logger = logging.getLogger(__name__)
         logger.info(
             "match_vs_bot_handler: user_id=%s trophies=%s max_level=%s difficulty=%s",
@@ -7107,17 +9770,8 @@ def create_web_app(
                 user_max_level=user_max_level,
                 selected_deck_id=selected_deck_id,
                 game_mode=game_mode,
+                difficulty_override=difficulty,
             )
-            # Override difficulty + per-card levels
-            bot_deck_ids = result.get("bot_info", {}).get("deck_ids", [])
-            card_levels = _BG._build_bot_card_levels(difficulty, user_max_level, len(bot_deck_ids))
-            difficulty_meta = _BG._difficulty_metadata(difficulty)
-            if result.get("bot_info"):
-                result["bot_info"]["difficulty"] = difficulty
-                result["bot_info"].update(difficulty_meta)
-                result["bot_info"]["card_levels"] = card_levels
-            else:
-                result["bot_info"] = {"difficulty": difficulty, **difficulty_meta, "card_levels": card_levels}
             if game_mode == "training":
                 result["bot_info"] = _decorate_training_bot_info(result.get("bot_info"))
 
@@ -7310,23 +9964,30 @@ def create_web_app(
                         or request.app.get("match_game_modes", {}).get(match_id, "")
                         or "classic"
                     )
-                    ok = await asyncio.wait_for(
-                        _prepare_and_cache_engine(
-                            request,
-                            match_id=match_id,
-                            player_ids=player_ids,
-                            is_bot=bool(result.get("is_bot")),
-                            bot_info=bot_info,
-                            player_decks=result.get("player_decks"),
-                            starting_player_id=result.get("starting_player_id"),
-                            game_mode=lazy_game_mode,
-                        ),
-                        timeout=5.0,
-                    )
+                    init_lock = _get_match_init_lock(match_id)
+                    async with init_lock:
+                        if request.app["active_matches"].get(match_id) is not None:
+                            ok = True
+                        else:
+                            ok = await asyncio.wait_for(
+                                _prepare_and_cache_engine(
+                                    request,
+                                    match_id=match_id,
+                                    player_ids=player_ids,
+                                    is_bot=bool(result.get("is_bot")),
+                                    bot_info=bot_info,
+                                    player_decks=result.get("player_decks"),
+                                    starting_player_id=result.get("starting_player_id"),
+                                    game_mode=lazy_game_mode,
+                                    init_lock_held=True,
+                                ),
+                                timeout=5.0,
+                            )
                     if not ok:
                         cancel_payload = await matchmaker.cancel_match(
                             match_id,
                             game_mode=lazy_game_mode,
+                            error=request.app.setdefault("battle_init_errors", {}).pop(match_id, "battle_init_failed"),
                             message="Выбранный режим сейчас недоступен. Попробуйте позже.",
                         )
                         return web.json_response(cancel_payload, status=200)
@@ -7442,22 +10103,22 @@ def create_web_app(
 
     def _decorate_card_image(card_obj: Card) -> Card:
         """
-        Проставляем путь к изображению в DesignAssets/Cards/<id>.png, чтобы
+        Проставляем путь к изображению в DesignAssets/Cards/<id>.<ext>, чтобы
         движок и фронт тянули файлы напрямую из статики, независимо от БД.
         """
         try:
-            card_obj.image_url = f"{CARD_IMAGE_URL_PREFIX}/{card_obj.id}.png"
+            card_obj.image_url = card_asset_url(card_obj.id)
         except Exception:
             # Если по какой-то причине объект не допускает атрибут, тихо продолжаем.
             pass
         return card_obj
 
-    async def _load_card_cache() -> dict[str, Card]:
+    async def _load_card_cache() -> dict[int, dict[str, Any]]:
         """
-        Загружаем полный каталог карт и приводим к dict[str, Card].
+        Загружаем полный каталог карт и приводим к dict[int, dict].
         Нужен для BattleEngine, чтобы сразу возвращать названия и статы.
         """
-        cache: dict[str, Card] = {}
+        cache: dict[int, dict[str, Any]] = {}
         try:
             cards = await db.get_cards_list()
         except Exception as exc:  # noqa: BLE001
@@ -7469,18 +10130,23 @@ def create_web_app(
                 card_obj = entry if isinstance(entry, Card) else Card.from_row(entry)
                 # Прописываем url картинки, чтобы дальше в бою приходила статика из DesignAssets.
                 card_obj = _decorate_card_image(card_obj)
-                cache[str(card_obj.id)] = card_obj
+                cache[int(card_obj.id)] = card_obj.to_dict()
             except Exception as exc:  # noqa: BLE001
                 logging.getLogger(__name__).debug("Пропущена карта при построении кеша: %s", exc)
         return cache
 
-    def _normalize_deck_with_cache(deck_ids: list[Any], card_cache: dict[str, Card]) -> list[str]:
+    def _normalize_deck_with_cache(
+        deck_ids: list[Any],
+        card_cache: dict[int, dict[str, Any]],
+        *,
+        allow_cache_fallback: bool = True,
+    ) -> list[str]:
         """
         Оставляем только валидные card_id, совпадающие с кешом карт.
         Если валидных карт нет, подбираем первые доступные из кеша.
         """
         normalized: list[str] = []
-        available_ids = set(card_cache.keys())
+        available_ids = {int(cid) for cid in card_cache.keys()}
 
         for raw in deck_ids or []:
             try:
@@ -7496,14 +10162,14 @@ def create_web_app(
                     candidate = str(raw) if raw is not None else None
                 if cid is None or candidate is None:
                     continue
-                if str(cid) in available_ids:
+                if int(cid) in available_ids:
                     normalized.append(candidate)
             except Exception:
                 continue
 
-        if not normalized and available_ids:
+        if not normalized and available_ids and allow_cache_fallback:
             # Подстраховка: выдаем первые 9 карт из кеша, чтобы бой мог стартовать.
-            normalized = list(list(available_ids)[:9])
+            normalized = [str(cid) for cid in list(available_ids)[:9]]
 
         return normalized
 
@@ -7594,6 +10260,153 @@ def create_web_app(
         # Старое поле "hero" игнорируется - герой теперь часть колоды
         return deck_ids, None
 
+    def _coerce_friend_invite_deck_snapshot(value: Any) -> list[int]:
+        if isinstance(value, str):
+            try:
+                value = _stdlib_json.loads(value)
+            except Exception:
+                value = []
+        if not isinstance(value, (list, tuple)):
+            return []
+        deck_ids: list[int] = []
+        for raw_id in value:
+            try:
+                deck_ids.append(int(str(raw_id).split(":", 1)[0]))
+            except (TypeError, ValueError):
+                return []
+        return deck_ids
+
+    async def _ensure_friendly_match_engine(
+        match_id: str,
+        viewer_id: int | None = None,
+        *,
+        init_lock_held: bool = False,
+    ) -> Any:
+        engine = _get_match_engine(match_id)
+        if engine:
+            return engine
+        if not init_lock_held:
+            init_lock = _get_match_init_lock(match_id)
+            async with init_lock:
+                engine = _get_match_engine(match_id)
+                if engine:
+                    return engine
+                return await _ensure_friendly_match_engine(
+                    match_id,
+                    viewer_id,
+                    init_lock_held=True,
+                )
+        try:
+            viewer_id_int = int(viewer_id) if viewer_id is not None else 0
+        except (TypeError, ValueError):
+            viewer_id_int = 0
+        if not viewer_id_int:
+            return None
+
+        invite = await db.get_friend_invite_by_battle_id_for_user(str(match_id), viewer_id_int)
+        if not invite:
+            return None
+
+        to_user_id = int(invite["to_user_id"])
+        from_user_id = int(invite["from_user_id"])
+        to_deck_int = _coerce_friend_invite_deck_snapshot(invite.get("to_deck_card_ids"))
+        from_deck_int = _coerce_friend_invite_deck_snapshot(invite.get("from_deck_card_ids"))
+
+        if len(to_deck_int) != DECK_SIZE:
+            to_raw_deck, _ = await _load_player_deck_and_hero(
+                to_user_id,
+                invite.get("to_selected_deck_id"),
+            )
+            card_cache_for_to = await _load_card_cache()
+            to_deck_ids = _normalize_deck_with_cache(
+                to_raw_deck or [],
+                card_cache_for_to,
+                allow_cache_fallback=False,
+            )
+            to_deck_int = _coerce_friend_invite_deck_snapshot(to_deck_ids)
+        if len(from_deck_int) != DECK_SIZE:
+            from_raw_deck, _ = await _load_player_deck_and_hero(
+                from_user_id,
+                invite.get("from_selected_deck_id"),
+            )
+            card_cache_for_from = await _load_card_cache()
+            from_deck_ids = _normalize_deck_with_cache(
+                from_raw_deck or [],
+                card_cache_for_from,
+                allow_cache_fallback=False,
+            )
+            from_deck_int = _coerce_friend_invite_deck_snapshot(from_deck_ids)
+
+        if len(to_deck_int) != DECK_SIZE or len(from_deck_int) != DECK_SIZE:
+            logging.getLogger(__name__).warning(
+                "Cannot rehydrate friendly match %s: invalid deck snapshots to=%s from=%s",
+                match_id,
+                len(to_deck_int),
+                len(from_deck_int),
+            )
+            return None
+
+        card_cache = await _load_card_cache()
+        p1_profile = await _resolve_battle_profile(db, to_user_id, fallback_name="Игрок 1")
+        p2_profile = await _resolve_battle_profile(db, from_user_id, fallback_name="Игрок 2")
+        mode_id = str(invite.get("mode_id") or "friendly")
+        engine = BattleEngine(
+            db=db,
+            match_id=match_id,
+            player_ids=[to_user_id, from_user_id],
+            is_bot_match=False,
+            card_cache=card_cache,
+            active_matches=app["active_matches"],
+            event_emitter=app.get("event_emitter"),
+            game_mode=mode_id,
+        )
+        create_result = await engine.create_match(
+            match_id=match_id,
+            p1_data={
+                "user_id": to_user_id,
+                "deck_ids": to_deck_int,
+                "name": p1_profile["name"],
+                "avatar_url": p1_profile["avatar_url"],
+                "is_bot": False,
+                "trophies": p1_profile["trophies"],
+                "clan": p1_profile["clan"],
+	                "title": p1_profile["title"],
+	                "rarity": p1_profile["title_class"],
+	                "extra_pass": p1_profile["extra_pass"],
+	                "nickname_glow_disabled": p1_profile.get("nickname_glow_disabled", False),
+	                "hide_player_id_public": p1_profile.get("hide_player_id_public", False),
+	                "background_url": p1_profile["background_url"],
+            },
+            p2_data={
+                "user_id": from_user_id,
+                "deck_ids": from_deck_int,
+                "name": p2_profile["name"],
+                "avatar_url": p2_profile["avatar_url"],
+                "is_bot": False,
+                "trophies": p2_profile["trophies"],
+                "clan": p2_profile["clan"],
+	                "title": p2_profile["title"],
+	                "rarity": p2_profile["title_class"],
+	                "extra_pass": p2_profile["extra_pass"],
+	                "nickname_glow_disabled": p2_profile.get("nickname_glow_disabled", False),
+	                "hide_player_id_public": p2_profile.get("hide_player_id_public", False),
+	                "background_url": p2_profile["background_url"],
+            },
+        )
+        if not create_result.get("success"):
+            app["active_matches"].pop(match_id, None)
+            logging.getLogger(__name__).warning(
+                "Cannot rehydrate friendly match %s: %s",
+                match_id,
+                create_result.get("error"),
+            )
+            return None
+        app["active_matches"][match_id] = engine
+        app["match_game_modes"][match_id] = getattr(engine, "game_mode", mode_id)
+        return engine
+
+    app["ensure_friendly_match_engine"] = _ensure_friendly_match_engine
+
     async def battle_state_handler(request: web.Request) -> web.Response:
         """Вернуть актуальное состояние боя из кешированного движка."""
         match_id = request.rel_url.query.get("match_id") or request.rel_url.query.get("id")
@@ -7602,6 +10415,53 @@ def create_web_app(
 
         viewer_id = await require_user_id(request)
         engine = _get_match_engine(match_id)
+        try:
+            fallback_tutorial_match = tutorial_match_id_for_user(int(viewer_id))
+            if str(match_id) == fallback_tutorial_match:
+                await _ensure_onboarding_user(int(viewer_id))
+            onboarding_state = await db.get_onboarding_state(int(viewer_id))
+            expected_tutorial_match = str(onboarding_state.get("tutorial_match_id") or fallback_tutorial_match)
+            if str(match_id) == expected_tutorial_match:
+                if onboarding_state.get("status") not in (
+                    ONBOARDING_STATUS_TUTORIAL_BATTLE,
+                    ONBOARDING_STATUS_MENU_TOUR,
+                    ONBOARDING_STATUS_COMPLETED,
+                ):
+                    onboarding_state = await db.set_onboarding_state(
+                        int(viewer_id),
+                        status=ONBOARDING_STATUS_TUTORIAL_BATTLE,
+                        current_step=ONBOARDING_STATUS_TUTORIAL_BATTLE,
+                        tutorial_step=0,
+                        tutorial_match_id=expected_tutorial_match,
+                    )
+                if onboarding_state.get("status") == ONBOARDING_STATUS_TUTORIAL_BATTLE:
+                    engine = await _ensure_tutorial_engine_for_user(request, int(viewer_id), onboarding_state)
+                    request.app["match_game_modes"][str(match_id)] = "tutorial"
+                elif not onboarding_state.get("completed"):
+                    return web.json_response(_onboarding_gate_payload(onboarding_state), status=403)
+            elif not onboarding_state.get("completed"):
+                return web.json_response(_onboarding_gate_payload(onboarding_state), status=403)
+            if _is_onboarding_tutorial_engine(engine):
+                request.app["match_game_modes"][str(match_id)] = "tutorial"
+        except web.HTTPException:
+            raise
+        except Exception:
+            logging.getLogger(__name__).debug("battle_state_handler onboarding check failed", exc_info=True)
+        if not engine:
+            try:
+                engine = await asyncio.wait_for(
+                    _ensure_friendly_match_engine(match_id, viewer_id),
+                    timeout=5.0,
+                )
+            except asyncio.TimeoutError:
+                return web.json_response({"error": "battle_init_timeout"}, status=504)
+            except Exception as exc:
+                logging.getLogger(__name__).warning(
+                    "battle_state_handler: failed to rehydrate friendly match %s: %s",
+                    match_id,
+                    exc,
+                    exc_info=True,
+                )
         if not engine:
             # Попытка ленивой инициализации боя, если матч уже найден матчмейкером.
             try:
@@ -7630,25 +10490,32 @@ def create_web_app(
                         or request.app.get("match_game_modes", {}).get(match_id, "")
                         or "classic"
                     )
-                    ok = await asyncio.wait_for(
-                        _prepare_and_cache_engine(
-                            request,
-                            match_id=match_id,
-                            player_ids=player_ids,
-                            is_bot=bool(status.get("is_bot")),
-                            bot_info=bot_info,
-                            player_decks=status.get("player_decks"),
-                            starting_player_id=status.get("starting_player_id"),
-                            game_mode=lazy_game_mode,
-                        ),
-                        timeout=5.0,
-                    )
+                    init_lock = _get_match_init_lock(match_id)
+                    async with init_lock:
+                        if request.app["active_matches"].get(match_id) is not None:
+                            ok = True
+                        else:
+                            ok = await asyncio.wait_for(
+                                _prepare_and_cache_engine(
+                                    request,
+                                    match_id=match_id,
+                                    player_ids=player_ids,
+                                    is_bot=bool(status.get("is_bot")),
+                                    bot_info=bot_info,
+                                    player_decks=status.get("player_decks"),
+                                    starting_player_id=status.get("starting_player_id"),
+                                    game_mode=lazy_game_mode,
+                                    init_lock_held=True,
+                                ),
+                                timeout=5.0,
+                            )
                     if ok:
                         engine = _get_match_engine(match_id)
                     else:
                         cancel_payload = await matchmaker.cancel_match(
                             match_id,
                             game_mode=lazy_game_mode,
+                            error=request.app.setdefault("battle_init_errors", {}).pop(match_id, "battle_init_failed"),
                             message="Выбранный режим сейчас недоступен. Попробуйте позже.",
                         )
                         return web.json_response(cancel_payload, status=200)
@@ -7667,7 +10534,12 @@ def create_web_app(
 
         try:
             _verify_participant(engine, viewer_id)
-            await _handle_natural_turn_timeout(request.app, str(match_id), engine)
+            restored_disconnected_viewer = False
+            if viewer_id is not None and _is_player_disconnected(str(match_id), int(viewer_id)):
+                _mark_user_activity_for_match(str(match_id), int(viewer_id), engine)
+                restored_disconnected_viewer = True
+            if not restored_disconnected_viewer:
+                await _handle_natural_turn_timeout(request.app, str(match_id), engine)
 
             if hasattr(engine, "get_full_state"):
                 state = engine.get_full_state(viewer_id=viewer_id)
@@ -7707,24 +10579,35 @@ def create_web_app(
             return web.json_response({"active": False})
 
         user_id_int = int(user_id)
-        for active_match_id, engine in list(request.app["active_matches"].items()):
-            if getattr(engine, "is_ended", False):
-                continue
-            p1_uid = getattr(engine.p1_state, "user_id", None)
-            p2_uid = getattr(engine.p2_state, "user_id", None)
-            if user_id_int not in (p1_uid, p2_uid):
-                continue
+        try:
+            onboarding_state = await db.get_onboarding_state(user_id_int)
+            if onboarding_state.get("status") == ONBOARDING_STATUS_TUTORIAL_BATTLE:
+                match_id = str(onboarding_state.get("tutorial_match_id") or tutorial_match_id_for_user(user_id_int))
+                if request.app["active_matches"].get(match_id) is None:
+                    engine = TutorialBattleEngine(
+                        user_id=user_id_int,
+                        tutorial_step=int(onboarding_state.get("tutorial_step") or 0),
+                        db=db,
+                        active_matches=request.app["active_matches"],
+                    )
+                    request.app["active_matches"][match_id] = engine
+                    request.app["match_game_modes"][match_id] = "tutorial"
+                return web.json_response({
+                    "active": True,
+                    "match_id": match_id,
+                    "game_mode": "tutorial",
+                    "current_player_id": user_id_int,
+                    "replacement_status": "active",
+                    "redirect_url": f"/arena?id={match_id}&onboarding=1",
+                    "onboarding": _build_onboarding_payload(onboarding_state),
+                })
+        except Exception:
+            logging.getLogger(__name__).debug("battle_active_handler onboarding check failed", exc_info=True)
 
-            status = _player_replacement_status(engine, user_id_int)
-            game_mode = _resolve_match_game_mode(request.app, str(active_match_id), engine)
-            return web.json_response({
-                "active": True,
-                "match_id": str(active_match_id),
-                "game_mode": game_mode,
-                "current_player_id": engine.get_current_player_id() if hasattr(engine, "get_current_player_id") else None,
-                "replacement_status": getattr(status, "value", str(status)),
-                "redirect_url": f"/arena?id={active_match_id}",
-            })
+        active_payload = _active_match_payload_for_user(request.app, user_id_int)
+        if active_payload is not None:
+            active_payload.pop("status", None)
+            return web.json_response(active_payload)
 
         matchmaker = request.app.get("matchmaker")
         if matchmaker and hasattr(matchmaker, "get_active_match_for_user"):
@@ -7745,6 +10628,10 @@ def create_web_app(
                 if existing_engine is not None and getattr(existing_engine, "is_ended", False):
                     _mark_match_ended(match_id)
                     return web.json_response({"active": False})
+                if existing_engine is not None:
+                    existing_status = _player_replacement_status(existing_engine, user_id_int)
+                    if getattr(existing_status, "value", str(existing_status)) == "surrendered":
+                        return web.json_response({"active": False})
                 return web.json_response({
                     "active": True,
                     "match_id": match_id,
@@ -7789,6 +10676,8 @@ def create_web_app(
 
         if not match_id or raw_card_id is None or user_id_int is None:
             return web.json_response({"error": "invalid_parameters"}, status=400)
+        if not client_action_id:
+            return _client_action_id_required_response()
         cached_action = _action_cache_get(match_id, user_id_int, client_action_id)
         if cached_action:
             return web.json_response(cached_action["payload"], status=cached_action["status"])
@@ -7799,12 +10688,48 @@ def create_web_app(
             board_position = 0
 
         engine = _get_match_engine(match_id)
+        if not engine and str(match_id) == tutorial_match_id_for_user(int(user_id_int)):
+            await _ensure_onboarding_user(int(user_id_int))
+            onboarding_state = await db.get_onboarding_state(int(user_id_int))
+            if onboarding_state.get("status") not in (
+                ONBOARDING_STATUS_TUTORIAL_BATTLE,
+                ONBOARDING_STATUS_MENU_TOUR,
+                ONBOARDING_STATUS_COMPLETED,
+            ):
+                onboarding_state = await db.set_onboarding_state(
+                    int(user_id_int),
+                    status=ONBOARDING_STATUS_TUTORIAL_BATTLE,
+                    current_step=ONBOARDING_STATUS_TUTORIAL_BATTLE,
+                    tutorial_step=int(onboarding_state.get("tutorial_step") or 0),
+                    tutorial_match_id=str(match_id),
+                )
+            if onboarding_state.get("status") == ONBOARDING_STATUS_TUTORIAL_BATTLE:
+                engine = await _ensure_tutorial_engine_for_user(request, int(user_id_int), onboarding_state)
         if not engine:
             if _is_finished_match(match_id):
                 return web.json_response(_build_finished_match_action_payload(match_id))
             return web.json_response({"error": "match_not_found"}, status=404)
 
         _verify_participant(engine, user_id_int)
+        if _is_onboarding_tutorial_engine(engine):
+            return await _handle_onboarding_tutorial_action(
+                request,
+                match_id=match_id,
+                engine=engine,
+                user_id=int(user_id_int),
+                client_action_id=client_action_id,
+                action={
+                    "type": "play_card",
+                    "hand_index": payload.get("hand_index") if payload.get("hand_index") is not None else raw_card_id,
+                    "card_id": payload.get("card_id"),
+                    "target_id": target_id,
+                    "target_is_hero": bool(target_is_hero),
+                },
+            )
+        if hasattr(db, "get_onboarding_state"):
+            onboarding_state = await db.get_onboarding_state(int(user_id_int))
+            if not onboarding_state.get("completed"):
+                return web.json_response(_onboarding_gate_payload(onboarding_state), status=403)
         if _is_finished_match(match_id, engine):
             payload_out = _build_finished_match_action_payload(match_id, engine, user_id_int)
             _action_cache_set(match_id, user_id_int, client_action_id, payload_out)
@@ -7813,9 +10738,28 @@ def create_web_app(
         lock = _get_match_lock(match_id)
         async with lock:
             try:
+                cached_action = _action_cache_get(match_id, user_id_int, client_action_id)
+                if cached_action:
+                    return web.json_response(cached_action["payload"], status=cached_action["status"])
+
+                finished_payload, finished_status = await _terminal_action_payload_if_needed(
+                    request.app,
+                    match_id,
+                    engine,
+                    user_id_int,
+                    reason="http_play_card_retry",
+                )
+                if finished_payload is not None:
+                    _action_cache_set(match_id, user_id_int, client_action_id, finished_payload, status=finished_status)
+                    return web.json_response(finished_payload, status=finished_status)
+
                 not_ready_response = _match_not_ready_response(match_id, engine, int(user_id_int))
                 if not_ready_response is not None:
                     return not_ready_response
+
+                surrendered_response = _surrendered_action_response(engine, int(user_id_int))
+                if surrendered_response is not None:
+                    return surrendered_response
 
                 expired_response = await _auto_end_expired_turn_response(
                     request.app,
@@ -7823,6 +10767,7 @@ def create_web_app(
                     engine,
                     int(user_id_int),
                     client_action_id,
+                    lock_already_held=True,
                 )
                 if expired_response is not None:
                     return expired_response
@@ -7900,7 +10845,7 @@ def create_web_app(
                 if not result.get("game_over"):
                     await trigger_bot_move(match_id)
 
-                payload_out = {"result": result, "state": state}
+                payload_out = {"result": result, "state": state, "sound_events": result.get("sound_events", [])}
                 _action_cache_set(match_id, user_id_int, client_action_id, payload_out)
                 return web.json_response(payload_out)
             except Exception as exc:
@@ -7925,17 +10870,54 @@ def create_web_app(
 
         if not match_id or attacker_id is None or user_id_int is None:
             return web.json_response({"error": "invalid_parameters"}, status=400)
+        if not client_action_id:
+            return _client_action_id_required_response()
         cached_action = _action_cache_get(match_id, user_id_int, client_action_id)
         if cached_action:
             return web.json_response(cached_action["payload"], status=cached_action["status"])
 
         engine = _get_match_engine(match_id)
+        if not engine and str(match_id) == tutorial_match_id_for_user(int(user_id_int)):
+            await _ensure_onboarding_user(int(user_id_int))
+            onboarding_state = await db.get_onboarding_state(int(user_id_int))
+            if onboarding_state.get("status") not in (
+                ONBOARDING_STATUS_TUTORIAL_BATTLE,
+                ONBOARDING_STATUS_MENU_TOUR,
+                ONBOARDING_STATUS_COMPLETED,
+            ):
+                onboarding_state = await db.set_onboarding_state(
+                    int(user_id_int),
+                    status=ONBOARDING_STATUS_TUTORIAL_BATTLE,
+                    current_step=ONBOARDING_STATUS_TUTORIAL_BATTLE,
+                    tutorial_step=int(onboarding_state.get("tutorial_step") or 0),
+                    tutorial_match_id=str(match_id),
+                )
+            if onboarding_state.get("status") == ONBOARDING_STATUS_TUTORIAL_BATTLE:
+                engine = await _ensure_tutorial_engine_for_user(request, int(user_id_int), onboarding_state)
         if not engine:
             if _is_finished_match(match_id):
                 return web.json_response(_build_finished_match_action_payload(match_id))
             return web.json_response({"error": "match_not_found"}, status=404)
 
         _verify_participant(engine, user_id_int)
+        if _is_onboarding_tutorial_engine(engine):
+            return await _handle_onboarding_tutorial_action(
+                request,
+                match_id=match_id,
+                engine=engine,
+                user_id=int(user_id_int),
+                client_action_id=client_action_id,
+                action={
+                    "type": "attack",
+                    "attacker_id": attacker_id,
+                    "target_id": target_id,
+                    "target_is_hero": target_is_hero,
+                },
+            )
+        if hasattr(db, "get_onboarding_state"):
+            onboarding_state = await db.get_onboarding_state(int(user_id_int))
+            if not onboarding_state.get("completed"):
+                return web.json_response(_onboarding_gate_payload(onboarding_state), status=403)
         if _is_finished_match(match_id, engine):
             payload_out = _build_finished_match_action_payload(match_id, engine, user_id_int)
             _action_cache_set(match_id, user_id_int, client_action_id, payload_out)
@@ -7948,9 +10930,28 @@ def create_web_app(
         lock = _get_match_lock(match_id)
         async with lock:
             try:
+                cached_action = _action_cache_get(match_id, user_id_int, client_action_id)
+                if cached_action:
+                    return web.json_response(cached_action["payload"], status=cached_action["status"])
+
+                finished_payload, finished_status = await _terminal_action_payload_if_needed(
+                    request.app,
+                    match_id,
+                    engine,
+                    user_id_int,
+                    reason="http_attack_retry",
+                )
+                if finished_payload is not None:
+                    _action_cache_set(match_id, user_id_int, client_action_id, finished_payload, status=finished_status)
+                    return web.json_response(finished_payload, status=finished_status)
+
                 not_ready_response = _match_not_ready_response(match_id, engine, int(user_id_int))
                 if not_ready_response is not None:
                     return not_ready_response
+
+                surrendered_response = _surrendered_action_response(engine, int(user_id_int))
+                if surrendered_response is not None:
+                    return surrendered_response
 
                 expired_response = await _auto_end_expired_turn_response(
                     request.app,
@@ -7958,6 +10959,7 @@ def create_web_app(
                     engine,
                     int(user_id_int),
                     client_action_id,
+                    lock_already_held=True,
                 )
                 if expired_response is not None:
                     return expired_response
@@ -8033,12 +11035,12 @@ def create_web_app(
                 if not result.get("game_over"):
                     await trigger_bot_move(match_id)
 
-                payload_out = {"result": result, "state": state}
+                payload_out = {"result": result, "state": state, "sound_events": result.get("sound_events", [])}
                 _action_cache_set(match_id, user_id_int, client_action_id, payload_out)
                 return web.json_response(payload_out)
             except Exception as exc:
                 logger.warning("Ошибка атаки в матче %s: %s", match_id, exc, exc_info=True)
-                return web.json_response({"error": "attack_failed", "details": str(exc)}, status=400)
+                return web.json_response({"error": "attack_failed", "message": "Attack failed"}, status=400)
 
     # calculate_trophy_delta и calculate_coins_reward вынесены на уровень модуля
 
@@ -8066,32 +11068,96 @@ def create_web_app(
         if user_id_int is None:
             return web.json_response({"error": "user_id_required"}, status=400)
         client_action_id = _client_action_id(payload)
+        if not client_action_id:
+            return _client_action_id_required_response()
         cached_action = _action_cache_get(match_id, user_id_int, client_action_id)
         if cached_action:
             return web.json_response(cached_action["payload"], status=cached_action["status"])
 
         engine = _get_match_engine(match_id)
         if not engine:
+            if _is_finished_match(match_id):
+                payload_out = _build_finished_match_action_payload(match_id)
+                _action_cache_set(match_id, user_id_int, client_action_id, payload_out)
+                return web.json_response(payload_out)
             return web.json_response({"error": "match_not_found"}, status=404)
 
         _verify_participant(engine, user_id_int)
+        if _is_onboarding_tutorial_engine(engine):
+            payload_out = {
+                "error": "onboarding_tutorial_required",
+                "result": {
+                    "success": False,
+                    "error": "tutorial_wrong_action",
+                    "feedback": "Этот бой учебный. Действуем по плану.",
+                },
+                "state": engine.get_full_state(viewer_id=user_id_int),
+            }
+            _action_cache_set(match_id, user_id_int, client_action_id, payload_out, status=409)
+            return web.json_response(payload_out, status=409)
+        if hasattr(db, "get_onboarding_state"):
+            onboarding_state = await db.get_onboarding_state(int(user_id_int))
+            if not onboarding_state.get("completed"):
+                return web.json_response(_onboarding_gate_payload(onboarding_state), status=403)
 
+        should_run_bot = False
+        pve_surrender_finished = False
         lock = _get_match_lock(match_id)
         async with lock:
+            cached_action = _action_cache_get(match_id, user_id_int, client_action_id)
+            if cached_action:
+                return web.json_response(cached_action["payload"], status=cached_action["status"])
+
+            finished_payload, finished_status = await _terminal_action_payload_if_needed(
+                request.app,
+                match_id,
+                engine,
+                user_id_int,
+                reason="http_surrender_retry",
+            )
+            if finished_payload is not None:
+                _action_cache_set(match_id, user_id_int, client_action_id, finished_payload, status=finished_status)
+                return web.json_response(finished_payload, status=finished_status)
+
+            if _is_finished_match(match_id, engine):
+                payload_out = _build_finished_match_action_payload(match_id, engine, user_id_int)
+                _action_cache_set(match_id, user_id_int, client_action_id, payload_out)
+                return web.json_response(payload_out)
+
             engine.mark_surrender(user_id_int)
 
-        penalty_result = await _apply_surrender_penalty_once(request.app, match_id, engine, user_id_int)
-        if not penalty_result.get("success"):
-            payload_out = {"error": penalty_result.get("error", "surrender_failed")}
-            status = int(penalty_result.get("status", 500) or 500)
-            _action_cache_set(match_id, user_id_int, client_action_id, payload_out, status=status)
-            return web.json_response(payload_out, status=status)
+            penalty_result = await _apply_surrender_penalty_once(request.app, match_id, engine, user_id_int)
+            if not penalty_result.get("success"):
+                payload_out = {"error": penalty_result.get("error", "surrender_failed")}
+                status = int(penalty_result.get("status", 500) or 500)
+                _action_cache_set(match_id, user_id_int, client_action_id, payload_out, status=status)
+                return web.json_response(payload_out, status=status)
 
-        game_over_result = engine.check_game_over()
+            if _is_single_human_bot_match(engine, user_id_int):
+                await _terminate_match_without_rewards(
+                    match_id,
+                    request.app.get("active_matches", ACTIVE_MATCHES),
+                    reason="human_surrendered_pve",
+                    message="Матч завершён: игрок сдался в бою против бота",
+                )
+                await _mark_matchmaker_finished(request.app, match_id)
+                game_over_result = {
+                    "game_over": True,
+                    "winner_id": None,
+                    "reason": "human_surrendered_pve",
+                }
+                pve_surrender_finished = True
+            else:
+                game_over_result = engine.check_game_over()
 
-        if game_over_result.get("game_over"):
+                if game_over_result.get("game_over"):
+                    winner_id = game_over_result.get("winner_id")
+                    await _finalize_terminal_match_if_needed(request.app, match_id, engine, reason="http_surrender")
+                else:
+                    should_run_bot = engine.current_player_id == user_id_int
+
+        if game_over_result.get("game_over") and not pve_surrender_finished:
             winner_id = game_over_result.get("winner_id")
-            await _process_battle_end(request.app, match_id, engine, winner_id)
             sio_inst = request.app.get("socketio")
             if sio_inst:
                 await sio_inst.emit(
@@ -8100,7 +11166,7 @@ def create_web_app(
                     room=match_id,
                 )
 
-        if not game_over_result.get("game_over") and engine.current_player_id == user_id_int:
+        if should_run_bot:
             await check_and_run_bot(match_id, ACTIVE_MATCHES)
 
         current_state = engine.get_full_state(viewer_id=user_id_int)
@@ -8112,7 +11178,8 @@ def create_web_app(
             "trophy_penalty": penalty_result.get("trophy_penalty", 0),
             "new_trophies": penalty_result.get("new_trophies", 0),
             "state": current_state,
-            "game_over": game_over_result.get("game_over", False)
+            "game_over": game_over_result.get("game_over", False),
+            "reason": game_over_result.get("reason"),
         }
         _action_cache_set(match_id, user_id_int, client_action_id, payload_out)
         return web.json_response(payload_out)
@@ -8132,17 +11199,49 @@ def create_web_app(
         if user_id_int is None:
             return web.json_response({"error": "user_id_required"}, status=400)
         client_action_id = _client_action_id(payload)
+        if not client_action_id:
+            return _client_action_id_required_response()
         cached_action = _action_cache_get(match_id, user_id_int, client_action_id)
         if cached_action:
             return web.json_response(cached_action["payload"], status=cached_action["status"])
 
         engine = _get_match_engine(match_id)
+        if not engine and str(match_id) == tutorial_match_id_for_user(int(user_id_int)):
+            await _ensure_onboarding_user(int(user_id_int))
+            onboarding_state = await db.get_onboarding_state(int(user_id_int))
+            if onboarding_state.get("status") not in (
+                ONBOARDING_STATUS_TUTORIAL_BATTLE,
+                ONBOARDING_STATUS_MENU_TOUR,
+                ONBOARDING_STATUS_COMPLETED,
+            ):
+                onboarding_state = await db.set_onboarding_state(
+                    int(user_id_int),
+                    status=ONBOARDING_STATUS_TUTORIAL_BATTLE,
+                    current_step=ONBOARDING_STATUS_TUTORIAL_BATTLE,
+                    tutorial_step=int(onboarding_state.get("tutorial_step") or 0),
+                    tutorial_match_id=str(match_id),
+                )
+            if onboarding_state.get("status") == ONBOARDING_STATUS_TUTORIAL_BATTLE:
+                engine = await _ensure_tutorial_engine_for_user(request, int(user_id_int), onboarding_state)
         if not engine:
             if _is_finished_match(match_id):
                 return web.json_response(_build_finished_match_action_payload(match_id))
             return web.json_response({"error": "match_not_found"}, status=404)
 
         _verify_participant(engine, user_id_int)
+        if _is_onboarding_tutorial_engine(engine):
+            return await _handle_onboarding_tutorial_action(
+                request,
+                match_id=match_id,
+                engine=engine,
+                user_id=int(user_id_int),
+                client_action_id=client_action_id,
+                action={"type": "end_turn"},
+            )
+        if hasattr(db, "get_onboarding_state"):
+            onboarding_state = await db.get_onboarding_state(int(user_id_int))
+            if not onboarding_state.get("completed"):
+                return web.json_response(_onboarding_gate_payload(onboarding_state), status=403)
         if _is_finished_match(match_id, engine):
             payload_out = _build_finished_match_action_payload(match_id, engine, user_id_int)
             _action_cache_set(match_id, user_id_int, client_action_id, payload_out)
@@ -8154,9 +11253,28 @@ def create_web_app(
         lock = _get_match_lock(match_id)
         async with lock:
             try:
+                cached_action = _action_cache_get(match_id, user_id_int, client_action_id)
+                if cached_action:
+                    return web.json_response(cached_action["payload"], status=cached_action["status"])
+
+                finished_payload, finished_status = await _terminal_action_payload_if_needed(
+                    request.app,
+                    match_id,
+                    engine,
+                    user_id_int,
+                    reason="http_end_turn_retry",
+                )
+                if finished_payload is not None:
+                    _action_cache_set(match_id, user_id_int, client_action_id, finished_payload, status=finished_status)
+                    return web.json_response(finished_payload, status=finished_status)
+
                 not_ready_response = _match_not_ready_response(match_id, engine, int(user_id_int))
                 if not_ready_response is not None:
                     return not_ready_response
+
+                surrendered_response = _surrendered_action_response(engine, int(user_id_int))
+                if surrendered_response is not None:
+                    return surrendered_response
 
                 expired_response = await _auto_end_expired_turn_response(
                     request.app,
@@ -8164,6 +11282,7 @@ def create_web_app(
                     engine,
                     int(user_id_int),
                     client_action_id,
+                    lock_already_held=True,
                 )
                 if expired_response is not None:
                     return expired_response
@@ -8180,15 +11299,34 @@ def create_web_app(
                     status = _action_failure_status(result)
                     _action_cache_set(match_id, user_id_int, client_action_id, payload_out, status=status)
                     return web.json_response(payload_out, status=status)
+                terminal_result = await _finalize_terminal_match_if_needed(
+                    request.app,
+                    str(match_id),
+                    engine,
+                    reason="http_end_turn",
+                )
+                if terminal_result:
+                    result["game_over"] = True
+                    result["winner"] = terminal_result.get("winner_id")
+                    result["winner_id"] = terminal_result.get("winner_id")
                 logger.info("turn_end_handler: success, current_player=%s", engine.get_current_player_id())
             except Exception as exc:
                 logger.warning("Ошибка завершения хода для матча %s: %s", match_id, exc, exc_info=True)
-                return web.json_response({"error": "turn_end_failed", "details": str(exc)}, status=400)
+                return web.json_response({"error": "turn_end_failed", "message": "Turn end failed"}, status=400)
 
-        try:
-            await check_and_run_bot(match_id, ACTIVE_MATCHES)
-        except Exception as exc:
-            logger.warning("Не удалось запустить проверку бота: %s", exc, exc_info=True)
+        if not result.get("game_over"):
+            try:
+                await check_and_run_bot(match_id, ACTIVE_MATCHES)
+            except Exception as exc:
+                logger.warning("Не удалось запустить проверку бота: %s", exc, exc_info=True)
+        else:
+            sio_inst = request.app.get("socketio")
+            if sio_inst:
+                await sio_inst.emit(
+                    "game_over",
+                    _build_game_over_payload(engine, result.get("winner_id", result.get("winner")), reason="end_turn"),
+                    room=str(match_id),
+                )
 
         state = engine.get_full_state(viewer_id=user_id_int)
 
@@ -8250,18 +11388,20 @@ def create_web_app(
                 return web.json_response({"error": "unknown_action_type"}, status=400)
         except Exception as exc:
             logger.warning("Ошибка парсинга действия: %s", exc, exc_info=True)
-            return web.json_response({"error": "invalid_action_format", "details": str(exc)}, status=400)
+            return web.json_response({"error": "invalid_action_format", "message": "Invalid action format"}, status=400)
 
         try:
             preview_delta = engine.get_preview_delta(action)
             return web.json_response({"success": True, "preview_data": preview_delta})
         except Exception as exc:
             logger.warning("Ошибка получения предпросмотра: %s", exc, exc_info=True)
-            return web.json_response({"error": "preview_failed", "details": str(exc)}, status=400)
+            return web.json_response({"error": "preview_failed", "message": "Preview failed"}, status=400)
 
     # ========== Регистрация роутов ==========
 
     app.router.add_get("/health", health_check)
+    app.router.add_get("/ready", readiness_check)
+    app.router.add_get("/favicon.ico", favicon_handler)
     app.router.add_get("/", index)
 
     # === СТАТИКА: РАЗДАЕМ РЕСУРСЫ КАРТ (ДОЛЖНО БЫТЬ В НАЧАЛЕ) ===
@@ -8274,6 +11414,13 @@ def create_web_app(
         logging.getLogger(__name__).info("✅ Static route added: /DesignAssets/ -> %s", design_assets_path)
     else:
         logging.getLogger(__name__).error("❌ DesignAssets directory NOT FOUND at: %s", design_assets_path)
+
+    audio_characters_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "assets", "audio", "characters"))
+    if os.path.exists(audio_characters_path):
+        app.router.add_static("/assets/audio/characters/", path=audio_characters_path, name="audio_characters")
+        logging.getLogger(__name__).info("✅ Static route added: /assets/audio/characters/ -> %s", audio_characters_path)
+    else:
+        logging.getLogger(__name__).warning("⚠️ Character audio directory NOT FOUND at: %s", audio_characters_path)
 
     # Отдельная HTML-страница боя; /arena - основной путь редиректа из фронтенда
     app.router.add_get("/arena", battle_page_handler)   # основной маршрут для UI арены
@@ -8304,6 +11451,16 @@ def create_web_app(
     app.router.add_get("/api/cosmetics/owned",  cosmetics_owned_handler)
     app.router.add_post("/api/cosmetics/equip", cosmetics_equip_handler)
     app.router.add_post("/api/promocode/use", promocode_use_handler)
+    app.router.add_post("/api/admin/session", admin_session_handler)
+    register_admin_mcp_routes(app, require_user_id=require_user_id, is_admin_user=_is_admin_user)
+    if support_service is not None:
+        register_support_routes(
+            app,
+            support_service,
+            admin_secret=settings.admin_session_secret,
+            admin_channel_id=str(settings.support_max_admin_id or settings.support_telegram_admin_id or "support-admin"),
+            max_webhook_secret=settings.support_max_webhook_secret,
+        )
     app.router.add_post("/api/admin/promocodes/create", promocode_create_handler)
     app.router.add_get("/api/admin/promocodes/list", promocode_list_handler)
     app.router.add_post("/api/admin/promocodes/delete", promocode_delete_handler)
@@ -8327,7 +11484,10 @@ def create_web_app(
     app.router.add_post("/api/cases/skip", case_skip_handler)
     app.router.add_post("/api/cases/roll-from-keys", case_roll_from_keys_handler)
     app.router.add_post("/api/cases/open-from-keys", case_open_from_keys_handler)
-    app.router.add_post("/api/debug/add-key", debug_add_key_handler)
+    app.router.add_post("/api/cases/reroll-from-keys", case_reroll_from_keys_handler)
+    app.router.add_post("/api/cases/open-reroll-from-keys", case_open_reroll_from_keys_handler)
+    app.router.add_post("/api/cases/claim-from-keys", case_claim_from_keys_handler)
+    app.router.add_post("/api/admin/debug/add-key", debug_add_key_handler)
     app.router.add_post("/api/admin/cards/get-all", admin_get_all_cards_handler)
     app.router.add_post("/api/admin/cards/delete-all", admin_delete_all_cards_handler)
     app.router.add_post("/api/cards/upgrade", card_upgrade_handler)
@@ -8437,9 +11597,11 @@ def create_web_app(
         if not await _is_admin_user(db, user_id):
             return web.json_response({"error": "admin_access_required"}, status=403)
         try:
-            days = int(request.rel_url.query.get("days", "7"))
+            days = _admin_int_query(request, "days", 7, min_value=1, max_value=365)
             data = await db.get_admin_analytics_overview(days=days)
             return web.json_response({"status": "ok", "data": data})
+        except AdminInputError as e:
+            return _admin_json_error(e.error, status=e.status)
         except Exception as e:
             logging.getLogger(__name__).error("analytics_overview error: %s", e, exc_info=True)
             return web.json_response({"error": str(e)}, status=500)
@@ -8449,9 +11611,11 @@ def create_web_app(
         if not await _is_admin_user(db, user_id):
             return web.json_response({"error": "admin_access_required"}, status=403)
         try:
-            days = int(request.rel_url.query.get("days", "30"))
+            days = _admin_int_query(request, "days", 30, min_value=1, max_value=365)
             data = await db.get_admin_revenue_analytics(days=days)
             return web.json_response({"status": "ok", "data": data})
+        except AdminInputError as e:
+            return _admin_json_error(e.error, status=e.status)
         except Exception as e:
             logging.getLogger(__name__).error("analytics_revenue error: %s", e, exc_info=True)
             return web.json_response({"error": str(e)}, status=500)
@@ -8461,9 +11625,11 @@ def create_web_app(
         if not await _is_admin_user(db, user_id):
             return web.json_response({"error": "admin_access_required"}, status=403)
         try:
-            days = int(request.rel_url.query.get("days", "30"))
+            days = _admin_int_query(request, "days", 30, min_value=1, max_value=365)
             data = await db.get_admin_players_analytics(days=days)
             return web.json_response({"status": "ok", "data": data})
+        except AdminInputError as e:
+            return _admin_json_error(e.error, status=e.status)
         except Exception as e:
             logging.getLogger(__name__).error("analytics_players error: %s", e, exc_info=True)
             return web.json_response({"error": str(e)}, status=500)
@@ -8473,9 +11639,11 @@ def create_web_app(
         if not await _is_admin_user(db, user_id):
             return web.json_response({"error": "admin_access_required"}, status=403)
         try:
-            days = int(request.rel_url.query.get("days", "30"))
+            days = _admin_int_query(request, "days", 30, min_value=1, max_value=365)
             data = await db.get_admin_battle_analytics(days=days)
             return web.json_response({"status": "ok", "data": data})
+        except AdminInputError as e:
+            return _admin_json_error(e.error, status=e.status)
         except Exception as e:
             logging.getLogger(__name__).error("analytics_battles error: %s", e, exc_info=True)
             return web.json_response({"error": str(e)}, status=500)
@@ -8485,7 +11653,7 @@ def create_web_app(
         if not await _is_admin_user(db, user_id):
             return web.json_response({"error": "admin_access_required"}, status=403)
         try:
-            days = int(request.rel_url.query.get("days", "30"))
+            days = _admin_int_query(request, "days", 30, min_value=1, max_value=365)
             rows = await db.fetch(
                 """
                 SELECT event_type, resource, COUNT(*) AS cnt, COALESCE(SUM(amount), 0) AS total_amount
@@ -8498,6 +11666,8 @@ def create_web_app(
             )
             events = [{"event_type": r["event_type"], "resource": r["resource"], "count": r["cnt"], "total_amount": float(r["total_amount"])} for r in rows]
             return web.json_response({"status": "ok", "data": {"events": events, "total_events": sum(e["count"] for e in events)}})
+        except AdminInputError as e:
+            return _admin_json_error(e.error, status=e.status)
         except Exception as e:
             logging.getLogger(__name__).error("analytics_economy error: %s", e, exc_info=True)
             return web.json_response({"error": str(e)}, status=500)
@@ -8515,9 +11685,11 @@ def create_web_app(
         if not await _is_admin_user(db, user_id):
             return web.json_response({"error": "admin_access_required"}, status=403)
         try:
-            days = int(request.rel_url.query.get("days", "30"))
+            days = _admin_int_query(request, "days", 30, min_value=1, max_value=365)
             data = await db.get_admin_cards_analytics(days=days)
             return web.json_response({"status": "ok", "data": data})
+        except AdminInputError as e:
+            return _admin_json_error(e.error, status=e.status)
         except Exception as e:
             logging.getLogger(__name__).error("analytics_cards error: %s", e, exc_info=True)
             return web.json_response({"error": str(e)}, status=500)
@@ -8527,9 +11699,11 @@ def create_web_app(
         if not await _is_admin_user(db, user_id):
             return web.json_response({"error": "admin_access_required"}, status=403)
         try:
-            days = int(request.rel_url.query.get("days", "30"))
+            days = _admin_int_query(request, "days", 30, min_value=1, max_value=365)
             data = await db.get_admin_heroes_analytics(days=days)
             return web.json_response({"status": "ok", "data": data})
+        except AdminInputError as e:
+            return _admin_json_error(e.error, status=e.status)
         except Exception as e:
             logging.getLogger(__name__).error("analytics_heroes error: %s", e, exc_info=True)
             return web.json_response({"error": str(e)}, status=500)
@@ -8539,9 +11713,11 @@ def create_web_app(
         if not await _is_admin_user(db, user_id):
             return web.json_response({"error": "admin_access_required"}, status=403)
         try:
-            days = int(request.rel_url.query.get("days", "30"))
+            days = _admin_int_query(request, "days", 30, min_value=1, max_value=365)
             data = await db.get_admin_retention_analytics(days=days)
             return web.json_response({"status": "ok", "data": data})
+        except AdminInputError as e:
+            return _admin_json_error(e.error, status=e.status)
         except Exception as e:
             logging.getLogger(__name__).error("analytics_retention error: %s", e, exc_info=True)
             return web.json_response({"error": str(e)}, status=500)
@@ -8551,9 +11727,11 @@ def create_web_app(
         if not await _is_admin_user(db, user_id):
             return web.json_response({"error": "admin_access_required"}, status=403)
         try:
-            days = int(request.rel_url.query.get("days", "30"))
+            days = _admin_int_query(request, "days", 30, min_value=1, max_value=365)
             data = await db.get_admin_onboarding_analytics(days=days)
             return web.json_response({"status": "ok", "data": data})
+        except AdminInputError as e:
+            return _admin_json_error(e.error, status=e.status)
         except Exception as e:
             logging.getLogger(__name__).error("analytics_onboarding error: %s", e, exc_info=True)
             return web.json_response({"error": str(e)}, status=500)
@@ -8563,9 +11741,11 @@ def create_web_app(
         if not await _is_admin_user(db, user_id):
             return web.json_response({"error": "admin_access_required"}, status=403)
         try:
-            days = int(request.rel_url.query.get("days", "7"))
+            days = _admin_int_query(request, "days", 7, min_value=1, max_value=365)
             data = await db.get_admin_battle_actions_analytics(days=days)
             return web.json_response({"status": "ok", "data": data})
+        except AdminInputError as e:
+            return _admin_json_error(e.error, status=e.status)
         except Exception as e:
             logging.getLogger(__name__).error("analytics_battle_actions error: %s", e, exc_info=True)
             return web.json_response({"error": str(e)}, status=500)
@@ -8575,8 +11755,8 @@ def create_web_app(
         if not await _is_admin_user(db, user_id):
             return web.json_response({"error": "admin_access_required"}, status=403)
         try:
-            days = int(request.rel_url.query.get("days", "30"))
-            limit = int(request.rel_url.query.get("limit", "5000"))
+            days = _admin_int_query(request, "days", 30, min_value=1, max_value=365)
+            limit = _admin_int_query(request, "limit", 5000, min_value=1, max_value=100_000)
             include_players = request.rel_url.query.get("include_players", "0") in ("1", "true", "yes")
             rows = await db.export_train_v2_battle_dataset(
                 days=days,
@@ -8584,11 +11764,14 @@ def create_web_app(
                 include_players=include_players,
             )
             header = {
-                "format": "train_v2_admin_battle_action_jsonl_v1",
+                "format": "train_v2_admin_battle_action_jsonl_v2",
+                "format_version": 2,
+                "dataset_schema": "train_v3_battle_action_context_v1",
+                "compatible_with": ["train_v2_admin_battle_action_jsonl_v1"],
                 "created_at": datetime.now(timezone.utc).isoformat(),
                 "days": max(days, 1),
                 "rows": len(rows),
-                "notes": "Each following line is a battle action sample with raw state_json/action_json captured from production analytics.",
+                "notes": "Each following line is a battle action sample with raw state_json/action_json plus TrainV3-style context_json card parameters.",
             }
             lines = [_stdlib_json.dumps(header, ensure_ascii=False)]
             lines.extend(_stdlib_json.dumps(row, ensure_ascii=False) for row in rows)
@@ -8598,6 +11781,8 @@ def create_web_app(
                 content_type="application/x-ndjson",
                 headers={"Content-Disposition": f'attachment; filename="{filename}"'},
             )
+        except AdminInputError as e:
+            return _admin_json_error(e.error, status=e.status)
         except Exception as e:
             logging.getLogger(__name__).error("analytics_dataset_export error: %s", e, exc_info=True)
             return web.json_response({"error": str(e)}, status=500)
@@ -8616,9 +11801,11 @@ def create_web_app(
         if not await _is_admin_user(db, user_id):
             return web.json_response({"error": "admin_access_required"}, status=403)
         try:
-            days = int(request.rel_url.query.get("days", "30"))
+            days = _admin_int_query(request, "days", 30, min_value=1, max_value=365)
             data = await db.get_admin_players_overview(days=days)
             return web.json_response({"status": "ok", "data": data})
+        except AdminInputError as e:
+            return _admin_json_error(e.error, status=e.status)
         except Exception as e:
             logging.getLogger(__name__).error("admin_players_overview_handler error: %s", e, exc_info=True)
             return web.json_response({"error": str(e)}, status=500)
@@ -8639,9 +11826,11 @@ def create_web_app(
         if not await _is_admin_user(db, user_id):
             return web.json_response({"error": "admin_access_required"}, status=403)
         try:
-            days = int(request.rel_url.query.get("days", "30"))
+            days = _admin_int_query(request, "days", 30, min_value=1, max_value=365)
             data = await db.get_admin_players_activity(days=days)
             return web.json_response({"status": "ok", "data": data})
+        except AdminInputError as e:
+            return _admin_json_error(e.error, status=e.status)
         except Exception as e:
             logging.getLogger(__name__).error("admin_players_activity_handler error: %s", e, exc_info=True)
             return web.json_response({"error": str(e)}, status=500)
@@ -8658,13 +11847,15 @@ def create_web_app(
             league_raw = request.rel_url.query.get("league")
             league = int(league_raw) if league_raw and league_raw.isdigit() else None
             activity = request.rel_url.query.get("activity", "all")
-            limit = min(int(request.rel_url.query.get("limit", "50")), 200)
-            offset = max(int(request.rel_url.query.get("offset", "0")), 0)
+            limit = _admin_int_query(request, "limit", 50, min_value=1, max_value=200)
+            offset = _admin_int_query(request, "offset", 0, min_value=0, max_value=1_000_000)
             data = await db.search_admin_players(
                 query=q, status=status, league=league, activity=activity,
                 limit=limit, offset=offset,
             )
             return web.json_response({"status": "ok", "data": data})
+        except AdminInputError as e:
+            return _admin_json_error(e.error, status=e.status)
         except Exception as e:
             logging.getLogger(__name__).error("admin_players_list_handler error: %s", e, exc_info=True)
             return web.json_response({"error": str(e)}, status=500)
@@ -8674,9 +11865,13 @@ def create_web_app(
         if not await _is_admin_user(db, user_id):
             return web.json_response({"error": "admin_access_required"}, status=403)
         try:
-            target_user_id = int(request.match_info["user_id"])
+            target_user_id = _admin_match_int(request, "user_id", error="invalid_user_id")
             data = await db.get_admin_player_detail(target_user_id)
+            if isinstance(data, dict) and data.get("error"):
+                return _admin_action_response(data)
             return web.json_response({"status": "ok", "data": data})
+        except AdminInputError as e:
+            return _admin_json_error(e.error, status=e.status)
         except Exception as e:
             logging.getLogger(__name__).error("admin_player_detail_handler error: %s", e, exc_info=True)
             return web.json_response({"error": str(e)}, status=500)
@@ -8688,7 +11883,7 @@ def create_web_app(
         if not await _is_admin_user(db, admin_id):
             return web.json_response({"error": "admin_access_required"}, status=403)
         try:
-            target_user_id = int(request.match_info["user_id"])
+            target_user_id = _admin_match_int(request, "user_id", error="invalid_user_id")
             body = await request.json()
             if target_user_id == admin_id:
                 if not body.get("confirm_self"):
@@ -8705,7 +11900,9 @@ def create_web_app(
                 except Exception:
                     return web.json_response({"error": "invalid_until_date"}, status=400)
             result = await db.admin_ban_user(admin_id, target_user_id, reason=reason, until=until)
-            return web.json_response({"status": "ok", "data": result})
+            return _admin_action_response(result)
+        except AdminInputError as e:
+            return _admin_json_error(e.error, status=e.status)
         except Exception as e:
             logging.getLogger(__name__).error("admin_player_ban_handler error: %s", e, exc_info=True)
             return web.json_response({"error": str(e)}, status=500)
@@ -8715,14 +11912,16 @@ def create_web_app(
         if not await _is_admin_user(db, admin_id):
             return web.json_response({"error": "admin_access_required"}, status=403)
         try:
-            target_user_id = int(request.match_info["user_id"])
+            target_user_id = _admin_match_int(request, "user_id", error="invalid_user_id")
             try:
                 body = await request.json()
             except Exception:
                 body = {}
             reason = body.get("reason")
             result = await db.admin_unban_user(admin_id, target_user_id, reason=reason)
-            return web.json_response({"status": "ok", "data": result})
+            return _admin_action_response(result)
+        except AdminInputError as e:
+            return _admin_json_error(e.error, status=e.status)
         except Exception as e:
             logging.getLogger(__name__).error("admin_player_unban_handler error: %s", e, exc_info=True)
             return web.json_response({"error": str(e)}, status=500)
@@ -8732,11 +11931,13 @@ def create_web_app(
         if not await _is_admin_user(db, admin_id):
             return web.json_response({"error": "admin_access_required"}, status=403)
         try:
-            target_user_id = int(request.match_info["user_id"])
+            target_user_id = _admin_match_int(request, "user_id", error="invalid_user_id")
             body = await request.json()
             reason = body.get("reason", "")
             result = await db.admin_warn_user(admin_id, target_user_id, reason=str(reason))
-            return web.json_response({"status": "ok", "data": result})
+            return _admin_action_response(result)
+        except AdminInputError as e:
+            return _admin_json_error(e.error, status=e.status)
         except Exception as e:
             logging.getLogger(__name__).error("admin_player_warn_handler error: %s", e, exc_info=True)
             return web.json_response({"error": str(e)}, status=500)
@@ -8746,11 +11947,13 @@ def create_web_app(
         if not await _is_admin_user(db, admin_id):
             return web.json_response({"error": "admin_access_required"}, status=403)
         try:
-            target_user_id = int(request.match_info["user_id"])
+            target_user_id = _admin_match_int(request, "user_id", error="invalid_user_id")
             body = await request.json()
             note = body.get("note", "")
             result = await db.admin_note_user(admin_id, target_user_id, note=str(note))
-            return web.json_response({"status": "ok", "data": result})
+            return _admin_action_response(result)
+        except AdminInputError as e:
+            return _admin_json_error(e.error, status=e.status)
         except Exception as e:
             logging.getLogger(__name__).error("admin_player_note_handler error: %s", e, exc_info=True)
             return web.json_response({"error": str(e)}, status=500)
@@ -8760,9 +11963,17 @@ def create_web_app(
         if not await _is_admin_user(db, admin_id):
             return web.json_response({"error": "admin_access_required"}, status=403)
         try:
-            target_user_id = int(request.match_info["user_id"])
+            target_user_id = _admin_match_int(request, "user_id", error="invalid_user_id")
             body = await request.json()
-            fields = body.get("fields") if isinstance(body.get("fields"), dict) else body
+            if not isinstance(body, dict) or not isinstance(body.get("fields"), dict):
+                return web.json_response({"error": "fields_required"}, status=400)
+            fields = body["fields"]
+            if target_user_id == admin_id and str(fields.get("status") or "").lower() == "banned":
+                if not body.get("confirm_self"):
+                    return web.json_response(
+                        {"error": "self_ban_requires_confirm", "message": "Set confirm_self=true to ban yourself"},
+                        status=400,
+                    )
             reason = body.get("reason") if isinstance(body, dict) else None
             result = await db.admin_update_user_account(
                 admin_id,
@@ -8770,8 +11981,9 @@ def create_web_app(
                 fields=fields,
                 reason=reason,
             )
-            status = 400 if result.get("error") else 200
-            return web.json_response({"status": "ok" if status == 200 else "error", "data": result}, status=status)
+            return _admin_action_response(result)
+        except AdminInputError as e:
+            return _admin_json_error(e.error, status=e.status)
         except Exception as e:
             logging.getLogger(__name__).error("admin_player_update_handler error: %s", e, exc_info=True)
             return web.json_response({"error": str(e)}, status=500)
@@ -8781,15 +11993,17 @@ def create_web_app(
         if not await _is_admin_user(db, admin_id):
             return web.json_response({"error": "admin_access_required"}, status=403)
         try:
-            target_user_id = int(request.match_info["user_id"])
+            target_user_id = _admin_match_int(request, "user_id", error="invalid_user_id")
             body = await request.json()
             resource = str(body.get("resource", ""))
-            amount = float(body.get("amount", 0))
+            amount = _admin_body_float(body, "amount", default=0.0, allow_zero=False, error="invalid_amount")
             reason = body.get("reason")
             result = await db.admin_adjust_resource(
                 admin_id, target_user_id, resource, amount, reason=reason,
             )
-            return web.json_response({"status": "ok", "data": result})
+            return _admin_action_response(result)
+        except AdminInputError as e:
+            return _admin_json_error(e.error, status=e.status)
         except Exception as e:
             logging.getLogger(__name__).error("admin_player_resource_handler error: %s", e, exc_info=True)
             return web.json_response({"error": str(e)}, status=500)
@@ -8799,16 +12013,17 @@ def create_web_app(
         if not await _is_admin_user(db, admin_id):
             return web.json_response({"error": "admin_access_required"}, status=403)
         try:
-            target_user_id = int(request.match_info["user_id"])
+            target_user_id = _admin_match_int(request, "user_id", error="invalid_user_id")
             body = await request.json()
             mode = str(body.get("mode", ""))
-            days_raw = body.get("days")
-            days = int(days_raw) if days_raw is not None else None
+            days = _admin_body_int(body, "days", default=None, min_value=1, max_value=3650)
             reason = body.get("reason")
             result = await db.admin_set_extra_pass(
                 admin_id, target_user_id, mode, days=days, reason=reason,
             )
-            return web.json_response({"status": "ok", "data": result})
+            return _admin_action_response(result)
+        except AdminInputError as e:
+            return _admin_json_error(e.error, status=e.status)
         except Exception as e:
             logging.getLogger(__name__).error("admin_player_extra_pass_handler error: %s", e, exc_info=True)
             return web.json_response({"error": str(e)}, status=500)
@@ -9017,7 +12232,11 @@ def create_web_app(
             raise ValueError("invalid_season_datetime") from exc
         return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
-    def _normalize_admin_season_payload(body: dict[str, Any], allowed: set[str]) -> tuple[dict[str, Any] | None, str | None]:
+    def _normalize_admin_season_payload(
+        body: dict[str, Any],
+        allowed: set[str],
+        base: dict[str, Any] | None = None,
+    ) -> tuple[dict[str, Any] | None, str | None]:
         fields = {key: body[key] for key in allowed if key in body}
         status = fields.get("status")
         if status is not None:
@@ -9035,27 +12254,67 @@ def create_web_app(
                 except ValueError as exc:
                     return None, str(exc)
 
-        start = fields.get("start_date")
-        end = fields.get("end_date")
+        candidate = dict(base or {})
+        candidate.update(fields)
+
+        try:
+            start = _parse_admin_season_datetime(candidate.get("start_date"))
+            end = _parse_admin_season_datetime(candidate.get("end_date"))
+        except ValueError as exc:
+            return None, str(exc)
         if start is not None and end is not None and start >= end:
             return None, "season_dates_invalid"
 
         try:
-            max_stars = int(fields.get("max_stars", DEFAULT_EXTRA_PASS_SEASON["max_stars"]) or DEFAULT_EXTRA_PASS_SEASON["max_stars"])
-            pass_end = int(fields.get("pass_end_position", min(40, max_stars)) or min(40, max_stars))
-            ultra_start = int(fields.get("ultra_start_position", pass_end + 1) or pass_end + 1)
+            max_stars = int(candidate.get("max_stars", DEFAULT_EXTRA_PASS_SEASON["max_stars"]) or DEFAULT_EXTRA_PASS_SEASON["max_stars"])
+            pass_end = int(candidate.get("pass_end_position", min(40, max_stars)) or min(40, max_stars))
+            ultra_start = int(candidate.get("ultra_start_position", pass_end + 1) or pass_end + 1)
         except (TypeError, ValueError):
             return None, "invalid_season_progression"
         if not 1 <= max_stars <= 99:
             return None, "invalid_max_stars"
         if not 1 <= pass_end <= max_stars or not 1 <= ultra_start <= max_stars or ultra_start <= pass_end:
             return None, "invalid_season_positions"
+        track_candidate = {
+            **DEFAULT_EXTRA_PASS_SEASON,
+            **candidate,
+            "max_stars": max_stars,
+            "pass_end_position": pass_end,
+            "ultra_start_position": ultra_start,
+        }
+        if not _season_track_types_unique(track_candidate):
+            return None, "duplicate_season_track_types"
         if "max_stars" in fields:
             fields["max_stars"] = max_stars
         if "pass_end_position" in fields:
             fields["pass_end_position"] = pass_end
         if "ultra_start_position" in fields:
             fields["ultra_start_position"] = ultra_start
+        if "stage_cost_min" in fields:
+            try:
+                fields["stage_cost_min"] = max(1, int(fields["stage_cost_min"] or DEFAULT_EXTRA_PASS_SEASON["stage_cost_min"]))
+            except (TypeError, ValueError):
+                return None, "invalid_stage_cost_min"
+        if "stage_cost_cap" in fields:
+            try:
+                fields["stage_cost_cap"] = max(1, int(fields["stage_cost_cap"] or DEFAULT_EXTRA_PASS_SEASON["stage_cost_cap"]))
+            except (TypeError, ValueError):
+                return None, "invalid_stage_cost_cap"
+        if "stage_cost_growth" in fields:
+            try:
+                fields["stage_cost_growth"] = max(0.0, float(fields["stage_cost_growth"] if fields["stage_cost_growth"] is not None else DEFAULT_EXTRA_PASS_SEASON["stage_cost_growth"]))
+            except (TypeError, ValueError):
+                return None, "invalid_stage_cost_growth"
+        if "stage_cost_exponent" in fields:
+            try:
+                fields["stage_cost_exponent"] = max(0.01, float(fields["stage_cost_exponent"] if fields["stage_cost_exponent"] is not None else DEFAULT_EXTRA_PASS_SEASON["stage_cost_exponent"]))
+            except (TypeError, ValueError):
+                return None, "invalid_stage_cost_exponent"
+        candidate_for_costs = {**candidate, **fields}
+        min_cost = int(candidate_for_costs.get("stage_cost_min", DEFAULT_EXTRA_PASS_SEASON["stage_cost_min"]) or DEFAULT_EXTRA_PASS_SEASON["stage_cost_min"])
+        cap_cost = int(candidate_for_costs.get("stage_cost_cap", DEFAULT_EXTRA_PASS_SEASON["stage_cost_cap"]) or DEFAULT_EXTRA_PASS_SEASON["stage_cost_cap"])
+        if cap_cost < min_cost:
+            return None, "invalid_stage_cost_formula"
         if "season_number" in fields:
             try:
                 fields["season_number"] = max(1, int(fields["season_number"] or 1))
@@ -9076,10 +12335,20 @@ def create_web_app(
                 "is_active", "season_number", "status", "auto_switch", "preset_key",
                 "max_stars", "free_track_type", "pass_track_type",
                 "ultra_track_type", "pass_end_position", "ultra_start_position", "theme",
+                "stage_cost_min", "stage_cost_growth", "stage_cost_exponent", "stage_cost_cap",
             }
-            fields, error = _normalize_admin_season_payload(body, allowed)
+            existing = await db.get_active_season() if hasattr(db, "get_active_season") else None
+            fields, error = _normalize_admin_season_payload(body, allowed, existing)
             if error:
                 return web.json_response({"error": error}, status=400)
+            if hasattr(db, "get_seasons"):
+                candidate = {**dict(existing or {}), **(fields or {})}
+                if _season_track_type_reuse_conflict(
+                    candidate,
+                    await db.get_seasons(),
+                    current_season_id=(existing or {}).get("id"),
+                ):
+                    return web.json_response({"error": "season_track_type_reused"}, status=400)
             season = await db.upsert_active_season(**(fields or {}))
             return web.json_response({"status": "ok", "data": _serialize_datetime(season)})
         except Exception as e:
@@ -9108,13 +12377,20 @@ def create_web_app(
     async def _admin_seasons_payload() -> dict[str, Any]:
         seasons = await db.get_seasons()
         tracks = await db.get_all_reward_tracks()
+        reset_summaries = await db.get_season_reset_summaries() if hasattr(db, "get_season_reset_summaries") else {}
         reward_counts: dict[str, int] = {}
         for track in tracks:
             if track.get("is_active", True) is False:
                 continue
             track_type = str(track.get("track_type") or "")
             reward_counts[track_type] = reward_counts.get(track_type, 0) + 1
-        normalized = [_normalize_extra_pass_season(season) for season in seasons]
+        normalized = []
+        for season in seasons:
+            normalized_season = _normalize_extra_pass_season(season)
+            normalized_season["progression_preview"] = _extra_pass_progression(normalized_season)["preview"]
+            reset = reset_summaries.get(int(normalized_season["id"] or 0)) if isinstance(reset_summaries, dict) else None
+            normalized_season["reset"] = reset
+            normalized.append(normalized_season)
         active = next((season for season in normalized if season.get("is_active")), None)
         drafts = [season for season in normalized if season.get("status") == "draft"]
         scheduled = [season for season in normalized if season.get("status") == "scheduled"]
@@ -9125,6 +12401,7 @@ def create_web_app(
             "scheduled": scheduled,
             "reward_counts": reward_counts,
             "reward_tracks": tracks,
+            "reset_summaries": reset_summaries,
             "overview": _build_season_schedule_overview(normalized, reward_counts),
             "presets": _extra_pass_preset_catalog(),
         }
@@ -9167,6 +12444,78 @@ def create_web_app(
             logging.getLogger(__name__).error("admin_season_create_draft_handler error: %s", e, exc_info=True)
             return web.json_response({"error": str(e)}, status=500)
 
+    async def admin_season_reset_preview_handler(request: web.Request) -> web.Response:
+        user_id = await require_user_id(request)
+        if not await _is_admin_user(db, user_id):
+            return web.json_response({"error": "admin_access_required"}, status=403)
+        try:
+            season_id = int(request.match_info["season_id"])
+            season = await db.get_season_by_id(season_id)
+            if not season:
+                return web.json_response({"error": "season_not_found"}, status=404)
+            normalized = _normalize_extra_pass_season(season)
+            if not bool(normalized.get("is_active")):
+                return web.json_response({"error": "season_reset_requires_active_season"}, status=400)
+            preview = await db.preview_season_reset(season_id)
+            return web.json_response({"status": "ok", "data": _serialize_datetime(_truncate_season_reset_preview(preview))})
+        except Exception as e:
+            logging.getLogger(__name__).error("admin_season_reset_preview_handler error: %s", e, exc_info=True)
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def admin_season_reset_execute_handler(request: web.Request) -> web.Response:
+        user_id = await require_user_id(request)
+        if not await _is_admin_user(db, user_id):
+            return web.json_response({"error": "admin_access_required"}, status=403)
+        try:
+            season_id = int(request.match_info["season_id"])
+            try:
+                parsed_body = await request.json()
+            except Exception:
+                parsed_body = {}
+            if not isinstance(parsed_body, dict):
+                return web.json_response({"error": "invalid_reset_payload"}, status=400)
+            body = parsed_body
+            if body.get("confirm") is not True:
+                return web.json_response({"error": "confirm_required"}, status=400)
+            if body.get("confirm_season_id") is not None:
+                try:
+                    confirm_season_id = int(body.get("confirm_season_id"))
+                except (TypeError, ValueError):
+                    return web.json_response({"error": "confirm_season_mismatch"}, status=400)
+                if confirm_season_id != season_id:
+                    return web.json_response({"error": "confirm_season_mismatch"}, status=400)
+            season = await db.get_season_by_id(season_id)
+            if not season:
+                return web.json_response({"error": "season_not_found"}, status=404)
+            normalized = _normalize_extra_pass_season(season)
+            if not bool(normalized.get("is_active")):
+                return web.json_response({"error": "season_reset_requires_active_season"}, status=400)
+            reason = str(body.get("reason") or "").strip()
+            if len(reason) > ADMIN_SEASON_RESET_REASON_MAX_LENGTH:
+                return web.json_response({"error": "reason_too_long"}, status=400)
+            reset = await db.execute_season_reset(
+                season_id=season_id,
+                previous_season_id=None,
+                trigger="admin",
+                admin_user_id=user_id,
+                reason=reason or None,
+                require_active=True,
+            )
+            if reset.get("error") == "season_reset_already_completed":
+                return web.json_response({"error": "season_reset_already_completed"}, status=409)
+            if reset.get("error") == "season_reset_requires_active_season":
+                return web.json_response({"error": "season_reset_requires_active_season"}, status=400)
+            if reset.get("error"):
+                return web.json_response({"error": reset["error"]}, status=400)
+            payload = await _admin_seasons_payload()
+            return web.json_response({
+                "status": "ok",
+                "data": _serialize_datetime({"reset": reset, **payload}),
+            })
+        except Exception as e:
+            logging.getLogger(__name__).error("admin_season_reset_execute_handler error: %s", e, exc_info=True)
+            return web.json_response({"error": str(e)}, status=500)
+
     async def admin_season_update_handler(request: web.Request) -> web.Response:
         user_id = await require_user_id(request)
         if not await _is_admin_user(db, user_id):
@@ -9179,11 +12528,23 @@ def create_web_app(
                 "auto_switch", "preset_key", "start_date", "end_date", "is_active",
                 "max_stars", "free_track_type", "pass_track_type", "ultra_track_type",
                 "pass_end_position", "ultra_start_position", "theme",
+                "stage_cost_min", "stage_cost_growth", "stage_cost_exponent", "stage_cost_cap",
             }
-            fields, error = _normalize_admin_season_payload(body, allowed)
+            existing = await db.get_season_by_id(season_id) if hasattr(db, "get_season_by_id") else None
+            if not existing:
+                return web.json_response({"error": "season_not_found"}, status=404)
+            fields, error = _normalize_admin_season_payload(body, allowed, existing)
             if error:
                 return web.json_response({"error": error}, status=400)
-            season = await db.update_season(season_id, **(fields or {}))
+            if hasattr(db, "get_seasons"):
+                candidate = {**dict(existing or {}), **(fields or {})}
+                if _season_track_type_reuse_conflict(
+                    candidate,
+                    await db.get_seasons(),
+                    current_season_id=season_id,
+                ):
+                    return web.json_response({"error": "season_track_type_reused"}, status=400)
+            season = await db.update_season(season_id, **(fields or {}), admin_user_id=user_id)
             if season.get("error"):
                 return web.json_response({"error": season["error"]}, status=400)
             payload = await _admin_seasons_payload()
@@ -9207,15 +12568,25 @@ def create_web_app(
             if isinstance(body, dict) and "tracks_json" in body:
                 payload = _stdlib_json.loads(str(body.get("tracks_json") or "{}"))
             rows = _normalize_reward_track_import_payload(payload, _normalize_extra_pass_season(season))
-            replace = bool(body.get("replace", True)) if isinstance(body, dict) else True
-            if replace:
-                await db.clear_reward_tracks(_season_track_types(season))
-            created = []
             for row in rows:
-                result = await db.create_reward_track(**row)
-                if result.get("error"):
-                    return web.json_response({"error": result["error"], "row": row}, status=400)
-                created.append(result)
+                config_error = await _admin_validate_reward_track_config(db, row)
+                if config_error:
+                    return web.json_response(
+                        {"error": config_error, "message": _reward_error_message(config_error), "row": row},
+                        status=400,
+                    )
+            replace = bool(body.get("replace", True)) if isinstance(body, dict) else True
+            if replace and hasattr(db, "replace_reward_tracks"):
+                created = await db.replace_reward_tracks(_season_track_types(season), rows)
+            else:
+                if replace:
+                    await db.clear_reward_tracks(_season_track_types(season))
+                created = []
+                for row in rows:
+                    result = await db.create_reward_track(**row)
+                    if result.get("error"):
+                        return web.json_response({"error": result["error"], "row": row}, status=400)
+                    created.append(result)
             payload = await _admin_seasons_payload()
             return web.json_response({
                 "status": "ok",
@@ -9317,6 +12688,8 @@ def create_web_app(
     app.router.add_post("/api/admin/seasons/create-draft", admin_season_create_draft_handler)
     app.router.add_post("/api/admin/seasons/{season_id:\\d+}", admin_season_update_handler)
     app.router.add_post("/api/admin/seasons/{season_id:\\d+}/rewards/import", admin_season_rewards_import_handler)
+    app.router.add_get("/api/admin/seasons/{season_id:\\d+}/reset-preview", admin_season_reset_preview_handler)
+    app.router.add_post("/api/admin/seasons/{season_id:\\d+}/reset", admin_season_reset_execute_handler)
     app.router.add_get("/api/admin/push/status", admin_push_status_handler)
     app.router.add_post("/api/admin/push/app-update", admin_push_app_update_handler)
     app.router.add_get("/api/admin/match-modes", admin_match_modes_handler)
@@ -9413,6 +12786,28 @@ def create_web_app(
             extra_pass_required = bool(data.get("extra_pass_required", False))
         except (TypeError, ValueError):
             return web.json_response({"error": "invalid_body"}, status=400)
+        if not track_type:
+            return web.json_response({"error": "track_type_required"}, status=400)
+        if position <= 0:
+            return web.json_response({"error": "invalid_position"}, status=400)
+        if reward_amount < 0:
+            return web.json_response({"error": "invalid_reward_amount"}, status=400)
+        seasons = await db.get_seasons() if hasattr(db, "get_seasons") else []
+        scope_error = _admin_reward_track_scope_error(
+            track_type=track_type,
+            position=position,
+            reward_type=reward_type,
+            seasons=seasons,
+        )
+        if scope_error:
+            return web.json_response({"error": scope_error, "message": _reward_error_message(scope_error)}, status=400)
+        config_error = await _admin_validate_reward_track_config(db, {
+            "reward_type": reward_type,
+            "reward_amount": reward_amount,
+            "reward_meta": reward_meta,
+        })
+        if config_error:
+            return web.json_response({"error": config_error, "message": _reward_error_message(config_error)}, status=400)
 
         result = await db.create_reward_track(
             track_type=track_type,
@@ -9423,7 +12818,8 @@ def create_web_app(
             extra_pass_required=extra_pass_required,
         )
         if result.get("error"):
-            return web.json_response({"error": result.get("error")}, status=400)
+            error = str(result.get("error") or "unknown")
+            return web.json_response({"error": error}, status=_admin_result_error_status(error))
         return web.json_response({"success": True, "tier": result})
 
     async def admin_rewards_track_update_handler(request: web.Request) -> web.Response:
@@ -9440,15 +12836,53 @@ def create_web_app(
             reward_id = int(data.get("id", 0))
         except (TypeError, ValueError):
             return web.json_response({"error": "invalid_body"}, status=400)
+        if reward_id <= 0:
+            return web.json_response({"error": "invalid_id"}, status=400)
 
         fields = {}
         for key in ("track_type", "position", "reward_type", "reward_amount", "reward_meta", "extra_pass_required", "is_active"):
             if key in data:
                 fields[key] = data[key]
+        if not fields:
+            return web.json_response({"error": "no_fields"}, status=400)
+        existing = await db.get_reward_track_by_id(reward_id) if hasattr(db, "get_reward_track_by_id") else None
+        if hasattr(db, "get_reward_track_by_id") and not existing:
+            return web.json_response({"error": "reward_not_found"}, status=404)
+        merged = {**(existing or {}), **fields}
+        if "position" in merged:
+            try:
+                merged["position"] = int(merged["position"])
+            except (TypeError, ValueError):
+                return web.json_response({"error": "invalid_position"}, status=400)
+        if "reward_amount" in fields:
+            try:
+                fields["reward_amount"] = int(fields["reward_amount"])
+            except (TypeError, ValueError):
+                return web.json_response({"error": "invalid_reward_amount"}, status=400)
+            if fields["reward_amount"] < 0:
+                return web.json_response({"error": "invalid_reward_amount"}, status=400)
+        has_full_reward_config = all(
+            key in merged and merged.get(key) not in (None, "")
+            for key in ("track_type", "position", "reward_type", "reward_amount")
+        )
+        if has_full_reward_config:
+            seasons = await db.get_seasons() if hasattr(db, "get_seasons") else []
+            scope_error = _admin_reward_track_scope_error(
+                track_type=str(merged.get("track_type") or ""),
+                position=int(merged.get("position") or 0),
+                reward_type=str(merged.get("reward_type")) if merged.get("reward_type") else None,
+                seasons=seasons,
+            )
+            if scope_error:
+                return web.json_response({"error": scope_error, "message": _reward_error_message(scope_error)}, status=400)
+            config_error = await _admin_validate_reward_track_config(db, merged)
+            if config_error:
+                return web.json_response({"error": config_error, "message": _reward_error_message(config_error)}, status=400)
 
         result = await db.update_reward_track(reward_id, **fields)
         if result.get("error"):
-            return web.json_response({"error": result.get("error")}, status=400)
+            error = str(result.get("error") or "unknown")
+            return web.json_response({"error": error}, status=_admin_result_error_status(error))
         return web.json_response({"success": True, "tier": result})
 
     async def admin_rewards_track_delete_handler(request: web.Request) -> web.Response:
@@ -9466,7 +12900,13 @@ def create_web_app(
         except (TypeError, ValueError):
             return web.json_response({"error": "invalid_body"}, status=400)
 
-        await db.delete_reward_track(reward_id)
+        if reward_id <= 0:
+            return web.json_response({"error": "invalid_id"}, status=400)
+
+        result = await db.delete_reward_track(reward_id)
+        if isinstance(result, dict) and result.get("error"):
+            error = str(result.get("error") or "unknown")
+            return web.json_response({"error": error}, status=_admin_result_error_status(error))
         return web.json_response({"success": True})
 
     app.router.add_get("/api/admin/rewards/tracks", admin_rewards_tracks_handler)
@@ -9485,7 +12925,7 @@ def create_web_app(
 
         try:
             data = await request.json()
-            post_id = int(data.get("post_id"))
+            post_id = _community_required_int_field(data, "post_id")
 
             if not post_id:
                 return web.json_response({"error": "post_id_required"}, status=400)
@@ -9504,13 +12944,15 @@ def create_web_app(
                 }, status=400)
 
             return web.json_response(result)
+        except AdminInputError as e:
+            return _admin_json_error(e.error, status=e.status)
         except Exception as e:
             import logging
             logging.getLogger(__name__).error(
                 "Ошибка удаления поста для user_id %s: %s", user_id, e, exc_info=True
             )
             return web.json_response(
-                {"error": "internal_server_error", "message": str(e)}, status=500
+                {"error": "internal_server_error"}, status=500
             )
 
     async def post_like_handler(request: web.Request) -> web.Response:
@@ -9522,7 +12964,7 @@ def create_web_app(
 
         try:
             data = await request.json()
-            post_id = int(data.get("post_id"))
+            post_id = _community_required_int_field(data, "post_id")
 
             if not post_id:
                 return web.json_response({"error": "post_id_required"}, status=400)
@@ -9537,13 +12979,15 @@ def create_web_app(
                 }, status=400)
 
             return web.json_response(result)
+        except AdminInputError as e:
+            return _admin_json_error(e.error, status=e.status)
         except Exception as e:
             import logging
             logging.getLogger(__name__).error(
                 "Ошибка обработки лайка для user_id %s: %s", user_id, e, exc_info=True
             )
             return web.json_response(
-                {"error": "internal_server_error", "message": str(e)}, status=500
+                {"error": "internal_server_error"}, status=500
             )
 
     async def rewards_track_handler(request: web.Request) -> web.Response:
@@ -9560,17 +13004,28 @@ def create_web_app(
                 return web.json_response({"error": "invalid_track_type"}, status=400)
 
             tracks = await db.get_reward_tracks(track_type)
+            track_def = _reward_track_def_for_type(track_type, season)
+            if track_def:
+                tracks = [
+                    _normalize_reward_entry_case_alias(dict(track))
+                    for track in tracks
+                    if _entry_in_track_scope(dict(track), track_def)
+                ]
+            else:
+                tracks = [_normalize_reward_entry_case_alias(dict(track)) for track in tracks]
             profile = await db.get_user_profile(user_id)
             if not profile:
                 return web.json_response({"error": "user_not_found"}, status=404)
 
             extra_pass = profile.get("extra_pass", "inactive")
-            pass_access = _extra_pass_access(extra_pass)
+            pass_access = _extra_pass_access(extra_pass, profile.get("extra_pass_expires_at"))
             has_extra_pass = bool(pass_access["has_extra_pass"])
             has_ultra = bool(pass_access["has_ultra"])
             user_trophies = profile.get("trophies", 0)
             user_stars = profile.get("stars", 0)
             required_value = user_trophies if track_type == "glory" else user_stars
+            normalized_season = _normalize_extra_pass_season(season)
+            extra_pass_progress = _extra_pass_progress_for_stars(user_stars, normalized_season)
 
             claimed_set = await db.get_claimed_rewards(user_id, track_type)
 
@@ -9588,25 +13043,25 @@ def create_web_app(
 
             tiers_response = []
             for pos in sorted(tiers_by_position):
-                entry = tracks[0]  # use any entry at this position for meta
-                for t in tracks:
-                    if t["position"] == pos:
-                        entry = t
-                        break
-
+                entries_at_position = [t for t in tracks if int(t["position"]) == int(pos)]
                 claimed = pos in claimed_set
-                ep_required = entry.get("extra_pass_required", False)
-                locked = required_value < pos
-                if ep_required and not _reward_track_unlocked_for_type(track_type, pass_access, season):
-                    locked = True
+                ep_required = bool((track_def or {}).get("access") not in (None, "free")) or any(bool(entry.get("extra_pass_required", False)) for entry in entries_at_position)
+                required_position_value = pos if track_type == "glory" else _extra_pass_required_stars_for_position(pos, normalized_season)
+                progress_locked = required_value < required_position_value
+                access_locked = ep_required and not _reward_track_unlocked_for_type(track_type, pass_access, season)
+                locked = progress_locked or access_locked
                 available = not claimed and not locked
 
                 tiers_response.append({
                     "position": pos,
+                    "required_stars": None if track_type == "glory" else required_position_value,
+                    "required_value": required_position_value,
                     "rewards": tiers_by_position[pos],
                     "claimed": claimed,
                     "available": available,
                     "locked": locked,
+                    "progress_locked": progress_locked,
+                    "access_locked": access_locked,
                     "extra_pass_required": ep_required,
                 })
 
@@ -9616,6 +13071,8 @@ def create_web_app(
                 "extra_pass": extra_pass,
                 "has_extra_pass": has_extra_pass,
                 "has_ultra": has_ultra,
+                "progression": None if track_type == "glory" else _extra_pass_progression(normalized_season),
+                "progress": None if track_type == "glory" else extra_pass_progress,
                 "tiers": tiers_response,
             })
         except Exception as e:
@@ -9648,7 +13105,7 @@ def create_web_app(
                 tracks_by_type=tracks_by_type,
                 claimed_by_type=claimed_by_type,
             )
-            return web.json_response(payload)
+            return web.json_response(payload, headers=NO_STORE_CACHE_HEADERS)
         except Exception as e:
             logging.getLogger(__name__).error("rewards_extra_pass error: %s", e, exc_info=True)
             return web.json_response({"error": "internal_error", "message": str(e)}, status=500)
@@ -9674,31 +13131,76 @@ def create_web_app(
             if not _reward_track_allowed(track_type, season):
                 return web.json_response({"error": "invalid_track_type"}, status=400)
 
+            track_def = _reward_track_def_for_type(track_type, season)
+            if track_def and not _entry_in_track_scope({"position": position}, track_def):
+                return web.json_response({"error": "position_out_of_track_scope"}, status=400)
+
             entries = await db.get_reward_track_entries(track_type, position)
+            entries = [_normalize_reward_entry_case_alias(dict(entry)) for entry in entries]
             if not entries:
                 return web.json_response({"error": "tier_not_found"}, status=404)
+            if track_def and not all(_entry_in_track_scope(entry, track_def) for entry in entries):
+                return web.json_response({"error": "position_out_of_track_scope"}, status=400)
 
             profile = await db.get_user_profile(user_id)
             if not profile:
                 return web.json_response({"error": "user_not_found"}, status=404)
 
             extra_pass = profile.get("extra_pass", "inactive")
-            pass_access = _extra_pass_access(extra_pass)
+            pass_access = _extra_pass_access(extra_pass, profile.get("extra_pass_expires_at"))
             user_trophies = profile.get("trophies", 0)
             user_stars = profile.get("stars", 0)
             required_value = user_trophies if track_type == "glory" else user_stars
+            normalized_season = _normalize_extra_pass_season(season)
+            required_position_value = position if track_type == "glory" else _extra_pass_required_stars_for_position(position, normalized_season)
 
-            if required_value < position:
+            if required_value < required_position_value:
                 return web.json_response({"error": "tier_locked", "message": "Недостаточно прогресса"}, status=400)
 
-            ep_required = any(e.get("extra_pass_required", False) for e in entries)
+            ep_required = bool((track_def or {}).get("access") not in (None, "free")) or any(e.get("extra_pass_required", False) for e in entries)
             if ep_required and not _reward_track_unlocked_for_type(track_type, pass_access, season):
                 track_def = _reward_track_def_for_type(track_type, season)
                 message = "Нужен ExtraPass Ultra" if (track_def or {}).get("access") == "ultra" or track_type == "bp_ultra" else "Нужен ExtraPass"
                 return web.json_response({"error": "extra_pass_required", "message": message}, status=400)
 
-            # Mark claimed first to prevent race conditions
-            await db.claim_reward(user_id, track_type, position)
+            for entry in entries:
+                config_error = await _admin_validate_reward_track_config(db, entry)
+                if config_error:
+                    return web.json_response(
+                        {"error": config_error, "message": _reward_error_message(config_error)},
+                        status=400,
+                    )
+
+            if hasattr(db, "claim_reward_entries_transaction"):
+                claim_result = await db.claim_reward_entries_transaction(
+                    user_id=user_id,
+                    track_type=track_type,
+                    position=position,
+                    entries=[dict(entry) for entry in entries],
+                )
+                if claim_result.get("error") == "already_claimed":
+                    return web.json_response({"error": "already_claimed", "message": "Награда уже получена"}, status=409)
+                if not claim_result.get("success"):
+                    error = str(claim_result.get("error") or "claim_failed")
+                    return web.json_response(
+                        {"error": error, "message": claim_result.get("message") or _reward_error_message(_reward_config_error_code(ValueError(error)))},
+                        status=400,
+                    )
+                granted = claim_result.get("granted") or []
+                logging.getLogger(__name__).info(
+                    "Reward claimed atomically: user=%s track=%s pos=%s granted=%s",
+                    user_id, track_type, position, _json.dumps(granted),
+                )
+                return web.json_response({
+                    "success": True,
+                    "track_type": track_type,
+                    "position": position,
+                    "granted": granted,
+                }, headers=NO_STORE_CACHE_HEADERS)
+
+            claimed_now = await db.claim_reward(user_id, track_type, position)
+            if claimed_now is False:
+                return web.json_response({"error": "already_claimed", "message": "Награда уже получена"}, status=409)
 
             granted = []
             for entry in entries:
@@ -9733,6 +13235,10 @@ def create_web_app(
                         rarities = rmeta["rarity"]
 
                     cards = await db.get_random_cards_by_rarities(rarities, limit=1)
+                    if cards and hasattr(db, "get_user_cards"):
+                        owned_cards = await db.get_user_cards(user_id)
+                        owned_ids = {int(card.get("id") or card.get("card_id") or 0) for card in owned_cards or []}
+                        cards = [card for card in cards if int(card.get("id") or 0) not in owned_ids]
                     if cards:
                         card = cards[0]
                         await db.add_card_to_user(user_id, card["id"])
@@ -9757,6 +13263,78 @@ def create_web_app(
                         await _track_economy_safe(db, user_id=user_id, event_type="earn",
                             resource="coins", amount=fallback_coins, source="reward_track",
                             metadata={"track_type": track_type, "position": position, "fallback_for": "card"})
+                elif rtype == "specific_card":
+                    card_id = _specific_card_id_from_meta(rmeta)
+                    card = await db.get_card_info(card_id) if hasattr(db, "get_card_info") else None
+                    card_name = (card or {}).get("name", "") if isinstance(card, dict) else ""
+                    already_owned = False
+                    if hasattr(db, "get_user_cards"):
+                        owned_cards = await db.get_user_cards(user_id)
+                        already_owned = any(
+                            int(user_card.get("id") or user_card.get("card_id") or 0) == int(card_id)
+                            for user_card in owned_cards or []
+                        )
+                    if already_owned:
+                        fallback_coins = 100
+                        await db.update_user_coins(user_id, fallback_coins)
+                        granted.append({
+                            "reward_type": "coins",
+                            "reward_amount": fallback_coins,
+                            "fallback_for": "specific_card",
+                            "card_id": card_id,
+                        })
+                        await _track_economy_safe(db, user_id=user_id, event_type="earn",
+                            resource="coins", amount=fallback_coins, source="reward_track",
+                            metadata={"track_type": track_type, "position": position,
+                                      "fallback_for": "specific_card", "card_id": card_id})
+                        continue
+                    result = await db.add_card_to_user(user_id, card_id)
+                    if isinstance(result, dict) and result.get("success") is False:
+                        fallback_coins = 100
+                        await db.update_user_coins(user_id, fallback_coins)
+                        granted.append({
+                            "reward_type": "coins",
+                            "reward_amount": fallback_coins,
+                            "fallback_for": "specific_card",
+                            "card_id": card_id,
+                        })
+                        await _track_economy_safe(db, user_id=user_id, event_type="earn",
+                            resource="coins", amount=fallback_coins, source="reward_track",
+                            metadata={"track_type": track_type, "position": position,
+                                      "fallback_for": "specific_card", "card_id": card_id,
+                                      "grant_error": result.get("error")})
+                        continue
+                    granted.append({
+                        "reward_type": "specific_card",
+                        "reward_amount": 1,
+                        "card_id": card_id,
+                        "card_name": card_name,
+                    })
+                    await _track_economy_safe(db, user_id=user_id, event_type="earn",
+                        resource="card", amount=1, source="reward_track",
+                        metadata={"track_type": track_type, "position": position,
+                                  "card_id": card_id, "card_name": card_name,
+                                  "reward_type": "specific_card"})
+                elif rtype == "case":
+                    case_tier = max(1, min(5, int(ramount or 1)))
+                    if hasattr(db, "get_admin_case_id"):
+                        case_id = await db.get_admin_case_id(case_tier)
+                    else:
+                        case_id = case_tier
+                    if not case_id:
+                        case_id = case_tier
+                    result = await db.add_user_case(user_id, int(case_id), case_tier)
+                    user_case_id = result.get("id") or result.get("user_case_id")
+                    granted.append({
+                        "reward_type": "case",
+                        "reward_amount": case_tier,
+                        "case_tier": case_tier,
+                        "user_case_id": user_case_id,
+                    })
+                    await _track_economy_safe(db, user_id=user_id, event_type="earn",
+                        resource="case", amount=1, source="reward_track",
+                        metadata={"track_type": track_type, "position": position,
+                                  "case_tier": case_tier, "user_case_id": user_case_id})
 
             logging.getLogger(__name__).info(
                 "Reward claimed: user=%s track=%s pos=%s granted=%s",
@@ -9768,7 +13346,7 @@ def create_web_app(
                 "track_type": track_type,
                 "position": position,
                 "granted": granted,
-            })
+            }, headers=NO_STORE_CACHE_HEADERS)
         except Exception as e:
             logging.getLogger(__name__).error("claim_reward error: %s", e, exc_info=True)
             return web.json_response({"error": "internal_error", "message": str(e)}, status=500)
@@ -9914,6 +13492,7 @@ def create_web_app(
                     else:
                         webhook_logger.info("Платеж %s обработан без дополнительных наград", payment_id)
             elif event == "payment.canceled" and verified_status == "canceled":
+                await _release_one_time_payment_from_record(payment_record)
                 webhook_logger.info("Платеж %s отменён", payment_id)
 
             elif event == "payment.waiting_for_capture":
@@ -9930,6 +13509,8 @@ def create_web_app(
 
     async def webhook_test_handler(request: web.Request) -> web.Response:
         """GET /api/payments/webhook/test — проверка доступности webhook URL."""
+        if not request.app.get("payment_webhook_diagnostics_enabled"):
+            raise web.HTTPNotFound()
         payment_service = request.app.get("payment_service")
         return web.json_response({
             "ok": True,
@@ -9940,6 +13521,8 @@ def create_web_app(
 
     async def webhook_debug_handler(request: web.Request) -> web.Response:
         """POST /api/payments/webhook/debug — диагностический webhook (не выдаёт награды)."""
+        if not request.app.get("payment_webhook_diagnostics_enabled"):
+            raise web.HTTPNotFound()
         import json
         import logging
         debug_logger = logging.getLogger(__name__)
@@ -9973,7 +13556,7 @@ def create_web_app(
             })
         except Exception as e:
             debug_logger.error("WEBHOOK_DEBUG error: %s", e, exc_info=True)
-            return web.json_response({"ok": False, "error": str(e)}, status=500)
+            return web.json_response({"ok": False, "error": "internal_server_error"}, status=500)
 
     def _payment_metadata(payment_record: dict[str, Any] | None) -> dict[str, Any]:
         if not payment_record:
@@ -9985,6 +13568,25 @@ def create_web_app(
             except Exception:
                 metadata = {}
         return metadata if isinstance(metadata, dict) else {}
+
+    async def _release_one_time_payment_from_record(payment_record: dict[str, Any] | None) -> None:
+        if not payment_record:
+            return
+        metadata = _payment_metadata(payment_record)
+        if not metadata.get("one_time_product"):
+            return
+        product_key = str(metadata.get("product_key") or "").strip()
+        reservation_id = str(metadata.get("one_time_reservation_id") or "").strip()
+        release = getattr(db, "release_one_time_payment_reservation", None)
+        if not product_key or not reservation_id or not release:
+            return
+        try:
+            user_id = int(payment_record.get("user_id") or 0)
+        except (TypeError, ValueError):
+            user_id = 0
+        if user_id <= 0:
+            return
+        await release(user_id=user_id, product_key=product_key, reservation_id=reservation_id)
 
     async def _merge_payment_metadata(payment_id: str, patch: dict[str, Any]) -> None:
         clean_patch = {k: v for k, v in (patch or {}).items() if v is not None and v != ""}
@@ -9999,6 +13601,256 @@ def create_web_app(
             """,
             payment_id,
             _stdlib_json.dumps(clean_patch, ensure_ascii=False),
+        )
+
+    def _robokassa_public_base_url(request: web.Request) -> str:
+        service = request.app.get("robokassa_payment_service")
+        settings_obj = getattr(service, "settings", None)
+        for candidate in (
+            getattr(settings_obj, "result_url", ""),
+            request.app.get("extra_shop_url", ""),
+            request.app.get("webapp_url", ""),
+        ):
+            parsed = urlsplit(str(candidate or ""))
+            if parsed.scheme and parsed.netloc:
+                return f"{parsed.scheme}://{parsed.netloc}"
+        return str(request.url.origin())
+
+    def _robokassa_payment_page_url(request: web.Request, payment_id: str) -> str:
+        return f"{_robokassa_public_base_url(request).rstrip('/')}/api/payments/robokassa/pay/{payment_id}"
+
+    def _new_robokassa_inv_id() -> str:
+        return str(int(time.time() * 1000) * 1000 + random.randint(100, 999))
+
+    def _checkout_provider_pair(request: web.Request) -> tuple[str, Any]:
+        primary = str(request.app.get("payment_primary_provider") or "yookassa").strip().lower()
+        fallback = str(request.app.get("payment_fallback_provider") or "yookassa").strip().lower()
+
+        def resolve(name: str) -> tuple[str, Any] | None:
+            if name == "robokassa" and request.app.get("robokassa_payment_service"):
+                return "robokassa", request.app.get("robokassa_payment_service")
+            if name == "yookassa" and request.app.get("payment_service"):
+                return "yookassa", request.app.get("payment_service")
+            return None
+
+        return resolve(primary) or resolve(fallback) or ("", None)
+
+    async def robokassa_payment_page_handler(request: web.Request) -> web.Response:
+        payment_id = str(request.match_info.get("payment_id") or "").strip()
+        if not payment_id.startswith("robokassa_"):
+            return web.Response(status=404, text="payment_not_found")
+
+        payment_record = await db.get_payment_by_id(payment_id)
+        metadata = _payment_metadata(payment_record)
+        form = metadata.get("robokassa_form") if isinstance(metadata, dict) else None
+        if not payment_record or not isinstance(form, dict):
+            return web.Response(status=404, text="payment_not_found")
+
+        action = str(metadata.get("robokassa_form_action") or "https://auth.robokassa.ru/Merchant/Index.aspx")
+        inputs = "\n".join(
+            f'<input type="hidden" name="{html.escape(str(key), quote=True)}" value="{html.escape(str(value), quote=True)}">'
+            for key, value in form.items()
+        )
+        body = f"""<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Переход к оплате</title>
+</head>
+<body>
+  <form id="robokassa-payment-form" action="{html.escape(action, quote=True)}" method="POST">
+    {inputs}
+    <noscript><button type="submit">Перейти к оплате</button></noscript>
+  </form>
+  <script>document.getElementById('robokassa-payment-form').submit();</script>
+</body>
+</html>"""
+        return web.Response(text=body, content_type="text/html")
+
+    async def _robokassa_paid_payload(
+        *,
+        parsed: dict[str, Any],
+        source: str,
+        logger: logging.Logger,
+    ) -> dict[str, Any]:
+        payment_id = str(parsed["payment_id"])
+        inv_id = str(parsed["inv_id"])
+        payment_record = await db.get_payment_by_id(payment_id)
+        if not payment_record:
+            logger.warning("Robokassa %s ignored unknown payment_id=%s inv_id=%s", source, payment_id, inv_id)
+            return {"success": False, "status": "ignored", "reason": "unknown_payment", "payment_id": payment_id, "inv_id": inv_id}
+
+        try:
+            provider_amount = float(parsed.get("amount") or 0)
+            record_amount = float(payment_record.get("amount") or 0)
+        except (TypeError, ValueError):
+            provider_amount = record_amount = -1.0
+        record_currency = str(payment_record.get("currency") or "").upper()
+        if abs(provider_amount - record_amount) > 0.01 or record_currency != "RUB":
+            logger.error(
+                "Robokassa amount mismatch for %s: provider %.2f RUB, record %.2f %s",
+                payment_id,
+                provider_amount,
+                record_amount,
+                record_currency,
+            )
+            return {"success": False, "status": "verification_failed", "reason": "amount_mismatch", "payment_id": payment_id, "inv_id": inv_id}
+
+        if payment_record.get("status") != "succeeded":
+            await db.update_payment_status(payment_id=payment_id, status="succeeded")
+            payment_record = await db.get_payment_by_id(payment_id)
+
+        processing_result = {"status": "already_processed"}
+        if payment_record and not bool(payment_record.get("rewards_processed", False)):
+            processing_result = await process_successful_payment(
+                db=db,
+                payment_id=payment_id,
+                payment_record=payment_record,
+                source=source,
+                logger=logger,
+            )
+        if processing_result["status"] == "already_processed":
+            logger.info("Robokassa payment %s already processed", payment_id)
+        elif processing_result["status"] == "missing_payment":
+            logger.error("Robokassa payment %s disappeared during processing", payment_id)
+
+        return {
+            "success": True,
+            "status": "processed",
+            "payment_id": payment_id,
+            "inv_id": inv_id,
+            "processing_status": processing_result.get("status"),
+        }
+
+    async def robokassa_result_handler(request: web.Request) -> web.Response:
+        result_logger = logging.getLogger(__name__)
+        service = request.app.get("robokassa_payment_service")
+        if not service:
+            return web.Response(status=503, text="payment_service_not_configured")
+
+        if request.method == "POST":
+            raw_payload = dict(await request.post())
+        else:
+            raw_payload = dict(request.rel_url.query)
+
+        parsed = service.parse_result_notification(raw_payload)
+        if not parsed.get("success"):
+            return web.Response(status=400, text=str(parsed.get("error") or "invalid_signature"))
+
+        processed = await _robokassa_paid_payload(parsed=parsed, source="robokassa_webhook", logger=result_logger)
+        if not processed.get("success"):
+            if processed.get("reason") == "unknown_payment":
+                return web.json_response({"status": "ignored", "reason": "unknown_payment"}, status=202)
+            return web.json_response({"status": "verification_failed", "reason": processed.get("reason")}, status=202)
+
+        return web.Response(text=f"OK{processed['inv_id']}", content_type="text/plain")
+
+    def _robokassa_return_url(request: web.Request, payment_id: str) -> str:
+        target = str(request.app.get("webapp_url") or "/").strip() or "/"
+        try:
+            parts = urlsplit(target)
+            query = dict(parse_qsl(parts.query, keep_blank_values=True))
+            if payment_id:
+                query["payment_id"] = payment_id
+            query["provider"] = "robokassa"
+            return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
+        except Exception:
+            return target
+
+    def _robokassa_return_page(*, title: str, message: str, return_url: str, ok: bool) -> web.Response:
+        icon = "✓" if ok else "!"
+        accent = "#22c55e" if ok else "#ef4444"
+        body = f"""<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{html.escape(title)}</title>
+  <style>
+    body {{ margin:0; min-height:100vh; display:grid; place-items:center; background:#0d081b; color:#f7f2ff; font-family:Arial,sans-serif; }}
+    main {{ width:min(420px,calc(100vw - 32px)); padding:24px; border:1px solid rgba(255,255,255,.14); border-radius:18px; background:#18102b; text-align:center; box-shadow:0 24px 70px rgba(0,0,0,.45); }}
+    .icon {{ width:64px; height:64px; margin:0 auto 16px; border-radius:18px; display:grid; place-items:center; font-size:34px; font-weight:900; background:{accent}; color:white; }}
+    h1 {{ margin:0 0 10px; font-size:24px; }}
+    p {{ margin:0 0 18px; color:#c9bddf; line-height:1.45; }}
+    a {{ display:block; height:48px; line-height:48px; border-radius:14px; background:#f5921e; color:#160d28; text-decoration:none; font-weight:800; }}
+  </style>
+</head>
+<body>
+  <main>
+    <div class="icon">{icon}</div>
+    <h1>{html.escape(title)}</h1>
+    <p>{html.escape(message)}</p>
+    <a href="{html.escape(return_url, quote=True)}">Вернуться в ExtraArena</a>
+  </main>
+  <script>
+    setTimeout(function() {{ window.location.href = {_stdlib_json.dumps(return_url)}; }}, 1400);
+  </script>
+</body>
+</html>"""
+        return web.Response(text=body, content_type="text/html")
+
+    async def robokassa_success_handler(request: web.Request) -> web.Response:
+        success_logger = logging.getLogger(__name__)
+        service = request.app.get("robokassa_payment_service")
+        if not service:
+            return web.Response(status=503, text="payment_service_not_configured")
+
+        if request.method == "POST":
+            raw_payload = dict(await request.post())
+        else:
+            raw_payload = dict(request.rel_url.query)
+
+        parsed = service.parse_success_redirect(raw_payload)
+        payment_id = str(parsed.get("payment_id") or "")
+        return_url = _robokassa_return_url(request, payment_id)
+        if not parsed.get("success"):
+            success_logger.warning("Robokassa SuccessURL rejected: %s", parsed.get("error"))
+            return _robokassa_return_page(
+                title="Оплата требует проверки",
+                message="Robokassa вернула некорректную подпись. Товар не зачислен автоматически.",
+                return_url=return_url,
+                ok=False,
+            )
+
+        processed = await _robokassa_paid_payload(parsed=parsed, source="robokassa_success_return", logger=success_logger)
+        if not processed.get("success"):
+            return _robokassa_return_page(
+                title="Оплата ожидает проверки",
+                message="Платеж в Robokassa прошел, но сервер не смог сопоставить его с заказом. Товар не зачислен автоматически.",
+                return_url=return_url,
+                ok=False,
+            )
+
+        return _robokassa_return_page(
+            title="Оплата прошла",
+            message="Товар зачислен. Вернитесь в игру, модальное окно появится автоматически.",
+            return_url=return_url,
+            ok=True,
+        )
+
+    async def robokassa_fail_handler(request: web.Request) -> web.Response:
+        payment_id = str(request.rel_url.query.get("Shp_payment_id") or "")
+        if payment_id.startswith("robokassa_"):
+            try:
+                payment_record = await db.get_payment_by_id(payment_id)
+                if payment_record and payment_record.get("status") not in {"succeeded", "canceled"}:
+                    await db.update_payment_status(payment_id=payment_id, status="canceled")
+                    payment_record = await db.get_payment_by_id(payment_id) or payment_record
+                if payment_record and payment_record.get("status") == "canceled":
+                    await _release_one_time_payment_from_record(payment_record)
+            except Exception as e:
+                logging.getLogger(__name__).warning(
+                    "Robokassa FailURL cancel update failed for %s: %s",
+                    payment_id,
+                    e,
+                )
+        return_url = _robokassa_return_url(request, payment_id)
+        return _robokassa_return_page(
+            title="Оплата не завершена",
+            message="Robokassa не подтвердила платеж. Товар не зачислен.",
+            return_url=return_url,
+            ok=False,
         )
 
     async def _rustore_product_id_from_checkout(metadata: dict[str, Any]) -> str:
@@ -10084,6 +13936,8 @@ def create_web_app(
             payment_record = await db.get_payment_by_id(payment_id) or payment_record
         else:
             payment_record = await db.get_payment_by_id(payment_id) or payment_record
+        if new_status == "canceled":
+            await _release_one_time_payment_from_record(payment_record)
 
         rewards_processed = bool(payment_record.get("rewards_processed", False))
         if new_status == "succeeded" and not rewards_processed:
@@ -10159,6 +14013,13 @@ def create_web_app(
                 "rustore_order_id": payment_id,
                 "amount_rub": amount,
             })
+            reservation_response = await _reserve_one_time_payment_or_response(
+                user_id=user_id,
+                metadata=metadata,
+                provider="rustore",
+            )
+            if reservation_response is not None:
+                return reservation_response
 
             db_result = await db.create_payment(
                 user_id=user_id,
@@ -10170,12 +14031,19 @@ def create_web_app(
                 status="pending",
             )
             if not db_result.get("success"):
+                await _release_one_time_payment_if_needed(user_id=user_id, metadata=metadata)
                 rustore_logger.error("Failed to save RuStore payment %s: %s", payment_id, db_result.get("error"))
                 return web.json_response({
                     "success": False,
                     "error": "payment_record_not_saved",
                     "message": "Платеж не был создан. Попробуйте еще раз.",
                 }, status=500)
+            await _attach_one_time_payment_if_needed(
+                user_id=user_id,
+                metadata=metadata,
+                payment_id=payment_id,
+                provider="rustore",
+            )
 
             return web.json_response({
                 "success": True,
@@ -10223,7 +14091,7 @@ def create_web_app(
             return web.json_response({"success": True, "payment_id": payment_id})
         except Exception as e:
             logging.getLogger(__name__).error("Ошибка attach RuStore payment: %s", e, exc_info=True)
-            return web.json_response({"error": "internal_server_error", "message": str(e)}, status=500)
+            return web.json_response(_safe_internal_error_payload(), status=500)
 
     async def complete_rustore_payment_handler(request: web.Request) -> web.Response:
         """POST /api/payments/rustore/complete — проверить invoice и выдать товар."""
@@ -10272,7 +14140,7 @@ def create_web_app(
             return web.json_response(result)
         except Exception as e:
             complete_logger.error("Ошибка complete RuStore payment: %s", e, exc_info=True)
-            return web.json_response({"error": "internal_server_error", "message": str(e)}, status=500)
+            return web.json_response(_safe_internal_error_payload(), status=500)
 
     async def create_payment_handler(request: web.Request) -> web.Response:
         """Обработчик создания платежа."""
@@ -10313,6 +14181,13 @@ def create_web_app(
             amount = float(resolved["amount_rub"])
             description = str(resolved["item_name"] or "Покупка в ExtraArena")
             metadata = dict(resolved["metadata"])
+            reservation_response = await _reserve_one_time_payment_or_response(
+                user_id=user_id,
+                metadata=metadata,
+                provider="yookassa",
+            )
+            if reservation_response is not None:
+                return reservation_response
 
             # Получаем URL для возврата после оплаты
             return_url = data.get("return_url", request.app.get("webapp_url", "https://t.me/your_bot"))
@@ -10331,6 +14206,7 @@ def create_web_app(
             logger.info(f"Результат создания платежа: success={payment_result.get('success')}, error={payment_result.get('error')}")
 
             if not payment_result.get("success"):
+                await _release_one_time_payment_if_needed(user_id=user_id, metadata=metadata)
                 error_msg = payment_result.get("error", "unknown")
                 logger.error(f"Ошибка создания платежа в YooKassa: {error_msg}")
                 return web.json_response({
@@ -10352,12 +14228,19 @@ def create_web_app(
             )
 
             if not db_result.get("success"):
+                await _release_one_time_payment_if_needed(user_id=user_id, metadata=metadata)
                 logger.error("Не удалось сохранить платеж %s в БД: %s", payment_id, db_result.get("error"))
                 return web.json_response({
                     "success": False,
                     "error": "payment_record_not_saved",
                     "message": "Платеж не был создан. Попробуйте еще раз.",
                 }, status=500)
+            await _attach_one_time_payment_if_needed(
+                user_id=user_id,
+                metadata=metadata,
+                payment_id=payment_id,
+                provider="yookassa",
+            )
 
             return web.json_response({
                 "success": True,
@@ -10421,7 +14304,14 @@ def create_web_app(
                     "rewards_processed": payment_record.get("rewards_processed", False),
                     "metadata": metadata,
                 }
-                if invoice_id and payment_record["status"] not in {"succeeded", "canceled"}:
+                should_verify_rustore = invoice_id and (
+                    payment_record["status"] not in {"succeeded", "canceled"}
+                    or (
+                        payment_record["status"] == "succeeded"
+                        and not bool(payment_record.get("rewards_processed", False))
+                    )
+                )
+                if should_verify_rustore:
                     verified = await _verify_and_process_rustore_payment(
                         payment_id=payment_id,
                         payment_record=payment_record,
@@ -10437,6 +14327,29 @@ def create_web_app(
                         "message": verified.get("message"),
                     })
                 return web.json_response(result)
+
+            if payment_id.startswith("robokassa_"):
+                metadata = _payment_metadata(payment_record)
+                rewards_processed = payment_record.get("rewards_processed", False)
+                if payment_record["status"] == "succeeded" and not rewards_processed:
+                    processing_result = await process_successful_payment(
+                        db=db,
+                        payment_id=payment_id,
+                        payment_record=payment_record,
+                        source="robokassa_status_check",
+                        logger=status_logger,
+                    )
+                    rewards_processed = processing_result["status"] not in ("missing_payment", "no_rewards")
+                return web.json_response({
+                    "payment_id": payment_id,
+                    "provider": "robokassa",
+                    "status": payment_record["status"],
+                    "paid": payment_record["status"] == "succeeded",
+                    "amount": float(payment_record["amount"]),
+                    "currency": payment_record["currency"],
+                    "rewards_processed": rewards_processed,
+                    "metadata": metadata,
+                })
 
             payment_service = request.app.get("payment_service")
             if not payment_service:
@@ -10508,6 +14421,8 @@ def create_web_app(
             if yookassa_status and yookassa_status != payment_record["status"]:
                 await db.update_payment_status(payment_id=payment_id, status=yookassa_status)
                 payment_record = await db.get_payment_by_id(payment_id)
+            if yookassa_status == "canceled":
+                await _release_one_time_payment_from_record(payment_record)
 
             rewards_processed = payment_record.get("rewards_processed", False)
 
@@ -10523,7 +14438,7 @@ def create_web_app(
                     source="yookassa_status_check",
                     logger=status_logger,
                 )
-                rewards_processed = processing_result["status"] not in ("missing_payment",)
+                rewards_processed = processing_result["status"] not in ("missing_payment", "no_rewards")
                 if processing_result.get("rewards_text"):
                     status_logger.info(
                         "STATUS_CHECK: награды выданы для %s: %s",
@@ -10712,6 +14627,8 @@ def create_web_app(
             "invalid_type",
             "invalid_name",
             "invalid_tag",
+            "invalid_image_url",
+            "cannot_transfer_to_self",
         ):
             return 400
         if error in ("clan_not_found", "request_not_found", "reward_not_found", "unknown_upgrade"):
@@ -10724,6 +14641,9 @@ def create_web_app(
             "only_creator_can_demote",
             "only_creator_can_transfer",
             "only_creator_can_delete",
+            "only_creator_can_customize",
+            "cannot_move_owner",
+            "cannot_kick_owner",
             "not_in_squad",
         ):
             return 403
@@ -10731,8 +14651,11 @@ def create_web_app(
 
     async def _user_has_extra_pass(user_id: int) -> bool:
         profile = await db.get_user_profile(user_id)
-        mode = str((profile or {}).get("extra_pass") or "").lower()
-        return mode in ("active", "ultra")
+        access = _extra_pass_access(
+            (profile or {}).get("extra_pass"),
+            (profile or {}).get("extra_pass_expires_at"),
+        )
+        return bool(access["has_extra_pass"])
 
     async def _player_notify_name(user_id: int) -> str:
         name = await db.fetchval(
@@ -11098,7 +15021,7 @@ def create_web_app(
     async def squads_settings_handler(request: web.Request) -> web.Response:
         user_id = await require_user_id(request)
         try:
-            clan = await _require_squad_role(user_id, ("creator", "officer"))
+            clan = await _require_squad_role(user_id, ("creator",))
             data: dict[str, Any] = {}
             pending_images: dict[str, dict[str, Any]] = {}
             if request.content_type.startswith("multipart/"):
@@ -11120,6 +15043,8 @@ def create_web_app(
                         max_size = 6 * 1024 * 1024 if kind == "banner" else 4 * 1024 * 1024
                         if len(raw) > max_size:
                             return web.json_response({"error": "file_too_large"}, status=400)
+                        if not _image_signature_matches(raw, content_type):
+                            return web.json_response({"error": "invalid_content_type"}, status=400)
                         ext = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}.get(content_type, "jpg")
                         pending_images[kind] = {
                             "raw": raw,
@@ -11163,9 +15088,15 @@ def create_web_app(
             if "min_trophies" in data or "minTrophies" in data:
                 updates["min_trophies"] = max(0, int(data.get("min_trophies") or data.get("minTrophies") or 0))
             if "avatar_url" in data:
-                updates["avatar_url"] = str(data.get("avatar_url") or "").strip()[:500] or None
+                avatar_url = str(data.get("avatar_url") or "").strip()[:500] or None
+                if avatar_url and not _validate_local_upload_url(avatar_url, "/uploads/squads/"):
+                    raise ValueError("invalid_image_url")
+                updates["avatar_url"] = avatar_url
             if "banner_url" in data:
-                updates["banner_url"] = str(data.get("banner_url") or "").strip()[:500] or None
+                banner_url = str(data.get("banner_url") or "").strip()[:500] or None
+                if banner_url and not _validate_local_upload_url(banner_url, "/uploads/squads/"):
+                    raise ValueError("invalid_image_url")
+                updates["banner_url"] = banner_url
             if updates or pending_images:
                 moderation_error = await _moderate_squad_batch(
                     user_id,
@@ -11221,6 +15152,7 @@ def create_web_app(
                     payload={
                         "nick": await _player_notify_name(target_id),
                         "action": "повышен до офицера",
+                        "squad_name": clan.get("name") or "Сквад",
                     },
                     dedupe_suffix=f"promote:{target_id}:{int(time.time())}",
                 )
@@ -11232,6 +15164,7 @@ def create_web_app(
                     payload={
                         "nick": await _player_notify_name(target_id),
                         "action": "понижен до участника",
+                        "squad_name": clan.get("name") or "Сквад",
                     },
                     dedupe_suffix=f"demote:{target_id}:{int(time.time())}",
                 )
@@ -11453,13 +15386,15 @@ def create_web_app(
         if not await _is_admin_user(db, user_id):
             return web.json_response({"error": "admin_access_required"}, status=403)
         try:
-            days = int(request.rel_url.query.get("days", "30"))
+            days = _admin_int_query(request, "days", 30, min_value=1, max_value=365)
             data = await db.get_admin_squads_analytics(days=days)
             if isinstance(data, dict):
                 base = _empty_admin_squads_analytics()
                 base.update(data)
                 data = base
             return web.json_response({"status": "ok", "data": _serialize_datetime(data)})
+        except AdminInputError as e:
+            return _admin_json_error(e.error, status=e.status)
         except Exception as e:
             logging.getLogger(__name__).warning("admin_squads_analytics fallback: %s", e, exc_info=True)
             return web.json_response({"status": "ok", "data": _serialize_datetime(_empty_admin_squads_analytics(str(e)))})
@@ -11473,10 +15408,12 @@ def create_web_app(
                 query=request.rel_url.query.get("q") or None,
                 filter_type=request.rel_url.query.get("filter", "all"),
                 sort=request.rel_url.query.get("sort", "cbrp"),
-                limit=int(request.rel_url.query.get("limit", "50")),
-                offset=int(request.rel_url.query.get("offset", "0")),
+                limit=_admin_int_query(request, "limit", 50, min_value=1, max_value=200),
+                offset=_admin_int_query(request, "offset", 0, min_value=0, max_value=1_000_000),
             )
             return web.json_response({"status": "ok", "data": _serialize_datetime(data)})
+        except AdminInputError as e:
+            return _admin_json_error(e.error, status=e.status)
         except Exception as e:
             logging.getLogger(__name__).error("admin_squads_list error: %s", e, exc_info=True)
             return web.json_response({"error": str(e)}, status=500)
@@ -11625,6 +15562,13 @@ def create_web_app(
             mode = str(data.get("mode") or "set")
             if not upgrade_type:
                 return web.json_response({"error": "upgrade_type_required"}, status=400)
+            try:
+                squad_cfg = await db.get_squad_runtime_config()
+            except Exception:
+                squad_cfg = {}
+            valid_upgrades = (squad_cfg.get("squad_upgrades") if isinstance(squad_cfg, dict) else None) or SQUAD_SETTINGS_DEFAULTS.get("squad_upgrades", {})
+            if upgrade_type not in valid_upgrades:
+                return web.json_response({"error": "invalid_upgrade_type"}, status=400)
             if mode == "buy":
                 result = await db.buy_clan_upgrade(int(clan["id"]), int(clan["owner_id"]), upgrade_type)
             else:
@@ -11709,6 +15653,7 @@ def create_web_app(
     # ── Image upload ─────────────────────────────────────────────────────────
 
     async def community_upload_image_handler(request: web.Request) -> web.Response:
+        from infrastructure.moderation import check_rate_limit, moderate_content
         user_id = await require_user_id(request)
         try:
             reader = await request.multipart()
@@ -11722,13 +15667,34 @@ def create_web_app(
             data = await field.read(decode=True)
             if len(data) > 5 * 1024 * 1024:
                 return web.json_response({"error": "file_too_large"}, status=400)
+            if not _image_signature_matches(data, content_type):
+                return web.json_response({"error": "invalid_content_type"}, status=400)
+            rl = await check_rate_limit(db, user_id)
+            if not rl["allowed"]:
+                return web.json_response({
+                    "error": "rate_limit_exceeded",
+                    "message": f"Слишком много отправок. Попробуйте через {rl['retry_after_seconds'] // 60} мин.",
+                    "retry_after_seconds": rl["retry_after_seconds"],
+                }, status=429)
+            mod = await moderate_content(
+                "Изображение объявления",
+                "ANNOUNCEMENT",
+                image_b64=base64.b64encode(data).decode("ascii"),
+                image_mime=content_type,
+            )
+            await db.record_submission(user_id, "ANNOUNCEMENT")
+            if mod["decision"] == "reject":
+                return web.json_response({
+                    "error": "moderation_rejected",
+                    "reason": mod.get("reason", "Контент не прошёл модерацию"),
+                }, status=422)
             filename = f"{uuid.uuid4().hex}.{ext}"
             filepath = COMMUNITY_UPLOADS_DIR / filename
             filepath.write_bytes(data)
             return web.json_response({"image_url": f"/uploads/community/{filename}"})
         except Exception as e:
             logging.getLogger(__name__).error("Ошибка загрузки изображения: %s", e, exc_info=True)
-            return web.json_response({"error": "upload_failed", "message": str(e)}, status=500)
+            return web.json_response({"error": "upload_failed"}, status=500)
 
     async def community_image_static_handler(request: web.Request) -> web.Response:
         filename = request.match_info["filename"]
@@ -11746,8 +15712,12 @@ def create_web_app(
 
     async def community_news_list_handler(request: web.Request) -> web.Response:
         user_id = await require_user_id(request)
-        limit = int(request.rel_url.query.get("limit", 30))
-        offset = int(request.rel_url.query.get("offset", 0))
+        try:
+            limit, offset = _community_pagination_query(
+                request, default_limit=30, max_limit=50
+            )
+        except AdminInputError as e:
+            return _admin_json_error(e.error, status=e.status)
         posts = await db.get_news_posts(limit=limit, offset=offset, user_id=user_id)
         return web.json_response({"posts": posts})
 
@@ -11797,20 +15767,40 @@ def create_web_app(
                         pass
                     return web.json_response(poll_result, status=400)
                 result["poll_id"] = poll_result.get("poll_id")
+            if result.get("success") and hasattr(db, "create_news_entry"):
+                try:
+                    legacy_text = re.sub(r"<[^>]+>", "", str(content or title)).strip()
+                    await db.create_news_entry(
+                        author_id=user_id,
+                        text=legacy_text or title,
+                        category=DEFAULT_CATEGORY,
+                        button_text="Открыть новости",
+                        button_url=str(app.get("webapp_url") or "").strip() or None,
+                        photo_file_id=None,
+                    )
+                except Exception as exc:
+                    logging.getLogger(__name__).warning(
+                        "Failed to mirror community news post to legacy news: %s",
+                        exc,
+                        exc_info=True,
+                    )
             return web.json_response(result)
         except Exception as e:
             logging.getLogger(__name__).error("Ошибка создания новости: %s", e, exc_info=True)
-            return web.json_response({"error": "internal_server_error", "message": str(e)}, status=500)
+            return web.json_response({"error": "internal_server_error"}, status=500)
 
     async def community_news_like_handler(request: web.Request) -> web.Response:
         user_id = await require_user_id(request)
         try:
             data = await request.json()
-            post_id = int(data.get("post_id"))
+            post_id = _community_required_int_field(data, "post_id")
             result = await db.toggle_post_like(post_id, user_id)
             return web.json_response(result)
+        except AdminInputError as e:
+            return _admin_json_error(e.error, status=e.status)
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            logging.getLogger(__name__).error("community_news_like error: %s", e, exc_info=True)
+            return web.json_response({"error": "internal_server_error"}, status=500)
 
     async def community_poll_vote_handler(request: web.Request) -> web.Response:
         user_id = await require_user_id(request)
@@ -11824,7 +15814,8 @@ def create_web_app(
                 return web.json_response(results)
             return web.json_response(result, status=400)
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            logging.getLogger(__name__).error("community_poll_vote error: %s", e, exc_info=True)
+            return web.json_response({"error": "internal_server_error"}, status=500)
 
     async def community_poll_results_handler(request: web.Request) -> web.Response:
         user_id = await require_user_id(request)
@@ -11838,8 +15829,18 @@ def create_web_app(
             results = await db.get_poll_results(poll_id=poll["id"], user_id=user_id)
             return web.json_response(results)
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            logging.getLogger(__name__).error("community_poll_results error: %s", e, exc_info=True)
+            return web.json_response({"error": "internal_server_error"}, status=500)
 
+    async def community_rating_handler(request: web.Request) -> web.Response:
+        await require_user_id(request)
+        scope = (request.rel_url.query.get("scope") or "players").strip() or "players"
+        if scope not in {"players", "squads"}:
+            return web.json_response({"error": "invalid_scope"}, status=400)
+        data = await db.get_community_rating(scope=scope)
+        return web.json_response(data)
+
+    app.router.add_get("/api/community/rating", community_rating_handler)
     app.router.add_get("/api/community/news", community_news_list_handler)
     app.router.add_post("/api/community/news/create", community_news_create_handler)
     app.router.add_post("/api/community/news/like", community_news_like_handler)
@@ -11850,8 +15851,12 @@ def create_web_app(
 
     async def community_ideas_list_handler(request: web.Request) -> web.Response:
         user_id = await require_user_id(request)
-        limit = int(request.rel_url.query.get("limit", 30))
-        offset = int(request.rel_url.query.get("offset", 0))
+        try:
+            limit, offset = _community_pagination_query(
+                request, default_limit=30, max_limit=50
+            )
+        except AdminInputError as e:
+            return _admin_json_error(e.error, status=e.status)
         sort_by = request.rel_url.query.get("sort", "votes")
         ideas = await db.get_ideas(limit=limit, offset=offset, sort_by=sort_by, user_id=user_id)
         return web.json_response({"ideas": ideas})
@@ -11900,24 +15905,27 @@ def create_web_app(
             return web.json_response(result)
         except Exception as e:
             logging.getLogger(__name__).error("Ошибка создания идеи: %s", e, exc_info=True)
-            return web.json_response({"error": "internal_server_error", "message": str(e)}, status=500)
+            return web.json_response({"error": "internal_server_error"}, status=500)
 
     async def community_ideas_vote_handler(request: web.Request) -> web.Response:
         user_id = await require_user_id(request)
         try:
             data = await request.json()
-            post_id = int(data.get("post_id"))
+            post_id = _community_required_int_field(data, "post_id")
             vote_type = data.get("vote_type", "up")
             if vote_type not in ("up", "down"):
                 return web.json_response({"error": "invalid_vote_type"}, status=400)
             result = await db.vote_idea(post_id=post_id, user_id=user_id, vote_type=vote_type)
             return web.json_response(result)
+        except AdminInputError as e:
+            return _admin_json_error(e.error, status=e.status)
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            logging.getLogger(__name__).error("community_ideas_vote error: %s", e, exc_info=True)
+            return web.json_response({"error": "internal_server_error"}, status=500)
 
     async def community_ideas_admin_approve_handler(request: web.Request) -> web.Response:
         user_id = await require_user_id(request)
-        if not await db.is_admin(user_id):
+        if not await _is_admin_user(db, user_id):
             return web.json_response({"error": "admin_access_required"}, status=403)
         try:
             data = await request.json()
@@ -11925,11 +15933,12 @@ def create_web_app(
             result = await db.admin_approve_idea(post_id)
             return web.json_response(result)
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            logging.getLogger(__name__).error("community_ideas_admin_approve error: %s", e, exc_info=True)
+            return web.json_response({"error": "internal_server_error"}, status=500)
 
     async def community_ideas_admin_status_handler(request: web.Request) -> web.Response:
         user_id = await require_user_id(request)
-        if not await db.is_admin(user_id):
+        if not await _is_admin_user(db, user_id):
             return web.json_response({"error": "admin_access_required"}, status=403)
         try:
             data = await request.json()
@@ -11938,16 +15947,24 @@ def create_web_app(
             result = await db.update_idea_status(post_id, status)
             return web.json_response(result)
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            logging.getLogger(__name__).error("community_ideas_admin_status error: %s", e, exc_info=True)
+            return web.json_response({"error": "internal_server_error"}, status=500)
 
     async def community_bugs_list_handler(request: web.Request) -> web.Response:
         user_id = await require_user_id(request)
-        if not await db.is_admin(user_id):
+        if not await _is_admin_user(db, user_id):
             return web.json_response({"error": "admin_access_required"}, status=403)
-        limit = int(request.rel_url.query.get("limit", 50))
-        offset = int(request.rel_url.query.get("offset", 0))
-        bugs = await db.get_bugs_for_admin(limit=limit, offset=offset)
-        return web.json_response({"bugs": bugs})
+        try:
+            limit, offset = _community_pagination_query(
+                request, default_limit=50, max_limit=100
+            )
+            bugs = await db.get_bugs_for_admin(limit=limit, offset=offset)
+            return web.json_response({"bugs": bugs})
+        except AdminInputError as e:
+            return _admin_json_error(e.error, status=e.status)
+        except Exception as e:
+            logging.getLogger(__name__).error("community_bugs_list error: %s", e, exc_info=True)
+            return web.json_response({"error": "internal_server_error"}, status=500)
 
     app.router.add_get("/api/community/ideas", community_ideas_list_handler)
     app.router.add_post("/api/community/ideas/create", community_ideas_create_handler)
@@ -11960,8 +15977,12 @@ def create_web_app(
 
     async def community_announcements_list_handler(request: web.Request) -> web.Response:
         user_id = await require_user_id(request)
-        limit = int(request.rel_url.query.get("limit", 20))
-        offset = int(request.rel_url.query.get("offset", 0))
+        try:
+            limit, offset = _community_pagination_query(
+                request, default_limit=20, max_limit=50
+            )
+        except AdminInputError as e:
+            return _admin_json_error(e.error, status=e.status)
         announcements = await db.get_announcements(limit=limit, offset=offset, user_id=user_id)
         return web.json_response({"announcements": announcements})
 
@@ -11972,23 +15993,27 @@ def create_web_app(
             from infrastructure.community_config import calc_announcement_price
             clan = await db.get_user_clan(user_id)
             has_boost = clan.get("has_boost", False) if clan else False
+            active_pin = await db.get_active_pin()
+            from infrastructure.community_config import ANNOUNCE_PIN_BASE_COST, ANNOUNCE_PIN_OVERBID_STEP
+            if active_pin:
+                min_pin_price = active_pin["pin_price"] + ANNOUNCE_PIN_OVERBID_STEP
+            else:
+                min_pin_price = ANNOUNCE_PIN_BASE_COST
+            is_pinned = bool(data.get("is_pinned", False))
+            requested_pin_price = int(data.get("pin_price") or 0)
             price = calc_announcement_price(
                 text=data.get("text", ""),
                 has_image=bool(data.get("has_image", False)),
                 duration_key=data.get("duration_key", "1d"),
-                is_pinned=bool(data.get("is_pinned", False)),
+                is_pinned=is_pinned,
                 has_boost=has_boost,
+                pin_price=max(requested_pin_price, min_pin_price) if is_pinned else 0,
             )
-            # include min required pin price
-            active_pin = await db.get_active_pin()
-            from infrastructure.community_config import ANNOUNCE_PIN_BASE_COST, ANNOUNCE_PIN_OVERBID_STEP
-            if active_pin:
-                price["min_pin_price"] = active_pin["pin_price"] + ANNOUNCE_PIN_OVERBID_STEP
-            else:
-                price["min_pin_price"] = ANNOUNCE_PIN_BASE_COST
+            price["min_pin_price"] = min_pin_price
             return web.json_response(price)
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            logging.getLogger(__name__).error("community_announcements_cost error: %s", e, exc_info=True)
+            return web.json_response({"error": "internal_server_error"}, status=500)
 
     async def community_announcements_create_handler(request: web.Request) -> web.Response:
         from infrastructure.moderation import moderate_content, check_rate_limit
@@ -12008,7 +16033,10 @@ def create_web_app(
             has_image = bool(data.get("image_url"))
             duration_key = data.get("duration_key", "1d")
             is_pinned = bool(data.get("is_pinned", False))
-            image_url = data.get("image_url")
+            image_url = str(data.get("image_url") or "").strip() or None
+            if image_url and not _validate_local_upload_url(image_url, "/uploads/community/"):
+                return web.json_response({"error": "invalid_image_url"}, status=400)
+            has_image = bool(image_url)
 
             # determine pin_price
             active_pin = await db.get_active_pin()
@@ -12030,12 +16058,8 @@ def create_web_app(
                 duration_key=duration_key,
                 is_pinned=is_pinned,
                 has_boost=clan.get("has_boost", False),
+                pin_price=pin_price,
             )
-            if is_pinned:
-                extra_pin = pin_price - ANNOUNCE_PIN_BASE_COST
-                if extra_pin > 0:
-                    price_info["total"] += extra_pin
-                    price_info["pin_extra"] = pin_price
 
             # rate limit
             rl = await check_rate_limit(db, user_id)
@@ -12069,18 +16093,21 @@ def create_web_app(
             return web.json_response(result, status=200 if result["success"] else 400)
         except Exception as e:
             logging.getLogger(__name__).error("Ошибка создания объявления: %s", e, exc_info=True)
-            return web.json_response({"error": "internal_server_error", "message": str(e)}, status=500)
+            return web.json_response({"error": "internal_server_error"}, status=500)
 
     async def community_announcements_react_handler(request: web.Request) -> web.Response:
         user_id = await require_user_id(request)
         try:
             data = await request.json()
-            post_id = int(data.get("post_id"))
+            post_id = _community_required_int_field(data, "post_id")
             vote_type = data.get("vote_type", "like")
             result = await db.react_announcement(post_id=post_id, user_id=user_id, vote_type=vote_type)
             return web.json_response(result)
+        except AdminInputError as e:
+            return _admin_json_error(e.error, status=e.status)
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            logging.getLogger(__name__).error("community_announcements_react error: %s", e, exc_info=True)
+            return web.json_response({"error": "internal_server_error"}, status=500)
 
     async def community_pin_info_handler(request: web.Request) -> web.Response:
         from infrastructure.community_config import ANNOUNCE_PIN_BASE_COST, ANNOUNCE_PIN_OVERBID_STEP
@@ -12119,7 +16146,7 @@ def create_web_app(
         """Отдать конфигурацию платежей (курсы и коэффициенты)."""
         provider_order = [
             part.strip()
-            for part in str(app.get("payment_provider_order", "yookassa,rustore,stars")).split(",")
+            for part in str(app.get("payment_provider_order", "robokassa,yookassa,rustore,stars")).split(",")
             if part.strip()
         ]
         return web.json_response({
@@ -12131,6 +16158,11 @@ def create_web_app(
                 "yookassa": {
                     "enabled": app.get("payment_service") is not None,
                     "label": "YooKassa",
+                },
+                "robokassa": {
+                    "enabled": app.get("robokassa_payment_service") is not None,
+                    "label": "Robokassa",
+                    "test_mode": bool(getattr(getattr(app.get("robokassa_payment_service"), "settings", None), "test_mode", False)),
                 },
                 "rustore": {
                     "enabled": True,
@@ -12199,6 +16231,14 @@ def create_web_app(
 
             # Сохраняем информацию о платеже в БД до отправки инвойса
             payment_id = f"stars_{invoice_payload}"
+            reservation_response = await _reserve_one_time_payment_or_response(
+                user_id=user_id,
+                metadata=metadata,
+                provider="stars",
+            )
+            if reservation_response is not None:
+                return reservation_response
+
             db_result = await db.create_payment(
                 user_id=user_id,
                 payment_id=payment_id,
@@ -12219,11 +16259,19 @@ def create_web_app(
 
             if not db_result.get("success"):
                 logger.error("Не удалось сохранить платеж Stars %s в БД: %s", payment_id, db_result.get("error"))
+                await _release_one_time_payment_if_needed(user_id=user_id, metadata=metadata)
                 return web.json_response({
                     "success": False,
                     "error": "payment_record_not_saved",
                     "message": "Инвойс не был создан. Попробуйте еще раз.",
                 }, status=500)
+
+            await _attach_one_time_payment_if_needed(
+                user_id=user_id,
+                metadata=metadata,
+                payment_id=payment_id,
+                provider="stars",
+            )
 
             # Отправляем инвойс через Telegram Bot API
             from aiogram import Bot
@@ -12284,6 +16332,7 @@ def create_web_app(
                 })
             except Exception as e:
                 logger.error(f"Ошибка отправки инвойса Stars пользователю {user_id}: {e}", exc_info=True)
+                await _release_one_time_payment_if_needed(user_id=user_id, metadata=metadata)
                 return web.json_response({
                     "success": False,
                     "error": "invoice_send_failed",
@@ -12412,6 +16461,119 @@ def create_web_app(
                 {"error": "internal_server_error", "message": str(e)}, status=500
             )
 
+    async def _reconcile_checkout_payment_status(
+        request: web.Request,
+        *,
+        payment_id: str,
+        payment_record: dict[str, Any],
+        logger: logging.Logger,
+    ) -> dict[str, Any]:
+        metadata = _payment_metadata(payment_record)
+        payment_status = payment_record.get("status")
+        result: dict[str, Any] = {
+            "payment_status": payment_status,
+            "paid": payment_status == "succeeded",
+            "amount": float(payment_record.get("amount") or 0),
+            "currency": payment_record.get("currency"),
+            "rewards_processed": bool(payment_record.get("rewards_processed", False)),
+            "metadata": metadata,
+            "modal_shown": bool(metadata.get("modal_shown", False)),
+        }
+
+        if payment_id.startswith("stars_") or payment_id.startswith("rustore_"):
+            return result
+
+        if payment_id.startswith("robokassa_"):
+            result["provider"] = "robokassa"
+            if payment_status == "succeeded" and not result["rewards_processed"]:
+                processing_result = await process_successful_payment(
+                    db=db,
+                    payment_id=payment_id,
+                    payment_record=payment_record,
+                    source="robokassa_status_check",
+                    logger=logger,
+                )
+                result["rewards_processed"] = processing_result["status"] not in ("missing_payment", "no_rewards")
+                refreshed = await db.get_payment_by_id(payment_id)
+                if refreshed:
+                    metadata = _payment_metadata(refreshed)
+                    result.update({
+                        "payment_status": refreshed.get("status"),
+                        "paid": refreshed.get("status") == "succeeded",
+                        "rewards_processed": bool(refreshed.get("rewards_processed", result["rewards_processed"])),
+                        "metadata": metadata,
+                        "modal_shown": bool(metadata.get("modal_shown", False)),
+                    })
+            return result
+
+        result["provider"] = "yookassa"
+        payment_service = request.app.get("payment_service")
+        if not payment_service:
+            return result
+
+        status_result = await asyncio.to_thread(payment_service.get_payment_status, payment_id)
+        if not status_result.get("success"):
+            logger.warning("CHECKOUT_SESSION_STATUS: YooKassa status check failed for %s", payment_id)
+            return result
+
+        yookassa_status = status_result.get("status") or payment_status
+        yookassa_paid = bool(status_result.get("paid"))
+        try:
+            provider_amount = float(status_result.get("amount") or 0)
+            record_amount = float(payment_record.get("amount") or 0)
+        except (TypeError, ValueError):
+            provider_amount = record_amount = -1.0
+        provider_currency = str(status_result.get("currency") or "").upper()
+        record_currency = str(payment_record.get("currency") or "").upper()
+        if abs(provider_amount - record_amount) > 0.01 or (
+            provider_currency and record_currency and provider_currency != record_currency
+        ):
+            logger.error(
+                "CHECKOUT_SESSION_STATUS amount mismatch for %s: provider %.2f %s, record %.2f %s",
+                payment_id,
+                provider_amount,
+                provider_currency,
+                record_amount,
+                record_currency,
+            )
+            result.update({
+                "payment_status": payment_status,
+                "paid": False,
+                "verification_failed": True,
+                "reason": "amount_mismatch",
+            })
+            return result
+
+        if yookassa_status and yookassa_status != payment_status:
+            await db.update_payment_status(payment_id=payment_id, status=yookassa_status)
+            payment_record = await db.get_payment_by_id(payment_id) or payment_record
+        if yookassa_status == "canceled":
+            await _release_one_time_payment_from_record(payment_record)
+
+        rewards_processed = bool(payment_record.get("rewards_processed", False))
+        if not rewards_processed and yookassa_status == "succeeded" and yookassa_paid:
+            processing_result = await process_successful_payment(
+                db=db,
+                payment_id=payment_id,
+                payment_record=payment_record,
+                source="yookassa_status_check",
+                logger=logger,
+            )
+            rewards_processed = processing_result["status"] not in ("missing_payment", "no_rewards")
+            payment_record = await db.get_payment_by_id(payment_id) or payment_record
+
+        metadata = _payment_metadata(payment_record)
+        result.update({
+            "payment_status": yookassa_status or payment_record.get("status"),
+            "paid": yookassa_paid,
+            "amount": status_result.get("amount") or float(payment_record.get("amount") or 0),
+            "currency": status_result.get("currency") or payment_record.get("currency"),
+            "rewards_processed": bool(payment_record.get("rewards_processed", rewards_processed)),
+            "metadata": metadata,
+            "modal_shown": bool(metadata.get("modal_shown", False)),
+        })
+        return result
+
     async def checkout_session_status_handler(request: web.Request) -> web.Response:
         """GET /api/payments/checkout/session-status?jti=... — статус сессии и платежа."""
         user_id = await require_user_id(request)
@@ -12434,23 +16596,29 @@ def create_web_app(
                 "jti": jti,
                 "session_status": session.get("status"),
                 "payment_id": payment_id,
+                "provider": "robokassa" if str(payment_id or "").startswith("robokassa_") else ("stars" if str(payment_id or "").startswith("stars_") else ("rustore" if str(payment_id or "").startswith("rustore_") else "yookassa")),
                 "confirmation_url": session.get("confirmation_url"),
                 "rewards_processed": False,
                 "modal_shown": False,
                 "payment_status": None,
+                "metadata": {},
             }
 
             if payment_id:
                 payment_record = await db.get_payment_by_id(payment_id)
                 if payment_record:
-                    result["payment_status"] = payment_record.get("status")
-                    result["rewards_processed"] = payment_record.get("rewards_processed", False)
-                    if isinstance(payment_record.get("metadata"), dict):
-                        result["modal_shown"] = payment_record["metadata"].get("modal_shown", False)
+                    if int(payment_record.get("user_id", 0)) != user_id:
+                        return web.json_response({"error": "access_denied"}, status=403)
+                    status_logger = logging.getLogger(__name__)
+                    result.update(await _reconcile_checkout_payment_status(
+                        request,
+                        payment_id=payment_id,
+                        payment_record=payment_record,
+                        logger=status_logger,
+                    ))
 
             return web.json_response(result)
         except Exception as e:
-            import logging
             logging.getLogger(__name__).error("Ошибка session-status: %s", e, exc_info=True)
             return web.json_response(
                 {"error": "internal_server_error", "message": str(e)}, status=500
@@ -12476,6 +16644,7 @@ def create_web_app(
                     continue
                 result.append({
                     "payment_id": p["payment_id"],
+                    "provider": "robokassa" if str(p["payment_id"]).startswith("robokassa_") else ("stars" if str(p["payment_id"]).startswith("stars_") else ("rustore" if str(p["payment_id"]).startswith("rustore_") else "yookassa")),
                     "amount": float(p["amount"]),
                     "currency": p["currency"],
                     "description": p["description"],
@@ -12496,6 +16665,17 @@ def create_web_app(
     app.router.add_post("/api/payments/rustore/create", create_rustore_payment_handler)
     app.router.add_post("/api/payments/rustore/attach", attach_rustore_payment_handler)
     app.router.add_post("/api/payments/rustore/complete", complete_rustore_payment_handler)
+    app.router.add_get("/api/payments/robokassa/pay/{payment_id}", robokassa_payment_page_handler)
+    app.router.add_post("/api/payments/robokassa/result", robokassa_result_handler)
+    app.router.add_get("/api/payments/robokassa/result", robokassa_result_handler)
+    app.router.add_post("/api/payments/robokassa/success", robokassa_success_handler)
+    app.router.add_get("/api/payments/robokassa/success", robokassa_success_handler)
+    app.router.add_post("/extraShop/payment-success", robokassa_success_handler)
+    app.router.add_get("/extraShop/payment-success", robokassa_success_handler)
+    app.router.add_post("/api/payments/robokassa/fail", robokassa_fail_handler)
+    app.router.add_get("/api/payments/robokassa/fail", robokassa_fail_handler)
+    app.router.add_post("/extraShop/payment-fail", robokassa_fail_handler)
+    app.router.add_get("/extraShop/payment-fail", robokassa_fail_handler)
     app.router.add_get("/api/payments/status", get_payment_status_handler)
     app.router.add_get("/api/payments/config", payment_config_handler)
     app.router.add_post("/api/payments/webhook", yookassa_webhook_handler)
@@ -12526,6 +16706,12 @@ def create_web_app(
 
             if not item_type:
                 return web.json_response({"error": "item_type_required"}, status=400)
+            if isinstance(item_type, str) and item_type.startswith("case_tier_"):
+                return web.json_response({
+                    "success": False,
+                    "error": "legacy_case_tier_disabled",
+                    "message": "Покупка кейсов по тирам больше недоступна. Используйте наборы кейсов.",
+                }, status=400)
 
             is_admin = await _is_admin_user(db, user_id)
             admin_case_tier: int | None = None
@@ -12974,7 +17160,7 @@ def create_web_app(
                 "Ошибка покупки товара за гемы для user_id %s: %s", user_id, e, exc_info=True
             )
             return web.json_response(
-                {"error": "internal_server_error", "message": str(e)}, status=500
+                {"error": "internal_server_error", "message": "Не удалось выполнить покупку"}, status=500
             )
 
     app.router.add_post("/api/shop/buy", shop_buy_handler)
@@ -12982,10 +17168,12 @@ def create_web_app(
     async def card_image_handler(request: web.Request) -> web.Response:
         """
         Возвращает изображение карты из локальной файловой системы.
-        Изображение берется из DesignAssets/Cards/<card_id>.png
+        Изображение берется из DesignAssets/Cards/<card_id>.<png|jpg|jpeg|webp>
         """
         card_id = request.rel_url.query.get("card_id")
         file_id = request.rel_url.query.get("file_id")
+        requested_variant = request.rel_url.query.get("variant")
+        asset_variant = "preview" if requested_variant == "preview" else None
 
         if file_id and not card_id:
             try:
@@ -13007,26 +17195,23 @@ def create_web_app(
         except ValueError:
             return web.json_response({"error": "invalid_card_id"}, status=400)
 
-        card_image_path = DESIGN_ASSETS_DIR / "Cards" / f"{card_id_int}.png"
+        card_image_path = resolve_card_asset_path(card_id_int, variant=asset_variant)
 
-        if not card_image_path.exists() or not card_image_path.is_file():
+        if card_image_path is None:
             import logging
-            logging.getLogger(__name__).warning(f"Изображение карты не найдено: {card_image_path}")
+            logging.getLogger(__name__).warning(f"Изображение карты не найдено: {card_id_int}")
             return web.json_response({"error": "card_image_not_found"}, status=404)
 
         try:
-            with open(card_image_path, "rb") as f:
-                image_data = f.read()
-            content_type = "image/png"
-            response = web.Response(
-                body=image_data,
-                content_type=content_type,
-                headers={
-                    "Cache-Control": "public, max-age=86400",
-                    "Access-Control-Allow-Origin": "*"
-                }
+            cache_control = (
+                "public, max-age=31536000, immutable"
+                if asset_variant == "preview" and card_image_path.parent == card_assets.CARD_PREVIEW_ASSETS_DIR
+                else "public, max-age=86400"
             )
-            return response
+            return web.FileResponse(
+                card_image_path,
+                headers={"Cache-Control": cache_control},
+            )
         except Exception as e:
             import logging
             logging.getLogger(__name__).error(f"Ошибка чтения изображения карты: {e}", exc_info=True)
@@ -13079,6 +17264,17 @@ def create_web_app(
                 "item_name": item_name,
                 "starter": package_type == "starter_once",
             }
+            if package_type == "starter_once":
+                metadata["one_time_product"] = True
+                metadata["product_key"] = "gems_package:starter_once"
+
+            reservation_response = await _reserve_one_time_payment_or_response(
+                user_id=user_id,
+                metadata=metadata,
+                provider="yookassa",
+            )
+            if reservation_response is not None:
+                return reservation_response
 
             return_url = data.get("return_url", request.app.get("webapp_url", "https://t.me/your_bot"))
 
@@ -13092,6 +17288,7 @@ def create_web_app(
             )
 
             if not payment_result.get("success"):
+                await _release_one_time_payment_if_needed(user_id=user_id, metadata=metadata)
                 err = payment_result.get("error", "unknown")
                 logger.error("Ошибка создания платежа за гемы: %s", err)
                 return web.json_response({
@@ -13111,12 +17308,19 @@ def create_web_app(
                 metadata=metadata,
             )
             if not db_result.get("success"):
+                await _release_one_time_payment_if_needed(user_id=user_id, metadata=metadata)
                 logger.error("Не удалось сохранить платёж %s в БД: %s", payment_id, db_result.get("error"))
                 return web.json_response({
                     "success": False,
                     "error": "payment_record_not_saved",
                     "message": "Платеж не был создан. Попробуйте еще раз.",
                 }, status=500)
+            await _attach_one_time_payment_if_needed(
+                user_id=user_id,
+                metadata=metadata,
+                payment_id=payment_id,
+                provider="yookassa",
+            )
 
             return web.json_response({
                 "success": True,
@@ -13133,10 +17337,9 @@ def create_web_app(
         """Получить сегодняшнюю ротацию карт на частицы."""
         user_id = await require_user_id(request)
 
-        from datetime import date, datetime, timedelta, timezone
-
         try:
-            today = date.today()
+            now = datetime.now(timezone.utc)
+            today = now.date()
             settings_record = await db.get_user_settings(user_id)
             rotation_date = settings_record.get("particles_rotation_date") if settings_record else None
             raw_cards = settings_record.get("particles_rotation_cards") if settings_record else None
@@ -13191,7 +17394,6 @@ def create_web_app(
                 user_id,
             )
 
-            now = datetime.now(timezone.utc)
             midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
             next_rotation_ts = int(midnight.timestamp())
 
@@ -13233,6 +17435,7 @@ def create_web_app(
                 "rotation_date": today.isoformat(),
                 "next_rotation_ts": next_rotation_ts,
                 "purchased_today": purchased_today,
+                "allow_max_level_purchase": bool(app.get("shop_allow_max_level_particles", False)),
             })
         except Exception as e:
             import logging
@@ -13251,7 +17454,7 @@ def create_web_app(
             if card_id <= 0:
                 return web.json_response({"error": "invalid_card_id"}, status=400)
 
-            from datetime import date
+            today = datetime.now(timezone.utc).date()
             settings_record = await db.get_user_settings(user_id)
             raw_cards = settings_record.get("particles_rotation_cards") if settings_record else None
             rotation_date = settings_record.get("particles_rotation_date") if settings_record else None
@@ -13265,18 +17468,42 @@ def create_web_app(
             if isinstance(raw_cards, str):
                 raw_cards = _stdlib_json.loads(raw_cards)
 
-            if rotation_date != date.today() or not raw_cards or card_id not in raw_cards:
+            if rotation_date != today or not raw_cards or card_id not in raw_cards:
                 return web.json_response({"error": "card_not_in_rotation"}, status=400)
 
             purchased = _stdlib_json.loads(purchased_raw) if isinstance(purchased_raw, str) else (purchased_raw or [])
             if card_id in purchased:
                 return web.json_response({"error": "already_purchased", "message": "Вы уже купили частицы для этой карты сегодня"}, status=400)
 
-            rarity_row = await db.fetchrow("SELECT rarity FROM cards WHERE id = $1", card_id)
-            if not rarity_row:
+            card_row = await db.fetchrow(
+                """
+                SELECT c.rarity,
+                       c.simplified_levelup,
+                       COALESCE(uc.level, 1) AS level
+                FROM cards c
+                LEFT JOIN user_cards uc
+                  ON uc.card_id = c.id AND uc.user_id = $2
+                WHERE c.id = $1
+                """,
+                card_id,
+                user_id,
+            )
+            if not card_row:
                 return web.json_response({"error": "card_not_found"}, status=404)
 
-            rarity = rarity_row["rarity"]
+            allow_max_level_particle_purchase = bool(app.get("shop_allow_max_level_particles", False))
+            card_info = dict(card_row)
+            simplified_levelup = bool(card_info.get("simplified_levelup", False))
+            current_level = int(card_info.get("level") or 1)
+            max_level = db.get_card_max_level({"simplified_levelup": simplified_levelup})
+            if current_level >= max_level and not allow_max_level_particle_purchase:
+                return web.json_response({
+                    "success": False,
+                    "error": "max_level_reached",
+                    "message": "Эта карта уже максимального уровня. Покупка частиц отключена.",
+                }, status=400)
+
+            rarity = card_info["rarity"]
             cost = PARTICLES_COSTS.get(rarity)
             if not cost:
                 return web.json_response({"error": "unsupported_rarity"}, status=400)
@@ -13290,13 +17517,25 @@ def create_web_app(
                     async with conn.transaction():
                         locked_settings = await conn.fetchrow(
                             """
-                            SELECT particles_purchased_today
+                            SELECT particles_rotation_date,
+                                   particles_rotation_cards,
+                                   particles_purchased_today
                             FROM user_settings
                             WHERE user_id = $1
                             FOR UPDATE
                             """,
                             user_id,
                         )
+                        if not locked_settings:
+                            return web.json_response({"error": "card_not_in_rotation"}, status=400)
+                        locked_rotation_date = locked_settings["particles_rotation_date"]
+                        locked_rotation_cards = locked_settings["particles_rotation_cards"]
+                        if isinstance(locked_rotation_date, datetime):
+                            locked_rotation_date = locked_rotation_date.date()
+                        if isinstance(locked_rotation_cards, str):
+                            locked_rotation_cards = _stdlib_json.loads(locked_rotation_cards)
+                        if locked_rotation_date != today or not locked_rotation_cards or card_id not in locked_rotation_cards:
+                            return web.json_response({"error": "card_not_in_rotation"}, status=400)
                         locked_raw = locked_settings["particles_purchased_today"] if locked_settings else []
                         if isinstance(locked_raw, str):
                             locked_purchased = _stdlib_json.loads(locked_raw)
@@ -13489,7 +17728,6 @@ def create_web_app(
                 content_type=content_type,
                 headers={
                     "Cache-Control": "public, max-age=86400",  # Кэшируем на 24 часа
-                    "Access-Control-Allow-Origin": "*"  # Разрешаем CORS
                 }
             )
             return response
@@ -13566,7 +17804,7 @@ def create_web_app(
 
             if not name:
                 return web.json_response({"error": "name_required"}, status=400)
-            if price < 0:
+            if not math.isfinite(price) or price < 0:
                 return web.json_response({"error": "invalid_price"}, status=400)
             if currency not in ("rubles", "gems", "coins"):
                 return web.json_response({"error": "invalid_currency"}, status=400)
@@ -13632,7 +17870,7 @@ def create_web_app(
                 ) or None
             if "price" in data:
                 price = float(data.get("price") or 0)
-                if price < 0:
+                if not math.isfinite(price) or price < 0:
                     return web.json_response({"error": "invalid_price"}, status=400)
                 update_kwargs["price"] = price
             if "currency" in data:
@@ -13688,8 +17926,8 @@ def create_web_app(
             result = await db.delete_shop_set(set_id)
             if result.get("success"):
                 return web.json_response({"success": True})
-            else:
-                return web.json_response({"error": result.get("error", "unknown")}, status=500)
+            error = str(result.get("error", "unknown"))
+            return web.json_response({"error": error}, status=_admin_result_error_status(error))
         except (TypeError, ValueError) as e:
             return web.json_response({"error": "invalid_set_id", "message": str(e)}, status=400)
         except Exception as e:
@@ -13711,7 +17949,11 @@ def create_web_app(
         """Получить серверный каталог товаров внутриигрового магазина."""
         try:
             products = await db.get_ruble_products(active_only=True, surface="shop")
-            return web.json_response(build_shop_catalog(products))
+            catalog = build_shop_catalog(products)
+            catalog["settings"] = {
+                "allow_max_level_particle_purchase": bool(app.get("shop_allow_max_level_particles", False)),
+            }
+            return web.json_response(catalog)
         except Exception as e:
             import logging
             logging.getLogger(__name__).error("Ошибка получения каталога магазина: %s", e, exc_info=True)
@@ -13748,6 +17990,7 @@ def create_web_app(
             "name_required",
             "invalid_price",
             "invalid_currency",
+            "invalid_image_url",
             "invalid_sort_order",
             "no_fields",
         }:
@@ -13856,7 +18099,7 @@ def create_web_app(
                 price = float(data.get("price", 0))
             except (TypeError, ValueError):
                 return {}, "invalid_price"
-            if price < 0:
+            if not math.isfinite(price) or price < 0:
                 return {}, "invalid_price"
             normalized["price"] = price
 
@@ -13866,10 +18109,16 @@ def create_web_app(
                 return {}, "invalid_currency"
             normalized["currency"] = currency
 
-        for field in ("description", "image_url", "badge"):
+        for field in ("description", "badge"):
             if field in data:
                 raw_value = data.get(field)
                 normalized[field] = (str(raw_value).strip() if raw_value is not None else None) or None
+        if "image_url" in data:
+            raw_image_url = data.get("image_url")
+            image_url = (str(raw_image_url).strip() if raw_image_url is not None else None) or None
+            if image_url and not _validate_ruble_product_image_url(image_url):
+                return {}, "invalid_image_url"
+            normalized["image_url"] = image_url
         if "sort_order" in data:
             try:
                 normalized["sort_order"] = int(data.get("sort_order") or 100)
@@ -13878,6 +18127,20 @@ def create_web_app(
         for field in ("show_in_game", "show_in_shop", "is_active"):
             if field in data:
                 normalized[field] = bool(data[field])
+        if "rustore_product_id" in data or "metadata" in data:
+            metadata = _json_dict(existing.get("metadata")) if existing else {}
+            incoming_metadata = data.get("metadata")
+            if isinstance(incoming_metadata, dict):
+                incoming_rustore_id = incoming_metadata.get("rustore_product_id")
+                if incoming_rustore_id is not None and "rustore_product_id" not in data:
+                    data["rustore_product_id"] = incoming_rustore_id
+            if "rustore_product_id" in data:
+                rustore_product_id = str(data.get("rustore_product_id") or "").strip()
+                if rustore_product_id:
+                    metadata["rustore_product_id"] = rustore_product_id
+                else:
+                    metadata.pop("rustore_product_id", None)
+            normalized["metadata"] = metadata
         return normalized, None
 
     async def ruble_products_options_handler(request: web.Request) -> web.Response:
@@ -14001,7 +18264,8 @@ def create_web_app(
             result = await db.delete_ruble_product(code_or_id)
             if result.get("success"):
                 return web.json_response({"success": True})
-            return web.json_response({"error": result.get("error", "unknown")}, status=500)
+            error = str(result.get("error", "unknown"))
+            return web.json_response({"error": error}, status=_product_error_status(error))
         except Exception as e:
             import logging
             logging.getLogger(__name__).error("Ошибка удаления ruble_product: %s", e, exc_info=True)
@@ -14013,7 +18277,7 @@ def create_web_app(
         try:
             surface = request.rel_url.query.get("surface", "shop")
             products = await db.get_ruble_products(active_only=True, surface=surface)
-            return web.json_response({"products": products})
+            return web.json_response({"products": [_sanitize_ruble_product_payload(product) for product in products]})
         except Exception as e:
             import logging
             logging.getLogger(__name__).error("Ошибка получения публичных ruble_products: %s", e, exc_info=True)
@@ -14030,6 +18294,21 @@ def create_web_app(
     # ── Image upload for admin ──
 
     UPLOADS_DIR = Path(__file__).resolve().parents[1] / "extraShop" / "uploads" / "products"
+    MAX_PRODUCT_IMAGE_BYTES = 5 * 1024 * 1024
+    PRODUCT_IMAGE_CONTENT_TYPES = {
+        "image/png": ".png",
+        "image/jpeg": ".jpg",
+        "image/webp": ".webp",
+    }
+
+    def _detect_product_image_content_type(head: bytes) -> str | None:
+        if head.startswith(b"\x89PNG\r\n\x1a\n"):
+            return "image/png"
+        if head.startswith(b"\xff\xd8\xff"):
+            return "image/jpeg"
+        if len(head) >= 12 and head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+            return "image/webp"
+        return None
 
     async def admin_upload_product_image(request: web.Request) -> web.Response:
         user_id = await require_user_id(request)
@@ -14042,24 +18321,38 @@ def create_web_app(
             field = await reader.next()
             if not field or field.name != "file":
                 return web.json_response({"error": "file_field_required"}, status=400)
-            import uuid, os
             content_type = field.headers.get("Content-Type", "")
-            if content_type not in ("image/png", "image/jpeg", "image/webp"):
-                return web.json_response({"error": "invalid_image_type", "allowed": ["image/png", "image/jpeg", "image/webp"]}, status=400)
-            ext_map = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}
-            ext = ext_map.get(content_type, ".png")
-            data = b""
-            while True:
-                chunk = await field.read_chunk(65536)
-                if not chunk:
-                    break
-                data += chunk
-            if len(data) > 5 * 1024 * 1024:
-                return web.json_response({"error": "file_too_large", "max_mb": 5}, status=400)
+            if content_type not in PRODUCT_IMAGE_CONTENT_TYPES:
+                return web.json_response({"error": "invalid_image_type", "allowed": list(PRODUCT_IMAGE_CONTENT_TYPES)}, status=400)
+            ext = PRODUCT_IMAGE_CONTENT_TYPES[content_type]
             UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
             filename = str(uuid.uuid4()) + ext
             filepath = UPLOADS_DIR / filename
-            filepath.write_bytes(data)
+            tmp_path = UPLOADS_DIR / f".{filename}.tmp"
+            total = 0
+            head = b""
+            try:
+                with tmp_path.open("wb") as fp:
+                    while True:
+                        chunk = await field.read_chunk(65536)
+                        if not chunk:
+                            break
+                        total += len(chunk)
+                        if total > MAX_PRODUCT_IMAGE_BYTES:
+                            return web.json_response({"error": "file_too_large", "max_mb": 5}, status=400)
+                        if len(head) < 16:
+                            head = (head + chunk)[:16]
+                        fp.write(chunk)
+                detected_type = _detect_product_image_content_type(head)
+                if total <= 0 or detected_type != content_type:
+                    return web.json_response({"error": "invalid_image_signature"}, status=400)
+                tmp_path.replace(filepath)
+            finally:
+                if tmp_path.exists():
+                    try:
+                        tmp_path.unlink()
+                    except OSError:
+                        pass
             image_url = f"/extraShop/uploads/products/{filename}"
             return web.json_response({"success": True, "image_url": image_url})
         except Exception as e:
@@ -14069,7 +18362,10 @@ def create_web_app(
 
     async def uploads_static_handler(request: web.Request) -> web.Response:
         filename = request.match_info.get("filename", "").lstrip("/")
-        if not filename or ".." in filename:
+        suffix = Path(filename).suffix.lower()
+        if not filename or ".." in filename or "/" in filename or "\\" in filename:
+            raise web.HTTPForbidden()
+        if suffix not in {".png", ".jpg", ".jpeg", ".webp"}:
             raise web.HTTPForbidden()
         file_path = UPLOADS_DIR / filename
         if not file_path.exists() or not file_path.is_file():
@@ -14087,63 +18383,19 @@ def create_web_app(
     app.router.add_post("/api/admin/uploads/product-image", admin_upload_product_image)
     app.router.add_get("/extraShop/uploads/products/{filename}", uploads_static_handler)
 
-    async def dice_status_handler(request: web.Request) -> web.Response:
-        """Получить статус кубика (можно ли бросать, когда был последний бросок)."""
-        user_id = await require_user_id(request)
-
-        try:
-            status = await db.get_dice_status(user_id)
-            return web.json_response(_serialize_datetime(status))
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).error(f"Ошибка получения статуса кубика: {e}", exc_info=True)
-            return web.json_response({"error": str(e)}, status=500)
-
-    async def dice_roll_handler(request: web.Request) -> web.Response:
-        """Бросить кубик."""
-        user_id = await require_user_id(request)
-
-        try:
-            result = await db.roll_dice(user_id)
-            return web.json_response(_serialize_datetime(result))
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).error(f"Ошибка броска кубика: {e}", exc_info=True)
-            return web.json_response({"error": str(e)}, status=500)
-
-    async def dice_notification_prompt_status_handler(request: web.Request) -> web.Response:
-        """Проверить, показывалось ли уже предложение включить уведомления."""
-        user_id = await require_user_id(request)
-
-        try:
-            prompt_shown = await db.get_dice_notification_prompt_status(user_id)
-            return web.json_response({"prompt_shown": prompt_shown})
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).error(f"Ошибка проверки статуса предложения: {e}", exc_info=True)
-            return web.json_response({"error": str(e)}, status=500)
-
-    async def dice_notification_prompt_mark_handler(request: web.Request) -> web.Response:
-        """Отметить, что предложение включить уведомления было показано."""
-        user_id = await require_user_id(request)
-
-        try:
-            await db.mark_dice_notification_prompt_shown(user_id)
-            return web.json_response({"success": True})
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).error(f"Ошибка отметки предложения: {e}", exc_info=True)
-            return web.json_response({"error": str(e)}, status=500)
-
     async def generator_status_handler(request: web.Request) -> web.Response:
         user_id = await require_user_id(request)
         try:
+            await _ensure_onboarding_user(int(user_id))
             data = await db.get_generator_status(int(user_id))
             return web.json_response(data)
         except Exception as e:
             import logging
             logging.getLogger(__name__).error(f"Ошибка получения статуса генератора: {e}", exc_info=True)
-            return web.json_response({"error": str(e)}, status=500)
+            return web.json_response({
+                "error": "internal_server_error",
+                "message": "Не удалось получить статус генератора",
+            }, status=500)
 
     async def generator_claim_handler(request: web.Request) -> web.Response:
         try:
@@ -14164,7 +18416,10 @@ def create_web_app(
         except Exception as e:
             import logging
             logging.getLogger(__name__).error(f"Ошибка сбора ключей генератора: {e}", exc_info=True)
-            return web.json_response({"error": str(e)}, status=500)
+            return web.json_response({
+                "error": "internal_server_error",
+                "message": "Не удалось забрать ключи генератора",
+            }, status=500)
 
     async def generator_upgrade_handler(request: web.Request) -> web.Response:
         user_id = await require_user_id(request)
@@ -14184,7 +18439,10 @@ def create_web_app(
         except Exception as e:
             import logging
             logging.getLogger(__name__).error(f"Ошибка улучшения генератора: {e}", exc_info=True)
-            return web.json_response({"error": str(e)}, status=500)
+            return web.json_response({
+                "error": "internal_server_error",
+                "message": "Не удалось улучшить генератор",
+            }, status=500)
 
     async def season_current_handler(request: web.Request) -> web.Response:
         """GET /api/season/current — возвращает активный сезон."""
@@ -14196,7 +18454,20 @@ def create_web_app(
             season = _normalize_extra_pass_season(record)
             end_date = dict(record).get("end_date")
             days_left = max(0, (end_date - datetime.now(timezone.utc)).days) if end_date else 0
-            return web.json_response({**season, "season_id": season["id"], "days_left": days_left})
+            profile = None
+            try:
+                user_id = await require_user_id(request)
+                profile = await db.get_user_profile(user_id)
+            except web.HTTPException:
+                profile = None
+            stars = int((profile or {}).get("stars") or 0)
+            return web.json_response({
+                **season,
+                "season_id": season["id"],
+                "days_left": days_left,
+                "progression": _extra_pass_progression(season),
+                "progress": _extra_pass_progress_for_stars(stars, season),
+            })
         except Exception as e:
             logging.getLogger(__name__).error("season_current error: %s", e, exc_info=True)
             return web.json_response({"error": "internal_error"}, status=500)
@@ -14224,7 +18495,8 @@ def create_web_app(
             result = {
                 "should_show": should_show,
                 "welcome_shown": not should_show,
-                "start_card": dict(start_card) if start_card else None
+                "start_card": dict(start_card) if start_card else None,
+                "onboarding": _build_onboarding_payload(await db.get_onboarding_state(user_id)),
             }
             return web.json_response(_serialize_datetime(result))
         except Exception as e:
@@ -14238,6 +18510,13 @@ def create_web_app(
 
         try:
             await db.mark_welcome_shown(user_id)
+            await db.set_onboarding_state(
+                user_id,
+                status=ONBOARDING_STATUS_TUTORIAL_BATTLE,
+                current_step=ONBOARDING_STATUS_TUTORIAL_BATTLE,
+                tutorial_step=0,
+                tutorial_match_id=tutorial_match_id_for_user(user_id),
+            )
             await db.track_onboarding_event(user_id, "welcome_completed", True)
             return web.json_response({"success": True})
         except Exception as e:
@@ -14245,21 +18524,303 @@ def create_web_app(
             logging.getLogger(__name__).error(f"Ошибка отметки приветствия: {e}", exc_info=True)
             return web.json_response({"error": str(e)}, status=500)
 
-    app.router.add_get("/api/dice/status", dice_status_handler)
-    app.router.add_post("/api/dice/roll", dice_roll_handler)
-    app.router.add_get("/api/dice/notification-prompt-status", dice_notification_prompt_status_handler)
-    app.router.add_post("/api/dice/notification-prompt-mark", dice_notification_prompt_mark_handler)
+    async def _ensure_onboarding_user(user_id: int) -> None:
+        exists = await db.fetchval("SELECT 1 FROM users WHERE user_id = $1", int(user_id))
+        if exists:
+            return
+        await db.ensure_user(
+            user_id=int(user_id),
+            username=None,
+            first_name=None,
+            last_name=None,
+        )
+        await db.track_onboarding_event(int(user_id), "user_created", True)
+
+    async def _ensure_tutorial_engine_for_user(
+        request: web.Request,
+        user_id: int,
+        state: dict[str, Any] | None = None,
+    ) -> TutorialBattleEngine:
+        state = state or await db.get_onboarding_state(int(user_id))
+        match_id = str(state.get("tutorial_match_id") or tutorial_match_id_for_user(int(user_id)))
+        tutorial_step = int(state.get("tutorial_step") or 0)
+        engine = request.app["active_matches"].get(match_id)
+        if not _is_onboarding_tutorial_engine(engine):
+            engine = TutorialBattleEngine(
+                user_id=int(user_id),
+                tutorial_step=tutorial_step,
+                db=db,
+                active_matches=request.app["active_matches"],
+            )
+            request.app["active_matches"][match_id] = engine
+        else:
+            engine.set_tutorial_step(tutorial_step)
+        request.app["match_game_modes"][match_id] = "tutorial"
+        return engine
+
+    async def onboarding_status_handler(request: web.Request) -> web.Response:
+        user_id = await require_user_id(request)
+        state = await db.get_onboarding_state(user_id)
+        return web.json_response({"onboarding": _build_onboarding_payload(state)})
+
+    async def onboarding_welcome_complete_handler(request: web.Request) -> web.Response:
+        user_id = await require_user_id(request)
+        await _ensure_onboarding_user(user_id)
+        current_state = await db.get_onboarding_state(user_id)
+        if current_state.get("completed") or current_state.get("status") not in (ONBOARDING_STATUS_WELCOME, "not_started"):
+            return web.json_response({"success": True, "onboarding": _build_onboarding_payload(current_state)})
+        state = await db.set_onboarding_state(
+            user_id,
+            status=ONBOARDING_STATUS_TUTORIAL_BATTLE,
+            current_step=ONBOARDING_STATUS_TUTORIAL_BATTLE,
+            tutorial_step=0,
+            tutorial_match_id=tutorial_match_id_for_user(user_id),
+        )
+        await db.mark_welcome_shown(user_id)
+        await db.track_onboarding_event(user_id, "welcome_completed", True)
+        return web.json_response({"success": True, "onboarding": _build_onboarding_payload(state)})
+
+    async def onboarding_tutorial_start_handler(request: web.Request) -> web.Response:
+        user_id = await require_user_id(request)
+        await _ensure_onboarding_user(user_id)
+        state = await db.get_onboarding_state(user_id)
+        if state.get("completed"):
+            return web.json_response({"success": True, "onboarding": _build_onboarding_payload(state)})
+        if state.get("status") == ONBOARDING_STATUS_MENU_TOUR:
+            return web.json_response({
+                "success": True,
+                "redirect_url": "/?onboarding_menu=1",
+                "onboarding": _build_onboarding_payload(state),
+            })
+        if state.get("status") != ONBOARDING_STATUS_TUTORIAL_BATTLE:
+            state = await db.set_onboarding_state(
+                user_id,
+                status=ONBOARDING_STATUS_TUTORIAL_BATTLE,
+                current_step=ONBOARDING_STATUS_TUTORIAL_BATTLE,
+                tutorial_step=int(state.get("tutorial_step") or 0),
+                tutorial_match_id=tutorial_match_id_for_user(user_id),
+            )
+        engine = await _ensure_tutorial_engine_for_user(request, user_id, state)
+        await db.track_onboarding_event(user_id, "tutorial_battle_started", True)
+        match_id = str(engine.match_id)
+        return web.json_response({
+            "success": True,
+            "match_id": match_id,
+            "redirect_url": f"/arena?id={match_id}&onboarding=1",
+            "state": engine.get_full_state(viewer_id=user_id),
+            "onboarding": _build_onboarding_payload(await db.get_onboarding_state(user_id)),
+        })
+
+    async def onboarding_tutorial_action_handler(request: web.Request) -> web.Response:
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        user_id = await require_user_id_from_payload(request, payload)
+        await _ensure_onboarding_user(user_id)
+        state = await db.get_onboarding_state(user_id)
+        engine = await _ensure_tutorial_engine_for_user(request, user_id, state)
+        action = {
+            "type": payload.get("type") or payload.get("action"),
+            "hand_index": payload.get("hand_index"),
+            "card_id": payload.get("card_id"),
+            "attacker_id": payload.get("attacker_id"),
+            "target_id": payload.get("target_id"),
+            "target_is_hero": bool(payload.get("target_is_hero")),
+        }
+        return await _handle_onboarding_tutorial_action(
+            request,
+            match_id=engine.match_id,
+            engine=engine,
+            user_id=int(user_id),
+            client_action_id=_client_action_id(payload),
+            action=action,
+        )
+
+    async def onboarding_menu_step_handler(request: web.Request) -> web.Response:
+        user_id = await require_user_id(request)
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        step_id = str(payload.get("step_id") or payload.get("step") or "")
+        if step_id not in ONBOARDING_MENU_STEPS:
+            return web.json_response({"error": "invalid_menu_step"}, status=400)
+        state = await db.get_onboarding_state(user_id)
+        expected_step = str(state.get("menu_step") or "arena")
+        if state.get("status") != ONBOARDING_STATUS_MENU_TOUR or int(state.get("tutorial_step") or 0) < TUTORIAL_FINAL_STEP:
+            return web.json_response({"error": "menu_tour_not_ready", "onboarding": _build_onboarding_payload(state)}, status=409)
+        if expected_step == "done":
+            return web.json_response({"success": True, "onboarding": _build_onboarding_payload(state)})
+        if step_id != expected_step:
+            return web.json_response({
+                "error": "unexpected_menu_step",
+                "expected_step": expected_step,
+                "onboarding": _build_onboarding_payload(state),
+            }, status=409)
+        await db.track_onboarding_event(
+            user_id,
+            "menu_tour_step_completed",
+            True,
+            metadata={"step": step_id},
+        )
+        idx = ONBOARDING_MENU_STEPS.index(step_id)
+        next_step = ONBOARDING_MENU_STEPS[idx + 1] if idx + 1 < len(ONBOARDING_MENU_STEPS) else "done"
+        state = await db.set_onboarding_state(
+            user_id,
+            status=ONBOARDING_STATUS_MENU_TOUR,
+            current_step=ONBOARDING_STATUS_MENU_TOUR,
+            menu_step=next_step,
+        )
+        return web.json_response({"success": True, "onboarding": _build_onboarding_payload(state)})
+
+    async def onboarding_complete_handler(request: web.Request) -> web.Response:
+        user_id = await require_user_id(request)
+        current_state = await db.get_onboarding_state(user_id)
+        if current_state.get("completed"):
+            return web.json_response({"success": True, "onboarding": _build_onboarding_payload(current_state)})
+        if (
+            current_state.get("status") != ONBOARDING_STATUS_MENU_TOUR
+            or int(current_state.get("tutorial_step") or 0) < TUTORIAL_FINAL_STEP
+            or str(current_state.get("menu_step") or "") != "done"
+        ):
+            return web.json_response({
+                "error": "onboarding_not_ready",
+                "message": "Сначала завершите учебный бой и подсказки меню.",
+                "onboarding": _build_onboarding_payload(current_state),
+            }, status=409)
+        state = await db.set_onboarding_state(
+            user_id,
+            status=ONBOARDING_STATUS_COMPLETED,
+            current_step=ONBOARDING_STATUS_COMPLETED,
+            tutorial_step=TUTORIAL_FINAL_STEP,
+            menu_step="done",
+        )
+        await db.mark_welcome_shown(user_id)
+        await db.track_onboarding_event(user_id, "mandatory_onboarding_completed", True)
+        return web.json_response({"success": True, "onboarding": _build_onboarding_payload(state)})
+
+    async def onboarding_newbie_path_handler(request: web.Request) -> web.Response:
+        user_id = await require_user_id(request)
+        state = await db.get_onboarding_state(user_id)
+        if not state.get("completed"):
+            return web.json_response(_onboarding_gate_payload(state), status=403)
+        if request.method == "GET":
+            return web.json_response({"newbie_path": _build_newbie_path_payload(state.get("newbie_path_progress") or {})})
+
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        task_id = str(payload.get("task_id") or "")
+        task = next((item for item in NEWBIE_PATH_TASKS if item["id"] == task_id), None)
+        if not task:
+            return web.json_response({"error": "invalid_task"}, status=400)
+
+        progress = dict(state.get("newbie_path_progress") or {})
+        task_progress = dict(progress.get("tasks") or {})
+        required_task_ids = [item["id"] for item in NEWBIE_PATH_TASKS if item["id"] != "claim_newbie_reward"]
+        if task_id == "claim_newbie_reward":
+            ready = all(bool((task_progress.get(item_id) or {}).get("claimed")) for item_id in required_task_ids)
+            if not ready:
+                return web.json_response({
+                    "error": "task_not_completed",
+                    "message": "Сначала заверши и забери предыдущие награды.",
+                    "newbie_path": _build_newbie_path_payload(progress),
+                }, status=409)
+            require_completed = False
+        else:
+            require_completed = True
+
+        reward = task.get("reward") or {}
+        claim_result = await db.claim_newbie_path_task(
+            user_id,
+            task_id,
+            reward_coins=int(reward.get("amount") or 0) if reward.get("type") == "coins" else 0,
+            require_completed=require_completed,
+        )
+        if not claim_result.get("success"):
+            latest_state = await db.get_onboarding_state(user_id)
+            return web.json_response({
+                "error": claim_result.get("error") or "task_not_completed",
+                "message": "Сначала выполни задачу, потом забери награду.",
+                "newbie_path": _build_newbie_path_payload(latest_state.get("newbie_path_progress") or {}),
+            }, status=409)
+
+        already_claimed = bool(claim_result.get("already_claimed"))
+        granted_amount = int(claim_result.get("granted_amount") or 0)
+        if not already_claimed:
+            await db.track_onboarding_event(
+                user_id,
+                "newbie_path_task_claimed",
+                True,
+                metadata={
+                    "task_id": task_id,
+                    "reward": reward,
+                    "granted_amount": granted_amount,
+                },
+            )
+        state = claim_result.get("state") or await db.get_onboarding_state(user_id)
+        return web.json_response({
+            "success": True,
+            "already_claimed": already_claimed,
+            "granted_amount": granted_amount,
+            "task": {**task, "completed": True, "claimed": True},
+            "newbie_path": _build_newbie_path_payload(state.get("newbie_path_progress") or {}),
+        })
+
+    async def onboarding_newbie_path_progress_handler(request: web.Request) -> web.Response:
+        user_id = await require_user_id(request)
+        state = await db.get_onboarding_state(user_id)
+        if not state.get("completed"):
+            return web.json_response(_onboarding_gate_payload(state), status=403)
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        task_id = str(payload.get("task_id") or "")
+        if task_id != "view_new_card":
+            return web.json_response({"error": "client_progress_not_allowed"}, status=400)
+        state = await db.mark_newbie_path_task(user_id, task_id, claimed=False)
+        await db.track_onboarding_event(
+            user_id,
+            "newbie_path_task_completed",
+            True,
+            metadata={"task_id": task_id, "source": "client_progress"},
+        )
+        return web.json_response({
+            "success": True,
+            "newbie_path": _build_newbie_path_payload(state.get("newbie_path_progress") or {}),
+        })
+
     app.router.add_get("/api/generator/status", generator_status_handler)
     app.router.add_post("/api/generator/claim", generator_claim_handler)
     app.router.add_post("/api/generator/upgrade", generator_upgrade_handler)
     async def welcome_create_user_handler(request: web.Request) -> web.Response:
         """Создать пользователя после завершения приветствия."""
         user_id = await require_user_id(request)
+        username = None
+        first_name_from_data = None
+        last_name = None
+
+        init_data = request.rel_url.query.get("_auth")
+        if init_data and not init_data.isdigit():
+            verified_data = _verify_init_data(init_data, request.app["bot_token"])
+            if verified_data:
+                user_str = verified_data.get("user", "")
+                if user_str:
+                    try:
+                        user_data = _stdlib_json.loads(user_str)
+                        first_name_from_data = user_data.get("first_name")
+                        username = user_data.get("username")
+                        last_name = user_data.get("last_name")
+                    except Exception:
+                        pass
 
         # Если данных пользователя нет в initData, пытаемся получить через Bot API
         if not first_name_from_data:
             try:
-                async with _create_ssl_disabled_session() as session:
+                async with _create_telegram_api_session() as session:
                     url = f"https://api.telegram.org/bot{bot_token}/getChat"
                     async with session.get(url, params={"chat_id": user_id}) as resp:
                         if resp.status == 200:
@@ -14285,6 +18846,13 @@ def create_web_app(
 
         # Отмечаем, что приветствие было показано
         await db.mark_welcome_shown(user_id)
+        await db.set_onboarding_state(
+            user_id,
+            status=ONBOARDING_STATUS_TUTORIAL_BATTLE,
+            current_step=ONBOARDING_STATUS_TUTORIAL_BATTLE,
+            tutorial_step=0,
+            tutorial_match_id=tutorial_match_id_for_user(user_id),
+        )
 
         # Загружаем профиль для ответа
         record = await db.get_user_profile(user_id)
@@ -14311,17 +18879,24 @@ def create_web_app(
                 "notif_extra_arena_modifiers": settings_record.get("notif_extra_arena_modifiers", True),
                 "ads_enabled": settings_record["ads_enabled"],
                 "sound_music": settings_record["sound_music"],
-                "sound_sfx": settings_record["sound_sfx"],
-                "social_block_friend_requests": settings_record["social_block_friend_requests"],
-            }
+	                "sound_sfx": settings_record["sound_sfx"],
+	                "social_block_friend_requests": settings_record["social_block_friend_requests"],
+	                "social_block_friendly_invites_from_friends": settings_record.get("social_block_friendly_invites_from_friends", False),
+	                "social_block_friendly_invites_from_non_friends": settings_record.get("social_block_friendly_invites_from_non_friends", True),
+	                "social_disable_talkies": settings_record.get("social_disable_talkies", False),
+	                "nickname_glow_disabled": settings_record.get("nickname_glow_disabled", False),
+	                "hide_player_id_public": settings_record.get("hide_player_id_public", False),
+	            }
 
         title = record.get("title") or "Игрок"
+
+        extra_pass_fields = _extra_pass_profile_fields(dict(record))
 
         payload: dict[str, Any] = {
             "user_id": record["user_id"],
             "username": record.get("username"),
             "first_name": first_name_from_data or record.get("first_name"),
-            "extra_pass": record.get("extra_pass", "inactive"),
+            **extra_pass_fields,
             "trophies": record.get("trophies", 0),
             "max_trophies": record.get("max_trophies", 0),
             "league": record.get("league", 1),
@@ -14341,11 +18916,21 @@ def create_web_app(
             "nickname_changed": record.get("nickname_changed", False),
             "settings": settings_data,
             "should_show_welcome": False,
+            "onboarding": _build_onboarding_payload(await db.get_onboarding_state(user_id)),
         }
 
         return web.json_response(payload)
 
     app.router.add_get("/api/season/current", season_current_handler)
+    app.router.add_get("/api/onboarding/status", onboarding_status_handler)
+    app.router.add_post("/api/onboarding/welcome/complete", onboarding_welcome_complete_handler)
+    app.router.add_post("/api/onboarding/tutorial/start", onboarding_tutorial_start_handler)
+    app.router.add_post("/api/onboarding/tutorial/action", onboarding_tutorial_action_handler)
+    app.router.add_post("/api/onboarding/menu-tour/step", onboarding_menu_step_handler)
+    app.router.add_post("/api/onboarding/complete", onboarding_complete_handler)
+    app.router.add_get("/api/onboarding/newbie-path", onboarding_newbie_path_handler)
+    app.router.add_post("/api/onboarding/newbie-path", onboarding_newbie_path_handler)
+    app.router.add_post("/api/onboarding/newbie-path/progress", onboarding_newbie_path_progress_handler)
     app.router.add_get("/api/welcome/status", welcome_status_handler)
     app.router.add_post("/api/welcome/mark-shown", welcome_mark_shown_handler)
     app.router.add_post("/api/welcome/create-user", welcome_create_user_handler)
@@ -14426,15 +19011,7 @@ def create_web_app(
                 ),
             },
         )
-        response.set_cookie(
-            ADMIN_SESSION_COOKIE_NAME,
-            _make_admin_session_token(user_id),
-            max_age=ADMIN_SESSION_MAX_AGE_SECONDS,
-            httponly=True,
-            secure=bool(request.secure or str(request.headers.get("X-Forwarded-Proto", "")).lower() == "https"),
-            samesite="Lax",
-            path="/",
-        )
+        _set_admin_session_cookie(request, response, user_id)
         return response
 
     app.router.add_get("/extraShop/admin", extra_shop_admin)
@@ -14480,17 +19057,60 @@ def create_web_app(
         db_product = None
         if product_code:
             db_product = await db.get_ruble_product(product_code)
+            if db_product and not db_product.get("is_active", True):
+                return {
+                    "error": "product_inactive",
+                    "message": "Товар временно недоступен",
+                    "status": 400,
+                }
         if not db_product and item_type:
             # Try matching by item_type + package_type
-            all_products = await db.get_ruble_products(active_only=True)
-            db_product = next((p for p in all_products if p["item_type"] == item_type and
-                               (not package_type or p.get("package_type") == package_type)), None)
+            all_products = await db.get_ruble_products(active_only=False)
+            matching_products = [
+                p for p in all_products
+                if p["item_type"] == item_type and (not package_type or p.get("package_type") == package_type)
+            ]
+            db_product = next((p for p in matching_products if p.get("is_active", True)), None)
+            if not db_product and matching_products:
+                return {
+                    "error": "product_inactive",
+                    "message": "Товар временно недоступен",
+                    "status": 400,
+                }
 
-        if db_product and db_product.get("is_active"):
+        if db_product and db_product.get("is_active", True):
+            product_currency = str(db_product.get("currency") or "rubles")
+            if product_currency != "rubles":
+                return {"error": "product_currency_not_rubles", "message": "Товар не продаётся за рубли", "status": 400}
             amount_rub = float(db_product.get("price", 0))
             db_item_type = str(db_product.get("item_type") or item_type)
             db_package_type = db_product.get("package_type")
             shop_set_id = db_product.get("shop_set_id")
+            if db_item_type == "gems_package":
+                package_text = str(db_package_type or "").strip()
+                if not package_text or package_text not in GEM_PACKAGES:
+                    return {"error": "invalid_package_type", "message": "Некорректный пакет гемов", "status": 400}
+                if GEM_PACKAGES[package_text].get("one_time"):
+                    settings = await db.get_user_settings(user_id)
+                    if settings and settings.get("starter_pack_used"):
+                        return {"error": "already_used", "message": "Стартовый пакет уже куплен", "status": 400}
+            if db_item_type == "shop_set":
+                if not shop_set_id:
+                    return {"error": "shop_set_id_required", "message": "Для товара не указан набор", "status": 400}
+                set_data = await db.get_shop_set(int(shop_set_id))
+                if not set_data:
+                    return {"error": "set_not_found", "message": "Набор не найден", "status": 404}
+                if not set_data.get("is_active", True):
+                    return {"error": "set_inactive", "message": "Набор недоступен", "status": 400}
+                if set_data.get("currency") != "rubles":
+                    return {"error": "set_currency_not_rubles", "message": "Набор не продаётся за рубли", "status": 400}
+                rewards_data = set_data.get("rewards") or []
+                if hasattr(db, "_normalize_shop_set_rewards"):
+                    _rewards, rewards_error = db._normalize_shop_set_rewards(rewards_data)
+                    if rewards_error:
+                        return {"error": rewards_error, "message": "Набор не содержит выдаваемых наград", "status": 400}
+                elif not isinstance(rewards_data, list) or not rewards_data:
+                    return {"error": "empty_rewards", "message": "Набор не содержит выдаваемых наград", "status": 400}
             if db_item_type == "shop_set" and shop_set_id:
                 db_item_type = f"shop_set_{int(shop_set_id)}"
 
@@ -14504,8 +19124,9 @@ def create_web_app(
                 "item_name": item_name,
                 "amount_rub": amount_rub,
             })
-            if db_product.get("image_url"):
-                metadata["image_url"] = db_product["image_url"]
+            safe_image_url = _safe_ruble_product_image_url(db_product.get("image_url"))
+            if safe_image_url:
+                metadata["image_url"] = safe_image_url
             if shop_set_id:
                 metadata["shop_set_id"] = int(shop_set_id)
             if package_type:
@@ -14516,6 +19137,9 @@ def create_web_app(
                     if pkg_cfg:
                         metadata["package_gems"] = int(pkg_cfg["gems"])
                     metadata["starter"] = (package_type == "starter_once")
+                    if package_type == "starter_once":
+                        metadata["one_time_product"] = True
+                        metadata["product_key"] = "gems_package:starter_once"
 
         # 2. Fallback: legacy hardcoded types
         elif item_type == "gems_package":
@@ -14540,6 +19164,9 @@ def create_web_app(
                 "item_name": item_name,
                 "starter": package_type == "starter_once",
             })
+            if package_type == "starter_once":
+                metadata["one_time_product"] = True
+                metadata["product_key"] = "gems_package:starter_once"
 
         elif item_type == "extrapass":
             amount_rub = 179.0
@@ -14603,6 +19230,113 @@ def create_web_app(
             "metadata": metadata,
         }
 
+    def _one_time_product_key(metadata: dict[str, Any]) -> str:
+        if not isinstance(metadata, dict) or not metadata.get("one_time_product"):
+            return ""
+        return str(metadata.get("product_key") or "").strip()
+
+    async def _reserve_one_time_payment_or_response(
+        *,
+        user_id: int,
+        metadata: dict[str, Any],
+        provider: str,
+        checkout_jti: str | None = None,
+    ) -> web.Response | None:
+        product_key = _one_time_product_key(metadata)
+        if not product_key:
+            return None
+        reserve = getattr(db, "reserve_one_time_payment", None)
+        if not reserve:
+            return None
+        reservation_id = str(metadata.get("one_time_reservation_id") or uuid.uuid4())
+        metadata["one_time_reservation_id"] = reservation_id
+        result = await reserve(
+            user_id=user_id,
+            product_key=product_key,
+            reservation_id=reservation_id,
+            checkout_jti=checkout_jti,
+            provider=provider,
+            expires_at=datetime.now(timezone.utc) + timedelta(minutes=60),
+        )
+        if result.get("success"):
+            return None
+        error = str(result.get("error") or "starter_checkout_in_progress")
+        status = 400 if error == "already_used" else 409
+        message = "Стартовый пакет уже куплен" if error == "already_used" else "Оплата стартового пакета уже начата"
+        return web.json_response({"error": error, "message": message}, status=status)
+
+    async def _attach_one_time_payment_if_needed(
+        *,
+        user_id: int,
+        metadata: dict[str, Any],
+        payment_id: str,
+        provider: str,
+    ) -> None:
+        product_key = _one_time_product_key(metadata)
+        reservation_id = str(metadata.get("one_time_reservation_id") or "")
+        attach = getattr(db, "attach_one_time_payment", None)
+        if product_key and reservation_id and attach:
+            await attach(
+                user_id=user_id,
+                product_key=product_key,
+                reservation_id=reservation_id,
+                payment_id=payment_id,
+                provider=provider,
+            )
+
+    async def _release_one_time_payment_if_needed(*, user_id: int, metadata: dict[str, Any]) -> None:
+        product_key = _one_time_product_key(metadata)
+        reservation_id = str(metadata.get("one_time_reservation_id") or "")
+        release = getattr(db, "release_one_time_payment_reservation", None)
+        if product_key and reservation_id and release:
+            await release(user_id=user_id, product_key=product_key, reservation_id=reservation_id)
+
+    async def _wait_for_checkout_payment(checkout_jti: str) -> dict[str, Any] | None:
+        for _ in range(30):
+            await asyncio.sleep(0.01)
+            existing = await db.get_checkout_session(checkout_jti)
+            if existing and existing.get("payment_id") and existing.get("confirmation_url"):
+                return existing
+        return None
+
+    async def _checkout_confirmation_url_for_existing_payment(
+        payment_id: Any,
+        confirmation_url: Any,
+    ) -> str:
+        pid = str(payment_id or "")
+        url = str(confirmation_url or "")
+        if not pid.startswith("robokassa_") or not url:
+            return url
+        try:
+            parsed = urlsplit(url)
+        except ValueError:
+            parsed = None
+        if parsed and parsed.netloc == "auth.robokassa.ru":
+            return url
+        if parsed and "/api/payments/robokassa/pay/" not in parsed.path:
+            return url
+
+        payment = await db.get_payment_by_id(pid)
+        metadata = payment.get("metadata") if isinstance(payment, dict) else None
+        if isinstance(metadata, str):
+            try:
+                metadata = _stdlib_json.loads(metadata)
+            except Exception:
+                metadata = None
+        if not isinstance(metadata, dict):
+            return url
+        form = metadata.get("robokassa_form")
+        if not isinstance(form, dict) or not form.get("SignatureValue"):
+            return url
+        action = str(metadata.get("robokassa_form_action") or "")
+        if not action:
+            service = app.get("robokassa_payment_service")
+            action = str(getattr(getattr(service, "settings", None), "payment_url", "") or "")
+        if not action:
+            action = "https://auth.robokassa.ru/Merchant/Index.aspx"
+        sanitized_form = {str(key): str(value) for key, value in form.items() if value is not None}
+        return f"{action}?{urlencode(sanitized_form)}"
+
     async def checkout_public_start_handler(request: web.Request) -> web.Response:
         logger = logging.getLogger(__name__)
 
@@ -14652,6 +19386,14 @@ def create_web_app(
             item_name = resolved["item_name"]
             amount_rub = resolved["amount_rub"]
             metadata = resolved["metadata"]
+            if _one_time_product_key(metadata):
+                return web.json_response(
+                    {
+                        "error": "one_time_public_checkout_forbidden",
+                        "message": "Разовый товар можно купить только внутри авторизованного WebApp.",
+                    },
+                    status=403,
+                )
 
             now = datetime.now(timezone.utc)
             expires_at = now + timedelta(minutes=60)
@@ -14669,6 +19411,14 @@ def create_web_app(
             }
 
             metadata["checkout_jti"] = jti
+            reservation_response = await _reserve_one_time_payment_or_response(
+                user_id=user_id,
+                metadata=metadata,
+                provider="checkout",
+                checkout_jti=jti,
+            )
+            if reservation_response is not None:
+                return reservation_response
 
             session_result = await db.create_checkout_session(
                 checkout_jti=jti,
@@ -14679,6 +19429,7 @@ def create_web_app(
                 expires_at=expires_at,
             )
             if not session_result.get("success"):
+                await _release_one_time_payment_if_needed(user_id=user_id, metadata=metadata)
                 logger.error("Не удалось создать checkout session %s: %s", jti, session_result.get("error"))
                 return web.json_response(
                     {"error": "checkout_session_failed", "message": "Не удалось создать сессию оплаты"},
@@ -14696,9 +19447,8 @@ def create_web_app(
             extra_shop_url = request.app.get("extra_shop_url", request.app.get("webapp_url", ""))
             return web.json_response({
                 "success": True,
-                "checkout_url": f"{extra_shop_url.rstrip('/')}/extraShop?checkout={token}",
+                "checkout_url": f"{extra_shop_url.rstrip('/')}/extraShop#checkout_jti={payload['jti']}",
                 "checkout_jti": payload["jti"],
-                "token": token,
             })
 
         except Exception as e:
@@ -14745,6 +19495,14 @@ def create_web_app(
             }
 
             metadata["checkout_jti"] = jti
+            reservation_response = await _reserve_one_time_payment_or_response(
+                user_id=user_id,
+                metadata=metadata,
+                provider="checkout",
+                checkout_jti=jti,
+            )
+            if reservation_response is not None:
+                return reservation_response
 
             session_result = await db.create_checkout_session(
                 checkout_jti=jti,
@@ -14755,6 +19513,7 @@ def create_web_app(
                 expires_at=expires_at,
             )
             if not session_result.get("success"):
+                await _release_one_time_payment_if_needed(user_id=user_id, metadata=metadata)
                 logger.error("Не удалось создать checkout session %s: %s", jti, session_result.get("error"))
                 return web.json_response(
                     {"error": "checkout_session_failed", "message": "Не удалось создать сессию оплаты"},
@@ -14772,7 +19531,7 @@ def create_web_app(
             extra_shop_url = request.app.get("extra_shop_url", request.app.get("webapp_url", ""))
             return web.json_response({
                 "success": True,
-                "checkout_url": f"{extra_shop_url.rstrip('/')}/extraShop?checkout={token}",
+                "checkout_url": f"{extra_shop_url.rstrip('/')}/extraShop#checkout_jti={jti}",
                 "checkout_jti": jti,
             })
 
@@ -14789,32 +19548,32 @@ def create_web_app(
 
         try:
             data = await request.json()
+            jti = str(data.get("checkout_jti") or data.get("jti") or "").strip()
+            legacy_payload: dict[str, Any] = {}
             token = str(data.get("token", "") or "")
-            if not token:
-                return web.json_response({"error": "missing_token"}, status=400)
+            if not jti and token:
+                secret = request.app["bot_token"]
+                parts = token.rsplit(".", 1)
+                if len(parts) != 2:
+                    return web.json_response({"error": "invalid_token_format"}, status=400)
 
-            secret = request.app["bot_token"]
-            parts = token.rsplit(".", 1)
-            if len(parts) != 2:
-                return web.json_response({"error": "invalid_token_format"}, status=400)
+                payload_b64, provided_sig = parts
+                expected_sig = hmac.new(secret.encode(), payload_b64.encode(), "sha256").hexdigest()
+                if not hmac.compare_digest(expected_sig, provided_sig):
+                    return web.json_response({"error": "invalid_signature"}, status=400)
 
-            payload_b64, provided_sig = parts
-            expected_sig = hmac.new(secret.encode(), payload_b64.encode(), "sha256").hexdigest()
-            if not hmac.compare_digest(expected_sig, provided_sig):
-                return web.json_response({"error": "invalid_signature"}, status=400)
+                try:
+                    padded = payload_b64 + "=" * ((4 - len(payload_b64) % 4) % 4)
+                    payload_json = base64.urlsafe_b64decode(padded).decode()
+                    legacy_payload = _stdlib_json.loads(payload_json)
+                except Exception:
+                    return web.json_response({"error": "invalid_token_payload"}, status=400)
 
-            try:
-                padded = payload_b64 + "=" * ((4 - len(payload_b64) % 4) % 4)
-                payload_json = base64.urlsafe_b64decode(padded).decode()
-                payload = _stdlib_json.loads(payload_json)
-            except Exception:
-                return web.json_response({"error": "invalid_token_payload"}, status=400)
+                exp = int(legacy_payload.get("exp", 0))
+                if time.time() > exp:
+                    return web.json_response({"error": "token_expired", "message": "Checkout session expired, please restart purchase"}, status=400)
 
-            exp = int(payload.get("exp", 0))
-            if time.time() > exp:
-                return web.json_response({"error": "token_expired", "message": "Checkout session expired, please restart purchase"}, status=400)
-
-            jti = str(payload.get("jti", ""))
+                jti = str(legacy_payload.get("jti", "")).strip()
             if not jti:
                 return web.json_response({"error": "missing_jti"}, status=400)
 
@@ -14824,49 +19583,125 @@ def create_web_app(
             if not session:
                 return web.json_response({"error": "session_not_found", "message": "Сессия оплаты не найдена"}, status=404)
 
+            expires_at = session.get("expires_at")
+            try:
+                if hasattr(expires_at, "timestamp"):
+                    session_exp = float(expires_at.timestamp())
+                else:
+                    session_exp = float(expires_at or 0)
+            except (TypeError, ValueError):
+                session_exp = 0
+            if session_exp and time.time() > session_exp:
+                return web.json_response(
+                    {"error": "session_expired", "message": "Checkout session expired, please restart purchase"},
+                    status=400,
+                )
+
             if session.get("payment_id") and session.get("confirmation_url"):
                 logger.info("Checkout session %s уже имеет payment %s, возвращаем существующий", jti, session["payment_id"])
+                confirmation_url = await _checkout_confirmation_url_for_existing_payment(
+                    session.get("payment_id"),
+                    session.get("confirmation_url"),
+                )
                 return web.json_response({
                     "success": True,
-                    "confirmation_url": session["confirmation_url"],
+                    "confirmation_url": confirmation_url,
                     "payment_id": session["payment_id"],
+                    "provider": "robokassa" if str(session["payment_id"]).startswith("robokassa_") else "yookassa",
                 })
 
-            user_id = int(payload["user_id"])
-            item_type = str(payload.get("item_type", ""))
-            item_name = str(payload.get("item_name", ""))
-            amount_rub = float(payload.get("amount_rub", 0))
-            metadata = dict(payload.get("metadata", {}))
+            claim_checkout = getattr(db, "claim_checkout_session_for_payment", None)
+            if claim_checkout:
+                claim_result = await claim_checkout(jti)
+                if not claim_result.get("success"):
+                    if claim_result.get("error") == "payment_already_created":
+                        confirmation_url = await _checkout_confirmation_url_for_existing_payment(
+                            claim_result.get("payment_id"),
+                            claim_result.get("confirmation_url"),
+                        )
+                        return web.json_response({
+                            "success": True,
+                            "confirmation_url": confirmation_url,
+                            "payment_id": claim_result.get("payment_id"),
+                            "provider": "robokassa" if str(claim_result.get("payment_id") or "").startswith("robokassa_") else "yookassa",
+                        })
+                    if claim_result.get("error") == "payment_creation_in_progress":
+                        existing = await _wait_for_checkout_payment(jti)
+                        if existing:
+                            confirmation_url = await _checkout_confirmation_url_for_existing_payment(
+                                existing.get("payment_id"),
+                                existing.get("confirmation_url"),
+                            )
+                            return web.json_response({
+                                "success": True,
+                                "confirmation_url": confirmation_url,
+                                "payment_id": existing.get("payment_id"),
+                                "provider": "robokassa" if str(existing.get("payment_id") or "").startswith("robokassa_") else "yookassa",
+                            })
+                        return web.json_response({"error": "payment_creation_in_progress"}, status=409)
+                    return web.json_response({"error": claim_result.get("error") or "session_claim_failed"}, status=404)
+
+            user_id = int(session["user_id"])
+            item_type = str(session.get("item_type", ""))
+            amount_rub = float(session.get("amount", 0))
+            metadata = dict(session.get("metadata") or {})
+            item_name = str(metadata.get("item_name") or legacy_payload.get("item_name") or item_type)
             metadata.setdefault("user_id", user_id)
             metadata.setdefault("item_type", item_type)
             metadata.setdefault("item_name", item_name)
             metadata.setdefault("amount_rub", amount_rub)
             metadata.setdefault("checkout_jti", jti)
 
-            payment_service = request.app.get("payment_service")
-            if not payment_service:
+            provider_name, provider_service = _checkout_provider_pair(request)
+            if not provider_service:
                 return web.json_response({"error": "payment_service_not_configured"}, status=503)
 
             webapp_url = request.app.get("webapp_url", "https://t.me/your_bot")
             return_url = str(data.get("return_url") or webapp_url or "")
 
+            inv_id = _new_robokassa_inv_id() if provider_name == "robokassa" else None
+            payment_page_url = (
+                _robokassa_payment_page_url(request, f"robokassa_{inv_id}")
+                if provider_name == "robokassa"
+                else None
+            )
             logger.info(
-                "Creating YooKassa payment for checkout: jti=%s user_id=%s item_type=%s amount=%.2f",
-                jti, user_id, item_type, amount_rub,
+                "Creating %s payment for checkout: jti=%s user_id=%s item_type=%s amount=%.2f",
+                provider_name, jti, user_id, item_type, amount_rub,
             )
-            payment_result = await asyncio.to_thread(
-                payment_service.create_payment,
-                amount=amount_rub,
-                currency="RUB",
-                description=item_name or f"Покупка {item_type}",
-                return_url=return_url,
-                metadata=metadata,
-                idempotence_key=f"checkout:{jti}",
-            )
+            create_kwargs = {
+                "amount": amount_rub,
+                "currency": "RUB",
+                "description": item_name or f"Покупка {item_type}",
+                "return_url": return_url,
+                "metadata": metadata,
+                "idempotence_key": f"checkout:{jti}",
+            }
+            if provider_name == "robokassa":
+                create_kwargs["inv_id"] = inv_id
+                create_kwargs["payment_page_url"] = payment_page_url
+            payment_result = await asyncio.to_thread(provider_service.create_payment, **create_kwargs)
+
+            if not payment_result.get("success") and provider_name == "robokassa":
+                fallback_name = str(request.app.get("payment_fallback_provider") or "").strip().lower()
+                fallback_service = request.app.get("payment_service") if fallback_name == "yookassa" else None
+                if fallback_service:
+                    logger.warning("Robokassa create_payment failed, trying YooKassa fallback: %s", payment_result.get("error"))
+                    provider_name = "yookassa"
+                    payment_result = await asyncio.to_thread(
+                        fallback_service.create_payment,
+                        amount=amount_rub,
+                        currency="RUB",
+                        description=item_name or f"Покупка {item_type}",
+                        return_url=return_url,
+                        metadata=metadata,
+                        idempotence_key=f"checkout:{jti}",
+                    )
 
             if not payment_result.get("success"):
                 err = payment_result.get("error", "unknown")
-                logger.error("YooKassa create_payment failed: %s", err)
+                logger.error("%s create_payment failed: %s", provider_name or "payment provider", err)
+                await _release_one_time_payment_if_needed(user_id=user_id, metadata=metadata)
                 message = f"Ошибка создания платежа: {err}"
                 if "api.yookassa.ru" in err or "SSLError" in err or "Max retries exceeded" in err:
                     message = "ЮKassa сейчас недоступна с сервера. Проверьте сеть/VPN на устройстве, где запущен сервер, и попробуйте ещё раз."
@@ -14874,7 +19709,16 @@ def create_web_app(
 
             payment_id = payment_result.get("payment_id")
             confirmation_url = payment_result.get("confirmation_url")
-            logger.info("YooKassa payment created for checkout: jti=%s payment_id=%s", jti, payment_id)
+            if provider_name == "robokassa":
+                metadata["provider"] = "robokassa"
+                metadata["robokassa_inv_id"] = payment_result.get("robokassa_inv_id")
+                metadata["robokassa_test_mode"] = bool(payment_result.get("test_mode"))
+                metadata["robokassa_form"] = payment_result.get("form") or {}
+                metadata["robokassa_form_action"] = payment_result.get("form_action")
+                metadata["robokassa_payment_page_url"] = payment_result.get("payment_page_url")
+            else:
+                metadata["provider"] = "yookassa"
+            logger.info("%s payment created for checkout: jti=%s payment_id=%s", provider_name, jti, payment_id)
 
             db_result = await db.create_payment(
                 user_id=user_id,
@@ -14885,6 +19729,7 @@ def create_web_app(
                 metadata=metadata,
             )
             if not db_result.get("success"):
+                await _release_one_time_payment_if_needed(user_id=user_id, metadata=metadata)
                 logger.error("Не удалось сохранить платеж %s в БД: %s", payment_id, db_result.get("error"))
                 return web.json_response({
                     "success": False,
@@ -14900,17 +19745,29 @@ def create_web_app(
             if not attach_result.get("success"):
                 existing = await db.get_checkout_session(jti)
                 if existing and existing.get("confirmation_url"):
+                    existing_confirmation_url = await _checkout_confirmation_url_for_existing_payment(
+                        existing.get("payment_id"),
+                        existing.get("confirmation_url"),
+                    )
                     return web.json_response({
                         "success": True,
-                        "confirmation_url": existing["confirmation_url"],
+                        "confirmation_url": existing_confirmation_url,
                         "payment_id": existing.get("payment_id"),
+                        "provider": "robokassa" if str(existing.get("payment_id") or "").startswith("robokassa_") else "yookassa",
                     })
                 logger.warning("Не удалось прикрепить payment к session %s: %s", jti, attach_result.get("error"))
+            await _attach_one_time_payment_if_needed(
+                user_id=user_id,
+                metadata=metadata,
+                payment_id=payment_id,
+                provider=provider_name,
+            )
 
             return web.json_response({
                 "success": True,
                 "confirmation_url": confirmation_url,
                 "payment_id": payment_id,
+                "provider": provider_name,
             })
 
         except Exception as e:
@@ -15062,6 +19919,7 @@ def create_web_app(
             while True:
                 await asyncio.sleep(1)  # Проверка каждую секунду
                 _prune_finished_match_runtime()
+                await _prune_matchmaker_cache(app)
                 _prune_action_result_cache()
 
                 # Получаем копию активных матчей для безопасной итерации
@@ -15076,13 +19934,11 @@ def create_web_app(
                         # Получаем текущего игрока для проверки таймера
                         current_player_id = engine.get_current_player_id() if hasattr(engine, 'get_current_player_id') else None
 
-                        # Получаем состояние матча для текущего игрока
-                        state = engine.get_full_state(viewer_id=current_player_id) if hasattr(engine, 'get_full_state') else {}
-
-                        # Проверяем, не истекло ли время
-                        time_remaining = state.get('turn_time_remaining', 99)
-
-                        if time_remaining <= 0 and current_player_id is not None:
+                        if (
+                            current_player_id is not None
+                            and hasattr(engine, 'is_turn_expired')
+                            and engine.is_turn_expired()
+                        ):
                             logger.warning(
                                 "⏰ Auto-ending turn for match %s (player %s) - time expired",
                                 match_id, current_player_id
@@ -15105,7 +19961,7 @@ def create_web_app(
         logger = logging.getLogger(__name__)
         try:
             while True:
-                await asyncio.sleep(60)
+                await asyncio.sleep(300)
                 try:
                     expired = await db.expire_announcements()
                     if expired:
@@ -15136,11 +19992,28 @@ def create_web_app(
         except asyncio.CancelledError:
             pass
 
+    async def _rating_snapshot_refresh_loop(app: web.Application) -> None:
+        """Фоновая задача: пересобирать общие снапшоты рейтинга по due-таймерам."""
+        logger = logging.getLogger(__name__)
+        try:
+            while True:
+                try:
+                    result = await db.refresh_due_rating_snapshots(scope="players")
+                    refreshed = result.get("refreshed") or []
+                    if refreshed:
+                        logger.info("Rating snapshots refreshed: %s", ", ".join(refreshed))
+                except Exception as exc:
+                    logger.error("Error refreshing rating snapshots: %s", exc, exc_info=True)
+                await asyncio.sleep(300)
+        except asyncio.CancelledError:
+            pass
+
     async def start_background_tasks(app: web.Application) -> None:
         """Запуск фоновых задач при старте сервера."""
         app['match_timer_task'] = asyncio.create_task(match_timer_checker(app))
         app['announcement_expiry_task'] = asyncio.create_task(_announcement_expiry_loop(app))
         app['squad_weekly_cbrp_task'] = asyncio.create_task(_squad_weekly_cbrp_loop(app))
+        app['rating_snapshot_refresh_task'] = asyncio.create_task(_rating_snapshot_refresh_loop(app))
 
     async def cleanup_background_tasks(app: web.Application) -> None:
         """Остановка фоновых задач при остановке сервера."""
@@ -15160,6 +20033,12 @@ def create_web_app(
             app['squad_weekly_cbrp_task'].cancel()
             try:
                 await app['squad_weekly_cbrp_task']
+            except asyncio.CancelledError:
+                pass
+        if 'rating_snapshot_refresh_task' in app:
+            app['rating_snapshot_refresh_task'].cancel()
+            try:
+                await app['rating_snapshot_refresh_task']
             except asyncio.CancelledError:
                 pass
 

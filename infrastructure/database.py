@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import math
 import random
+import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
+from pathlib import Path
 from typing import Any, Optional, Dict, TYPE_CHECKING
 
 # asyncpg требуется только для реальной работы с БД.
@@ -23,6 +26,7 @@ except ModuleNotFoundError:
     bcrypt = None  # type: ignore
 
 from infrastructure.config import DECK_SIZE, MAX_FREE_DECK_PRESETS, MAX_TOTAL_DECK_PRESETS, DatabaseSettings, get_league_by_trophies_fn, LEAGUE_CONFIG
+from infrastructure.case_config import UNI_CARD_ID
 from infrastructure.notifications import (
     NOTIFICATION_DEFAULTS,
     NOTIFICATION_SETTING_BY_CATEGORY,
@@ -33,11 +37,168 @@ from infrastructure.notifications import (
 
 
 # Версию схемы повышаем при изменении структуры таблиц
-SCHEMA_VERSION = 39
+SCHEMA_VERSION = 48
+STARTER_DECK_CARD_IDS: list[int] = [1, 36, 37, 38, 39, 40, 41, 42, 46]
 BOT_USER_ID_MIN = 900_000_000
 BOT_USER_ID_MAX = 8_999_999_999_999
 NOTIFICATION_DELIVERY_MODES = {"app_then_telegram", "app_only", "telegram_only"}
 DEFAULT_NOTIFICATION_DELIVERY_MODE = "app_then_telegram"
+MOSCOW_TZ = timezone(timedelta(hours=3))
+def _validate_schema_identifier(identifier: str) -> str:
+    identifier = str(identifier or "")
+    if (
+        not identifier
+        or identifier[0].isdigit()
+        or not all(char.isascii() and (char.isalnum() or char == "_") for char in identifier)
+    ):
+        raise ValueError(f"invalid_schema_identifier:{identifier!r}")
+    return identifier
+
+
+SEASON_RESET_THRESHOLDS: tuple[tuple[int, int], ...] = (
+    (9000, 10),
+    (7500, 9),
+    (6000, 8),
+    (4500, 7),
+    (3000, 6),
+    (2000, 5),
+    (1200, 4),
+    (600, 3),
+    (300, 2),
+    (0, 1),
+)
+
+RATING_CATEGORIES: tuple[dict[str, str], ...] = (
+    {
+        "key": "trophies",
+        "title": "Абсолютные чемпионы",
+        "subtitle": "Пик трофеев и текущая форма.",
+        "metric_label": "трофеев",
+    },
+    {
+        "key": "score",
+        "title": "Властители арены",
+        "subtitle": "score = wins × winrate.",
+        "metric_label": "score",
+    },
+    {
+        "key": "cbrp",
+        "title": "Опора и поддержка",
+        "subtitle": "Личный вклад в CBRP сквада.",
+        "metric_label": "CBRP",
+    },
+    {
+        "key": "items",
+        "title": "Коллекционеры",
+        "subtitle": "Уникальная косметика игрока.",
+        "metric_label": "предметов",
+    },
+)
+RATING_PERIOD_KEYS = ("daily", "preview")
+RATING_DEFAULT_AVATAR = "/DesignAssets/PlayerCosmetics/Avatars/1.png"
+RATING_DEFAULT_BACKGROUND = "/DesignAssets/PlayerCosmetics/Background/7.png"
+RATING_ALGORITHM_VERSION = "2026-05-29-score-wins-winrate-cosmetics-only"
+
+
+def _rating_utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _rating_next_refresh_at(period: str, now: datetime | None = None) -> datetime:
+    current = now or _rating_utc_now()
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    current_msk = current.astimezone(MOSCOW_TZ)
+    if period == "daily":
+        next_local = (current_msk + timedelta(days=1)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+    elif period == "preview":
+        base = current_msk.replace(second=0, microsecond=0)
+        minutes_to_next = 15 - (base.minute % 15)
+        if minutes_to_next == 0:
+            minutes_to_next = 15
+        next_local = base + timedelta(minutes=minutes_to_next)
+    else:
+        raise ValueError(f"unknown_rating_period:{period}")
+    return next_local.astimezone(timezone.utc)
+
+
+def _rating_window_start(period: str, generated_at: datetime) -> datetime:
+    current = generated_at
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    if period == "preview":
+        return current - timedelta(minutes=15)
+    if period == "daily":
+        return current - timedelta(hours=24)
+    raise ValueError(f"unknown_rating_period:{period}")
+
+
+def _rating_dt(value: Any) -> str | None:
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc).isoformat()
+    return str(value)
+
+
+def _rating_json_safe(value: Any) -> Any:
+    if isinstance(value, Decimal):
+        return int(value) if value == value.to_integral_value() else float(value)
+    if isinstance(value, datetime):
+        return _rating_dt(value)
+    if isinstance(value, dict):
+        return {str(k): _rating_json_safe(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_rating_json_safe(v) for v in value]
+    return value
+
+
+def _jsonb_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except Exception:
+            return {}
+        return dict(parsed) if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _is_unique_violation(exc: BaseException) -> bool:
+    return bool(asyncpg is not None and isinstance(exc, asyncpg.UniqueViolationError))
+
+
+def _coerce_utc_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    return None
+
+
+def _extra_pass_mode_active(profile: Any, now: datetime | None = None) -> bool:
+    if not profile:
+        return False
+    mode = str(profile.get("extra_pass") or "inactive").lower()
+    if mode not in {"active", "ultra"}:
+        return False
+    expires_at = _coerce_utc_datetime(profile.get("extra_pass_expires_at"))
+    if not expires_at:
+        return True
+    return expires_at > (now or datetime.now(timezone.utc))
 
 RUNTIME_FEATURE_DEFAULTS: dict[str, bool] = {
     "shop": True,
@@ -47,6 +208,7 @@ RUNTIME_FEATURE_DEFAULTS: dict[str, bool] = {
     "friendly": True,
     "classic": True,
     "extra_arena": True,
+    "rating": True,
 }
 
 RUNTIME_SETTINGS_DEFAULTS: dict[str, Any] = {
@@ -65,6 +227,10 @@ DEFAULT_EXTRA_PASS_SEASON: dict[str, Any] = {
     "auto_switch": True,
     "preset_key": "default",
     "max_stars": 45,
+    "stage_cost_min": 3,
+    "stage_cost_growth": 0.07,
+    "stage_cost_exponent": 1.5,
+    "stage_cost_cap": 25,
     "free_track_type": "bp_free",
     "pass_track_type": "bp_premium",
     "ultra_track_type": "bp_ultra",
@@ -149,13 +315,14 @@ SQUAD_SETTINGS_DEFAULTS: dict[str, Any] = {
 RARITY_STATS: dict[str, float] = {
     "common": 0.10,
     "rare": 0.10,
+    "start": 0.10,
     "superrare": 0.10,
-    "epic": 0.11,
-    "legendary": 0.12,
-    "mythic": 0.12,
-    "limited": 0.13,
-    "divine": 0.15,
-    "unique": 0.15,
+    "epic": 0.10,
+    "legendary": 0.10,
+    "mythic": 0.10,
+    "limited": 0.10,
+    "divine": 0.10,
+    "unique": 0.10,
 }
 
 
@@ -174,35 +341,38 @@ def _ensure_asyncpg() -> None:
 
 _CARD_MECHANICS_DESC: dict[int, str] = {
     3:  "Аура: усиливает атаку всех союзных существ на доске",
-    4:  "Отражает 2 урона обратно атакующему при каждом получении урона",
+    4:  "Отражает 1 урон обратно атакующему при каждом получении урона",
     5:  "Броня: уменьшает входящий урон на случайное значение от 1 до 3",
     6:  "Восстанавливает 1 HP в конце каждого своего хода",
     7:  "Даёт дополнительную ману и увеличивает максимум маны в начале боя",
     8:  "Наносит прямой урон выбранной вражеской цели (юниту или герою)",
     10: "Наносит урон всем вражеским существам на доске",
-    11: "Замораживает выбранного врага: цель пропускает следующую атаку",
+    11: "Замораживает выбранного врага: цель пропускает следующую атаку, если не защищена щитом",
     12: "Крадёт до 2 маны у противника и отдаёт её владельцу карты",
-    13: "Мгновенно уничтожает выбранное вражеское существо (игнорирует щиты и броню)",
+    13: "Мгновенно уничтожает выбранное вражеское существо, если цель не защищена щитом",
     14: "При выходе на поле лечит своего героя на 2 HP",
     15: "При выходе на поле наносит 1 урон случайному врагу",
     16: "Игнорирует Провокацию: может атаковать любую цель",
-    17: "Одноразовый щит: полностью блокирует первый полученный урон и исчезает",
+    17: "Одноразовый щит: полностью блокирует первый входящий урон, вредную механику или заклинание и исчезает",
     18: "Броня: уменьшает каждый входящий урон ровно на 1",
     19: "При выходе на поле замораживает выбранного врага",
     20: "Уничтожает выбранного союзника и прибавляет его атаку и здоровье к своим",
     21: "При выходе выбор: нанести 3 урона вражеской цели ИЛИ получить одноразовый щит",
-    22: "При выходе замораживает всех вражеских существ на доске",
-    23: "При атаке наносит дополнительный урон соседним существам противника",
-    24: "Вечный щит: блокирует весь входящий урон и никогда не исчезает",
-    25: "При атаке по существу: если цель выжила — мгновенно убивает её (HP → 0)",
+    22: "При выходе замораживает до 3 вражеских существ на доске",
+    23: "При атаке наносит дополнительный урон до 2 соседним существам противника",
+    24: "В начале каждого своего хода получает одноразовый щит, если щита ещё нет",
+    25: "При первом ходе Сайтамы уничтожает выбранного противника. Срабатывает один раз; щит блокирует удар",
     26: "При выходе разыгрывает случайное заклинание с масштабированием",
     30: "Провокация: противник обязан атаковать это существо в первую очередь",
     32: "Рывок: может атаковать в тот же ход, когда был выставлен на доску",
     33: "При нанесении урона герой владельца восстанавливает HP на величину урона",
-    34: "После смерти наносит 3 урона всем вражеским существам и вражескому герою",
+    34: "После смерти наносит 2 урона всем вражеским существам и вражескому герою",
     35: "При выходе на поле лечит выбранного союзника на 5 HP",
     36: "При выходе на поле лечит выбранного союзника на 3 HP",
     39: "Провокация: противник обязан атаковать это существо в первую очередь",
+    43: "Игнорирует Провокацию: может атаковать любую цель даже при наличии вражеских юнитов с taunt",
+    44: "Рывок: может атаковать в тот же ход, когда был выставлен на доску",
+    45: "Провокация: противник обязан атаковать это существо в первую очередь",
 }
 
 
@@ -293,6 +463,181 @@ def _json_safe(value: Any) -> Any:
     if isinstance(value, list):
         return [_json_safe(item) for item in value]
     return value
+
+
+MCP_REDACTED_VALUE = "[REDACTED]"
+MCP_TRUNCATED_VALUE = "[TRUNCATED]"
+MCP_SUMMARY_MAX_DEPTH = 6
+MCP_SUMMARY_MAX_ITEMS = 50
+MCP_SUMMARY_MAX_STRING = 1000
+MCP_ERROR_MAX_STRING = 2000
+MCP_SENSITIVE_KEY_MARKERS = (
+    "authorization",
+    "auth_token",
+    "access_token",
+    "refresh_token",
+    "id_token",
+    "csrf",
+    "password",
+    "passwd",
+    "secret",
+    "token",
+    "cookie",
+    "session",
+    "jwt",
+    "bearer",
+    "credential",
+    "private_key",
+    "api_key",
+    "apikey",
+)
+
+
+def _mcp_hash_identifier(value: Any) -> str | None:
+    if value is None:
+        return None
+    return hashlib.sha256(str(value).encode("utf-8")).hexdigest()
+
+
+def _mcp_scoped_idempotency_hash(idempotency_key: Any, admin_user_id: int, tool_name: str) -> str | None:
+    if idempotency_key is None:
+        return None
+    return _mcp_hash_identifier(f"{int(admin_user_id)}:{str(tool_name)}:{str(idempotency_key)}")
+
+
+def _mcp_is_sensitive_key(key: Any) -> bool:
+    normalized = str(key).strip().lower().replace("-", "_")
+    return any(marker in normalized for marker in MCP_SENSITIVE_KEY_MARKERS)
+
+
+def _mcp_is_sensitive_string(value: str) -> bool:
+    normalized = value.strip().lower()
+    return normalized.startswith(("bearer ", "basic ", "token "))
+
+
+def _mcp_sanitize_summary(value: Any, *, depth: int = 0) -> Any:
+    if depth >= MCP_SUMMARY_MAX_DEPTH:
+        return MCP_TRUNCATED_VALUE
+
+    if isinstance(value, dict):
+        summary: dict[str, Any] = {}
+        for index, (key, item) in enumerate(value.items()):
+            if index >= MCP_SUMMARY_MAX_ITEMS:
+                summary["_truncated"] = True
+                break
+            safe_key = str(key)
+            if _mcp_is_sensitive_key(safe_key):
+                summary[safe_key] = MCP_REDACTED_VALUE
+            else:
+                summary[safe_key] = _mcp_sanitize_summary(item, depth=depth + 1)
+        return summary
+
+    if isinstance(value, (list, tuple, set)):
+        items = list(value)
+        summary_list = [
+            _mcp_sanitize_summary(item, depth=depth + 1)
+            for item in items[:MCP_SUMMARY_MAX_ITEMS]
+        ]
+        if len(items) > MCP_SUMMARY_MAX_ITEMS:
+            summary_list.append({"_truncated": True})
+        return summary_list
+
+    if isinstance(value, bytes):
+        return f"<bytes:{len(value)}>"
+
+    if isinstance(value, str):
+        if _mcp_is_sensitive_string(value):
+            return MCP_REDACTED_VALUE
+        if len(value) > MCP_SUMMARY_MAX_STRING:
+            return f"{value[:MCP_SUMMARY_MAX_STRING]}...<truncated>"
+        return value
+
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+
+    return _json_safe(value)
+
+
+def _mcp_summary_json(value: Any) -> str:
+    return json.dumps(
+        _mcp_sanitize_summary(value),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _mcp_args_digest(args: Any) -> str:
+    return _mcp_hash_identifier(_mcp_summary_json(args)) or ""
+
+
+def _mcp_error_summary(error: Any) -> str | None:
+    if error is None:
+        return None
+    safe_error = str(_mcp_sanitize_summary(str(error)))
+    if len(safe_error) > MCP_ERROR_MAX_STRING:
+        return f"{safe_error[:MCP_ERROR_MAX_STRING]}...<truncated>"
+    return safe_error
+
+
+def _mcp_datetime_expired(value: Any, now: datetime) -> bool:
+    if not isinstance(value, datetime):
+        return False
+    expires_at = value
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    return expires_at <= now
+
+
+def _mcp_row_dict(row: Any) -> dict[str, Any] | None:
+    if not row:
+        return None
+    data = dict(row)
+    for key in ("args_summary", "result_summary", "response_summary", "metadata"):
+        value = data.get(key)
+        if isinstance(value, str):
+            try:
+                data[key] = json.loads(value)
+            except json.JSONDecodeError:
+                pass
+    return data
+
+
+def _season_reset_boundary_for_trophies(trophies: Any) -> tuple[int, int]:
+    value = max(0, int(trophies or 0))
+    for boundary, league_id in SEASON_RESET_THRESHOLDS:
+        if value >= boundary:
+            return boundary, league_id
+    return 0, 1
+
+
+def _build_season_reset_player_result(row: Any) -> dict[str, int]:
+    data = dict(row)
+    old_trophies = max(0, int(data.get("trophies") or 0))
+    old_stars = max(0, int(data.get("stars") or 0))
+    boundary, league_id = _season_reset_boundary_for_trophies(old_trophies)
+    excess_trophies = max(0, old_trophies - boundary)
+    bonus_units = excess_trophies // 100
+    return {
+        "user_id": int(data["user_id"]),
+        "old_trophies": old_trophies,
+        "new_trophies": boundary,
+        "new_league": league_id,
+        "old_stars": old_stars,
+        "excess_trophies": excess_trophies,
+        "granted_keys": int(bonus_units),
+        "granted_coins": int(bonus_units * 200),
+    }
+
+
+def _build_season_reset_summary(players: list[dict[str, int]]) -> dict[str, int]:
+    return {
+        "players": len(players),
+        "trophies_reduced": sum(max(0, row["old_trophies"] - row["new_trophies"]) for row in players),
+        "keys_granted": sum(row["granted_keys"] for row in players),
+        "coins_granted": sum(row["granted_coins"] for row in players),
+        "stars_reset": sum(row["old_stars"] for row in players),
+    }
 
 
 def _normalize_poll_options(raw: Any) -> list[dict[str, Any]]:
@@ -501,8 +846,11 @@ class Database:
         promocodes_changed = await self._ensure_promocodes_table()
         user_mail_changed = await self._ensure_user_mail_table()
         cards_changed = await self._ensure_cards_table()
+        items_changed = await self._ensure_items_table()
+        await self._seed_balance_cards()
         user_cards_changed = await self._ensure_user_cards_table()
         deck_presets_changed = await self._ensure_deck_presets_table()
+        await self._backfill_starter_decks_for_beta_users()
         battle_results_changed = await self._ensure_battle_results_table()
         cooldowns_changed = await self._ensure_cooldowns_table()
         notifications_changed = await self._ensure_notifications_table()
@@ -515,19 +863,25 @@ class Database:
         reward_tracks_changed = await self._ensure_reward_tracks_table()
         claimed_rewards_changed = await self._ensure_claimed_rewards_table()
         seasons_changed = await self._ensure_seasons_table()
+        season_resets_changed = await self._ensure_season_reset_tables()
         shop_sets_changed = await self._ensure_shop_sets_table()
         ruble_products_changed = await self._ensure_ruble_products_table()
         payments_changed = await self._ensure_payments_table()
+        payment_reward_steps_changed = await self._ensure_payment_reward_steps_table()
+        one_time_reservations_changed = await self._ensure_payment_one_time_reservations_table()
         checkout_sessions_changed = await self._ensure_payment_checkout_sessions_table()
         friend_invites_changed = await self._ensure_friend_invites_table()
         friend_requests_changed = await self._ensure_friend_requests_table()
         generator_changed = await self._ensure_generator_state_table()
         economy_events_changed = await self._ensure_economy_events_table()
         user_sessions_changed = await self._ensure_user_sessions_table()
+        user_onboarding_changed = await self._ensure_user_onboarding_table()
         onboarding_events_changed = await self._ensure_onboarding_events_table()
         battle_summary_changed = await self._ensure_battle_summary_table()
+        battle_surrender_penalties_changed = await self._ensure_battle_surrender_penalties_table()
         battle_actions_changed = await self._ensure_battle_actions_table()
         admin_actions_changed = await self._ensure_admin_account_actions_table()
+        mcp_admin_changed = await self._ensure_mcp_admin_tables()
         cosmetics_changed = await self._ensure_cosmetic_tables()
         user_cases_changed = await self._ensure_user_cases_table()
         match_mode_overrides_changed = await self._ensure_match_mode_overrides_table()
@@ -545,6 +899,7 @@ class Database:
         community_votes_changed = await self._ensure_community_votes_table()
         community_polls_changed = await self._ensure_community_polls_table()
         community_submissions_changed = await self._ensure_community_submissions_table()
+        rating_cache_changed = await self._ensure_rating_snapshot_cache_table()
         schema_changed = (
             (current_version != SCHEMA_VERSION)
             or users_changed
@@ -554,6 +909,7 @@ class Database:
             or promocodes_changed
             or user_mail_changed
             or cards_changed
+            or items_changed
             or user_cards_changed
             or deck_presets_changed
             or battle_results_changed
@@ -568,19 +924,25 @@ class Database:
             or reward_tracks_changed
             or claimed_rewards_changed
             or seasons_changed
+            or season_resets_changed
             or shop_sets_changed
             or ruble_products_changed
             or payments_changed
+            or payment_reward_steps_changed
+            or one_time_reservations_changed
             or checkout_sessions_changed
             or friend_invites_changed
             or friend_requests_changed
             or generator_changed
             or economy_events_changed
             or user_sessions_changed
+            or user_onboarding_changed
             or onboarding_events_changed
             or battle_summary_changed
+            or battle_surrender_penalties_changed
             or battle_actions_changed
             or admin_actions_changed
+            or mcp_admin_changed
             or cosmetics_changed
             or user_cases_changed
             or match_mode_overrides_changed
@@ -597,6 +959,7 @@ class Database:
             or community_votes_changed
             or community_polls_changed
             or community_submissions_changed
+            or rating_cache_changed
         )
 
         # Обновляем референсные данные для новой боевой системы
@@ -618,6 +981,28 @@ class Database:
 
         self.schema_changed_last_run = schema_changed
         return schema_changed
+
+    async def verify_schema_ready(self) -> bool:
+        """Read-only schema gate for production startup."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+
+        table_exists = await self.fetchval("SELECT to_regclass('public.schema_version')")
+        if not table_exists:
+            raise RuntimeError(
+                "Database schema is not initialized; run the explicit manual migration command before startup."
+            )
+
+        row = await self.fetchrow("SELECT version, updated_at FROM schema_version WHERE id = 1")
+        current_version = int(row["version"]) if row and row["version"] is not None else None
+        self.schema_last_updated = row["updated_at"] if row else None
+        self.schema_changed_last_run = False
+        if current_version != SCHEMA_VERSION:
+            raise RuntimeError(
+                f"Database schema version {current_version} is not ready "
+                f"(expected {SCHEMA_VERSION}); run the explicit manual migration command before startup."
+            )
+        return True
 
     async def ensure_user(
         self,
@@ -663,7 +1048,7 @@ class Database:
             created = True
             # Создаем 2 пресета по умолчанию для нового пользователя
             await self._ensure_user_has_default_presets(user_id)
-            
+
             # Выдаем все карты стартовой редкости новому пользователю
             try:
                 start_cards_result = await self.grant_start_cards(user_id)
@@ -672,7 +1057,17 @@ class Database:
             except Exception as e:
                 import logging
                 logging.getLogger(__name__).warning(f"Не удалось выдать стартовые карты пользователю {user_id}: {e}")
-            
+                raise
+
+            try:
+                starter_deck_result = await self._ensure_user_has_starter_deck(user_id)
+                if not starter_deck_result.get("success"):
+                    raise RuntimeError(starter_deck_result.get("error", "unknown_error"))
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).warning(f"Не удалось создать стартовую колоду пользователю {user_id}: {e}")
+                raise
+
             # Выдаем приветственные бонусы: 50 гемов и 200 монет
             try:
                 await self.execute(
@@ -713,6 +1108,147 @@ class Database:
 
         return created
 
+    async def _seed_balance_cards(self) -> None:
+        """Execute the repeatable Wave 4 card balance seed during schema startup."""
+        sql_path = Path(__file__).resolve().parent / "sql" / "2026_05_30_balance_cards.sql"
+        if not sql_path.is_file():
+            raise FileNotFoundError(f"required balance seed is missing: {sql_path}")
+        sql = sql_path.read_text(encoding="utf-8").strip()
+        if not sql:
+            raise RuntimeError(f"required balance seed is empty: {sql_path}")
+        await self.execute(sql)
+
+    async def _complete_deck_exists(self, user_id: int) -> bool:
+        rows = await self.fetch(
+            """
+            SELECT card_slot_1, card_slot_2, card_slot_3, card_slot_4, card_slot_5,
+                   card_slot_6, card_slot_7, card_slot_8, card_slot_9
+            FROM deck_presets
+            WHERE user_id = $1
+            """,
+            user_id,
+        )
+        for row in rows:
+            row_dict = dict(row)
+            card_ids = [row_dict.get(f"card_slot_{idx}") for idx in range(1, DECK_SIZE + 1)]
+            filled = [int(card_id) for card_id in card_ids if card_id is not None]
+            if len(filled) == DECK_SIZE and len(set(filled)) == DECK_SIZE:
+                return True
+        return False
+
+    async def _ensure_user_has_starter_deck(self, user_id: int) -> dict[str, Any]:
+        """Backfill preset 1 with a legal starter deck only when no complete deck exists."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+
+        if await self._complete_deck_exists(user_id):
+            return {"success": True, "skipped": "complete_deck_exists"}
+
+        grant_result = await self.grant_start_cards(user_id)
+        if not grant_result.get("success"):
+            return {"success": False, "error": grant_result.get("error", "starter_grant_failed")}
+
+        rows = await self.fetch(
+            "SELECT id, card_type FROM cards WHERE id = ANY($1::bigint[])",
+            STARTER_DECK_CARD_IDS,
+        )
+        card_types = {int(row["id"]): str(row["card_type"] or "warrior") for row in rows}
+        missing_cards = [card_id for card_id in STARTER_DECK_CARD_IDS if card_id not in card_types]
+        if missing_cards:
+            return {"success": False, "error": "starter_cards_missing", "card_ids": missing_cards}
+        if card_types.get(STARTER_DECK_CARD_IDS[0]) != "hero":
+            return {"success": False, "error": "starter_hero_invalid"}
+        invalid_warriors = [card_id for card_id in STARTER_DECK_CARD_IDS[1:] if card_types.get(card_id) == "hero"]
+        if invalid_warriors:
+            return {"success": False, "error": "starter_warrior_slots_invalid", "card_ids": invalid_warriors}
+
+        owned_rows = await self.fetch(
+            "SELECT card_id FROM user_cards WHERE user_id = $1 AND card_id = ANY($2::bigint[])",
+            user_id,
+            STARTER_DECK_CARD_IDS,
+        )
+        owned_ids = {int(row["card_id"]) for row in owned_rows}
+        missing_owned = [card_id for card_id in STARTER_DECK_CARD_IDS if card_id not in owned_ids]
+        if missing_owned:
+            return {"success": False, "error": "starter_cards_unowned", "card_ids": missing_owned}
+
+        existing = await self.fetchval(
+            "SELECT id FROM deck_presets WHERE user_id = $1 AND preset_number = 1",
+            user_id,
+        )
+        if existing:
+            await self.execute(
+                """
+                UPDATE deck_presets
+                SET preset_name = 'Стартовая колода',
+                    card_slot_1 = $2,
+                    card_slot_2 = $3,
+                    card_slot_3 = $4,
+                    card_slot_4 = $5,
+                    card_slot_5 = $6,
+                    card_slot_6 = $7,
+                    card_slot_7 = $8,
+                    card_slot_8 = $9,
+                    card_slot_9 = $10,
+                    updated_at = NOW()
+                WHERE user_id = $1 AND preset_number = 1
+                """,
+                user_id,
+                *STARTER_DECK_CARD_IDS,
+            )
+        else:
+            await self.execute(
+                """
+                INSERT INTO deck_presets (
+                    user_id, preset_name, preset_number,
+                    card_slot_1, card_slot_2, card_slot_3, card_slot_4, card_slot_5,
+                    card_slot_6, card_slot_7, card_slot_8, card_slot_9,
+                    created_at, updated_at
+                )
+                VALUES ($1, 'Стартовая колода', 1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW())
+                ON CONFLICT (user_id, preset_number) DO UPDATE SET
+                    preset_name = EXCLUDED.preset_name,
+                    card_slot_1 = EXCLUDED.card_slot_1,
+                    card_slot_2 = EXCLUDED.card_slot_2,
+                    card_slot_3 = EXCLUDED.card_slot_3,
+                    card_slot_4 = EXCLUDED.card_slot_4,
+                    card_slot_5 = EXCLUDED.card_slot_5,
+                    card_slot_6 = EXCLUDED.card_slot_6,
+                    card_slot_7 = EXCLUDED.card_slot_7,
+                    card_slot_8 = EXCLUDED.card_slot_8,
+                    card_slot_9 = EXCLUDED.card_slot_9,
+                    updated_at = NOW()
+                """,
+                user_id,
+                *STARTER_DECK_CARD_IDS,
+            )
+
+        await self.execute(
+            "UPDATE users SET primary_deck = 1, updated_at = NOW() WHERE user_id = $1",
+            user_id,
+        )
+        deck_cache = getattr(self, "deck_presets_cache", None)
+        if isinstance(deck_cache, dict):
+            deck_cache.pop(user_id, None)
+        return {"success": True, "deck_ids": list(STARTER_DECK_CARD_IDS)}
+
+    async def _backfill_starter_decks_for_beta_users(self) -> None:
+        """Repair beta users without a complete deck after schema/catalog seed is ready."""
+        if not self._pool:
+            return
+        rows = await self.fetch(
+            """
+            SELECT user_id
+            FROM users
+            WHERE COALESCE(is_bot, FALSE) = FALSE
+            """
+        )
+        for row in rows:
+            user_id = int(row["user_id"])
+            result = await self._ensure_user_has_starter_deck(user_id)
+            if not result.get("success"):
+                raise RuntimeError(f"starter_deck_backfill_failed:{user_id}:{result.get('error')}")
+
     async def get_next_bot_id(self) -> int:
         """
         Рассчитываем следующий безопасный идентификатор для ботов, начиная с 900000000.
@@ -736,6 +1272,156 @@ class Database:
         if next_id > BOT_USER_ID_MAX:
             raise RuntimeError("bot_user_id_range_exhausted")
         return next_id
+
+    async def create_generated_bot_profile(
+        self,
+        *,
+        display_name: str,
+        trophies: int,
+        level: int,
+        deck_ids: list[int],
+        avatar_url: str | None = None,
+        extra_pass: str = "inactive",
+        avatar_cos_id: int | None = None,
+        title_cos_id: int | None = None,
+        bg_cos_id: int | None = None,
+    ) -> dict[str, Any]:
+        """Atomically allocate and persist a generated bot profile."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+        if len(deck_ids or []) != DECK_SIZE:
+            raise ValueError(f"generated bot deck must contain {DECK_SIZE} cards")
+
+        safe_trophies = max(0, int(trophies))
+        safe_level = max(1, int(level))
+        safe_extra_pass = str(extra_pass or "inactive")
+        slots = (list(deck_ids) + [None] * DECK_SIZE)[:DECK_SIZE]
+
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.fetchval("SELECT pg_advisory_xact_lock($1::bigint)", BOT_USER_ID_MIN)
+                next_id = await conn.fetchval(
+                    """
+                    SELECT COALESCE(MAX(user_id), $1::bigint - 1) + 1
+                    FROM users
+                    WHERE user_id >= $1::bigint
+                      AND user_id <= $2::bigint
+                      AND COALESCE(is_bot, FALSE) = TRUE
+                    """,
+                    BOT_USER_ID_MIN,
+                    BOT_USER_ID_MAX,
+                )
+                bot_id = int(next_id or BOT_USER_ID_MIN)
+                if bot_id > BOT_USER_ID_MAX:
+                    raise RuntimeError("bot_user_id_range_exhausted")
+
+                await conn.execute(
+                    """
+                    INSERT INTO users (
+                        user_id, username, first_name, last_name, trophies,
+                        max_trophies, league, is_bot, status, extra_pass
+                    )
+                    VALUES ($1, NULL, $2, NULL, $3, $3, $4, TRUE, 'active', $5)
+                    ON CONFLICT (user_id) DO UPDATE
+                    SET trophies = EXCLUDED.trophies,
+                        max_trophies = GREATEST(users.max_trophies, EXCLUDED.max_trophies),
+                        league = EXCLUDED.league,
+                        is_bot = TRUE,
+                        first_name = EXCLUDED.first_name,
+                        extra_pass = EXCLUDED.extra_pass,
+                        updated_at = NOW(),
+                        status = 'active'
+                    """,
+                    bot_id,
+                    display_name,
+                    safe_trophies,
+                    get_league_by_trophies_fn(safe_trophies),
+                    safe_extra_pass,
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO profiles (user_id, custom_nickname, nickname_changed, title, img)
+                    VALUES ($1, $2, TRUE, 'Бот', $3)
+                    ON CONFLICT (user_id) DO UPDATE
+                    SET custom_nickname = EXCLUDED.custom_nickname,
+                        nickname_changed = TRUE,
+                        title = EXCLUDED.title,
+                        img = EXCLUDED.img
+                    """,
+                    bot_id,
+                    display_name,
+                    avatar_url,
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO deck_presets (
+                        user_id, preset_name, preset_number,
+                        card_slot_1, card_slot_2, card_slot_3, card_slot_4, card_slot_5,
+                        card_slot_6, card_slot_7, card_slot_8, card_slot_9, used_by_bot
+                    )
+                    VALUES ($1, $2, 1, $3, $4, $5, $6, $7, $8, $9, $10, $11, TRUE)
+                    ON CONFLICT (user_id, preset_number) DO UPDATE
+                    SET preset_name = EXCLUDED.preset_name,
+                        card_slot_1 = EXCLUDED.card_slot_1,
+                        card_slot_2 = EXCLUDED.card_slot_2,
+                        card_slot_3 = EXCLUDED.card_slot_3,
+                        card_slot_4 = EXCLUDED.card_slot_4,
+                        card_slot_5 = EXCLUDED.card_slot_5,
+                        card_slot_6 = EXCLUDED.card_slot_6,
+                        card_slot_7 = EXCLUDED.card_slot_7,
+                        card_slot_8 = EXCLUDED.card_slot_8,
+                        card_slot_9 = EXCLUDED.card_slot_9,
+                        used_by_bot = EXCLUDED.used_by_bot,
+                        updated_at = NOW()
+                    """,
+                    bot_id,
+                    "Бот-колода",
+                    slots[0],
+                    slots[1],
+                    slots[2],
+                    slots[3],
+                    slots[4],
+                    slots[5],
+                    slots[6],
+                    slots[7],
+                    slots[8],
+                )
+
+                for item_type, cos_id in (
+                    ("avatar", avatar_cos_id),
+                    ("title", title_cos_id),
+                    ("profile_background", bg_cos_id),
+                ):
+                    if cos_id is None:
+                        continue
+                    await conn.execute(
+                        """
+                        INSERT INTO user_cosmetics (user_id, cosmetic_id, source)
+                        VALUES ($1, $2, 'bot_grant')
+                        ON CONFLICT (user_id, cosmetic_id) DO NOTHING
+                        """,
+                        bot_id,
+                        int(cos_id),
+                    )
+                    await conn.execute(
+                        """
+                        INSERT INTO user_equipped_cosmetics (user_id, item_type, cosmetic_id, updated_at)
+                        VALUES ($1, $2, $3, NOW())
+                        ON CONFLICT (user_id, item_type) DO UPDATE
+                        SET cosmetic_id = EXCLUDED.cosmetic_id, updated_at = NOW()
+                        """,
+                        bot_id,
+                        item_type,
+                        int(cos_id),
+                    )
+
+        return {
+            "bot_id": bot_id,
+            "trophies": safe_trophies,
+            "level": safe_level,
+            "deck_ids": list(deck_ids),
+            "extra_pass": safe_extra_pass,
+        }
 
     async def get_user_profile(self, user_id: int) -> Optional[asyncpg.Record]:
         if not self._pool:
@@ -776,7 +1462,7 @@ class Database:
             """,
             user_id,
         )
-        
+
         # Если профиля нет, создаем его
         if record and not record.get("title"):
             await self.execute(
@@ -820,7 +1506,7 @@ class Database:
                 """,
                 user_id,
             )
-        
+
         return record
 
     async def get_random_display_names(self, count: int, exclude_user_id: int) -> list[str]:
@@ -838,6 +1524,7 @@ class Database:
             JOIN users u ON u.user_id = p.user_id
             WHERE p.user_id <> $1
               AND COALESCE(u.is_bot, FALSE) = FALSE
+              AND u.status = 'active'
             ORDER BY RANDOM()
             LIMIT $2
             """,
@@ -850,7 +1537,7 @@ class Database:
         """
         Возвращает случайных пользователей с их именами и аватарками (img).
         Исключаем переданного пользователя и ботов, чтобы не брать их данные для новых ботов.
-        
+
         Returns:
             list[dict]: Список словарей с ключами "display_name" и "img"
         """
@@ -859,13 +1546,14 @@ class Database:
 
         rows = await self.fetch(
             """
-            SELECT 
+            SELECT
                 COALESCE(p.custom_nickname, u.first_name, u.username, 'Бот') AS display_name,
                 p.img
             FROM profiles p
             JOIN users u ON u.user_id = p.user_id
             WHERE p.user_id <> $1
               AND COALESCE(u.is_bot, FALSE) = FALSE
+              AND u.status = 'active'
             ORDER BY RANDOM()
             LIMIT $2
             """,
@@ -878,7 +1566,7 @@ class Database:
         """
         Возвращает профиль случайного реального игрока-донора для создания бота.
         Включает имя, аватар, колоду и средний уровень карт.
-        
+
         Returns:
             dict с ключами: display_name, img, deck_ids, avg_level, trophies
         """
@@ -888,7 +1576,7 @@ class Database:
         # Находим донора с готовой колодой (минимум 5 карт в пресете)
         donor = await self.fetchrow(
             """
-            SELECT 
+            SELECT
                 u.user_id,
                 COALESCE(p.custom_nickname, u.first_name, u.username, 'Донор') AS display_name,
                 p.img,
@@ -902,8 +1590,8 @@ class Database:
               AND COALESCE(u.is_bot, FALSE) = FALSE
               AND u.trophies >= 0
               AND (
-                  dp.card_slot_1 IS NOT NULL OR dp.card_slot_2 IS NOT NULL OR 
-                  dp.card_slot_3 IS NOT NULL OR dp.card_slot_4 IS NOT NULL OR 
+                  dp.card_slot_1 IS NOT NULL OR dp.card_slot_2 IS NOT NULL OR
+                  dp.card_slot_3 IS NOT NULL OR dp.card_slot_4 IS NOT NULL OR
                   dp.card_slot_5 IS NOT NULL
               )
             ORDER BY RANDOM()
@@ -911,17 +1599,17 @@ class Database:
             """,
             exclude_user_id,
         )
-        
+
         if not donor:
             return None
-        
+
         # Собираем колоду из непустых слотов
         deck_ids = []
         for i in range(1, 10):
             card_id = donor.get(f"card_slot_{i}")
             if card_id:
                 deck_ids.append(int(card_id))
-        
+
         # Получаем средний уровень карт донора
         avg_level_result = await self.fetchval(
             """
@@ -933,7 +1621,7 @@ class Database:
             deck_ids,
         )
         avg_level = int(avg_level_result or 1)
-        
+
         return {
             "display_name": donor["display_name"],
             "img": donor.get("img"),
@@ -1081,32 +1769,75 @@ class Database:
             "deck_ids": list(deck_ids) if deck_ids else [],
         }
 
+    async def update_bot_deck_preset(self, bot_id: int, deck_ids: list[int]) -> None:
+        """Replace the persisted reusable bot deck after sanitation repair."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+        if len(deck_ids or []) != DECK_SIZE:
+            raise ValueError(f"bot deck repair requires {DECK_SIZE} cards")
+
+        slots = (list(deck_ids) + [None] * DECK_SIZE)[:DECK_SIZE]
+        await self.execute(
+            """
+            INSERT INTO deck_presets (
+                user_id, preset_name, preset_number,
+                card_slot_1, card_slot_2, card_slot_3, card_slot_4, card_slot_5,
+                card_slot_6, card_slot_7, card_slot_8, card_slot_9, used_by_bot
+            )
+            VALUES ($1, $2, 1, $3, $4, $5, $6, $7, $8, $9, $10, $11, TRUE)
+            ON CONFLICT (user_id, preset_number) DO UPDATE
+            SET preset_name = EXCLUDED.preset_name,
+                card_slot_1 = EXCLUDED.card_slot_1,
+                card_slot_2 = EXCLUDED.card_slot_2,
+                card_slot_3 = EXCLUDED.card_slot_3,
+                card_slot_4 = EXCLUDED.card_slot_4,
+                card_slot_5 = EXCLUDED.card_slot_5,
+                card_slot_6 = EXCLUDED.card_slot_6,
+                card_slot_7 = EXCLUDED.card_slot_7,
+                card_slot_8 = EXCLUDED.card_slot_8,
+                card_slot_9 = EXCLUDED.card_slot_9,
+                used_by_bot = EXCLUDED.used_by_bot,
+                updated_at = NOW()
+            """,
+            int(bot_id),
+            "Бот-колода",
+            slots[0],
+            slots[1],
+            slots[2],
+            slots[3],
+            slots[4],
+            slots[5],
+            slots[6],
+            slots[7],
+            slots[8],
+        )
+
     async def change_nickname(self, user_id: int, new_nickname: str, cost_gems: int = 0) -> dict[str, Any]:
         """Изменить никнейм пользователя. Возвращает dict с результатом."""
         if not self._pool:
             raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
-        
+
         # Проверяем текущий статус смены никнейма
         profile_record = await self.fetchrow(
             "SELECT nickname_changed, custom_nickname FROM profiles WHERE user_id = $1",
             user_id,
         )
-        
+
         nickname_changed = profile_record["nickname_changed"] if profile_record else False
         is_first_change = not nickname_changed
-        
+
         # Если это не первая смена, проверяем наличие гемов
         if not is_first_change and cost_gems > 0:
             user_gems = await self.fetchval("SELECT gems FROM users WHERE user_id = $1", user_id)
             if not user_gems or user_gems < cost_gems:
                 return {"success": False, "error": "insufficient_gems", "required": cost_gems, "current": user_gems or 0}
-            
+
             # Списываем гемы
             await self.execute(
                 "UPDATE users SET gems = gems - $1 WHERE user_id = $2",
                 cost_gems, user_id
             )
-        
+
         # Сохраняем никнейм (вставка с обновлением при конфликте)
         await self.execute(
             """
@@ -1118,13 +1849,13 @@ class Database:
             """,
             new_nickname, user_id
         )
-        
+
         return {"success": True, "is_first_change": is_first_change}
 
     async def delete_user(self, user_id: int) -> bool:
         """
         Полностью удалить пользователя и все его данные из БД.
-        
+
         Удаляет:
         - Карты пользователя (user_cards)
         - Колоды (deck_presets)
@@ -1147,13 +1878,13 @@ class Database:
 
             # Удаляем карты пользователя
             await self.execute("DELETE FROM user_cards WHERE user_id = $1", user_id)
-            
+
             # Удаляем колоды пользователя
             await self.execute("DELETE FROM deck_presets WHERE user_id = $1", user_id)
-            
+
             # Удаляем настройки пользователя
             await self.execute("DELETE FROM user_settings WHERE user_id = $1", user_id)
-            
+
             # Удаляем почту пользователя
             await self.execute("DELETE FROM user_mail WHERE user_id = $1", user_id)
 
@@ -1168,13 +1899,13 @@ class Database:
             for post in posts:
                 await self.execute("DELETE FROM post_likes WHERE post_id = $1", post["id"])
             await self.execute("DELETE FROM community_posts WHERE author_id = $1", user_id)
-            
+
             # Удаляем профиль пользователя
             await self.execute("DELETE FROM profiles WHERE user_id = $1", user_id)
-            
+
             # Удаляем пользователя (это должно быть последним, так как могут быть CASCADE ограничения)
             await self.execute("DELETE FROM users WHERE user_id = $1", user_id)
-            
+
             return True
         except Exception as e:
             # Логируем ошибку для отладки
@@ -1471,7 +2202,6 @@ class Database:
                     notif_friend_requests BOOLEAN NOT NULL DEFAULT true,
                     notif_events BOOLEAN NOT NULL DEFAULT true,
                     notif_news BOOLEAN NOT NULL DEFAULT true,
-                    notif_dice BOOLEAN NOT NULL DEFAULT false,
                     notif_generator BOOLEAN NOT NULL DEFAULT true,
                     notif_shop BOOLEAN NOT NULL DEFAULT false,
                     notif_reminders BOOLEAN NOT NULL DEFAULT true,
@@ -1483,8 +2213,13 @@ class Database:
                     ads_enabled BOOLEAN NOT NULL DEFAULT true,
                     sound_music BOOLEAN NOT NULL DEFAULT true,
                     sound_sfx BOOLEAN NOT NULL DEFAULT true,
-                    social_block_friend_requests BOOLEAN NOT NULL DEFAULT false,
-                    notification_delivery_mode TEXT NOT NULL DEFAULT 'app_then_telegram',
+	                    social_block_friend_requests BOOLEAN NOT NULL DEFAULT false,
+	                    social_block_friendly_invites_from_friends BOOLEAN NOT NULL DEFAULT false,
+	                    social_block_friendly_invites_from_non_friends BOOLEAN NOT NULL DEFAULT true,
+	                    social_disable_talkies BOOLEAN NOT NULL DEFAULT false,
+	                    nickname_glow_disabled BOOLEAN NOT NULL DEFAULT false,
+	                    hide_player_id_public BOOLEAN NOT NULL DEFAULT false,
+	                    notification_delivery_mode TEXT NOT NULL DEFAULT 'app_then_telegram',
                     welcome_shown BOOLEAN NOT NULL DEFAULT false,
                     starter_pack_used BOOLEAN NOT NULL DEFAULT false,
                     particles_rotation_cards JSONB,
@@ -1505,12 +2240,15 @@ class Database:
                 WHERE user_id NOT IN (SELECT user_id FROM user_settings)
                 """
             )
-            
-            # Добавляем колонку notif_dice, если её нет
+
             columns = await self._get_columns("user_settings")
             changed |= await self._add_column_if_missing(
-                "user_settings", columns, 
-                "notif_dice BOOLEAN NOT NULL DEFAULT false"
+                "user_settings", columns,
+                "notif_game_invites BOOLEAN NOT NULL DEFAULT true"
+            )
+            changed |= await self._add_column_if_missing(
+                "user_settings", columns,
+                "notif_friend_requests BOOLEAN NOT NULL DEFAULT true"
             )
             # Добавляем колонку notif_generator, если её нет
             changed |= await self._add_column_if_missing(
@@ -1547,7 +2285,7 @@ class Database:
             )
             # Добавляем колонку welcome_shown, если её нет
             changed |= await self._add_column_if_missing(
-                "user_settings", columns, 
+                "user_settings", columns,
                 "welcome_shown BOOLEAN NOT NULL DEFAULT false"
             )
             changed |= await self._add_column_if_missing(
@@ -1574,6 +2312,26 @@ class Database:
                 "user_settings", columns,
                 "notification_delivery_mode TEXT NOT NULL DEFAULT 'app_then_telegram'"
             )
+            changed |= await self._add_column_if_missing(
+                "user_settings", columns,
+                "social_block_friendly_invites_from_friends BOOLEAN NOT NULL DEFAULT false"
+            )
+            changed |= await self._add_column_if_missing(
+                "user_settings", columns,
+                "social_block_friendly_invites_from_non_friends BOOLEAN NOT NULL DEFAULT true"
+            )
+            changed |= await self._add_column_if_missing(
+                "user_settings", columns,
+                "social_disable_talkies BOOLEAN NOT NULL DEFAULT false"
+            )
+            changed |= await self._add_column_if_missing(
+                "user_settings", columns,
+                "nickname_glow_disabled BOOLEAN NOT NULL DEFAULT false"
+            )
+            changed |= await self._add_column_if_missing(
+                "user_settings", columns,
+                "hide_player_id_public BOOLEAN NOT NULL DEFAULT false"
+            )
 
         return changed
 
@@ -1593,14 +2351,17 @@ class Database:
 
         valid_keys = {
             "notif_cases", "notif_daily_rewards", "notif_game_invites",
-            "notif_friend_requests", "notif_events", "notif_news", "notif_dice",
+            "notif_friend_requests", "notif_events", "notif_news",
             "notif_generator", "notif_shop", "notif_reminders",
             "notif_squad_member_role", "notif_squad_new_member",
             "notif_squad_disbanded", "notif_squad_boost",
             "notif_extra_arena_modifiers",
-            "notification_delivery_mode",
-            "ads_enabled", "sound_music", "sound_sfx", "social_block_friend_requests",
-            "welcome_shown",
+	            "notification_delivery_mode",
+	            "ads_enabled", "sound_music", "sound_sfx", "social_block_friend_requests",
+	            "social_block_friendly_invites_from_friends",
+	            "social_block_friendly_invites_from_non_friends",
+	            "social_disable_talkies", "nickname_glow_disabled", "hide_player_id_public",
+	            "welcome_shown",
             "starter_pack_used", "particles_rotation_cards", "particles_rotation_date",
             "particles_purchased_today", "wins_since_last_case",
         }
@@ -1630,27 +2391,27 @@ class Database:
     async def update_user_trophies(self, user_id: int, delta: int) -> dict[str, Any]:
         """
         Обновить трофеи пользователя с защитой от отрицательных значений.
-        
+
         Args:
             user_id: ID пользователя
             delta: Изменение трофеев (может быть положительным или отрицательным)
-        
+
         Returns:
             dict с новыми значениями trophies, max_trophies и league
         """
         if not self._pool:
             raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
-        
+
         # КРИТИЧНО: Используем GREATEST для защиты от отрицательных трофеев
         # max_trophies обновляется только если новое значение больше текущего
         # league автоматически пересчитывается по новым трофеям
         result = await self.fetchrow(
             """
-            UPDATE users 
-            SET 
+            UPDATE users
+            SET
                 trophies = GREATEST(0, trophies + $1),
                 max_trophies = GREATEST(max_trophies, GREATEST(0, trophies + $1)),
-                league = CASE 
+                league = CASE
                     WHEN GREATEST(0, trophies + $1) >= 9000 THEN 10
                     WHEN GREATEST(0, trophies + $1) >= 7500 THEN 9
                     WHEN GREATEST(0, trophies + $1) >= 6000 THEN 8
@@ -1668,14 +2429,14 @@ class Database:
             """,
             delta, user_id
         )
-        
+
         if result:
             return {
                 "trophies": result["trophies"],
                 "max_trophies": result["max_trophies"],
                 "league": result["league"]
             }
-        
+
         return {"trophies": 0, "max_trophies": 0, "league": 1}
 
     async def get_user_info(self, user_id: int) -> Optional[dict[str, Any]]:
@@ -1685,26 +2446,26 @@ class Database:
         """
         if not self._pool:
             raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
-        
+
         record = await self.fetchrow(
             """
-            SELECT 
-                user_id, 
-                trophies, 
-                max_trophies, 
+            SELECT
+                user_id,
+                trophies,
+                max_trophies,
                 league,
-                coins, 
-                gems, 
+                coins,
+                gems,
                 extra_pass,
                 primary_deck,
                 energy,
                 energy_cd
-            FROM users 
+            FROM users
             WHERE user_id = $1
             """,
             user_id
         )
-        
+
         if record:
             return dict(record)
         return None
@@ -1716,17 +2477,18 @@ class Database:
         """
         if not self._pool:
             raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
-        
+
         try:
             record = await self.fetchrow(
                 """
                 SELECT COUNT(*) as unread_count
                 FROM user_mail
                 WHERE user_id = $1 AND is_read = FALSE
+                  AND NOT COALESCE(attachments ? 'event_type', FALSE)
                 """,
                 user_id
             )
-            
+
             if record:
                 return int(record["unread_count"] or 0)
             return 0
@@ -1737,21 +2499,21 @@ class Database:
     async def update_user_coins(self, user_id: int, delta: int) -> dict[str, Any]:
         """
         Обновить монеты пользователя с защитой от отрицательных значений.
-        
+
         Args:
             user_id: ID пользователя
             delta: Изменение монет (может быть положительным или отрицательным)
-        
+
         Returns:
             dict с новым значением coins
         """
         if not self._pool:
             raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
-        
+
         result = await self.fetchrow(
             """
-            UPDATE users 
-            SET 
+            UPDATE users
+            SET
                 coins = GREATEST(0, coins + $1),
                 updated_at = NOW()
             WHERE user_id = $2
@@ -1759,10 +2521,10 @@ class Database:
             """,
             delta, user_id
         )
-        
+
         if result:
             return {"coins": result["coins"]}
-        
+
         return {"coins": 0}
 
     async def add_gems(self, user_id: int, amount: int) -> dict[str, Any]:
@@ -1787,7 +2549,6 @@ class Database:
             raise RuntimeError("База данных не подключена.")
 
         if preset_number is not None:
-            # H1: verify preset exists, belongs to user, and has at least one card
             preset = await self.fetchrow(
                 """
                 SELECT card_slot_1, card_slot_2, card_slot_3, card_slot_4, card_slot_5,
@@ -1799,9 +2560,14 @@ class Database:
             )
             if not preset:
                 return {"success": False, "error": "preset_not_found", "message": "Пресет не найден"}
-            has_cards = any(preset.get(f"card_slot_{i}") is not None for i in range(1, 10))
-            if not has_cards:
-                return {"success": False, "error": "empty_preset", "message": "Нельзя сделать пустой пресет основным"}
+            card_slots = [preset.get(f"card_slot_{idx}") for idx in range(1, DECK_SIZE + 1)]
+            validation = await self._validate_deck_slots(
+                user_id,
+                card_slots,
+                require_complete=True,
+            )
+            if not validation.get("success"):
+                return validation
 
         await self.execute(
             "UPDATE users SET primary_deck = $1, updated_at = NOW() WHERE user_id = $2",
@@ -1936,28 +2702,27 @@ class Database:
             """
         )
         if not unique_exists:
-            # Безопасная миграция: удаляем строки с пустым match_id и дедуплицируем дубли,
-            # чтобы CREATE UNIQUE INDEX не упал на проде.
-            dupes_deleted = await self.execute(
+            blocking_rows = await self.fetchval(
                 """
-                DELETE FROM battle_results
-                WHERE match_id = ''
-                   OR match_id IS NULL
+                SELECT COUNT(*)
+                FROM (
+                    SELECT match_id
+                    FROM battle_results
+                    WHERE match_id IS NULL OR match_id = ''
+                    UNION ALL
+                    SELECT match_id
+                    FROM battle_results
+                    WHERE match_id IS NOT NULL AND match_id <> ''
+                    GROUP BY match_id
+                    HAVING COUNT(*) > 1
+                ) blocking
                 """
             )
-            if int(dupes_deleted.split()[-1]) > 0:
-                import logging
-                logging.getLogger(__name__).warning(
-                    "Cleaned %s rows with empty/null match_id before creating unique index", dupes_deleted
+            if int(blocking_rows or 0) > 0:
+                raise RuntimeError(
+                    "battle_results_match_id_unique_idx blocked by legacy empty or duplicate match_id rows; "
+                    "run the explicit manual migration to deduplicate battle history before startup."
                 )
-            await self.execute(
-                """
-                DELETE FROM battle_results a
-                USING battle_results b
-                WHERE a.match_id = b.match_id
-                  AND a.id < b.id
-                """
-            )
             await self.execute(
                 "CREATE UNIQUE INDEX battle_results_match_id_unique_idx ON battle_results(match_id)"
             )
@@ -2082,12 +2847,16 @@ class Database:
         if all_opponent_ids:
             opp_rows = await self.fetch(
                 """
-                SELECT u.user_id, u.first_name, u.username, u.is_bot, u.trophies,
-                       p.custom_nickname, p.img,
-                       equipped_avatar.asset_path AS equipped_avatar_url
-                FROM users u
-                LEFT JOIN profiles p ON p.user_id = u.user_id
-                LEFT JOIN user_equipped_cosmetics uec ON uec.user_id = u.user_id AND uec.item_type = 'avatar'
+	                SELECT u.user_id, u.first_name, u.username, u.is_bot, u.trophies,
+	                       COALESCE(u.extra_pass, 'inactive') AS extra_pass,
+	                       COALESCE(us.nickname_glow_disabled, FALSE) AS nickname_glow_disabled,
+	                       COALESCE(us.hide_player_id_public, FALSE) AS hide_player_id_public,
+	                       p.custom_nickname, p.img,
+	                       equipped_avatar.asset_path AS equipped_avatar_url
+	                FROM users u
+	                LEFT JOIN profiles p ON p.user_id = u.user_id
+	                LEFT JOIN user_settings us ON us.user_id = u.user_id
+	                LEFT JOIN user_equipped_cosmetics uec ON uec.user_id = u.user_id AND uec.item_type = 'avatar'
                 LEFT JOIN cosmetic_items equipped_avatar ON equipped_avatar.id = uec.cosmetic_id AND equipped_avatar.item_type = 'avatar'
                 WHERE u.user_id = ANY($1)
                 """,
@@ -2098,9 +2867,12 @@ class Database:
                 opponent_info[row["user_id"]] = {
                     "name": (row.get("custom_nickname") or row.get("first_name") or row.get("username") or "Игрок"),
                     "is_bot": is_bot,
-                    "avatar_url": row.get("equipped_avatar_url") or row.get("img"),
-                    "trophies": row.get("trophies") or 0,
-                }
+	                    "avatar_url": row.get("equipped_avatar_url") or row.get("img"),
+	                    "trophies": row.get("trophies") or 0,
+	                    "extra_pass": row.get("extra_pass") or "inactive",
+	                    "nickname_glow_disabled": bool(row.get("nickname_glow_disabled", False)),
+	                    "hide_player_id_public": bool(row.get("hide_player_id_public", False)),
+	                }
 
         # ---- Step 5: format all rows ----
         rows: list[dict[str, Any]] = []
@@ -2142,6 +2914,380 @@ class Database:
         return rows[:limit]
 
     @staticmethod
+    def _is_ranked_streak_mode(game_mode: Any = None, match_type: Any = None) -> bool:
+        blocked = {"friendly", "training"}
+        values = {str(game_mode or "").strip().lower(), str(match_type or "").strip().lower()}
+        return not bool(values & blocked)
+
+    @staticmethod
+    def _streak_result_for_row(user_id: int, winner_id: Any) -> str:
+        if winner_id is None:
+            return "draw"
+        try:
+            return "win" if int(winner_id) == int(user_id) else "loss"
+        except (TypeError, ValueError):
+            return "draw"
+
+    async def get_current_result_streak(self, user_id: int) -> dict[str, Any]:
+        """Return the current ranked win/loss streak, excluding training and friendly battles."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+
+        summary_rows = await self.fetch(
+            """
+            SELECT id, match_id, p1_user_id, p2_user_id, winner_user_id, loser_user_id,
+                   game_mode, match_type, created_at
+            FROM battle_summary
+            WHERE p1_user_id = $1 OR p2_user_id = $1
+            ORDER BY created_at DESC, id DESC
+            """,
+            user_id,
+        )
+        summary_match_ids = {str(row["match_id"]) for row in summary_rows if row.get("match_id") is not None}
+
+        legacy_rows = await self.fetch(
+            """
+            SELECT id, match_id, p1_id, p2_id, winner_id, loser_id, match_type, created_at
+            FROM battle_results br
+            WHERE NOT EXISTS (
+                SELECT 1 FROM battle_summary bs WHERE bs.match_id = br.match_id
+            )
+              AND (
+                  p1_id = $1 OR p2_id = $1
+                  OR (p1_id IS NULL AND p2_id IS NULL AND (winner_id = $1 OR loser_id = $1))
+              )
+            ORDER BY created_at DESC, id DESC
+            """,
+            user_id,
+        )
+
+        legacy_best: dict[str, Any] = {}
+        for row in legacy_rows:
+            match_id = str(row.get("match_id") or "")
+            if not match_id or match_id in summary_match_ids:
+                continue
+            existing = legacy_best.get(match_id)
+            if existing is None or (row.get("created_at"), row.get("id", 0)) > (
+                existing.get("created_at"),
+                existing.get("id", 0),
+            ):
+                legacy_best[match_id] = row
+
+        ranked_rows: list[dict[str, Any]] = []
+        for row in summary_rows:
+            if not self._is_ranked_streak_mode(row.get("game_mode"), row.get("match_type")):
+                continue
+            ranked_rows.append(
+                {
+                    "result": self._streak_result_for_row(user_id, row.get("winner_user_id")),
+                    "created_at": row.get("created_at"),
+                    "id": int(row.get("id", 0) or 0),
+                    "source_priority": 0,
+                    "match_id": str(row.get("match_id") or ""),
+                }
+            )
+
+        for row in legacy_best.values():
+            if not self._is_ranked_streak_mode(None, row.get("match_type")):
+                continue
+            _, _, opponent_id = self._resolve_legacy_opponent(user_id, row)
+            if opponent_id is None:
+                continue
+            ranked_rows.append(
+                {
+                    "result": self._streak_result_for_row(user_id, row.get("winner_id")),
+                    "created_at": row.get("created_at"),
+                    "id": int(row.get("id", 0) or 0),
+                    "source_priority": 1,
+                    "match_id": str(row.get("match_id") or ""),
+                }
+            )
+
+        ranked_rows.sort(
+            key=lambda row: (
+                row.get("created_at"),
+                -int(row.get("source_priority", 0) or 0),
+                int(row.get("id", 0) or 0),
+                str(row.get("match_id") or ""),
+            ),
+            reverse=True,
+        )
+
+        current_kind: str | None = None
+        current_length = 0
+        for row in ranked_rows:
+            result = row.get("result")
+            if result not in {"win", "loss"}:
+                if current_length == 0:
+                    continue
+                break
+            if current_kind is None:
+                current_kind = str(result)
+                current_length = 1
+                continue
+            if result != current_kind:
+                break
+            current_length += 1
+
+        return {"kind": current_kind, "length": current_length}
+
+    async def get_battle_history_page(self, user_id: int, limit: int = 25) -> list[dict[str, Any]]:
+        """Return only the visible battle-history page without loading every opponent profile."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+
+        limit = max(1, min(int(limit or 25), 50))
+        rows = await self.fetch(
+            """
+            WITH summary_rows AS (
+                SELECT
+                    match_id,
+                    p1_user_id AS p1_id,
+                    p2_user_id AS p2_id,
+                    winner_user_id AS winner_id,
+                    loser_user_id AS loser_id,
+                    p1_trophy_change,
+                    p2_trophy_change,
+                    game_mode,
+                    match_type,
+                    duration_seconds,
+                    turns_count,
+                    created_at
+                FROM battle_summary
+                WHERE p1_user_id = $1 OR p2_user_id = $1
+            ),
+            legacy_dedup AS (
+                SELECT DISTINCT ON (br.match_id)
+                    br.match_id,
+                    br.p1_id,
+                    br.p2_id,
+                    br.winner_id,
+                    br.loser_id,
+                    br.p1_trophy_change,
+                    br.p2_trophy_change,
+                    NULL::text AS game_mode,
+                    br.match_type,
+                    br.match_duration AS duration_seconds,
+                    br.turns_count,
+                    br.created_at
+                FROM battle_results br
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM battle_summary bs WHERE bs.match_id = br.match_id
+                )
+                  AND (
+                    br.p1_id = $1 OR br.p2_id = $1
+                    OR (br.p1_id IS NULL AND br.p2_id IS NULL AND (br.winner_id = $1 OR br.loser_id = $1))
+                  )
+                ORDER BY br.match_id, br.created_at DESC
+            ),
+            unified_rows AS (
+                SELECT * FROM summary_rows
+                UNION ALL
+                SELECT * FROM legacy_dedup
+            )
+            SELECT *
+            FROM unified_rows
+            ORDER BY created_at DESC
+            LIMIT $2
+            """,
+            user_id,
+            limit,
+        )
+
+        all_opponent_ids: set[int] = set()
+        formatted_input: list[tuple[Any, int | None]] = []
+        for r in rows:
+            p1_id = r.get("p1_id")
+            p2_id = r.get("p2_id")
+            opp_id = p1_id if p2_id == user_id else p2_id
+            if p1_id is None and p2_id is None:
+                _, _, opp_id = self._resolve_legacy_opponent(user_id, r)
+            if opp_id is not None:
+                all_opponent_ids.add(int(opp_id))
+            formatted_input.append((r, int(opp_id) if opp_id is not None else None))
+
+        opponent_info = await self._load_battle_history_opponent_info(all_opponent_ids)
+        history: list[dict[str, Any]] = []
+        for r, opp_id in formatted_input:
+            history.append(self._format_battle_row(
+                match_id=r["match_id"],
+                player_id=user_id,
+                p1_id=r.get("p1_id"),
+                p2_id=r.get("p2_id"),
+                winner_id=r.get("winner_id"),
+                loser_id=r.get("loser_id"),
+                p1_trophy_change=r.get("p1_trophy_change", 0),
+                p2_trophy_change=r.get("p2_trophy_change", 0),
+                game_mode=r.get("game_mode"),
+                match_type=r.get("match_type"),
+                duration_seconds=r.get("duration_seconds", 0),
+                turns_count=r.get("turns_count", 0),
+                created_at=r["created_at"],
+                opponent_id=opp_id,
+                opponent_info=opponent_info,
+            ))
+        return history
+
+    async def _load_battle_history_opponent_info(self, opponent_ids: set[int]) -> dict[int, dict[str, Any]]:
+        opponent_info: dict[int, dict[str, Any]] = {}
+        if not opponent_ids:
+            return opponent_info
+        opp_rows = await self.fetch(
+            """
+            SELECT u.user_id, u.first_name, u.username, u.is_bot, u.trophies,
+                   COALESCE(u.extra_pass, 'inactive') AS extra_pass,
+                   COALESCE(us.nickname_glow_disabled, FALSE) AS nickname_glow_disabled,
+                   COALESCE(us.hide_player_id_public, FALSE) AS hide_player_id_public,
+                   p.custom_nickname, p.img,
+                   equipped_avatar.asset_path AS equipped_avatar_url
+            FROM users u
+            LEFT JOIN profiles p ON p.user_id = u.user_id
+            LEFT JOIN user_settings us ON us.user_id = u.user_id
+            LEFT JOIN user_equipped_cosmetics uec ON uec.user_id = u.user_id AND uec.item_type = 'avatar'
+            LEFT JOIN cosmetic_items equipped_avatar ON equipped_avatar.id = uec.cosmetic_id AND equipped_avatar.item_type = 'avatar'
+            WHERE u.user_id = ANY($1)
+            """,
+            list(opponent_ids),
+        )
+        for row in opp_rows:
+            is_bot = bool(row.get("is_bot", False))
+            opponent_info[int(row["user_id"])] = {
+                "name": (row.get("custom_nickname") or row.get("first_name") or row.get("username") or "Игрок"),
+                "is_bot": is_bot,
+                "avatar_url": row.get("equipped_avatar_url") or row.get("img"),
+                "trophies": row.get("trophies") or 0,
+                "extra_pass": row.get("extra_pass") or "inactive",
+                "nickname_glow_disabled": bool(row.get("nickname_glow_disabled", False)),
+                "hide_player_id_public": bool(row.get("hide_player_id_public", False)),
+            }
+        return opponent_info
+
+    async def get_battle_history_stats(self, user_id: int) -> dict[str, Any]:
+        """Return battle-history counters without loading full public opponent cards."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+
+        rows = await self.fetch(
+            """
+            WITH summary_rows AS (
+                SELECT
+                    match_id,
+                    p1_user_id AS p1_id,
+                    p2_user_id AS p2_id,
+                    winner_user_id AS winner_id,
+                    p1_trophy_change,
+                    p2_trophy_change,
+                    COALESCE(game_mode, match_type, 'classic') AS mode,
+                    duration_seconds,
+                    turns_count,
+                    created_at
+                FROM battle_summary
+                WHERE p1_user_id = $1 OR p2_user_id = $1
+            ),
+            legacy_dedup AS (
+                SELECT DISTINCT ON (br.match_id)
+                    br.match_id,
+                    br.p1_id,
+                    br.p2_id,
+                    br.winner_id,
+                    br.p1_trophy_change,
+                    br.p2_trophy_change,
+                    COALESCE(br.match_type, 'classic') AS mode,
+                    br.match_duration AS duration_seconds,
+                    br.turns_count,
+                    br.created_at
+                FROM battle_results br
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM battle_summary bs WHERE bs.match_id = br.match_id
+                )
+                  AND (
+                    br.p1_id = $1 OR br.p2_id = $1
+                    OR (br.p1_id IS NULL AND br.p2_id IS NULL AND (br.winner_id = $1 OR br.loser_id = $1))
+                  )
+                ORDER BY br.match_id, br.created_at DESC
+            ),
+            unified_rows AS (
+                SELECT * FROM summary_rows
+                UNION ALL
+                SELECT * FROM legacy_dedup
+            )
+            SELECT *
+            FROM unified_rows
+            ORDER BY created_at DESC
+            """,
+            user_id,
+        )
+
+        all_count = len(rows)
+        ranked_rows: list[dict[str, Any]] = []
+        for r in rows:
+            mode = str(r.get("mode") or "classic")
+            if mode.lower() in {"friendly", "training"}:
+                continue
+            winner_id = r.get("winner_id")
+            if winner_id is None:
+                result = "draw"
+            elif winner_id == user_id:
+                result = "win"
+            else:
+                result = "lose"
+            p1_id = r.get("p1_id")
+            p2_id = r.get("p2_id")
+            if p1_id is not None and p2_id is not None:
+                trophies_change = r.get("p1_trophy_change", 0) if p1_id == user_id else r.get("p2_trophy_change", 0)
+            else:
+                trophies_change = 0
+            ranked_rows.append({
+                "mode": mode,
+                "result": result,
+                "trophies_change": trophies_change,
+                "turns_count": r.get("turns_count", 0),
+                "duration_seconds": r.get("duration_seconds", 0),
+            })
+
+        wins = sum(1 for r in ranked_rows if r["result"] == "win")
+        losses = sum(1 for r in ranked_rows if r["result"] == "lose")
+        draws = sum(1 for r in ranked_rows if r["result"] == "draw")
+        decided = wins + losses
+        avg_turns_values = [int(r.get("turns_count") or 0) for r in ranked_rows if int(r.get("turns_count") or 0) > 0]
+        avg_duration_values = [int(r.get("duration_seconds") or 0) for r in ranked_rows if int(r.get("duration_seconds") or 0) > 0]
+        mode_counts: dict[str, int] = {}
+        for r in ranked_rows:
+            mode = str(r.get("mode") or "classic")
+            mode_counts[mode] = mode_counts.get(mode, 0) + 1
+
+        current_streak_result = None
+        current_streak_count = 0
+        for r in ranked_rows:
+            result = r.get("result")
+            if result not in ("win", "lose"):
+                if current_streak_count == 0:
+                    continue
+                break
+            if current_streak_result is None:
+                current_streak_result = result
+                current_streak_count = 1
+            elif current_streak_result == result:
+                current_streak_count += 1
+            else:
+                break
+
+        return {
+            "history_total": all_count,
+            "total": len(ranked_rows),
+            "wins": wins,
+            "losses": losses,
+            "draws": draws,
+            "win_rate": round((wins / decided) * 100, 1) if decided else 0,
+            "trophy_delta": sum(int(r.get("trophies_change") or 0) for r in ranked_rows),
+            "avg_turns": round(sum(avg_turns_values) / len(avg_turns_values), 1) if avg_turns_values else None,
+            "avg_duration_seconds": round(sum(avg_duration_values) / len(avg_duration_values)) if avg_duration_values else None,
+            "favorite_mode": max(mode_counts.items(), key=lambda item: item[1])[0] if mode_counts else None,
+            "current_streak_result": current_streak_result,
+            "current_streak_count": current_streak_count,
+        }
+
+    @staticmethod
     def _format_battle_row(
         *, match_id: str, player_id: int, p1_id, p2_id,
         winner_id, loser_id, p1_trophy_change: int, p2_trophy_change: int,
@@ -2165,10 +3311,13 @@ class Database:
             "battle_id": match_id,
             "opponent_id": opponent_id,
             "opponent_name": opp.get("name", "Игрок"),
-            "opponent_avatar_url": opp.get("avatar_url"),
-            "opponent_trophies": opp.get("trophies", 0),
-            "opponent_is_bot": opp.get("is_bot", False),
-            "result": result,
+	            "opponent_avatar_url": opp.get("avatar_url"),
+	            "opponent_trophies": opp.get("trophies", 0),
+	            "opponent_is_bot": opp.get("is_bot", False),
+	            "opponent_extra_pass": opp.get("extra_pass", "inactive"),
+	            "opponent_nickname_glow_disabled": opp.get("nickname_glow_disabled", False),
+	            "opponent_hide_player_id_public": opp.get("hide_player_id_public", False),
+	            "result": result,
             "trophies_change": trophies_change,
             "mode": mode,
             "duration_seconds": duration_seconds or 0,
@@ -2342,48 +3491,6 @@ class Database:
             changed = True
 
         return changed
-
-    async def check_dice_ready_notifications(self) -> list[dict[str, Any]]:
-        """Проверить, кому нужно отправить уведомление о готовности кубика."""
-        if not self._pool:
-            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
-
-        # Используем универсальную систему уведомлений
-        now = datetime.now(timezone.utc)
-
-        # Находим пользователей, у которых кулдаун истек и уведомление не отправлено
-        rows = await self.fetch(
-            """
-            SELECT DISTINCT c.user_id
-            FROM cooldowns c
-            INNER JOIN users u ON u.user_id = c.user_id
-            LEFT JOIN notifications n ON n.user_id = c.user_id AND n.notification_type = 'dice'
-            LEFT JOIN user_settings us ON us.user_id = c.user_id
-            WHERE c.cooldown_type = 'dice'
-              AND c.cooldown_until <= $1
-              AND u.status = 'active'
-              AND (n.sent IS NULL OR n.sent = FALSE)
-              AND (us.notif_dice = TRUE OR us.notif_dice IS NULL)
-            """,
-            now
-        )
-
-        return [{"user_id": row["user_id"]} for row in rows]
-
-    async def mark_dice_notification_sent(self, user_id: int) -> None:
-        """Отметить, что уведомление о готовности кубика было отправлено."""
-        if not self._pool:
-            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
-
-        await self.execute(
-            """
-            INSERT INTO notifications (user_id, notification_type, sent, sent_at)
-            VALUES ($1, 'dice', TRUE, NOW())
-            ON CONFLICT (user_id, notification_type) DO UPDATE
-            SET sent = TRUE, sent_at = NOW()
-            """,
-            user_id
-        )
 
     async def _ensure_notification_outbox_table(self) -> bool:
         """Создать очередь личных Telegram-уведомлений."""
@@ -2675,6 +3782,7 @@ class Database:
             "notif_squad_member_role", "notif_squad_new_member",
             "notif_squad_disbanded", "notif_squad_boost",
             "notif_extra_arena_modifiers",
+            "notif_game_invites", "notif_friend_requests",
         }:
             return True
         row = await self.fetchrow(f"SELECT {setting} FROM user_settings WHERE user_id = $1", user_id)
@@ -2731,12 +3839,6 @@ class Database:
         if row is None:
             return False
 
-        await self._create_mail_from_notification(
-            user_id=user_id,
-            category=category,
-            event_type=event_type,
-            payload=payload,
-        )
         return True
 
     async def _create_mail_from_notification(
@@ -3086,6 +4188,9 @@ class Database:
         changed |= await self._add_column_if_missing(
             "promocodes", columns, "expires_at TIMESTAMPTZ"
         )
+        changed |= await self._add_column_if_missing(
+            "promocodes", columns, "is_active BOOLEAN NOT NULL DEFAULT TRUE"
+        )
 
         # Добавляем уникальный индекс для code, если его нет
         index_exists = await self.fetchval(
@@ -3244,6 +4349,7 @@ class Database:
             SELECT id, user_id, sender, subject, text, is_read, category, icon, attachments, created_at
             FROM user_mail
             WHERE user_id = $1
+              AND NOT COALESCE(attachments ? 'event_type', FALSE)
         """
         params = [user_id]
         param_idx = 2
@@ -3293,7 +4399,8 @@ class Database:
             )
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            logging.getLogger(__name__).error("create_chat_message failed: %s", e, exc_info=True)
+            return {"success": False, "error": "internal_server_error"}
 
     # --- Глобальный чат ---
 
@@ -3366,7 +4473,8 @@ class Database:
             )
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            logging.getLogger(__name__).error("create_news_post failed: %s", e, exc_info=True)
+            return {"success": False, "error": "internal_server_error"}
 
     async def get_chat_messages(self, limit: int = 100) -> list[dict[str, Any]]:
         """Получить сообщения из глобального чата."""
@@ -3426,6 +4534,18 @@ class Database:
         )
         return [dict(r) for r in rows]
 
+    async def get_user_case(self, user_case_id: int, user_id: int) -> Optional[dict[str, Any]]:
+        row = await self.fetchrow(
+            """
+            SELECT *
+            FROM user_cases
+            WHERE id = $1 AND user_id = $2 AND status = 'pending'
+            """,
+            user_case_id,
+            user_id,
+        )
+        return dict(row) if row else None
+
     async def add_user_case(self, user_id: int, case_id: int, tier: int) -> dict:
         row = await self.fetchrow(
             """
@@ -3436,8 +4556,46 @@ class Database:
             user_id, case_id, tier
         )
         if row:
-            return dict(row)
+            result = dict(row)
+            result["success"] = True
+            result["user_case_id"] = result.get("id")
+            return result
         return {"error": "failed"}
+
+    async def update_case_tier(self, user_case_id: int, user_id: int, tier: int) -> Optional[dict[str, Any]]:
+        row = await self.fetchrow(
+            """
+            UPDATE user_cases
+            SET tier = $3
+            WHERE id = $1 AND user_id = $2 AND status = 'pending'
+            RETURNING *
+            """,
+            user_case_id,
+            user_id,
+            max(1, min(5, int(tier or 1))),
+        )
+        return dict(row) if row else None
+
+    async def remove_user_case(self, user_case_id: int, user_id: int) -> bool:
+        removed = await self.fetchval(
+            """
+            DELETE FROM user_cases
+            WHERE id = $1 AND user_id = $2 AND status = 'pending'
+            RETURNING 1
+            """,
+            user_case_id,
+            user_id,
+        )
+        return bool(removed)
+
+    async def sync_user_key_cases(self, user_id: int) -> None:
+        return None
+
+    async def get_default_case_id(self) -> Optional[int]:
+        return None
+
+    async def get_admin_case_id(self, tier: int) -> int:
+        return max(1, min(5, int(tier or 1)))
 
     # --- Коммьюнити (Посты и лайки) ---
 
@@ -3642,6 +4800,7 @@ class Database:
                     type TEXT NOT NULL DEFAULT 'open',
                     min_trophies INTEGER NOT NULL DEFAULT 0,
                     treasury_tokens INTEGER NOT NULL DEFAULT 0,
+                    owner_tax_remainder_micros BIGINT NOT NULL DEFAULT 0,
                     cbrp INTEGER NOT NULL DEFAULT 0,
                     banner_url TEXT,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -3666,6 +4825,7 @@ class Database:
         changed |= await self._add_column_if_missing("clans", columns, "type TEXT NOT NULL DEFAULT 'open'")
         changed |= await self._add_column_if_missing("clans", columns, "min_trophies INTEGER NOT NULL DEFAULT 0")
         changed |= await self._add_column_if_missing("clans", columns, "treasury_tokens INTEGER NOT NULL DEFAULT 0")
+        changed |= await self._add_column_if_missing("clans", columns, "owner_tax_remainder_micros BIGINT NOT NULL DEFAULT 0")
         changed |= await self._add_column_if_missing("clans", columns, "cbrp INTEGER NOT NULL DEFAULT 0")
         changed |= await self._add_column_if_missing("clans", columns, "banner_url TEXT")
         changed |= await self._add_column_if_missing("clans", columns, "public_id INTEGER UNIQUE")
@@ -3727,6 +4887,63 @@ class Database:
         columns = await self._get_columns("clan_members")
         changed |= await self._add_column_if_missing("clan_members", columns, "personal_tokens INTEGER NOT NULL DEFAULT 0")
         await self.execute("UPDATE clan_members SET role = 'creator' WHERE role = 'owner'")
+        await self.execute(
+            """
+            WITH ranked AS (
+                SELECT cm.ctid,
+                       cm.user_id,
+                       cm.clan_id,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY cm.user_id
+                           ORDER BY
+                               CASE WHEN COALESCE(u.squad_id, 0) = cm.clan_id THEN 0 ELSE 1 END,
+                               CASE cm.role WHEN 'creator' THEN 0 WHEN 'owner' THEN 0 WHEN 'officer' THEN 1 ELSE 2 END,
+                               cm.joined_at DESC,
+                               cm.clan_id
+                       ) AS rn
+                FROM clan_members cm
+                LEFT JOIN users u ON u.user_id = cm.user_id
+            )
+            DELETE FROM clan_members cm
+            USING ranked r
+            WHERE cm.ctid = r.ctid
+              AND r.rn > 1
+            """
+        )
+        await self.execute(
+            """
+            UPDATE users u
+            SET squad_id = COALESCE(m.clan_id, 0)
+            FROM (
+                SELECT DISTINCT ON (user_id) user_id, clan_id
+                FROM clan_members
+                ORDER BY user_id,
+                         CASE role WHEN 'creator' THEN 0 WHEN 'owner' THEN 0 WHEN 'officer' THEN 1 ELSE 2 END,
+                         joined_at DESC,
+                         clan_id
+            ) m
+            WHERE u.user_id = m.user_id
+              AND COALESCE(u.squad_id, 0) <> m.clan_id
+            """
+        )
+        await self.execute(
+            """
+            UPDATE clans c
+            SET members_count = (
+                SELECT COUNT(*)::INT
+                FROM clan_members cm
+                WHERE cm.clan_id = c.id
+            )
+            """
+        )
+        idx_exists = await self.fetchval(
+            "SELECT 1 FROM pg_indexes WHERE tablename='clan_members' AND indexname='clan_members_user_id_unique_idx'"
+        )
+        if not idx_exists:
+            await self.execute(
+                "CREATE UNIQUE INDEX clan_members_user_id_unique_idx ON clan_members (user_id)"
+            )
+            changed = True
 
         return changed
 
@@ -3737,7 +4954,10 @@ class Database:
         high = (10 ** digits) - 1
         for _ in range(200):
             value = random.randint(low, high)
-            exists = await self.fetchval(f"SELECT 1 FROM clans WHERE {column} = $1", value)
+            exists = await self.fetchval(
+                "SELECT 1 FROM clans WHERE id = $1 OR public_id = $1 OR boost_public_id = $1",
+                value,
+            )
             if not exists:
                 return value
         raise RuntimeError(f"Could not generate unique {digits}-digit clan id")
@@ -3768,6 +4988,37 @@ class Database:
                     decided_at TIMESTAMPTZ,
                     UNIQUE(clan_id, user_id)
                 )
+                """
+            )
+            changed = True
+        await self.execute(
+            """
+            WITH ranked AS (
+                SELECT id,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY user_id
+                           ORDER BY created_at DESC, id DESC
+                       ) AS rn
+                FROM clan_join_requests
+                WHERE status = 'pending'
+            )
+            UPDATE clan_join_requests jr
+            SET status = 'rejected',
+                decided_at = COALESCE(decided_at, NOW())
+            FROM ranked r
+            WHERE jr.id = r.id
+              AND r.rn > 1
+            """
+        )
+        idx_exists = await self.fetchval(
+            "SELECT 1 FROM pg_indexes WHERE tablename='clan_join_requests' AND indexname='clan_join_requests_one_pending_user_idx'"
+        )
+        if not idx_exists:
+            await self.execute(
+                """
+                CREATE UNIQUE INDEX clan_join_requests_one_pending_user_idx
+                ON clan_join_requests (user_id)
+                WHERE status = 'pending'
                 """
             )
             changed = True
@@ -4110,6 +5361,618 @@ class Database:
             changed = True
         return changed
 
+    async def _ensure_rating_snapshot_cache_table(self) -> bool:
+        changed = False
+        table_exists = await self.fetchval("SELECT to_regclass('public.rating_snapshot_cache')")
+        if not table_exists:
+            await self.execute(
+                """
+                CREATE TABLE rating_snapshot_cache (
+                    scope TEXT NOT NULL DEFAULT 'players',
+                    period TEXT NOT NULL DEFAULT 'daily',
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    generated_at TIMESTAMPTZ,
+                    next_refresh_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    source_count INTEGER NOT NULL DEFAULT 0,
+                    error TEXT,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (scope, period)
+                )
+                """
+            )
+            changed = True
+
+        columns = await self._get_columns("rating_snapshot_cache")
+        changed |= await self._add_column_if_missing("rating_snapshot_cache", columns, "scope TEXT NOT NULL DEFAULT 'players'")
+        changed |= await self._add_column_if_missing("rating_snapshot_cache", columns, "period TEXT NOT NULL DEFAULT 'daily'")
+        changed |= await self._add_column_if_missing("rating_snapshot_cache", columns, "status TEXT NOT NULL DEFAULT 'pending'")
+        changed |= await self._add_column_if_missing("rating_snapshot_cache", columns, "payload JSONB NOT NULL DEFAULT '{}'::jsonb")
+        changed |= await self._add_column_if_missing("rating_snapshot_cache", columns, "generated_at TIMESTAMPTZ")
+        changed |= await self._add_column_if_missing("rating_snapshot_cache", columns, "next_refresh_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
+        changed |= await self._add_column_if_missing("rating_snapshot_cache", columns, "source_count INTEGER NOT NULL DEFAULT 0")
+        changed |= await self._add_column_if_missing("rating_snapshot_cache", columns, "error TEXT")
+        changed |= await self._add_column_if_missing("rating_snapshot_cache", columns, "updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
+        await self.execute(
+            """
+            CREATE INDEX IF NOT EXISTS rating_snapshot_cache_due_idx
+            ON rating_snapshot_cache (scope, next_refresh_at)
+            """
+        )
+        await self.execute(
+            """
+            DELETE FROM rating_snapshot_cache
+            WHERE ctid IN (
+                SELECT ctid
+                FROM (
+                    SELECT ctid,
+                           ROW_NUMBER() OVER (PARTITION BY scope, period ORDER BY updated_at DESC, generated_at DESC NULLS LAST) AS rn
+                    FROM rating_snapshot_cache
+                ) ranked
+                WHERE rn > 1
+            )
+            """
+        )
+        await self.execute(
+            """
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1
+                    FROM pg_constraint
+                    WHERE conname = 'rating_snapshot_cache_scope_period_key'
+                ) THEN
+                    ALTER TABLE rating_snapshot_cache
+                    ADD CONSTRAINT rating_snapshot_cache_scope_period_key UNIQUE (scope, period);
+                END IF;
+            END $$;
+            """
+        )
+        return changed
+
+    def _rating_empty_period(self, period: str, *, status: str = "pending") -> dict[str, Any]:
+        now = _rating_utc_now()
+        return {
+            "status": status,
+            "generated_at": None,
+            "next_refresh_at": _rating_dt(_rating_next_refresh_at(period, now)),
+            "categories": [
+                {**category, "entries": [], "status": "empty"}
+                for category in RATING_CATEGORIES
+            ],
+        }
+
+    def _rating_unavailable_response(self, *, scope: str) -> dict[str, Any]:
+        return {
+            "success": True,
+            "scope": scope,
+            "server_time": _rating_dt(_rating_utc_now()),
+            "periods": {
+                "daily": self._rating_empty_period("daily", status="error"),
+                "preview": self._rating_empty_period("preview", status="error"),
+            },
+        }
+
+    async def get_community_rating(self, *, scope: str = "players") -> dict[str, Any]:
+        if scope != "players":
+            return {
+                "success": True,
+                "scope": scope,
+                "server_time": _rating_dt(_rating_utc_now()),
+                "periods": {
+                    "daily": self._rating_empty_period("daily", status="coming_soon"),
+                    "preview": self._rating_empty_period("preview", status="coming_soon"),
+                },
+            }
+
+        try:
+            await self._ensure_rating_snapshot_cache_table()
+            await self.refresh_due_rating_snapshots(scope=scope)
+        except Exception as exc:
+            logging.getLogger(__name__).error(
+                "get_community_rating failed before cache read: scope=%s",
+                scope,
+                exc_info=True,
+            )
+            return self._rating_unavailable_response(scope=scope)
+        try:
+            rows = await self.fetch(
+                """
+                SELECT period, status, payload, generated_at, next_refresh_at, source_count, error
+                FROM rating_snapshot_cache
+                WHERE scope = $1 AND period = ANY($2::text[])
+                """,
+                scope,
+                list(RATING_PERIOD_KEYS),
+            )
+        except Exception as exc:
+            logging.getLogger(__name__).error(
+                "get_community_rating failed during cache read: scope=%s",
+                scope,
+                exc_info=True,
+            )
+            return self._rating_unavailable_response(scope=scope)
+        by_period = {str(row["period"]): row for row in rows}
+        periods: dict[str, Any] = {}
+        for period in RATING_PERIOD_KEYS:
+            row = by_period.get(period)
+            if not row:
+                periods[period] = self._rating_empty_period(period)
+                continue
+            payload = row["payload"] or {}
+            if isinstance(payload, str):
+                try:
+                    payload = json.loads(payload)
+                except Exception:
+                    payload = {}
+            categories = payload.get("categories") if isinstance(payload, dict) else None
+            if not isinstance(categories, list):
+                categories = []
+            if period == "preview":
+                categories = self._rating_mask_preview_categories(categories)
+            periods[period] = {
+                "status": row["status"] or "pending",
+                "generated_at": _rating_dt(row["generated_at"]),
+                "next_refresh_at": _rating_dt(row["next_refresh_at"]),
+                "categories": categories,
+                "source_count": int(row["source_count"] or 0),
+                "error": row["error"],
+            }
+        return {
+            "success": True,
+            "scope": scope,
+            "server_time": _rating_dt(_rating_utc_now()),
+            "periods": periods,
+        }
+
+    async def refresh_due_rating_snapshots(
+        self,
+        *,
+        scope: str = "players",
+        force: bool = False,
+    ) -> dict[str, Any]:
+        if scope != "players":
+            return {"success": True, "scope": scope, "refreshed": []}
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+
+        now = _rating_utc_now()
+        refreshed: list[str] = []
+        skipped_locked: list[str] = []
+        for period in RATING_PERIOD_KEYS:
+            row = await self.fetchrow(
+                """
+                SELECT period, next_refresh_at, payload
+                FROM rating_snapshot_cache
+                WHERE scope = $1 AND period = $2
+                """,
+                scope,
+                period,
+            )
+            due = force or not row or not row["next_refresh_at"] or row["next_refresh_at"] <= now
+            if row and not due:
+                payload = row["payload"] or {}
+                if isinstance(payload, str):
+                    try:
+                        payload = json.loads(payload)
+                    except Exception:
+                        payload = {}
+                due = not isinstance(payload, dict) or payload.get("algorithm_version") != RATING_ALGORITHM_VERSION
+            if not due:
+                continue
+
+            async with self._pool.acquire() as conn:
+                lock_key = f"rating_snapshot_refresh:{scope}:{period}"
+                try:
+                    async with conn.transaction():
+                        locked = await conn.fetchval(
+                            "SELECT pg_try_advisory_xact_lock(hashtext($1)::bigint)",
+                            lock_key,
+                        )
+                        if not locked:
+                            skipped_locked.append(period)
+                            continue
+                        generated_at = _rating_utc_now()
+                        next_refresh_at = _rating_next_refresh_at(period, generated_at)
+                        payload = await self._build_player_rating_payload(
+                            period=period,
+                            generated_at=generated_at,
+                            conn=conn,
+                        )
+                        source_count = sum(
+                            len(category.get("entries") or [])
+                            for category in payload.get("categories", [])
+                        )
+                        await conn.execute(
+                            """
+                            INSERT INTO rating_snapshot_cache (
+                                scope, period, status, payload, generated_at,
+                                next_refresh_at, source_count, error, updated_at
+                            )
+                            VALUES ($1, $2, 'ready', $3::jsonb, $4, $5, $6, NULL, NOW())
+                            ON CONFLICT (scope, period) DO UPDATE
+                            SET status = EXCLUDED.status,
+                                payload = EXCLUDED.payload,
+                                generated_at = EXCLUDED.generated_at,
+                                next_refresh_at = EXCLUDED.next_refresh_at,
+                                source_count = EXCLUDED.source_count,
+                                error = NULL,
+                                updated_at = NOW()
+                            """,
+                            scope,
+                            period,
+                            json.dumps(_rating_json_safe(payload), ensure_ascii=False),
+                            generated_at,
+                            next_refresh_at,
+                            source_count,
+                        )
+                    refreshed.append(period)
+                except Exception as exc:
+                    logging.getLogger(__name__).error(
+                        "Rating snapshot refresh failed: scope=%s period=%s",
+                        scope,
+                        period,
+                        exc_info=True,
+                    )
+                    await self.execute(
+                        """
+                        INSERT INTO rating_snapshot_cache (
+                            scope, period, status, payload, generated_at,
+                            next_refresh_at, source_count, error, updated_at
+                        )
+                        VALUES ($1, $2, 'error', '{}'::jsonb, NULL, $3, 0, $4, NOW())
+                        ON CONFLICT (scope, period) DO UPDATE
+                            SET status = CASE
+                                WHEN rating_snapshot_cache.generated_at IS NULL THEN 'error'
+                                ELSE 'stale'
+                            END,
+                            payload = CASE
+                                WHEN rating_snapshot_cache.generated_at IS NULL THEN EXCLUDED.payload
+                                ELSE jsonb_set(
+                                    COALESCE(rating_snapshot_cache.payload, '{}'::jsonb),
+                                    '{stale_payload}',
+                                    'true'::jsonb,
+                                    true
+                                )
+                            END,
+                            next_refresh_at = EXCLUDED.next_refresh_at,
+                            error = EXCLUDED.error,
+                            updated_at = NOW()
+                        """,
+                        scope,
+                        period,
+                        _rating_next_refresh_at(period, _rating_utc_now()),
+                        "refresh_failed",
+                    )
+        return {"success": True, "scope": scope, "refreshed": refreshed, "locked": skipped_locked}
+
+    def _rating_entry_from_row(
+        self,
+        row: Any,
+        *,
+        rank: int,
+        metric_label: str,
+        metric_field: str = "metric",
+    ) -> dict[str, Any]:
+        data = dict(row)
+        metric = data.get(metric_field, 0)
+        if isinstance(metric, Decimal):
+            metric = metric.quantize(Decimal("0.01"))
+            metric = int(metric) if metric == metric.to_integral_value() else float(metric)
+        else:
+            try:
+                numeric_metric = float(metric or 0)
+                metric = int(numeric_metric) if numeric_metric.is_integer() else round(numeric_metric, 2)
+            except Exception:
+                metric = 0
+        return {
+            "rank": rank,
+            "user_id": int(data.get("user_id") or 0),
+            "display_name": data.get("display_name") or "Игрок",
+            "title": data.get("title") or "Игрок",
+            "title_class": data.get("title_class") or "starter",
+            "avatar_url": data.get("avatar_url") or RATING_DEFAULT_AVATAR,
+            "profile_background_url": data.get("profile_background_url") or RATING_DEFAULT_BACKGROUND,
+            "squad_name": data.get("squad_name") or "Без сквада",
+            "extra_pass": data.get("extra_pass") or "inactive",
+            "metric": metric,
+            "metric_label": metric_label,
+        }
+
+    def _rating_mask_preview_entry(self, entry: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "rank": self._rating_entry_rank(entry),
+            "masked": True,
+        }
+
+    def _rating_entry_rank(self, entry: dict[str, Any]) -> int:
+        try:
+            return int(entry.get("rank") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    def _rating_mask_preview_categories(self, categories: list[Any]) -> list[Any]:
+        masked_categories: list[Any] = []
+        for category in categories:
+            if not isinstance(category, dict):
+                masked_categories.append(category)
+                continue
+            entries = category.get("entries")
+            if not isinstance(entries, list):
+                masked_categories.append(category)
+                continue
+            masked_categories.append({
+                **category,
+                "entries": [
+                    self._rating_mask_preview_entry(entry)
+                    if isinstance(entry, dict) and 0 < self._rating_entry_rank(entry) <= 3
+                    else entry
+                    for entry in entries
+                ],
+            })
+        return masked_categories
+
+    async def _build_player_rating_payload(
+        self,
+        *,
+        period: str,
+        generated_at: datetime,
+        conn: Any,
+    ) -> dict[str, Any]:
+        categories: list[dict[str, Any]] = []
+        for category in RATING_CATEGORIES:
+            entries = await self._rating_fetch_entries(
+                category["key"],
+                metric_label=category["metric_label"],
+                conn=conn,
+                limit=10,
+                period=period,
+                generated_at=generated_at,
+            )
+            if period == "preview":
+                entries = [
+                    self._rating_mask_preview_entry(entry)
+                    if period == "preview" and entry.get("rank", 0) <= 3
+                    else entry
+                    for entry in entries
+                ]
+            status = "ready" if entries else "empty"
+            categories.append({
+                **category,
+                "status": status,
+                "entries": entries,
+            })
+        return {
+            "period": period,
+            "algorithm_version": RATING_ALGORITHM_VERSION,
+            "generated_at": _rating_dt(generated_at),
+            "next_refresh_at": _rating_dt(_rating_next_refresh_at(period, generated_at)),
+            "categories": categories,
+        }
+
+    async def _rating_fetch_entries(
+        self,
+        category_key: str,
+        *,
+        metric_label: str,
+        conn: Any,
+        limit: int,
+        period: str,
+        generated_at: datetime,
+    ) -> list[dict[str, Any]]:
+        window_start = _rating_window_start(period, generated_at)
+        base_cte = f"""
+            WITH human_players AS (
+                SELECT u.user_id,
+                       COALESCE(NULLIF(p.custom_nickname, ''), NULLIF(u.username, ''), NULLIF(u.first_name, ''), 'Игрок #' || u.user_id::TEXT) AS display_name,
+                       COALESCE(equipped_title.name, NULLIF(p.title, ''), 'Игрок') AS title,
+                       COALESCE(equipped_title.class, 'starter') AS title_class,
+                       COALESCE(equipped_avatar.asset_path, NULLIF(p.img, ''), '{RATING_DEFAULT_AVATAR}') AS avatar_url,
+                       COALESCE(equipped_background.asset_path, '{RATING_DEFAULT_BACKGROUND}') AS profile_background_url,
+                       COALESCE(NULLIF(c.name, ''), 'Без сквада') AS squad_name,
+                       COALESCE(u.extra_pass, 'inactive') AS extra_pass,
+                       GREATEST(COALESCE(u.max_trophies, 0), COALESCE(u.trophies, 0)) AS best_trophies
+                FROM users u
+                LEFT JOIN profiles p ON p.user_id = u.user_id
+                LEFT JOIN clan_members cm ON cm.user_id = u.user_id
+                LEFT JOIN clans c ON c.id = cm.clan_id
+                LEFT JOIN user_equipped_cosmetics uec_avatar ON uec_avatar.user_id = u.user_id AND uec_avatar.item_type = 'avatar'
+                LEFT JOIN cosmetic_items equipped_avatar ON equipped_avatar.id = uec_avatar.cosmetic_id AND equipped_avatar.item_type = 'avatar' AND equipped_avatar.is_active = TRUE
+                LEFT JOIN user_equipped_cosmetics uec_background ON uec_background.user_id = u.user_id AND uec_background.item_type = 'profile_background'
+                LEFT JOIN cosmetic_items equipped_background ON equipped_background.id = uec_background.cosmetic_id AND equipped_background.item_type = 'profile_background' AND equipped_background.is_active = TRUE
+                LEFT JOIN user_equipped_cosmetics uec_title ON uec_title.user_id = u.user_id AND uec_title.item_type = 'title'
+                LEFT JOIN cosmetic_items equipped_title ON equipped_title.id = uec_title.cosmetic_id AND equipped_title.item_type = 'title' AND equipped_title.is_active = TRUE
+                WHERE COALESCE(u.is_bot, FALSE) = FALSE
+                  AND COALESCE(u.status, 'active') IN ('active', 'warn')
+                  AND COALESCE(u.is_banned, FALSE) = FALSE
+            )
+        """
+        if category_key == "trophies":
+            rows = await conn.fetch(
+                base_cte
+                + """
+                SELECT hp.*, hp.best_trophies AS metric
+                FROM human_players hp
+                WHERE hp.best_trophies > 0
+                  AND (
+                    EXISTS (
+                        SELECT 1
+                        FROM battle_summary bs
+                        JOIN users u1 ON u1.user_id = bs.p1_user_id
+                        JOIN users u2 ON u2.user_id = bs.p2_user_id
+                        WHERE (bs.p1_user_id = hp.user_id OR bs.p2_user_id = hp.user_id)
+                          AND bs.created_at >= $2 AND bs.created_at < $3
+                          AND bs.winner_user_id IN (bs.p1_user_id, bs.p2_user_id)
+                          AND COALESCE(u1.is_bot, FALSE) = FALSE
+                          AND COALESCE(u2.is_bot, FALSE) = FALSE
+                          AND COALESCE(u1.status, 'active') IN ('active', 'warn')
+                          AND COALESCE(u2.status, 'active') IN ('active', 'warn')
+                          AND COALESCE(bs.metadata->>'p1_is_bot', 'false') <> 'true'
+                          AND COALESCE(bs.metadata->>'p2_is_bot', 'false') <> 'true'
+                    )
+                    OR EXISTS (
+                        SELECT 1
+                        FROM battle_results br
+                        JOIN users u1 ON u1.user_id = br.p1_id
+                        JOIN users u2 ON u2.user_id = br.p2_id
+                        WHERE (br.p1_id = hp.user_id OR br.p2_id = hp.user_id)
+                          AND br.created_at >= $2 AND br.created_at < $3
+                          AND br.p1_id IS NOT NULL
+                          AND br.p2_id IS NOT NULL
+                          AND br.winner_id IN (br.p1_id, br.p2_id)
+                          AND (br.match_id IS NULL OR NOT EXISTS (SELECT 1 FROM battle_summary bs WHERE bs.match_id = br.match_id))
+                          AND COALESCE(u1.is_bot, FALSE) = FALSE
+                          AND COALESCE(u2.is_bot, FALSE) = FALSE
+                          AND COALESCE(u1.status, 'active') IN ('active', 'warn')
+                          AND COALESCE(u2.status, 'active') IN ('active', 'warn')
+                    )
+                  )
+                ORDER BY hp.best_trophies DESC, hp.display_name ASC, hp.user_id ASC
+                LIMIT $1
+                """,
+                limit,
+                window_start,
+                generated_at,
+            )
+        elif category_key == "score":
+            rows = await conn.fetch(
+                base_cte
+                + """
+                , human_battle_sides AS (
+                    SELECT bs.p1_user_id AS user_id,
+                           CASE WHEN bs.winner_user_id = bs.p1_user_id THEN 1 ELSE 0 END AS win
+                    FROM battle_summary bs
+                    JOIN users u1 ON u1.user_id = bs.p1_user_id
+                    JOIN users u2 ON u2.user_id = bs.p2_user_id
+                    WHERE bs.winner_user_id IN (bs.p1_user_id, bs.p2_user_id)
+                      AND bs.created_at >= $2 AND bs.created_at < $3
+                      AND COALESCE(u1.is_bot, FALSE) = FALSE
+                      AND COALESCE(u2.is_bot, FALSE) = FALSE
+                      AND COALESCE(u1.status, 'active') IN ('active', 'warn')
+                      AND COALESCE(u2.status, 'active') IN ('active', 'warn')
+                      AND COALESCE(bs.metadata->>'p1_is_bot', 'false') <> 'true'
+                      AND COALESCE(bs.metadata->>'p2_is_bot', 'false') <> 'true'
+                    UNION ALL
+                    SELECT bs.p2_user_id AS user_id,
+                           CASE WHEN bs.winner_user_id = bs.p2_user_id THEN 1 ELSE 0 END AS win
+                    FROM battle_summary bs
+                    JOIN users u1 ON u1.user_id = bs.p1_user_id
+                    JOIN users u2 ON u2.user_id = bs.p2_user_id
+                    WHERE bs.winner_user_id IN (bs.p1_user_id, bs.p2_user_id)
+                      AND bs.created_at >= $2 AND bs.created_at < $3
+                      AND COALESCE(u1.is_bot, FALSE) = FALSE
+                      AND COALESCE(u2.is_bot, FALSE) = FALSE
+                      AND COALESCE(u1.status, 'active') IN ('active', 'warn')
+                      AND COALESCE(u2.status, 'active') IN ('active', 'warn')
+                      AND COALESCE(bs.metadata->>'p1_is_bot', 'false') <> 'true'
+                      AND COALESCE(bs.metadata->>'p2_is_bot', 'false') <> 'true'
+                    UNION ALL
+                    SELECT br.p1_id AS user_id,
+                           CASE WHEN br.winner_id = br.p1_id THEN 1 ELSE 0 END AS win
+                    FROM battle_results br
+                    JOIN users u1 ON u1.user_id = br.p1_id
+                    JOIN users u2 ON u2.user_id = br.p2_id
+                    WHERE br.p1_id IS NOT NULL
+                      AND br.p2_id IS NOT NULL
+                      AND br.winner_id IN (br.p1_id, br.p2_id)
+                      AND br.created_at >= $2 AND br.created_at < $3
+                      AND (br.match_id IS NULL OR NOT EXISTS (SELECT 1 FROM battle_summary bs WHERE bs.match_id = br.match_id))
+                      AND COALESCE(u1.is_bot, FALSE) = FALSE
+                      AND COALESCE(u2.is_bot, FALSE) = FALSE
+                      AND COALESCE(u1.status, 'active') IN ('active', 'warn')
+                      AND COALESCE(u2.status, 'active') IN ('active', 'warn')
+                    UNION ALL
+                    SELECT br.p2_id AS user_id,
+                           CASE WHEN br.winner_id = br.p2_id THEN 1 ELSE 0 END AS win
+                    FROM battle_results br
+                    JOIN users u1 ON u1.user_id = br.p1_id
+                    JOIN users u2 ON u2.user_id = br.p2_id
+                    WHERE br.p1_id IS NOT NULL
+                      AND br.p2_id IS NOT NULL
+                      AND br.winner_id IN (br.p1_id, br.p2_id)
+                      AND br.created_at >= $2 AND br.created_at < $3
+                      AND (br.match_id IS NULL OR NOT EXISTS (SELECT 1 FROM battle_summary bs WHERE bs.match_id = br.match_id))
+                      AND COALESCE(u1.is_bot, FALSE) = FALSE
+                      AND COALESCE(u2.is_bot, FALSE) = FALSE
+                      AND COALESCE(u1.status, 'active') IN ('active', 'warn')
+                      AND COALESCE(u2.status, 'active') IN ('active', 'warn')
+                ),
+                battle_score AS (
+                    SELECT user_id,
+                           COUNT(*)::INTEGER AS battles,
+                           SUM(win)::INTEGER AS wins,
+                           CASE WHEN COUNT(*) > 0 THEN SUM(win)::NUMERIC / COUNT(*) ELSE 0 END AS winrate
+                    FROM human_battle_sides
+                    GROUP BY user_id
+                )
+                SELECT hp.*,
+                       ROUND((wins * winrate)::NUMERIC, 2) AS metric,
+                       battles,
+                       wins,
+                       winrate
+                FROM human_players hp
+                JOIN battle_score bs ON bs.user_id = hp.user_id
+                WHERE bs.battles > 0 AND bs.wins > 0
+                ORDER BY metric DESC, bs.wins DESC, bs.battles DESC, hp.best_trophies DESC, hp.user_id ASC
+                LIMIT $1
+                """,
+                limit,
+                window_start,
+                generated_at,
+            )
+        elif category_key == "cbrp":
+            rows = await conn.fetch(
+                base_cte
+                + """
+                , cbrp_score AS (
+                    SELECT user_id, COALESCE(SUM(cbrp), 0)::BIGINT AS metric
+                    FROM squad_cbrp_events e
+                    WHERE e.created_at >= $2 AND e.created_at < $3
+                    GROUP BY user_id
+                )
+                SELECT hp.*, cs.metric
+                FROM human_players hp
+                JOIN cbrp_score cs ON cs.user_id = hp.user_id
+                WHERE cs.metric > 0
+                ORDER BY cs.metric DESC, hp.best_trophies DESC, hp.user_id ASC
+                LIMIT $1
+                """,
+                limit,
+                window_start,
+                generated_at,
+            )
+        elif category_key == "items":
+            rows = await conn.fetch(
+                base_cte
+                + """
+                , item_score AS (
+                    SELECT hp.user_id,
+                           COALESCE(COUNT(DISTINCT uco.cosmetic_id), 0) AS metric
+                    FROM human_players hp
+                    LEFT JOIN user_cosmetics uco
+                      ON uco.user_id = hp.user_id
+                     AND uco.acquired_at >= $2 AND uco.acquired_at < $3
+                    GROUP BY hp.user_id
+                )
+                SELECT hp.*, iscore.metric
+                FROM human_players hp
+                JOIN item_score iscore ON iscore.user_id = hp.user_id
+                WHERE iscore.metric > 0
+                ORDER BY iscore.metric DESC, hp.best_trophies DESC, hp.user_id ASC
+                LIMIT $1
+                """,
+                limit,
+                window_start,
+                generated_at,
+            )
+        else:
+            return []
+
+        return [
+            self._rating_entry_from_row(row, rank=index + 1, metric_label=metric_label)
+            for index, row in enumerate(rows)
+        ]
+
     # ── Community CRUD ─────────────────────────────────────────────────────
 
     async def is_admin(self, user_id: int) -> bool:
@@ -4390,6 +6253,7 @@ class Database:
                 result = await self.award_squad_cbrp(
                     int(row["user_id"]),
                     "weekly_trophy_delta",
+                    clan_id=int(row["clan_id"]),
                     source_id=source_id,
                     period_key=str(row["period_key"]),
                     metadata={
@@ -4441,6 +6305,7 @@ class Database:
         *,
         season_id: int | str,
         delta_trophies: int,
+        clan_id: Optional[int] = None,
     ) -> dict[str, Any]:
         """Hook для будущего season reset: начислить CBRP за сезонную дельту."""
         config = await self.get_squad_runtime_config()
@@ -4451,10 +6316,18 @@ class Database:
         cbrp_divisor = max(1, int(config.get("squad_seasonal_cbrp_divisor") or 50))
         personal_divisor = max(1, int(config.get("squad_seasonal_personal_tokens_divisor") or 200))
         treasury_divisor = max(1, int(config.get("squad_seasonal_treasury_tokens_divisor") or 300))
+        if clan_id is None:
+            clan_id = await self.fetchval(
+                "SELECT clan_id FROM clan_members WHERE user_id = $1 LIMIT 1",
+                user_id,
+            )
+        if not clan_id:
+            return {"awarded": False, "reason": "no_squad"}
         return await self.award_squad_cbrp(
             user_id,
             "seasonal_reset",
-            source_id=f"seasonal_reset:{season_id}:{user_id}",
+            clan_id=int(clan_id),
+            source_id=f"seasonal_reset:{season_id}:{int(clan_id)}:{user_id}",
             period_key=str(season_id),
             metadata={
                 "season_id": season_id,
@@ -4498,6 +6371,7 @@ class Database:
         user_id: int,
         event_type: str,
         *,
+        clan_id: Optional[int] = None,
         source_id: Optional[str] = None,
         metadata: Optional[dict[str, Any]] = None,
         period_key: Optional[str] = None,
@@ -4510,15 +6384,20 @@ class Database:
             return {"awarded": False, "reason": "db_not_connected"}
 
         metadata = metadata or {}
+        member_params: list[Any] = [user_id]
+        member_filter = "WHERE cm.user_id = $1"
+        if clan_id is not None:
+            member_params.append(int(clan_id))
+            member_filter += f"\n              AND cm.clan_id = ${len(member_params)}"
         member = await self.fetchrow(
-            """
+            f"""
             SELECT cm.clan_id, cm.role, c.owner_id, c.has_boost
             FROM clan_members cm
             JOIN clans c ON c.id = cm.clan_id
-            WHERE cm.user_id = $1
+            {member_filter}
             LIMIT 1
             """,
-            user_id,
+            *member_params,
         )
         if not member:
             return {"awarded": False, "reason": "no_squad"}
@@ -4533,7 +6412,6 @@ class Database:
         upgrades = await self.get_clan_upgrades(clan_id)
         cbrp_boost_level = int(upgrades.get("cbrp_boost", 0) or 0)
         if cbrp_value > 0 and cbrp_boost_level > 0:
-            import math
             cbrp_multiplier = 1.0
             boost_cfg = ((config.get("squad_upgrades") or {}).get("cbrp_boost") or {})
             for item in boost_cfg.get("levels", []):
@@ -4543,7 +6421,6 @@ class Database:
             cbrp_value = int(math.ceil(cbrp_value * cbrp_multiplier))
 
         if bool(member["has_boost"]):
-            import math
             multiplier = float(config.get("squad_clan_boost_token_multiplier") or 1.0)
             personal_value = int(math.ceil(personal_value * multiplier))
             treasury_value = int(math.ceil(treasury_value * multiplier))
@@ -4551,18 +6428,32 @@ class Database:
         role = "creator" if member["role"] == "owner" else str(member["role"])
         owner_id = int(member["owner_id"])
         owner_tax = 0
-        if user_id != owner_id and personal_value > 0:
-            import math
+        tax_pct = 0.0
+        gross_personal_value = personal_value
+        if user_id != owner_id and gross_personal_value > 0:
             tax_pct = max(0.0, min(0.9, float(config.get("squad_creator_passive_tax_pct") or 0)))
-            owner_tax = int(math.floor(personal_value * tax_pct))
-            personal_value = max(0, personal_value - owner_tax)
 
-        if cbrp_value <= 0 and personal_value <= 0 and treasury_value <= 0 and owner_tax <= 0:
+        if cbrp_value <= 0 and gross_personal_value <= 0 and treasury_value <= 0:
             return {"awarded": False, "reason": "zero_reward"}
 
         metadata_json = json.dumps(metadata, ensure_ascii=False)
         async with self._pool.acquire() as conn:
             async with conn.transaction():
+                new_tax_remainder = None
+                if tax_pct > 0 and gross_personal_value > 0:
+                    tax_row = await conn.fetchrow(
+                        "SELECT owner_tax_remainder_micros FROM clans WHERE id = $1 FOR UPDATE",
+                        clan_id,
+                    )
+                    current_remainder = int(tax_row["owner_tax_remainder_micros"] if tax_row else 0)
+                    total_tax_micros = current_remainder + int(math.floor(gross_personal_value * tax_pct * 1_000_000))
+                    owner_tax = min(gross_personal_value, total_tax_micros // 1_000_000)
+                    new_tax_remainder = total_tax_micros % 1_000_000
+                    personal_value = max(0, gross_personal_value - owner_tax)
+
+                if cbrp_value <= 0 and personal_value <= 0 and treasury_value <= 0 and owner_tax <= 0:
+                    return {"awarded": False, "reason": "zero_reward"}
+
                 row = await conn.fetchrow(
                     """
                     INSERT INTO squad_cbrp_events (
@@ -4588,17 +6479,32 @@ class Database:
                 if not row:
                     return {"awarded": False, "reason": "duplicate"}
 
-                await conn.execute(
-                    """
-                    UPDATE clans
-                    SET cbrp = cbrp + $1,
-                        treasury_tokens = treasury_tokens + $2
-                    WHERE id = $3
-                    """,
-                    cbrp_value,
-                    treasury_value,
-                    clan_id,
-                )
+                if new_tax_remainder is not None:
+                    await conn.execute(
+                        """
+                        UPDATE clans
+                        SET cbrp = cbrp + $1,
+                            treasury_tokens = treasury_tokens + $2,
+                            owner_tax_remainder_micros = $3
+                        WHERE id = $4
+                        """,
+                        cbrp_value,
+                        treasury_value,
+                        new_tax_remainder,
+                        clan_id,
+                    )
+                else:
+                    await conn.execute(
+                        """
+                        UPDATE clans
+                        SET cbrp = cbrp + $1,
+                            treasury_tokens = treasury_tokens + $2
+                        WHERE id = $3
+                        """,
+                        cbrp_value,
+                        treasury_value,
+                        clan_id,
+                    )
                 if personal_value > 0:
                     await conn.execute(
                         """
@@ -4780,26 +6686,47 @@ class Database:
         description: str = "", clan_type: str = "open", min_trophies: int = 0,
     ) -> dict:
         from infrastructure.clan_config import CLAN_BASE_SLOTS
-        existing = await self.fetchval(
-            "SELECT clan_id FROM clan_members WHERE user_id = $1", owner_id
-        )
-        if existing:
-            raise ValueError("already_in_squad")
         public_id = await self._generate_unique_clan_public_id(digits=5, column="public_id")
-        row = await self.fetchrow(
-            """
-            INSERT INTO clans (name, tag, owner_id, description, type, min_trophies, max_members, public_id)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-            RETURNING *
-            """,
-            name, tag, owner_id, description, clan_type, min_trophies, CLAN_BASE_SLOTS, public_id,
-        )
+        try:
+            async with self._pool.acquire() as conn:
+                async with conn.transaction():
+                    existing = await conn.fetchval(
+                        "SELECT clan_id FROM clan_members WHERE user_id = $1 FOR UPDATE",
+                        owner_id,
+                    )
+                    if existing:
+                        raise ValueError("already_in_squad")
+                    row = await conn.fetchrow(
+                        """
+                        INSERT INTO clans (name, tag, owner_id, description, type, min_trophies, max_members, public_id)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                        RETURNING *
+                        """,
+                        name, tag, owner_id, description, clan_type, min_trophies, CLAN_BASE_SLOTS, public_id,
+                    )
+                    member_row = await conn.fetchrow(
+                        """
+                        INSERT INTO clan_members (clan_id, user_id, role)
+                        VALUES ($1, $2, 'creator')
+                        ON CONFLICT DO NOTHING
+                        RETURNING clan_id
+                        """,
+                        row["id"], owner_id,
+                    )
+                    if not member_row:
+                        raise ValueError("already_in_squad")
+                    await conn.execute(
+                        "UPDATE users SET squad_id = $1 WHERE user_id = $2",
+                        row["id"], owner_id,
+                    )
+        except Exception as exc:
+            if isinstance(exc, ValueError):
+                raise
+            if _is_unique_violation(exc):
+                if await self.get_clan_by_tag(tag):
+                    raise ValueError("tag_taken") from exc
+            raise
         clan = dict(row)
-        await self.execute(
-            "INSERT INTO clan_members (clan_id, user_id, role) VALUES ($1, $2, 'creator')",
-            clan["id"], owner_id,
-        )
-        await self.execute("UPDATE users SET squad_id = $1 WHERE user_id = $2", clan["id"], owner_id)
         await self.ensure_current_squad_trophy_snapshot(owner_id, clan_id=clan["id"])
         await self._log_clan_activity(clan["id"], "created", f"{name} создан", user_id=owner_id)
         return clan
@@ -4823,6 +6750,13 @@ class Database:
             WHERE id = $1
                OR public_id = $1
                OR (has_boost = TRUE AND boost_public_id = $1)
+            ORDER BY
+                CASE
+                    WHEN id = $1 THEN 0
+                    WHEN public_id = $1 THEN 1
+                    WHEN has_boost = TRUE AND boost_public_id = $1 THEN 2
+                    ELSE 3
+                END
             LIMIT 1
             """,
             value,
@@ -4844,7 +6778,12 @@ class Database:
             return False
         sets = ", ".join(f"{k} = ${i+2}" for i, k in enumerate(updates))
         vals = [clan_id] + list(updates.values())
-        await self.execute(f"UPDATE clans SET {sets} WHERE id = $1", *vals)
+        try:
+            await self.execute(f"UPDATE clans SET {sets} WHERE id = $1", *vals)
+        except Exception as exc:
+            if _is_unique_violation(exc) and "tag" in updates:
+                raise ValueError("tag_taken") from exc
+            raise
         return True
 
     async def delete_clan(self, clan_id: int) -> bool:
@@ -4861,7 +6800,7 @@ class Database:
         if not to_role:
             return False
         if int(from_id or 0) == int(to_id or 0):
-            return True
+            raise ValueError("cannot_transfer_to_self")
         await self.execute("UPDATE clans SET owner_id = $1 WHERE id = $2", to_id, clan_id)
         await self.execute(
             "UPDATE clan_members SET role = 'creator' WHERE clan_id = $1 AND user_id = $2", clan_id, to_id
@@ -4882,28 +6821,65 @@ class Database:
     # ── Membership ─────────────────────────────────────────────────────
 
     async def clan_join(self, clan_id: int, user_id: int) -> dict:
-        existing = await self.fetchval(
-            "SELECT clan_id FROM clan_members WHERE user_id = $1", user_id
-        )
-        if existing:
-            raise ValueError("already_in_clan")
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                existing = await conn.fetchval(
+                    "SELECT clan_id FROM clan_members WHERE user_id = $1",
+                    user_id,
+                )
+                if existing:
+                    raise ValueError("already_in_clan")
 
-        row = await self.fetchrow(
-            """
-            UPDATE clans SET members_count = members_count + 1
-            WHERE id = $1 AND members_count < max_members
-            RETURNING id, members_count, max_members
-            """,
-            clan_id,
-        )
-        if not row:
-            raise ValueError("clan_full")
+                clan = await conn.fetchrow(
+                    "SELECT id, max_members, min_trophies FROM clans WHERE id = $1 FOR UPDATE",
+                    clan_id,
+                )
+                if not clan:
+                    raise ValueError("clan_not_found")
+                current_count = await conn.fetchval(
+                    "SELECT COUNT(*) FROM clan_members WHERE clan_id = $1",
+                    clan_id,
+                )
+                if int(current_count or 0) >= int(clan["max_members"] or 0):
+                    raise ValueError("clan_full")
+                trophies = await conn.fetchval(
+                    "SELECT COALESCE(trophies, 0) FROM users WHERE user_id = $1",
+                    user_id,
+                )
+                if int(trophies or 0) < int(clan["min_trophies"] or 0):
+                    raise ValueError("not_enough_trophies")
 
-        await self.execute(
-            "INSERT INTO clan_members (clan_id, user_id, role) VALUES ($1, $2, 'member')",
-            clan_id, user_id,
-        )
-        await self.execute("UPDATE users SET squad_id = $1 WHERE user_id = $2", clan_id, user_id)
+                member_row = await conn.fetchrow(
+                    """
+                    INSERT INTO clan_members (clan_id, user_id, role)
+                    VALUES ($1, $2, 'member')
+                    ON CONFLICT DO NOTHING
+                    RETURNING clan_id
+                    """,
+                    clan_id,
+                    user_id,
+                )
+                if not member_row:
+                    raise ValueError("already_in_clan")
+                await conn.execute("UPDATE users SET squad_id = $1 WHERE user_id = $2", clan_id, user_id)
+                await conn.execute(
+                    """
+                    UPDATE clan_join_requests
+                    SET status = 'rejected', decided_at = NOW()
+                    WHERE user_id = $1
+                      AND status = 'pending'
+                    """,
+                    user_id,
+                )
+                row = await conn.fetchrow(
+                    """
+                    UPDATE clans
+                    SET members_count = (SELECT COUNT(*) FROM clan_members WHERE clan_id = $1)
+                    WHERE id = $1
+                    RETURNING members_count, max_members, id
+                    """,
+                    clan_id,
+                )
         await self.ensure_current_squad_trophy_snapshot(user_id, clan_id=clan_id)
         nick = await self.fetchval(
             "SELECT COALESCE(p.custom_nickname, u.username, u.first_name, 'Игрок') FROM users u LEFT JOIN profiles p ON p.user_id = u.user_id WHERE u.user_id = $1",
@@ -4952,7 +6928,7 @@ class Database:
         await self.execute(
             "DELETE FROM clan_members WHERE clan_id = $1 AND user_id = $2", clan_id, user_id
         )
-        await self.execute("UPDATE users SET squad_id = 0 WHERE user_id = $1", user_id)
+        await self.execute("UPDATE users SET squad_id = 0 WHERE user_id = $1 AND squad_id = $2", user_id, clan_id)
         remaining = await self.fetchval(
             "UPDATE clans SET members_count = GREATEST(members_count - 1, 0) WHERE id = $1 RETURNING members_count",
             clan_id,
@@ -4974,16 +6950,20 @@ class Database:
                    cm.personal_tokens, cm.joined_at,
                    COALESCE(p.custom_nickname, u.username, u.first_name, 'Игрок #' || cm.user_id::TEXT) AS nick,
                    COALESCE(equipped_avatar.asset_path, NULLIF(p.img, '')) AS avatar_url,
-                   equipped_background.asset_path AS profile_background_url,
-                   COALESCE(equipped_title.name, NULLIF(p.title, ''), 'Игрок') AS title,
-                   COALESCE(equipped_title.class, 'starter') AS title_class,
-                   COALESCE(u.trophies, 0) AS trophies,
-                   COALESCE(u.is_bot, FALSE) AS is_bot,
-                   CASE WHEN u.updated_at > NOW() - INTERVAL '5 minutes' THEN true ELSE false END AS online
+	                   equipped_background.asset_path AS profile_background_url,
+	                   COALESCE(equipped_title.name, NULLIF(p.title, ''), 'Игрок') AS title,
+	                   COALESCE(equipped_title.class, 'starter') AS title_class,
+	                   COALESCE(u.extra_pass, 'inactive') AS extra_pass,
+	                   COALESCE(us.nickname_glow_disabled, FALSE) AS nickname_glow_disabled,
+	                   COALESCE(us.hide_player_id_public, FALSE) AS hide_player_id_public,
+	                   COALESCE(u.trophies, 0) AS trophies,
+	                   COALESCE(u.is_bot, FALSE) AS is_bot,
+	                   CASE WHEN u.updated_at > NOW() - INTERVAL '5 minutes' THEN true ELSE false END AS online
             FROM clan_members cm
-            LEFT JOIN users u ON u.user_id = cm.user_id
-            LEFT JOIN profiles p ON p.user_id = cm.user_id
-            LEFT JOIN user_equipped_cosmetics uec_avatar ON uec_avatar.user_id = cm.user_id AND uec_avatar.item_type = 'avatar'
+	            LEFT JOIN users u ON u.user_id = cm.user_id
+	            LEFT JOIN profiles p ON p.user_id = cm.user_id
+	            LEFT JOIN user_settings us ON us.user_id = cm.user_id
+	            LEFT JOIN user_equipped_cosmetics uec_avatar ON uec_avatar.user_id = cm.user_id AND uec_avatar.item_type = 'avatar'
             LEFT JOIN cosmetic_items equipped_avatar ON equipped_avatar.id = uec_avatar.cosmetic_id AND equipped_avatar.item_type = 'avatar'
             LEFT JOIN user_equipped_cosmetics uec_background ON uec_background.user_id = cm.user_id AND uec_background.item_type = 'profile_background'
             LEFT JOIN cosmetic_items equipped_background ON equipped_background.id = uec_background.cosmetic_id AND equipped_background.item_type = 'profile_background'
@@ -5020,7 +7000,7 @@ class Database:
             raise ValueError("cannot_kick_officer")
 
         await self.execute("DELETE FROM clan_members WHERE clan_id = $1 AND user_id = $2", clan_id, target_id)
-        await self.execute("UPDATE users SET squad_id = 0 WHERE user_id = $1", target_id)
+        await self.execute("UPDATE users SET squad_id = 0 WHERE user_id = $1 AND squad_id = $2", target_id, clan_id)
         await self.execute(
             "UPDATE clans SET members_count = GREATEST(members_count - 1, 0) WHERE id = $1", clan_id
         )
@@ -5080,30 +7060,40 @@ class Database:
         if existing:
             raise ValueError("already_in_clan")
         pending = await self.fetchval(
-            "SELECT id FROM clan_join_requests WHERE clan_id = $1 AND user_id = $2 AND status = 'pending'",
-            clan_id, user_id,
+            "SELECT id FROM clan_join_requests WHERE user_id = $1 AND status = 'pending'",
+            user_id,
         )
         if pending:
             raise ValueError("request_already_exists")
-        row = await self.fetchrow(
-            """
-            INSERT INTO clan_join_requests (clan_id, user_id) VALUES ($1, $2)
-            ON CONFLICT (clan_id, user_id) DO UPDATE SET status = 'pending', created_at = NOW(), decided_by = NULL, decided_at = NULL
-            RETURNING *
-            """,
-            clan_id, user_id,
-        )
+        try:
+            row = await self.fetchrow(
+                """
+                INSERT INTO clan_join_requests (clan_id, user_id) VALUES ($1, $2)
+                ON CONFLICT (clan_id, user_id) DO UPDATE
+                SET status = 'pending', created_at = NOW(), decided_by = NULL, decided_at = NULL
+                RETURNING *
+                """,
+                clan_id, user_id,
+            )
+        except Exception as exc:
+            if _is_unique_violation(exc):
+                raise ValueError("request_already_exists") from exc
+            raise
         return dict(row)
 
     async def get_join_requests(self, clan_id: int, status: str = "pending") -> list[dict]:
         rows = await self.fetch(
             """
-            SELECT jr.*, COALESCE(p.custom_nickname, u.username, u.first_name, 'Игрок #' || jr.user_id::TEXT) AS nick,
-                   COALESCE(u.trophies, 0) AS trophies,
-                   COALESCE(u.is_bot, FALSE) AS is_bot
-            FROM clan_join_requests jr
-            LEFT JOIN users u ON u.user_id = jr.user_id
-            LEFT JOIN profiles p ON p.user_id = jr.user_id
+	            SELECT jr.*, COALESCE(p.custom_nickname, u.username, u.first_name, 'Игрок #' || jr.user_id::TEXT) AS nick,
+	                   COALESCE(u.extra_pass, 'inactive') AS extra_pass,
+	                   COALESCE(us.nickname_glow_disabled, FALSE) AS nickname_glow_disabled,
+	                   COALESCE(us.hide_player_id_public, FALSE) AS hide_player_id_public,
+	                   COALESCE(u.trophies, 0) AS trophies,
+	                   COALESCE(u.is_bot, FALSE) AS is_bot
+	            FROM clan_join_requests jr
+	            LEFT JOIN users u ON u.user_id = jr.user_id
+	            LEFT JOIN profiles p ON p.user_id = jr.user_id
+	            LEFT JOIN user_settings us ON us.user_id = jr.user_id
             WHERE jr.clan_id = $1 AND jr.status = $2
             ORDER BY jr.created_at DESC
             """,
@@ -5112,22 +7102,104 @@ class Database:
         return [dict(r) for r in rows]
 
     async def accept_join_request(self, request_id: int, decided_by: int) -> dict:
-        row = await self.fetchrow(
-            "SELECT * FROM clan_join_requests WHERE id = $1 AND status = 'pending'", request_id
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    "SELECT * FROM clan_join_requests WHERE id = $1 AND status = 'pending' FOR UPDATE",
+                    request_id,
+                )
+                if not row:
+                    raise ValueError("request_not_found")
+                req = dict(row)
+                try:
+                    existing = await conn.fetchval(
+                        "SELECT clan_id FROM clan_members WHERE user_id = $1",
+                        int(req["user_id"]),
+                    )
+                    if existing:
+                        raise ValueError("already_in_clan")
+                    clan = await conn.fetchrow(
+                        "SELECT id, max_members, min_trophies FROM clans WHERE id = $1 FOR UPDATE",
+                        int(req["clan_id"]),
+                    )
+                    if not clan:
+                        raise ValueError("clan_not_found")
+                    current_count = await conn.fetchval(
+                        "SELECT COUNT(*) FROM clan_members WHERE clan_id = $1",
+                        int(req["clan_id"]),
+                    )
+                    if int(current_count or 0) >= int(clan["max_members"] or 0):
+                        raise ValueError("clan_full")
+                    trophies = await conn.fetchval(
+                        "SELECT COALESCE(trophies, 0) FROM users WHERE user_id = $1",
+                        int(req["user_id"]),
+                    )
+                    if int(trophies or 0) < int(clan["min_trophies"] or 0):
+                        raise ValueError("not_enough_trophies")
+                    member_row = await conn.fetchrow(
+                        """
+                        INSERT INTO clan_members (clan_id, user_id, role)
+                        VALUES ($1, $2, 'member')
+                        ON CONFLICT DO NOTHING
+                        RETURNING clan_id
+                        """,
+                        int(req["clan_id"]),
+                        int(req["user_id"]),
+                    )
+                    if not member_row:
+                        raise ValueError("already_in_clan")
+                    await conn.execute(
+                        "UPDATE users SET squad_id = $1 WHERE user_id = $2",
+                        int(req["clan_id"]),
+                        int(req["user_id"]),
+                    )
+                    await conn.execute(
+                        """
+                        UPDATE clans
+                        SET members_count = (SELECT COUNT(*) FROM clan_members WHERE clan_id = $1)
+                        WHERE id = $1
+                        """,
+                        int(req["clan_id"]),
+                    )
+                except ValueError as exc:
+                    if str(exc) in {"already_in_clan", "not_enough_trophies", "clan_full", "clan_not_found"}:
+                        await conn.execute(
+                            """
+                            UPDATE clan_join_requests
+                            SET status = 'failed', decided_by = $1, decided_at = NOW()
+                            WHERE id = $2
+                            """,
+                            decided_by,
+                            request_id,
+                        )
+                    raise
+                updated = await conn.fetchrow(
+                    """
+                    UPDATE clan_join_requests
+                    SET status = 'accepted', decided_by = $1, decided_at = NOW()
+                    WHERE id = $2
+                    RETURNING *
+                    """,
+                    decided_by, request_id,
+                )
+                await conn.execute(
+                    """
+                    UPDATE clan_join_requests
+                    SET status = 'rejected', decided_by = $1, decided_at = NOW()
+                    WHERE user_id = $2
+                      AND id <> $3
+                      AND status = 'pending'
+                    """,
+                    decided_by,
+                    int(req["user_id"]),
+                    request_id,
+                )
+        await self.ensure_current_squad_trophy_snapshot(int(updated["user_id"]), clan_id=int(updated["clan_id"]))
+        nick = await self.fetchval(
+            "SELECT COALESCE(p.custom_nickname, u.username, u.first_name, 'Игрок') FROM users u LEFT JOIN profiles p ON p.user_id = u.user_id WHERE u.user_id = $1",
+            int(updated["user_id"]),
         )
-        if not row:
-            raise ValueError("request_not_found")
-        req = dict(row)
-        await self.clan_join(req["clan_id"], req["user_id"])
-        updated = await self.fetchrow(
-            """
-            UPDATE clan_join_requests
-            SET status = 'accepted', decided_by = $1, decided_at = NOW()
-            WHERE id = $2
-            RETURNING *
-            """,
-            decided_by, request_id,
-        )
+        await self._log_clan_activity(int(updated["clan_id"]), "join", f"{nick} вступил в сквад", user_id=int(updated["user_id"]))
         return dict(updated)
 
     async def reject_join_request(self, request_id: int, decided_by: int) -> dict:
@@ -5550,6 +7622,7 @@ class Database:
         updates: list[str] = []
         values: list[Any] = []
         normalized: dict[str, Any] = {}
+        owner_previous_clan: Optional[int] = None
         for key, column in allowed.items():
             if key not in fields:
                 continue
@@ -5566,6 +7639,18 @@ class Database:
                     user_exists = await self.fetchval("SELECT 1 FROM users WHERE user_id = $1", int(value))
                     if not user_exists:
                         return {"error": "owner_not_found"}
+                    target_membership = await self.fetchrow(
+                        """
+                        SELECT clan_id, CASE WHEN role = 'owner' THEN 'creator' ELSE role END AS role
+                        FROM clan_members
+                        WHERE user_id = $1
+                        """,
+                        int(value),
+                    )
+                    if target_membership and int(target_membership["clan_id"]) != int(clan_id):
+                        if target_membership["role"] == "creator":
+                            return {"error": "owner_already_creator"}
+                        owner_previous_clan = int(target_membership["clan_id"])
             elif key == "has_boost":
                 value = bool(value)
             elif key == "type":
@@ -5585,6 +7670,16 @@ class Database:
             *values,
         )
         if "owner_id" in normalized and normalized["owner_id"]:
+            if owner_previous_clan:
+                await self.execute(
+                    "DELETE FROM clan_members WHERE clan_id = $1 AND user_id = $2",
+                    owner_previous_clan,
+                    int(normalized["owner_id"]),
+                )
+                await self.execute(
+                    "UPDATE clans SET members_count = (SELECT COUNT(*) FROM clan_members WHERE clan_id = $1) WHERE id = $1",
+                    owner_previous_clan,
+                )
             await self.execute(
                 """
                 UPDATE clan_members
@@ -5668,28 +7763,57 @@ class Database:
         if not user_exists:
             return {"error": "user_not_found"}
         if action == "add":
-            old_clan = await self.fetchval("SELECT clan_id FROM clan_members WHERE user_id = $1", target_user_id)
-            if old_clan and int(old_clan) != clan_id:
-                await self.execute("DELETE FROM clan_members WHERE user_id = $1", target_user_id)
-                await self.execute(
-                    "UPDATE clans SET members_count = GREATEST(members_count - 1, 0) WHERE id = $1",
-                    int(old_clan),
-                )
-            await self.execute(
-                """
-                INSERT INTO clan_members (clan_id, user_id, role)
-                VALUES ($1, $2, 'member')
-                ON CONFLICT (clan_id, user_id) DO NOTHING
-                """,
-                clan_id,
-                target_user_id,
-            )
-            await self.execute("UPDATE users SET squad_id = $1 WHERE user_id = $2", clan_id, target_user_id)
-            await self.execute(
-                "UPDATE clans SET members_count = (SELECT COUNT(*) FROM clan_members WHERE clan_id = $1) WHERE id = $1",
-                clan_id,
-            )
+            async with self._pool.acquire() as conn:
+                async with conn.transaction():
+                    clan = await conn.fetchrow("SELECT max_members FROM clans WHERE id = $1 FOR UPDATE", clan_id)
+                    if not clan:
+                        return {"error": "clan_not_found"}
+                    old_membership = await conn.fetchrow(
+                        """
+                        SELECT clan_id, CASE WHEN role = 'owner' THEN 'creator' ELSE role END AS role
+                        FROM clan_members
+                        WHERE user_id = $1
+                        """,
+                        target_user_id,
+                    )
+                    old_clan = int(old_membership["clan_id"]) if old_membership else None
+                    if old_clan and old_clan != clan_id and old_membership["role"] == "creator":
+                        return {"error": "cannot_move_owner"}
+                    if old_clan != clan_id:
+                        current_count = await conn.fetchval(
+                            "SELECT COUNT(*) FROM clan_members WHERE clan_id = $1",
+                            clan_id,
+                        )
+                        if int(current_count or 0) >= int(clan["max_members"] or 0):
+                            return {"error": "clan_full"}
+                        if old_clan:
+                            await conn.execute(
+                                "DELETE FROM clan_members WHERE clan_id = $1 AND user_id = $2",
+                                old_clan,
+                                target_user_id,
+                            )
+                            await conn.execute(
+                                "UPDATE clans SET members_count = (SELECT COUNT(*) FROM clan_members WHERE clan_id = $1) WHERE id = $1",
+                                old_clan,
+                            )
+                        await conn.execute(
+                            """
+                            INSERT INTO clan_members (clan_id, user_id, role)
+                            VALUES ($1, $2, 'member')
+                            ON CONFLICT DO NOTHING
+                            """,
+                            clan_id,
+                            target_user_id,
+                        )
+                    await conn.execute("UPDATE users SET squad_id = $1 WHERE user_id = $2", clan_id, target_user_id)
+                    await conn.execute(
+                        "UPDATE clans SET members_count = (SELECT COUNT(*) FROM clan_members WHERE clan_id = $1) WHERE id = $1",
+                        clan_id,
+                    )
         elif action == "kick":
+            target_role = await self.get_member_role(clan_id, target_user_id)
+            if target_role == "creator":
+                return {"error": "cannot_kick_owner"}
             is_member = await self.fetchval(
                 "SELECT 1 FROM clan_members WHERE clan_id = $1 AND user_id = $2",
                 clan_id,
@@ -5718,7 +7842,10 @@ class Database:
             )
         elif action == "transfer":
             old_owner = await self.fetchval("SELECT owner_id FROM clans WHERE id = $1", clan_id)
-            transferred = await self.transfer_ownership(clan_id, old_owner, target_user_id)
+            try:
+                transferred = await self.transfer_ownership(clan_id, old_owner, target_user_id)
+            except ValueError as exc:
+                return {"error": str(exc)}
             if not transferred:
                 return {"error": "member_not_found"}
         elif action == "set_tokens":
@@ -5805,18 +7932,9 @@ class Database:
         if not upgrade_cfg:
             raise ValueError("unknown_upgrade")
 
-        upgrades = await self.get_clan_upgrades(clan_id)
-        current_level = 0 if upgrade_type == "boost" else int(upgrades.get(upgrade_type, 0) or 0)
-        next_level = current_level + 1
-        level_cfg = None
-        for item in upgrade_cfg.get("levels", []):
-            if int(item.get("level", 0)) == next_level:
-                level_cfg = item
-                break
-        if not level_cfg:
-            raise ValueError("max_level_reached")
-
-        cost = max(0, int(level_cfg.get("cost") or 0))
+        next_level = 0
+        level_cfg: dict[str, Any] | None = None
+        cost = 0
         boost_public_id: int | None = None
         if upgrade_type == "boost":
             existing_boost_id = await self.fetchval(
@@ -5846,6 +7964,25 @@ class Database:
                     raise ValueError("no_permission")
                 if upgrade_type == "boost" and bool(row["has_boost"]):
                     raise ValueError("boost_already_active")
+                upgrade_row = await conn.fetchrow(
+                    """
+                    SELECT level FROM clan_upgrades
+                    WHERE clan_id = $1 AND upgrade_type = $2
+                    FOR UPDATE
+                    """,
+                    clan_id,
+                    upgrade_type,
+                )
+                current_level = 0 if upgrade_type == "boost" else int(upgrade_row["level"] if upgrade_row else 0)
+                next_level = current_level + 1
+                level_cfg = None
+                for item in upgrade_cfg.get("levels", []):
+                    if int(item.get("level", 0)) == next_level:
+                        level_cfg = item
+                        break
+                if not level_cfg:
+                    raise ValueError("max_level_reached")
+                cost = max(0, int(level_cfg.get("cost") or 0))
                 if int(row["treasury_tokens"] or 0) < cost:
                     raise ValueError("insufficient_treasury")
 
@@ -6093,6 +8230,9 @@ class Database:
                 cp.cover_image_url, cp.tags, cp.post_type, cp.is_pinned,
                 cp.created_at,
                 COALESCE(u.username, u.first_name, 'Администрация') AS author_name,
+                COALESCE(u.extra_pass, 'inactive') AS extra_pass,
+                COALESCE(us.nickname_glow_disabled, FALSE) AS nickname_glow_disabled,
+                COALESCE(us.hide_player_id_public, FALSE) AS hide_player_id_public,
                 (SELECT COUNT(*) FROM post_likes pl WHERE pl.post_id = cp.id) AS likes_count,
                 CASE WHEN $3::BIGINT IS NOT NULL THEN
                     EXISTS(SELECT 1 FROM post_likes pl WHERE pl.post_id = cp.id AND pl.user_id = $3)
@@ -6100,6 +8240,7 @@ class Database:
                 p.id AS poll_id, p.question, p.options, p.expires_at
             FROM community_posts cp
             LEFT JOIN users u ON u.user_id = cp.author_id
+            LEFT JOIN user_settings us ON us.user_id = cp.author_id
             LEFT JOIN community_polls p ON p.post_id = cp.id
             WHERE cp.post_type IN ('news', 'poll')
               AND cp.moderation_status = 'approved'
@@ -6157,7 +8298,8 @@ class Database:
             )
             return {"success": True, "id": row["id"], "created_at": row["created_at"].isoformat()}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            logging.getLogger(__name__).error("create_poll failed: %s", e, exc_info=True)
+            return {"success": False, "error": "internal_server_error"}
 
     async def create_poll(
         self,
@@ -6184,34 +8326,38 @@ class Database:
             )
             return {"success": True, "poll_id": row["id"]}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            logging.getLogger(__name__).error("create_idea failed: %s", e, exc_info=True)
+            return {"success": False, "error": "internal_server_error"}
 
     async def vote_poll(self, *, poll_id: int, user_id: int, option_id: int) -> dict:
         """Проголосовать в опросе."""
         if not self._pool:
             raise RuntimeError("База данных не подключена.")
-        poll = await self.fetchrow(
-            "SELECT expires_at, options FROM community_polls WHERE id = $1", poll_id
-        )
-        if not poll:
-            return {"success": False, "error": "poll_not_found"}
-        option_ids = {opt["id"] for opt in _normalize_poll_options(poll["options"])}
-        if option_id not in option_ids:
-            return {"success": False, "error": "invalid_option"}
-        from datetime import timezone as _tz
-        import datetime as _dt
-        if poll["expires_at"].replace(tzinfo=_tz.utc) < _dt.datetime.now(_tz.utc):
-            return {"success": False, "error": "poll_expired"}
-        existing = await self.fetchval(
-            "SELECT 1 FROM community_poll_votes WHERE poll_id = $1 AND user_id = $2",
-            poll_id, user_id,
-        )
-        if existing:
-            return {"success": False, "error": "already_voted"}
-        await self.execute(
-            "INSERT INTO community_poll_votes (poll_id, user_id, option_id) VALUES ($1, $2, $3)",
-            poll_id, user_id, option_id,
-        )
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                poll = await conn.fetchrow(
+                    "SELECT expires_at, options FROM community_polls WHERE id = $1", poll_id
+                )
+                if not poll:
+                    return {"success": False, "error": "poll_not_found"}
+                option_ids = {opt["id"] for opt in _normalize_poll_options(poll["options"])}
+                if option_id not in option_ids:
+                    return {"success": False, "error": "invalid_option"}
+                from datetime import timezone as _tz
+                import datetime as _dt
+                if poll["expires_at"].replace(tzinfo=_tz.utc) < _dt.datetime.now(_tz.utc):
+                    return {"success": False, "error": "poll_expired"}
+                inserted = await conn.fetchrow(
+                    """
+                    INSERT INTO community_poll_votes (poll_id, user_id, option_id)
+                    VALUES ($1, $2, $3)
+                    ON CONFLICT (poll_id, user_id) DO NOTHING
+                    RETURNING 1 AS inserted
+                    """,
+                    poll_id, user_id, option_id,
+                )
+                if not inserted:
+                    return {"success": False, "error": "already_voted"}
         return {"success": True}
 
     async def get_poll_results(self, *, poll_id: int, user_id: Optional[int] = None) -> dict:
@@ -6286,12 +8432,16 @@ class Database:
                 cp.upvotes, cp.downvotes, cp.status, cp.admin_approved,
                 cp.created_at,
                 COALESCE(pr.custom_nickname, u.username, u.first_name, 'Игрок') AS author_name,
+                COALESCE(u.extra_pass, 'inactive') AS extra_pass,
+                COALESCE(us.nickname_glow_disabled, FALSE) AS nickname_glow_disabled,
+                COALESCE(us.hide_player_id_public, FALSE) AS hide_player_id_public,
                 CASE WHEN $3::BIGINT IS NOT NULL THEN
                     (SELECT vote_type FROM community_votes cv WHERE cv.post_id = cp.id AND cv.user_id = $3)
                 ELSE NULL END AS user_vote
             FROM community_posts cp
             LEFT JOIN users u ON u.user_id = cp.author_id
             LEFT JOIN profiles pr ON pr.user_id = cp.author_id
+            LEFT JOIN user_settings us ON us.user_id = cp.author_id
             WHERE cp.post_type = 'idea'
               AND cp.moderation_status = 'approved'
               AND cp.status NOT IN ('hidden', 'expired')
@@ -6335,67 +8485,77 @@ class Database:
             )
             return {"success": True, "id": row["id"]}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            logging.getLogger(__name__).error("create_announcement failed: %s", e, exc_info=True)
+            return {"success": False, "error": "internal_server_error"}
 
     async def vote_idea(self, *, post_id: int, user_id: int, vote_type: str) -> dict:
         """Проголосовать за/против идеи. Повторное голосование убирает голос."""
         if not self._pool:
             raise RuntimeError("База данных не подключена.")
-        existing = await self.fetchrow(
-            "SELECT vote_type FROM community_votes WHERE post_id = $1 AND user_id = $2",
-            post_id, user_id,
-        )
+        if vote_type not in ("up", "down"):
+            return {"success": False, "error": "invalid_vote_type"}
+
         async with self._pool.acquire() as conn:
-            if existing:
-                if existing["vote_type"] == vote_type:
-                    # убираем голос
+            async with conn.transaction():
+                await conn.fetchval(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    f"community_vote:{post_id}:{user_id}",
+                )
+                post = await conn.fetchrow(
+                    """
+                    SELECT id FROM community_posts
+                    WHERE id = $1
+                      AND post_type IN ('idea', 'bug')
+                      AND moderation_status = 'approved'
+                      AND status = 'active'
+                    """,
+                    post_id,
+                )
+                if not post:
+                    return {"success": False, "error": "invalid_post"}
+                existing = await conn.fetchrow(
+                    "SELECT vote_type FROM community_votes WHERE post_id = $1 AND user_id = $2",
+                    post_id, user_id,
+                )
+                if existing and existing["vote_type"] == vote_type:
                     await conn.execute(
                         "DELETE FROM community_votes WHERE post_id = $1 AND user_id = $2",
                         post_id, user_id,
                     )
-                    if vote_type == "up":
-                        await conn.execute(
-                            "UPDATE community_posts SET upvotes = GREATEST(0, upvotes - 1) WHERE id = $1", post_id
-                        )
-                    else:
-                        await conn.execute(
-                            "UPDATE community_posts SET downvotes = GREATEST(0, downvotes - 1) WHERE id = $1", post_id
-                        )
                     new_vote = None
                 else:
-                    # меняем голос
                     await conn.execute(
-                        "UPDATE community_votes SET vote_type = $3, created_at = NOW() WHERE post_id = $1 AND user_id = $2",
+                        """
+                        INSERT INTO community_votes (post_id, user_id, vote_type)
+                        VALUES ($1, $2, $3)
+                        ON CONFLICT (post_id, user_id) DO UPDATE
+                        SET vote_type = EXCLUDED.vote_type,
+                            created_at = NOW()
+                        """,
                         post_id, user_id, vote_type,
                     )
-                    if vote_type == "up":
-                        await conn.execute(
-                            "UPDATE community_posts SET upvotes = upvotes + 1, downvotes = GREATEST(0, downvotes - 1) WHERE id = $1",
-                            post_id,
-                        )
-                    else:
-                        await conn.execute(
-                            "UPDATE community_posts SET downvotes = downvotes + 1, upvotes = GREATEST(0, upvotes - 1) WHERE id = $1",
-                            post_id,
-                        )
                     new_vote = vote_type
-            else:
                 await conn.execute(
-                    "INSERT INTO community_votes (post_id, user_id, vote_type) VALUES ($1, $2, $3)",
-                    post_id, user_id, vote_type,
+                    """
+                    UPDATE community_posts
+                    SET upvotes = (
+                            SELECT COUNT(*) FROM community_votes
+                            WHERE post_id = $1 AND vote_type = 'up'
+                        ),
+                        downvotes = (
+                            SELECT COUNT(*) FROM community_votes
+                            WHERE post_id = $1 AND vote_type = 'down'
+                        )
+                    WHERE id = $1
+                    """,
+                    post_id,
                 )
-                if vote_type == "up":
-                    await conn.execute("UPDATE community_posts SET upvotes = upvotes + 1 WHERE id = $1", post_id)
-                else:
-                    await conn.execute("UPDATE community_posts SET downvotes = downvotes + 1 WHERE id = $1", post_id)
-                new_vote = vote_type
-
-        row = await self.fetchrow(
-            "SELECT upvotes, downvotes FROM community_posts WHERE id = $1", post_id
-        )
+                row = await conn.fetchrow(
+                    "SELECT upvotes, downvotes FROM community_posts WHERE id = $1", post_id
+                )
         return {
             "success": True,
-            "user_vote": new_vote if not existing or existing["vote_type"] != vote_type else None,
+            "user_vote": new_vote,
             "upvotes": row["upvotes"] if row else 0,
             "downvotes": row["downvotes"] if row else 0,
         }
@@ -6559,11 +8719,15 @@ class Database:
 
                     # handle pin overbid
                     if is_pinned:
+                        await conn.execute(
+                            "SELECT pg_advisory_xact_lock(hashtext('community_announcement_pin'))"
+                        )
                         old_pin = await conn.fetchrow(
                             """
                             SELECT id, pin_price FROM community_posts
                             WHERE post_type = 'announcement' AND is_pinned = TRUE AND status = 'active'
                             ORDER BY created_at DESC LIMIT 1
+                            FOR UPDATE
                             """
                         )
                         if old_pin:
@@ -6618,7 +8782,8 @@ class Database:
                 "gems_remaining": gems_after,
             }
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            logging.getLogger(__name__).error("create_community_post failed: %s", e, exc_info=True)
+            return {"success": False, "error": "internal_server_error"}
 
     async def react_announcement(self, *, post_id: int, user_id: int, vote_type: str) -> dict:
         """Лайк/дизлайк объявления (toggle)."""
@@ -6627,38 +8792,56 @@ class Database:
         if vote_type not in ("like", "dislike"):
             return {"success": False, "error": "invalid_vote_type"}
 
-        existing = await self.fetchrow(
-            "SELECT vote_type FROM community_votes WHERE post_id = $1 AND user_id = $2",
-            post_id, user_id,
-        )
-        if existing:
-            if existing["vote_type"] == vote_type:
-                await self.execute(
-                    "DELETE FROM community_votes WHERE post_id = $1 AND user_id = $2",
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.fetchval(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    f"community_vote:{post_id}:{user_id}",
+                )
+                post = await conn.fetchrow(
+                    """
+                    SELECT id FROM community_posts
+                    WHERE id = $1
+                      AND post_type = 'announcement'
+                      AND moderation_status = 'approved'
+                      AND status = 'active'
+                    """,
+                    post_id,
+                )
+                if not post:
+                    return {"success": False, "error": "invalid_post"}
+
+                existing = await conn.fetchrow(
+                    "SELECT vote_type FROM community_votes WHERE post_id = $1 AND user_id = $2",
                     post_id, user_id,
                 )
-                new_reaction = None
-            else:
-                await self.execute(
-                    "UPDATE community_votes SET vote_type = $3 WHERE post_id = $1 AND user_id = $2",
-                    post_id, user_id, vote_type,
-                )
-                new_reaction = vote_type
-        else:
-            await self.execute(
-                "INSERT INTO community_votes (post_id, user_id, vote_type) VALUES ($1, $2, $3)",
-                post_id, user_id, vote_type,
-            )
-            new_reaction = vote_type
+                if existing and existing["vote_type"] == vote_type:
+                    await conn.execute(
+                        "DELETE FROM community_votes WHERE post_id = $1 AND user_id = $2",
+                        post_id, user_id,
+                    )
+                    new_reaction = None
+                else:
+                    await conn.execute(
+                        """
+                        INSERT INTO community_votes (post_id, user_id, vote_type)
+                        VALUES ($1, $2, $3)
+                        ON CONFLICT (post_id, user_id) DO UPDATE
+                        SET vote_type = EXCLUDED.vote_type,
+                            created_at = NOW()
+                        """,
+                        post_id, user_id, vote_type,
+                    )
+                    new_reaction = vote_type
 
-        row = await self.fetchrow(
-            """
-            SELECT
-                (SELECT COUNT(*) FROM community_votes WHERE post_id = $1 AND vote_type = 'like') AS likes,
-                (SELECT COUNT(*) FROM community_votes WHERE post_id = $1 AND vote_type = 'dislike') AS dislikes
-            """,
-            post_id,
-        )
+                row = await conn.fetchrow(
+                    """
+                    SELECT
+                        (SELECT COUNT(*) FROM community_votes WHERE post_id = $1 AND vote_type = 'like') AS likes,
+                        (SELECT COUNT(*) FROM community_votes WHERE post_id = $1 AND vote_type = 'dislike') AS dislikes
+                    """,
+                    post_id,
+                )
         return {
             "success": True,
             "user_reaction": new_reaction,
@@ -6749,7 +8932,45 @@ class Database:
             )
             changed = True
 
+        changed |= await self._migrate_reward_track_case_rows()
+
         return changed
+
+    async def _migrate_reward_track_case_rows(self) -> bool:
+        """Convert legacy gems rows that really represented case tier rewards."""
+        if not self._pool:
+            return False
+        await self.execute(
+            """
+            INSERT INTO reward_tracks (
+                track_type, position, reward_type, reward_amount,
+                reward_meta, extra_pass_required, is_active
+            )
+            SELECT
+                track_type,
+                position,
+                'case',
+                GREATEST(1, LEAST(5, COALESCE((reward_meta->>'case_tier')::int, 1))),
+                NULL,
+                extra_pass_required,
+                is_active
+            FROM reward_tracks
+            WHERE reward_type = 'gems'
+              AND reward_meta ? 'case_tier'
+            ON CONFLICT (track_type, position, reward_type) DO NOTHING
+            """
+        )
+        result = await self.execute(
+            """
+            DELETE FROM reward_tracks
+            WHERE reward_type = 'gems'
+              AND reward_meta ? 'case_tier'
+            """
+        )
+        try:
+            return int(str(result).split()[-1]) > 0
+        except Exception:
+            return False
 
     async def _ensure_claimed_rewards_table(self) -> bool:
         changed = False
@@ -6818,6 +9039,10 @@ class Database:
                     end_date TIMESTAMPTZ,
                     is_active BOOLEAN NOT NULL DEFAULT FALSE,
                     max_stars INTEGER NOT NULL DEFAULT 45,
+                    stage_cost_min INTEGER NOT NULL DEFAULT 3,
+                    stage_cost_growth DOUBLE PRECISION NOT NULL DEFAULT 0.07,
+                    stage_cost_exponent DOUBLE PRECISION NOT NULL DEFAULT 1.5,
+                    stage_cost_cap INTEGER NOT NULL DEFAULT 25,
                     free_track_type TEXT NOT NULL DEFAULT 'bp_free',
                     pass_track_type TEXT NOT NULL DEFAULT 'bp_premium',
                     ultra_track_type TEXT NOT NULL DEFAULT 'bp_ultra',
@@ -6870,6 +9095,18 @@ class Database:
             "seasons", columns, "max_stars INTEGER NOT NULL DEFAULT 45"
         )
         changed |= await self._add_column_if_missing(
+            "seasons", columns, "stage_cost_min INTEGER NOT NULL DEFAULT 3"
+        )
+        changed |= await self._add_column_if_missing(
+            "seasons", columns, "stage_cost_growth DOUBLE PRECISION NOT NULL DEFAULT 0.07"
+        )
+        changed |= await self._add_column_if_missing(
+            "seasons", columns, "stage_cost_exponent DOUBLE PRECISION NOT NULL DEFAULT 1.5"
+        )
+        changed |= await self._add_column_if_missing(
+            "seasons", columns, "stage_cost_cap INTEGER NOT NULL DEFAULT 25"
+        )
+        changed |= await self._add_column_if_missing(
             "seasons", columns, "free_track_type TEXT NOT NULL DEFAULT 'bp_free'"
         )
         changed |= await self._add_column_if_missing(
@@ -6898,6 +9135,107 @@ class Database:
         await self.execute(
             "UPDATE seasons SET season_number = id WHERE season_number <= 0 OR (season_number = 1 AND id <> 1)"
         )
+
+        return changed
+
+    async def _ensure_season_reset_tables(self) -> bool:
+        changed = False
+
+        table_exists = await self.fetchval("SELECT to_regclass('public.season_resets')")
+        if not table_exists:
+            await self.execute(
+                """
+                CREATE TABLE season_resets (
+                    id BIGSERIAL PRIMARY KEY,
+                    season_id INTEGER NOT NULL UNIQUE,
+                    previous_season_id INTEGER,
+                    trigger TEXT NOT NULL DEFAULT 'admin',
+                    admin_user_id BIGINT,
+                    reason TEXT,
+                    status TEXT NOT NULL DEFAULT 'running',
+                    processed_players INTEGER NOT NULL DEFAULT 0,
+                    total_trophies_reduced INTEGER NOT NULL DEFAULT 0,
+                    total_keys_granted INTEGER NOT NULL DEFAULT 0,
+                    total_coins_granted INTEGER NOT NULL DEFAULT 0,
+                    total_stars_reset INTEGER NOT NULL DEFAULT 0,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    completed_at TIMESTAMPTZ,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            changed = True
+
+        columns = await self._get_columns("season_resets")
+        changed |= await self._add_column_if_missing("season_resets", columns, "season_id INTEGER NOT NULL DEFAULT 0")
+        changed |= await self._add_column_if_missing("season_resets", columns, "previous_season_id INTEGER")
+        changed |= await self._add_column_if_missing("season_resets", columns, "trigger TEXT NOT NULL DEFAULT 'admin'")
+        changed |= await self._add_column_if_missing("season_resets", columns, "admin_user_id BIGINT")
+        changed |= await self._add_column_if_missing("season_resets", columns, "reason TEXT")
+        changed |= await self._add_column_if_missing("season_resets", columns, "status TEXT NOT NULL DEFAULT 'running'")
+        changed |= await self._add_column_if_missing("season_resets", columns, "processed_players INTEGER NOT NULL DEFAULT 0")
+        changed |= await self._add_column_if_missing("season_resets", columns, "total_trophies_reduced INTEGER NOT NULL DEFAULT 0")
+        changed |= await self._add_column_if_missing("season_resets", columns, "total_keys_granted INTEGER NOT NULL DEFAULT 0")
+        changed |= await self._add_column_if_missing("season_resets", columns, "total_coins_granted INTEGER NOT NULL DEFAULT 0")
+        changed |= await self._add_column_if_missing("season_resets", columns, "total_stars_reset INTEGER NOT NULL DEFAULT 0")
+        changed |= await self._add_column_if_missing("season_resets", columns, "created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
+        changed |= await self._add_column_if_missing("season_resets", columns, "completed_at TIMESTAMPTZ")
+        changed |= await self._add_column_if_missing("season_resets", columns, "updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
+
+        if not await self._constraint_exists("season_resets", "season_resets_season_id_key"):
+            try:
+                await self.execute("ALTER TABLE season_resets ADD CONSTRAINT season_resets_season_id_key UNIQUE (season_id)")
+                changed = True
+            except Exception:
+                pass
+
+        results_exists = await self.fetchval("SELECT to_regclass('public.season_reset_results')")
+        if not results_exists:
+            await self.execute(
+                """
+                CREATE TABLE season_reset_results (
+                    id BIGSERIAL PRIMARY KEY,
+                    reset_id BIGINT NOT NULL,
+                    season_id INTEGER NOT NULL,
+                    user_id BIGINT NOT NULL,
+                    old_trophies INTEGER NOT NULL DEFAULT 0,
+                    new_trophies INTEGER NOT NULL DEFAULT 0,
+                    old_stars INTEGER NOT NULL DEFAULT 0,
+                    excess_trophies INTEGER NOT NULL DEFAULT 0,
+                    granted_keys INTEGER NOT NULL DEFAULT 0,
+                    granted_coins INTEGER NOT NULL DEFAULT 0,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE(reset_id, user_id),
+                    UNIQUE(season_id, user_id)
+                )
+                """
+            )
+            changed = True
+
+        result_columns = await self._get_columns("season_reset_results")
+        changed |= await self._add_column_if_missing("season_reset_results", result_columns, "reset_id BIGINT NOT NULL DEFAULT 0")
+        changed |= await self._add_column_if_missing("season_reset_results", result_columns, "season_id INTEGER NOT NULL DEFAULT 0")
+        changed |= await self._add_column_if_missing("season_reset_results", result_columns, "user_id BIGINT NOT NULL DEFAULT 0")
+        changed |= await self._add_column_if_missing("season_reset_results", result_columns, "old_trophies INTEGER NOT NULL DEFAULT 0")
+        changed |= await self._add_column_if_missing("season_reset_results", result_columns, "new_trophies INTEGER NOT NULL DEFAULT 0")
+        changed |= await self._add_column_if_missing("season_reset_results", result_columns, "old_stars INTEGER NOT NULL DEFAULT 0")
+        changed |= await self._add_column_if_missing("season_reset_results", result_columns, "excess_trophies INTEGER NOT NULL DEFAULT 0")
+        changed |= await self._add_column_if_missing("season_reset_results", result_columns, "granted_keys INTEGER NOT NULL DEFAULT 0")
+        changed |= await self._add_column_if_missing("season_reset_results", result_columns, "granted_coins INTEGER NOT NULL DEFAULT 0")
+        changed |= await self._add_column_if_missing("season_reset_results", result_columns, "created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
+
+        if not await self._constraint_exists("season_reset_results", "season_reset_results_reset_id_user_id_key"):
+            try:
+                await self.execute("ALTER TABLE season_reset_results ADD CONSTRAINT season_reset_results_reset_id_user_id_key UNIQUE (reset_id, user_id)")
+                changed = True
+            except Exception:
+                pass
+        if not await self._constraint_exists("season_reset_results", "season_reset_results_season_id_user_id_key"):
+            try:
+                await self.execute("ALTER TABLE season_reset_results ADD CONSTRAINT season_reset_results_season_id_user_id_key UNIQUE (season_id, user_id)")
+                changed = True
+            except Exception:
+                pass
 
         return changed
 
@@ -7139,7 +9477,8 @@ class Database:
             )
             return {"success": True, "product_id": record["id"]}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            logging.getLogger(__name__).error("delete_community_post failed: %s", e, exc_info=True)
+            return {"success": False, "error": "internal_server_error"}
 
     async def update_ruble_product(self, code_or_id: str | int, **kwargs) -> dict[str, Any]:
         if not self._pool:
@@ -7175,7 +9514,8 @@ class Database:
             await self.execute(query, *values)
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            logging.getLogger(__name__).error("toggle_post_like failed: %s", e, exc_info=True)
+            return {"success": False, "error": "internal_server_error"}
 
     async def delete_ruble_product(self, code_or_id: str | int) -> dict[str, Any]:
         if not self._pool:
@@ -7193,7 +9533,8 @@ class Database:
                 )
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            logging.getLogger(__name__).error("create_community_post failed: %s", e, exc_info=True)
+            return {"success": False, "error": "internal_server_error"}
 
     async def get_shop_sets(self, active_only: bool = True) -> list[dict[str, Any]]:
         if not self._pool:
@@ -7239,7 +9580,8 @@ class Database:
             )
             return {"success": True, "set_id": record["id"]}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            logging.getLogger(__name__).error("delete_community_post failed: %s", e, exc_info=True)
+            return {"success": False, "error": "internal_server_error"}
 
     async def update_shop_set(self, set_id: int, **kwargs) -> dict[str, Any]:
         if not self._pool:
@@ -7269,7 +9611,8 @@ class Database:
             await self.execute(query, *values)
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            logging.getLogger(__name__).error("toggle_post_like failed: %s", e, exc_info=True)
+            return {"success": False, "error": "internal_server_error"}
 
     async def delete_shop_set(self, set_id: int) -> dict[str, Any]:
         if not self._pool:
@@ -7281,7 +9624,8 @@ class Database:
             )
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            logging.getLogger(__name__).error("create_community_post failed: %s", e, exc_info=True)
+            return {"success": False, "error": "internal_server_error"}
 
     async def grant_shop_set_rewards(
         self, user_id: int, set_id: int
@@ -7301,6 +9645,19 @@ class Database:
                     return {"success": False, "error": error}
                 granted = await self._apply_shop_set_rewards_on_conn(conn, user_id, set_id, rewards)
                 return {"success": True, "granted": granted}
+
+    async def grant_shop_set_rewards_on_conn(self, conn, user_id: int, set_id: int) -> dict[str, Any]:
+        row = await conn.fetchrow(
+            "SELECT id, rewards FROM shop_sets WHERE id = $1 AND is_active = TRUE",
+            set_id,
+        )
+        if not row:
+            return {"success": False, "error": "set_not_found"}
+        rewards, error = self._normalize_shop_set_rewards(row["rewards"])
+        if error:
+            return {"success": False, "error": error}
+        granted = await self._apply_shop_set_rewards_on_conn(conn, user_id, set_id, rewards)
+        return {"success": True, "granted": granted}
 
     async def purchase_shop_set(self, user_id: int, set_id: int) -> dict[str, Any]:
         if not self._pool:
@@ -7523,6 +9880,74 @@ class Database:
 
         return changed
 
+    async def _ensure_payment_reward_steps_table(self) -> bool:
+        changed = False
+
+        table_exists = await self.fetchval("SELECT to_regclass('public.payment_reward_steps')")
+        if not table_exists:
+            await self.execute(
+                """
+                CREATE TABLE payment_reward_steps (
+                    payment_id TEXT NOT NULL,
+                    step_key TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    applied_at TIMESTAMPTZ,
+                    error TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (payment_id, step_key)
+                )
+                """
+            )
+            changed = True
+
+        columns = await self._get_columns("payment_reward_steps")
+        changed |= await self._add_column_if_missing("payment_reward_steps", columns, "payment_id TEXT NOT NULL")
+        changed |= await self._add_column_if_missing("payment_reward_steps", columns, "step_key TEXT NOT NULL")
+        changed |= await self._add_column_if_missing("payment_reward_steps", columns, "status TEXT NOT NULL DEFAULT 'pending'")
+        changed |= await self._add_column_if_missing("payment_reward_steps", columns, "applied_at TIMESTAMPTZ")
+        changed |= await self._add_column_if_missing("payment_reward_steps", columns, "error TEXT")
+        changed |= await self._add_column_if_missing("payment_reward_steps", columns, "created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
+        changed |= await self._add_column_if_missing("payment_reward_steps", columns, "updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
+        return changed
+
+    async def _ensure_payment_one_time_reservations_table(self) -> bool:
+        changed = False
+
+        table_exists = await self.fetchval("SELECT to_regclass('public.payment_one_time_reservations')")
+        if not table_exists:
+            await self.execute(
+                """
+                CREATE TABLE payment_one_time_reservations (
+                    user_id BIGINT NOT NULL,
+                    product_key TEXT NOT NULL,
+                    reservation_id TEXT NOT NULL,
+                    checkout_jti TEXT,
+                    payment_id TEXT,
+                    provider TEXT,
+                    status TEXT NOT NULL DEFAULT 'reserved',
+                    expires_at TIMESTAMPTZ NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (user_id, product_key)
+                )
+                """
+            )
+            changed = True
+
+        columns = await self._get_columns("payment_one_time_reservations")
+        changed |= await self._add_column_if_missing("payment_one_time_reservations", columns, "user_id BIGINT NOT NULL")
+        changed |= await self._add_column_if_missing("payment_one_time_reservations", columns, "product_key TEXT NOT NULL")
+        changed |= await self._add_column_if_missing("payment_one_time_reservations", columns, "reservation_id TEXT NOT NULL")
+        changed |= await self._add_column_if_missing("payment_one_time_reservations", columns, "checkout_jti TEXT")
+        changed |= await self._add_column_if_missing("payment_one_time_reservations", columns, "payment_id TEXT")
+        changed |= await self._add_column_if_missing("payment_one_time_reservations", columns, "provider TEXT")
+        changed |= await self._add_column_if_missing("payment_one_time_reservations", columns, "status TEXT NOT NULL DEFAULT 'reserved'")
+        changed |= await self._add_column_if_missing("payment_one_time_reservations", columns, "expires_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
+        changed |= await self._add_column_if_missing("payment_one_time_reservations", columns, "created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
+        changed |= await self._add_column_if_missing("payment_one_time_reservations", columns, "updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
+        return changed
+
     async def _ensure_payment_checkout_sessions_table(self) -> bool:
         changed = False
 
@@ -7595,7 +10020,8 @@ class Database:
             )
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            logging.getLogger(__name__).error("delete_community_post failed: %s", e, exc_info=True)
+            return {"success": False, "error": "internal_server_error"}
 
     async def get_checkout_session(self, checkout_jti: str) -> Optional[dict[str, Any]]:
         if not self._pool:
@@ -7604,7 +10030,17 @@ class Database:
             "SELECT * FROM payment_checkout_sessions WHERE checkout_jti = $1",
             checkout_jti,
         )
-        return dict(row) if row else None
+        if not row:
+            return None
+        session = dict(row)
+        metadata = session.get("metadata")
+        if isinstance(metadata, str):
+            try:
+                metadata = json.loads(metadata)
+            except Exception:
+                metadata = {}
+        session["metadata"] = metadata if isinstance(metadata, dict) else {}
+        return session
 
     async def attach_checkout_payment(
         self,
@@ -7635,7 +10071,280 @@ class Database:
                 return {"success": True, "payment_id": existing["payment_id"], "confirmation_url": existing.get("confirmation_url")}
             return {"success": False, "error": "session_not_found"}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            logging.getLogger(__name__).error("toggle_post_like failed: %s", e, exc_info=True)
+            return {"success": False, "error": "internal_server_error"}
+
+    async def claim_checkout_session_for_payment(self, checkout_jti: str) -> dict[str, Any]:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                session = await conn.fetchrow(
+                    "SELECT * FROM payment_checkout_sessions WHERE checkout_jti = $1 FOR UPDATE",
+                    checkout_jti,
+                )
+                if not session:
+                    return {"success": False, "error": "session_not_found"}
+                if session["payment_id"] and session["confirmation_url"]:
+                    return {
+                        "success": False,
+                        "error": "payment_already_created",
+                        "payment_id": session["payment_id"],
+                        "confirmation_url": session["confirmation_url"],
+                    }
+                if session["status"] == "payment_creating":
+                    return {"success": False, "error": "payment_creation_in_progress"}
+                await conn.execute(
+                    """
+                    UPDATE payment_checkout_sessions
+                    SET status = 'payment_creating', updated_at = NOW()
+                    WHERE checkout_jti = $1
+                    """,
+                    checkout_jti,
+                )
+                claimed_session = dict(session)
+                metadata = claimed_session.get("metadata")
+                if isinstance(metadata, str):
+                    try:
+                        metadata = json.loads(metadata)
+                    except Exception:
+                        metadata = {}
+                claimed_session["metadata"] = metadata if isinstance(metadata, dict) else {}
+                return {"success": True, "session": claimed_session}
+
+    async def run_payment_reward_step(self, payment_id: str, step_key: str, apply_fn) -> dict[str, Any]:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        try:
+            async with self._pool.acquire() as conn:
+                async with conn.transaction():
+                    await conn.execute(
+                        """
+                        INSERT INTO payment_reward_steps (payment_id, step_key, status)
+                        VALUES ($1, $2, 'pending')
+                        ON CONFLICT (payment_id, step_key) DO NOTHING
+                        """,
+                        payment_id,
+                        step_key,
+                    )
+                    row = await conn.fetchrow(
+                        """
+                        SELECT status
+                        FROM payment_reward_steps
+                        WHERE payment_id = $1 AND step_key = $2
+                        FOR UPDATE
+                        """,
+                        payment_id,
+                        step_key,
+                    )
+                    if row and row["status"] == "applied":
+                        return {"success": True, "applied": False, "status": "already_applied"}
+                    await conn.execute(
+                        """
+                        UPDATE payment_reward_steps
+                        SET status = 'processing', error = NULL, updated_at = NOW()
+                        WHERE payment_id = $1 AND step_key = $2
+                        """,
+                        payment_id,
+                        step_key,
+                    )
+                    result = await apply_fn(conn)
+                    await conn.execute(
+                        """
+                        UPDATE payment_reward_steps
+                        SET status = 'applied', applied_at = NOW(), error = NULL, updated_at = NOW()
+                        WHERE payment_id = $1 AND step_key = $2
+                        """,
+                        payment_id,
+                        step_key,
+                    )
+                    await conn.execute(
+                        """
+                        UPDATE payments
+                        SET metadata = jsonb_set(
+                                COALESCE(metadata, '{}'::jsonb),
+                                '{reward_steps}',
+                                COALESCE(metadata->'reward_steps', '{}'::jsonb) || jsonb_build_object($2::text, true),
+                                true
+                            ),
+                            updated_at = NOW()
+                        WHERE payment_id = $1
+                        """,
+                        payment_id,
+                        step_key,
+                    )
+                    return {"success": True, "applied": True, "status": "applied", "result": result}
+        except Exception as exc:
+            try:
+                await self.execute(
+                    """
+                    INSERT INTO payment_reward_steps (payment_id, step_key, status, error, updated_at)
+                    VALUES ($1, $2, 'failed', $3, NOW())
+                    ON CONFLICT (payment_id, step_key) DO UPDATE
+                    SET status = 'failed',
+                        error = EXCLUDED.error,
+                        updated_at = NOW()
+                    """,
+                    payment_id,
+                    step_key,
+                    str(exc)[:1000],
+                )
+            except Exception:
+                pass
+            raise
+
+    async def mark_payment_reward_step(self, payment_id: str, step_key: str) -> bool:
+        result = await self.fetchval(
+            """
+            INSERT INTO payment_reward_steps (payment_id, step_key, status, applied_at)
+            VALUES ($1, $2, 'applied', NOW())
+            ON CONFLICT (payment_id, step_key) DO UPDATE
+            SET status = 'applied',
+                applied_at = COALESCE(payment_reward_steps.applied_at, NOW()),
+                error = NULL,
+                updated_at = NOW()
+            RETURNING 1
+            """,
+            payment_id,
+            step_key,
+        )
+        return bool(result)
+
+    async def reserve_one_time_payment(
+        self,
+        *,
+        user_id: int,
+        product_key: str,
+        reservation_id: str,
+        checkout_jti: Optional[str] = None,
+        provider: Optional[str] = None,
+        expires_at=None,
+    ) -> dict[str, Any]:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        settings = await self.get_user_settings(user_id)
+        if settings and settings.get("starter_pack_used"):
+            return {"success": False, "error": "already_used"}
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    """
+                    INSERT INTO payment_one_time_reservations (
+                        user_id, product_key, reservation_id, checkout_jti, provider, expires_at
+                    )
+                    VALUES ($1, $2, $3, $4, $5, COALESCE($6::timestamptz, NOW() + INTERVAL '1 hour'))
+                    ON CONFLICT (user_id, product_key) DO UPDATE
+                    SET reservation_id = EXCLUDED.reservation_id,
+                        checkout_jti = EXCLUDED.checkout_jti,
+                        payment_id = NULL,
+                        provider = EXCLUDED.provider,
+                        status = 'reserved',
+                        expires_at = EXCLUDED.expires_at,
+                        updated_at = NOW()
+                    WHERE payment_one_time_reservations.status IN ('released', 'failed')
+                       OR payment_one_time_reservations.expires_at < NOW()
+                    RETURNING *
+                    """,
+                    user_id,
+                    product_key,
+                    reservation_id,
+                    checkout_jti,
+                    provider,
+                    expires_at,
+                )
+                if row:
+                    return {"success": True, "reservation": dict(row)}
+                existing = await conn.fetchrow(
+                    """
+                    SELECT *
+                    FROM payment_one_time_reservations
+                    WHERE user_id = $1 AND product_key = $2
+                    """,
+                    user_id,
+                    product_key,
+                )
+                return {
+                    "success": False,
+                    "error": "starter_checkout_in_progress",
+                    "reservation": dict(existing) if existing else None,
+                }
+
+    async def attach_one_time_payment(
+        self,
+        *,
+        user_id: int,
+        product_key: str,
+        reservation_id: str,
+        payment_id: str,
+        provider: Optional[str] = None,
+    ) -> dict[str, Any]:
+        row = await self.fetchrow(
+            """
+            UPDATE payment_one_time_reservations
+            SET payment_id = $4,
+                provider = COALESCE($5, provider),
+                status = 'payment_created',
+                updated_at = NOW()
+            WHERE user_id = $1
+              AND product_key = $2
+              AND reservation_id = $3
+              AND status = 'reserved'
+            RETURNING *
+            """,
+            user_id,
+            product_key,
+            reservation_id,
+            payment_id,
+            provider,
+        )
+        if row:
+            return {"success": True, "reservation": dict(row)}
+        return {"success": False, "error": "reservation_not_found"}
+
+    async def release_one_time_payment_reservation(
+        self,
+        *,
+        user_id: int,
+        product_key: str,
+        reservation_id: str,
+    ) -> dict[str, Any]:
+        await self.execute(
+            """
+            UPDATE payment_one_time_reservations
+            SET status = 'released', updated_at = NOW()
+            WHERE user_id = $1
+              AND product_key = $2
+              AND reservation_id = $3
+              AND status IN ('reserved', 'payment_created')
+            """,
+            user_id,
+            product_key,
+            reservation_id,
+        )
+        return {"success": True}
+
+    async def consume_one_time_payment_reservation(
+        self,
+        *,
+        user_id: int,
+        product_key: str,
+        payment_id: str,
+        executor=None,
+    ) -> bool:
+        query = """
+            UPDATE payment_one_time_reservations
+            SET status = 'consumed', updated_at = NOW()
+            WHERE user_id = $1
+              AND product_key = $2
+              AND payment_id = $3
+              AND status IN ('reserved', 'payment_created')
+            RETURNING 1
+        """
+        if executor is not None:
+            row = await executor.fetchrow(query, user_id, product_key, payment_id)
+            return bool(row)
+        row = await self.fetchrow(query, user_id, product_key, payment_id)
+        return bool(row)
 
     async def _ensure_friend_invites_table(self) -> bool:
         """Создать таблицу friend_invites для дружеских матчей."""
@@ -7654,7 +10363,13 @@ class Database:
                     expires_at TIMESTAMPTZ NOT NULL DEFAULT NOW() + INTERVAL '5 minutes',
                     battle_id TEXT DEFAULT NULL,
                     from_selected_deck_id INTEGER,
-                    to_selected_deck_id INTEGER
+                    to_selected_deck_id INTEGER,
+                    mode_id TEXT NOT NULL DEFAULT 'friendly',
+                    from_deck_card_ids JSONB NOT NULL DEFAULT '[]',
+                    to_deck_card_ids JSONB NOT NULL DEFAULT '[]',
+                    accepted_at TIMESTAMPTZ,
+                    failed_at TIMESTAMPTZ,
+                    fail_reason TEXT
                 )
                 """
             )
@@ -7669,12 +10384,90 @@ class Database:
         changed |= await self._add_column_if_missing("friend_invites", columns, "battle_id TEXT DEFAULT NULL")
         changed |= await self._add_column_if_missing("friend_invites", columns, "from_selected_deck_id INTEGER")
         changed |= await self._add_column_if_missing("friend_invites", columns, "to_selected_deck_id INTEGER")
+        changed |= await self._add_column_if_missing("friend_invites", columns, "mode_id TEXT NOT NULL DEFAULT 'friendly'")
+        changed |= await self._add_column_if_missing("friend_invites", columns, "from_deck_card_ids JSONB NOT NULL DEFAULT '[]'")
+        changed |= await self._add_column_if_missing("friend_invites", columns, "to_deck_card_ids JSONB NOT NULL DEFAULT '[]'")
+        changed |= await self._add_column_if_missing("friend_invites", columns, "accepted_at TIMESTAMPTZ")
+        changed |= await self._add_column_if_missing("friend_invites", columns, "failed_at TIMESTAMPTZ")
+        changed |= await self._add_column_if_missing("friend_invites", columns, "fail_reason TEXT")
 
         index_exists = await self.fetchval(
             "SELECT 1 FROM pg_indexes WHERE tablename = 'friend_invites' AND indexname = 'friend_invites_to_user_idx'"
         )
         if not index_exists:
             await self.execute("CREATE INDEX friend_invites_to_user_idx ON friend_invites(to_user_id, status)")
+            changed = True
+
+        pending_pair_index_exists = await self.fetchval(
+            "SELECT 1 FROM pg_indexes WHERE tablename = 'friend_invites' AND indexname = 'friend_invites_pending_pair_uniq'"
+        )
+        if not pending_pair_index_exists:
+            await self.execute(
+                """
+                UPDATE friend_invites
+                SET status = 'expired'
+                WHERE status = 'pending'
+                  AND expires_at <= NOW()
+                """
+            )
+            await self.execute(
+                """
+                WITH ranked_pending AS (
+                    SELECT
+                        id,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY from_user_id, to_user_id
+                            ORDER BY created_at DESC, id DESC
+                        ) AS row_num
+                    FROM friend_invites
+                    WHERE status = 'pending'
+                )
+                UPDATE friend_invites i
+                SET status = 'cancelled'
+                FROM ranked_pending rp
+                WHERE i.id = rp.id
+                  AND rp.row_num > 1
+                """
+            )
+            await self.execute(
+                """
+                CREATE UNIQUE INDEX friend_invites_pending_pair_uniq
+                ON friend_invites(from_user_id, to_user_id)
+                WHERE status = 'pending'
+                """
+            )
+            changed = True
+
+        active_pair_index_exists = await self.fetchval(
+            "SELECT 1 FROM pg_indexes WHERE tablename = 'friend_invites' AND indexname = 'friend_invites_active_pair_uniq'"
+        )
+        if not active_pair_index_exists:
+            await self.execute(
+                """
+                WITH ranked_active AS (
+                    SELECT
+                        id,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY LEAST(from_user_id, to_user_id), GREATEST(from_user_id, to_user_id)
+                            ORDER BY created_at DESC, id DESC
+                        ) AS row_num
+                    FROM friend_invites
+                    WHERE status IN ('pending', 'accepting')
+                )
+                UPDATE friend_invites i
+                SET status = 'cancelled'
+                FROM ranked_active ra
+                WHERE i.id = ra.id
+                  AND ra.row_num > 1
+                """
+            )
+            await self.execute(
+                """
+                CREATE UNIQUE INDEX friend_invites_active_pair_uniq
+                ON friend_invites(LEAST(from_user_id, to_user_id), GREATEST(from_user_id, to_user_id))
+                WHERE status IN ('pending', 'accepting')
+                """
+            )
             changed = True
 
         return changed
@@ -7816,6 +10609,61 @@ class Database:
 
         return changed
 
+    async def _ensure_user_onboarding_table(self) -> bool:
+        changed = False
+
+        table_exists = await self.fetchval("SELECT to_regclass('public.user_onboarding')")
+        if not table_exists:
+            await self.execute(
+                """
+                CREATE TABLE user_onboarding (
+                    user_id BIGINT PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
+                    status TEXT NOT NULL DEFAULT 'welcome',
+                    current_step TEXT NOT NULL DEFAULT 'welcome',
+                    tutorial_step INTEGER NOT NULL DEFAULT 0,
+                    tutorial_match_id TEXT,
+                    menu_step TEXT NOT NULL DEFAULT 'arena',
+                    newbie_path_progress JSONB NOT NULL DEFAULT '{}',
+                    started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    completed_at TIMESTAMPTZ,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            changed = True
+
+        columns = await self._get_columns("user_onboarding")
+        changed |= await self._add_column_if_missing("user_onboarding", columns, "user_id BIGINT PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE")
+        changed |= await self._add_column_if_missing("user_onboarding", columns, "status TEXT NOT NULL DEFAULT 'welcome'")
+        changed |= await self._add_column_if_missing("user_onboarding", columns, "current_step TEXT NOT NULL DEFAULT 'welcome'")
+        changed |= await self._add_column_if_missing("user_onboarding", columns, "tutorial_step INTEGER NOT NULL DEFAULT 0")
+        changed |= await self._add_column_if_missing("user_onboarding", columns, "tutorial_match_id TEXT")
+        changed |= await self._add_column_if_missing("user_onboarding", columns, "menu_step TEXT NOT NULL DEFAULT 'arena'")
+        changed |= await self._add_column_if_missing("user_onboarding", columns, "newbie_path_progress JSONB NOT NULL DEFAULT '{}'")
+        changed |= await self._add_column_if_missing("user_onboarding", columns, "started_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
+        changed |= await self._add_column_if_missing("user_onboarding", columns, "completed_at TIMESTAMPTZ")
+        changed |= await self._add_column_if_missing("user_onboarding", columns, "updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
+
+        await self.execute(
+            """
+            INSERT INTO user_onboarding (
+                user_id, status, current_step, completed_at
+            )
+            SELECT
+                u.user_id,
+                CASE WHEN COALESCE(us.welcome_shown, FALSE) THEN 'completed' ELSE 'welcome' END,
+                CASE WHEN COALESCE(us.welcome_shown, FALSE) THEN 'completed' ELSE 'welcome' END,
+                CASE WHEN COALESCE(us.welcome_shown, FALSE) THEN NOW() ELSE NULL END
+            FROM users u
+            LEFT JOIN user_settings us ON us.user_id = u.user_id
+            WHERE NOT EXISTS (
+                SELECT 1 FROM user_onboarding uo WHERE uo.user_id = u.user_id
+            )
+            """
+        )
+
+        return changed
+
     async def _ensure_battle_summary_table(self) -> bool:
         changed = False
 
@@ -7886,6 +10734,35 @@ class Database:
 
         return changed
 
+    async def _ensure_battle_surrender_penalties_table(self) -> bool:
+        changed = False
+        table_exists = await self.fetchval("SELECT to_regclass('public.battle_surrender_penalties')")
+        if not table_exists:
+            await self.execute(
+                """
+                CREATE TABLE battle_surrender_penalties (
+                    id BIGSERIAL PRIMARY KEY,
+                    match_id TEXT NOT NULL,
+                    user_id BIGINT NOT NULL,
+                    reason TEXT NOT NULL,
+                    penalty_delta INTEGER NOT NULL DEFAULT 0,
+                    new_trophies INTEGER NOT NULL DEFAULT 0,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (match_id, user_id, reason)
+                )
+                """
+            )
+            changed = True
+
+        columns = await self._get_columns("battle_surrender_penalties")
+        changed |= await self._add_column_if_missing("battle_surrender_penalties", columns, "match_id TEXT NOT NULL")
+        changed |= await self._add_column_if_missing("battle_surrender_penalties", columns, "user_id BIGINT NOT NULL")
+        changed |= await self._add_column_if_missing("battle_surrender_penalties", columns, "reason TEXT NOT NULL DEFAULT 'surrender'")
+        changed |= await self._add_column_if_missing("battle_surrender_penalties", columns, "penalty_delta INTEGER NOT NULL DEFAULT 0")
+        changed |= await self._add_column_if_missing("battle_surrender_penalties", columns, "new_trophies INTEGER NOT NULL DEFAULT 0")
+        changed |= await self._add_column_if_missing("battle_surrender_penalties", columns, "created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
+        return changed
+
     async def _ensure_battle_actions_table(self) -> bool:
         changed = False
 
@@ -7902,6 +10779,7 @@ class Database:
                     is_bot BOOLEAN NOT NULL DEFAULT FALSE,
                     state_json JSONB NOT NULL DEFAULT '{}',
                     action_json JSONB NOT NULL DEFAULT '{}',
+                    context_json JSONB NOT NULL DEFAULT '{}',
                     quality_score DOUBLE PRECISION,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
@@ -7917,6 +10795,7 @@ class Database:
         changed |= await self._add_column_if_missing("battle_actions", columns, "is_bot BOOLEAN NOT NULL DEFAULT FALSE")
         changed |= await self._add_column_if_missing("battle_actions", columns, "state_json JSONB NOT NULL DEFAULT '{}'")
         changed |= await self._add_column_if_missing("battle_actions", columns, "action_json JSONB NOT NULL DEFAULT '{}'")
+        changed |= await self._add_column_if_missing("battle_actions", columns, "context_json JSONB NOT NULL DEFAULT '{}'")
         changed |= await self._add_column_if_missing("battle_actions", columns, "quality_score DOUBLE PRECISION")
         changed |= await self._add_column_if_missing("battle_actions", columns, "created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
 
@@ -7936,15 +10815,93 @@ class Database:
         if not self._pool:
             raise RuntimeError("База данных не подключена.")
         try:
-            row = await self.fetchrow(
-                """
-                INSERT INTO friend_invites (from_user_id, to_user_id, from_selected_deck_id)
-                VALUES ($1, $2, $3)
-                RETURNING id, created_at, expires_at
-                """,
-                from_user_id, to_user_id, from_selected_deck_id,
-            )
-            return {"success": True, "id": row["id"], "created_at": row["created_at"].isoformat(), "expires_at": row["expires_at"].isoformat()}
+            async with self._pool.acquire() as conn:
+                async with conn.transaction():
+                    pair_key = f"friend_invite_pair:{min(int(from_user_id), int(to_user_id))}:{max(int(from_user_id), int(to_user_id))}"
+                    await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1)::bigint)", pair_key)
+                    active_battle = await conn.fetchrow(
+                        """
+                        SELECT i.id, i.battle_id
+                        FROM friend_invites i
+                        LEFT JOIN battle_summary bs ON bs.match_id = i.battle_id
+                        WHERE i.status = 'accepted'
+                          AND i.battle_id IS NOT NULL
+                          AND bs.match_id IS NULL
+                          AND (
+                              i.from_user_id = ANY($1::bigint[])
+                              OR i.to_user_id = ANY($1::bigint[])
+                          )
+                        ORDER BY COALESCE(i.accepted_at, i.created_at) DESC, i.id DESC
+                        LIMIT 1
+                        """,
+                        [int(from_user_id), int(to_user_id)],
+                    )
+                    if active_battle:
+                        return {
+                            "success": False,
+                            "error": "active_battle_exists",
+                            "battle_id": active_battle["battle_id"],
+                            "invite_id": active_battle["id"],
+                        }
+
+                    await conn.execute(
+                        """
+                        UPDATE friend_invites
+                        SET status = 'expired'
+                        WHERE LEAST(from_user_id, to_user_id) = LEAST($1::bigint, $2::bigint)
+                          AND GREATEST(from_user_id, to_user_id) = GREATEST($1::bigint, $2::bigint)
+                          AND status = 'pending'
+                          AND expires_at <= NOW()
+                        """,
+                        from_user_id,
+                        to_user_id,
+                    )
+                    existing = await conn.fetchrow(
+                        """
+                        SELECT id, created_at, expires_at
+                        FROM friend_invites
+                        WHERE LEAST(from_user_id, to_user_id) = LEAST($1::bigint, $2::bigint)
+                          AND GREATEST(from_user_id, to_user_id) = GREATEST($1::bigint, $2::bigint)
+                          AND status IN ('pending', 'accepting')
+                          AND expires_at > NOW()
+                        ORDER BY created_at DESC, id DESC
+                        LIMIT 1
+                        """,
+                        from_user_id,
+                        to_user_id,
+                    )
+                    if existing:
+                        return {
+                            "success": False,
+                            "error": "invite_already_sent",
+                            "id": existing["id"],
+                            "created_at": existing["created_at"].isoformat(),
+                            "expires_at": existing["expires_at"].isoformat(),
+                        }
+                    row = await conn.fetchrow(
+                        """
+                        INSERT INTO friend_invites (from_user_id, to_user_id, from_selected_deck_id)
+                        VALUES ($1, $2, $3)
+                        ON CONFLICT (from_user_id, to_user_id) WHERE status = 'pending'
+                        DO UPDATE SET from_selected_deck_id = friend_invites.from_selected_deck_id
+                        RETURNING id, created_at, expires_at, (xmax = 0) AS created
+                        """,
+                        from_user_id, to_user_id, from_selected_deck_id,
+                    )
+            if not bool(row["created"]):
+                return {
+                    "success": False,
+                    "error": "invite_already_sent",
+                    "id": row["id"],
+                    "created_at": row["created_at"].isoformat(),
+                    "expires_at": row["expires_at"].isoformat(),
+                }
+            return {
+                "success": True,
+                "id": row["id"],
+                "created_at": row["created_at"].isoformat(),
+                "expires_at": row["expires_at"].isoformat(),
+            }
         except Exception as e:
             import logging
             logging.getLogger(__name__).error("create_friend_invite error: %s", e, exc_info=True)
@@ -8003,33 +10960,189 @@ class Database:
         )
         return bool(val)
 
+    async def get_active_friend_battle_for_users(
+        self,
+        user_ids: list[int] | tuple[int, ...],
+        *,
+        exclude_invite_id: Optional[int] = None,
+    ) -> Optional[dict[str, Any]]:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        normalized_user_ids: list[int] = []
+        for raw_user_id in user_ids:
+            try:
+                normalized_user_ids.append(int(raw_user_id))
+            except (TypeError, ValueError):
+                continue
+        if not normalized_user_ids:
+            return None
+        row = await self.fetchrow(
+            """
+            SELECT i.*
+            FROM friend_invites i
+            LEFT JOIN battle_summary bs ON bs.match_id = i.battle_id
+            WHERE i.status = 'accepted'
+              AND i.battle_id IS NOT NULL
+              AND bs.match_id IS NULL
+              AND ($2::integer IS NULL OR i.id <> $2)
+              AND (
+                  i.from_user_id = ANY($1::bigint[])
+                  OR i.to_user_id = ANY($1::bigint[])
+              )
+            ORDER BY COALESCE(i.accepted_at, i.created_at) DESC, i.id DESC
+            LIMIT 1
+            """,
+            normalized_user_ids,
+            exclude_invite_id,
+        )
+        return dict(row) if row else None
+
+    async def claim_friend_invite_accept(
+        self,
+        invite_id: int,
+        to_user_id: int,
+        to_selected_deck_id: Optional[int] = None,
+    ) -> Optional[dict[str, Any]]:
+        """Atomically reserve a pending friendly invite for match creation."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        row = await self.fetchrow(
+            """
+            UPDATE friend_invites
+            SET status = 'accepting',
+                to_selected_deck_id = COALESCE($3, to_selected_deck_id)
+            WHERE id = $1
+              AND to_user_id = $2
+              AND status = 'pending'
+              AND expires_at > NOW()
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM friend_invites active
+                  LEFT JOIN battle_summary bs ON bs.match_id = active.battle_id
+                          WHERE active.status IN ('pending', 'accepting', 'accepted')
+                            AND (
+                                active.status <> 'accepted'
+                                OR (active.battle_id IS NOT NULL AND bs.match_id IS NULL)
+                            )
+                            AND active.id <> friend_invites.id
+                            AND (
+                        active.from_user_id IN (friend_invites.from_user_id, friend_invites.to_user_id)
+                        OR active.to_user_id IN (friend_invites.from_user_id, friend_invites.to_user_id)
+                    )
+              )
+            RETURNING *
+            """,
+            invite_id,
+            to_user_id,
+            to_selected_deck_id,
+        )
+        return dict(row) if row else None
+
+    async def complete_friend_invite_accept(
+        self,
+        invite_id: int,
+        battle_id: str,
+        *,
+        to_selected_deck_id: Optional[int] = None,
+        from_deck_card_ids: Optional[list[int]] = None,
+        to_deck_card_ids: Optional[list[int]] = None,
+        mode_id: str = "friendly",
+    ) -> bool:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        row = await self.fetchrow(
+            """
+            UPDATE friend_invites
+            SET status = 'accepted',
+                battle_id = $2,
+                to_selected_deck_id = COALESCE($3, to_selected_deck_id),
+                mode_id = $4,
+                from_deck_card_ids = $5::jsonb,
+                to_deck_card_ids = $6::jsonb,
+                accepted_at = NOW(),
+                failed_at = NULL,
+                fail_reason = NULL
+            WHERE id = $1 AND status = 'accepting'
+            RETURNING id
+            """,
+            invite_id,
+            battle_id,
+            to_selected_deck_id,
+            mode_id,
+            json.dumps([int(card_id) for card_id in (from_deck_card_ids or [])]),
+            json.dumps([int(card_id) for card_id in (to_deck_card_ids or [])]),
+        )
+        return bool(row)
+
+    async def fail_friend_invite_accept(
+        self,
+        invite_id: int,
+        reason: str,
+        *,
+        to_selected_deck_id: Optional[int] = None,
+    ) -> bool:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        row = await self.fetchrow(
+            """
+            UPDATE friend_invites
+            SET status = 'failed',
+                to_selected_deck_id = COALESCE($2, to_selected_deck_id),
+                failed_at = NOW(),
+                fail_reason = $3
+            WHERE id = $1 AND status IN ('pending', 'accepting')
+            RETURNING id
+            """,
+            invite_id,
+            to_selected_deck_id,
+            reason,
+        )
+        return bool(row)
+
     async def update_invite_status(
         self,
         invite_id: int,
         status: str,
         battle_id: Optional[str] = None,
         to_selected_deck_id: Optional[int] = None,
-    ) -> None:
+    ) -> bool:
         if not self._pool:
             raise RuntimeError("База данных не подключена.")
+        if status in {"expired", "declined", "cancelled"}:
+            row = await self.fetchrow(
+                """
+                UPDATE friend_invites
+                -- Guarded terminal transitions mirror status IN ('expired', 'declined', 'cancelled').
+                SET status = $1, to_selected_deck_id = COALESCE($2, to_selected_deck_id)
+                WHERE id = $3
+                  AND status = 'pending'
+                RETURNING id
+                """,
+                status, to_selected_deck_id, invite_id,
+            )
+            return bool(row)
         if battle_id:
-            await self.execute(
+            row = await self.fetchrow(
                 """
                 UPDATE friend_invites
                 SET status = $1, battle_id = $2, to_selected_deck_id = COALESCE($3, to_selected_deck_id)
                 WHERE id = $4
+                RETURNING id
                 """,
                 status, battle_id, to_selected_deck_id, invite_id,
             )
+            return bool(row)
         else:
-            await self.execute(
+            row = await self.fetchrow(
                 """
                 UPDATE friend_invites
                 SET status = $1, to_selected_deck_id = COALESCE($2, to_selected_deck_id)
                 WHERE id = $3
+                RETURNING id
                 """,
                 status, to_selected_deck_id, invite_id,
             )
+            return bool(row)
 
     async def get_friend_invite_for_user(self, invite_id: int, user_id: int) -> Optional[dict[str, Any]]:
         if not self._pool:
@@ -8040,6 +11153,29 @@ class Database:
             WHERE id = $1 AND (from_user_id = $2 OR to_user_id = $2)
             """,
             invite_id, user_id,
+        )
+        return dict(row) if row else None
+
+    async def get_friend_invite_by_battle_id_for_user(
+        self,
+        battle_id: str,
+        user_id: int,
+    ) -> Optional[dict[str, Any]]:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        row = await self.fetchrow(
+            """
+            SELECT *
+            FROM friend_invites i
+            LEFT JOIN battle_summary bs ON bs.match_id = i.battle_id
+            WHERE i.battle_id = $1
+              AND i.status = 'accepted'
+              AND bs.match_id IS NULL
+              AND (i.from_user_id = $2 OR i.to_user_id = $2)
+            LIMIT 1
+            """,
+            battle_id,
+            user_id,
         )
         return dict(row) if row else None
 
@@ -8136,6 +11272,31 @@ class Database:
             logging.getLogger(__name__).error("create_friend_request error: %s", e, exc_info=True)
             return {"success": False, "error": str(e)}
 
+    async def create_or_reopen_friend_request(self, requester_id: int, addressee_id: int) -> dict[str, Any]:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        try:
+            row = await self.fetchrow(
+                """
+                INSERT INTO friend_requests (requester_id, addressee_id)
+                VALUES ($1, $2)
+                ON CONFLICT (requester_id, addressee_id) DO UPDATE
+                SET status = 'pending',
+                    updated_at = NOW()
+                WHERE friend_requests.status IN ('declined', 'cancelled')
+                RETURNING id, created_at
+                """,
+                requester_id,
+                addressee_id,
+            )
+            if not row:
+                return {"success": False, "error": "request_already_exists"}
+            return {"success": True, "id": row["id"], "created_at": row["created_at"].isoformat()}
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error("create_or_reopen_friend_request error: %s", e, exc_info=True)
+            return {"success": False, "error": str(e)}
+
     async def get_friend_request_by_id(self, request_id: int) -> Optional[dict[str, Any]]:
         if not self._pool:
             raise RuntimeError("База данных не подключена.")
@@ -8146,11 +11307,16 @@ class Database:
         """Обновить статус заявки. Возвращает True если обновлено."""
         if not self._pool:
             raise RuntimeError("База данных не подключена.")
-        result = await self.execute(
-            "UPDATE friend_requests SET status = $1, updated_at = NOW() WHERE id = $2",
+        row = await self.fetchrow(
+            """
+            UPDATE friend_requests
+            SET status = $1, updated_at = NOW()
+            WHERE id = $2 AND status = 'pending'
+            RETURNING id
+            """,
             status, request_id,
         )
-        return bool(result)
+        return row is not None
 
     async def get_incoming_friend_requests(self, user_id: int) -> list[dict[str, Any]]:
         """Входящие заявки в друзья (адресат = user_id)."""
@@ -8160,10 +11326,12 @@ class Database:
             """
             SELECT fr.id, fr.requester_id, fr.status, fr.created_at,
                    COALESCE(p.custom_nickname, u.first_name, u.username, 'Игрок') AS display_name,
-                   COALESCE(equipped_avatar.asset_path, NULLIF(p.img, '')) AS avatar_url
+                   COALESCE(equipped_avatar.asset_path, NULLIF(p.img, '')) AS avatar_url,
+                   COALESCE(us.hide_player_id_public, FALSE) AS hide_player_id_public
             FROM friend_requests fr
             JOIN users u ON u.user_id = fr.requester_id
             LEFT JOIN profiles p ON p.user_id = fr.requester_id
+            LEFT JOIN user_settings us ON us.user_id = fr.requester_id
             LEFT JOIN user_equipped_cosmetics uec_avatar ON uec_avatar.user_id = fr.requester_id AND uec_avatar.item_type = 'avatar'
             LEFT JOIN cosmetic_items equipped_avatar ON equipped_avatar.id = uec_avatar.cosmetic_id AND equipped_avatar.item_type = 'avatar'
             WHERE fr.addressee_id = $1 AND fr.status = 'pending'
@@ -8177,6 +11345,7 @@ class Database:
                 "requester_id": r["requester_id"],
                 "display_name": r["display_name"],
                 "avatar_url": r["avatar_url"],
+                "hide_player_id_public": bool(r["hide_player_id_public"]),
                 "status": r["status"],
                 "created_at": r["created_at"].isoformat(),
             }
@@ -8191,10 +11360,12 @@ class Database:
             """
             SELECT fr.id, fr.addressee_id, fr.status, fr.created_at,
                    COALESCE(p.custom_nickname, u.first_name, u.username, 'Игрок') AS display_name,
-                   COALESCE(equipped_avatar.asset_path, NULLIF(p.img, '')) AS avatar_url
+                   COALESCE(equipped_avatar.asset_path, NULLIF(p.img, '')) AS avatar_url,
+                   COALESCE(us.hide_player_id_public, FALSE) AS hide_player_id_public
             FROM friend_requests fr
             JOIN users u ON u.user_id = fr.addressee_id
             LEFT JOIN profiles p ON p.user_id = fr.addressee_id
+            LEFT JOIN user_settings us ON us.user_id = fr.addressee_id
             LEFT JOIN user_equipped_cosmetics uec_avatar ON uec_avatar.user_id = fr.addressee_id AND uec_avatar.item_type = 'avatar'
             LEFT JOIN cosmetic_items equipped_avatar ON equipped_avatar.id = uec_avatar.cosmetic_id AND equipped_avatar.item_type = 'avatar'
             WHERE fr.requester_id = $1 AND fr.status = 'pending'
@@ -8208,6 +11379,7 @@ class Database:
                 "addressee_id": r["addressee_id"],
                 "display_name": r["display_name"],
                 "avatar_url": r["avatar_url"],
+                "hide_player_id_public": bool(r["hide_player_id_public"]),
                 "status": r["status"],
                 "created_at": r["created_at"].isoformat(),
             }
@@ -8220,23 +11392,27 @@ class Database:
             raise RuntimeError("База данных не подключена.")
         rows = await self.fetch(
             """
-            SELECT friend_id, display_name, avatar_url FROM (
+            SELECT friend_id, display_name, avatar_url, hide_player_id_public FROM (
                 SELECT fr.addressee_id AS friend_id,
                        COALESCE(p.custom_nickname, u.first_name, u.username, 'Игрок') AS display_name,
-                       COALESCE(equipped_avatar.asset_path, NULLIF(p.img, '')) AS avatar_url
+                       COALESCE(equipped_avatar.asset_path, NULLIF(p.img, '')) AS avatar_url,
+                       COALESCE(us.hide_player_id_public, FALSE) AS hide_player_id_public
                 FROM friend_requests fr
                 JOIN users u ON u.user_id = fr.addressee_id
                 LEFT JOIN profiles p ON p.user_id = fr.addressee_id
+                LEFT JOIN user_settings us ON us.user_id = fr.addressee_id
                 LEFT JOIN user_equipped_cosmetics uec_avatar ON uec_avatar.user_id = fr.addressee_id AND uec_avatar.item_type = 'avatar'
                 LEFT JOIN cosmetic_items equipped_avatar ON equipped_avatar.id = uec_avatar.cosmetic_id AND equipped_avatar.item_type = 'avatar'
                 WHERE fr.requester_id = $1 AND fr.status = 'accepted'
                 UNION
                 SELECT fr.requester_id AS friend_id,
                        COALESCE(p.custom_nickname, u.first_name, u.username, 'Игрок') AS display_name,
-                       COALESCE(equipped_avatar.asset_path, NULLIF(p.img, '')) AS avatar_url
+                       COALESCE(equipped_avatar.asset_path, NULLIF(p.img, '')) AS avatar_url,
+                       COALESCE(us.hide_player_id_public, FALSE) AS hide_player_id_public
                 FROM friend_requests fr
                 JOIN users u ON u.user_id = fr.requester_id
                 LEFT JOIN profiles p ON p.user_id = fr.requester_id
+                LEFT JOIN user_settings us ON us.user_id = fr.requester_id
                 LEFT JOIN user_equipped_cosmetics uec_avatar ON uec_avatar.user_id = fr.requester_id AND uec_avatar.item_type = 'avatar'
                 LEFT JOIN cosmetic_items equipped_avatar ON equipped_avatar.id = uec_avatar.cosmetic_id AND equipped_avatar.item_type = 'avatar'
                 WHERE fr.addressee_id = $1 AND fr.status = 'accepted'
@@ -8250,6 +11426,7 @@ class Database:
                 "user_id": r["friend_id"],
                 "display_name": r["display_name"],
                 "avatar_url": r["avatar_url"],
+                "hide_player_id_public": bool(r["hide_player_id_public"]),
             }
             for r in rows
         ]
@@ -8354,6 +11531,7 @@ class Database:
             SELECT l.opponent_id, p.custom_nickname,
                    COALESCE(equipped_avatar.asset_path, NULLIF(p.img, '')) AS avatar_url,
                    COALESCE(p.custom_nickname, u.first_name, u.username, 'Игрок') AS display_name,
+                   COALESCE(us.hide_player_id_public, FALSE) AS hide_player_id_public,
                    (SELECT 1 FROM friend_requests fr
                     WHERE fr.status = 'accepted'
                       AND ((fr.requester_id = $1 AND fr.addressee_id = l.opponent_id)
@@ -8363,8 +11541,10 @@ class Database:
             FROM latest l
             JOIN users u ON u.user_id = l.opponent_id
             LEFT JOIN profiles p ON p.user_id = l.opponent_id
+            LEFT JOIN user_settings us ON us.user_id = l.opponent_id
             LEFT JOIN user_equipped_cosmetics uec_avatar ON uec_avatar.user_id = l.opponent_id AND uec_avatar.item_type = 'avatar'
             LEFT JOIN cosmetic_items equipped_avatar ON equipped_avatar.id = uec_avatar.cosmetic_id AND equipped_avatar.item_type = 'avatar'
+            WHERE COALESCE(u.is_bot, FALSE) = FALSE
             ORDER BY l.created_at DESC
             LIMIT $2
             """,
@@ -8375,6 +11555,7 @@ class Database:
                 "user_id": r["opponent_id"],
                 "display_name": r["display_name"],
                 "avatar_url": r["avatar_url"],
+                "hide_player_id_public": bool(r["hide_player_id_public"]),
                 "is_friend": bool(r["is_friend"]),
             }
             for r in rows
@@ -8448,12 +11629,27 @@ class Database:
         row = await self.fetchrow(
             """
             UPDATE payments
-            SET rewards_processed = TRUE,
+            SET metadata = COALESCE(metadata, '{}'::jsonb)
+                    || jsonb_build_object(
+                        'rewards_processing', true,
+                        'rewards_processing_started_at', EXTRACT(EPOCH FROM NOW())
+                    ),
                 updated_at = NOW()
-            WHERE payment_id = $1
-              AND rewards_processed = FALSE
-            RETURNING *
-            """,
+	            WHERE payment_id = $1
+	              AND rewards_processed = FALSE
+	              AND (
+	                    COALESCE(metadata->>'rewards_processing', 'false') != 'true'
+	                    OR COALESCE(
+	                        CASE
+	                            WHEN (metadata->>'rewards_processing_started_at') ~ '^[0-9]+([.][0-9]+)?$'
+	                            THEN (metadata->>'rewards_processing_started_at')::double precision
+	                            ELSE 0
+	                        END,
+	                        0
+	                    ) < EXTRACT(EPOCH FROM NOW()) - 900
+	                  )
+	            RETURNING *
+	            """,
             payment_id,
         )
         return dict(row) if row else None
@@ -8465,9 +11661,10 @@ class Database:
         await self.execute(
             """
             UPDATE payments
-            SET rewards_processed = FALSE,
+            SET metadata = COALESCE(metadata, '{}'::jsonb) - 'rewards_processing' - 'rewards_processing_started_at',
                 updated_at = NOW()
             WHERE payment_id = $1
+              AND rewards_processed = FALSE
             """,
             payment_id,
         )
@@ -8541,7 +11738,8 @@ class Database:
             )
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            logging.getLogger(__name__).error("create_community_post failed: %s", e, exc_info=True)
+            return {"success": False, "error": "internal_server_error"}
 
     async def delete_community_post(self, post_id: int, user_id: int) -> dict[str, Any]:
         """Удалить пост коммьюнити. Только админ может удалять посты."""
@@ -8575,7 +11773,8 @@ class Database:
 
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            logging.getLogger(__name__).error("delete_community_post failed: %s", e, exc_info=True)
+            return {"success": False, "error": "internal_server_error"}
 
     async def get_community_posts(self, limit: int = 50, user_id: int | None = None) -> list[dict[str, Any]]:
         """Получить список постов коммьюнити. Если указан user_id, добавляет информацию о лайках пользователя."""
@@ -8587,19 +11786,23 @@ class Database:
             SELECT cp.id, cp.author_id, cp.title, cp.content, cp.photo_file_id, cp.created_at,
                    u.username, u.first_name,
                    COALESCE(p.custom_nickname, u.first_name, u.username, 'Игрок') as author_name,
+                   COALESCE(u.extra_pass, 'inactive') AS extra_pass,
+                   COALESCE(us.nickname_glow_disabled, FALSE) AS nickname_glow_disabled,
+                   COALESCE(us.hide_player_id_public, FALSE) AS hide_player_id_public,
                    (SELECT COUNT(*) FROM post_likes WHERE post_id = cp.id) as likes_count,
                    NULL as author_photo_url
             FROM community_posts cp
             LEFT JOIN users u ON u.user_id = cp.author_id
             LEFT JOIN profiles p ON p.user_id = cp.author_id
+            LEFT JOIN user_settings us ON us.user_id = cp.author_id
             ORDER BY cp.created_at DESC
             LIMIT $1
             """,
             limit,
         )
-        
+
         posts = [dict(row) for row in rows]
-        
+
         # Если указан user_id, добавляем информацию о том, лайкнул ли пользователь каждый пост
         if user_id:
             for post in posts:
@@ -8607,7 +11810,7 @@ class Database:
         else:
             for post in posts:
                 post["is_liked"] = False
-        
+
         return posts
 
     async def toggle_post_like(self, post_id: int, user_id: int) -> dict[str, Any]:
@@ -8616,40 +11819,55 @@ class Database:
             raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
 
         try:
-            # Проверяем, есть ли уже лайк
-            existing = await self.fetchrow(
-                "SELECT id FROM post_likes WHERE post_id = $1 AND user_id = $2",
-                post_id, user_id
-            )
+            async with self._pool.acquire() as conn:
+                async with conn.transaction():
+                    await conn.fetchval(
+                        "SELECT pg_advisory_xact_lock(hashtext($1))",
+                        f"post_like:{post_id}:{user_id}",
+                    )
+                    post = await conn.fetchrow(
+                        """
+                        SELECT id FROM community_posts
+                        WHERE id = $1
+                          AND post_type IN ('news', 'poll')
+                          AND moderation_status = 'approved'
+                          AND status = 'active'
+                        """,
+                        post_id,
+                    )
+                    if not post:
+                        return {"success": False, "error": "invalid_post"}
+                    inserted = await conn.fetchrow(
+                        """
+                        INSERT INTO post_likes (post_id, user_id)
+                        VALUES ($1, $2)
+                        ON CONFLICT (post_id, user_id) DO NOTHING
+                        RETURNING 1 AS inserted
+                        """,
+                        post_id, user_id,
+                    )
+                    if inserted:
+                        liked = True
+                    else:
+                        await conn.execute(
+                            "DELETE FROM post_likes WHERE post_id = $1 AND user_id = $2",
+                            post_id, user_id,
+                        )
+                        liked = False
 
-            if existing:
-                # Удаляем лайк
-                await self.execute(
-                    "DELETE FROM post_likes WHERE post_id = $1 AND user_id = $2",
-                    post_id, user_id
-                )
-                liked = False
-            else:
-                # Добавляем лайк
-                await self.execute(
-                    "INSERT INTO post_likes (post_id, user_id) VALUES ($1, $2)",
-                    post_id, user_id
-                )
-                liked = True
+                    likes_count = await conn.fetchval(
+                        "SELECT COUNT(*) FROM post_likes WHERE post_id = $1",
+                        post_id,
+                    )
 
-            # Получаем количество лайков
-            likes_count = await self.fetchval(
-                "SELECT COUNT(*) FROM post_likes WHERE post_id = $1",
-                post_id
-            )
-
-            return {
-                "success": True,
-                "liked": liked,
-                "likes_count": int(likes_count or 0)
-            }
+                return {
+                    "success": True,
+                    "liked": liked,
+                    "likes_count": int(likes_count or 0)
+                }
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            logging.getLogger(__name__).error("toggle_post_like failed: %s", e, exc_info=True)
+            return {"success": False, "error": "internal_server_error"}
 
     async def is_post_liked_by_user(self, post_id: int, user_id: int) -> bool:
         """Проверить, лайкнул ли пользователь пост."""
@@ -8697,13 +11915,13 @@ class Database:
             raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
 
         code_upper = code.upper()
-        
+
         # Получаем промокод
         promocode = await self.fetchrow(
             """
             SELECT id, type, reward_gems, reward_coins, reward_keys, reward_extrapass, expires_at
             FROM promocodes
-            WHERE code = $1
+            WHERE code = $1 AND COALESCE(is_active, TRUE) = TRUE
             """,
             code_upper
         )
@@ -8774,8 +11992,30 @@ class Database:
                         promocode["reward_keys"], user_id
                     )
                 if promocode["reward_extrapass"]:
+                    pass_row = await conn.fetchrow(
+                        "SELECT extra_pass, extra_pass_expires_at FROM users WHERE user_id = $1 FOR UPDATE",
+                        user_id,
+                    )
+                    current_mode = str((pass_row or {}).get("extra_pass") or "inactive").lower()
+                    current_expiry = _coerce_utc_datetime((pass_row or {}).get("extra_pass_expires_at") if pass_row else None)
+                    now = datetime.now(timezone.utc)
+                    tier_order = {"inactive": 0, "active": 1, "ultra": 2}
+                    preserve_higher_tier = tier_order.get(current_mode, 0) > tier_order["active"] and (not current_expiry or current_expiry > now)
+                    final_mode = current_mode if preserve_higher_tier else "active"
+                    if preserve_higher_tier and current_expiry is None:
+                        expires_at = None
+                    else:
+                        base_expiry = current_expiry if current_expiry and current_expiry > now else now
+                        expires_at = base_expiry + timedelta(days=30)
                     await conn.execute(
-                        "UPDATE users SET extra_pass = 'active' WHERE user_id = $1",
+                        """
+                        UPDATE users
+                        SET extra_pass = $1,
+                            extra_pass_expires_at = $2
+                        WHERE user_id = $3
+                        """,
+                        final_mode,
+                        expires_at,
                         user_id,
                     )
 
@@ -8820,8 +12060,8 @@ class Database:
         from infrastructure.generator_config import GENERATOR_LEVELS
 
         level = row["level"]
-        extra_pass_raw = (row.get("extra_pass") or "inactive")
-        pass_tier = extra_pass_raw if extra_pass_raw in ("ultra", "active") else "f2p"
+        extra_pass_raw = str(row.get("extra_pass") or "inactive").lower()
+        pass_tier = extra_pass_raw if extra_pass_raw in ("ultra", "active") and _extra_pass_mode_active(row) else "f2p"
         level_cfg = GENERATOR_LEVELS.get(level, GENERATOR_LEVELS[1])
         tier_cfg = level_cfg.get(pass_tier, level_cfg["f2p"])
         interval_seconds = tier_cfg["interval_hours"] * 3600
@@ -8850,7 +12090,7 @@ class Database:
         row = await self.fetchrow(
             """
             SELECT g.level, g.accumulated_keys, g.last_tick_at, g.notified,
-                   u.extra_pass, u.coins, u.gems, u.keys
+                   u.extra_pass, u.extra_pass_expires_at, u.coins, u.gems, u.keys
             FROM generator_state g
             JOIN users u ON u.user_id = g.user_id
             WHERE g.user_id = $1
@@ -8863,8 +12103,8 @@ class Database:
         accumulated, new_keys, cap, interval_seconds = await self._compute_generator_accumulated(row)
         interval_hours = interval_seconds // 3600
         level = row["level"]
-        extra_pass = row["extra_pass"] or "inactive"
-        tier = "ultra" if extra_pass == "ultra" else "active" if extra_pass == "active" else "f2p"
+        extra_pass = str(row["extra_pass"] or "inactive").lower()
+        tier = extra_pass if extra_pass in ("ultra", "active") and _extra_pass_mode_active(row) else "f2p"
 
         now = datetime.now(timezone.utc)
         last_tick = row["last_tick_at"]
@@ -8879,17 +12119,6 @@ class Database:
         next_level = level + 1
         if next_level in GENERATOR_UPGRADE_COST and next_level <= GENERATOR_MAX_LEVEL:
             upgrade_cost = dict(GENERATOR_UPGRADE_COST[next_level])
-
-        if new_keys > 0:
-            await self.execute(
-                """
-                UPDATE generator_state
-                SET accumulated_keys = $2, last_tick_at = last_tick_at + ($3::int * INTERVAL '1 second'),
-                    updated_at = NOW()
-                WHERE user_id = $1
-                """,
-                user_id, accumulated, ticks_used,
-            )
 
         return {
             "level": level,
@@ -8926,7 +12155,7 @@ class Database:
                 row = await conn.fetchrow(
                     """
                     SELECT g.level, g.accumulated_keys, g.last_tick_at, g.notified,
-                           u.extra_pass
+                           u.extra_pass, u.extra_pass_expires_at
                     FROM generator_state g
                     JOIN users u ON u.user_id = g.user_id
                     WHERE g.user_id = $1
@@ -8947,7 +12176,7 @@ class Database:
                     """
                     UPDATE generator_state
                     SET accumulated_keys = 0,
-                        last_tick_at = CASE WHEN $2 > 0 THEN last_tick_at + ($2::int * INTERVAL '1 second') ELSE NOW() END,
+                        last_tick_at = CASE WHEN $2 > 0 THEN last_tick_at + ($2::int * INTERVAL '1 second') ELSE last_tick_at END,
                         notified = FALSE, updated_at = NOW()
                     WHERE user_id = $1
                     """,
@@ -9058,7 +12287,7 @@ class Database:
         rows = await self.fetch(
             """
             SELECT g.user_id, g.level, g.accumulated_keys, g.last_tick_at, g.notified,
-                   u.extra_pass, u.status
+                   u.extra_pass, u.extra_pass_expires_at, u.status
             FROM generator_state g
             INNER JOIN users u ON u.user_id = g.user_id
             LEFT JOIN user_settings us ON us.user_id = g.user_id
@@ -9127,7 +12356,7 @@ class Database:
         if created_by:
             rows = await self.fetch(
                 """
-                SELECT id, code, type, reward_gems, reward_coins, reward_keys, reward_extrapass, created_at, expires_at,
+                SELECT id, code, type, reward_gems, reward_coins, reward_keys, reward_extrapass, created_at, expires_at, is_active,
                        (SELECT COUNT(*) FROM promocode_usage WHERE promocode_id = promocodes.id) as usage_count
                 FROM promocodes
                 WHERE created_by = $1
@@ -9138,7 +12367,7 @@ class Database:
         else:
             rows = await self.fetch(
                 """
-                SELECT id, code, type, reward_gems, reward_coins, reward_keys, reward_extrapass, created_at, expires_at,
+                SELECT id, code, type, reward_gems, reward_coins, reward_keys, reward_extrapass, created_at, expires_at, is_active,
                        (SELECT COUNT(*) FROM promocode_usage WHERE promocode_id = promocodes.id) as usage_count
                 FROM promocodes
                 ORDER BY created_at DESC
@@ -9146,6 +12375,62 @@ class Database:
             )
 
         return [dict(row) for row in rows]
+
+    async def get_promocode(self, promocode_id: int) -> dict[str, Any] | None:
+        """Получить один промокод по id."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+        row = await self.fetchrow(
+            """
+            SELECT id, code, type, reward_gems, reward_coins, reward_keys, reward_extrapass,
+                   created_by, created_at, expires_at, is_active,
+                   (SELECT COUNT(*) FROM promocode_usage WHERE promocode_id = promocodes.id) as usage_count
+            FROM promocodes
+            WHERE id = $1
+            """,
+            int(promocode_id),
+        )
+        return dict(row) if row else None
+
+    async def update_promocode(self, promocode_id: int, **fields: Any) -> dict[str, Any]:
+        """Обновить поля промокода по id."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+        valid_keys = {
+            "code",
+            "type",
+            "reward_gems",
+            "reward_coins",
+            "reward_keys",
+            "reward_extrapass",
+            "expires_at",
+            "is_active",
+        }
+        updates: list[str] = []
+        values: list[Any] = []
+        for key, value in fields.items():
+            if key not in valid_keys:
+                continue
+            if key == "code" and value is not None:
+                value = str(value).upper()
+            if key in {"reward_gems", "reward_coins", "reward_keys"}:
+                value = int(value or 0)
+            updates.append(f"{key} = ${len(values) + 1}")
+            values.append(value)
+        if not updates:
+            return {"success": False, "error": "no_valid_fields"}
+        values.append(int(promocode_id))
+        try:
+            status = await self.execute(
+                f"UPDATE promocodes SET {', '.join(updates)} WHERE id = ${len(values)}",
+                *values,
+            )
+            updated = status.endswith(" 1")
+            return {"success": updated, "error": None if updated else "not_found"}
+        except asyncpg.UniqueViolationError:
+            return {"success": False, "error": "code_exists"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
 
     async def delete_promocode(self, promocode_id: int) -> dict[str, Any]:
         """Удалить промокод из админ-панели."""
@@ -9228,10 +12513,61 @@ class Database:
                 "UPDATE cards SET mechanics_desc = $1 WHERE id = $2 AND (mechanics_desc IS NULL OR mechanics_desc = '')",
                 desc, card_id
             )
+        await self.execute(
+            """
+            UPDATE cards
+            SET description = $1, mechanics_desc = $2
+            WHERE id = 25
+            """,
+            "Один удар. На первом своем ходу уничтожает выбранного противника один раз.",
+            _CARD_MECHANICS_DESC[25],
+        )
+        await self.execute(
+            """
+            UPDATE cards
+            SET mechanics = $1::jsonb, mechanics_desc = $2
+            WHERE id = 15
+            """,
+            '["battlecry_damage_1_random"]',
+            _CARD_MECHANICS_DESC[15],
+        )
 
         await self.execute("UPDATE cards SET simplified_levelup = TRUE WHERE id = ANY($1::bigint[])", [11, 12, 13])
         await self.execute("UPDATE cards SET simplified_levelup = FALSE WHERE id <> ALL($1::bigint[])", [11, 12, 13])
 
+        return changed
+
+
+    async def _ensure_items_table(self) -> bool:
+        """Create the legacy admin item catalog table used by ExtraAdmin."""
+        changed = False
+
+        table_exists = await self.fetchval("SELECT to_regclass('public.items')")
+        if not table_exists:
+            await self.execute(
+                """
+                CREATE TABLE items (
+                    id BIGSERIAL PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    description TEXT,
+                    rarity TEXT NOT NULL DEFAULT 'common',
+                    power INT NOT NULL DEFAULT 0,
+                    image_file_id TEXT,
+                    created_by BIGINT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            changed = True
+
+        columns = await self._get_columns("items")
+        changed |= await self._add_column_if_missing("items", columns, "name TEXT NOT NULL DEFAULT ''")
+        changed |= await self._add_column_if_missing("items", columns, "description TEXT")
+        changed |= await self._add_column_if_missing("items", columns, "rarity TEXT NOT NULL DEFAULT 'common'")
+        changed |= await self._add_column_if_missing("items", columns, "power INT NOT NULL DEFAULT 0")
+        changed |= await self._add_column_if_missing("items", columns, "image_file_id TEXT")
+        changed |= await self._add_column_if_missing("items", columns, "created_by BIGINT")
+        changed |= await self._add_column_if_missing("items", columns, "created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
         return changed
 
 
@@ -9266,7 +12602,7 @@ class Database:
         # Создаем индекс для быстрого поиска по user_id
         index_exists = await self.fetchval(
             """
-            SELECT 1 FROM pg_indexes 
+            SELECT 1 FROM pg_indexes
             WHERE tablename = 'user_cards' AND indexname = 'user_cards_user_id_idx'
             """
         )
@@ -9277,7 +12613,7 @@ class Database:
         # Создаем индекс для быстрого поиска по card_id
         index_exists = await self.fetchval(
             """
-            SELECT 1 FROM pg_indexes 
+            SELECT 1 FROM pg_indexes
             WHERE tablename = 'user_cards' AND indexname = 'user_cards_card_id_idx'
             """
         )
@@ -9413,6 +12749,49 @@ class Database:
             cards.append(card_dict)
         return cards
 
+    async def create_item(
+        self,
+        name: str,
+        description: str,
+        rarity: str,
+        power: int,
+        image_file_id: str | None = None,
+        created_by: int | None = None,
+    ) -> dict[str, Any]:
+        """Создать предмет админ-каталога. Возвращает dict с item_id."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+        try:
+            item_id = await self.fetchval(
+                """
+                INSERT INTO items (name, description, rarity, power, image_file_id, created_by)
+                VALUES ($1, $2, $3, $4, $5, $6)
+                RETURNING id
+                """,
+                name,
+                description,
+                rarity,
+                int(power),
+                image_file_id,
+                created_by,
+            )
+            return {"success": True, "item_id": item_id}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def get_items_list(self) -> list[dict[str, Any]]:
+        """Получить список предметов админ-каталога."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+        rows = await self.fetch(
+            """
+            SELECT id, name, description, rarity, power, image_file_id, created_by, created_at
+            FROM items
+            ORDER BY created_at DESC
+            """
+        )
+        return [dict(row) for row in rows]
+
     async def get_cards_by_rarity(self, rarity: str) -> list[dict[str, Any]]:
         """Получить все карты указанной редкости."""
         if not self._pool:
@@ -9429,16 +12808,16 @@ class Database:
         return [dict(row) for row in rows]
 
     async def get_uni_card(self) -> dict[str, Any] | None:
-        """Получить стартовую карту Юни (rarity='start' или card_type='hero')."""
+        """Получить стартовую карту Юни по явному id."""
         if not self._pool:
             raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
         row = await self.fetchrow(
             """
             SELECT id, name, description, rarity, power, mana_cost, base_attack, base_hp, mechanics, card_type, image_file_id, created_by, created_at, mechanics_desc, simplified_levelup
             FROM cards
-            WHERE rarity = 'start' OR card_type = 'hero'
-            LIMIT 1
-            """
+            WHERE id = $1
+            """,
+            UNI_CARD_ID,
         )
         return dict(row) if row else None
 
@@ -9604,6 +12983,12 @@ class Database:
 
             return max(1, max_lvl)
         except Exception:
+            logging.getLogger(__name__).warning(
+                "get_player_deck_max_level failed for user_id=%s selected_deck_id=%s; falling back to level 1",
+                user_id,
+                selected_deck_id,
+                exc_info=True,
+            )
             return 1
 
     async def get_player_deck_avg_level(
@@ -9710,13 +13095,14 @@ class Database:
                 INSERT INTO seasons (
                     slug, name, subtitle, description, season_number, status,
                     auto_switch, preset_key, start_date, end_date, is_active,
-                    max_stars, free_track_type, pass_track_type, ultra_track_type,
+                    max_stars, stage_cost_min, stage_cost_growth, stage_cost_exponent, stage_cost_cap,
+                    free_track_type, pass_track_type, ultra_track_type,
                     pass_end_position, ultra_start_position, theme
                 )
                 SELECT
                     $1, $2, $3, $4, $5, $6,
                     $7, $8, NOW(), NOW() + INTERVAL '30 days', TRUE,
-                    $9, $10, $11, $12, $13, $14, $15::jsonb
+                    $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19::jsonb
                 WHERE NOT EXISTS (
                     SELECT 1 FROM seasons WHERE is_active = TRUE
                 )
@@ -9730,6 +13116,10 @@ class Database:
                 DEFAULT_EXTRA_PASS_SEASON["auto_switch"],
                 DEFAULT_EXTRA_PASS_SEASON["preset_key"],
                 DEFAULT_EXTRA_PASS_SEASON["max_stars"],
+                DEFAULT_EXTRA_PASS_SEASON["stage_cost_min"],
+                DEFAULT_EXTRA_PASS_SEASON["stage_cost_growth"],
+                DEFAULT_EXTRA_PASS_SEASON["stage_cost_exponent"],
+                DEFAULT_EXTRA_PASS_SEASON["stage_cost_cap"],
                 DEFAULT_EXTRA_PASS_SEASON["free_track_type"],
                 DEFAULT_EXTRA_PASS_SEASON["pass_track_type"],
                 DEFAULT_EXTRA_PASS_SEASON["ultra_track_type"],
@@ -9754,41 +13144,41 @@ class Database:
             ("glory", 300,  "keys",  1,    None,                          False),
             ("glory", 500,  "coins", 800,  None,                          False),
             ("glory", 700,  "gems",  50,   None,                          False),
-            ("glory", 1000, "gems",  150,  '{"original":"case_tier_2","case_tier":2}', False),
+            ("glory", 1000, "case",  2,    None,                          False),
             ("glory", 1500, "keys",  2,    None,                          False),
             ("glory", 2000, "coins", 1200, None,                          False),
             ("glory", 2500, "gems",  100,  None,                          False),
-            ("glory", 3000, "gems",  300,  '{"original":"case_tier_3","case_tier":3}', False),
+            ("glory", 3000, "case",  3,    None,                          False),
             ("glory", 3000, "card",  1,    '{"rarity":["common","rare"]}', False),
             ("glory", 4000, "keys",  2,    None,                          False),
             ("glory", 5000, "coins", 1500, None,                          False),
             ("glory", 6000, "gems",  150,  None,                          False),
-            ("glory", 7000, "gems",  300,  '{"original":"case_tier_3","case_tier":3}', False),
+            ("glory", 7000, "case",  3,    None,                          False),
             ("glory", 8000, "keys",  3,    None,                          False),
             ("glory", 9000, "coins", 2000, None,                          False),
             ("glory", 9500, "gems",  200,  None,                          False),
-            ("glory", 10000,"gems",  500,  '{"original":"case_tier_4","case_tier":4}', False),
+            ("glory", 10000,"case",  4,    None,                          False),
 
             # BP Free
             ("bp_free", 1,  "coins", 200,  None,                         False),
             ("bp_free", 3,  "keys",  1,    None,                         False),
             ("bp_free", 5,  "coins", 300,  None,                         False),
             ("bp_free", 8,  "gems",  50,   None,                         False),
-            ("bp_free", 10, "gems",  150,  '{"original":"case_tier_2","case_tier":2}', False),
+            ("bp_free", 10, "case",  2,    None,                         False),
             ("bp_free", 13, "coins", 400,  None,                         False),
             ("bp_free", 15, "keys",  1,    None,                         False),
             ("bp_free", 18, "coins", 500,  None,                         False),
-            ("bp_free", 20, "gems",  300,  '{"original":"case_tier_3","case_tier":3}', False),
+            ("bp_free", 20, "case",  3,    None,                         False),
             ("bp_free", 20, "gems",  100,  None,                         False),
             ("bp_free", 23, "keys",  2,    None,                         False),
             ("bp_free", 25, "coins", 600,  None,                         False),
             ("bp_free", 28, "gems",  100,  None,                         False),
-            ("bp_free", 30, "gems",  300,  '{"original":"case_tier_3","case_tier":3}', False),
+            ("bp_free", 30, "case",  3,    None,                         False),
             ("bp_free", 30, "card",  1,    '{"rarity":["common","rare"]}', False),
             ("bp_free", 33, "keys",  2,    None,                         False),
             ("bp_free", 35, "coins", 700,  None,                         False),
             ("bp_free", 38, "gems",  150,  None,                         False),
-            ("bp_free", 40, "gems",  500,  '{"original":"case_tier_4","case_tier":4}', False),
+            ("bp_free", 40, "case",  4,    None,                         False),
             ("bp_free", 43, "keys",  3,    None,                         False),
             ("bp_free", 45, "coins", 500,  None,                         False),
             ("bp_free", 45, "gems",  200,  None,                         False),
@@ -9798,30 +13188,30 @@ class Database:
             ("bp_premium", 3,  "keys",  2,    None,                                      True),
             ("bp_premium", 5,  "coins", 600,  None,                                      True),
             ("bp_premium", 8,  "gems",  100,  None,                                      True),
-            ("bp_premium", 10, "gems",  300,  '{"original":"case_tier_3","case_tier":3}', True),
+            ("bp_premium", 10, "case",  3,    None,                                      True),
             ("bp_premium", 10, "gems",  100,  None,                                      True),
             ("bp_premium", 13, "coins", 700,  None,                                      True),
             ("bp_premium", 15, "keys",  2,    None,                                      True),
             ("bp_premium", 18, "coins", 800,  None,                                      True),
-            ("bp_premium", 20, "gems",  500,  '{"original":"case_tier_4","case_tier":4}', True),
+            ("bp_premium", 20, "case",  4,    None,                                      True),
             ("bp_premium", 20, "gems",  150,  None,                                      True),
             ("bp_premium", 23, "keys",  3,    None,                                      True),
             ("bp_premium", 25, "coins", 1000, None,                                      True),
             ("bp_premium", 28, "gems",  150,  None,                                      True),
-            ("bp_premium", 30, "gems",  500,  '{"original":"case_tier_4","case_tier":4}', True),
+            ("bp_premium", 30, "case",  4,    None,                                      True),
             ("bp_premium", 30, "card",  1,    '{"rarity":["common","rare"]}',             True),
             ("bp_premium", 33, "keys",  3,    None,                                      True),
             ("bp_premium", 35, "coins", 1000, None,                                      True),
             ("bp_premium", 35, "gems",  100,  None,                                      True),
             ("bp_premium", 38, "gems",  200,  None,                                      True),
-            ("bp_premium", 40, "gems",  800,  '{"original":"case_tier_5","case_tier":5}', True),
+            ("bp_premium", 40, "case",  5,    None,                                      True),
             ("bp_premium", 43, "keys",  4,    None,                                      True),
             ("bp_premium", 45, "coins", 1000, None,                                      True),
             ("bp_premium", 45, "gems",  300,  None,                                      True),
 
             # BP Ultra
             ("bp_ultra", 41, "gems", 120, None,                                      True),
-            ("bp_ultra", 42, "gems", 500, '{"original":"case_tier_5","case_tier":5}', True),
+            ("bp_ultra", 42, "case", 5,   None,                                      True),
             ("bp_ultra", 43, "keys", 4,   None,                                      True),
             ("bp_ultra", 44, "gems", 500, None,                                      True),
             ("bp_ultra", 45, "card", 1,   '{"rarity":["common","rare"]}',            True),
@@ -10010,16 +13400,457 @@ class Database:
         """Мягкое удаление: is_active = FALSE."""
         if not self._pool:
             raise RuntimeError("База данных не подключена.")
-        await self.execute(
-            "UPDATE reward_tracks SET is_active = FALSE, updated_at = NOW() WHERE id = $1",
+        row = await self.fetchrow(
+            "UPDATE reward_tracks SET is_active = FALSE, updated_at = NOW() WHERE id = $1 RETURNING id",
             reward_id,
         )
-        return True
+        return bool(row)
+
+    def _serialize_season_reset_row(self, row: Any) -> dict[str, Any]:
+        data = dict(row)
+        return {
+            "id": data.get("id"),
+            "season_id": int(data.get("season_id") or 0),
+            "previous_season_id": data.get("previous_season_id"),
+            "trigger": data.get("trigger"),
+            "admin_user_id": data.get("admin_user_id"),
+            "reason": data.get("reason"),
+            "status": data.get("status"),
+            "processed_players": int(data.get("processed_players") or 0),
+            "total_trophies_reduced": int(data.get("total_trophies_reduced") or 0),
+            "total_keys_granted": int(data.get("total_keys_granted") or 0),
+            "total_coins_granted": int(data.get("total_coins_granted") or 0),
+            "total_stars_reset": int(data.get("total_stars_reset") or 0),
+            "created_at": data.get("created_at"),
+            "completed_at": data.get("completed_at"),
+            "updated_at": data.get("updated_at"),
+        }
+
+    async def get_season_reset_summaries(self, *, include_audit_fields: bool = False) -> dict[int, dict[str, Any]]:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        rows = await self.fetch(
+            """
+            SELECT id, season_id, previous_season_id, trigger, admin_user_id, reason,
+                   status, processed_players, total_trophies_reduced,
+                   total_keys_granted, total_coins_granted, total_stars_reset,
+                   created_at, completed_at, updated_at
+            FROM season_resets
+            ORDER BY season_id
+            """
+        )
+        summaries: dict[int, dict[str, Any]] = {}
+        for row in rows:
+            reset = self._serialize_season_reset_row(row)
+            if not include_audit_fields:
+                reset.pop("admin_user_id", None)
+                reset.pop("reason", None)
+            summaries[int(row["season_id"])] = reset
+        return summaries
+
+    async def preview_season_reset(self, season_id: int, *, sample_limit: int = 200) -> dict[str, Any]:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        season_id = int(season_id)
+        sample_limit = max(0, min(int(sample_limit or 0), 1000))
+        existing = await self.fetchrow(
+            """
+            SELECT id, season_id, previous_season_id, trigger, admin_user_id, reason,
+                   status, processed_players, total_trophies_reduced,
+                   total_keys_granted, total_coins_granted, total_stars_reset,
+                   created_at, completed_at, updated_at
+            FROM season_resets
+            WHERE season_id = $1
+            """,
+            season_id,
+        )
+        if existing and str(dict(existing).get("status")) == "completed":
+            reset = self._serialize_season_reset_row(existing)
+            return {
+                "season_id": season_id,
+                "already_completed": True,
+                "reset": reset,
+                "summary": {
+                    "players": reset["processed_players"],
+                    "trophies_reduced": reset["total_trophies_reduced"],
+                    "keys_granted": reset["total_keys_granted"],
+                    "coins_granted": reset["total_coins_granted"],
+                    "stars_reset": reset["total_stars_reset"],
+                },
+                "players": [],
+            }
+
+        summary_row = await self.fetchrow(
+            """
+            WITH real_users AS (
+                SELECT
+                    user_id,
+                    GREATEST(0, COALESCE(trophies, 0))::integer AS old_trophies,
+                    GREATEST(0, COALESCE(stars, 0))::integer AS old_stars
+                FROM users
+                WHERE COALESCE(is_bot, FALSE) = FALSE
+            ),
+            computed AS (
+                SELECT
+                    old_trophies,
+                    old_stars,
+                    CASE
+                        WHEN old_trophies >= 9000 THEN 9000
+                        WHEN old_trophies >= 7500 THEN 7500
+                        WHEN old_trophies >= 6000 THEN 6000
+                        WHEN old_trophies >= 4500 THEN 4500
+                        WHEN old_trophies >= 3000 THEN 3000
+                        WHEN old_trophies >= 2000 THEN 2000
+                        WHEN old_trophies >= 1200 THEN 1200
+                        WHEN old_trophies >= 600 THEN 600
+                        WHEN old_trophies >= 300 THEN 300
+                        ELSE 0
+                    END AS boundary
+                FROM real_users
+            ),
+            rewards AS (
+                SELECT
+                    old_trophies,
+                    old_stars,
+                    boundary,
+                    FLOOR(GREATEST(0, old_trophies - boundary)::numeric / 100)::integer AS bonus_units
+                FROM computed
+            )
+            SELECT
+                COUNT(*)::integer AS players,
+                COALESCE(SUM(GREATEST(0, old_trophies - boundary)), 0)::integer AS trophies_reduced,
+                COALESCE(SUM(bonus_units), 0)::integer AS keys_granted,
+                COALESCE(SUM(bonus_units * 200), 0)::integer AS coins_granted,
+                COALESCE(SUM(old_stars), 0)::integer AS stars_reset
+            FROM rewards
+            """
+        )
+        summary_data = dict(summary_row) if summary_row else {}
+        summary = {
+            "players": int(summary_data.get("players") or 0),
+            "trophies_reduced": int(summary_data.get("trophies_reduced") or 0),
+            "keys_granted": int(summary_data.get("keys_granted") or 0),
+            "coins_granted": int(summary_data.get("coins_granted") or 0),
+            "stars_reset": int(summary_data.get("stars_reset") or 0),
+        }
+        rows = await self.fetch(
+            """
+            SELECT user_id, trophies, stars, COALESCE(is_bot, FALSE) AS is_bot
+            FROM users
+            WHERE COALESCE(is_bot, FALSE) = FALSE
+            ORDER BY user_id
+            LIMIT $1
+            """,
+            sample_limit,
+        )
+        players = [_build_season_reset_player_result(row) for row in rows if not bool(dict(row).get("is_bot"))]
+        return {
+            "season_id": season_id,
+            "already_completed": False,
+            "summary": summary,
+            "players": players,
+            "players_limit": sample_limit,
+            "players_truncated": summary["players"] > len(players),
+        }
+
+    async def _execute_season_reset_on_conn(
+        self,
+        conn: Any,
+        *,
+        season_id: int,
+        previous_season_id: int | None = None,
+        trigger: str = "admin",
+        admin_user_id: int | None = None,
+        reason: str | None = None,
+        require_active: bool = False,
+    ) -> dict[str, Any]:
+        season_id = int(season_id)
+        await conn.fetchval("SELECT pg_advisory_xact_lock(hashtext('extraarena_season_reset'))")
+        if require_active:
+            active_row = await conn.fetchrow(
+                """
+                SELECT id
+                FROM seasons
+                WHERE id = $1 AND is_active = TRUE
+                FOR UPDATE
+                """,
+                season_id,
+            )
+            if not active_row:
+                return {"error": "season_reset_requires_active_season", "season_id": season_id}
+        existing = await conn.fetchrow(
+            """
+            SELECT id, status
+            FROM season_resets
+            WHERE season_id = $1
+            FOR UPDATE
+            """,
+            season_id,
+        )
+        if existing and str(existing["status"]) == "completed":
+            return {"error": "season_reset_already_completed", "season_id": season_id}
+        if existing:
+            partial_results = await conn.fetchval(
+                """
+                SELECT COUNT(*)
+                FROM season_reset_results
+                WHERE reset_id = $1 OR season_id = $2
+                """,
+                int(existing["id"]),
+                season_id,
+            )
+            if int(partial_results or 0) > 0:
+                return {"error": "season_reset_in_progress", "season_id": season_id}
+
+        if existing:
+            reset_id = int(existing["id"])
+        else:
+            reset_row = await conn.fetchrow(
+                """
+                INSERT INTO season_resets (
+                    season_id, previous_season_id, trigger, admin_user_id,
+                    reason, status
+                )
+                VALUES ($1, $2, $3, $4, $5, 'running')
+                RETURNING id
+                """,
+                season_id,
+                previous_season_id,
+                str(trigger or "admin"),
+                admin_user_id,
+                reason,
+            )
+            reset_id = int(reset_row["id"])
+
+        user_rows = await conn.fetch(
+            """
+            SELECT user_id, trophies, stars, COALESCE(is_bot, FALSE) AS is_bot
+            FROM users
+            WHERE COALESCE(is_bot, FALSE) = FALSE
+            ORDER BY user_id
+            FOR UPDATE
+            """
+        )
+        players = [_build_season_reset_player_result(row) for row in user_rows if not bool(dict(row).get("is_bot"))]
+        summary = _build_season_reset_summary(players)
+        mail_subject = "Новый сезон ExtraArena"
+
+        for player in players:
+            user_id = player["user_id"]
+            await conn.execute(
+                """
+                UPDATE users
+                SET trophies = $2,
+                    league = $3,
+                    stars = 0,
+                    keys = GREATEST(0, COALESCE(keys, 0) + $4),
+                    coins = GREATEST(0, COALESCE(coins, 0) + $5),
+                    updated_at = NOW()
+                WHERE user_id = $1
+                """,
+                user_id,
+                player["new_trophies"],
+                player["new_league"],
+                player["granted_keys"],
+                player["granted_coins"],
+            )
+            await conn.execute(
+                """
+                INSERT INTO season_reset_results (
+                    reset_id, season_id, user_id, old_trophies, new_trophies,
+                    old_stars, excess_trophies, granted_keys, granted_coins
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                ON CONFLICT (season_id, user_id) DO NOTHING
+                """,
+                reset_id,
+                season_id,
+                user_id,
+                player["old_trophies"],
+                player["new_trophies"],
+                player["old_stars"],
+                player["excess_trophies"],
+                player["granted_keys"],
+                player["granted_coins"],
+            )
+            reset_meta = json.dumps({
+                "season_id": season_id,
+                "reset_id": reset_id,
+                "old_trophies": player["old_trophies"],
+                "new_trophies": player["new_trophies"],
+            }, ensure_ascii=False)
+            await conn.execute(
+                """
+                INSERT INTO economy_events (user_id, event_type, resource, amount, source, metadata)
+                VALUES ($1, 'reset', 'trophies', $2, 'season_reset', $3::jsonb)
+                """,
+                user_id,
+                max(0, player["old_trophies"] - player["new_trophies"]),
+                reset_meta,
+            )
+            if player["granted_keys"] > 0:
+                await conn.execute(
+                    """
+                    INSERT INTO economy_events (user_id, event_type, resource, amount, source, metadata)
+                    VALUES ($1, 'earn', 'keys', $2, 'season_reset', $3::jsonb)
+                    """,
+                    user_id,
+                    player["granted_keys"],
+                    reset_meta,
+                )
+            if player["granted_coins"] > 0:
+                await conn.execute(
+                    """
+                    INSERT INTO economy_events (user_id, event_type, resource, amount, source, metadata)
+                    VALUES ($1, 'earn', 'coins', $2, 'season_reset', $3::jsonb)
+                    """,
+                    user_id,
+                    player["granted_coins"],
+                    reset_meta,
+                )
+            mail_text = (
+                "Сезон завершен. Трофеи сброшены до границы вашей лиги, "
+                f"прогресс ExtraPass обнулен. Компенсация: {player['granted_keys']} ключ(ей) "
+                f"и {player['granted_coins']} монет."
+            )
+            await conn.execute(
+                """
+                INSERT INTO user_mail (user_id, sender, subject, text, category, icon, attachments)
+                VALUES ($1, 'Система ExtraArena', $2, $3, 'system', '🏆', $4::jsonb)
+                """,
+                user_id,
+                mail_subject,
+                mail_text,
+                json.dumps({
+                    "season_id": season_id,
+                    "reset_id": reset_id,
+                    "old_trophies": player["old_trophies"],
+                    "new_trophies": player["new_trophies"],
+                    "granted_keys": player["granted_keys"],
+                    "granted_coins": player["granted_coins"],
+                }, ensure_ascii=False),
+            )
+
+        row = await conn.fetchrow(
+            """
+            UPDATE season_resets
+            SET status = 'completed',
+                processed_players = $2,
+                total_trophies_reduced = $3,
+                total_keys_granted = $4,
+                total_coins_granted = $5,
+                total_stars_reset = $6,
+                completed_at = NOW(),
+                updated_at = NOW()
+            WHERE id = $1
+            RETURNING id, season_id, previous_season_id, trigger, admin_user_id,
+                      reason, status, processed_players, total_trophies_reduced,
+                      total_keys_granted, total_coins_granted, total_stars_reset,
+                      created_at, completed_at, updated_at
+            """,
+            reset_id,
+            summary["players"],
+            summary["trophies_reduced"],
+            summary["keys_granted"],
+            summary["coins_granted"],
+            summary["stars_reset"],
+        )
+        return self._serialize_season_reset_row(row)
+
+    async def execute_season_reset(
+        self,
+        *,
+        season_id: int,
+        previous_season_id: int | None = None,
+        trigger: str = "admin",
+        admin_user_id: int | None = None,
+        reason: str | None = None,
+        require_active: bool = False,
+    ) -> dict[str, Any]:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        if hasattr(self._pool, "acquire"):
+            async with self._pool.acquire() as conn:
+                async with conn.transaction():
+                    return await self._execute_season_reset_on_conn(
+                        conn,
+                        season_id=season_id,
+                        previous_season_id=previous_season_id,
+                        trigger=trigger,
+                        admin_user_id=admin_user_id,
+                        reason=reason,
+                        require_active=require_active,
+                    )
+
+        raise RuntimeError("season_reset_requires_transactional_pool")
 
     async def activate_due_season(self) -> dict[str, Any] | None:
         """Активировать запланированный сезон, если его старт уже наступил."""
         if not self._pool:
             raise RuntimeError("База данных не подключена.")
+        if hasattr(self._pool, "acquire"):
+            async with self._pool.acquire() as conn:
+                async with conn.transaction():
+                    await conn.fetchval("SELECT pg_advisory_xact_lock(hashtext('extra_pass_season_activation'))")
+                    current_active_id = await conn.fetchval(
+                        "SELECT id FROM seasons WHERE is_active = TRUE ORDER BY id DESC LIMIT 1"
+                    )
+                    candidate = await conn.fetchrow(
+                        """
+                        SELECT id
+                        FROM seasons
+                        WHERE auto_switch = TRUE
+                          AND start_date IS NOT NULL
+                          AND start_date <= NOW()
+                          AND (end_date IS NULL OR end_date > NOW())
+                          AND status IN ('scheduled', 'active')
+                        ORDER BY start_date DESC, season_number DESC, id DESC
+                        LIMIT 1
+                        """
+                    )
+                    if not candidate:
+                        return None
+
+                    candidate_id = int(candidate["id"])
+                    season_changed = int(current_active_id or 0) != candidate_id
+                    await conn.execute(
+                        """
+                        UPDATE seasons
+                        SET is_active = CASE WHEN id = $1 THEN TRUE ELSE FALSE END,
+                            status = CASE WHEN id = $1 THEN 'active' ELSE status END,
+                            updated_at = NOW()
+                        WHERE is_active = TRUE OR id = $1
+                        """,
+                        candidate_id,
+                    )
+                    if season_changed:
+                        await self._execute_season_reset_on_conn(
+                            conn,
+                            season_id=candidate_id,
+                            previous_season_id=int(current_active_id) if current_active_id else None,
+                            trigger="auto",
+                            admin_user_id=None,
+                            reason="automatic_season_activation",
+                            require_active=True,
+                        )
+                    await conn.execute(
+                        """
+                        UPDATE seasons
+                        SET status = 'archived',
+                            is_active = FALSE,
+                            updated_at = NOW()
+                        WHERE id <> $1
+                          AND end_date IS NOT NULL
+                          AND end_date <= NOW()
+                          AND status IN ('active', 'scheduled')
+                        """,
+                        candidate_id,
+                    )
+            return await self.get_season_by_id(candidate_id)
+
+        current_active_id = await self.fetchval(
+            "SELECT id FROM seasons WHERE is_active = TRUE ORDER BY id DESC LIMIT 1"
+        )
         candidate = await self.fetchrow(
             """
             SELECT id
@@ -10037,6 +13868,7 @@ class Database:
             return None
 
         candidate_id = int(candidate["id"])
+        season_changed = int(current_active_id or 0) != candidate_id
         await self.execute(
             """
             UPDATE seasons
@@ -10047,6 +13879,15 @@ class Database:
             """,
             candidate_id,
         )
+        if season_changed:
+            await self.execute_season_reset(
+                season_id=candidate_id,
+                previous_season_id=int(current_active_id) if current_active_id else None,
+                trigger="auto",
+                admin_user_id=None,
+                reason="automatic_season_activation",
+                require_active=True,
+            )
         await self.execute(
             """
             UPDATE seasons
@@ -10071,7 +13912,8 @@ class Database:
             """
             SELECT id, slug, name, subtitle, description, season_number, status,
                    auto_switch, preset_key, start_date, end_date, is_active,
-                   max_stars, free_track_type, pass_track_type, ultra_track_type,
+                   max_stars, stage_cost_min, stage_cost_growth, stage_cost_exponent, stage_cost_cap,
+                   free_track_type, pass_track_type, ultra_track_type,
                    pass_end_position, ultra_start_position, theme, created_at, updated_at
             FROM seasons
             WHERE is_active = TRUE
@@ -10089,7 +13931,8 @@ class Database:
             """
             SELECT id, slug, name, subtitle, description, season_number, status,
                    auto_switch, preset_key, start_date, end_date, is_active,
-                   max_stars, free_track_type, pass_track_type, ultra_track_type,
+                   max_stars, stage_cost_min, stage_cost_growth, stage_cost_exponent, stage_cost_cap,
+                   free_track_type, pass_track_type, ultra_track_type,
                    pass_end_position, ultra_start_position, theme, created_at, updated_at
             FROM seasons
             WHERE id = $1
@@ -10107,7 +13950,8 @@ class Database:
             """
             SELECT id, slug, name, subtitle, description, season_number, status,
                    auto_switch, preset_key, start_date, end_date, is_active,
-                   max_stars, free_track_type, pass_track_type, ultra_track_type,
+                   max_stars, stage_cost_min, stage_cost_growth, stage_cost_exponent, stage_cost_cap,
+                   free_track_type, pass_track_type, ultra_track_type,
                    pass_end_position, ultra_start_position, theme, created_at, updated_at
             FROM seasons
             ORDER BY start_date NULLS LAST, season_number, id
@@ -10141,10 +13985,16 @@ class Database:
                 params.append(str(fields[key]))
                 idx += 1
 
-        for key in ("season_number", "max_stars", "pass_end_position", "ultra_start_position"):
+        for key in ("season_number", "max_stars", "pass_end_position", "ultra_start_position", "stage_cost_min", "stage_cost_cap"):
             if key in fields and fields[key] is not None:
                 updates.append(f"{key} = ${idx}")
                 params.append(int(fields[key]))
+                idx += 1
+
+        for key in ("stage_cost_growth", "stage_cost_exponent"):
+            if key in fields and fields[key] is not None:
+                updates.append(f"{key} = ${idx}")
+                params.append(float(fields[key]))
                 idx += 1
 
         for key in ("start_date", "end_date"):
@@ -10180,7 +14030,8 @@ class Database:
             WHERE id = ${idx}
             RETURNING id, slug, name, subtitle, description, season_number, status,
                       auto_switch, preset_key, start_date, end_date, is_active,
-                      max_stars, free_track_type, pass_track_type, ultra_track_type,
+                      max_stars, stage_cost_min, stage_cost_growth, stage_cost_exponent, stage_cost_cap,
+                      free_track_type, pass_track_type, ultra_track_type,
                       pass_end_position, ultra_start_position, theme, created_at, updated_at
             """,
             *params,
@@ -10193,9 +14044,17 @@ class Database:
             raise RuntimeError("База данных не подключена.")
         import json as _json
 
+        admin_user_id = fields.pop("admin_user_id", None)
         existing = await self.get_season_by_id(season_id)
         if not existing:
             return {"error": "not_found"}
+        current_active_id = await self.fetchval(
+            "SELECT id FROM seasons WHERE is_active = TRUE ORDER BY id DESC LIMIT 1"
+        )
+        activating_new_season = (
+            (fields.get("is_active") is True or fields.get("status") == "active")
+            and int(current_active_id or 0) != int(season_id)
+        )
 
         updates: list[str] = []
         params: list[Any] = []
@@ -10210,10 +14069,16 @@ class Database:
                 params.append(str(fields[key]))
                 idx += 1
 
-        for key in ("season_number", "max_stars", "pass_end_position", "ultra_start_position"):
+        for key in ("season_number", "max_stars", "pass_end_position", "ultra_start_position", "stage_cost_min", "stage_cost_cap"):
             if key in fields and fields[key] is not None:
                 updates.append(f"{key} = ${idx}")
                 params.append(int(fields[key]))
+                idx += 1
+
+        for key in ("stage_cost_growth", "stage_cost_exponent"):
+            if key in fields and fields[key] is not None:
+                updates.append(f"{key} = ${idx}")
+                params.append(float(fields[key]))
                 idx += 1
 
         for key in ("start_date", "end_date"):
@@ -10261,11 +14126,21 @@ class Database:
             WHERE id = ${idx}
             RETURNING id, slug, name, subtitle, description, season_number, status,
                       auto_switch, preset_key, start_date, end_date, is_active,
-                      max_stars, free_track_type, pass_track_type, ultra_track_type,
+                      max_stars, stage_cost_min, stage_cost_growth, stage_cost_exponent, stage_cost_cap,
+                      free_track_type, pass_track_type, ultra_track_type,
                       pass_end_position, ultra_start_position, theme, created_at, updated_at
             """,
             *params,
         )
+        if row and activating_new_season:
+            await self.execute_season_reset(
+                season_id=season_id,
+                previous_season_id=int(current_active_id) if current_active_id else None,
+                trigger="admin",
+                admin_user_id=int(admin_user_id) if admin_user_id is not None else None,
+                reason="manual_season_activation",
+                require_active=True,
+            )
         return dict(row) if row else {"error": "update_failed"}
 
     async def create_season_draft(self, preset_key: str = "blank") -> dict[str, Any]:
@@ -10292,18 +14167,20 @@ class Database:
             INSERT INTO seasons (
                 slug, name, subtitle, description, season_number, status,
                 auto_switch, preset_key, start_date, end_date, is_active,
-                max_stars, free_track_type, pass_track_type, ultra_track_type,
+                max_stars, stage_cost_min, stage_cost_growth, stage_cost_exponent, stage_cost_cap,
+                free_track_type, pass_track_type, ultra_track_type,
                 pass_end_position, ultra_start_position, theme
             )
             VALUES (
                 $1, $2, $3, $4, $5, 'draft',
                 TRUE, $6, $7, $8, FALSE,
-                45, $9, $10, $11,
+                45, 3, 0.07, 1.5, 25, $9, $10, $11,
                 40, 41, '{}'::jsonb
             )
             RETURNING id, slug, name, subtitle, description, season_number, status,
                       auto_switch, preset_key, start_date, end_date, is_active,
-                      max_stars, free_track_type, pass_track_type, ultra_track_type,
+                      max_stars, stage_cost_min, stage_cost_growth, stage_cost_exponent, stage_cost_cap,
+                      free_track_type, pass_track_type, ultra_track_type,
                       pass_end_position, ultra_start_position, theme, created_at, updated_at
             """,
             f"season-{season_number}",
@@ -10372,6 +14249,56 @@ class Database:
         except Exception:
             return 0
 
+    async def replace_reward_tracks(
+        self,
+        track_types: list[str],
+        rows: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Atomically replace reward rows for selected track types."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        import json as _json
+
+        created: list[dict[str, Any]] = []
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                if track_types:
+                    await conn.execute(
+                        """
+                        UPDATE reward_tracks
+                        SET is_active = FALSE,
+                            updated_at = NOW()
+                        WHERE track_type = ANY($1::text[])
+                        """,
+                        list(track_types),
+                    )
+                for row in rows:
+                    inserted = await conn.fetchrow(
+                        """
+                        INSERT INTO reward_tracks (
+                            track_type, position, reward_type, reward_amount,
+                            reward_meta, extra_pass_required
+                        )
+                        VALUES ($1, $2, $3, $4, $5::jsonb, $6)
+                        ON CONFLICT (track_type, position, reward_type) DO UPDATE
+                        SET reward_amount = EXCLUDED.reward_amount,
+                            reward_meta = EXCLUDED.reward_meta,
+                            extra_pass_required = EXCLUDED.extra_pass_required,
+                            is_active = TRUE,
+                            updated_at = NOW()
+                        RETURNING id, track_type, position, reward_type, reward_amount,
+                                  reward_meta, extra_pass_required, is_active
+                        """,
+                        str(row["track_type"]),
+                        int(row["position"]),
+                        str(row["reward_type"]),
+                        int(row["reward_amount"]),
+                        _json.dumps(row.get("reward_meta")) if row.get("reward_meta") else None,
+                        bool(row.get("extra_pass_required", False)),
+                    )
+                    created.append(dict(inserted))
+        return created
+
     async def get_reward_track_counts_by_type(self, track_types: list[str] | None = None) -> dict[str, int]:
         """Посчитать активные награды по track_type."""
         if not self._pool:
@@ -10412,17 +14339,339 @@ class Database:
         if not self._pool:
             raise RuntimeError("База данных не подключена.")
         try:
-            await self.execute(
+            row = await self.fetchrow(
                 """
                 INSERT INTO claimed_rewards (user_id, track_type, position)
                 VALUES ($1, $2, $3)
                 ON CONFLICT (user_id, track_type, position) DO NOTHING
+                RETURNING id
                 """,
                 user_id, track_type, position,
             )
-            return True
+            return bool(row)
         except Exception:
             return False
+
+    async def claim_reward_entries_transaction(
+        self,
+        *,
+        user_id: int,
+        track_type: str,
+        position: int,
+        entries: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Atomically mark a reward tier claimed and grant all supported rewards."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+
+        granted: list[dict[str, Any]] = []
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                normalized_entries: list[dict[str, Any]] = []
+                for entry in entries:
+                    reward_type = str(entry.get("reward_type") or "")
+                    try:
+                        reward_amount = int(entry.get("reward_amount") or 0)
+                    except (TypeError, ValueError):
+                        return {"success": False, "error": "invalid_reward_amount", "message": "Награда временно недоступна из-за настройки сезона.", "granted": []}
+                    reward_meta = entry.get("reward_meta")
+                    if isinstance(reward_meta, str) and reward_meta.strip():
+                        try:
+                            reward_meta = json.loads(reward_meta)
+                        except Exception:
+                            return {"success": False, "error": "invalid_reward_meta", "message": "Награда временно недоступна из-за настройки сезона.", "granted": []}
+                    elif reward_meta in ("", None):
+                        reward_meta = None
+                    if reward_type not in {"coins", "gems", "keys", "card", "specific_card", "case"}:
+                        return {"success": False, "error": f"unsupported_reward_type:{reward_type}", "message": "Этот тип награды пока не поддерживается.", "granted": []}
+                    if reward_type in {"coins", "gems", "keys"} and reward_amount <= 0:
+                        return {"success": False, "error": "invalid_reward_amount", "message": "Количество награды должно быть больше нуля.", "granted": []}
+                    if reward_type == "case" and not 1 <= reward_amount <= 5:
+                        return {"success": False, "error": "invalid_case_tier", "message": "Кейс должен быть от T1 до T5.", "granted": []}
+                    if reward_type in {"card", "specific_card"} and reward_amount != 1:
+                        return {"success": False, "error": "invalid_card_reward_amount", "message": "Карточная награда выдается по одной карте.", "granted": []}
+                    if reward_type == "specific_card":
+                        card_id = None
+                        if isinstance(reward_meta, dict):
+                            try:
+                                card_id = int(reward_meta.get("card_id") or reward_meta.get("id") or 0)
+                            except (TypeError, ValueError):
+                                card_id = None
+                        if not card_id or card_id <= 0:
+                            return {"success": False, "error": "specific_card_id_required", "message": "Для конкретной карты укажите card_id.", "granted": []}
+                        card = await conn.fetchrow(
+                            "SELECT id, name, card_type FROM cards WHERE id = $1",
+                            card_id,
+                        )
+                        if not card:
+                            return {"success": False, "error": "specific_card_not_found", "message": "Карта для награды не найдена.", "granted": []}
+                        if str(card["card_type"] or "warrior") != "warrior":
+                            return {"success": False, "error": "specific_card_must_be_warrior", "message": "В ExtraPass можно выдавать только карты бойцов.", "granted": []}
+                        reward_meta = dict(reward_meta or {})
+                        reward_meta["card_id"] = card_id
+                        reward_meta["card_name"] = card["name"] or ""
+                    normalized_entries.append({
+                        "reward_type": reward_type,
+                        "reward_amount": reward_amount,
+                        "reward_meta": reward_meta,
+                    })
+
+                claim_row = await conn.fetchrow(
+                    """
+                    INSERT INTO claimed_rewards (user_id, track_type, position)
+                    VALUES ($1, $2, $3)
+                    ON CONFLICT (user_id, track_type, position) DO NOTHING
+                    RETURNING id
+                    """,
+                    user_id, track_type, position,
+                )
+                if not claim_row:
+                    return {"success": False, "error": "already_claimed", "granted": []}
+
+                for entry in normalized_entries:
+                    reward_type = str(entry.get("reward_type") or "")
+                    reward_amount = int(entry.get("reward_amount") or 0)
+                    reward_meta = entry.get("reward_meta")
+                    if reward_type == "coins":
+                        await conn.execute(
+                            """
+                            UPDATE users
+                            SET coins = GREATEST(0, COALESCE(coins, 0) + $1),
+                                updated_at = NOW()
+                            WHERE user_id = $2
+                            """,
+                            reward_amount, user_id,
+                        )
+                        granted.append({"reward_type": "coins", "reward_amount": reward_amount})
+                        await conn.execute(
+                            """
+                            INSERT INTO economy_events (user_id, event_type, resource, amount, source, metadata)
+                            VALUES ($1, 'earn', 'coins', $2, 'reward_track', $3::jsonb)
+                            """,
+                            user_id, reward_amount,
+                            json.dumps({"track_type": track_type, "position": position}, ensure_ascii=False),
+                        )
+                    elif reward_type == "gems":
+                        await conn.execute(
+                            """
+                            UPDATE users
+                            SET gems = GREATEST(0, COALESCE(gems, 0) + $1),
+                                updated_at = NOW()
+                            WHERE user_id = $2
+                            """,
+                            reward_amount, user_id,
+                        )
+                        granted.append({"reward_type": "gems", "reward_amount": reward_amount})
+                        await conn.execute(
+                            """
+                            INSERT INTO economy_events (user_id, event_type, resource, amount, source, metadata)
+                            VALUES ($1, 'earn', 'gems', $2, 'reward_track', $3::jsonb)
+                            """,
+                            user_id, reward_amount,
+                            json.dumps({"track_type": track_type, "position": position}, ensure_ascii=False),
+                        )
+                    elif reward_type == "keys":
+                        await conn.execute(
+                            """
+                            UPDATE users
+                            SET keys = GREATEST(0, COALESCE(keys, 0) + $1),
+                                updated_at = NOW()
+                            WHERE user_id = $2
+                            """,
+                            reward_amount, user_id,
+                        )
+                        granted.append({"reward_type": "keys", "reward_amount": reward_amount})
+                        await conn.execute(
+                            """
+                            INSERT INTO economy_events (user_id, event_type, resource, amount, source, metadata)
+                            VALUES ($1, 'earn', 'keys', $2, 'reward_track', $3::jsonb)
+                            """,
+                            user_id, reward_amount,
+                            json.dumps({"track_type": track_type, "position": position}, ensure_ascii=False),
+                            )
+                    elif reward_type == "card":
+                        rarities = ["common", "rare"]
+                        if isinstance(reward_meta, dict) and reward_meta.get("rarity"):
+                            raw_rarities = reward_meta.get("rarity")
+                            rarities = raw_rarities if isinstance(raw_rarities, list) else [str(raw_rarities)]
+                        card = await conn.fetchrow(
+                            """
+                            SELECT id, name
+                            FROM cards
+                            WHERE rarity = ANY($1::text[])
+                              AND card_type = 'warrior'
+                              AND NOT EXISTS (
+                                  SELECT 1
+                                  FROM user_cards
+                                  WHERE user_cards.user_id = $2
+                                    AND user_cards.card_id = cards.id
+                              )
+                            ORDER BY RANDOM()
+                            LIMIT 1
+                            """,
+                            [str(rarity) for rarity in rarities],
+                            user_id,
+                        )
+                        if card:
+                            inserted_card = await conn.fetchrow(
+                                """
+                                INSERT INTO user_cards (user_id, card_id, level, particles)
+                                VALUES ($1, $2, 1, 0)
+                                ON CONFLICT (user_id, card_id) DO NOTHING
+                                RETURNING card_id
+                                """,
+                                user_id, int(card["id"]),
+                            )
+                            if inserted_card:
+                                granted.append({
+                                    "reward_type": "card",
+                                    "reward_amount": 1,
+                                    "card_id": int(card["id"]),
+                                    "card_name": card["name"] or "",
+                                })
+                                await conn.execute(
+                                    """
+                                    INSERT INTO economy_events (user_id, event_type, resource, amount, source, metadata)
+                                    VALUES ($1, 'earn', 'card', 1, 'reward_track', $2::jsonb)
+                                    """,
+                                    user_id,
+                                    json.dumps({
+                                        "track_type": track_type,
+                                        "position": position,
+                                        "card_id": int(card["id"]),
+                                        "card_name": card["name"],
+                                    }, ensure_ascii=False),
+                                )
+                            else:
+                                card = None
+                        if not card:
+                            fallback_coins = 100
+                            await conn.execute(
+                                """
+                                UPDATE users
+                                SET coins = GREATEST(0, COALESCE(coins, 0) + $1),
+                                    updated_at = NOW()
+                                WHERE user_id = $2
+                                """,
+                                fallback_coins, user_id,
+                            )
+                            granted.append({
+                                "reward_type": "coins",
+                                "reward_amount": fallback_coins,
+                                "fallback_for": "card",
+                            })
+                            await conn.execute(
+                                """
+                                INSERT INTO economy_events (user_id, event_type, resource, amount, source, metadata)
+                                VALUES ($1, 'earn', 'coins', $2, 'reward_track', $3::jsonb)
+                                """,
+                                user_id, fallback_coins,
+                                json.dumps({
+                                    "track_type": track_type,
+                                    "position": position,
+                                    "fallback_for": "card",
+                                    }, ensure_ascii=False),
+                            )
+                    elif reward_type == "specific_card":
+                        card_id = int((reward_meta or {}).get("card_id") or 0)
+                        card_name = str((reward_meta or {}).get("card_name") or "")
+                        inserted_card = await conn.fetchrow(
+                            """
+                            INSERT INTO user_cards (user_id, card_id, level, particles)
+                            VALUES ($1, $2, 1, 0)
+                            ON CONFLICT (user_id, card_id) DO NOTHING
+                            RETURNING card_id
+                            """,
+                            user_id,
+                            card_id,
+                        )
+                        if inserted_card:
+                            granted.append({
+                                "reward_type": "specific_card",
+                                "reward_amount": 1,
+                                "card_id": card_id,
+                                "card_name": card_name,
+                            })
+                            await conn.execute(
+                                """
+                                INSERT INTO economy_events (user_id, event_type, resource, amount, source, metadata)
+                                VALUES ($1, 'earn', 'card', 1, 'reward_track', $2::jsonb)
+                                """,
+                                user_id,
+                                json.dumps({
+                                    "track_type": track_type,
+                                    "position": position,
+                                    "card_id": card_id,
+                                    "card_name": card_name,
+                                    "reward_type": "specific_card",
+                                }, ensure_ascii=False),
+                            )
+                        else:
+                            fallback_coins = 100
+                            await conn.execute(
+                                """
+                                UPDATE users
+                                SET coins = GREATEST(0, COALESCE(coins, 0) + $1),
+                                    updated_at = NOW()
+                                WHERE user_id = $2
+                                """,
+                                fallback_coins,
+                                user_id,
+                            )
+                            granted.append({
+                                "reward_type": "coins",
+                                "reward_amount": fallback_coins,
+                                "fallback_for": "specific_card",
+                                "card_id": card_id,
+                            })
+                            await conn.execute(
+                                """
+                                INSERT INTO economy_events (user_id, event_type, resource, amount, source, metadata)
+                                VALUES ($1, 'earn', 'coins', $2, 'reward_track', $3::jsonb)
+                                """,
+                                user_id,
+                                fallback_coins,
+                                json.dumps({
+                                    "track_type": track_type,
+                                    "position": position,
+                                    "fallback_for": "specific_card",
+                                    "card_id": card_id,
+                                }, ensure_ascii=False),
+                            )
+                    elif reward_type == "case":
+                        case_tier = max(1, min(5, reward_amount or 1))
+                        case_row = await conn.fetchrow(
+                            """
+                            INSERT INTO user_cases (user_id, case_id, tier, status)
+                            VALUES ($1, $2, $3, 'pending')
+                            RETURNING id
+                            """,
+                            user_id, case_tier, case_tier,
+                        )
+                        user_case_id = int(case_row["id"]) if case_row else None
+                        granted.append({
+                            "reward_type": "case",
+                            "reward_amount": case_tier,
+                            "case_tier": case_tier,
+                            "user_case_id": user_case_id,
+                        })
+                        await conn.execute(
+                            """
+                            INSERT INTO economy_events (user_id, event_type, resource, amount, source, metadata)
+                            VALUES ($1, 'earn', 'case', 1, 'reward_track', $2::jsonb)
+                            """,
+                            user_id,
+                            json.dumps({
+                                    "track_type": track_type,
+                                    "position": position,
+                                    "case_tier": case_tier,
+                                    "user_case_id": user_case_id,
+                                }, ensure_ascii=False),
+                        )
+                    else:
+                        raise ValueError(f"unsupported_reward_type:{reward_type}")
+
+        return {"success": True, "granted": granted}
 
     async def update_user_stars(self, user_id: int, delta: int) -> int:
         """Обновить звёзды пользователя. Возвращает новое значение."""
@@ -10579,7 +14828,7 @@ class Database:
             return {"success": False, "error": str(e)}
 
     async def grant_start_cards(self, user_id: int) -> dict[str, Any]:
-        """Выдать игроку все карты редкости start без создания дубликатов."""
+        """Выдать игроку стартовый набор карт без создания дубликатов."""
         if not self._pool:
             raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
 
@@ -10589,11 +14838,12 @@ class Database:
                 INSERT INTO user_cards (user_id, card_id, level, particles)
                 SELECT $1, id, 1, 0
                 FROM cards
-                WHERE rarity = 'start'
+                WHERE rarity = 'start' OR id = ANY($2::bigint[])
                 ON CONFLICT (user_id, card_id) DO NOTHING
                 RETURNING card_id
                 """,
                 user_id,
+                STARTER_DECK_CARD_IDS,
             )
             return {"success": True, "added": len(inserted)}
         except Exception as e:
@@ -10645,16 +14895,16 @@ class Database:
 
     def calculate_upgrade_particles(self, rarity: str, level: int) -> int:
         """Рассчитать необходимое количество частиц для улучшения карты.
-        
+
         Args:
             rarity: Редкость карты (common, rare, start, superrare, epic, legendary, mythic, divine, limited)
             level: Текущий уровень карты (1-9, переход на level+1)
-            
+
         Returns:
             Количество частиц, необходимое для улучшения до следующего уровня
         """
         import math
-        
+
         # Базовые значения частиц для каждого перехода уровня (для Обычной карты)
         base_particles_by_level = {
             1: 5,    # 1 → 2
@@ -10667,7 +14917,7 @@ class Database:
             8: 640,  # 8 → 9
             9: 2500  # 9 → 10 (ценовой обрыв)
         }
-        
+
         # Множители частиц по редкостям
         rarity_multipliers = {
             "common": 1.0,
@@ -10680,30 +14930,30 @@ class Database:
             "divine": 3.0,
             "limited": 3.5
         }
-        
+
         # Получаем базовое значение для текущего уровня
         base_particles = base_particles_by_level.get(level, 5)
-        
+
         # Получаем множитель редкости
         rarity_mult = rarity_multipliers.get(rarity, 1.0)
-        
+
         # Вычисляем финальное количество частиц (округление вверх)
         required_particles = math.ceil(base_particles * rarity_mult)
-        
+
         return int(required_particles)
 
     def calculate_upgrade_coins(self, rarity: str, level: int) -> int:
         """Рассчитать необходимое количество монет для улучшения карты.
-        
+
         Args:
             rarity: Редкость карты (common, rare, start, superrare, epic, legendary, mythic, divine, limited)
             level: Текущий уровень карты (1-9, переход на level+1)
-            
+
         Returns:
             Количество монет, необходимое для улучшения до следующего уровня
         """
         import math
-        
+
         # Базовые значения монет для каждого перехода уровня (для Обычной карты)
         base_coins_by_level = {
             1: 50,      # 1 → 2
@@ -10716,7 +14966,7 @@ class Database:
             8: 13000,   # 8 → 9
             9: 40000    # 9 → 10 (ценовой обрыв)
         }
-        
+
         # Множители монет по редкостям
         # Смещение экономики: больше спроса на монеты у легендарок
         rarity_multipliers = {
@@ -10730,16 +14980,16 @@ class Database:
             "divine": 5.0,
             "limited": 6.0
         }
-        
+
         # Получаем базовое значение для текущего уровня
         base_coins = base_coins_by_level.get(level, 50)
-        
+
         # Получаем множитель редкости
         rarity_mult = rarity_multipliers.get(rarity, 1.0)
-        
+
         # Вычисляем финальное количество монет (округление вверх)
         required_coins = math.ceil(base_coins * rarity_mult)
-        
+
         return int(required_coins)
 
     async def add_particles_to_card(self, user_id: int, card_id: int, particles: int) -> dict[str, Any]:
@@ -10788,18 +15038,18 @@ class Database:
                 """,
                 user_id, card_id
             )
-            
+
             if not user_card:
                 return {"success": False, "error": "card_not_found"}
-            
+
             simplified_levelup = bool(user_card.get("simplified_levelup", False))
             max_level = self.get_card_max_level({"simplified_levelup": simplified_levelup})
             current_level = min(max(1, int(user_card["level"] or 1)), max_level)
-            
+
             # Проверяем максимальный уровень
             if current_level >= max_level:
                 return {"success": False, "error": "max_level_reached"}
-            
+
             current_particles = user_card["particles"] or 0
             rarity = user_card["rarity"]
             base_power = user_card["power"]
@@ -10808,18 +15058,18 @@ class Database:
             mana_cost = user_card.get("mana_cost") or 0
             mechanics = _normalize_mechanics(user_card.get("mechanics"))
             card_type = user_card.get("card_type") or "warrior"
-            
+
             # Рассчитываем необходимое количество частиц и монет
             cost = self.get_upgrade_cost(rarity, current_level, simplified_levelup)
             required_particles = cost["particles"]
             required_coins = cost["coins"]
-            
+
             # Получаем текущее количество монет пользователя
             user_coins = await self.fetchval(
                 "SELECT coins FROM users WHERE user_id = $1",
                 user_id
             ) or 0
-            
+
             # Проверяем частицы
             if current_particles < required_particles:
                 return {
@@ -10828,7 +15078,7 @@ class Database:
                     "required": required_particles,
                     "current": current_particles
                 }
-            
+
             # Проверяем монеты
             if user_coins < required_coins:
                 return {
@@ -10837,10 +15087,10 @@ class Database:
                     "required": required_coins,
                     "current": user_coins
                 }
-            
+
             # Улучшаем карту: увеличиваем уровень, сбрасываем частицы, увеличиваем мощность
             new_level = min(current_level + 1, max_level)
-            
+
             # Формула мощности: Power(n) = Power_base × 1.10^(n-1)
             import math
             power_multiplier = math.pow(1.10, new_level - 1)
@@ -10856,7 +15106,7 @@ class Database:
             }
             old_stats = calculate_card_stats(card_base_payload, level=current_level)
             new_stats = calculate_card_stats(card_base_payload, level=new_level)
-            
+
             # Выполняем обновление в транзакции
             async with self._pool.acquire() as conn:
                 async with conn.transaction():
@@ -10869,7 +15119,7 @@ class Database:
                         """,
                         new_level, required_particles, user_id, card_id
                     )
-                    
+
                     # Списываем монеты
                     await conn.execute(
                         """
@@ -10879,7 +15129,7 @@ class Database:
                         """,
                         required_coins, user_id
                     )
-            
+
             try:
                 await self.award_squad_cbrp(
                     user_id,
@@ -10945,13 +15195,13 @@ class Database:
                 "SELECT COUNT(*) FROM user_cards WHERE user_id = $1",
                 user_id
             ) or 0
-            
+
             # Получаем все ID карт из БД
             all_cards = await self.fetch("SELECT id FROM cards")
-            
+
             if not all_cards:
                 return {"success": True, "message": "Нет карт для добавления", "added": 0}
-            
+
             # Добавляем все карты в коллекцию пользователя (используя ON CONFLICT для избежания дубликатов)
             async with self._pool.acquire() as conn:
                 async with conn.transaction():
@@ -10965,15 +15215,15 @@ class Database:
                             """,
                             user_id, card_id
                         )
-            
+
             # Получаем количество карт после добавления
             count_after = await self.fetchval(
                 "SELECT COUNT(*) FROM user_cards WHERE user_id = $1",
                 user_id
             ) or 0
-            
+
             added_count = count_after - count_before
-            
+
             return {"success": True, "message": f"Добавлено карт в коллекцию: {added_count}", "added": int(added_count)}
         except Exception as e:
             import logging
@@ -11048,7 +15298,7 @@ class Database:
         # Создаем индекс для быстрого поиска по user_id
         index_exists = await self.fetchval(
             """
-            SELECT 1 FROM pg_indexes 
+            SELECT 1 FROM pg_indexes
             WHERE tablename = 'deck_presets' AND indexname = 'deck_presets_user_id_idx'
             """
         )
@@ -11076,7 +15326,7 @@ class Database:
             "SELECT 1 FROM deck_presets WHERE user_id = $1 LIMIT 1",
             user_id
         )
-        
+
         if not existing:
             # Создаем пресет "Моя колода" по умолчанию
             await self.execute(
@@ -11131,6 +15381,574 @@ class Database:
                 changed = True
 
         return changed
+
+    async def _ensure_mcp_admin_tables(self) -> bool:
+        changed = False
+        changed |= await self._ensure_mcp_tool_calls_table()
+        changed |= await self._ensure_mcp_confirmations_table()
+        changed |= await self._ensure_mcp_idempotency_keys_table()
+        changed |= await self._ensure_mcp_rate_limits_table()
+        return changed
+
+    async def _ensure_mcp_tool_calls_table(self) -> bool:
+        changed = False
+        table_exists = await self.fetchval("SELECT to_regclass('public.mcp_tool_calls')")
+        if not table_exists:
+            await self.execute(
+                """
+                CREATE TABLE mcp_tool_calls (
+                    id BIGSERIAL PRIMARY KEY,
+                    admin_user_id BIGINT NOT NULL,
+                    tool_name TEXT NOT NULL,
+                    args_digest TEXT NOT NULL,
+                    args_summary JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    result_summary JSONB,
+                    status TEXT NOT NULL DEFAULT 'started',
+                    error TEXT,
+                    duration_ms INTEGER,
+                    jti_hash TEXT,
+                    confirmation_id TEXT,
+                    idempotency_key_hash TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            changed = True
+
+        columns = await self._get_columns("mcp_tool_calls")
+        changed |= await self._add_column_if_missing("mcp_tool_calls", columns, "id BIGSERIAL PRIMARY KEY")
+        changed |= await self._add_column_if_missing("mcp_tool_calls", columns, "admin_user_id BIGINT NOT NULL")
+        changed |= await self._add_column_if_missing("mcp_tool_calls", columns, "tool_name TEXT NOT NULL")
+        changed |= await self._add_column_if_missing("mcp_tool_calls", columns, "args_digest TEXT NOT NULL")
+        changed |= await self._add_column_if_missing("mcp_tool_calls", columns, "args_summary JSONB NOT NULL DEFAULT '{}'::jsonb")
+        changed |= await self._add_column_if_missing("mcp_tool_calls", columns, "result_summary JSONB")
+        changed |= await self._add_column_if_missing("mcp_tool_calls", columns, "status TEXT NOT NULL DEFAULT 'started'")
+        changed |= await self._add_column_if_missing("mcp_tool_calls", columns, "error TEXT")
+        changed |= await self._add_column_if_missing("mcp_tool_calls", columns, "duration_ms INTEGER")
+        changed |= await self._add_column_if_missing("mcp_tool_calls", columns, "jti_hash TEXT")
+        changed |= await self._add_column_if_missing("mcp_tool_calls", columns, "confirmation_id TEXT")
+        changed |= await self._add_column_if_missing("mcp_tool_calls", columns, "idempotency_key_hash TEXT")
+        changed |= await self._add_column_if_missing("mcp_tool_calls", columns, "created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
+        await self.execute(
+            """
+            CREATE INDEX IF NOT EXISTS mcp_tool_calls_admin_created_idx
+            ON mcp_tool_calls (admin_user_id, created_at DESC)
+            """
+        )
+        await self.execute(
+            """
+            CREATE INDEX IF NOT EXISTS mcp_tool_calls_tool_created_idx
+            ON mcp_tool_calls (tool_name, created_at DESC)
+            """
+        )
+        await self.execute(
+            """
+            CREATE INDEX IF NOT EXISTS mcp_tool_calls_args_digest_idx
+            ON mcp_tool_calls (args_digest)
+            """
+        )
+        await self.execute(
+            """
+            CREATE INDEX IF NOT EXISTS mcp_tool_calls_jti_hash_idx
+            ON mcp_tool_calls (jti_hash)
+            """
+        )
+        return changed
+
+    async def _ensure_mcp_confirmations_table(self) -> bool:
+        changed = False
+        table_exists = await self.fetchval("SELECT to_regclass('public.mcp_confirmations')")
+        if not table_exists:
+            await self.execute(
+                """
+                CREATE TABLE mcp_confirmations (
+                    confirmation_id TEXT PRIMARY KEY,
+                    admin_user_id BIGINT NOT NULL,
+                    tool_name TEXT NOT NULL,
+                    args_digest TEXT NOT NULL,
+                    confirmation_token_hash TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    jti_hash TEXT,
+                    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    expires_at TIMESTAMPTZ NOT NULL,
+                    confirmed_at TIMESTAMPTZ,
+                    error TEXT
+                )
+                """
+            )
+            changed = True
+
+        columns = await self._get_columns("mcp_confirmations")
+        changed |= await self._add_column_if_missing("mcp_confirmations", columns, "confirmation_id TEXT PRIMARY KEY")
+        changed |= await self._add_column_if_missing("mcp_confirmations", columns, "admin_user_id BIGINT NOT NULL")
+        changed |= await self._add_column_if_missing("mcp_confirmations", columns, "tool_name TEXT NOT NULL")
+        changed |= await self._add_column_if_missing("mcp_confirmations", columns, "args_digest TEXT NOT NULL")
+        changed |= await self._add_column_if_missing("mcp_confirmations", columns, "confirmation_token_hash TEXT NOT NULL")
+        changed |= await self._add_column_if_missing("mcp_confirmations", columns, "status TEXT NOT NULL DEFAULT 'pending'")
+        changed |= await self._add_column_if_missing("mcp_confirmations", columns, "jti_hash TEXT")
+        changed |= await self._add_column_if_missing("mcp_confirmations", columns, "metadata JSONB NOT NULL DEFAULT '{}'::jsonb")
+        changed |= await self._add_column_if_missing("mcp_confirmations", columns, "created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
+        changed |= await self._add_column_if_missing("mcp_confirmations", columns, "expires_at TIMESTAMPTZ NOT NULL")
+        changed |= await self._add_column_if_missing("mcp_confirmations", columns, "confirmed_at TIMESTAMPTZ")
+        changed |= await self._add_column_if_missing("mcp_confirmations", columns, "error TEXT")
+        await self.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS mcp_confirmations_token_hash_idx
+            ON mcp_confirmations (confirmation_token_hash)
+            """
+        )
+        await self.execute(
+            """
+            CREATE INDEX IF NOT EXISTS mcp_confirmations_admin_status_idx
+            ON mcp_confirmations (admin_user_id, status, expires_at)
+            """
+        )
+        await self.execute(
+            """
+            CREATE INDEX IF NOT EXISTS mcp_confirmations_tool_args_idx
+            ON mcp_confirmations (tool_name, args_digest)
+            """
+        )
+        return changed
+
+    async def _ensure_mcp_idempotency_keys_table(self) -> bool:
+        changed = False
+        table_exists = await self.fetchval("SELECT to_regclass('public.mcp_idempotency_keys')")
+        if not table_exists:
+            await self.execute(
+                """
+                CREATE TABLE mcp_idempotency_keys (
+                    key_hash TEXT PRIMARY KEY,
+                    admin_user_id BIGINT NOT NULL,
+                    tool_name TEXT NOT NULL,
+                    args_digest TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'in_progress',
+                    response_summary JSONB,
+                    error TEXT,
+                    jti_hash TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    expires_at TIMESTAMPTZ NOT NULL
+                )
+                """
+            )
+            changed = True
+
+        columns = await self._get_columns("mcp_idempotency_keys")
+        changed |= await self._add_column_if_missing("mcp_idempotency_keys", columns, "key_hash TEXT PRIMARY KEY")
+        changed |= await self._add_column_if_missing("mcp_idempotency_keys", columns, "admin_user_id BIGINT NOT NULL")
+        changed |= await self._add_column_if_missing("mcp_idempotency_keys", columns, "tool_name TEXT NOT NULL")
+        changed |= await self._add_column_if_missing("mcp_idempotency_keys", columns, "args_digest TEXT NOT NULL")
+        changed |= await self._add_column_if_missing("mcp_idempotency_keys", columns, "status TEXT NOT NULL DEFAULT 'in_progress'")
+        changed |= await self._add_column_if_missing("mcp_idempotency_keys", columns, "response_summary JSONB")
+        changed |= await self._add_column_if_missing("mcp_idempotency_keys", columns, "error TEXT")
+        changed |= await self._add_column_if_missing("mcp_idempotency_keys", columns, "jti_hash TEXT")
+        changed |= await self._add_column_if_missing("mcp_idempotency_keys", columns, "created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
+        changed |= await self._add_column_if_missing("mcp_idempotency_keys", columns, "updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
+        changed |= await self._add_column_if_missing("mcp_idempotency_keys", columns, "expires_at TIMESTAMPTZ NOT NULL")
+        await self.execute(
+            """
+            CREATE INDEX IF NOT EXISTS mcp_idempotency_keys_admin_tool_idx
+            ON mcp_idempotency_keys (admin_user_id, tool_name)
+            """
+        )
+        await self.execute(
+            """
+            CREATE INDEX IF NOT EXISTS mcp_idempotency_keys_expires_idx
+            ON mcp_idempotency_keys (expires_at)
+            """
+        )
+        return changed
+
+    async def _ensure_mcp_rate_limits_table(self) -> bool:
+        changed = False
+        table_exists = await self.fetchval("SELECT to_regclass('public.mcp_rate_limits')")
+        if not table_exists:
+            await self.execute(
+                """
+                CREATE TABLE mcp_rate_limits (
+                    scope TEXT NOT NULL,
+                    key_hash TEXT NOT NULL,
+                    count INTEGER NOT NULL DEFAULT 0,
+                    reset_at TIMESTAMPTZ NOT NULL,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (scope, key_hash)
+                )
+                """
+            )
+            changed = True
+
+        columns = await self._get_columns("mcp_rate_limits")
+        changed |= await self._add_column_if_missing("mcp_rate_limits", columns, "scope TEXT NOT NULL")
+        changed |= await self._add_column_if_missing("mcp_rate_limits", columns, "key_hash TEXT NOT NULL")
+        changed |= await self._add_column_if_missing("mcp_rate_limits", columns, "count INTEGER NOT NULL DEFAULT 0")
+        changed |= await self._add_column_if_missing("mcp_rate_limits", columns, "reset_at TIMESTAMPTZ NOT NULL")
+        changed |= await self._add_column_if_missing("mcp_rate_limits", columns, "updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
+        await self.execute(
+            """
+            CREATE INDEX IF NOT EXISTS mcp_rate_limits_reset_idx
+            ON mcp_rate_limits (reset_at)
+            """
+        )
+        return changed
+
+    async def record_mcp_tool_call(
+        self,
+        *,
+        admin_user_id: int,
+        tool_name: str,
+        args: Any,
+        result: Any = None,
+        status: str = "success",
+        error: Any = None,
+        duration_ms: int | None = None,
+        jti: str | None = None,
+        jti_hash: str | None = None,
+        confirmation_id: str | None = None,
+        idempotency_key: str | None = None,
+        idempotency_key_hash: str | None = None,
+    ) -> dict[str, Any]:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+
+        args_summary_json = _mcp_summary_json(args or {})
+        result_summary_json = _mcp_summary_json(result or {})
+        args_digest = _mcp_args_digest(args or {})
+        safe_jti_hash = jti_hash or _mcp_hash_identifier(jti)
+        safe_idempotency_hash = idempotency_key_hash or _mcp_hash_identifier(idempotency_key)
+        safe_duration = None if duration_ms is None else max(0, int(duration_ms))
+        row = await self.fetchrow(
+            """
+            INSERT INTO mcp_tool_calls (
+                admin_user_id, tool_name, args_digest, args_summary, result_summary,
+                status, error, duration_ms, jti_hash, confirmation_id, idempotency_key_hash
+            )
+            VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8, $9, $10, $11)
+            RETURNING id, admin_user_id, tool_name, args_digest, status, jti_hash, created_at
+            """,
+            int(admin_user_id),
+            str(tool_name),
+            args_digest,
+            args_summary_json,
+            result_summary_json,
+            str(status or "success"),
+            _mcp_error_summary(error),
+            safe_duration,
+            safe_jti_hash,
+            confirmation_id,
+            safe_idempotency_hash,
+        )
+        data = _mcp_row_dict(row) or {}
+        data.setdefault("args_digest", args_digest)
+        data.setdefault("jti_hash", safe_jti_hash)
+        data.setdefault("idempotency_key_hash", safe_idempotency_hash)
+        return data
+
+    async def create_mcp_confirmation(
+        self,
+        *,
+        admin_user_id: int,
+        tool_name: str,
+        args_digest: str,
+        confirmation_token: str,
+        expires_at: datetime | None = None,
+        jti: str | None = None,
+        jti_hash: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+
+        token_hash = _mcp_hash_identifier(confirmation_token)
+        if not token_hash:
+            raise ValueError("confirmation_token_required")
+        safe_expires_at = expires_at or (datetime.now(timezone.utc) + timedelta(minutes=5))
+        safe_jti_hash = jti_hash or _mcp_hash_identifier(jti)
+        metadata_json = _mcp_summary_json(metadata or {})
+        confirmation_id = uuid.uuid4().hex
+        row = await self.fetchrow(
+            """
+            INSERT INTO mcp_confirmations (
+                confirmation_id, admin_user_id, tool_name, args_digest, confirmation_token_hash,
+                status, jti_hash, metadata, expires_at
+            )
+            VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7::jsonb, $8)
+            RETURNING confirmation_id, admin_user_id, tool_name, args_digest,
+                      status, jti_hash, metadata, created_at, expires_at, confirmed_at, error
+            """,
+            confirmation_id,
+            int(admin_user_id),
+            str(tool_name),
+            str(args_digest),
+            token_hash,
+            safe_jti_hash,
+            metadata_json,
+            safe_expires_at,
+        )
+        data = _mcp_row_dict(row) or {}
+        data.setdefault("confirmation_id", confirmation_id)
+        data.setdefault("confirmation_token_hash", token_hash)
+        data.setdefault("jti_hash", safe_jti_hash)
+        return data
+
+    async def get_mcp_confirmation(self, confirmation_id: str) -> dict[str, Any] | None:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+
+        row = await self.fetchrow(
+            """
+            SELECT confirmation_id, admin_user_id, tool_name, args_digest,
+                   status, jti_hash, metadata, created_at, expires_at,
+                   confirmed_at, error
+            FROM mcp_confirmations
+            WHERE confirmation_id = $1
+            """,
+            str(confirmation_id),
+        )
+        return _mcp_row_dict(row)
+
+    async def consume_mcp_confirmation(
+        self,
+        *,
+        confirmation_token: str,
+        admin_user_id: int,
+        tool_name: str,
+        args_digest: str,
+    ) -> dict[str, Any] | None:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+
+        token_hash = _mcp_hash_identifier(confirmation_token)
+        if not token_hash:
+            raise ValueError("confirmation_token_required")
+        row = await self.fetchrow(
+            """
+            UPDATE mcp_confirmations
+            SET status = 'confirmed',
+                confirmed_at = NOW()
+            WHERE confirmation_token_hash = $1
+              AND admin_user_id = $2
+              AND tool_name = $3
+              AND args_digest = $4
+              AND status = 'pending'
+              AND expires_at > NOW()
+            RETURNING confirmation_id, admin_user_id, tool_name, args_digest,
+                      status, jti_hash, metadata, created_at, expires_at,
+                      confirmed_at, error
+            """,
+            token_hash,
+            int(admin_user_id),
+            str(tool_name),
+            str(args_digest),
+        )
+        return _mcp_row_dict(row)
+
+    async def reserve_mcp_idempotency_key(
+        self,
+        *,
+        idempotency_key: str,
+        admin_user_id: int,
+        tool_name: str,
+        args_digest: str,
+        expires_at: datetime | None = None,
+        jti: str | None = None,
+        jti_hash: str | None = None,
+    ) -> dict[str, Any]:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+
+        key_hash = _mcp_scoped_idempotency_hash(idempotency_key, admin_user_id, tool_name)
+        if not key_hash:
+            raise ValueError("idempotency_key_required")
+        safe_expires_at = expires_at or (datetime.now(timezone.utc) + timedelta(hours=24))
+        safe_jti_hash = jti_hash or _mcp_hash_identifier(jti)
+        columns = """
+            key_hash, admin_user_id, tool_name, args_digest, status,
+            response_summary, error, jti_hash, created_at, updated_at, expires_at
+        """
+        now = datetime.now(timezone.utc)
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.fetchval("SELECT pg_advisory_xact_lock(hashtext($1))", key_hash)
+                existing_row = await conn.fetchrow(
+                    f"""
+                    SELECT {columns}
+                    FROM mcp_idempotency_keys
+                    WHERE key_hash = $1
+                    FOR UPDATE
+                    """,
+                    key_hash,
+                )
+                existing = _mcp_row_dict(existing_row)
+                if existing and not _mcp_datetime_expired(existing.get("expires_at"), now):
+                    data = existing
+                    data.setdefault("key_hash", key_hash)
+                    data.setdefault("jti_hash", safe_jti_hash)
+                    data["reserved"] = False
+                    data["args_match"] = data.get("args_digest") == str(args_digest)
+                    data["replayable"] = bool(data["args_match"] and data.get("status") in {"success", "error", "failed"})
+                    return data
+
+                if existing:
+                    row = await conn.fetchrow(
+                        f"""
+                        UPDATE mcp_idempotency_keys
+                        SET admin_user_id = $2,
+                            tool_name = $3,
+                            args_digest = $4,
+                            status = 'in_progress',
+                            response_summary = NULL,
+                            error = NULL,
+                            jti_hash = $5,
+                            expires_at = $6,
+                            updated_at = NOW()
+                        WHERE key_hash = $1
+                        RETURNING {columns}
+                        """,
+                        key_hash,
+                        int(admin_user_id),
+                        str(tool_name),
+                        str(args_digest),
+                        safe_jti_hash,
+                        safe_expires_at,
+                    )
+                else:
+                    row = await conn.fetchrow(
+                        f"""
+                        INSERT INTO mcp_idempotency_keys (
+                            key_hash, admin_user_id, tool_name, args_digest, status,
+                            response_summary, error, jti_hash, expires_at
+                        )
+                        VALUES ($1, $2, $3, $4, 'in_progress', NULL, NULL, $5, $6)
+                        RETURNING {columns}
+                        """,
+                        key_hash,
+                        int(admin_user_id),
+                        str(tool_name),
+                        str(args_digest),
+                        safe_jti_hash,
+                        safe_expires_at,
+                    )
+        data = _mcp_row_dict(row) or {}
+        data.setdefault("key_hash", key_hash)
+        data.setdefault("jti_hash", safe_jti_hash)
+        data["reserved"] = True
+        data["args_match"] = data.get("args_digest") == str(args_digest)
+        data["replayable"] = bool(data["args_match"] and data.get("status") in {"success", "error", "failed"})
+        return data
+
+    async def get_mcp_idempotency_key(
+        self,
+        *,
+        idempotency_key: str,
+        admin_user_id: int,
+        tool_name: str,
+    ) -> dict[str, Any] | None:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+
+        key_hash = _mcp_scoped_idempotency_hash(idempotency_key, admin_user_id, tool_name)
+        if not key_hash:
+            return None
+        row = await self.fetchrow(
+            """
+            SELECT key_hash, admin_user_id, tool_name, args_digest, status,
+                   response_summary, error, jti_hash, created_at, updated_at, expires_at
+            FROM mcp_idempotency_keys
+            WHERE key_hash = $1 AND admin_user_id = $2 AND tool_name = $3 AND expires_at > NOW()
+            """,
+            key_hash,
+            int(admin_user_id),
+            str(tool_name),
+        )
+        return _mcp_row_dict(row)
+
+    async def complete_mcp_idempotency_key(
+        self,
+        *,
+        idempotency_key: str,
+        admin_user_id: int,
+        tool_name: str,
+        status: str,
+        response: Any = None,
+        error: Any = None,
+    ) -> dict[str, Any] | None:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+
+        key_hash = _mcp_scoped_idempotency_hash(idempotency_key, admin_user_id, tool_name)
+        if not key_hash:
+            raise ValueError("idempotency_key_required")
+        row = await self.fetchrow(
+            """
+            UPDATE mcp_idempotency_keys
+            SET status = $2,
+                response_summary = $3::jsonb,
+                error = $4,
+                updated_at = NOW()
+            WHERE key_hash = $1
+              AND admin_user_id = $5
+              AND tool_name = $6
+            RETURNING key_hash, admin_user_id, tool_name, args_digest, status,
+                      response_summary, error, jti_hash, created_at, updated_at, expires_at
+            """,
+            key_hash,
+            str(status or "success"),
+            _mcp_summary_json(response or {}),
+            _mcp_error_summary(error),
+            int(admin_user_id),
+            str(tool_name),
+        )
+        return _mcp_row_dict(row)
+
+    async def check_mcp_rate_limit(
+        self,
+        *,
+        scope: str,
+        subject: str,
+        max_requests: int,
+        window_seconds: int,
+    ) -> dict[str, Any]:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+
+        key_hash = _mcp_hash_identifier(subject)
+        if not key_hash:
+            raise ValueError("rate_subject_required")
+        row = await self.fetchrow(
+            """
+            WITH upsert AS (
+                INSERT INTO mcp_rate_limits (scope, key_hash, count, reset_at, updated_at)
+                VALUES ($1, $2, 1, NOW() + make_interval(secs => $4::int), NOW())
+                ON CONFLICT (scope, key_hash) DO UPDATE SET
+                    count = CASE
+                        WHEN mcp_rate_limits.reset_at <= NOW() THEN 1
+                        ELSE mcp_rate_limits.count + 1
+                    END,
+                    reset_at = CASE
+                        WHEN mcp_rate_limits.reset_at <= NOW()
+                            THEN NOW() + make_interval(secs => $4::int)
+                        ELSE mcp_rate_limits.reset_at
+                    END,
+                    updated_at = NOW()
+                RETURNING count, reset_at
+            )
+            SELECT count <= $3 AS allowed, count, reset_at
+            FROM upsert
+            """,
+            str(scope),
+            key_hash,
+            int(max_requests),
+            int(window_seconds),
+        )
+        data = _mcp_row_dict(row) or {}
+        return {
+            "allowed": bool(data.get("allowed")),
+            "count": int(data.get("count") or 0),
+            "reset_at": data.get("reset_at"),
+            "key_hash": key_hash,
+        }
 
     async def _ensure_cosmetic_tables(self) -> bool:
         """Создать таблицы косметики, seed стартовых аватарок, мигрировать пользователей."""
@@ -11392,7 +16210,7 @@ class Database:
         if not self._pool:
             raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
 
-        exclude = set(exclude_user_ids or [])
+        exclude = [int(user_id) for user_id in (exclude_user_ids or [])]
         window = max(50, round(player_trophies * 0.15))
         min_trophies = max(0, player_trophies - window)
         max_trophies = player_trophies + window
@@ -11407,17 +16225,16 @@ class Database:
             WHERE u.is_bot = TRUE
               AND u.trophies >= $1 AND u.trophies <= $2
               AND u.status = 'active'
+              AND NOT (u.user_id = ANY($5::bigint[]))
             ORDER BY ABS(u.trophies - $3) ASC, RANDOM()
             LIMIT $4
             """,
-            min_trophies, max_trophies, player_trophies, max_results,
+            min_trophies, max_trophies, player_trophies, max_results, exclude,
         )
 
         result: list[dict[str, Any]] = []
         for row in rows:
             bid = int(row["user_id"])
-            if bid in exclude:
-                continue
             result.append({
                 "user_id": bid,
                 "trophies": int(row["trophies"]),
@@ -11659,7 +16476,7 @@ class Database:
             """
             SELECT dp.id,
                    dp.preset_name,
-                   dp.preset_number, 
+                   dp.preset_number,
                    dp.card_slot_1,
                    dp.card_slot_2,
                    dp.card_slot_3,
@@ -11677,6 +16494,28 @@ class Database:
             """,
             user_id
         )
+        all_slot_ids: set[int] = set()
+        for row in rows:
+            row_dict = dict(row)
+            for i in range(1, DECK_SIZE + 1):
+                val = row_dict.get(f"card_slot_{i}")
+                if val is not None:
+                    all_slot_ids.add(int(val))
+        card_types: dict[int, str] = {}
+        owned_ids: set[int] = set()
+        if all_slot_ids:
+            card_rows = await self.fetch(
+                "SELECT id, card_type FROM cards WHERE id = ANY($1::bigint[])",
+                list(all_slot_ids),
+            )
+            card_types = {int(row["id"]): str(row["card_type"] or "warrior") for row in card_rows}
+            owned_rows = await self.fetch(
+                "SELECT card_id FROM user_cards WHERE user_id = $1 AND card_id = ANY($2::bigint[])",
+                user_id,
+                list(all_slot_ids),
+            )
+            owned_ids = {int(row["card_id"]) for row in owned_rows}
+
         presets: list[dict[str, Any]] = []
         for row in rows:
             preset = dict(row)
@@ -11687,9 +16526,47 @@ class Database:
                 if val is not None:
                     card_ids.append(int(val))
             preset["card_ids"] = card_ids
-            
+
             # used_by_bot нужен, чтобы движок и матчмейкер могли выбрать правильную колоду бота.
             preset["used_by_bot"] = bool(preset.get("used_by_bot", False))
+            slot_ids = [
+                int(preset[f"card_slot_{i}"]) if preset.get(f"card_slot_{i}") is not None else None
+                for i in range(1, DECK_SIZE + 1)
+            ]
+            filled_count = len([card_id for card_id in slot_ids if card_id is not None])
+            duplicate_cards = len(card_ids) != len(set(card_ids))
+            validates_ownership = not preset["used_by_bot"]
+            hero_id = slot_ids[0]
+            has_hero = (
+                hero_id is not None
+                and card_types.get(hero_id) == "hero"
+                and (not validates_ownership or hero_id in owned_ids)
+            )
+            valid_regular_count = 0
+            stale_card_ids: list[int] = []
+            for card_id in slot_ids[1:]:
+                if card_id is None:
+                    continue
+                card_exists = card_id in card_types
+                card_owned = not validates_ownership or card_id in owned_ids
+                if card_exists and card_owned and card_types.get(card_id) != "hero":
+                    valid_regular_count += 1
+                else:
+                    stale_card_ids.append(card_id)
+            if hero_id is not None and not has_hero:
+                stale_card_ids.append(hero_id)
+            owned_valid_count = (1 if has_hero else 0) + valid_regular_count
+            preset["has_hero"] = has_hero
+            preset["filled_count"] = filled_count
+            preset["owned_valid_count"] = owned_valid_count
+            preset["is_playable"] = (
+                has_hero
+                and not duplicate_cards
+                and filled_count == DECK_SIZE
+                and valid_regular_count == DECK_SIZE - 1
+            )
+            preset["stale_card_ids"] = stale_card_ids
+            preset["duplicate_cards"] = duplicate_cards
             presets.append(preset)
 
         # Обновляем локальный кеш пресетов, чтобы боевой движок мог синхронно
@@ -11704,6 +16581,83 @@ class Database:
             # Кеш - вспомогательный; при любой ошибке просто пропускаем запись.
             pass
         return presets
+
+    async def _validate_deck_slots(
+        self,
+        user_id: int,
+        card_slots: list[int | None],
+        *,
+        require_complete: bool,
+        used_by_bot: bool = False,
+    ) -> dict[str, Any]:
+        if len(card_slots) != DECK_SIZE:
+            return {"success": False, "error": "invalid_slots_count"}
+
+        normalized_slots = [int(card_id) if card_id is not None else None for card_id in card_slots]
+        non_null_ids = [card_id for card_id in normalized_slots if card_id is not None]
+
+        if len(non_null_ids) != len(set(non_null_ids)):
+            return {"success": False, "error": "duplicate_cards", "message": "Колода содержит одинаковые карты"}
+
+        card_types: dict[int, str] = {}
+        if non_null_ids:
+            rows = await self.fetch(
+                "SELECT id, card_type FROM cards WHERE id = ANY($1::bigint[])",
+                non_null_ids,
+            )
+            card_types = {int(row["id"]): str(row["card_type"] or "warrior") for row in rows}
+            missing_card_ids = [card_id for card_id in non_null_ids if card_id not in card_types]
+            if missing_card_ids:
+                return {
+                    "success": False,
+                    "error": "invalid_card_ids",
+                    "message": f"Карты не найдены: {missing_card_ids}",
+                    "card_ids": missing_card_ids,
+                }
+
+        hero_id = normalized_slots[0]
+        if hero_id is not None and card_types.get(hero_id) != "hero":
+            return {
+                "success": False,
+                "error": "slot_0_must_be_hero",
+                "message": "Первый слот должен содержать героя",
+            }
+        for idx in range(1, DECK_SIZE):
+            card_id = normalized_slots[idx]
+            if card_id is not None and card_types.get(card_id) == "hero":
+                return {
+                    "success": False,
+                    "error": "hero_in_warrior_slot",
+                    "message": f"Герой не может быть в слоте {idx + 1}",
+                }
+
+        if not used_by_bot and non_null_ids:
+            owned = await self.fetch(
+                "SELECT card_id FROM user_cards WHERE user_id = $1 AND card_id = ANY($2::bigint[])",
+                user_id,
+                non_null_ids,
+            )
+            owned_set = {int(row["card_id"]) for row in owned}
+            missing = [card_id for card_id in non_null_ids if card_id not in owned_set]
+            if missing:
+                logging.getLogger(__name__).warning(
+                    "deck validation: user %s tried to use unowned cards %s", user_id, missing
+                )
+                return {
+                    "success": False,
+                    "error": "unowned_cards",
+                    "message": "Колода содержит карты, которых нет у вас",
+                    "card_ids": missing,
+                }
+
+        playable = len(non_null_ids) == DECK_SIZE and all(card_id is not None for card_id in normalized_slots)
+        if require_complete and not playable:
+            return {
+                "success": False,
+                "error": "deck_incomplete",
+                "message": "Основной может быть только полная колода: герой и 8 карт",
+            }
+        return {"success": True, "playable": playable}
 
     async def save_deck_preset(
         self,
@@ -11729,58 +16683,14 @@ class Database:
         if preset_number < 1 or preset_number > MAX_TOTAL_DECK_PRESETS:
             return {"success": False, "error": "invalid_preset_number", "message": f"Номер пресета должен быть от 1 до {MAX_TOTAL_DECK_PRESETS}"}
 
-        # Patch 1 + H2: hero slot must be filled
-        if card_slots[0] is None:
-            return {"success": False, "error": "missing_hero", "message": "Выберите героя"}
-
-        non_null_ids = [cid for cid in card_slots if cid is not None]
-
-        # C2: no duplicate card ids
-        if len(non_null_ids) != len(set(non_null_ids)):
-            return {"success": False, "error": "duplicate_cards", "message": "Колода содержит одинаковые карты"}
-
-        # Patch 5: explicit card existence check (before type/slot validation)
-        if non_null_ids:
-            rows = await self.fetch(
-                "SELECT id, card_type FROM cards WHERE id = ANY($1::bigint[])",
-                non_null_ids,
-            )
-            found_ids = {int(row["id"]) for row in rows}
-            card_types = {int(row["id"]): (row["card_type"] or "warrior") for row in rows}
-            missing_card_ids = [cid for cid in non_null_ids if cid not in found_ids]
-            if missing_card_ids:
-                return {"success": False, "error": "invalid_card_ids", "message": f"Карты не найдены: {missing_card_ids}", "card_ids": missing_card_ids}
-        else:
-            card_types = {}
-
-        # C3: slot 0 must be hero; slots 1..8 must NOT be hero
-        hero_id = card_slots[0]
-        if card_types.get(hero_id) != "hero":
-            return {"success": False, "error": "slot_0_must_be_hero", "message": "Первый слот должен содержать героя"}
-        for idx in range(1, DECK_SIZE):
-            cid = card_slots[idx]
-            if cid is not None and card_types.get(cid) == "hero":
-                return {"success": False, "error": "hero_in_warrior_slot", "message": f"Герой не может быть в слоте {idx + 1}"}
-
-        # C1: verify card ownership (unless bot)
-        if not used_by_bot:
-            owned = await self.fetch(
-                "SELECT card_id FROM user_cards WHERE user_id = $1 AND card_id = ANY($2::bigint[])",
-                user_id, non_null_ids,
-            )
-            owned_set = {int(row["card_id"]) for row in owned}
-            missing = [cid for cid in non_null_ids if cid not in owned_set]
-            if missing:
-                import logging
-                logging.getLogger(__name__).warning(
-                    "save_deck_preset: user %s tried to save unowned cards %s", user_id, missing
-                )
-                return {
-                    "success": False,
-                    "error": "unowned_cards",
-                    "message": "Колода содержит карты, которых нет у вас",
-                    "card_ids": missing,
-                }
+        validation = await self._validate_deck_slots(
+            user_id,
+            card_slots,
+            require_complete=False,
+            used_by_bot=used_by_bot,
+        )
+        if not validation.get("success"):
+            return validation
 
         try:
             existing = await self.fetchval(
@@ -11797,10 +16707,10 @@ class Database:
                 if current_count >= MAX_TOTAL_DECK_PRESETS:
                     return {"success": False, "error": "max_presets_reached", "message": "Достигнут максимум пресетов"}
 
-                extra_pass = await self.fetchval(
-                    "SELECT extra_pass FROM users WHERE user_id = $1", user_id
+                pass_row = await self.fetchrow(
+                    "SELECT extra_pass, extra_pass_expires_at FROM users WHERE user_id = $1", user_id
                 )
-                has_pass = (extra_pass or "") in ("active", "ultra")
+                has_pass = _extra_pass_mode_active(pass_row)
                 if not has_pass and current_count >= MAX_FREE_DECK_PRESETS:
                     return {"success": False, "error": "extra_pass_required", "message": "Требуется ExtraPass для большего числа колод"}
                 if not has_pass and preset_number > MAX_FREE_DECK_PRESETS:
@@ -11834,7 +16744,7 @@ class Database:
             else:
                 await self.execute(
                     """
-                    INSERT INTO deck_presets (user_id, preset_name, preset_number, 
+                    INSERT INTO deck_presets (user_id, preset_name, preset_number,
                                              card_slot_1, card_slot_2, card_slot_3, card_slot_4,
                                              card_slot_5, card_slot_6, card_slot_7, card_slot_8, card_slot_9,
                                              used_by_bot, created_at, updated_at)
@@ -11851,7 +16761,7 @@ class Database:
             if isinstance(deck_cache, dict):
                 deck_cache.pop(user_id, None)
 
-            return {"success": True}
+            return {"success": True, "playable": bool(validation.get("playable"))}
         except Exception as e:
             import logging
             logging.getLogger(__name__).error(f"Ошибка сохранения пресета: {e}", exc_info=True)
@@ -11879,10 +16789,10 @@ class Database:
         existing_numbers = {int(row["preset_number"]) for row in rows}
         current_count = len(existing_numbers)
 
-        extra_pass = await self.fetchval(
-            "SELECT extra_pass FROM users WHERE user_id = $1", user_id
+        pass_row = await self.fetchrow(
+            "SELECT extra_pass, extra_pass_expires_at FROM users WHERE user_id = $1", user_id
         )
-        has_pass = (extra_pass or "") in ("active", "ultra")
+        has_pass = _extra_pass_mode_active(pass_row)
         effective_limit = MAX_TOTAL_DECK_PRESETS if has_pass else MAX_FREE_DECK_PRESETS
 
         if current_count >= effective_limit:
@@ -12013,6 +16923,8 @@ class Database:
         self, table: str, existing_columns: set[str], column_definition: str
     ) -> bool:
         column_name = column_definition.split()[0]
+        table = _validate_schema_identifier(table)
+        column_name = _validate_schema_identifier(column_name)
         if column_name in existing_columns:
             return False
         await self.execute(f"ALTER TABLE {table} ADD COLUMN {column_definition}")
@@ -12254,6 +17166,94 @@ class Database:
             logging.getLogger(__name__).error(
                 "record_battle_summary failed: match_id=%s", match_id, exc_info=True,
             )
+
+    async def apply_surrender_penalty_once(
+        self,
+        *,
+        match_id: str,
+        user_id: int,
+        reason: str,
+        penalty_delta: int,
+    ) -> Dict[str, Any]:
+        """Apply immediate surrender trophy penalty once per match/user/reason."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                inserted = await conn.fetchrow(
+                    """
+                    INSERT INTO battle_surrender_penalties (match_id, user_id, reason, penalty_delta)
+                    VALUES ($1, $2, $3, $4)
+                    ON CONFLICT (match_id, user_id, reason) DO NOTHING
+                    RETURNING id
+                    """,
+                    str(match_id),
+                    int(user_id),
+                    str(reason),
+                    int(penalty_delta),
+                )
+                if not inserted:
+                    row = await conn.fetchrow(
+                        """
+                        SELECT penalty_delta, new_trophies
+                        FROM battle_surrender_penalties
+                        WHERE match_id = $1 AND user_id = $2 AND reason = $3
+                        """,
+                        str(match_id),
+                        int(user_id),
+                        str(reason),
+                    )
+                    return {
+                        "applied": False,
+                        "already_processed": True,
+                        "trophy_penalty": int(row["penalty_delta"] if row else 0),
+                        "new_trophies": int(row["new_trophies"] if row else 0),
+                    }
+
+                trophy_row = await conn.fetchrow(
+                    """
+                    UPDATE users
+                    SET
+                        trophies = GREATEST(0, COALESCE(trophies, 0) + $1),
+                        max_trophies = GREATEST(COALESCE(max_trophies, 0), GREATEST(0, COALESCE(trophies, 0) + $1)),
+                        league = CASE
+                            WHEN GREATEST(0, COALESCE(trophies, 0) + $1) >= 9000 THEN 10
+                            WHEN GREATEST(0, COALESCE(trophies, 0) + $1) >= 7500 THEN 9
+                            WHEN GREATEST(0, COALESCE(trophies, 0) + $1) >= 6000 THEN 8
+                            WHEN GREATEST(0, COALESCE(trophies, 0) + $1) >= 4500 THEN 7
+                            WHEN GREATEST(0, COALESCE(trophies, 0) + $1) >= 3000 THEN 6
+                            WHEN GREATEST(0, COALESCE(trophies, 0) + $1) >= 2000 THEN 5
+                            WHEN GREATEST(0, COALESCE(trophies, 0) + $1) >= 1200 THEN 4
+                            WHEN GREATEST(0, COALESCE(trophies, 0) + $1) >= 600  THEN 3
+                            WHEN GREATEST(0, COALESCE(trophies, 0) + $1) >= 300  THEN 2
+                            ELSE 1
+                        END,
+                        updated_at = NOW()
+                    WHERE user_id = $2
+                    RETURNING trophies
+                    """,
+                    int(penalty_delta),
+                    int(user_id),
+                )
+                new_trophies = int(trophy_row["trophies"] if trophy_row else 0)
+                await conn.execute(
+                    """
+                    UPDATE battle_surrender_penalties
+                    SET new_trophies = $4
+                    WHERE match_id = $1 AND user_id = $2 AND reason = $3
+                    """,
+                    str(match_id),
+                    int(user_id),
+                    str(reason),
+                    new_trophies,
+                )
+                return {
+                    "applied": True,
+                    "already_processed": False,
+                    "trophy_penalty": int(penalty_delta),
+                    "new_trophies": new_trophies,
+                }
 
     async def apply_battle_end_rewards_transaction(
         self,
@@ -12606,9 +17606,9 @@ class Database:
                     """
                     INSERT INTO battle_actions (
                         battle_id, turn_number, acting_player, acting_user_id,
-                        is_bot, state_json, action_json, quality_score
+                        is_bot, state_json, action_json, context_json, quality_score
                     )
-                    VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8)
+                    VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8::jsonb,$9)
                     """,
                     battle_id,
                     int(item.get("turn_number") or 0),
@@ -12617,6 +17617,7 @@ class Database:
                     bool(item.get("is_bot", False)),
                     json.dumps(item.get("state_json") or {}, ensure_ascii=False),
                     json.dumps(item.get("action_json") or {}, ensure_ascii=False),
+                    json.dumps(item.get("context_json") or {}, ensure_ascii=False),
                     item.get("quality_score"),
                 )
                 inserted += 1
@@ -13567,7 +18568,7 @@ class Database:
         if not self._pool:
             raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
         try:
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
 
             total = await self.fetchval("SELECT COUNT(*) FROM users WHERE COALESCE(is_bot, FALSE) = FALSE") or 0
             active_24h = await self.fetchval(
@@ -13694,7 +18695,7 @@ class Database:
         if not self._pool:
             raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
         try:
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
             active_by_day = []
             new_by_day = []
             sessions_by_day = []
@@ -13776,7 +18777,10 @@ class Database:
         try:
             where_clauses = []
             params: list[Any] = []
-            param_idx = 0
+
+            def _add_param(value: Any) -> str:
+                params.append(value)
+                return f"${len(params)}"
 
             if status == "bots":
                 where_clauses.append("(COALESCE(u.is_bot, FALSE) = TRUE)")
@@ -13785,15 +18789,13 @@ class Database:
 
             if query:
                 if query.isdigit():
-                    param_idx += 1
-                    where_clauses.append(f"(u.user_id = ${param_idx})")
-                    params.append(int(query))
+                    ph = _add_param(int(query))
+                    where_clauses.append(f"(u.user_id = {ph})")
                 else:
-                    param_idx += 1
+                    ph = _add_param(f"%{query}%")
                     where_clauses.append(
-                        f"(LOWER(u.username) LIKE LOWER(${param_idx}) OR LOWER(u.first_name) LIKE LOWER(${param_idx}))"
+                        f"(LOWER(u.username) LIKE LOWER({ph}) OR LOWER(u.first_name) LIKE LOWER({ph}))"
                     )
-                    params.append(f"%{query}%")
 
             if status == "active":
                 where_clauses.append("(u.is_banned = FALSE AND u.status = 'active')")
@@ -13803,69 +18805,53 @@ class Database:
                 where_clauses.append("(u.warnings_count > 0)")
 
             if league is not None:
-                param_idx += 1
-                where_clauses.append(f"(u.league = ${param_idx})")
-                params.append(league)
+                ph = _add_param(league)
+                where_clauses.append(f"(u.league = {ph})")
 
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
+            now_24h = now - timedelta(hours=24)
+            now_7d = now - timedelta(days=7)
+            now_30d = now - timedelta(days=30)
             if activity == "active_24h":
+                ph = _add_param(now_24h)
                 where_clauses.append(
-                    "(EXISTS (SELECT 1 FROM user_sessions s WHERE s.user_id = u.user_id AND s.started_at >= $__now24h__))"
+                    f"(EXISTS (SELECT 1 FROM user_sessions s WHERE s.user_id = u.user_id AND s.started_at >= {ph}))"
                 )
             elif activity == "active_7d":
+                ph = _add_param(now_7d)
                 where_clauses.append(
-                    "(EXISTS (SELECT 1 FROM user_sessions s WHERE s.user_id = u.user_id AND s.started_at >= $__now7d__))"
+                    f"(EXISTS (SELECT 1 FROM user_sessions s WHERE s.user_id = u.user_id AND s.started_at >= {ph}))"
                 )
             elif activity == "dormant_7d":
+                ph = _add_param(now_7d)
                 where_clauses.append(
-                    "(NOT EXISTS (SELECT 1 FROM user_sessions s WHERE s.user_id = u.user_id AND s.started_at >= $__now7d__))"
+                    f"(NOT EXISTS (SELECT 1 FROM user_sessions s WHERE s.user_id = u.user_id AND s.started_at >= {ph}))"
                 )
             elif activity == "dormant_30d":
+                ph = _add_param(now_30d)
                 where_clauses.append(
-                    "(NOT EXISTS (SELECT 1 FROM user_sessions s WHERE s.user_id = u.user_id AND s.started_at >= $__now30d__))"
+                    f"(NOT EXISTS (SELECT 1 FROM user_sessions s WHERE s.user_id = u.user_id AND s.started_at >= {ph}))"
                 )
             elif activity == "paying":
                 where_clauses.append(
                     "(EXISTS (SELECT 1 FROM payments p WHERE p.user_id = u.user_id AND p.status = 'succeeded'))"
                 )
 
-            # Resolve all named markers
-            now_24h = now - timedelta(hours=24)
-            now_7d = now - timedelta(days=7)
-            now_30d = now - timedelta(days=30)
-
-            def _resolve_markers(text: str, all_params: list[Any]) -> str:
-                while "$__sessions_since__" in text:
-                    all_params.append(now_30d)
-                    text = text.replace("$__sessions_since__", f"${len(all_params)}", 1)
-                while "$__now24h__" in text:
-                    all_params.append(now_24h)
-                    text = text.replace("$__now24h__", f"${len(all_params)}", 1)
-                while "$__now7d__" in text:
-                    all_params.append(now_7d)
-                    text = text.replace("$__now7d__", f"${len(all_params)}", 1)
-                while "$__now30d__" in text:
-                    all_params.append(now_30d)
-                    text = text.replace("$__now30d__", f"${len(all_params)}", 1)
-                return text
-
             where_sql = ""
             if where_clauses:
-                resolved = []
-                resolved_params: list[Any] = []
-                for clause in where_clauses:
-                    clause = _resolve_markers(clause, resolved_params)
-                    resolved.append(clause)
-                where_sql = "WHERE " + " AND ".join(resolved)
-                params.extend(resolved_params)
+                where_sql = "WHERE " + " AND ".join(where_clauses)
 
             count_sql = f"SELECT COUNT(*) FROM users u {where_sql}"
-            count_params = list(params)
-            count_sql = _resolve_markers(count_sql, count_params)
-            total = await self.fetchval(count_sql, *count_params)
+            total = await self.fetchval(count_sql, *params)
             total = int(total or 0)
 
-            limit_clause = f"LIMIT {int(limit)} OFFSET {int(offset)}"
+            data_params = list(params)
+            sessions_since_ph = f"${len(data_params) + 1}"
+            data_params.append(now_30d)
+            limit_ph = f"${len(data_params) + 1}"
+            data_params.append(int(limit))
+            offset_ph = f"${len(data_params) + 1}"
+            data_params.append(int(offset))
             data_sql = f"""
                 SELECT
                     u.user_id,
@@ -13885,17 +18871,14 @@ class Database:
                     u.status,
                     u.reg_date,
                     u.updated_at as last_seen_raw,
-                    (SELECT COUNT(*) FROM user_sessions s WHERE s.user_id = u.user_id AND s.started_at >= $__sessions_since__) as sessions_30d,
+                    (SELECT COUNT(*) FROM user_sessions s WHERE s.user_id = u.user_id AND s.started_at >= {sessions_since_ph}) as sessions_30d,
                     (SELECT COUNT(*) FROM payments p WHERE p.user_id = u.user_id AND p.status = 'succeeded') as purchases_total,
                     (SELECT COALESCE(SUM(p.amount), 0) FROM payments p WHERE p.user_id = u.user_id AND p.status = 'succeeded') as revenue_total
                 FROM users u
                 {where_sql}
                 ORDER BY u.trophies DESC
-                {limit_clause}
+                LIMIT {limit_ph} OFFSET {offset_ph}
             """
-            # Note: data_sql is rebuilt here, we resolve markers on its final form
-            data_params = list(params)
-            data_sql = _resolve_markers(data_sql, data_params)
             rows = await self.fetch(data_sql, *data_params)
 
             players = []
@@ -14430,7 +19413,7 @@ class Database:
             else:
                 if not days or days < 1:
                     return {"error": "days_required_for_active_mode"}
-                expires = datetime.utcnow() + timedelta(days=int(days))
+                expires = datetime.now(timezone.utc) + timedelta(days=int(days))
                 await self.execute(
                     "UPDATE users SET extra_pass = $2, extra_pass_expires_at = $3 WHERE user_id = $1",
                     target_user_id, mode, expires,
@@ -14479,7 +19462,7 @@ class Database:
             """
             SELECT ba.id, ba.battle_id, ba.turn_number, ba.acting_player,
                    ba.acting_user_id, ba.is_bot, ba.state_json, ba.action_json,
-                   ba.quality_score, ba.created_at,
+                   ba.context_json, ba.quality_score, ba.created_at,
                    bs.game_mode, bs.match_type, bs.winner_user_id,
                    bs.p1_user_id, bs.p2_user_id, bs.metadata AS battle_metadata
             FROM battle_actions ba
@@ -14493,11 +19476,20 @@ class Database:
         )
         dataset = []
         for r in rows:
+            state_json = _jsonb_dict(r["state_json"])
+            action_json = _jsonb_dict(r["action_json"])
+            context_json = _jsonb_dict(r["context_json"])
+            battle_metadata = _jsonb_dict(r["battle_metadata"])
+            if not include_players:
+                context_json.pop("acting_user_id", None)
             acting_user_id = r["acting_user_id"] if include_players else None
             winner_user_id = r["winner_user_id"] if include_players else None
             sample_won = (r["winner_user_id"] == r["acting_user_id"]) if r["winner_user_id"] and r["acting_user_id"] else None
             dataset.append(_json_safe({
-                "format": "train_v2_admin_battle_action_jsonl_v1",
+                "format": "train_v2_admin_battle_action_jsonl_v2",
+                "format_version": 2,
+                "dataset_schema": "train_v3_battle_action_context_v1",
+                "compatible_with": ["train_v2_admin_battle_action_jsonl_v1"],
                 "id": r["id"],
                 "battle_id": r["battle_id"],
                 "turn_number": r["turn_number"],
@@ -14507,42 +19499,289 @@ class Database:
                 "game_mode": r["game_mode"] or r["match_type"] or "classic",
                 "winner_user_id": winner_user_id,
                 "won": sample_won,
-                "state_json": r["state_json"] or {},
-                "action_json": r["action_json"] or {},
+                "state_json": state_json,
+                "action_json": action_json,
+                "context_json": context_json,
+                "deck_param_snapshots": battle_metadata.get("deck_param_snapshots", {}),
+                "card_params_schema": (
+                    context_json.get("card_params_schema")
+                    or battle_metadata.get("card_params_schema")
+                    or "train_v3_card_params_v1"
+                ),
                 "quality_score": r["quality_score"],
-                "battle_metadata": r["battle_metadata"] or {},
+                "battle_metadata": battle_metadata,
                 "created_at": r["created_at"],
             }))
         return dataset
 
 
+    async def get_onboarding_state(self, user_id: int) -> dict[str, Any]:
+        """Return protected onboarding progress for a user."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+
+        user_id = int(user_id)
+        user_exists = await self.fetchval("SELECT 1 FROM users WHERE user_id = $1", user_id)
+        if not user_exists:
+            return {
+                "user_id": user_id,
+                "status": "welcome",
+                "current_step": "welcome",
+                "tutorial_step": 0,
+                "tutorial_match_id": None,
+                "menu_step": "arena",
+                "newbie_path_progress": {},
+                "completed": False,
+                "need_registration": True,
+            }
+
+        row = await self.fetchrow(
+            "SELECT * FROM user_onboarding WHERE user_id = $1",
+            user_id,
+        )
+        if not row:
+            welcome_shown = await self.fetchval(
+                "SELECT welcome_shown FROM user_settings WHERE user_id = $1",
+                user_id,
+            )
+            status = "completed" if welcome_shown else "welcome"
+            await self.execute(
+                """
+                INSERT INTO user_onboarding (user_id, status, current_step, completed_at)
+                VALUES ($1, $2, $3, CASE WHEN $2 = 'completed' THEN NOW() ELSE NULL END)
+                ON CONFLICT (user_id) DO NOTHING
+                """,
+                user_id,
+                status,
+                status,
+            )
+            row = await self.fetchrow(
+                "SELECT * FROM user_onboarding WHERE user_id = $1",
+                user_id,
+            )
+
+        data = dict(row or {})
+        progress = _jsonb_dict(data.get("newbie_path_progress"))
+
+        status = data.get("status") or "welcome"
+        return {
+            "user_id": user_id,
+            "status": status,
+            "current_step": data.get("current_step") or status,
+            "tutorial_step": int(data.get("tutorial_step") or 0),
+            "tutorial_match_id": data.get("tutorial_match_id"),
+            "menu_step": data.get("menu_step") or "arena",
+            "newbie_path_progress": progress,
+            "started_at": data.get("started_at").isoformat() if data.get("started_at") else None,
+            "completed_at": data.get("completed_at").isoformat() if data.get("completed_at") else None,
+            "updated_at": data.get("updated_at").isoformat() if data.get("updated_at") else None,
+            "completed": status == "completed",
+            "need_registration": False,
+        }
+
+    async def set_onboarding_state(
+        self,
+        user_id: int,
+        *,
+        status: Optional[str] = None,
+        current_step: Optional[str] = None,
+        tutorial_step: Optional[int] = None,
+        tutorial_match_id: Optional[str] = None,
+        menu_step: Optional[str] = None,
+        newbie_path_progress: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        """Create/update onboarding progress and return the refreshed state."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+
+        user_id = int(user_id)
+        await self.execute(
+            """
+            INSERT INTO user_onboarding (user_id)
+            VALUES ($1)
+            ON CONFLICT (user_id) DO NOTHING
+            """,
+            user_id,
+        )
+
+        updates: list[str] = []
+        values: list[Any] = []
+
+        if status is not None:
+            status = str(status)
+            if status not in {"not_started", "welcome", "tutorial_battle", "menu_tour", "completed"}:
+                raise ValueError("invalid_onboarding_status")
+            updates.append(f"status = ${len(values) + 1}")
+            values.append(status)
+            if status == "completed":
+                updates.append("completed_at = COALESCE(completed_at, NOW())")
+            else:
+                updates.append("completed_at = NULL")
+
+        if current_step is not None:
+            updates.append(f"current_step = ${len(values) + 1}")
+            values.append(str(current_step))
+        if tutorial_step is not None:
+            updates.append(f"tutorial_step = ${len(values) + 1}")
+            values.append(int(tutorial_step))
+        if tutorial_match_id is not None:
+            updates.append(f"tutorial_match_id = ${len(values) + 1}")
+            values.append(str(tutorial_match_id))
+        if menu_step is not None:
+            updates.append(f"menu_step = ${len(values) + 1}")
+            values.append(str(menu_step))
+        if newbie_path_progress is not None:
+            updates.append(f"newbie_path_progress = ${len(values) + 1}::jsonb")
+            values.append(json.dumps(newbie_path_progress or {}, ensure_ascii=False))
+
+        if updates:
+            updates.append("updated_at = NOW()")
+            values.append(user_id)
+            await self.execute(
+                f"""
+                UPDATE user_onboarding
+                SET {', '.join(updates)}
+                WHERE user_id = ${len(values)}
+                """,
+                *values,
+            )
+
+        return await self.get_onboarding_state(user_id)
+
+    async def mark_newbie_path_task(self, user_id: int, task_id: str, *, claimed: bool = False) -> dict[str, Any]:
+        """Atomically mark a soft Newbie Path task completed/claimed."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+
+        user_id = int(user_id)
+        task_id = str(task_id)
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    """
+                    INSERT INTO user_onboarding (user_id)
+                    VALUES ($1)
+                    ON CONFLICT (user_id) DO NOTHING
+                    """,
+                    user_id,
+                )
+                row = await conn.fetchrow(
+                    "SELECT newbie_path_progress FROM user_onboarding WHERE user_id = $1 FOR UPDATE",
+                    user_id,
+                )
+                if row is None:
+                    return {
+                        "success": False,
+                        "error": "onboarding_not_found",
+                    }
+                progress = _jsonb_dict(row["newbie_path_progress"] if row else None)
+                tasks = _jsonb_dict(progress.get("tasks"))
+                entry = dict(tasks.get(task_id) or {})
+                entry["completed"] = True
+                if claimed:
+                    entry["claimed"] = True
+                entry["completed_at"] = entry.get("completed_at") or datetime.now(timezone.utc).isoformat()
+                tasks[task_id] = entry
+                progress["tasks"] = tasks
+                await conn.execute(
+                    """
+                    UPDATE user_onboarding
+                    SET newbie_path_progress = $2::jsonb,
+                        updated_at = NOW()
+                    WHERE user_id = $1
+                    """,
+                    user_id,
+                    json.dumps(progress, ensure_ascii=False),
+                )
+
+        return await self.get_onboarding_state(user_id)
+
+    async def claim_newbie_path_task(self, user_id: int, task_id: str, *, reward_coins: int = 0, require_completed: bool = True) -> dict[str, Any]:
+        """Atomically claim an already-completed Newbie Path task."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+
+        user_id = int(user_id)
+        task_id = str(task_id)
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    "SELECT newbie_path_progress FROM user_onboarding WHERE user_id = $1 FOR UPDATE",
+                    user_id,
+                )
+                if row is None:
+                    return {
+                        "success": False,
+                        "error": "onboarding_not_found",
+                    }
+                progress = _jsonb_dict(row["newbie_path_progress"] if row else None)
+                tasks = _jsonb_dict(progress.get("tasks"))
+                entry = dict(tasks.get(task_id) or {})
+                if require_completed and not entry.get("completed"):
+                    return {
+                        "success": False,
+                        "error": "task_not_completed",
+                    }
+
+                already_claimed = bool(entry.get("claimed"))
+                entry["completed"] = True
+                entry["claimed"] = True
+                entry["completed_at"] = entry.get("completed_at") or datetime.now(timezone.utc).isoformat()
+                tasks[task_id] = entry
+                progress["tasks"] = tasks
+
+                granted_amount = int(reward_coins or 0) if not already_claimed else 0
+                if granted_amount > 0:
+                    await conn.execute(
+                        "UPDATE users SET coins = coins + $2 WHERE user_id = $1",
+                        user_id,
+                        granted_amount,
+                    )
+                await conn.execute(
+                    """
+                    UPDATE user_onboarding
+                    SET newbie_path_progress = $2::jsonb,
+                        updated_at = NOW()
+                    WHERE user_id = $1
+                    """,
+                    user_id,
+                    json.dumps(progress, ensure_ascii=False),
+                )
+
+        return {
+            "success": True,
+            "already_claimed": already_claimed,
+            "granted_amount": granted_amount,
+            "state": await self.get_onboarding_state(user_id),
+        }
+
     async def get_welcome_status(self, user_id: int) -> dict[str, Any]:
         """Получить статус приветствия для пользователя."""
         if not self._pool:
             raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
-        
+
         # Проверяем, существует ли пользователь
         user_exists = await self.fetchval("SELECT 1 FROM users WHERE user_id = $1", user_id)
         if not user_exists:
             return {"should_show": True}
-        
+
         # Получаем статус welcome_shown из настроек
         welcome_shown = await self.fetchval(
             "SELECT welcome_shown FROM user_settings WHERE user_id = $1",
             user_id
         )
-        
+
         # Если настройки не найдены, считаем, что приветствие нужно показать
         if welcome_shown is None:
             return {"should_show": True}
-        
+
         return {"should_show": not welcome_shown}
 
     async def mark_welcome_shown(self, user_id: int) -> None:
         """Отметить, что приветствие было показано пользователю."""
         if not self._pool:
             raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
-        
+
         # Убеждаемся, что настройки существуют
         await self.execute(
             """

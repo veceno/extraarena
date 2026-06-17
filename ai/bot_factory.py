@@ -42,11 +42,20 @@ class BotGenerator:
         self,
         player_id: int,
         player_trophies: int,
+        difficulty_override: str | None = None,
     ) -> dict[str, Any]:
         """
         Try to reuse an existing bot; fallback to creation.
         Returns a unified bot payload.
         """
+        if difficulty_override is not None:
+            difficulty = self._normalize_difficulty(difficulty_override)
+            return await self._generate_bot(
+                player_id,
+                player_trophies,
+                difficulty_override=difficulty,
+            )
+
         # 1. Collect recent bot opponents to exclude
         recent_bot_opponents: list[int] = []
         try:
@@ -124,13 +133,18 @@ class BotGenerator:
         self,
         player_id: int,
         player_trophies: int,
+        difficulty_override: str | None = None,
     ) -> dict[str, Any]:
         """Generate a brand new bot and persist everything."""
         # 1. Deck: try donor first
         deck_ids: list[int] = []
         bot_name = None
         bot_avatar_url = None
-        difficulty = self._calc_difficulty(player_trophies)
+        difficulty = (
+            self._normalize_difficulty(difficulty_override)
+            if difficulty_override is not None
+            else self._calc_difficulty(player_trophies)
+        )
         deck_policy = self._difficulty_metadata(difficulty)["deck_policy"]
 
         donor_deck = await self._get_donor_deck(
@@ -141,16 +155,11 @@ class BotGenerator:
         if donor_deck:
             self._logger.info("Using donor deck: %s cards", len(donor_deck))
             deck_ids = donor_deck
-            donor_name, donor_avatar = await self._get_random_donor_name(player_id)
-            bot_name = donor_name
-            bot_avatar_url = donor_avatar
         else:
             self._logger.warning("No donor deck, using random catalog deck")
             deck_ids = await self._build_bot_deck(player_trophies)
-            donor_name, donor_avatar = await self._get_random_donor_name(player_id)
-            bot_name = donor_name
-            bot_avatar_url = donor_avatar
         deck_ids = await self._sanitize_deck(deck_ids)
+        bot_name, bot_avatar_url = await self._get_random_donor_name(player_id)
 
         # 2. Trophies: player ± N, no hard cap, min 0
         n = max(25, min(round(player_trophies * 0.08), 500))
@@ -164,30 +173,49 @@ class BotGenerator:
         extra_pass = self._roll_extra_pass()
 
         # 5. Persist
-        bot_id = await self._db.get_next_bot_id()
-        self._logger.info("Creating new bot %s trophies=%s difficulty=%s", bot_id, bot_trophies, difficulty)
+        bot_id = 0
+        display_name = bot_name or f"Бот {random.randint(1000, 9999)}"
 
         try:
-            await self._db.create_or_update_bot_profile(
-                bot_id=bot_id,
-                display_name=bot_name or f"Бот {random.randint(1000, 9999)}",
-                trophies=bot_trophies,
-                level=1,
-                deck_ids=deck_ids,
-                avatar_url=bot_avatar_url,
-            )
-            # Persist extra_pass
-            await self._db.execute(
-                "UPDATE users SET extra_pass = $2 WHERE user_id = $1",
-                bot_id, extra_pass,
-            )
-            # Persist cosmetics
-            await self._db.grant_and_equip_bot_cosmetics(
-                bot_id=bot_id,
-                avatar_cos_id=cosmetics.get("avatar", {}).get("id"),
-                title_cos_id=cosmetics.get("title", {}).get("id"),
-                bg_cos_id=cosmetics.get("profile_background", {}).get("id"),
-            )
+            if hasattr(self._db, "create_generated_bot_profile"):
+                persisted = await self._db.create_generated_bot_profile(
+                    display_name=display_name,
+                    trophies=bot_trophies,
+                    level=1,
+                    deck_ids=deck_ids,
+                    avatar_url=bot_avatar_url,
+                    extra_pass=extra_pass,
+                    avatar_cos_id=cosmetics.get("avatar", {}).get("id"),
+                    title_cos_id=cosmetics.get("title", {}).get("id"),
+                    bg_cos_id=cosmetics.get("profile_background", {}).get("id"),
+                )
+                bot_id = int(persisted.get("bot_id", 0))
+                if bot_id <= 0:
+                    raise RuntimeError("create_generated_bot_profile returned invalid bot_id")
+                self._logger.info("Created new bot %s trophies=%s difficulty=%s", bot_id, bot_trophies, difficulty)
+            else:
+                bot_id = await self._db.get_next_bot_id()
+                self._logger.info("Creating new bot %s trophies=%s difficulty=%s", bot_id, bot_trophies, difficulty)
+                await self._db.create_or_update_bot_profile(
+                    bot_id=bot_id,
+                    display_name=display_name,
+                    trophies=bot_trophies,
+                    level=1,
+                    deck_ids=deck_ids,
+                    avatar_url=bot_avatar_url,
+                )
+                # Persist extra_pass
+                await self._db.execute(
+                    "UPDATE users SET extra_pass = $2 WHERE user_id = $1",
+                    bot_id, extra_pass,
+                )
+                # Persist cosmetics
+                await self._db.grant_and_equip_bot_cosmetics(
+                    bot_id=bot_id,
+                    avatar_cos_id=cosmetics.get("avatar", {}).get("id"),
+                    title_cos_id=cosmetics.get("title", {}).get("id"),
+                    bg_cos_id=cosmetics.get("profile_background", {}).get("id"),
+                )
         except Exception as exc:
             self._fallback_metrics["persist_failed"] += 1
             self._logger.error("Failed to persist bot %s: %s", bot_id, exc, exc_info=True)
@@ -316,7 +344,7 @@ class BotGenerator:
         catalog = await self._card_catalog_rows()
         if not catalog:
             raise ValueError("Cannot build valid bot deck: card catalog is unavailable")
-        target_size = min(max(len(deck_ids or []), 1), DECK_SIZE)
+        target_size = DECK_SIZE
         target_non_heroes = max(0, target_size - 1)
 
         type_by_id = {row["id"]: row["type"] for row in catalog}
@@ -405,6 +433,28 @@ class BotGenerator:
     def _calc_public_difficulty(cls, player_trophies: int) -> str:
         return str(get_bot_strength_tier(player_trophies)["difficulty_label"])
 
+    @classmethod
+    def _shift_difficulty_by_streak(
+        cls,
+        difficulty: str,
+        direction: str | None,
+        n: int,
+    ) -> str:
+        """Shift a bot strength tier by streak pressure without changing trophy-road mapping."""
+        resolved = cls._normalize_difficulty(difficulty)
+        if direction not in {"up", "down"}:
+            return resolved
+
+        steps = min(5, max(0, int(n or 0)))
+        if steps <= 0:
+            return resolved
+
+        tier_keys = [str(tier["key"]) for tier in BOT_STRENGTH_TIERS]
+        current_idx = tier_keys.index(resolved)
+        delta = steps if direction == "up" else -steps
+        shifted_idx = max(0, min(len(tier_keys) - 1, current_idx + delta))
+        return tier_keys[shifted_idx]
+
     @staticmethod
     def _tier_by_key(difficulty: str) -> dict[str, Any] | None:
         difficulty = BOT_DIFFICULTY_ALIASES.get(str(difficulty), str(difficulty))
@@ -413,51 +463,21 @@ class BotGenerator:
                 return tier
         return None
 
-    @staticmethod
-    def _manual_metadata(difficulty: str) -> dict[str, Any]:
-        manual = {
-            "lite": {
-                "difficulty_label": "lite",
-                "brain_profile": "extra-lr-v4-micro",
-                "selection": "softmax",
-                "temperature": 5.0,
-                "level_policy": {"delta_min": -1, "delta_max": -1, "cap": 1, "boost_fraction": 0.0},
-                "deck_policy": "starter_random",
-            },
-            "easy": {
-                "difficulty_label": "easy",
-                "brain_profile": "extra-lr-v4-lite",
-                "selection": "softmax",
-                "temperature": 2.8,
-                "level_policy": {"delta_min": -1, "delta_max": -1, "cap": 2, "boost_fraction": 0.0},
-                "deck_policy": "weak_donor",
-            },
-            "medium": {
-                "difficulty_label": "medium",
-                "brain_profile": "extra-lr-v4-opti",
-                "selection": "softmax",
-                "temperature": 1.8,
-                "level_policy": {"delta_min": 0, "delta_max": 0, "cap": 5, "boost_fraction": 0.0},
-                "deck_policy": "decent_donor",
-            },
-            "hard": {
-                "difficulty_label": "hard",
-                "brain_profile": "extra-lr-v4-max",
-                "selection": "softmax",
-                "temperature": 1.6,
-                "level_policy": {"delta_min": 0, "delta_max": 0, "cap": 8, "boost_fraction": 0.0},
-                "deck_policy": "curated_donor",
-            },
-            "max": {
-                "difficulty_label": "max",
-                "brain_profile": "extra-lr-v4-max",
-                "selection": "softmax",
-                "temperature": 0.45,
-                "level_policy": {"delta_min": 0, "delta_max": 0, "cap": 10, "boost_fraction": 0.4},
-                "deck_policy": "meta_boss",
-            },
-        }
-        return manual.get(difficulty, manual["medium"])
+    @classmethod
+    def _normalize_difficulty(cls, difficulty: str) -> str:
+        tier = cls._tier_by_key(difficulty)
+        if tier is None:
+            raise KeyError(f"Unknown bot difficulty/tier: {difficulty}")
+        return str(tier["key"])
+
+    @classmethod
+    def _match_difficulty(cls, player_trophies: int, difficulty: str | None = None) -> str:
+        if difficulty:
+            try:
+                return cls._normalize_difficulty(str(difficulty))
+            except KeyError:
+                pass
+        return cls._calc_difficulty(player_trophies)
 
     @classmethod
     def _difficulty_metadata(cls, difficulty: str) -> dict[str, Any]:
@@ -473,6 +493,41 @@ class BotGenerator:
             "card_level_policy": dict(tier["level_policy"]),
             "deck_policy": tier["deck_policy"],
         }
+
+    @classmethod
+    def normalize_bot_info(
+        cls,
+        bot_info: dict[str, Any],
+        *,
+        player_trophies: int,
+        user_max_level: int,
+        difficulty: str | None = None,
+    ) -> dict[str, Any]:
+        """Fill match-scoped bot difficulty metadata and per-card levels."""
+        normalized = dict(bot_info or {})
+        resolved_difficulty = cls._match_difficulty(
+            player_trophies,
+            difficulty or normalized.get("difficulty"),
+        )
+        deck_count = len(normalized.get("deck_ids") or [])
+        card_levels = normalized.get("card_levels")
+        incoming_difficulty = normalized.get("difficulty")
+        difficulty_changed = False
+        if difficulty is not None and incoming_difficulty:
+            try:
+                difficulty_changed = cls._normalize_difficulty(str(incoming_difficulty)) != resolved_difficulty
+            except KeyError:
+                difficulty_changed = True
+
+        normalized["difficulty"] = resolved_difficulty
+        normalized.update(cls._difficulty_metadata(resolved_difficulty))
+        if difficulty_changed or not isinstance(card_levels, list) or len(card_levels) != deck_count:
+            normalized["card_levels"] = cls._build_bot_card_levels(
+                resolved_difficulty,
+                int(user_max_level or 1),
+                deck_count,
+            )
+        return normalized
 
     @staticmethod
     def _build_bot_card_levels(
@@ -584,16 +639,21 @@ class BotGenerator:
         """Build a unified bot payload from a reused DB bot profile."""
         bot_id = profile["user_id"]
         bot_trophies = profile.get("trophies", player_trophies)
-        deck_ids = profile.get("deck_ids", [])
-        if not deck_ids or len(deck_ids) < 3:
+        original_deck_ids = [int(card_id) for card_id in profile.get("deck_ids", [])]
+        if not self._is_valid_deck(original_deck_ids):
             return None
         try:
-            deck_ids = await self._sanitize_deck([int(card_id) for card_id in deck_ids])
+            deck_ids = await self._sanitize_deck(original_deck_ids)
         except Exception as exc:
             self._logger.warning("Reused bot %s deck sanitization failed: %s", bot_id, exc, exc_info=True)
             return None
-        if not deck_ids or len(deck_ids) < 3:
+        if not self._is_valid_deck(deck_ids):
             return None
+        if sorted(deck_ids) != sorted(original_deck_ids) and hasattr(self._db, "update_bot_deck_preset"):
+            try:
+                await self._db.update_bot_deck_preset(bot_id, deck_ids)
+            except Exception as exc:
+                self._logger.warning("Failed to persist repaired deck for reused bot %s: %s", bot_id, exc)
 
         bot_name = profile.get("display_name") or f"Бот {bot_id}"
         bot_avatar_url = profile.get("img")
@@ -631,6 +691,11 @@ class BotGenerator:
         )
 
     @staticmethod
+    def _require_full_bot_deck(deck_ids: list[int]) -> None:
+        if len(deck_ids or []) != DECK_SIZE:
+            raise ValueError(f"Bot payload requires a full bot deck of {DECK_SIZE} cards")
+
+    @staticmethod
     def _build_payload(
         bot_id: int,
         deck_ids: list[int],
@@ -643,6 +708,7 @@ class BotGenerator:
         extra_pass: str,
         reused: bool,
     ) -> dict[str, Any]:
+        BotGenerator._require_full_bot_deck(deck_ids)
         return {
             "user_id": bot_id,
             "deck_ids": deck_ids,
@@ -673,6 +739,7 @@ class BotGenerator:
         cosmetics: dict[str, dict[str, Any]],
         extra_pass: str,
     ) -> dict[str, Any]:
+        BotGenerator._require_full_bot_deck(deck_ids)
         temp_bot_id = -abs(int(bot_id) or random.randint(1, 1_000_000))
         return {
             "user_id": temp_bot_id,

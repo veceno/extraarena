@@ -196,7 +196,7 @@ def deck_from_card_ids(
 
     for idx, card_id in enumerate(card_ids):
         if card_id not in cards_data:
-            continue
+            raise ValueError(f"unknown_card_id:{card_id}")
 
         card_data = cards_data[card_id]
 

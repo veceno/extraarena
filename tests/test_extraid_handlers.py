@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from infrastructure.config import get_settings
 from web import extraid_handlers
 
 
@@ -18,6 +19,17 @@ class FakeRequest:
 
     async def json(self):
         return self._payload
+
+
+@pytest.fixture(autouse=True)
+def _local_settings(monkeypatch):
+    monkeypatch.setenv("BOT_TOKEN", "bot-token")
+    monkeypatch.setenv("ENVIRONMENT", "development")
+    monkeypatch.setenv("WEBAPP_HOST", "127.0.0.1")
+    monkeypatch.delenv("TELEGRAM_API_INSECURE_SSL", raising=False)
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
 
 
 class FakeGameDB:
@@ -59,6 +71,7 @@ class FakeExtraIDDB:
         self.account_id = uuid.uuid4()
         self.executed = []
         self.bonus_marked = None
+        self.revoked_user_sessions = []
 
     async def get_synthetic_user_id(self):
         return 987654321
@@ -107,6 +120,9 @@ class FakeExtraIDDB:
     async def cleanup_old_bot_codes(self, user_id):
         self.cleaned_bot_codes_for = user_id
 
+    async def revoke_all_user_sessions(self, user_id):
+        self.revoked_user_sessions.append(user_id)
+
 
 def test_rate_limit_store_prunes_expired_keys(monkeypatch):
     extraid_handlers._rate_limit_store.clear()
@@ -115,6 +131,43 @@ def test_rate_limit_store_prunes_expired_keys(monkeypatch):
 
     assert extraid_handlers._check_rate_limit("fresh:key", 3, 60) is True
     assert "stale:key" not in extraid_handlers._rate_limit_store
+
+
+@pytest.mark.asyncio
+async def test_extraid_rate_limit_requires_shared_backend_outside_development(monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("JWT_SECRET", "test-extraid-jwt-secret-that-is-long-enough-2026")
+    monkeypatch.setenv("ADMIN_SESSION_SECRET", "test-extraid-admin-secret-that-is-long-enough-2026")
+    get_settings.cache_clear()
+    request = FakeRequest(
+        {},
+        app={"extraid_db": object()},
+    )
+
+    with pytest.raises(RuntimeError, match="shared rate limit"):
+        await extraid_handlers._check_rate_limit_for_request(request, "login:key", 10, 60)
+
+
+@pytest.mark.asyncio
+async def test_extraid_rate_limit_uses_database_backend_when_available(monkeypatch):
+    class SharedRateLimitDB:
+        def __init__(self):
+            self.calls = []
+
+        async def check_rate_limit(self, key, max_requests, window_seconds):
+            self.calls.append((key, max_requests, window_seconds))
+            return False
+
+    backend = SharedRateLimitDB()
+    request = FakeRequest(
+        {},
+        app={"extraid_db": backend},
+    )
+
+    allowed = await extraid_handlers._check_rate_limit_for_request(request, "login:key", 10, 60)
+
+    assert allowed is False
+    assert backend.calls == [("login:key", 10, 60)]
 
 
 def test_bot_auth_code_uses_secure_random_source():
@@ -233,8 +286,8 @@ async def test_mobile_register_with_jwt_links_current_app_user(monkeypatch):
             "nickname": "MobileHero",
             "client": "android_app",
         },
-        query={"_auth": "mobile-jwt"},
         app={"db": game_db, "extraid_db": extra_db, "bot_token": "bot-token"},
+        headers={"Authorization": "Bearer mobile-jwt"},
     )
 
     async def verify_jwt(token, _extra_db, _settings):
@@ -243,6 +296,7 @@ async def test_mobile_register_with_jwt_links_current_app_user(monkeypatch):
 
     monkeypatch.setattr(extraid_handlers, "_verify_init_data_fn", lambda auth, token: None)
     monkeypatch.setattr(extraid_handlers, "_verify_jwt_token_async_fn", verify_jwt)
+    monkeypatch.setattr(extraid_handlers, "_nickname_valid_fn", lambda nick: True)
     monkeypatch.setattr(extraid_handlers, "_display_id_generator_fn", lambda check: "4242-APP")
     monkeypatch.setattr(extraid_handlers, "_nickname_valid_fn", lambda nick: True)
     monkeypatch.setattr(extraid_handlers.bcrypt, "gensalt", lambda rounds=12: b"salt")
@@ -259,6 +313,72 @@ async def test_mobile_register_with_jwt_links_current_app_user(monkeypatch):
     assert game_db.ensured_users[0]["user_id"] == 4242
     assert extra_db.bonus_marked is None
     assert any("auth_source = $2" in query and args[1] == "extraid_mobile" for query, args in game_db.executed)
+
+
+@pytest.mark.asyncio
+async def test_mobile_register_accepts_bearer_jwt_without_query_auth(monkeypatch):
+    game_db = FakeGameDB()
+    extra_db = FakeExtraIDDB()
+    request = FakeRequest(
+        {
+            "email": "Bearer@Example.com",
+            "password": "strongpass",
+            "nickname": "BearerHero",
+            "client": "android_app",
+        },
+        app={"db": game_db, "extraid_db": extra_db, "bot_token": "bot-token"},
+        headers={"Authorization": "Bearer mobile-jwt"},
+    )
+
+    async def verify_jwt(token, _extra_db, _settings):
+        assert token == "mobile-jwt"
+        return 5252, uuid.uuid4()
+
+    monkeypatch.setattr(extraid_handlers, "_verify_init_data_fn", lambda auth, token: None)
+    monkeypatch.setattr(extraid_handlers, "_verify_jwt_token_async_fn", verify_jwt)
+    monkeypatch.setattr(extraid_handlers, "_display_id_generator_fn", lambda check: "5252-APP")
+    monkeypatch.setattr(extraid_handlers, "_nickname_valid_fn", lambda nick: True)
+    monkeypatch.setattr(extraid_handlers.bcrypt, "gensalt", lambda rounds=12: b"salt")
+    monkeypatch.setattr(extraid_handlers.bcrypt, "hashpw", lambda password, salt: b"hash")
+
+    response = await extraid_handlers.extraid_register_handler(request)
+    body = json.loads(response.text)
+
+    assert response.status == 200
+    assert body["ok"] is True
+    assert game_db.ensured_users[0]["user_id"] == 5252
+    assert any("auth_source = $2" in query and args[1] == "extraid_mobile" for query, args in game_db.executed)
+
+
+@pytest.mark.asyncio
+async def test_mobile_register_rejects_query_jwt(monkeypatch):
+    game_db = FakeGameDB()
+    extra_db = FakeExtraIDDB()
+    token = "a.b.c"
+    request = FakeRequest(
+        {
+            "email": "QueryJwt@Example.com",
+            "password": "strongpass",
+            "nickname": "QueryHero",
+            "client": "android_app",
+        },
+        query={"_auth": token},
+        app={"db": game_db, "extraid_db": extra_db, "bot_token": "bot-token"},
+    )
+
+    async def verify_jwt(*args):
+        raise AssertionError("query JWT must not be verified")
+
+    monkeypatch.setattr(extraid_handlers, "_verify_init_data_fn", lambda auth, token: None)
+    monkeypatch.setattr(extraid_handlers, "_verify_jwt_token_async_fn", verify_jwt)
+    monkeypatch.setattr(extraid_handlers, "_nickname_valid_fn", lambda nick: True)
+
+    response = await extraid_handlers.extraid_register_handler(request)
+    body = json.loads(response.text)
+
+    assert response.status == 401
+    assert body["error"] == "invalid_auth"
+    assert game_db.ensured_users == []
 
 
 class LoginExtraIDDB:
@@ -391,11 +511,20 @@ class TelegramTransferExtraIDDB(FakeExtraIDDB):
         super().__init__()
         self.inserted_session_id = None
         self.used_bot_code = None
+        self.created_accounts = []
 
     async def verify_bot_auth_code(self, code):
         if code == "123456":
             return {"code": code, "user_id": 12345}
         return None
+
+    async def consume_bot_auth_code(self, code):
+        return await self.verify_bot_auth_code(code)
+
+    async def create_extra_account(self, user_id, display_id, email, password_hash, nickname=None):
+        account = await super().create_extra_account(user_id, display_id, email, password_hash, nickname)
+        self.created_accounts.append(account)
+        return account
 
     async def execute(self, query, *args):
         self.executed.append((query, args))
@@ -440,8 +569,16 @@ async def test_telegram_transfer_complete_creates_extraid_session(monkeypatch):
 
 
 class TelegramTransferEmailTakenDB(TelegramTransferExtraIDDB):
+    def __init__(self):
+        super().__init__()
+        self.consumed_codes = []
+
     async def get_any_extra_account_by_email(self, email):
         return {"id": uuid.uuid4(), "email": email, "deleted_at": "2026-01-01"}
+
+    async def consume_bot_auth_code(self, code):
+        self.consumed_codes.append(code)
+        return await super().consume_bot_auth_code(code)
 
 
 @pytest.mark.asyncio
@@ -463,7 +600,136 @@ async def test_telegram_transfer_returns_email_taken_for_soft_deleted_unique_ema
 
     assert response.status == 409
     assert body["error"] == "email_taken"
+    assert extra_db.consumed_codes == []
     assert not any("INSERT INTO auth_sessions" in query for query, _ in extra_db.executed)
+
+
+class TelegramTransferAlreadyConsumedDB(TelegramTransferExtraIDDB):
+    async def verify_bot_auth_code(self, code):
+        return {"code": code, "user_id": 12345}
+
+    async def consume_bot_auth_code(self, code):
+        return None
+
+
+@pytest.mark.asyncio
+async def test_telegram_transfer_complete_does_not_create_account_after_duplicate_consume(monkeypatch):
+    game_db = FakeGameDB()
+    extra_db = TelegramTransferAlreadyConsumedDB()
+    request = FakeRequest(
+        {
+            "telegram_id": "12345",
+            "code": "123456",
+            "email": "Player@Example.com",
+            "password": "strongpass",
+        },
+        app={"db": game_db, "extraid_db": extra_db, "bot_token": "bot-token"},
+    )
+
+    response = await extraid_handlers.telegram_transfer_complete_handler(request)
+    body = json.loads(response.text)
+
+    assert response.status == 400
+    assert body["error"] == "invalid_code"
+    assert extra_db.created_accounts == []
+    assert not any("INSERT INTO auth_sessions" in query for query, _ in extra_db.executed)
+    assert game_db.executed == []
+
+
+class LinkExtraIDDB(FakeExtraIDDB):
+    def __init__(self):
+        super().__init__()
+        self.account_id = uuid.uuid4()
+
+    async def get_extra_account_by_user_id(self, user_id):
+        if user_id == 4242:
+            return {
+                "id": self.account_id,
+                "user_id": 4242,
+                "display_id": "4242-APP",
+                "email": "player@example.com",
+            }
+        return None
+
+
+@pytest.mark.asyncio
+async def test_extraid_link_rejects_stale_telegram_init_data(monkeypatch):
+    game_db = FakeGameDB()
+    extra_db = LinkExtraIDDB()
+    request = FakeRequest(
+        {"tg_init_data": "stale-init-data"},
+        app={"db": game_db, "extraid_db": extra_db, "bot_token": "bot-token"},
+        headers={"Authorization": "Bearer mobile-jwt"},
+    )
+
+    async def verify_jwt(token, _extra_db, _settings):
+        assert token == "mobile-jwt"
+        return 4242, uuid.uuid4()
+
+    monkeypatch.setattr(extraid_handlers, "_verify_jwt_token_async_fn", verify_jwt)
+    monkeypatch.setattr(extraid_handlers, "_verify_init_data_fn", lambda auth, token: {"auth_date": "1", "user": "{}"})
+    monkeypatch.setattr(extraid_handlers, "_validate_auth_date_fn", lambda data: False)
+    monkeypatch.setattr(extraid_handlers, "_extract_user_id_from_init_data_fn", lambda data: 12345)
+
+    response = await extraid_handlers.extraid_link_handler(request)
+    body = json.loads(response.text)
+
+    assert response.status == 400
+    assert body["error"] == "invalid_tg_init_data"
+    assert extra_db.executed == []
+    assert game_db.executed == []
+
+
+@pytest.mark.asyncio
+async def test_extraid_link_rejects_query_jwt(monkeypatch):
+    game_db = FakeGameDB()
+    extra_db = LinkExtraIDDB()
+    request = FakeRequest(
+        {"tg_init_data": "valid-init-data"},
+        query={"_auth": "a.b.c"},
+        app={"db": game_db, "extraid_db": extra_db, "bot_token": "bot-token"},
+    )
+
+    async def verify_jwt(*args):
+        raise AssertionError("query JWT must not be verified")
+
+    monkeypatch.setattr(extraid_handlers, "_verify_jwt_token_async_fn", verify_jwt)
+
+    response = await extraid_handlers.extraid_link_handler(request)
+    body = json.loads(response.text)
+
+    assert response.status == 401
+    assert body["error"] == "auth_required"
+    assert extra_db.executed == []
+
+
+@pytest.mark.asyncio
+async def test_extraid_link_clears_old_owner_and_revokes_old_sessions(monkeypatch):
+    game_db = FakeGameDB()
+    extra_db = LinkExtraIDDB()
+    request = FakeRequest(
+        {"tg_init_data": "valid-init-data"},
+        app={"db": game_db, "extraid_db": extra_db, "bot_token": "bot-token"},
+        headers={"Authorization": "Bearer mobile-jwt"},
+    )
+
+    async def verify_jwt(token, _extra_db, _settings):
+        assert token == "mobile-jwt"
+        return 4242, uuid.uuid4()
+
+    monkeypatch.setattr(extraid_handlers, "_verify_jwt_token_async_fn", verify_jwt)
+    monkeypatch.setattr(extraid_handlers, "_verify_init_data_fn", lambda auth, token: {"auth_date": "1", "user": "{}"})
+    monkeypatch.setattr(extraid_handlers, "_validate_auth_date_fn", lambda data: True)
+    monkeypatch.setattr(extraid_handlers, "_extract_user_id_from_init_data_fn", lambda data: 12345)
+
+    response = await extraid_handlers.extraid_link_handler(request)
+    body = json.loads(response.text)
+
+    assert response.status == 200
+    assert body["ok"] is True
+    assert any("UPDATE extra_accounts SET user_id" in query and args[0] == 12345 for query, args in extra_db.executed)
+    assert any("extra_account_id = NULL" in query and args == (4242,) for query, args in game_db.executed)
+    assert extra_db.revoked_user_sessions == [4242]
 
 
 @pytest.mark.asyncio

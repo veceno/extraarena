@@ -36,14 +36,15 @@ final_stat = ceil(base_stat * (1 + rarity_growth) ^ (level - 1))
 |---|---:|
 | common | 10% |
 | rare | 10% |
+| start | 10% |
 | superrare | 10% |
-| epic | 11% |
-| legendary | 12% |
-| mythic | 12% |
-| limited | 13% |
-| divine | 15% |
-| unique | 15% |
-| start или неизвестная | 10% |
+| epic | 10% |
+| legendary | 10% |
+| mythic | 10% |
+| limited | 10% |
+| divine | 10% |
+| unique | 10% |
+| неизвестная | 10% |
 
 ## Воины
 
@@ -56,8 +57,8 @@ final_stat = ceil(base_stat * (1 + rarity_growth) ^ (level - 1))
 | Карта | L1 | L4 | L7 | L10 |
 |---|---:|---:|---:|---:|
 | Тока Киришима, common 2/1 | 2/1 | 3/2 | 4/2 | 5/3 |
-| Геральт, legendary 4/5 | 4/5 | 6/8 | 8/10 | 12/14 |
-| Сайтама, divine 10/10 | 10/10 | 16/16 | 24/24 | 36/36 |
+| Геральт, legendary 4/5 | 4/5 | 6/7 | 8/9 | 10/12 |
+| Сайтама, divine 10/10 | 10/10 | 14/14 | 18/18 | 24/24 |
 
 ### Механики воинов
 
@@ -76,7 +77,7 @@ final_stat = ceil(base_stat * (1 + rarity_growth) ^ (level - 1))
 |---|---|---|---|---|
 | Тока Киришима | `battlecry_damage_1` | `battlecry_damage_2` | `battlecry_damage_4` | `battlecry_damage_5` |
 | П.Е.К.К.А. | `armor_1` | `armor_2` | `armor_3` | `armor_4` |
-| Крипер | `deathrattle_aoe_damage_3` | `deathrattle_aoe_damage_4` | `deathrattle_aoe_damage_6` | `deathrattle_aoe_damage_7` |
+| Крипер | `deathrattle_aoe_damage_2` | `deathrattle_aoe_damage_3` | `deathrattle_aoe_damage_5` | `deathrattle_aoe_damage_6` |
 | Фрирен | `battlecry_heal_target_5` | `battlecry_heal_target_6` | `battlecry_heal_target_8` | `battlecry_heal_target_9` |
 | Юни | `battlecry_heal_target_3` | `battlecry_heal_target_4` | `battlecry_heal_target_6` | `battlecry_heal_target_7` |
 
@@ -89,9 +90,10 @@ final_stat = ceil(base_stat * (1 + rarity_growth) ^ (level - 1))
 - `consume_ally`
 - `choose_shield_damage`
 - `aoe_freeze`
-- `cleave_1_3`
-- `permanent_shield`
+- `desk_freeze`
+- `cleave_1_2`
 - `instant_kill`
+- `unit_killer`
 - `charge`
 - `lifesteal`
 
@@ -168,12 +170,12 @@ X + floor((level - 1) / 3)
 
 | Герой | База | L4 | L7 | L10 |
 |---|---|---|---|---|
-| Искатель | 30 HP, без механик | 36 HP | 42 HP | 48 HP |
+| Искатель | 35 HP, без механик | 41 HP | 47 HP | 53 HP |
 | Жанна д'Арк | 35 HP, `aura_atk_1` | 41 HP, `aura_atk_2` | 47 HP, `aura_atk_3` | 53 HP, `aura_atk_4` |
-| Аскеладд | 40 HP, `reflect_2` | 46 HP, `reflect_3` | 52 HP, `reflect_4` | 58 HP, `reflect_5` |
+| Аскеладд | 40 HP, `reflect_1` | 46 HP, `reflect_2` | 52 HP, `reflect_3` | 58 HP, `reflect_4` |
 | Даркнесс | 45 HP, `armor_1` | 51 HP, `armor_2` | 57 HP, `armor_3` | 63 HP, `armor_4` |
-| Росомаха | 35 HP, `regen_1` | 41 HP, `regen_1` | 47 HP, `regen_1` | 53 HP, `regen_1` |
-| Олег Тиньков | 25 HP, `start_mana_1` | 31 HP, `start_mana_2` | 37 HP, `start_mana_3` | 43 HP, `start_mana_4` |
+| Росомаха | 37 HP, `regen_1` | 43 HP, `regen_2` | 49 HP, `regen_3` | 55 HP, `regen_4` |
+| Олег Тиньков | 23 HP, `start_mana_1` | 29 HP, `start_mana_2` | 35 HP, `start_mana_3` | 41 HP, `start_mana_4` |
 
 ## Проблемные области
 
