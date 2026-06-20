@@ -54,6 +54,18 @@ class TestDifficultyCalculation:
             assert diff in BotGenerator.DIFFICULTIES
             assert diff != "noob"
 
+    def test_streak_difficulty_shift_moves_by_strength_tier(self):
+        assert BotGenerator._shift_difficulty_by_streak("tier_medium_1200", "down", 1) == "tier_medium_minus_0600"
+        assert BotGenerator._shift_difficulty_by_streak("tier_medium_1200", "up", 2) == "tier_hard_minus_3000"
+
+    def test_streak_difficulty_shift_clamps_and_caps_steps(self):
+        assert BotGenerator._shift_difficulty_by_streak("tier_lite_0000", "down", 3) == "tier_lite_0000"
+        assert BotGenerator._shift_difficulty_by_streak("tier_hard_4500", "up", 99) == "tier_max_9000"
+        assert BotGenerator._shift_difficulty_by_streak("tier_lite_0000", "up", 99) == "tier_medium_plus_2000"
+        assert BotGenerator._shift_difficulty_by_streak("tier_max_9000", "down", 99) == "tier_medium_plus_2000"
+        assert BotGenerator._shift_difficulty_by_streak("medium", "up", 1) == "tier_medium_plus_2000"
+        assert BotGenerator._shift_difficulty_by_streak("tier_hard_4500", None, 3) == "tier_hard_4500"
+
 
 # ============================================================================
 # Per-card level builder
@@ -316,6 +328,29 @@ class TestStrictDeckSanitization:
         with pytest.raises(ValueError, match="valid bot deck"):
             await bg._sanitize_deck([1, 2, 3])
 
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_short_input_is_expanded_to_full_bot_deck(self):
+        db = StrictDeckDB(
+            catalog=[
+                {"id": 1, "card_type": "hero"},
+                {"id": 2, "card_type": "warrior"},
+                {"id": 3, "card_type": "warrior"},
+                {"id": 4, "card_type": "warrior"},
+                {"id": 5, "card_type": "warrior"},
+                {"id": 6, "card_type": "warrior"},
+                {"id": 7, "card_type": "warrior"},
+                {"id": 8, "card_type": "warrior"},
+                {"id": 9, "card_type": "potion"},
+            ],
+        )
+        bg = BotGenerator(db)
+
+        deck = await bg._sanitize_deck([1, 2, 3])
+
+        assert len(deck) == DECK_SIZE
+        assert len(set(deck)) == DECK_SIZE
+        assert sum(1 for card_id in deck if card_id == 1) == 1
+
 
 class PersistFailureDB(StrictDeckDB):
     def __init__(self):
@@ -350,6 +385,149 @@ class PersistFailureDB(StrictDeckDB):
         raise RuntimeError("db down")
 
 
+class AtomicCreationDB(StrictDeckDB):
+    def __init__(self):
+        super().__init__(
+            disabled=[],
+            catalog=[
+                {"id": 1, "card_type": "hero"},
+                {"id": 2, "card_type": "warrior"},
+                {"id": 3, "card_type": "warrior"},
+                {"id": 4, "card_type": "warrior"},
+                {"id": 5, "card_type": "warrior"},
+                {"id": 6, "card_type": "warrior"},
+                {"id": 7, "card_type": "warrior"},
+                {"id": 8, "card_type": "warrior"},
+                {"id": 9, "card_type": "potion"},
+            ],
+        )
+        self.generated_kwargs = None
+
+    async def get_bot_deck_from_donor(self, *_args, **_kwargs):
+        return [1, 2, 3, 4, 5, 6, 7, 8, 9]
+
+    async def get_random_users_with_avatars(self, *_args, **_kwargs):
+        return []
+
+    async def get_cosmetic_catalog_by_class(self):
+        return {
+            "starter": [
+                {"id": 101, "slug": "avatar", "item_type": "avatar", "class": "starter"},
+                {"id": 102, "slug": "title", "item_type": "title", "class": "starter"},
+                {"id": 103, "slug": "bg", "item_type": "profile_background", "class": "starter"},
+            ]
+        }
+
+    async def create_generated_bot_profile(self, **kwargs):
+        self.generated_kwargs = kwargs
+        return {"bot_id": 900000777}
+
+    async def get_next_bot_id(self):
+        raise AssertionError("legacy bot id allocation should not be used")
+
+    async def create_or_update_bot_profile(self, **_kwargs):
+        raise AssertionError("legacy bot profile persistence should not be used")
+
+    async def execute(self, *_args, **_kwargs):
+        raise AssertionError("extra non-atomic persistence should not be used")
+
+    async def grant_and_equip_bot_cosmetics(self, *_args, **_kwargs):
+        raise AssertionError("extra non-atomic cosmetic persistence should not be used")
+
+
+class IdentityDonorDB(AtomicCreationDB):
+    async def get_random_users_with_avatars(self, *_args, **_kwargs):
+        return [{"display_name": "Alice Realperson", "img": "https://cdn.example.com/alice.png"}]
+
+
+class PolicyCaptureDB(AtomicCreationDB):
+    def __init__(self):
+        super().__init__()
+        self.donor_calls = []
+
+    async def get_bot_deck_from_donor(self, trophies, exclude_user_ids=None):
+        self.donor_calls.append({"trophies": trophies, "exclude_user_ids": exclude_user_ids})
+        return [1, 2, 3, 4, 5, 6, 7, 8, 9]
+
+
+class RepairDeckDB(StrictDeckDB):
+    def __init__(self):
+        super().__init__(
+            disabled=[99],
+            catalog=[
+                {"id": 1, "card_type": "hero"},
+                {"id": 2, "card_type": "warrior"},
+                {"id": 3, "card_type": "warrior"},
+                {"id": 4, "card_type": "warrior"},
+                {"id": 5, "card_type": "warrior"},
+                {"id": 6, "card_type": "warrior"},
+                {"id": 7, "card_type": "warrior"},
+                {"id": 8, "card_type": "warrior"},
+                {"id": 9, "card_type": "potion"},
+                {"id": 10, "card_type": "spell"},
+            ],
+        )
+        self.repaired = None
+
+    async def update_bot_deck_preset(self, bot_id, deck_ids):
+        self.repaired = {"bot_id": bot_id, "deck_ids": list(deck_ids)}
+
+
+class TestBotDonorIdentity:
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_generate_bot_difficulty_override_drives_deck_policy_before_selection(self):
+        db = PolicyCaptureDB()
+        bg = BotGenerator(db)
+
+        payload = await bg._generate_bot(
+            player_id=42,
+            player_trophies=100,
+            difficulty_override="max",
+        )
+
+        assert payload["difficulty"] == "tier_max_9000"
+        assert payload["deck_policy"] == "meta_boss"
+        assert db.donor_calls == [{"trophies": 1000, "exclude_user_ids": [42]}]
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_generated_bot_uses_donor_user_identity(self):
+        db = IdentityDonorDB()
+        bg = BotGenerator(db)
+
+        payload = await bg._generate_bot(player_id=42, player_trophies=1200)
+
+        assert set(payload["deck_ids"]) == set(range(1, DECK_SIZE + 1))
+        assert db.generated_kwargs is not None
+        assert db.generated_kwargs["display_name"] == "Alice Realperson"
+        assert db.generated_kwargs["avatar_url"] == "https://cdn.example.com/alice.png"
+        assert payload["name"] == db.generated_kwargs["display_name"]
+        assert payload["name"] == "Alice Realperson"
+        assert payload["avatar_url"] == "https://cdn.example.com/alice.png"
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_reused_bot_profile_keeps_donor_identity(self):
+        db = RepairDeckDB()
+        bg = BotGenerator(db)
+        profile = {
+            "user_id": 900000001,
+            "trophies": 500,
+            "league": 1,
+            "extra_pass": "inactive",
+            "display_name": "Alice Realperson",
+            "img": "https://cdn.example.com/alice.png",
+            "deck_ids": [1, 2, 3, 4, 5, 6, 7, 8, 9],
+            "equipped_cosmetics": {"avatar": {}, "title": {}, "profile_background": {}},
+        }
+
+        payload = await bg._build_payload_from_profile(42, 500, profile, reused=True)
+
+        assert payload is not None
+        assert payload["user_id"] == 900000001
+        assert set(payload["deck_ids"]) == set(profile["deck_ids"])
+        assert payload["name"] == "Alice Realperson"
+        assert payload["avatar_url"] == "https://cdn.example.com/alice.png"
+
+
 class TestPersistenceFallback:
     @pytest.mark.asyncio(loop_scope="function")
     async def test_generate_bot_persistence_failure_returns_unpersisted_temp_payload(self):
@@ -362,6 +540,66 @@ class TestPersistenceFallback:
         assert payload["user_id"] < 0
         assert len(payload["deck_ids"]) == DECK_SIZE
 
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_generate_bot_uses_atomic_creation_helper_when_available(self):
+        db = AtomicCreationDB()
+        bg = BotGenerator(db)
+
+        payload = await bg._generate_bot(player_id=42, player_trophies=1200)
+
+        assert payload["persisted"] is True
+        assert payload["user_id"] == 900000777
+        assert db.generated_kwargs is not None
+        assert db.generated_kwargs["deck_ids"]
+        assert len(db.generated_kwargs["deck_ids"]) == DECK_SIZE
+        assert db.generated_kwargs["extra_pass"] in ("inactive", "active", "ultra")
+        assert db.generated_kwargs["avatar_cos_id"] == 101
+        assert db.generated_kwargs["title_cos_id"] == 102
+        assert db.generated_kwargs["bg_cos_id"] == 103
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_reused_bot_repaired_deck_is_persisted(self):
+        db = RepairDeckDB()
+        bg = BotGenerator(db)
+        profile = {
+            "user_id": 900000001,
+            "trophies": 500,
+            "league": 1,
+            "extra_pass": "inactive",
+            "display_name": "Reusable",
+            "img": None,
+            "deck_ids": [1, 99, 2, 3, 4, 5, 6, 7, 8],
+            "equipped_cosmetics": {"avatar": {}, "title": {}, "profile_background": {}},
+        }
+
+        payload = await bg._build_payload_from_profile(42, 500, profile, reused=True)
+
+        assert payload is not None
+        assert db.repaired is not None
+        assert db.repaired["bot_id"] == 900000001
+        assert len(db.repaired["deck_ids"]) == DECK_SIZE
+        assert 99 not in db.repaired["deck_ids"]
+        assert set(payload["deck_ids"]) == set(db.repaired["deck_ids"])
+
+
+class TestDatabaseBotFactoryQueries:
+    def test_reusable_bot_exclusion_is_applied_before_limit(self):
+        import inspect
+        from infrastructure.database import Database
+
+        source = inspect.getsource(Database.find_reusable_bots)
+
+        assert "AND NOT (u.user_id = ANY($5::bigint[]))" in source
+        assert source.index("AND NOT (u.user_id = ANY($5::bigint[]))") < source.index("LIMIT $4")
+
+    def test_random_donor_names_only_use_active_users(self):
+        import inspect
+        from infrastructure.database import Database
+
+        source = inspect.getsource(Database.get_random_users_with_avatars)
+
+        assert "u.status = 'active'" in source
+
 
 # ============================================================================
 # Payload building (no more card_level/level)
@@ -371,7 +609,7 @@ class TestPayloadBuilding:
     def test_payload_has_all_keys(self):
         payload = BotGenerator._build_payload(
             bot_id=900000001,
-            deck_ids=[1, 2, 3],
+            deck_ids=list(range(1, DECK_SIZE + 1)),
             bot_name="TestBot",
             bot_avatar_url="/test.png",
             bot_trophies=1500,
@@ -391,14 +629,15 @@ class TestPayloadBuilding:
         assert "level" not in payload
 
     def test_payload_reused_flag(self):
-        p1 = BotGenerator._build_payload(900000001, [1, 2, 3], "B", None, 100, "easy", 1, {}, "inactive", True)
-        p2 = BotGenerator._build_payload(900000002, [1, 2, 3], "B", None, 100, "easy", 1, {}, "inactive", False)
+        full_deck = list(range(1, DECK_SIZE + 1))
+        p1 = BotGenerator._build_payload(900000001, full_deck, "B", None, 100, "easy", 1, {}, "inactive", True)
+        p2 = BotGenerator._build_payload(900000002, full_deck, "B", None, 100, "easy", 1, {}, "inactive", False)
         assert p1["reused"] is True
         assert p2["reused"] is False
 
     def test_fallback_payload(self):
         payload = BotGenerator._build_fallback_payload(
-            900000001, [1, 2, 3], "FB", None, 500, "medium", {}, "inactive"
+            900000001, list(range(1, DECK_SIZE + 1)), "FB", None, 500, "medium", {}, "inactive"
         )
         assert payload["user_id"] < 0
         assert payload["persisted"] is False
@@ -415,3 +654,13 @@ class TestPayloadBuilding:
 
         assert payload["persisted"] is False
         assert payload["user_id"] < 0
+
+    def test_payload_builders_reject_partial_decks(self):
+        with pytest.raises(ValueError, match="full bot deck"):
+            BotGenerator._build_payload(
+                900000001, [1, 2, 3], "B", None, 100, "easy", 1, {}, "inactive", True
+            )
+        with pytest.raises(ValueError, match="full bot deck"):
+            BotGenerator._build_fallback_payload(
+                900000001, [1, 2, 3], "FB", None, 500, "medium", {}, "inactive"
+            )

@@ -28,6 +28,22 @@ def test_build_shop_catalog_uses_server_prices_for_case_and_coin_offers():
     assert coin_prices == expected_coin_prices
 
 
+def test_build_shop_catalog_uses_clear_case_pack_copy_and_plural_forms():
+    catalog = build_shop_catalog([])
+
+    case_copy = {
+        item["id"]: (item["title"], item["subtitle"])
+        for item in catalog["case_packs"]
+    }
+
+    assert case_copy == {
+        "case_pack_1": ("1 кейс", "Открыть один кейс"),
+        "case_pack_3": ("3 кейса", "Три открытия подряд"),
+        "case_pack_5": ("5 кейсов", "Выгодный набор"),
+        "case_pack_10": ("10 кейсов", "Большой запас кейсов"),
+    }
+
+
 def test_build_shop_catalog_merges_ruble_products_with_gem_package_config():
     catalog = build_shop_catalog([
         {
@@ -110,6 +126,29 @@ def test_order_particles_featured_tie_break_is_stable_for_rotation():
     assert {card["id"] for card in first} == {21, 22, 23}
 
 
+def test_order_particles_featured_softly_penalizes_unowned_cards():
+    cards = [
+        {"id": 1, "rarity": "rare", "particles": 30, "owned": True},
+        {"id": 2, "rarity": "epic", "particles": 15, "owned": False},
+        {"id": 3, "rarity": "common", "particles": 50, "owned": True},
+    ]
+
+    ordered = order_particles_for_shop(cards, "2026-05-28")
+
+    assert [card["id"] for card in ordered] == [1, 2, 3]
+
+
+def test_particles_daily_payload_marks_unowned_cards_for_shop_ordering():
+    server = SERVER.read_text(encoding="utf-8")
+    particles_block = server.split("async def particles_daily_handler", 1)[1].split(
+        "async def particles_buy_handler",
+        1,
+    )[0]
+
+    assert "uc.card_id IS NOT NULL AS owned" in particles_block
+    assert '"owned": bool(row.get("owned"))' in particles_block
+
+
 def test_shop_catalog_endpoint_and_mobile_bootstrap_are_wired():
     server = SERVER.read_text(encoding="utf-8")
 
@@ -126,7 +165,23 @@ def test_shop_frontend_uses_catalog_endpoint_and_redesign_classes():
 
     assert "/api/shop/catalog" in source
     assert "shopCatalog" in source
-    assert "/styles.css?v=shop-redesign-20260528" in source
+    assert "/styles.css?v=shop-pack-ui-20260619" in source
     assert "ea-shop-root" in source
     assert "ea-shop-featured-particle" in source
     assert "window.openExternalLink(historyUrl)" in source
+
+
+def test_shop_frontend_polishes_particles_copy_layout_and_debug_section():
+    source = INDEX.read_text(encoding="utf-8")
+    styles = Path("webapp/styles.css").read_text(encoding="utf-8")
+    shop_block = source.split("const ShopScreen", 1)[1].split(
+        "// ═══════════════════════════════════════════\n// ARENA MAIN",
+        1,
+    )[0]
+
+    assert "Видно, кому именно покупается" not in shop_block
+    assert "Добирай частицы до следующего уровня" in shop_block
+    assert "Debug Section" not in shop_block
+    assert "1 ключ (дебаг)" not in shop_block
+    assert ".ea-shop-particle-card:not(.ea-shop-featured-particle) .ea-shop-particle-art" in styles
+    assert "caseArtForPack" in shop_block

@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import re
 import logging
-from datetime import datetime
+import re
 from html import escape
-from typing import List, Optional
+from typing import Any, Optional
 from urllib.parse import urlparse
 
 from aiogram import Bot, Dispatcher, F, Router
@@ -14,25 +13,25 @@ from aiogram.types import (
     CallbackQuery,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
-    KeyboardButton,
     Message,
     PreCheckoutQuery,
-    ReplyKeyboardMarkup,
     SuccessfulPayment,
     WebAppInfo,
 )
 
-from bot.constants import ADMIN_ID, CATEGORY_ALIASES, CATEGORY_LABELS, DEFAULT_CATEGORY
+from bot.constants import ADMIN_ID
 from infrastructure.database import Database
-from infrastructure.storage import add_user_id, get_all_user_ids
 from infrastructure.payments_logic import process_successful_payment
+from infrastructure.storage import add_user_id, get_all_user_ids
 
 router = Router(name="basic")
 
+BROADCAST_PENDING: dict[int, dict[str, Any]] = {}
+BROADCAST_CONFIRM_CALLBACK = "broadcast_confirm"
+BROADCAST_CANCEL_CALLBACK = "broadcast_cancel"
+BROADCAST_CLOSE_CALLBACK = "broadcast_close"
+BROADCAST_CAPTION_LIMIT = 1000
 
-NEWS_FETCH_LIMIT = 20
-NEWS_MAX_CHARS = 1500
-NEWS_ENTRY_MAX_CHARS = 1200
 OPTION_PATTERN = re.compile(
     r'(?P<prefix>\s*)(?:--|-)(?P<key>[a-zA-Z_]+)\s*=\s*(?P<value>"[^"]*"|\'[^\']*\'|[^\s]+)'
 )
@@ -41,94 +40,34 @@ OPTION_PATTERN = re.compile(
 def register_basic_handlers(dp: Dispatcher, webapp_url: str, db: Database | None = None) -> None:
     webapp_info = WebAppInfo(url=webapp_url)
 
-    async def _remember_user(message: Message) -> bool:
-        if not message.from_user:
-            return False
-        add_user_id(message.from_user.id)
-        created = False
-        if db:
-            created = await db.ensure_user(
-                user_id=message.from_user.id,
-                username=message.from_user.username,
-                first_name=message.from_user.first_name,
-                last_name=message.from_user.last_name,
-            )
-        return created
+    async def _remember_user_id(message: Message) -> None:
+        if message.from_user:
+            add_user_id(message.from_user.id)
 
     @router.message(CommandStart())
-    async def handle_start(message: Message, bot: Bot) -> None:
-        created = await _remember_user(message)
-        keyboard = ReplyKeyboardMarkup(
-            keyboard=[
-                [KeyboardButton(text="🔥 ExtraCards Season 0 🏟️", web_app=webapp_info)],
+    async def handle_start(message: Message) -> None:
+        await _remember_user_id(message)
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
                 [
-                    KeyboardButton(text="🙋‍♂️ Профиль"),
-                    KeyboardButton(text="🔑 Генератор"),
-                ],
-                [
-                    KeyboardButton(text="📰 Новости"),
-                    KeyboardButton(text="🤝 Поддержка"),
-                ],
-            ],
-            resize_keyboard=True,
+                    _game_button(
+                        text="Открыть ExtraArena",
+                        webapp_url=webapp_url,
+                        webapp_info=webapp_info,
+                    )
+                ]
+            ]
         )
         await message.answer(
-            "Привет! Жми кнопку, чтобы открыть ExtraCards WebApp.",
+            "Нажми кнопку ниже, чтобы открыть игру.",
             reply_markup=keyboard,
         )
-        if created:
-            await message.answer("✨ Учётная запись создана. Добро пожаловать в арену!")
-        
-        # Проверяем готовность ключей генератора
-        if db and message.from_user:
-            await _check_and_notify_generator_ready(message.from_user.id, bot)
 
     @router.message(Command("id"))
     async def handle_id(message: Message) -> None:
-        await _remember_user(message)
+        await _remember_user_id(message)
         user_id = message.from_user.id if message.from_user else "unknown"
         await message.answer(f"Твой Telegram ID: <code>{user_id}</code>")
-
-    @router.message(Command("tps"))
-    async def handle_tps(message: Message) -> None:
-        """Команда для отображения TPS (Ticks Per Second) сервера."""
-        if not message.from_user:
-            await message.answer("Не удалось определить пользователя.")
-            return
-
-        admin_id = message.from_user.id
-        if admin_id != ADMIN_ID:
-            await message.answer("Команда доступна только администратору.")
-            return
-
-        await _remember_user(message)
-
-        try:
-            from tps_monitor import get_tps_monitor
-            
-            monitor = get_tps_monitor()
-            stats = monitor.get_statistics()
-            
-            # Форматируем сообщение
-            text = (
-                f"<b>📊 Производительность сервера</b>\n\n"
-                f"{stats['status_emoji']} <b>Статус:</b> {stats['status']}\n\n"
-                f"<b>Текущий TPS:</b> {stats['current_tps']}\n"
-                f"<b>Средний TPS (1 мин):</b> {stats['average_tps_1m']}\n"
-                f"<b>Средний TPS (5 мин):</b> {stats['average_tps_5m']}\n"
-                f"<b>Мин. TPS (1 мин):</b> {stats['min_tps_1m']}\n"
-                f"<b>Макс. TPS (1 мин):</b> {stats['max_tps_1m']}\n\n"
-                f"<b>Всего тиков:</b> {stats['total_ticks']:,}\n"
-                f"<b>Время работы:</b> {stats['uptime_formatted']}\n\n"
-                f"<i>Идеальное значение: 20.0 TPS</i>"
-            )
-            
-            await message.answer(text, parse_mode="HTML")
-        except Exception as e:
-            import logging
-            logger = logging.getLogger(__name__)
-            logger.error(f"Ошибка получения TPS: {e}", exc_info=True)
-            await message.answer(f"❌ Ошибка получения статистики TPS: {e}")
 
     @router.message(Command("broadcast"))
     async def handle_broadcast(message: Message, bot: Bot) -> None:
@@ -141,499 +80,170 @@ def register_basic_handlers(dp: Dispatcher, webapp_url: str, db: Database | None
             await message.answer("Команда доступна только администратору.")
             return
 
-        await _remember_user(message)
+        await _remember_user_id(message)
 
-        payload = _extract_payload(
+        raw_payload = _extract_payload(
             message.text or message.caption or "", commands=("/broadcast",)
         )
-        text, button_text, button_url = _parse_broadcast_payload(payload)
+        text, button_text, button_url = _parse_broadcast_payload(raw_payload)
         photo_id = message.photo[-1].file_id if message.photo else None
 
         if not text and not photo_id:
-            await message.answer("Добавьте текст сообщения или изображение для рассылки.")
+            await message.answer(
+                "Добавьте текст сообщения или изображение для рассылки.\n\n"
+                "HTML поддерживается: <b>жирный</b>, <i>курсив</i>, "
+                '<a href="https://example.com">ссылка</a>.'
+            )
             return
 
-        recipients = [uid for uid in get_all_user_ids() if uid != admin_id]
+        broadcast_payload = {
+            "text": text,
+            "photo_id": photo_id,
+            "button_text": button_text,
+            "button_url": button_url,
+        }
+        recipient_keyboard = _build_broadcast_keyboard(button_text, button_url)
+
+        try:
+            await message.answer("Предпросмотр рассылки:")
+            await _send_broadcast_payload(
+                bot,
+                admin_id,
+                broadcast_payload,
+                reply_markup=recipient_keyboard,
+            )
+        except TelegramBadRequest as exc:
+            await message.answer(
+                "Telegram не принял сообщение. Проверьте HTML-разметку, URL кнопки "
+                f"и длину текста.\n\n<code>{escape(str(exc))}</code>"
+            )
+            return
+
+        BROADCAST_PENDING[admin_id] = broadcast_payload
+        recipients = len([uid for uid in get_all_user_ids() if uid != admin_id])
+        await message.answer(
+            f"Отправить эту рассылку? Получателей: {recipients}",
+            reply_markup=_build_broadcast_confirm_keyboard(),
+        )
+
+    @router.callback_query(F.data == BROADCAST_CONFIRM_CALLBACK)
+    async def handle_broadcast_confirm(callback: CallbackQuery, bot: Bot) -> None:
+        if callback.from_user.id != ADMIN_ID:
+            await callback.answer("Недоступно", show_alert=True)
+            return
+
+        payload = BROADCAST_PENDING.pop(callback.from_user.id, None)
+        if not payload:
+            await callback.answer("Нет рассылки для отправки", show_alert=True)
+            return
+
+        recipients = [uid for uid in get_all_user_ids() if uid != callback.from_user.id]
         if not recipients:
-            await message.answer("Некому отправлять сообщение - база пользователей пуста.")
+            if callback.message:
+                await callback.message.edit_text("Некому отправлять сообщение - база пользователей пуста.")
+            await callback.answer()
             return
 
-        keyboard = _build_broadcast_keyboard(button_text, button_url)
+        if callback.message:
+            await callback.message.edit_text("Рассылка отправляется...")
 
+        keyboard = _build_broadcast_keyboard(payload.get("button_text"), payload.get("button_url"))
         sent, failed = 0, 0
         for user_id in recipients:
             try:
-                if photo_id:
-                    await bot.send_photo(
-                        chat_id=user_id,
-                        photo=photo_id,
-                        caption=text or None,
-                        reply_markup=keyboard,
-                    )
-                else:
-                    await bot.send_message(
-                        chat_id=user_id,
-                        text=text,
-                        reply_markup=keyboard,
-                    )
+                await _send_broadcast_payload(bot, user_id, payload, reply_markup=keyboard)
                 sent += 1
             except (TelegramForbiddenError, TelegramBadRequest):
                 failed += 1
             except Exception:
+                logging.getLogger(__name__).exception(
+                    "Unexpected broadcast delivery failure: user_id=%s", user_id
+                )
                 failed += 1
 
-        await message.answer(
-            f"Рассылка завершена.\nУспешно: {sent}\nОшибок: {failed}\nПолучателей: {len(recipients)}"
-        )
-
-    @router.message(Command("stat"))
-    async def handle_stat(message: Message) -> None:
-        if not message.from_user or message.from_user.id != ADMIN_ID:
-            await message.answer("Команда доступна только администратору.")
-            return
-
-        if not db:
-            await message.answer("База данных недоступна.")
-            return
-
-        stats = await db.get_statistics()
-        text = (
-            "<b>Статистика бота</b>\n"
-            f"Игроков: <b>{stats['players']}</b>\n"
-            f"Активных ExtraPass: {stats['extra_pass_active']}\n"
-            f"Суммарные трофеи: {stats['total_trophies']}\n"
-            f"Максимум трофеев у игрока: {stats['max_trophies_global']}"
-        )
-        await message.answer(text)
-
-    @router.message(Command("del"))
-    async def handle_delete(message: Message) -> None:
-        if not message.from_user or message.from_user.id != ADMIN_ID:
-            await message.answer("Команда доступна только администратору.")
-            return
-
-        if not db:
-            await message.answer("База данных недоступна.")
-            return
-
-        parts = (message.text or "").split()
-        if len(parts) < 2:
-            await message.answer("Использование: /del <user_id>")
-            return
-
-        try:
-            user_id = int(parts[1])
-        except ValueError:
-            await message.answer("Некорректный user_id. Используйте число.")
-            return
-
-        deleted = await db.delete_user(user_id)
-        if deleted:
-            await message.answer(
-                f"✅ Пользователь {user_id} полностью удалён из базы данных.\n\n"
-                f"<b>Удалены:</b>\n"
-                f"• Карты пользователя (user_cards)\n"
-                f"• Колоды (deck_presets)\n"
-                f"• Почта (user_mail)\n"
-                f"• Кейсы (user_cases)\n"
-                f"• Кулдауны (cooldowns)\n"
-                f"• Платежи (payments)\n"
-                f"• Уведомления (notifications)\n"
-                f"• Настройки (user_settings)\n"
-                f"• Профиль (profiles)\n"
-                f"• Посты в сообществе (кроме админских)\n"
-                f"• Сообщения в глобальном чате (кроме админских)\n"
-                f"• Лайки постов (кроме лайков админских постов)\n"
-                f"• Пользователь (users)\n\n"
-                f"<b>Сохранены:</b>\n"
-                f"• Админские посты в сообществе\n"
-                f"• Админские сообщения в глобальном чате\n"
-                f"• Лайки админских постов",
-                parse_mode="HTML"
-            )
-        else:
-            await message.answer(f"❌ Пользователь {user_id} не найден или произошла ошибка при удалении.")
-
-    @router.message(Command("news_post"))
-    async def handle_news_post(message: Message) -> None:
-        if not message.from_user or message.from_user.id != ADMIN_ID:
-            await message.answer("Команда доступна только администратору.")
-            return
-
-        if not db:
-            await message.answer("База данных недоступна.")
-            return
-
-        payload = _extract_payload(
-            message.text or message.caption or "", commands=("/news_post",)
-        )
-        news_payload = _parse_news_payload(payload)
-
-        if not news_payload["text"]:
-            await message.answer("Добавьте текст новости.")
-            return
-
-        if news_payload["category"] not in CATEGORY_LABELS:
-            await message.answer(
-                "Укажите категорию через `--category=` (обновление/событие/важное/интересное).",
-                parse_mode="Markdown",
-            )
-            return
-
-        photo_id = message.photo[-1].file_id if message.photo else None
-
-        await db.create_news_entry(
-            author_id=message.from_user.id,
-            text=news_payload["text"],
-            category=news_payload["category"],
-            button_text=news_payload["button_text"],
-            button_url=news_payload["button_url"],
-            photo_file_id=photo_id,
-        )
-        if hasattr(db, "create_news_post"):
-            try:
-                safe_html = escape(news_payload["text"]).replace("\n", "<br>")
-                await db.create_news_post(
-                    author_id=message.from_user.id,
-                    title=CATEGORY_LABELS[news_payload["category"]],
-                    content=news_payload["text"],
-                    content_html=safe_html,
-                    tags=[CATEGORY_LABELS[news_payload["category"]]],
-                    cover_image_url=None,
-                    post_type="news",
-                )
-            except Exception as exc:
-                logging.getLogger(__name__).warning(
-                    "Failed to mirror Telegram news entry to community news: %s",
-                    exc,
-                    exc_info=True,
-                )
-
-        preview = CATEGORY_LABELS[news_payload["category"]]
-        await message.answer(
-            f"Новость сохранена в разделе «Новости».\nКатегория: {preview}",
-        )
-
-    @router.message(Command("community_post"))
-    async def handle_community_post(message: Message) -> None:
-        if not message.from_user or message.from_user.id != ADMIN_ID:
-            await message.answer("Команда доступна только администратору.")
-            return
-
-        if not db:
-            await message.answer("База данных недоступна.")
-            return
-
-        payload = _extract_payload(
-            message.text or message.caption or "", commands=("/community_post",)
-        )
-        
-        # Парсим опции: --title= и --content=
-        text, options = _extract_options(
-            payload, allowed={"title", "content"}
-        )
-        
-        title = options.get("title", "").strip()
-        content = text.strip() if text else options.get("content", "").strip()
-        
-        if not title and not content:
-            # Если нет опций, используем весь текст как контент, а заголовок - первые 50 символов
-            full_text = text.strip()
-            if not full_text:
-                await message.answer(
-                    "Использование: /community_post --title=\"Заголовок\" Текст поста\n"
-                    "Или: /community_post Текст поста (заголовок будет автоматически)"
-                )
-                return
-            content = full_text
-            title = full_text[:50] + ("..." if len(full_text) > 50 else "")
-        elif not title:
-            title = content[:50] + ("..." if len(content) > 50 else "")
-        elif not content:
-            content = text.strip() if text else title
-
-        photo_id = message.photo[-1].file_id if message.photo else None
-
-        result = await db.create_community_post(
-            author_id=message.from_user.id,
-            title=title,
-            content=content,
-            photo_file_id=photo_id,
-        )
-
-        if result.get("success"):
-            await message.answer(
-                f"✅ Пост создан в разделе «Коммьюнити».\n"
-                f"Заголовок: {title}\n"
-                f"Контент: {content[:100]}{'...' if len(content) > 100 else ''}"
-            )
-        else:
-            await message.answer(
-                f"❌ Ошибка создания поста: {result.get('error', 'неизвестная ошибка')}"
-            )
-
-    async def _check_and_notify_generator_ready(user_id: int, bot: Bot) -> None:
-        """Проверить, готовы ли ключи генератора, и отправить уведомление."""
-        if not db:
-            return
-
-        try:
-            status = await db.get_generator_status(user_id)
-            if status.get("can_claim") and not status.get("notified"):
-                key_count = status.get("accumulated_keys", 0)
-                await bot.send_message(
-                    chat_id=user_id,
-                    text=f"🔑 Генератор накопил {key_count} ключ(ей)! Забери их в разделе «Генератор».",
-                )
-                await db.mark_generator_notification_sent(user_id)
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).error(f"Ошибка проверки генератора: {e}", exc_info=True)
-
-    @router.message(lambda msg: msg.text == "🙋‍♂️ Профиль")
-    async def handle_profile(message: Message, bot: Bot) -> None:
-        await _remember_user(message)
-        if not db:
-            await message.answer("Профили недоступны без подключения к базе.")
-            return
-
-        if not message.from_user:
-            return
-        
-        # Проверяем готовность ключей генератора
-        await _check_and_notify_generator_ready(message.from_user.id, bot)
-
-        profile = await db.get_user_profile(message.from_user.id)
-        if not profile:
-            await message.answer("Профиль пока не создан. Попробуйте ещё раз.")
-            return
-
-        reg_date = profile["reg_date"]
-        reg_str = reg_date.strftime("%d.%m.%Y") if isinstance(reg_date, datetime) else str(reg_date)
-        extra_pass = "⚡ Активирован" if profile["extra_pass"] == "active" else "⛔ Не активирован"
-        squad = profile["squad_id"] if profile["squad_id"] else "-"
-        status_badge = {
-            "active": "🟢",
-            "warn": "🟡",
-            "banned": "🔴",
-        }.get(profile["status"], "⚪")
-
-        text = (
-            "<b>🏟️ ExtraCards | Профиль</b>\n"
-            f"<i>{profile['title'] or 'Новичок'}</i>\n\n"
-            f"🆔 ID: <code>{profile['user_id']}</code>\n"
-            f"{extra_pass}\n"
-            f"🏆 Трофеи: <b>{profile['trophies']}</b> (макс. {profile['max_trophies']})\n"
-            f"🧪 Частицы: {profile['particles']} • 💎 {profile['gems']} • 💰 {profile['coins']}\n"
-            f"👥 Сквад: {squad}\n"
-            f"{status_badge} Статус: {profile['status']}\n"
-            f"📅 С нами с: {reg_str}"
-        )
-        await message.answer(text)
-
-    @router.message(lambda msg: msg.text == "🔑 Генератор")
-    async def handle_generator(message: Message, bot: Bot) -> None:
-        await _remember_user(message)
-        if not message.from_user:
-            return
-
-        if db:
-            await _check_and_notify_generator_ready(message.from_user.id, bot)
-
-            try:
-                status = await db.get_generator_status(message.from_user.id)
-                acc = status.get("accumulated_keys", 0)
-                cap = status.get("cap", "?")
-                level = status.get("level", 1)
-                interval_h = status.get("interval_hours", "?")
-                next_sec = status.get("next_key_seconds")
-                timer_str = f"{int(next_sec // 3600)}ч {int((next_sec % 3600) // 60)}м" if next_sec else "—"
-
-                text = (
-                    "<b>🔑 Генератор ключей</b>\n\n"
-                    f"Уровень: <b>{level}</b>\n"
-                    f"Ключей накоплено: <b>{acc} / {cap}</b>\n"
-                    f"Интервал: <b>{interval_h}ч</b>\n"
-                    f"До следующего: <b>{timer_str}</b>\n\n"
-                    "<i>Открой WebApp, чтобы забрать ключи или улучшить генератор.</i>"
-                )
-            except Exception:
-                text = (
-                    "<b>🔑 Генератор ключей</b>\n\n"
-                    "<i>Открой WebApp, чтобы посмотреть состояние и забрать ключи.</i>"
-                )
-        else:
-            text = "<i>Открой WebApp, чтобы использовать генератор ключей.</i>"
-
-        await message.answer(text)
-
-    @router.message(lambda msg: msg.text == "📰 Новости")
-    async def handle_news(message: Message) -> None:
-        await _remember_user(message)
-        if not db:
-            await message.answer("Новости временно недоступны.")
-            return
-
-        news_items = await db.get_recent_news(limit=NEWS_FETCH_LIMIT)
-        if not news_items:
-            await message.answer("Пока нет новостей. Возвращайся позже!")
-            return
-
-        pages = _build_news_pages(news_items)
-        keyboard = _build_news_keyboard(current=0, total=len(pages))
-        await _send_news_page(message, pages[0], keyboard)
-
-    @router.callback_query(F.data.startswith("news_page:"))
-    async def handle_news_page(callback: CallbackQuery) -> None:
-        if not db:
-            await callback.answer("Новости недоступны", show_alert=True)
-            return
-
-        try:
-            page_index = int(callback.data.split(":", 1)[1])
-        except (ValueError, AttributeError):
-            await callback.answer("Некорректная страница", show_alert=True)
-            return
-
-        news_items = await db.get_recent_news(limit=NEWS_FETCH_LIMIT)
-        pages = _build_news_pages(news_items)
-        if not pages:
-            await callback.message.edit_text(
-                "Пока нет новостей. Возвращайся позже!",
-                reply_markup=None,
-            )
-            await callback.answer()
-            return
-
-        total = len(pages)
-        page_index = max(0, min(page_index, total - 1))
-        keyboard = _build_news_keyboard(page_index, total)
-        try:
-            await callback.message.edit_text(
-                pages[page_index]["text"],
-                reply_markup=keyboard,
-                parse_mode="HTML",
-            )
-        except TelegramBadRequest:
-            await callback.message.edit_text(
-                _plain_news_text(pages[page_index]["text"]),
-                reply_markup=keyboard,
-            )
-        await callback.answer()
-
-    @router.callback_query(F.data == "news_close")
-    async def handle_news_close(callback: CallbackQuery) -> None:
         if callback.message:
-            await callback.message.delete()
+            await callback.message.edit_text(
+                f"Рассылка завершена.\nУспешно: {sent}\nОшибок: {failed}\nПолучателей: {len(recipients)}"
+            )
         await callback.answer()
 
-    @router.callback_query(F.data == "broadcast_close")
+    @router.callback_query(F.data == BROADCAST_CANCEL_CALLBACK)
+    async def handle_broadcast_cancel(callback: CallbackQuery) -> None:
+        if callback.from_user.id != ADMIN_ID:
+            await callback.answer("Недоступно", show_alert=True)
+            return
+        BROADCAST_PENDING.pop(callback.from_user.id, None)
+        if callback.message:
+            await callback.message.edit_text("Рассылка отменена.")
+        await callback.answer()
+
+    @router.callback_query(F.data == BROADCAST_CLOSE_CALLBACK)
     async def handle_broadcast_close(callback: CallbackQuery) -> None:
         if callback.message:
             await callback.message.delete()
         await callback.answer()
 
-    @router.message(lambda msg: msg.text == "🤝 Поддержка")
-    async def handle_support(message: Message) -> None:
-        await _remember_user(message)
-        support_keyboard = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="Перейти в поддержку", url="https://t.me/lqsup")]
-            ]
-        )
-        await message.answer(
-            "Нажмите на кнопку ниже, чтобы перейти в канал поддержки:",
-            reply_markup=support_keyboard,
-        )
-
-    @router.message(lambda msg: msg.web_app_data is not None)
-    async def handle_webapp_data(message: Message) -> None:
-        await _remember_user(message)
-        payload = message.web_app_data.data if message.web_app_data else "{}"
-        await message.answer(f"Получены данные WebApp:\n<code>{payload}</code>")
-
-    @router.message(F.photo & ~F.text & ~F.caption)
-    async def handle_admin_photo_id(message: Message) -> None:
-        """Обработчик для получения file_id изображения от админа."""
-        if not message.from_user or message.from_user.id != ADMIN_ID:
-            return  # Пропускаем, если не админ
-        
-        if not message.photo:
-            return
-        
-        # Получаем file_id самого большого размера изображения
-        photo_id = message.photo[-1].file_id
-        
-        await message.answer(
-            f"📷 Telegram Image ID:\n<code>{photo_id}</code>",
-            parse_mode="HTML"
-        )
-
     @router.pre_checkout_query()
     async def handle_pre_checkout_query(query: PreCheckoutQuery, bot: Bot) -> None:
         """Обработчик предварительной проверки платежа через Telegram Stars."""
-        import logging
         logger = logging.getLogger(__name__)
-        
+
         try:
-            # Всегда подтверждаем запрос для Stars
             await bot.answer_pre_checkout_query(
                 pre_checkout_query_id=query.id,
-                ok=True
+                ok=True,
             )
-            logger.info(f"Pre-checkout query подтвержден для invoice_payload={query.invoice_payload}")
-        except Exception as e:
-            logger.error(f"Ошибка обработки pre-checkout query: {e}", exc_info=True)
+            logger.info("Pre-checkout query подтвержден для invoice_payload=%s", query.invoice_payload)
+        except Exception as exc:
+            logger.error("Ошибка обработки pre-checkout query: %s", exc, exc_info=True)
             try:
                 await bot.answer_pre_checkout_query(
                     pre_checkout_query_id=query.id,
                     ok=False,
-                    error_message="Ошибка обработки платежа. Попробуйте позже."
+                    error_message="Ошибка обработки платежа. Попробуйте позже.",
                 )
-            except:
+            except Exception:
                 pass
 
     @router.message(F.successful_payment)
     async def handle_successful_payment(message: Message, bot: Bot) -> None:
         """Обработчик успешного платежа через Telegram Stars."""
-        import logging
         logger = logging.getLogger(__name__)
-        
+
         if not message.from_user or not message.successful_payment:
             return
-        
+
         user_id = message.from_user.id
         payment: SuccessfulPayment = message.successful_payment
-        
+
         try:
-            # Извлекаем invoice_payload
             invoice_payload = payment.invoice_payload
             payment_id = f"stars_{invoice_payload}"
-            
+
             logger.info(
-                f"✅ Платеж Stars успешно получен. "
-                f"User: {user_id}, Payment ID: {payment_id}, "
-                f"Amount: {payment.total_amount} {payment.currency}, "
-                f"Invoice payload: {invoice_payload}"
+                "✅ Платеж Stars успешно получен. User: %s, Payment ID: %s, Amount: %s %s, Invoice payload: %s",
+                user_id,
+                payment_id,
+                payment.total_amount,
+                payment.currency,
+                invoice_payload,
             )
-            
+
             if not db:
                 logger.error("База данных недоступна для обработки платежа Stars")
                 await message.answer("❌ Ошибка: база данных недоступна. Обратитесь в поддержку.")
                 return
-            
-            # Получаем запись о платеже из БД
-            payment_record = await db.get_payment_by_id(payment_id)
 
+            payment_record = await db.get_payment_by_id(payment_id)
             logger.info(
                 "STARS LOOKUP: payment_id=%s found=%s record_keys=%s",
-                payment_id, bool(payment_record),
-                list(payment_record.keys()) if payment_record else 'NONE',
+                payment_id,
+                bool(payment_record),
+                list(payment_record.keys()) if payment_record else "NONE",
             )
-            
+
             if not payment_record:
-                logger.warning(f"Платеж {payment_id} не найден в БД, создаем запись")
-                # Создаем запись о платеже
+                logger.warning("Платеж %s не найден в БД, создаем запись", payment_id)
                 await db.create_payment(
                     user_id=user_id,
                     payment_id=payment_id,
@@ -641,22 +251,20 @@ def register_basic_handlers(dp: Dispatcher, webapp_url: str, db: Database | None
                     currency=payment.currency,
                     description=payment.invoice_payload,
                     metadata={"invoice_payload": invoice_payload},
-                    status="succeeded"
+                    status="succeeded",
                 )
                 payment_record = await db.get_payment_by_id(payment_id)
-            
-            # Фиксируем статус как succeeded, чтобы запись была актуальна
+
             await db.update_payment_status(
                 payment_id=payment_id,
-                status="succeeded"
+                status="succeeded",
             )
             payment_record = await db.get_payment_by_id(payment_id)
             if not payment_record:
                 logger.error("Не удалось получить запись о платеже %s после обновления статуса", payment_id)
                 await message.answer("❌ Ошибка обработки платежа. Обратитесь в поддержку.")
                 return
-            
-            # Универсально выдаём награды и создаём письмо
+
             processing_result = await process_successful_payment(
                 db=db,
                 payment_id=payment_id,
@@ -681,19 +289,21 @@ def register_basic_handlers(dp: Dispatcher, webapp_url: str, db: Database | None
                 rewards_message = "✅ Платеж успешно обработан!"
 
             await message.answer(rewards_message)
-                
-        except Exception as e:
-            logger.error(f"Ошибка обработки платежа Stars для user_id {user_id}: {e}", exc_info=True)
+
+        except Exception as exc:
+            logger.error("Ошибка обработки платежа Stars для user_id %s: %s", user_id, exc, exc_info=True)
             try:
                 await message.answer("❌ Произошла ошибка при обработке платежа. Обратитесь в поддержку.")
-            except:
+            except Exception:
                 pass
 
-    @router.message()
-    async def remember_user(message: Message) -> None:
-        await _remember_user(message)
-
     dp.include_router(router)
+
+
+def _game_button(text: str, webapp_url: str, webapp_info: WebAppInfo) -> InlineKeyboardButton:
+    if webapp_url.startswith("https://"):
+        return InlineKeyboardButton(text=text, web_app=webapp_info)
+    return InlineKeyboardButton(text=text, url=webapp_url)
 
 
 def _extract_payload(text: str, commands: tuple[str, ...]) -> str:
@@ -714,20 +324,6 @@ def _extract_payload(text: str, commands: tuple[str, ...]) -> str:
 def _parse_broadcast_payload(raw: str) -> tuple[str, Optional[str], Optional[str]]:
     text, options = _extract_options(raw, allowed={"button_text", "button_url"})
     return text, options.get("button_text"), options.get("button_url")
-
-
-def _parse_news_payload(raw: str) -> dict[str, Optional[str]]:
-    text, options = _extract_options(
-        raw, allowed={"button_text", "button_url", "category"}
-    )
-    category_value = options.get("category", DEFAULT_CATEGORY)
-    category = CATEGORY_ALIASES.get(category_value.lower(), category_value.lower())
-    return {
-        "text": text,
-        "button_text": options.get("button_text"),
-        "button_url": options.get("button_url"),
-        "category": category,
-    }
 
 
 def _extract_options(raw: str, allowed: set[str]) -> tuple[str, dict[str, str]]:
@@ -753,53 +349,10 @@ def _extract_options(raw: str, allowed: set[str]) -> tuple[str, dict[str, str]]:
         cleaned_parts.append(raw[last:start])
         last = end
     cleaned_parts.append(raw[last:])
-    cleaned = "".join(cleaned_parts)
-    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
-
-    return cleaned, options
+    return "".join(cleaned_parts).strip(), options
 
 
-def _build_news_pages(news_items) -> List[dict[str, Optional[str]]]:
-    pages: List[dict[str, Optional[str]]] = []
-    current_entries: List[str] = []
-    current_photo_id: Optional[str] = None
-    current_len = 0
-
-    for item in news_items:
-        entry = _render_news_entry(item)
-        entry_len = len(entry)
-        if entry_len > NEWS_MAX_CHARS:
-            if current_entries:
-                pages.append({"text": "\n\n".join(current_entries), "photo_file_id": current_photo_id})
-                current_entries = []
-                current_photo_id = None
-                current_len = 0
-            for start in range(0, entry_len, NEWS_ENTRY_MAX_CHARS):
-                chunk = entry[start:start + NEWS_ENTRY_MAX_CHARS]
-                pages.append({
-                    "text": chunk,
-                    "photo_file_id": item.get("photo_file_id") if start == 0 else None,
-                })
-            continue
-        if current_entries and (
-            current_len + entry_len > NEWS_MAX_CHARS or len(current_entries) >= 2
-        ):
-            pages.append({"text": "\n\n".join(current_entries), "photo_file_id": current_photo_id})
-            current_entries = []
-            current_photo_id = None
-            current_len = 0
-        current_entries.append(entry)
-        if not current_photo_id and item.get("photo_file_id"):
-            current_photo_id = item.get("photo_file_id")
-        current_len += entry_len
-
-    if current_entries:
-        pages.append({"text": "\n\n".join(current_entries), "photo_file_id": current_photo_id})
-
-    return pages
-
-
-def _safe_news_url(url: Optional[str]) -> Optional[str]:
+def _safe_button_url(url: Optional[str]) -> Optional[str]:
     raw = (url or "").strip()
     if not raw:
         return None
@@ -809,87 +362,64 @@ def _safe_news_url(url: Optional[str]) -> Optional[str]:
     return raw
 
 
-def _render_news_entry(item) -> str:
-    category_label = CATEGORY_LABELS.get(item["category"], item["category"])
-    created_at = item["created_at"]
-    if isinstance(created_at, datetime):
-        date_str = created_at.strftime("%d.%m.%Y")
-    else:
-        date_str = str(created_at)
-
-    text = escape(item["text"] or "")
-    if len(text) > NEWS_ENTRY_MAX_CHARS:
-        text = text[:NEWS_ENTRY_MAX_CHARS - 1] + "…"
-    entry = f"<b>{category_label}</b> • {date_str}\n{text}"
-
-    if item.get("photo_file_id"):
-        entry += "\n📷 <i>В новости есть изображение</i>"
-
-    safe_url = _safe_news_url(item.get("button_url"))
-    if safe_url:
-        label = escape(item["button_text"] or "Подробнее")
-        escaped_url = escape(item["button_url"], quote=True)
-        entry += f'\n<a href="{escaped_url}">{label}</a>'
-
-    return entry
-
-
-def _plain_news_text(text: str) -> str:
-    return re.sub(r"<[^>]+>", "", text or "")[:NEWS_MAX_CHARS]
-
-
-async def _send_news_page(message: Message, page: dict[str, Optional[str]], keyboard: InlineKeyboardMarkup | None) -> None:
-    text = page["text"] or ""
-    try:
-        if page.get("photo_file_id") and len(text) <= 1024:
-            await message.answer_photo(
-                photo=page["photo_file_id"],
-                caption=text,
-                reply_markup=keyboard,
-                parse_mode="HTML",
-            )
-        else:
-            await message.answer(
-                text,
-                reply_markup=keyboard,
-                parse_mode="HTML",
-            )
-    except TelegramBadRequest:
-        await message.answer(
-            _plain_news_text(text),
-            reply_markup=keyboard,
-        )
-
-
-def _build_news_keyboard(current: int, total: int) -> InlineKeyboardMarkup | None:
-    if total <= 1:
-        return InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="Закрыть", callback_data="news_close")]]
-        )
-
-    nav_row = []
-    if current > 0:
-        nav_row.append(InlineKeyboardButton(text="⟵ Назад", callback_data=f"news_page:{current - 1}"))
-
-    nav_row.append(InlineKeyboardButton(text=f"{current + 1}/{total}", callback_data=f"news_page:{current}"))
-
-    if current < total - 1:
-        nav_row.append(InlineKeyboardButton(text="Вперёд ⟶", callback_data=f"news_page:{current + 1}"))
-
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            nav_row,
-            [InlineKeyboardButton(text="Закрыть", callback_data="news_close")],
-        ]
-    )
-    return keyboard
-
-
 def _build_broadcast_keyboard(
     button_text: Optional[str], button_url: Optional[str]
 ) -> InlineKeyboardMarkup:
     rows = []
-    if button_text and button_url:
-        rows.append([InlineKeyboardButton(text=button_text, url=button_url)])
-    rows.append([InlineKeyboardButton(text="Закрыть", callback_data="broadcast_close")])
+    safe_url = _safe_button_url(button_url)
+    if button_text and safe_url:
+        rows.append([InlineKeyboardButton(text=button_text, url=safe_url)])
+    rows.append([InlineKeyboardButton(text="Закрыть", callback_data=BROADCAST_CLOSE_CALLBACK)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _build_broadcast_confirm_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="Отправить", callback_data=BROADCAST_CONFIRM_CALLBACK),
+                InlineKeyboardButton(text="Отменить", callback_data=BROADCAST_CANCEL_CALLBACK),
+            ]
+        ]
+    )
+
+
+async def _send_broadcast_payload(
+    bot: Bot,
+    chat_id: int,
+    payload: dict[str, Any],
+    *,
+    reply_markup: InlineKeyboardMarkup | None,
+) -> None:
+    text = str(payload.get("text") or "")
+    photo_id = payload.get("photo_id")
+
+    if photo_id and text and len(text) <= BROADCAST_CAPTION_LIMIT:
+        await bot.send_photo(
+            chat_id=chat_id,
+            photo=photo_id,
+            caption=text,
+            parse_mode="HTML",
+            reply_markup=reply_markup,
+        )
+        return
+
+    if photo_id and not text:
+        await bot.send_photo(
+            chat_id=chat_id,
+            photo=photo_id,
+            reply_markup=reply_markup,
+        )
+        return
+
+    if photo_id:
+        await bot.send_photo(chat_id=chat_id, photo=photo_id)
+
+    if text:
+        await bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            parse_mode="HTML",
+            reply_markup=reply_markup,
+        )
+        return

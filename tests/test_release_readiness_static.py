@@ -63,6 +63,10 @@ def test_health_readiness_contract_and_start_script_body_validation():
     assert 'app.router.add_get("/favicon.ico", favicon_handler)' in server
     assert "components" in server
     assert "health_ready()" in start
+    assert "database_tcp_ready()" in start
+    assert "detect_local_database_name()" in start
+    assert 'export DB_PORT="${LOCAL_DB_PORT:-5434}"' in start
+    assert 'export DB_NAME="${LOCAL_DB_NAME:-}"' in start
     assert 'payload.get("status") == "ok"' in start
     assert 'payload.get("service") == "extraarena-webapp"' in start
 

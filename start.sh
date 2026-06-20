@@ -11,15 +11,19 @@ if [ -f "$DIR/.env" ]; then
     set +a
 fi
 
-if [ "${DATABASE_URL:-}" = "postgresql://user:password@localhost:5432/extraarena" ]; then
-    echo "⚠️  DATABASE_URL в .env похож на пример из .env.example; использую локальную БД проекта."
-    export DATABASE_URL=""
-    export DB_HOST="${LOCAL_DB_HOST:-localhost}"
-    export DB_PORT="${LOCAL_DB_PORT:-5432}"
-    export DB_USER="${LOCAL_DB_USER:-postgres}"
-    export DB_PASSWORD="${LOCAL_DB_PASSWORD:-}"
-    export DB_NAME="${LOCAL_DB_NAME:-extraarena}"
-fi
+LOCAL_DB_FALLBACK=0
+case "${DATABASE_URL:-}" in
+    postgresql://user:password@localhost:5432/extraarena|postgresql://user:password@localhost:5434/extraarena)
+        echo "⚠️  DATABASE_URL в .env похож на пример из .env.example; использую локальную БД проекта."
+        export DATABASE_URL=""
+        export DB_HOST="${LOCAL_DB_HOST:-localhost}"
+        export DB_PORT="${LOCAL_DB_PORT:-5434}"
+        export DB_USER="${LOCAL_DB_USER:-postgres}"
+        export DB_PASSWORD="${LOCAL_DB_PASSWORD:-}"
+        export DB_NAME="${LOCAL_DB_NAME:-}"
+        LOCAL_DB_FALLBACK=1
+        ;;
+esac
 
 LOG_FILE="$DIR/extraarena.log"
 PID_FILE="$DIR/extraarena.pid"
@@ -71,6 +75,103 @@ except Exception:
 if payload.get("status") == "ok" and payload.get("service") == "extraarena-webapp":
     sys.exit(0)
 sys.exit(1)
+PY
+}
+
+database_tcp_ready() {
+    local host="$1"
+    local port="$2"
+
+    python3 - "$host" "$port" <<'PY'
+import socket
+import sys
+
+host = sys.argv[1]
+try:
+    port = int(sys.argv[2])
+except (TypeError, ValueError):
+    sys.exit(1)
+
+try:
+    with socket.create_connection((host, port), timeout=2):
+        pass
+except OSError:
+    sys.exit(1)
+PY
+}
+
+detect_local_database_name() {
+    python3 <<'PY'
+import asyncio
+import os
+import sys
+
+import asyncpg
+
+
+async def main() -> int:
+    host = os.environ.get("DB_HOST", "localhost")
+    port = int(os.environ.get("DB_PORT", "5434"))
+    user = os.environ.get("DB_USER", "postgres")
+    password = os.environ.get("DB_PASSWORD", "")
+
+    conn = await asyncpg.connect(
+        host=host,
+        port=port,
+        user=user,
+        password=password,
+        database="postgres",
+    )
+    try:
+        rows = await conn.fetch(
+            "SELECT datname FROM pg_database WHERE NOT datistemplate ORDER BY datname"
+        )
+        candidates: list[tuple[int, int, str]] = []
+        for row in rows:
+            name = row["datname"]
+            if name == "postgres":
+                continue
+            db_conn = None
+            try:
+                db_conn = await asyncpg.connect(
+                    host=host,
+                    port=port,
+                    user=user,
+                    password=password,
+                    database=name,
+                    timeout=2,
+                )
+                has_schema = await db_conn.fetchval(
+                    "SELECT to_regclass('public.schema_version') IS NOT NULL"
+                )
+                has_users = await db_conn.fetchval(
+                    "SELECT to_regclass('public.users') IS NOT NULL"
+                )
+                if not has_schema or not has_users:
+                    continue
+                schema_version = await db_conn.fetchval(
+                    "SELECT version FROM schema_version WHERE id = 1"
+                )
+                user_count = await db_conn.fetchval("SELECT count(*) FROM users")
+                candidates.append((int(user_count or 0), int(schema_version or 0), name))
+            except Exception:
+                continue
+            finally:
+                if db_conn is not None:
+                    await db_conn.close()
+        if candidates:
+            candidates.sort(reverse=True)
+            print(candidates[0][2])
+        return 0
+    finally:
+        await conn.close()
+
+
+try:
+    raise SystemExit(asyncio.run(main()))
+except Exception as exc:
+    print(f"❌ Не удалось найти локальную БД проекта: {exc}", file=sys.stderr)
+    raise SystemExit(1)
 PY
 }
 
@@ -166,6 +267,26 @@ for PORT_PID in $PORT_PIDS; do
 done
 
 rm -f "$PID_FILE"
+
+case "${DB_HOST:-}" in
+    localhost|127.0.0.1|::1)
+        if ! database_tcp_ready "$DB_HOST" "${DB_PORT:-5434}"; then
+            echo "❌ Локальная БД недоступна: ${DB_HOST}:${DB_PORT:-5434}"
+            echo "   Проверьте, что Postgres запущен, или задайте DATABASE_URL/DB_HOST/DB_PORT в .env."
+            exit 1
+        fi
+        if [ "$LOCAL_DB_FALLBACK" -eq 1 ] && [ -z "${DB_NAME:-}" ]; then
+            DETECTED_DB_NAME=$(detect_local_database_name)
+            if [ -z "$DETECTED_DB_NAME" ]; then
+                echo "❌ Не нашёл существующую локальную БД ExtraArena на ${DB_HOST}:${DB_PORT:-5434}."
+                echo "   Укажите LOCAL_DB_NAME или настоящий DATABASE_URL в .env."
+                exit 1
+            fi
+            export DB_NAME="$DETECTED_DB_NAME"
+            echo "🗄️  Использую локальную БД проекта: $DB_NAME"
+        fi
+        ;;
+esac
 
 if [ "${EXTRAARENA_TRUNCATE_LOG:-false}" = "true" ]; then
     : > "$LOG_FILE"

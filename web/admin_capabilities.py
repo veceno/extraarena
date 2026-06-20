@@ -98,6 +98,7 @@ def _string_schema(
     min_length: int | None = None,
     max_length: int | None = None,
     enum: tuple[str, ...] | None = None,
+    pattern: str | None = None,
 ) -> JsonSchema:
     schema: JsonSchema = {"type": "string"}
     if min_length is not None:
@@ -106,6 +107,8 @@ def _string_schema(
         schema["maxLength"] = max_length
     if enum is not None:
         schema["enum"] = list(enum)
+    if pattern is not None:
+        schema["pattern"] = pattern
     return schema
 
 
@@ -128,9 +131,11 @@ def _array_schema(items: JsonSchema, *, min_items: int | None = None, max_items:
 def _shop_set_reward_schema() -> JsonSchema:
     return _object_schema(
         {
-            "type": _string_schema(enum=("gems", "coins", "keys", "case", "card", "particles")),
+            "type": _string_schema(enum=("gems", "coins", "keys", "case", "card", "particles", "cosmetic")),
             "amount": _int_schema(minimum=0, maximum=1_000_000),
             "card_id": _int_schema(minimum=1, maximum=1_000_000),
+            "cosmetic_slug": _string_schema(min_length=1, max_length=120),
+            "auto_equip": _boolean_schema(default=False),
         },
         required=("type",),
     )
@@ -270,9 +275,9 @@ def _shop_set_patch_schema() -> JsonSchema:
 
 def _ruble_product_fields_schema() -> dict[str, JsonSchema]:
     return {
-        "code": _string_schema(min_length=1, max_length=120),
+        "code": _string_schema(min_length=1, max_length=120, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,119}$"),
         "id": _int_schema(minimum=1),
-        "item_type": _string_schema(enum=("extrapass", "extrapass_ultra", "starter_boost", "gems_package", "shop_set")),
+        "item_type": _string_schema(enum=("extrapass", "extrapass_ultra", "starter_boost", "squad_boost", "gems_package", "shop_set", "gift_shop_set")),
         "package_type": _string_schema(max_length=120),
         "shop_set_id": _int_schema(minimum=1),
         "name": _string_schema(min_length=1, max_length=160),
@@ -287,6 +292,21 @@ def _ruble_product_fields_schema() -> dict[str, JsonSchema]:
         "is_active": _boolean_schema(),
         "rustore_product_id": _string_schema(max_length=200),
         "metadata": _freeform_object_schema(),
+    }
+
+
+def _cosmetic_fields_schema() -> dict[str, JsonSchema]:
+    return {
+        "id": _int_schema(minimum=1),
+        "slug": _string_schema(min_length=1, max_length=120, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,119}$"),
+        "item_type": _string_schema(enum=("avatar", "profile_background", "title")),
+        "class": _string_schema(max_length=80),
+        "name": _string_schema(min_length=1, max_length=160),
+        "asset_path": _string_schema(max_length=500),
+        "media_type": _string_schema(enum=("image", "text")),
+        "has_sound": _boolean_schema(default=False),
+        "sort_order": _int_schema(minimum=0, maximum=1_000_000),
+        "is_active": _boolean_schema(),
     }
 
 
@@ -446,6 +466,128 @@ ADMIN_CAPABILITIES: tuple[AdminCapability, ...] = (
         dry_run_required=False,
         idempotency_required=False,
         adapter_function="adapter_list_shop_sets",
+    ),
+    AdminCapability(
+        id="admin.cosmetics.read",
+        title="List Cosmetics",
+        description="List DB-backed cosmetic items for avatars, profile backgrounds, and titles.",
+        input_schema=_object_schema(
+            {
+                "active_only": _boolean_schema(default=False),
+                "item_type": _string_schema(enum=("avatar", "profile_background", "title")),
+            }
+        ),
+        required_scope="admin:shop:read",
+        read_only=True,
+        mutating=False,
+        safety_level="low",
+        audit_policy="metadata",
+        dry_run_required=False,
+        idempotency_required=False,
+        adapter_function="adapter_list_cosmetics",
+    ),
+    AdminCapability(
+        id="admin.cosmetics.detail.read",
+        title="Read Cosmetic Detail",
+        description="Read one cosmetic item by numeric id or slug.",
+        input_schema=_object_schema(
+            {
+                "id": _int_schema(minimum=1),
+                "slug": _string_schema(min_length=1, max_length=120),
+            }
+        ),
+        required_scope="admin:shop:read",
+        read_only=True,
+        mutating=False,
+        safety_level="low",
+        audit_policy="metadata",
+        dry_run_required=False,
+        idempotency_required=False,
+        adapter_function="adapter_get_cosmetic_detail",
+    ),
+    AdminCapability(
+        id="admin.cosmetics.create",
+        title="Create Cosmetic",
+        description="Create a cosmetic item and make it immediately available for gift/shop-set rewards.",
+        input_schema=_object_schema(
+            {
+                **_cosmetic_fields_schema(),
+                **_mutating_controls(),
+            },
+            required=("slug", "item_type", "name", "dry_run"),
+        ),
+        required_scope="admin:shop:write",
+        read_only=False,
+        mutating=True,
+        safety_level="high",
+        audit_policy="request_and_result",
+        dry_run_required=True,
+        idempotency_required=True,
+        adapter_function="adapter_create_cosmetic",
+    ),
+    AdminCapability(
+        id="admin.cosmetics.update",
+        title="Update Cosmetic",
+        description="Patch cosmetic item metadata, activation state, or uploaded asset path.",
+        input_schema=_object_schema(
+            {
+                **_cosmetic_fields_schema(),
+                **_mutating_controls(),
+            },
+            required=("id", "dry_run"),
+        ),
+        required_scope="admin:shop:write",
+        read_only=False,
+        mutating=True,
+        safety_level="high",
+        audit_policy="request_and_result",
+        dry_run_required=True,
+        idempotency_required=True,
+        adapter_function="adapter_update_cosmetic",
+    ),
+    AdminCapability(
+        id="admin.cosmetics.delete",
+        title="Delete Cosmetic",
+        description="Deactivate a cosmetic item and unequip it from player profiles.",
+        input_schema=_object_schema(
+            {
+                "id": _int_schema(minimum=1),
+                **_mutating_controls(),
+            },
+            required=("id", "dry_run"),
+        ),
+        required_scope="admin:shop:write",
+        read_only=False,
+        mutating=True,
+        safety_level="critical",
+        audit_policy="request_and_result",
+        dry_run_required=True,
+        idempotency_required=True,
+        adapter_function="adapter_delete_cosmetic",
+    ),
+    AdminCapability(
+        id="admin.uploads.cosmetic_image.create",
+        title="Upload Cosmetic Image",
+        description="Upload an avatar or profile-background image into DesignAssets for immediate cosmetic use.",
+        input_schema=_object_schema(
+            {
+                "item_type": _string_schema(enum=("avatar", "profile_background")),
+                "slug": _string_schema(max_length=120),
+                "filename": _string_schema(max_length=200),
+                "content_type": _string_schema(enum=("image/png", "image/jpeg", "image/webp")),
+                "base64": _string_schema(min_length=1, max_length=7_000_000),
+                **_mutating_controls(),
+            },
+            required=("item_type", "content_type", "base64", "dry_run"),
+        ),
+        required_scope="admin:shop:write",
+        read_only=False,
+        mutating=True,
+        safety_level="high",
+        audit_policy="request",
+        dry_run_required=True,
+        idempotency_required=True,
+        adapter_function="adapter_upload_cosmetic_image",
     ),
     AdminCapability(
         id="admin.shop.sets.create",
@@ -618,7 +760,6 @@ ADMIN_CAPABILITIES: tuple[AdminCapability, ...] = (
             {
                 "user_id": _int_schema(minimum=1),
                 "mode": _string_schema(enum=("inactive", "active", "ultra")),
-                "days": _int_schema(minimum=1, maximum=3_650),
                 "reason": _string_schema(max_length=500),
                 "dry_run": _boolean_schema(),
                 "idempotency_key": _string_schema(min_length=8, max_length=128),

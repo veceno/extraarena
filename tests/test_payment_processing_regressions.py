@@ -3,6 +3,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from infrastructure.config import DatabaseSettings
+from infrastructure.database import Database
 from infrastructure.payments_logic import _grant_rewards_for_item, process_successful_payment
 
 
@@ -137,14 +139,17 @@ class PassEntitlementDB:
         return dict(self.profile)
 
     async def fetchval(self, query, *args):
+        compact_query = " ".join(str(query).split())
         if "UPDATE users SET extra_pass = 'active'" in query:
             self.pass_updates.append({"mode": "active", "expires_at": args[0], "user_id": args[1]})
             return 1
         if "UPDATE users SET extra_pass = 'ultra'" in query:
             self.pass_updates.append({"mode": "ultra", "expires_at": args[0], "user_id": args[1]})
             return 1
-        if "UPDATE users SET extra_pass = $1" in query:
-            self.pass_updates.append({"mode": args[0], "expires_at": args[1], "user_id": args[2]})
+        if "UPDATE users SET extra_pass = $1" in compact_query:
+            if len(args) >= 4:
+                self.gems_added += int(args[2])
+            self.pass_updates.append({"mode": args[0], "expires_at": args[1], "user_id": args[3] if len(args) >= 4 else args[2]})
             return 1
         return None
 
@@ -241,11 +246,162 @@ class StarterBoostMarkerCrashDB(StarterBoostStepLedgerDB):
         return await super().mark_payment_reward_step(payment_id, step_id)
 
 
+class ShopSetPaymentProcessingDB:
+    def __init__(self, payment_record):
+        self.payment_record = dict(payment_record)
+        self.payment_record["metadata"] = dict(payment_record.get("metadata") or {})
+        self.released = 0
+        self.marked_processed = False
+        self.marked_steps = []
+        self.shop_set_grants = []
+        self.mail = None
+        self.economy_events = []
+
+    async def claim_payment_for_processing(self, payment_id):
+        return dict(self.payment_record)
+
+    async def release_payment_processing_claim(self, payment_id):
+        self.released += 1
+
+    async def run_payment_reward_step(self, payment_id, step_id, apply_fn):
+        metadata = self.payment_record.setdefault("metadata", {})
+        if metadata.setdefault("reward_steps", {}).get(step_id):
+            return {"success": True, "applied": False, "status": "already_applied"}
+        await apply_fn(self)
+        metadata["reward_steps"][step_id] = True
+        self.marked_steps.append(step_id)
+        return {"success": True, "applied": True, "status": "applied"}
+
+    async def grant_shop_set_rewards_on_conn(self, conn, user_id, set_id):
+        self.shop_set_grants.append({"conn": conn, "user_id": user_id, "set_id": set_id})
+        return {
+            "success": True,
+            "granted": [
+                {"type": "gems", "amount": 25},
+                {"type": "cosmetic", "cosmetic_slug": "avatar_paid_test", "acquired": True},
+            ],
+        }
+
+    async def fetchrow(self, query=None, *args):
+        return {"id": 1}
+
+    async def fetchval(self, query, *args):
+        if "SET rewards_processed = TRUE" in query:
+            self.marked_processed = True
+            return 1
+        return None
+
+    async def create_mail(self, **kwargs):
+        self.mail = kwargs
+        return {"success": True}
+
+    async def track_economy_event(self, **kwargs):
+        self.economy_events.append(kwargs)
+        return {"success": True}
+
+
+class SquadBoostPaymentProcessingDB:
+    def __init__(self, payment_record):
+        self.payment_record = dict(payment_record)
+        self.payment_record["metadata"] = dict(payment_record.get("metadata") or {})
+        self.released = 0
+        self.marked_processed = False
+        self.marked_steps = []
+        self.activations = []
+        self.mail = None
+        self.economy_events = []
+
+    async def claim_payment_for_processing(self, payment_id):
+        return dict(self.payment_record)
+
+    async def release_payment_processing_claim(self, payment_id):
+        self.released += 1
+
+    async def run_payment_reward_step(self, payment_id, step_id, apply_fn):
+        metadata = self.payment_record.setdefault("metadata", {})
+        if metadata.setdefault("reward_steps", {}).get(step_id):
+            return {"success": True, "applied": False, "status": "already_applied"}
+        await apply_fn(self)
+        metadata["reward_steps"][step_id] = True
+        self.marked_steps.append(step_id)
+        return {"success": True, "applied": True, "status": "applied"}
+
+    async def activate_clan_boost_from_purchase(self, user_id, *, executor=None):
+        self.activations.append({"user_id": user_id, "executor": executor})
+        return {"status": "activated", "clan_id": 10, "boost_public_id": 777, "member_slots_added": 5}
+
+    async def fetchval(self, query, *args):
+        if "SET rewards_processed = TRUE" in query:
+            self.marked_processed = True
+            return 1
+        return None
+
+    async def create_mail(self, **kwargs):
+        self.mail = kwargs
+        return {"success": True}
+
+    async def track_economy_event(self, **kwargs):
+        self.economy_events.append(kwargs)
+        return {"success": True}
+
+
 class DuplicateRetryDB(ClaimSucceedsPaymentDB):
     async def claim_payment_for_processing(self, payment_id):
         if self.marked_processed:
             return None
         return dict(self.payment_record)
+
+
+class ShopSetRewardApplyDB(Database):
+    def __init__(self):
+        super().__init__(DatabaseSettings(host="localhost", port=5434, user="test", password="", database="test"))
+        self.cosmetic_grants = []
+
+    async def grant_cosmetic_by_slug(self, user_id, slug, *, source="grant", auto_equip=False):
+        self.cosmetic_grants.append(
+            {
+                "user_id": int(user_id),
+                "slug": str(slug),
+                "source": source,
+                "auto_equip": bool(auto_equip),
+            }
+        )
+        return {
+            "item": {"id": 77, "slug": str(slug), "item_type": "avatar", "name": "Gift Avatar"},
+            "equipped": {"slug": str(slug)} if auto_equip else None,
+            "acquired": True,
+        }
+
+
+class ShopSetRewardConn:
+    def __init__(self):
+        self.execute_calls = []
+
+    async def execute(self, query, *args):
+        self.execute_calls.append((query, args))
+        return "UPDATE 1"
+
+
+class ShopSetOwnedCardFallbackConn(ShopSetRewardConn):
+    async def fetchrow(self, query, *args):
+        if "FROM cosmetic_items" in query:
+            return {
+                "id": 88,
+                "slug": str(args[0]),
+                "item_type": "profile_background",
+                "class": "gold",
+                "name": "Gold Background",
+                "asset_path": "/static/bg_gold.png",
+                "media_type": "image",
+            }
+        return None
+
+    async def fetchval(self, query, *args):
+        if "FROM user_cards" in query:
+            return 1
+        if "FROM user_cosmetics" in query:
+            return None
+        return None
 
 
 @pytest.mark.asyncio
@@ -415,7 +571,7 @@ async def test_successful_payment_does_not_retry_reward_when_economy_event_fails
 
 
 @pytest.mark.asyncio
-async def test_extrapass_purchase_over_active_ultra_extends_without_downgrade():
+async def test_extrapass_purchase_over_active_ultra_preserves_tier_without_expiry():
     future_expiry = datetime.now(timezone.utc) + timedelta(days=10)
     db = PassEntitlementDB(
         {
@@ -435,7 +591,30 @@ async def test_extrapass_purchase_over_active_ultra_extends_without_downgrade():
 
     assert result["rewards_given"] is True
     assert db.pass_updates[-1]["mode"] == "ultra"
-    assert db.pass_updates[-1]["expires_at"] >= future_expiry + timedelta(days=30) - timedelta(seconds=1)
+    assert db.pass_updates[-1]["expires_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_extrapass_ultra_purchase_grants_season_entitlement_without_expiry():
+    db = PassEntitlementDB(
+        {
+            "user_id": 1001,
+            "extra_pass": "inactive",
+            "extra_pass_expires_at": None,
+        }
+    )
+
+    result = await _grant_rewards_for_item(
+        db,
+        user_id=1001,
+        item_type="extrapass_ultra",
+        metadata={},
+        logger=logging.getLogger("test"),
+    )
+
+    assert result["rewards_given"] is True
+    assert db.pass_updates[-1] == {"mode": "ultra", "expires_at": None, "user_id": 1001}
+    assert db.gems_added == 500
 
 
 @pytest.mark.asyncio
@@ -581,6 +760,157 @@ async def test_duplicate_successful_payment_retry_does_not_duplicate_grant():
     assert first["status"] == "processed"
     assert second["status"] == "already_processed"
     assert db.gems_added == 100
+
+
+@pytest.mark.asyncio
+async def test_successful_shop_set_payment_grants_pack_and_marks_reward_step():
+    payment_record = {
+        "payment_id": "pay-shop-set-10rub",
+        "user_id": 1001,
+        "amount": 10,
+        "currency": "RUB",
+        "description": "Test Shop Set",
+        "metadata": {"item_type": "shop_set_7", "shop_set_id": 7, "item_name": "Test Shop Set"},
+        "rewards_processed": False,
+    }
+    db = ShopSetPaymentProcessingDB(payment_record)
+
+    result = await process_successful_payment(
+        db,
+        payment_id="pay-shop-set-10rub",
+        payment_record=payment_record,
+        source="yookassa_webhook",
+        logger=logging.getLogger("test"),
+    )
+
+    assert result["status"] == "processed"
+    assert result["attachments"]["shop_set_id"] == 7
+    assert result["attachments"]["granted"] == [
+        {"type": "gems", "amount": 25},
+        {"type": "cosmetic", "cosmetic_slug": "avatar_paid_test", "acquired": True},
+    ]
+    assert db.shop_set_grants == [{"conn": db, "user_id": 1001, "set_id": 7}]
+    assert db.marked_steps == ["shop_set_7"]
+    assert db.payment_record["metadata"]["reward_steps"]["shop_set_7"] is True
+    assert db.marked_processed is True
+    assert db.released == 0
+    assert db.mail["attachments"]["shop_set_id"] == 7
+
+
+@pytest.mark.asyncio
+async def test_successful_squad_boost_payment_activates_current_clan_and_marks_reward_step():
+    payment_record = {
+        "payment_id": "pay-squad-boost",
+        "user_id": 1001,
+        "amount": 299,
+        "currency": "RUB",
+        "description": "Boost сквада",
+        "metadata": {"item_type": "squad_boost", "item_name": "Boost сквада"},
+        "rewards_processed": False,
+    }
+    db = SquadBoostPaymentProcessingDB(payment_record)
+
+    result = await process_successful_payment(
+        db,
+        payment_id="pay-squad-boost",
+        payment_record=payment_record,
+        source="yookassa_webhook",
+        logger=logging.getLogger("test"),
+    )
+
+    assert result["status"] == "processed"
+    assert result["attachments"]["squad_boost"] is True
+    assert result["attachments"]["clan_id"] == 10
+    assert result["attachments"]["boost_public_id"] == 777
+    assert result["attachments"]["member_slots_added"] == 5
+    assert result["rewards_text"] == ["⚡ Boost сквада активирован", "+5 мест в скваде"]
+    assert db.activations == [{"user_id": 1001, "executor": db}]
+    assert db.marked_steps == ["squad_boost_activation"]
+    assert db.payment_record["metadata"]["reward_steps"]["squad_boost_activation"] is True
+    assert db.marked_processed is True
+    assert db.released == 0
+    assert db.mail["attachments"]["squad_boost"] is True
+
+
+@pytest.mark.asyncio
+async def test_shop_set_rewards_support_cosmetics_and_preserve_case_type():
+    db = ShopSetRewardApplyDB()
+    conn = ShopSetRewardConn()
+    rewards, error = db._normalize_shop_set_rewards(
+        [
+            {"type": "case", "amount": 2},
+            {"type": "cosmetic", "cosmetic_slug": "avatar_gold", "auto_equip": True},
+        ]
+    )
+    assert error is None
+
+    granted = await db._apply_shop_set_rewards_on_conn(conn, 1001, 7, rewards)
+
+    assert {"type": "case", "amount": 2} in granted
+    assert {
+        "type": "cosmetic",
+        "cosmetic_slug": "avatar_gold",
+        "auto_equip": True,
+        "acquired": True,
+    } in granted
+    assert db.cosmetic_grants == [
+        {"user_id": 1001, "slug": "avatar_gold", "source": "shop_set", "auto_equip": True}
+    ]
+    assert any("UPDATE users SET keys" in query for query, _args in conn.execute_calls)
+
+
+@pytest.mark.asyncio
+async def test_shop_set_card_background_reward_replaces_owned_card_with_gems():
+    db = ShopSetRewardApplyDB()
+    conn = ShopSetOwnedCardFallbackConn()
+    rewards, error = db._normalize_shop_set_rewards(
+        [
+            {"type": "card", "card_id": 77},
+            {"type": "cosmetic", "cosmetic_slug": "bg_gold", "auto_equip": True},
+        ]
+    )
+    assert error is None
+
+    granted = await db._apply_shop_set_rewards_on_conn(conn, 1001, 12, rewards)
+
+    assert {"type": "gems", "amount": 50, "fallback_for": "owned_card", "card_id": 77} in granted
+    assert not any("INSERT INTO user_cards" in query for query, _args in conn.execute_calls)
+    assert any("UPDATE users SET gems" in query for query, _args in conn.execute_calls)
+
+
+@pytest.mark.asyncio
+async def test_shop_set_reward_validation_rejects_missing_card_and_inactive_cosmetic():
+    db = Database(DatabaseSettings(host="localhost", port=5434, user="test", password="", database="test"))
+    db._pool = object()
+
+    async def fake_fetchval(query, *args):
+        normalized = " ".join(str(query).split())
+        if "FROM cards" in normalized:
+            return 1 if int(args[0]) == 10 else None
+        if "FROM cosmetic_items" in normalized:
+            return 1 if str(args[0]) == "avatar_active" else None
+        return None
+
+    db.fetchval = fake_fetchval
+
+    missing_card = await db.validate_shop_set_rewards([{"type": "card", "card_id": 404}])
+    missing_particles_card = await db.validate_shop_set_rewards(
+        [{"type": "particles", "card_id": 405, "amount": 10}]
+    )
+    inactive_cosmetic = await db.validate_shop_set_rewards(
+        [{"type": "cosmetic", "cosmetic_slug": "avatar_inactive"}]
+    )
+    valid = await db.validate_shop_set_rewards(
+        [
+            {"type": "card", "card_id": 10},
+            {"type": "cosmetic", "cosmetic_slug": "avatar_active", "auto_equip": False},
+        ]
+    )
+
+    assert missing_card == ([], "reward_card_not_found")
+    assert missing_particles_card == ([], "reward_card_not_found")
+    assert inactive_cosmetic == ([], "reward_cosmetic_not_found")
+    assert valid[1] is None
 
 
 def test_payment_processing_claim_can_reclaim_stale_processing_marker():

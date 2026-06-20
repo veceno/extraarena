@@ -422,6 +422,90 @@
       gap: 5px;
     }
 
+    .shop-set-preview {
+      min-width: 220px;
+      display: grid;
+      gap: 6px;
+      font-size: 12px;
+      color: var(--soft);
+    }
+
+    .shop-set-preview.resources-only .reward-resource {
+      color: var(--gold);
+      border-color: rgba(251, 191, 36, 0.42);
+      background: rgba(251, 191, 36, 0.08);
+    }
+
+    .shop-set-preview.cosmetics-resources .reward-cosmetic-chip {
+      color: var(--purple);
+      border-color: rgba(167, 139, 250, 0.52);
+      background: rgba(167, 139, 250, 0.12);
+    }
+
+    .shop-set-preview.card-pack .reward-card-media {
+      border-color: rgba(96, 165, 250, 0.36);
+      background: rgba(96, 165, 250, 0.08);
+    }
+
+    .reward-preview-row,
+    .reward-chip-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+      align-items: center;
+    }
+
+    .reward-resource,
+    .reward-cosmetic-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      max-width: 100%;
+      padding: 3px 7px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: rgba(28, 34, 48, 0.72);
+      white-space: nowrap;
+    }
+
+    .reward-card-media {
+      display: grid;
+      grid-template-columns: 34px minmax(0, 1fr);
+      gap: 7px;
+      align-items: center;
+      padding: 6px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: rgba(28, 34, 48, 0.72);
+    }
+
+    .reward-card-media img,
+    .reward-card-fallback {
+      width: 34px;
+      height: 34px;
+      border-radius: 6px;
+      object-fit: cover;
+      display: grid;
+      place-items: center;
+      background: rgba(167, 139, 250, 0.15);
+      color: var(--purple);
+      font-weight: 800;
+    }
+
+    .reward-card-media strong,
+    .reward-card-media span {
+      display: block;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .reward-card-media span {
+      color: var(--muted);
+      font-size: 11px;
+    }
+
     .badge {
       height: 22px;
       padding: 0 7px;
@@ -1596,6 +1680,7 @@
       <div class="brand"><div class="brand-mark">EA</div><div><strong>ExtraArena</strong><span>Commerce Admin</span></div></div>
       <nav class="nav">
         <button class="nav-button active" type="button" data-nav="products"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 7H4"/><path d="M20 12H4"/><path d="M20 17H4"/><path d="M7 7v10"/></svg>Products</button>
+        <button class="nav-button" type="button" data-nav="cosmetics"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 22a8 8 0 0 1 16 0"/><path d="M18 3.5 20 2l1.5 2"/></svg>Cosmetics</button>
         <button class="nav-button" type="button" data-nav="analytics"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 20V10"/><path d="M12 20V4"/><path d="M6 20v-6"/></svg>Analytics</button>
         <button class="nav-button" type="button" data-nav="players"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>Players</button>
         <button class="nav-button" type="button" data-nav="squads"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.46"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>Squads</button>
@@ -1611,7 +1696,11 @@
       <section class="view active" id="products-view">
         <header class="topbar">
           <div><div class="title-kicker">Catalog management</div><h1>Products</h1></div>
-          <button class="primary" type="button" id="btn-create-product"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 5v14"/><path d="M5 12h14"/></svg>Create Product</button>
+          <div></div>
+          <div class="top-actions">
+            <button class="secondary" type="button" id="btn-create-shop-set"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M20 7H4"/><path d="M20 12H4"/><path d="M20 17H4"/><path d="M7 7v10"/></svg>Create Set</button>
+            <button class="primary" type="button" id="btn-create-product"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 5v14"/><path d="M5 12h14"/></svg>Create Product</button>
+          </div>
         </header>
 
         <section class="metrics">
@@ -1641,6 +1730,48 @@
         </section>
       </section>
 
+      <!-- COSMETICS VIEW -->
+      <section class="view" id="cosmetics-view">
+        <header class="topbar">
+          <div><div class="title-kicker">Profile cosmetics</div><h1>Cosmetics</h1></div>
+          <div></div>
+          <div class="top-actions">
+            <button class="secondary" type="button" id="btn-reload-cosmetics"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/><path d="M3 12a9 9 0 0 1 15.36-6.36L21 8"/><path d="M21 3v5h-5"/></svg>Reload</button>
+            <button class="primary" type="button" id="btn-create-cosmetic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 5v14"/><path d="M5 12h14"/></svg>Create Cosmetic</button>
+          </div>
+        </header>
+        <div id="cosmetics-status" style="min-height:20px;margin-bottom:10px"></div>
+        <div class="editor-layout">
+          <section class="table-shell">
+            <div class="table-head"><div><strong>Cosmetic catalog</strong><span id="cosmetics-count">loading...</span></div><div><select id="cosmetics-filter-type" style="padding:6px 10px;border-radius:6px;background:#151923;color:#f2f4f8;border:1px solid #303848"><option value="">All types</option><option value="avatar">Avatars</option><option value="profile_background">Backgrounds</option><option value="title">Titles</option></select></div></div>
+            <div class="table-scroll"><table>
+              <thead><tr><th>ID</th><th>Type</th><th>Name</th><th>Slug</th><th>Asset</th><th>Status</th><th>Actions</th></tr></thead>
+              <tbody id="cosmetics-tbody"><tr><td colspan="7" style="text-align:center;padding:32px;color:var(--muted)">Loading...</td></tr></tbody>
+            </table></div>
+          </section>
+          <aside class="side-stack">
+            <section class="side-panel">
+              <div class="side-head"><strong id="cosmetic-form-title">Create cosmetic</strong><span id="cosmetic-form-id">new</span></div>
+              <div class="form-grid">
+                <div class="field"><label>Type</label><select id="cosmetic-type"><option value="avatar">avatar</option><option value="profile_background">profile_background</option><option value="title">title</option></select></div>
+                <div class="field"><label>Class</label><input id="cosmetic-class" value="common"></div>
+                <div class="field full"><label>Slug</label><input id="cosmetic-slug" placeholder="extra_cards_avatar"></div>
+                <div class="field full"><label>Name / title text</label><input id="cosmetic-name" placeholder="Экстра олд"></div>
+                <div class="field"><label>Sort order</label><input id="cosmetic-sort" type="number" min="0" value="100"></div>
+                <div class="toggle"><span class="toggle-label">Active</span><span class="switch on" id="cosmetic-active-switch" data-on="1"></span></div>
+                <div class="field full"><label>Image (avatar 750x750, background 760x380)</label><input type="file" id="cosmetic-file" accept="image/png,image/jpeg,image/webp"></div>
+                <div class="field full"><label>Asset path</label><input id="cosmetic-asset-path" readonly placeholder="/DesignAssets/..."></div>
+                <div class="field full"><img id="cosmetic-preview" style="max-width:100%;max-height:180px;border-radius:8px;display:none;border:1px solid var(--line)"></div>
+              </div>
+              <div class="top-actions" style="justify-content:flex-start;margin-top:12px">
+                <button class="primary" type="button" id="btn-save-cosmetic">Save</button>
+                <button class="danger" type="button" id="btn-delete-cosmetic" style="display:none">Delete</button>
+              </div>
+            </section>
+          </aside>
+        </div>
+      </section>
+
       <!-- PRODUCT EDITOR VIEW -->
       <section class="view" id="product-editor-view">
         <header class="editor-topbar">
@@ -1665,7 +1796,7 @@
             </section>
             <section class="form-section"><div class="section-head"><strong>Pricing</strong></div>
               <div class="form-grid">
-                <div class="field"><label>Price</label><input id="pe-price" type="number" step="0.01" min="0"></div>
+                <div class="field"><label id="pe-price-label">Price</label><input id="pe-price" type="number" step="0.01" min="0"></div>
                 <div class="field"><label>Currency</label><select id="pe-currency"><option value="rubles">Rubles</option><option value="gems">Gems</option><option value="coins">Coins</option></select></div>
                 <div class="field"><label>Badge</label><input id="pe-badge" placeholder="e.g. popular"></div>
                 <div class="field"><label>Sort order</label><input id="pe-sort-order" type="number" value="100"></div>
@@ -1726,7 +1857,7 @@
               <div class="builder-list" id="editor-rewards-list"></div>
               <div class="builder-footer">
                 <div class="add-menu">
-                  <button class="menu-chip" data-add-reward="gems">+ gems</button><button class="menu-chip" data-add-reward="coins">+ coins</button><button class="menu-chip" data-add-reward="keys">+ keys</button><button class="menu-chip" data-add-reward="case">+ case</button><button class="menu-chip" data-add-reward="card">+ card</button><button class="menu-chip" data-add-reward="particles">+ particles</button>
+                  <button class="menu-chip" data-add-reward="gems">+ gems</button><button class="menu-chip" data-add-reward="coins">+ coins</button><button class="menu-chip" data-add-reward="keys">+ keys</button><button class="menu-chip" data-add-reward="case">+ case</button><button class="menu-chip" data-add-reward="card">+ card</button><button class="menu-chip" data-add-reward="particles">+ particles</button><button class="menu-chip" data-add-reward="cosmetic">+ cosmetic</button>
                 </div>
               </div>
               <pre class="json-preview" id="editor-rewards-json" style="max-height:180px"></pre>
@@ -2021,7 +2152,7 @@
                   <option value="active">Active</option>
                   <option value="ultra">Ultra</option>
                 </select>
-                <input type="number" id="pd-ep-days" placeholder="Days" style="background:var(--surface);border:1px solid var(--line);color:var(--fg);padding:5px 8px;border-radius:6px;font-size:12px" min="1" value="30">
+                <span style="align-self:center;color:var(--muted);font-size:12px">Until season end</span>
                 <input type="text" id="pd-ep-reason" placeholder="Reason" style="background:var(--surface);border:1px solid var(--line);color:var(--fg);padding:5px 8px;border-radius:6px;font-size:12px">
                 <button class="primary" type="button" id="btn-pd-set-ep" style="font-size:12px">Set ExtraPass + notify</button>
               </div>
@@ -2416,17 +2547,19 @@
       })();
       if(location.search){var clean=new URL(location.href);clean.searchParams.delete('_auth');clean.searchParams.delete('user_id');if(clean.href!==location.href)history.replaceState(null,'',clean.pathname+clean.search+clean.hash)}
 
-      var shopSets=[],rubleProducts=[],editingProduct=null,editingSet=null,isDirty=!1,loadError=null,editorRewards=[];
+      var cosmeticCatalog=[];
+      var shopSets=[],rubleProducts=[],editingProduct=null,editingSet=null,editingCosmetic=null,isDirty=!1,loadError=null,editorRewards=[];
       var productOptions={item_types:[],package_types:{},shop_sets:[]},
           seasonsState={seasons:[],reward_tracks:[],reward_counts:{},overview:[],active:null,drafts:[],scheduled:[],presets:[]},
           selectedDraftId=null,selectedRewardSeasonId=null,
           seasonResetPreview=null,seasonResetBusy=!1,
-          VALID_REWARD_TYPES=['gems','coins','keys','case','card','particles'],
+          VALID_REWARD_TYPES=['gems','coins','keys','case','card','particles','cosmetic'],
           $=function(s){return document.querySelector(s)},
           $$=function(s){return [].slice.call(document.querySelectorAll(s))};
 
-      function showView(n){['products-view','editor-view','product-editor-view','analytics-view','players-view','player-detail-view','squads-view','promocodes-view','seasons-view','configs-view','purchases-view'].forEach(function(id){$('#'+id).classList.toggle('active',id===n)});$$('[data-nav]').forEach(function(b){b.classList.toggle('active',b.dataset.nav===(n==='analytics-view'?'analytics':n==='players-view'||n==='player-detail-view'?'players':n==='squads-view'?'squads':n==='promocodes-view'?'promocodes':n==='seasons-view'?'seasons':n==='configs-view'?'configs':n==='purchases-view'?'purchases':'products'))})}
+      function showView(n){['products-view','cosmetics-view','editor-view','product-editor-view','analytics-view','players-view','player-detail-view','squads-view','promocodes-view','seasons-view','configs-view','purchases-view'].forEach(function(id){$('#'+id).classList.toggle('active',id===n)});$$('[data-nav]').forEach(function(b){b.classList.toggle('active',b.dataset.nav===(n==='analytics-view'?'analytics':n==='cosmetics-view'?'cosmetics':n==='players-view'||n==='player-detail-view'?'players':n==='squads-view'?'squads':n==='promocodes-view'?'promocodes':n==='seasons-view'?'seasons':n==='configs-view'?'configs':n==='purchases-view'?'purchases':'products'))})}
       $('[data-nav="products"]').addEventListener('click',function(){showView('products-view')});
+      $('[data-nav="cosmetics"]').addEventListener('click',function(){showView('cosmetics-view');loadCosmetics()});
       $('[data-nav="analytics"]').addEventListener('click',function(){showView('analytics-view');loadAnalytics()});
       $('[data-nav="players"]').addEventListener('click',function(){showView('players-view');loadPlayersOverview()});
       $('[data-nav="squads"]').addEventListener('click',function(){showView('squads-view');loadSquadsAdmin()});
@@ -2490,6 +2623,97 @@
         }
       }
 
+      function cosmeticActive(on){$('#cosmetic-active-switch').classList.toggle('on',!!on);$('#cosmetic-active-switch').dataset.on=on?'1':'0'}
+      function cosmeticLabel(c){return(c.name||c.slug||'cosmetic')+' · '+(c.item_type||'')}
+      function cosmeticOptions(selected){
+        var rows=cosmeticCatalog.filter(function(c){return c.is_active!==!1});
+        var html='<option value="">Select cosmetic</option>';
+        rows.forEach(function(c){html+='<option value="'+escHtml(c.slug)+'"'+(selected===c.slug?' selected':'')+'>'+escHtml(cosmeticLabel(c))+'</option>'});
+        return html;
+      }
+      function resetCosmeticForm(){
+        editingCosmetic=null;
+        $('#cosmetic-form-title').textContent='Create cosmetic';$('#cosmetic-form-id').textContent='new';
+        $('#cosmetic-type').value='avatar';$('#cosmetic-class').value='common';$('#cosmetic-slug').value='';$('#cosmetic-name').value='';
+        $('#cosmetic-sort').value='100';$('#cosmetic-asset-path').value='';$('#cosmetic-file').value='';$('#btn-delete-cosmetic').style.display='none';
+        cosmeticActive(!0);renderCosmeticPreview('');
+      }
+      function renderCosmeticPreview(path){
+        var img=$('#cosmetic-preview');
+        if(path){img.src=path;img.style.display='block'}else{img.removeAttribute('src');img.style.display='none'}
+      }
+      function openCosmeticEditor(id){
+        var c=cosmeticCatalog.find(function(x){return Number(x.id)===Number(id)});
+        if(!c)return;
+        editingCosmetic=c;
+        $('#cosmetic-form-title').textContent='Edit cosmetic';$('#cosmetic-form-id').textContent='#'+c.id;
+        $('#cosmetic-type').value=c.item_type||'avatar';$('#cosmetic-class').value=c.class||'common';$('#cosmetic-slug').value=c.slug||'';$('#cosmetic-name').value=c.name||'';
+        $('#cosmetic-sort').value=c.sort_order||0;$('#cosmetic-asset-path').value=c.asset_path||'';$('#cosmetic-file').value='';$('#btn-delete-cosmetic').style.display='';
+        cosmeticActive(c.is_active!==!1);renderCosmeticPreview(c.asset_path||'');
+      }
+      function renderCosmeticsTable(){
+        var type=$('#cosmetics-filter-type').value||'',rows=cosmeticCatalog;
+        if(type)rows=rows.filter(function(c){return c.item_type===type});
+        $('#cosmetics-count').textContent=rows.length+' / '+cosmeticCatalog.length+' items';
+        if(!rows.length){$('#cosmetics-tbody').innerHTML='<tr><td colspan="7" style="text-align:center;padding:24px;color:var(--muted)">No cosmetics yet</td></tr>';return}
+        $('#cosmetics-tbody').innerHTML=rows.map(function(c){
+          var asset=c.asset_path||'',preview=asset&&c.item_type!=='title'&&c.is_active!==!1?'<img src="'+escHtml(asset)+'" style="width:42px;height:42px;object-fit:cover;border-radius:6px;border:1px solid var(--line)" alt="">':escHtml(asset||'text');
+          return'<tr><td><code>#'+Number(c.id||0)+'</code></td><td><span class="badge">'+escHtml(c.item_type||'')+'</span></td><td><strong>'+escHtml(c.name||'')+'</strong><br><span style="font-size:11px;color:var(--muted)">'+escHtml(c.class||'common')+'</span></td><td><code>'+escHtml(c.slug||'')+'</code></td><td>'+preview+'</td><td><span class="status '+setStatusClass(c.is_active)+'">'+setStatusLabel(c.is_active)+'</span></td><td><div class="actions"><button class="icon-button" title="Edit" data-cosmetic-edit="'+Number(c.id||0)+'"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg></button></div></td></tr>';
+        }).join('');
+        $('#cosmetics-tbody').querySelectorAll('[data-cosmetic-edit]').forEach(function(b){b.addEventListener('click',function(){openCosmeticEditor(this.dataset.cosmeticEdit)})});
+      }
+      async function loadCosmetics(){
+        $('#cosmetics-status').innerHTML='';
+        try{
+          var res=await api('GET','/api/admin/cosmetics',null,{active_only:'false'});
+          cosmeticCatalog=res.items||((res.data||{}).items)||[];
+          renderCosmeticsTable();
+        }catch(e){
+          $('#cosmetics-status').innerHTML='<div style="color:var(--red);font-size:12px;background:rgba(239,68,68,0.08);padding:8px 12px;border-radius:6px;border:1px solid rgba(239,68,68,0.22)">Cosmetics error: '+escHtml(e.message)+'</div>';
+          $('#cosmetics-tbody').innerHTML='<tr><td colspan="7" style="text-align:center;padding:24px;color:var(--muted)">Error loading cosmetics</td></tr>';
+        }
+      }
+      async function uploadCosmeticImageIfNeeded(){
+        var file=$('#cosmetic-file').files[0],type=$('#cosmetic-type').value;
+        if(!file)return $('#cosmetic-asset-path').value.trim();
+        if(type==='title')throw new Error('Title cosmetics do not use images');
+        var fd=new FormData();
+        fd.append('item_type',type);fd.append('slug',$('#cosmetic-slug').value.trim());fd.append('file',file);
+        var res=await api('POST','/api/admin/cosmetics/upload-image',fd);
+        $('#cosmetic-asset-path').value=res.asset_path||'';renderCosmeticPreview(res.asset_path||'');
+        return res.asset_path||'';
+      }
+      async function saveCosmetic(){
+        var type=$('#cosmetic-type').value,name=$('#cosmetic-name').value.trim(),slug=$('#cosmetic-slug').value.trim();
+        if(!slug||!name){toast('Slug and name required','error');return}
+        try{
+          var asset=type==='title'?null:await uploadCosmeticImageIfNeeded();
+          var body={slug:slug,item_type:type,class:$('#cosmetic-class').value.trim()||'common',name:name,asset_path:asset,media_type:type==='title'?'text':'image',sort_order:parseInt($('#cosmetic-sort').value)||0,is_active:$('#cosmetic-active-switch').dataset.on==='1'};
+          if(editingCosmetic)body.id=editingCosmetic.id;
+          var res=await api('POST',editingCosmetic?'/api/admin/cosmetics/update':'/api/admin/cosmetics/create',body);
+          toast(editingCosmetic?'Cosmetic updated':'Cosmetic created','success');
+          await loadCosmetics();
+          if(res.cosmetic)openCosmeticEditor(res.cosmetic.id);
+        }catch(e){toast('Cosmetic save: '+e.message,'error')}
+      }
+      async function deleteCosmetic(){
+        if(!editingCosmetic)return;
+        if(!confirm('Delete cosmetic '+editingCosmetic.slug+'?'))return;
+        try{
+          await api('POST','/api/admin/cosmetics/delete',{id:editingCosmetic.id});
+          toast('Cosmetic deleted','info');resetCosmeticForm();await loadCosmetics();
+        }catch(e){toast('Cosmetic delete: '+e.message,'error')}
+      }
+      $('#btn-create-cosmetic').addEventListener('click',resetCosmeticForm);
+      $('#btn-reload-cosmetics').addEventListener('click',loadCosmetics);
+      $('#btn-save-cosmetic').addEventListener('click',saveCosmetic);
+      $('#btn-delete-cosmetic').addEventListener('click',deleteCosmetic);
+      $('#cosmetics-filter-type').addEventListener('change',renderCosmeticsTable);
+      $('#cosmetic-active-switch').addEventListener('click',function(){cosmeticActive(this.dataset.on!=='1')});
+      $('#cosmetic-type').addEventListener('change',function(){if(this.value==='title'){$('#cosmetic-asset-path').value='';$('#cosmetic-file').value='';renderCosmeticPreview('')}});
+      $('#cosmetic-asset-path').addEventListener('input',function(){renderCosmeticPreview(this.value.trim())});
+      $('#cosmetic-file').addEventListener('change',function(){var f=this.files[0];if(f)renderCosmeticPreview(URL.createObjectURL(f))});
+
       // ── Load all ──
       async function loadAll(){
         $('#shop-sets-tbody').innerHTML='<tr><td colspan="8" style="text-align:center;padding:32px;color:var(--muted)">Loading...</td></tr>';
@@ -2497,7 +2721,7 @@
         $('#metric-api').style.color='var(--gold)';$('#metric-api').textContent='loading';$('#metric-api-note').textContent='fetching...';
         $('#products-status-bar').innerHTML='';loadError=null;
         try{
-          var res=await Promise.all([api('GET','/api/admin/shop/sets',null,{active_only:'false'}),api('GET','/api/admin/ruble-products',null,{active_only:'false'}),loadProductOptions()]);
+          var res=await Promise.all([api('GET','/api/admin/shop/sets',null,{active_only:'false'}),api('GET','/api/admin/ruble-products',null,{active_only:'false'}),loadProductOptions(),loadCosmetics()]);
           shopSets=res[0].sets||[];rubleProducts=res[1].products||[];
           $('#metric-api').style.color='var(--green)';$('#metric-api').textContent='OK';$('#metric-api-note').textContent=shopSets.length+' sets, '+rubleProducts.length+' products';
         }catch(e){
@@ -2531,6 +2755,52 @@
       $('#rp-search').addEventListener('input',renderRubleTable);
 
       // ── Shop sets table ──
+      function rewardList(set){var rewards=(set||{}).rewards;if(typeof rewards==='string'){try{rewards=JSON.parse(rewards)}catch(e){rewards=[]}}return Array.isArray(rewards)?rewards:[]}
+      function rewardAmount(r){return r.amount!=null?r.amount:1}
+      function cosmeticKind(r){
+        var k=String(r.cosmetic_type||r.kind||r.category||'').toLowerCase(),slug=String(r.cosmetic_slug||r.slug||'').toLowerCase();
+        var item=cosmeticCatalog.find(function(c){return String(c.slug||'').toLowerCase()===slug});
+        if(item){
+          if(item.item_type==='profile_background')return'background';
+          if(item.item_type==='title')return'title';
+          return item.item_type||'cosmetic';
+        }
+        if(k.indexOf('avatar')>-1||slug.indexOf('avatar')>-1)return'avatar';
+        if(k.indexOf('background')>-1||slug.indexOf('background')>-1||slug.indexOf('bg_')===0)return'background';
+        return'cosmetic';
+      }
+      function classifyShopSetPreview(set){
+        var rewards=rewardList(set),hasCard=rewards.some(function(r){return r.type==='card'}),hasCosmetic=rewards.some(function(r){return r.type==='cosmetic'}),hasResource=rewards.some(function(r){return['gems','coins','keys','case','particles'].indexOf(r.type)>-1});
+        if(hasCard)return'card-pack';
+        if(hasCosmetic)return'cosmetics-resources';
+        if(hasResource)return'resources-only';
+        return'empty-pack';
+      }
+      function renderShopSetPreview(set){
+        var rewards=rewardList(set),variant=classifyShopSetPreview(set);
+        if(!rewards.length)return'<div class="shop-set-preview empty-pack">No rewards</div>';
+        var resources=rewards.filter(function(r){return['gems','coins','keys','case','particles'].indexOf(r.type)>-1}),
+            cosmetics=rewards.filter(function(r){return r.type==='cosmetic'}),
+            cards=rewards.filter(function(r){return r.type==='card'});
+        var html='<div class="shop-set-preview '+variant+'">';
+        if(cards.length){
+          html+=cards.map(function(r){
+            var img=r.card_image_url||r.image_url||'',nm=r.card_name||r.name||(r.card_id?'Card #'+r.card_id:'Random card'),desc=r.card_description||r.description||'',mech=r.mechanics||r.description||'';
+            return'<div class="reward-card-media">'+(img?'<img src="'+escHtml(img)+'" alt="">':'<div class="reward-card-fallback">'+escHtml(_ri('card'))+'</div>')+'<div><strong>'+escHtml(nm)+'</strong><span>'+escHtml(desc||mech||'Card reward')+'</span></div></div>';
+          }).join('');
+        }
+        if(cosmetics.length){
+          var avatars=cosmetics.filter(function(r){return cosmeticKind(r)==='avatar'}),
+              backgrounds=cosmetics.filter(function(r){return cosmeticKind(r)==='background'}),
+              other=cosmetics.filter(function(r){return['avatar','background'].indexOf(cosmeticKind(r))===-1}),
+              ordered=avatars.concat(backgrounds).concat(other);
+          html+='<div class="reward-chip-row">'+ordered.map(function(r){var kind=cosmeticKind(r),label=r.cosmetic_slug||r.slug||r.name||r.card_id||'cosmetic';return'<span class="reward-cosmetic-chip">'+escHtml(kind)+' · '+escHtml(label)+(r.auto_equip?' · auto equip':'')+'</span>'}).join('')+'</div>';
+        }
+        if(resources.length){
+          html+='<div class="reward-preview-row">'+resources.map(function(r){var extra=r.type==='particles'&&r.card_id?' · card #'+r.card_id:'';return'<span class="reward-resource">'+escHtml(_ri(r.type))+' '+escHtml(r.type)+' × '+escHtml(rewardAmount(r))+escHtml(extra)+'</span>'}).join('')+'</div>';
+        }
+        return html+'</div>';
+      }
       function renderSetsTable(){
         var searchEl=$('#filter-search'),statusEl=$('#filter-status'),currencyEl=$('#filter-currency');
         var tb=$('#shop-sets-tbody'),s=((searchEl&&searchEl.value)||'').toLowerCase(),sf=(statusEl&&statusEl.value)||'any',cf=(currencyEl&&currencyEl.value)||'any',f=shopSets;
@@ -2539,9 +2809,8 @@
         if(sf==='inactive')f=f.filter(function(x){return x.is_active===!1});
         if(cf!=='any')f=f.filter(function(x){return x.currency===cf});
         $('#table-head-count').textContent=shopSets.length?f.length+' / '+shopSets.length+' sets':'No sets';
-        if(!shopSets.length&&!loadError){tb.innerHTML='<tr><td colspan="8" style="text-align:center;padding:24px;color:var(--muted)">No shop sets.</td></tr>';return}
-        function rs(rw){if(!Array.isArray(rw)||!rw.length)return'—';return rw.map(function(r){return r.type+(r.card_id?'#'+r.card_id:'')+':'+(r.amount||1)}).join(', ')}
-        tb.innerHTML=f.map(function(x){return'<tr><td style="color:var(--muted)">#'+x.id+'</td><td><span class="status '+setStatusClass(x.is_active)+'">'+setStatusLabel(x.is_active)+'</span></td><td><div class="product-name"><strong>'+escHtml(x.name)+'</strong><span>'+escHtml(x.description||'')+'</span></div></td><td class="price">'+x.price+' '+(x.currency==='rubles'?'RUB':'')+'</td><td><span class="badge">'+escHtml(x.currency)+'</span></td><td style="font-size:12px;color:var(--muted);max-width:200px;overflow:hidden;text-overflow:ellipsis">'+escHtml(rs(x.rewards))+'</td><td class="date">'+fmtDate(x.updated_at||x.created_at)+'</td><td><div class="actions"><button class="icon-button" title="Edit" data-es="'+x.id+'"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg></button><button class="icon-button warn" title="Archive" data-hs="'+x.id+'"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9.88 9.88A3 3 0 0 0 14.12 14.12"/><path d="M10.73 5.08A10.4 10.4 0 0 1 12 5c6.5 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61C3.95 8.2 2 12 2 12s3.5 7 10 7a9.77 9.77 0 0 0 5.39-1.61"/><path d="m2 2 20 20"/></svg></button></div></td></tr>'}).join('');
+        if(!shopSets.length&&!loadError){tb.innerHTML='<tr><td colspan="8" style="text-align:center;padding:24px;color:var(--muted)">No shop sets. Click "Create Set".</td></tr>';return}
+        tb.innerHTML=f.map(function(x){return'<tr><td style="color:var(--muted)">#'+x.id+'</td><td><span class="status '+setStatusClass(x.is_active)+'">'+setStatusLabel(x.is_active)+'</span></td><td><div class="product-name"><strong>'+escHtml(x.name)+'</strong><span>'+escHtml(x.description||'')+'</span></div></td><td class="price">'+x.price+' '+(x.currency==='rubles'?'RUB':'')+'</td><td><span class="badge">'+escHtml(x.currency)+'</span></td><td>'+renderShopSetPreview(x)+'</td><td class="date">'+fmtDate(x.updated_at||x.created_at)+'</td><td><div class="actions"><button class="icon-button" title="Edit" data-es="'+x.id+'"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg></button><button class="icon-button warn" title="Archive" data-hs="'+x.id+'"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9.88 9.88A3 3 0 0 0 14.12 14.12"/><path d="M10.73 5.08A10.4 10.4 0 0 1 12 5c6.5 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61C3.95 8.2 2 12 2 12s3.5 7 10 7a9.77 9.77 0 0 0 5.39-1.61"/><path d="m2 2 20 20"/></svg></button></div></td></tr>'}).join('');
         tb.querySelectorAll('[data-es]').forEach(function(b){b.addEventListener('click',function(){openSetEditor(parseInt(b.dataset.es))})});
         tb.querySelectorAll('[data-hs]').forEach(function(b){b.addEventListener('click',function(){hideSet(parseInt(b.dataset.hs))})});
       }
@@ -2554,14 +2823,22 @@
       async function archiveProduct(code){if(!confirm('Archive '+code+'?'))return;try{await api('POST','/api/admin/ruble-products/delete',{code:code});toast('Archived','info');await loadAll()}catch(e){toast('Error: '+e.message,'error')}}
 
       // ── Product editor ──
-      function productTypeList(){
-        return(productOptions.item_types&&productOptions.item_types.length)?productOptions.item_types:[
+      function isGiftShopSetType(type){return type==='gift_shop_set'}
+      function isShopSetProductType(type){return type==='shop_set'||isGiftShopSetType(type)}
+      function productTypeFallbacks(){
+        return[
           {value:'extrapass',label:'ExtraPass',defaults:{code:'extrapass',name:'ExtraPass',price:179,show_in_game:true,show_in_shop:true}},
           {value:'extrapass_ultra',label:'ExtraPass Ultra',defaults:{code:'extrapass_ultra',name:'ExtraPass Ultra',price:349,badge:'popular',show_in_game:true,show_in_shop:true}},
           {value:'starter_boost',label:'Starter Boost',defaults:{code:'starter_boost',name:'Starter Boost',price:499,show_in_game:true,show_in_shop:true}},
           {value:'gems_package',label:'Gems package',defaults:{code:'gems_100',name:'100 gems',price:99,show_in_game:false,show_in_shop:true}},
-          {value:'shop_set',label:'Shop set',defaults:{code:'shop_set',name:'Shop Set',price:0,show_in_game:true,show_in_shop:true}}
+          {value:'shop_set',label:'Shop set',defaults:{code:'shop_set',name:'Shop Set',price:0,show_in_game:true,show_in_shop:true}},
+          {value:'gift_shop_set',label:'Gift shop set',defaults:{code:'gift_shop_set',name:'Gift Shop Set',price:0,badge:'gift',show_in_game:true,show_in_shop:true}}
         ];
+      }
+      function productTypeList(){
+        var types=(productOptions.item_types&&productOptions.item_types.length)?productOptions.item_types.slice():productTypeFallbacks();
+        productTypeFallbacks().forEach(function(f){if(!types.find(function(t){return t.value===f.value}))types.push(f)});
+        return types;
       }
       function productTypeByValue(value){return productTypeList().find(function(x){return x.value===value})||productTypeList()[0]}
       function fillProductSelectors(p){
@@ -2579,9 +2856,12 @@
         $('#pe-package-type').innerHTML=packages.map(function(pkg){return'<option value="'+escHtml(pkg.value)+'" data-price="'+escHtml(pkg.price||0)+'" data-badge="'+escHtml(pkg.badge||'')+'">'+escHtml(pkg.label||pkg.value)+'</option>'}).join('');
         if(type==='gems_package')$('#pe-package-type').value=(p&&p.package_type)||($('#pe-package-type').querySelector('[value="gems_100"]')?'gems_100':($('#pe-package-type').value||''));
         var sets=(productOptions.shop_sets&&productOptions.shop_sets.length?productOptions.shop_sets:shopSets).slice();
-        $('#pe-shop-set-field').style.display=type==='shop_set'?'':'none';
+        $('#pe-shop-set-field').style.display=isShopSetProductType(type)?'':'none';
         $('#pe-shop-set-id').innerHTML='<option value="">Select set</option>'+sets.map(function(s){return'<option value="'+Number(s.id)+'" data-price="'+escHtml(s.price||0)+'" data-currency="'+escHtml(s.currency||'rubles')+'">'+escHtml(s.name||('Set #'+s.id))+'</option>'}).join('');
-        if(type==='shop_set'&&p&&p.shop_set_id)$('#pe-shop-set-id').value=String(p.shop_set_id);
+        if(isShopSetProductType(type)&&p&&p.shop_set_id)$('#pe-shop-set-id').value=String(p.shop_set_id);
+        $('#pe-price-label').textContent=isGiftShopSetType(type)?'Price (Gift / Free)':'Price';
+        $('#pe-price').placeholder=isGiftShopSetType(type)?'Gift / Free':'';
+        $('#pe-save-btn').lastChild.nodeValue=isGiftShopSetType(type)?'Save Gift / Free':'Save';
       }
       function applyProductDefaultsForSelection(force){
         if(!editingProduct||!editingProduct.is_new)return;
@@ -2592,9 +2872,9 @@
         if(type==='gems_package'){
           var pkg=$('#pe-package-type').selectedOptions[0];
           if(pkg){setVal('pe-code',pkg.value==='starter_once'?'gems_starter_once':pkg.value);setVal('pe-name',pkg.textContent||pkg.value);setVal('pe-price',pkg.dataset.price||def.price||0);setVal('pe-badge',pkg.dataset.badge||def.badge||'')}
-        }else if(type==='shop_set'){
+        }else if(isShopSetProductType(type)){
           var set=$('#pe-shop-set-id').selectedOptions[0];
-          if(set&&set.value){setVal('pe-code','shop_set_'+set.value);setVal('pe-name',set.textContent||('Shop set '+set.value));setVal('pe-price',set.dataset.price||def.price||0)}
+          if(set&&set.value){setVal('pe-code',(isGiftShopSetType(type)?'gift_shop_set_':'shop_set_')+set.value);setVal('pe-name',set.textContent||('Shop set '+set.value));setVal('pe-price',isGiftShopSetType(type)?0:(set.dataset.price||def.price||0))}
         }
       }
       function openProductEditor(code){
@@ -2643,12 +2923,13 @@
         var code=$('#pe-code').value.trim(),name=$('#pe-name').value.trim(),it=$('#pe-item-type').value.trim();
         if(!code||!name||!it){toast('Code, name, item_type required','error');_pf('Fill required fields',!1);return}
         if(it==='gems_package'&&!$('#pe-package-type').value){toast('Package type required','error');_pf('Choose a gem package',!1);return}
-        if(it==='shop_set'&&!$('#pe-shop-set-id').value){toast('Shop set required','error');_pf('Choose a shop set',!1);return}
+        if(isShopSetProductType(it)&&!$('#pe-shop-set-id').value){toast('Shop set required','error');_pf('Choose a shop set',!1);return}
         var price=parseFloat($('#pe-price').value)||0;if(price<0){toast('Price>=0','error');return}
+        if(isGiftShopSetType(it))price=0;
         var body={code:code,item_type:it,name:name,description:$('#pe-desc').value.trim()||null,price:price,currency:$('#pe-currency').value||'rubles',badge:$('#pe-badge').value.trim()||null,sort_order:parseInt($('#pe-sort-order').value)||100,show_in_game:$('#pe-switch-show-in-game').dataset.on==='1',show_in_shop:$('#pe-switch-show-in-shop').dataset.on==='1',is_active:$('#pe-switch-is-active').dataset.on==='1'};
         body.rustore_product_id=$('#pe-rustore-product-id').value.trim();
         if(it==='gems_package'){body.package_type=$('#pe-package-type').value.trim();body.shop_set_id=null}
-        else if(it==='shop_set'){body.shop_set_id=parseInt($('#pe-shop-set-id').value)||null;body.package_type=null}
+        else if(isShopSetProductType(it)){body.shop_set_id=parseInt($('#pe-shop-set-id').value)||null;body.package_type=null}
         else{body.package_type=null;body.shop_set_id=null}
         if($('#pe-img-url').value.trim())body.image_url=$('#pe-img-url').value.trim();
         _pf('Saving...',void 0);$('#pe-feedback').style.color='var(--gold)';
@@ -2662,6 +2943,7 @@
       $('#pe-save-btn').addEventListener('click',saveProduct);
       $('#pe-delete-btn').addEventListener('click',async function(){if(!editingProduct||editingProduct.is_new)return;if(!confirm('Archive '+editingProduct.code+'?'))return;try{await api('POST','/api/admin/ruble-products/delete',{code:editingProduct.code});toast('Archived','info');await loadAll();showView('products-view')}catch(e){toast('Error: '+e.message,'error')}});
       $('#btn-create-product').addEventListener('click',function(){openProductEditor(null)});
+      $('#btn-create-shop-set').addEventListener('click',function(){openSetEditor(null)});
 
       // ── Set editor ──
       function openSetEditor(setId){
@@ -2675,7 +2957,7 @@
           $('#editor-price').value=s.price||0;$('#editor-currency').value=s.currency||'rubles';$('#editor-image').value=s.image_file_id||'';
           _ss(s.is_active!==!1);$('#editor-created-at').textContent=fmtDate(s.created_at);$('#editor-updated-at').textContent=fmtDate(s.updated_at);
           $('#btn-editor-delete').style.display='';$('#btn-editor-publish').textContent='Save & Publish';
-          editorRewards=Array.isArray(s.rewards)?JSON.parse(JSON.stringify(s.rewards)):[];
+          editorRewards=JSON.parse(JSON.stringify(rewardList(s)));
         }else{
           $('#editor-breadcrumb').textContent='New set';$('#editor-title').textContent='New Shop Set';$('#editor-status-badge').textContent='new';
           $('#editor-status-badge').className='status draft';$('#editor-id').value='—';$('#editor-created-by').value='—';
@@ -2689,17 +2971,18 @@
       $('#editor-active-switch').addEventListener('click',function(){_ss(this.dataset.on!=='1');isDirty=!0});
 
       function _ef(m,ok){var e=$('#editor-feedback');e.textContent=m;e.style.color=ok===!1?'var(--red)':ok===!0?'var(--green)':'var(--soft)'}
-      function _ri(t){return{gems:'◆',coins:'●',keys:'🔑',case:'▣',card:'🂡',particles:'✦'}[t]||'?'}
-      function _rv(r){if(!r.type||VALID_REWARD_TYPES.indexOf(r.type)===-1)return{ok:!1,error:'bad type'};if((r.type==='card'||r.type==='particles')&&(!r.card_id||!Number.isInteger(r.card_id)||r.card_id<1))return{ok:!1,error:'need card_id'};if(r.type!=='card'){var a=r.amount;if(a===void 0||a===null||!Number.isInteger(a)||a<1)return{ok:!1,error:'amount 0'}}return{ok:!0,error:''}}
+      function _ri(t){return{gems:'◆',coins:'●',keys:'🔑',case:'▣',card:'🂡',particles:'✦',cosmetic:'◈'}[t]||'?'}
+      function _rv(r){if(!r.type||VALID_REWARD_TYPES.indexOf(r.type)===-1)return{ok:!1,error:'bad type'};if((r.type==='card'||r.type==='particles')&&(!r.card_id||!Number.isInteger(r.card_id)||r.card_id<1))return{ok:!1,error:'need card_id'};if(r.type==='cosmetic'&&!(r.cosmetic_slug||r.slug||'').trim())return{ok:!1,error:'need cosmetic_slug'};if(r.type!=='card'&&r.type!=='cosmetic'){var a=r.amount;if(a===void 0||a===null||!Number.isInteger(a)||a<1)return{ok:!1,error:'amount 0'}}return{ok:!0,error:''}}
       function _urj(){$('#editor-rewards-json').textContent=JSON.stringify(editorRewards,null,2)||'[]'}
 
       function _rer(){
         var l=$('#editor-rewards-list');
         l.innerHTML=editorRewards.map(function(r,i){
-          var v=_rv(r),isC=r.type==='card',isP=r.type==='particles',nc=isC||isP,na=!isC,ci=r.card_id!=null?r.card_id:'',ai=r.amount!=null?r.amount:'',fs='';
+          var v=_rv(r),isC=r.type==='card',isP=r.type==='particles',isCos=r.type==='cosmetic',nc=isC||isP,na=!isC&&!isCos,ci=r.card_id!=null?r.card_id:'',ai=r.amount!=null?r.amount:'',fs='';
           fs+='<div class="compact-field"><label>Type</label><select data-rf="'+i+'" data-rk="type">'+VALID_REWARD_TYPES.map(function(t){return'<option value="'+t+'"'+(r.type===t?' selected':'')+'>'+t+'</option>'}).join('')+'</select></div>';
           if(nc)fs+='<div class="compact-field"><label>card_id</label><input value="'+escHtml(ci)+'" data-rf="'+i+'" data-rk="card_id" type="number" min="1"></div>';
           if(na)fs+='<div class="compact-field"><label>amount</label><input value="'+ai+'" data-rf="'+i+'" data-rk="amount" type="number" min="1"></div>';
+          if(isCos)fs+='<div class="compact-field"><label>cosmetic_slug</label><select data-rf="'+i+'" data-rk="cosmetic_slug">'+cosmeticOptions(r.cosmetic_slug||r.slug||'')+'</select></div><div class="compact-field"><label>auto_equip</label><select data-rf="'+i+'" data-rk="auto_equip"><option value="0"'+(!r.auto_equip?' selected':'')+'>No</option><option value="1"'+(r.auto_equip?' selected':'')+'>Yes</option></select></div>';
           return'<article class="reward-block"><div class="drag-handle" style="cursor:default">'+(i+1)+'</div><div class="reward-icon">'+_ri(r.type)+'</div><div class="reward-fields">'+fs+'</div><span class="validation-pill '+(v.ok?'':'warn')+'">'+(v.ok?'valid':v.error)+'</span><button class="remove-button" data-rr="'+i+'"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button></article>'
         }).join('');
         $('#rewards-count-label').textContent=editorRewards.length+' block(s)';
@@ -2707,11 +2990,13 @@
         l.querySelectorAll('[data-rf]').forEach(function(el){el.addEventListener('change',function(){
           var idx=parseInt(this.dataset.rf),key=this.dataset.rk,val=this.value;
           if(key==='amount'||key==='card_id'){val=parseInt(val)||1;if(val<1)val=1}
+          if(key==='auto_equip')val=val==='1';
           editorRewards[idx][key]=val;
           if(key==='type'){
             var nt=val;
             if(nt==='card'){delete editorRewards[idx].amount;if(!editorRewards[idx].card_id)editorRewards[idx].card_id=1}
             else if(nt==='particles'){if(!editorRewards[idx].amount)editorRewards[idx].amount=50;if(!editorRewards[idx].card_id)editorRewards[idx].card_id=1}
+            else if(nt==='cosmetic'){delete editorRewards[idx].amount;delete editorRewards[idx].card_id;if(!editorRewards[idx].cosmetic_slug)editorRewards[idx].cosmetic_slug=editorRewards[idx].slug||'';delete editorRewards[idx].slug}
             else{delete editorRewards[idx].card_id;if(!editorRewards[idx].amount)editorRewards[idx].amount=1}
           }
           isDirty=!0;_rer();_urj();
@@ -2721,7 +3006,7 @@
 
       $$('[data-add-reward]').forEach(function(b){b.addEventListener('click',function(){
         var t=this.dataset.addReward,bl={type:t};
-        if(t==='card')bl.card_id=1;else if(t==='particles'){bl.card_id=1;bl.amount=50}else bl.amount=1;
+        if(t==='card')bl.card_id=1;else if(t==='particles'){bl.card_id=1;bl.amount=50}else if(t==='cosmetic'){bl.cosmetic_slug='';bl.auto_equip=false}else bl.amount=1;
         editorRewards.push(bl);isDirty=!0;_rer();_urj();
       })});
 
@@ -3253,10 +3538,8 @@
       // Set ExtraPass
       $('#btn-pd-set-ep').addEventListener('click',async function(){
         var mode=$('#pd-ep-mode').value||'inactive';
-        var days=parseInt($('#pd-ep-days').value)||0;
         var reason=$('#pd-ep-reason').value||'';
         var body={mode:mode};
-        if(mode!=='inactive')body.days=days;
         if(reason.trim())body.reason=reason;
         try{
           var res=await api('POST','/api/admin/players/'+poPlayerId+'/extra-pass',body);

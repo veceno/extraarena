@@ -228,10 +228,360 @@ def _validate_ruble_product_image_url(value: Any) -> bool:
     return value in (None, "") or _safe_ruble_product_image_url(value) is not None
 
 
+RUBLE_PRODUCT_CODE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,119}$")
+
+
+def _is_safe_ruble_product_code(value: Any) -> bool:
+    return bool(RUBLE_PRODUCT_CODE_RE.fullmatch(str(value or "").strip()))
+
+
 def _sanitize_ruble_product_payload(product: Any) -> dict[str, Any]:
     normalized = dict(product)
     normalized["image_url"] = _safe_ruble_product_image_url(normalized.get("image_url"))
     return normalized
+
+
+def _normalize_public_shop_set_rewards(rewards: Any) -> list[dict[str, Any]]:
+    if isinstance(rewards, str):
+        try:
+            rewards = _stdlib_json.loads(rewards)
+        except Exception:
+            return []
+    if not isinstance(rewards, list):
+        return []
+    return [dict(reward) for reward in rewards if isinstance(reward, dict)]
+
+
+def _normalize_shop_set_response_payload(shop_set: Any) -> dict[str, Any]:
+    payload = dict(shop_set or {})
+    payload["rewards"] = _normalize_public_shop_set_rewards(payload.get("rewards"))
+    return payload
+
+
+def _public_card_mechanics_text(mechanics_desc: Any, mechanics: Any) -> str | None:
+    if isinstance(mechanics_desc, str) and mechanics_desc.strip():
+        return mechanics_desc.strip()
+    if isinstance(mechanics, str):
+        return mechanics.strip() or None
+    if isinstance(mechanics, list):
+        parts: list[str] = []
+        for item in mechanics:
+            if isinstance(item, (str, int, float)):
+                text = str(item).strip()
+            elif isinstance(item, dict):
+                text = str(
+                    item.get("description")
+                    or item.get("text")
+                    or item.get("label")
+                    or item.get("name")
+                    or ""
+                ).strip()
+            else:
+                text = ""
+            if text:
+                parts.append(text)
+        return ", ".join(parts) or None
+    if isinstance(mechanics, dict):
+        for key in ("description", "text", "label", "name"):
+            value = mechanics.get(key)
+            if isinstance(value, (str, int, float)):
+                text = str(value).strip()
+                if text:
+                    return text
+        parts = [
+            str(value).strip()
+            for value in mechanics.values()
+            if isinstance(value, (str, int, float)) and str(value).strip()
+        ]
+        return ", ".join(parts) or None
+    return None
+
+
+async def _enrich_shop_set_rewards_for_public(db: Any, rewards: Any) -> list[dict[str, Any]] | None:
+    rewards = _normalize_public_shop_set_rewards(rewards)
+    if not rewards:
+        return []
+    enriched: list[dict[str, Any]] = []
+    fetchrow = getattr(db, "fetchrow", None)
+    for raw_reward in rewards:
+        if not isinstance(raw_reward, dict):
+            continue
+        reward = dict(raw_reward)
+        reward_type = str(reward.get("type") or "")
+        if fetchrow and reward_type in {"card", "particles"} and reward.get("card_id"):
+            try:
+                card_id = int(reward.get("card_id") or 0)
+            except (TypeError, ValueError):
+                card_id = 0
+            if card_id > 0:
+                card = await fetchrow(
+                    """
+                    SELECT id, name, description, rarity, mechanics, mechanics_desc, card_type,
+                           mana_cost, base_attack, base_hp
+                    FROM cards
+                    WHERE id = $1
+                    """,
+                    card_id,
+                )
+                if card:
+                    card_data = _serialize_datetime(dict(card))
+                    reward.update(
+                        {
+                            "card_name": card_data.get("name"),
+                            "card_description": card_data.get("description"),
+                            "rarity": card_data.get("rarity"),
+                            "mechanics": _public_card_mechanics_text(
+                                card_data.get("mechanics_desc"),
+                                card_data.get("mechanics"),
+                            ),
+                            "card_type": card_data.get("card_type"),
+                            "card_mana": card_data.get("mana_cost"),
+                            "card_attack": card_data.get("base_attack"),
+                            "card_hp": card_data.get("base_hp"),
+                            "card_image_url": f"/api/cards/image?card_id={card_id}",
+                        }
+                    )
+                else:
+                    return None
+        elif fetchrow and reward_type == "cosmetic" and reward.get("cosmetic_slug"):
+            cosmetic = await fetchrow(
+                """
+                SELECT slug, item_type, class, name, asset_path, media_type
+                FROM cosmetic_items
+                WHERE slug = $1 AND is_active = TRUE
+                """,
+                str(reward.get("cosmetic_slug") or ""),
+            )
+            if cosmetic:
+                cosmetic_data = _serialize_datetime(dict(cosmetic))
+                reward.update(
+                    {
+                        "name": cosmetic_data.get("name"),
+                        "cosmetic_type": cosmetic_data.get("item_type"),
+                        "class": cosmetic_data.get("class"),
+                        "image_url": cosmetic_data.get("asset_path"),
+                        "media_type": cosmetic_data.get("media_type"),
+                    }
+                )
+            else:
+                return None
+        enriched.append(reward)
+    return enriched
+
+
+def _public_shop_set_reward_cosmetic_kind(reward: dict[str, Any]) -> str:
+    kind = str(reward.get("cosmetic_type") or reward.get("item_type") or reward.get("kind") or "").lower()
+    slug = str(reward.get("cosmetic_slug") or reward.get("slug") or "").lower()
+    if "background" in kind or "background" in slug or slug.startswith("bg_"):
+        return "background"
+    if "avatar" in kind or "avatar" in slug:
+        return "avatar"
+    if "title" in kind or "title" in slug:
+        return "title"
+    return "cosmetic"
+
+
+def _apply_owned_card_public_shop_set_fallback(
+    rewards: list[dict[str, Any]],
+    owned_card_ids: set[int] | None,
+) -> tuple[list[dict[str, Any]] | None, dict[str, Any] | None]:
+    if not owned_card_ids:
+        return rewards, None
+    card_rewards = [
+        reward for reward in rewards
+        if reward.get("type") == "card" and int(reward.get("card_id") or 0) in owned_card_ids
+    ]
+    if not card_rewards:
+        return rewards, None
+    has_background = any(
+        reward.get("type") == "cosmetic" and _public_shop_set_reward_cosmetic_kind(reward) == "background"
+        for reward in rewards
+    )
+    if not has_background:
+        return None, None
+    fallback_gems = 50 * len(card_rewards)
+    owned_card_ids_in_pack = {int(reward.get("card_id") or 0) for reward in card_rewards}
+    fallback = {
+        "type": "owned_card",
+        "amount": fallback_gems,
+        "resource": "gems",
+        "cards": [
+            {
+                "card_id": int(reward.get("card_id") or 0),
+                "card_name": reward.get("card_name") or reward.get("name") or "",
+                "rarity": reward.get("rarity"),
+            }
+            for reward in card_rewards
+        ],
+    }
+    next_rewards = [
+        reward for reward in rewards
+        if not (reward.get("type") == "card" and int(reward.get("card_id") or 0) in owned_card_ids_in_pack)
+    ]
+    next_rewards.append(
+        {
+            "type": "gems",
+            "amount": fallback_gems,
+            "fallback_for": "owned_card",
+            "card_ids": sorted(owned_card_ids_in_pack),
+        }
+    )
+    return next_rewards, fallback
+
+
+async def _owned_card_ids_for_request(request: web.Request, db: Any) -> set[int]:
+    user_id = await optional_user_id(request)
+    if not user_id:
+        return set()
+    get_user_cards = getattr(db, "get_user_cards", None)
+    if not get_user_cards:
+        return set()
+    try:
+        cards = await get_user_cards(int(user_id))
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "Failed to load owned cards for shop-set fallback: user_id=%s",
+            user_id,
+            exc_info=True,
+        )
+        return set()
+    owned: set[int] = set()
+    for card in cards or []:
+        try:
+            card_id = int((card or {}).get("id") or (card or {}).get("card_id") or 0)
+        except (TypeError, ValueError):
+            card_id = 0
+        if card_id > 0:
+            owned.add(card_id)
+    return owned
+
+
+async def _public_ruble_product_payload(
+    db: Any,
+    product: Any,
+    *,
+    owned_card_ids: set[int] | None = None,
+) -> dict[str, Any] | None:
+    payload = _sanitize_ruble_product_payload(product)
+    item_type = str(payload.get("item_type") or "")
+    shop_set_id = payload.get("shop_set_id")
+    if item_type not in {"shop_set", "gift_shop_set"} or not shop_set_id:
+        return payload
+    get_shop_set = getattr(db, "get_shop_set", None)
+    if not get_shop_set:
+        return payload
+    try:
+        set_data = await get_shop_set(int(shop_set_id))
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "Failed to enrich ruble product %s with shop set %s",
+            payload.get("code"),
+            shop_set_id,
+            exc_info=True,
+        )
+        return payload
+    if not set_data:
+        return None
+    if set_data.get("is_active") is False:
+        return None
+    rewards = await _enrich_shop_set_rewards_for_public(db, set_data.get("rewards") or [])
+    if rewards is None:
+        return None
+    rewards, owned_fallback = _apply_owned_card_public_shop_set_fallback(rewards, owned_card_ids)
+    if rewards is None:
+        return None
+    public_set = {
+        "id": set_data.get("id"),
+        "name": set_data.get("name"),
+        "description": set_data.get("description"),
+        "price": set_data.get("price"),
+        "currency": set_data.get("currency"),
+        "image_file_id": set_data.get("image_file_id"),
+        "rewards": rewards,
+    }
+    if owned_fallback:
+        public_set["owned_card_fallback"] = owned_fallback
+        payload["owned_card_fallback"] = owned_fallback
+    payload["shop_set"] = public_set
+    payload["rewards"] = rewards
+    payload["is_gift"] = item_type == "gift_shop_set"
+    return payload
+
+
+async def _claimed_shop_set_ids_for_request(request: web.Request, db: Any) -> set[int]:
+    user_id = await optional_user_id(request)
+    if not user_id:
+        return set()
+    loader = getattr(db, "get_claimed_shop_set_ids", None)
+    if not loader:
+        return set()
+    try:
+        return {int(set_id) for set_id in await loader(user_id)}
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "Failed to load claimed shop sets for user %s", user_id, exc_info=True
+        )
+        return set()
+
+
+def _filter_claimed_shop_sets(items: list[Any], claimed_set_ids: set[int]) -> list[Any]:
+    if not claimed_set_ids:
+        return items
+    filtered: list[Any] = []
+    for item in items:
+        try:
+            set_id = int((item or {}).get("id") or 0)
+        except (TypeError, ValueError, AttributeError):
+            set_id = 0
+        if set_id not in claimed_set_ids:
+            filtered.append(item)
+    return filtered
+
+
+def _filter_claimed_shop_set_products(products: list[Any], claimed_set_ids: set[int]) -> list[Any]:
+    if not claimed_set_ids:
+        return products
+    filtered: list[Any] = []
+    for product in products:
+        if str((product or {}).get("item_type") or "") not in {"shop_set", "gift_shop_set"}:
+            filtered.append(product)
+            continue
+        try:
+            set_id = int((product or {}).get("shop_set_id") or 0)
+        except (TypeError, ValueError, AttributeError):
+            set_id = 0
+        if set_id not in claimed_set_ids:
+            filtered.append(product)
+    return filtered
+
+
+def _filter_used_starter_once_from_catalog(catalog: dict[str, Any]) -> dict[str, Any]:
+    next_catalog = dict(catalog)
+    next_catalog["gem_products"] = [
+        product
+        for product in list(next_catalog.get("gem_products") or [])
+        if str((product or {}).get("package_type") or "") != "starter_once"
+    ]
+    return next_catalog
+
+
+async def _starter_once_used_for_request(request: web.Request, db: Any) -> bool:
+    user_id = await optional_user_id(request)
+    if not user_id:
+        return False
+    get_user_settings = getattr(db, "get_user_settings", None)
+    if not get_user_settings:
+        return False
+    try:
+        settings = await get_user_settings(int(user_id))
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "Failed to load starter pack state for shop catalog user %s",
+            user_id,
+            exc_info=True,
+        )
+        return False
+    return bool(settings and settings.get("starter_pack_used"))
 
 
 def _image_signature_matches(data: bytes, content_type: str) -> bool:
@@ -242,6 +592,152 @@ def _image_signature_matches(data: bytes, content_type: str) -> bool:
     if content_type == "image/webp":
         return len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP"
     return False
+
+
+COSMETIC_ITEM_TYPES = {"avatar", "profile_background", "title"}
+COSMETIC_IMAGE_CONTENT_TYPES = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}
+COSMETIC_IMAGE_SIZES = {"avatar": (750, 750), "profile_background": (760, 380)}
+COSMETIC_UPLOAD_DIRS = {
+    "avatar": ("PlayerCosmetics", "Avatars", "Admin"),
+    "profile_background": ("PlayerCosmetics", "Background", "Admin"),
+}
+COSMETIC_SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,119}$")
+
+
+def _normalize_cosmetic_slug(value: Any) -> str:
+    slug = str(value or "").strip()
+    if not slug or not COSMETIC_SLUG_RE.fullmatch(slug):
+        raise ValueError("invalid_slug")
+    return slug
+
+
+def _safe_cosmetic_filename_part(value: Any) -> str:
+    text = re.sub(r"[^A-Za-z0-9_.:-]+", "-", str(value or "").strip()).strip("-._:")
+    return (text or "cosmetic")[:80]
+
+
+def _validate_cosmetic_item_type(value: Any) -> str:
+    item_type = str(value or "").strip()
+    if item_type not in COSMETIC_ITEM_TYPES:
+        raise ValueError("invalid_item_type")
+    return item_type
+
+
+def _cosmetic_error_status(error: str) -> int:
+    if error == "cosmetic_slug_exists":
+        return 409
+    if error == "cosmetic_not_found":
+        return 404
+    if error in {
+        "invalid_slug",
+        "invalid_item_type",
+        "invalid_class",
+        "invalid_media_type",
+        "invalid_asset_path",
+        "invalid_sort_order",
+        "name_required",
+        "asset_path_required",
+        "image_not_allowed_for_title",
+        "item_type_required",
+        "file_field_required",
+        "invalid_image_type",
+        "invalid_image_signature",
+        "invalid_image_dimensions",
+        "file_too_large",
+        "invalid_body",
+        "no_fields",
+    }:
+        return 400
+    return 500
+
+
+def _safe_cosmetic_asset_path(value: Any, item_type: str) -> str | None:
+    if value in (None, ""):
+        return None
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in text):
+        return None
+    if any(ch in text for ch in ("'", '"', "`", "<", ">")):
+        return None
+    if item_type == "title":
+        return None
+    if item_type not in COSMETIC_UPLOAD_DIRS:
+        return None
+    expected_prefix = "/DesignAssets/" + "/".join(COSMETIC_UPLOAD_DIRS[item_type][:-1]) + "/"
+    if not text.startswith(expected_prefix):
+        return None
+    relative = text[len("/DesignAssets/"):]
+    parts = relative.split("/")
+    if any(not part or part in {".", ".."} for part in parts):
+        return None
+    suffix = Path(parts[-1]).suffix.lower()
+    if suffix not in {".png", ".jpg", ".jpeg", ".webp"}:
+        return None
+    return text
+
+
+def _normalize_cosmetic_payload(data: dict[str, Any], *, require_identity: bool) -> dict[str, Any]:
+    normalized: dict[str, Any] = {}
+    item_type = _validate_cosmetic_item_type(data.get("item_type")) if ("item_type" in data or require_identity) else None
+    if item_type:
+        normalized["item_type"] = item_type
+    if "slug" in data or require_identity:
+        normalized["slug"] = _normalize_cosmetic_slug(data.get("slug"))
+    if "class" in data or "class_name" in data or require_identity:
+        class_name = str(data.get("class", data.get("class_name", "common")) or "common").strip()
+        if not class_name or len(class_name) > 80:
+            raise ValueError("invalid_class")
+        normalized["class_name"] = class_name
+    if "name" in data or require_identity:
+        name = str(data.get("name") or "").strip()
+        if not name:
+            raise ValueError("name_required")
+        normalized["name"] = name
+    if "media_type" in data or require_identity:
+        media_type = str(data.get("media_type") or ("text" if item_type == "title" else "image")).strip()
+        if media_type not in {"image", "text"}:
+            raise ValueError("invalid_media_type")
+        effective_media_type_item = item_type or str(data.get("item_type") or "")
+        if effective_media_type_item == "title" and media_type != "text":
+            raise ValueError("invalid_media_type")
+        normalized["media_type"] = media_type
+    if item_type == "title":
+        normalized.setdefault("media_type", "text")
+        normalized.setdefault("asset_path", None)
+    if "asset_path" in data or require_identity:
+        effective_type = item_type or str(data.get("item_type") or "")
+        if effective_type == "title":
+            if data.get("asset_path"):
+                raise ValueError("image_not_allowed_for_title")
+            normalized["asset_path"] = None
+        else:
+            asset_path = _safe_cosmetic_asset_path(data.get("asset_path"), effective_type)
+            if require_identity and not asset_path:
+                raise ValueError("asset_path_required")
+            if data.get("asset_path") and not asset_path:
+                raise ValueError("invalid_asset_path")
+            normalized["asset_path"] = asset_path
+    if "has_sound" in data:
+        normalized["has_sound"] = bool(data.get("has_sound"))
+    if "sort_order" in data:
+        try:
+            normalized["sort_order"] = int(data.get("sort_order") or 0)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("invalid_sort_order") from exc
+    elif require_identity:
+        normalized["sort_order"] = 0
+    if "is_active" in data:
+        normalized["is_active"] = bool(data.get("is_active"))
+    return normalized
+
+
+def _cosmetic_response_payload(item: Any) -> dict[str, Any]:
+    data = _serialize_datetime(dict(item or {}))
+    if "class_name" in data and "class" not in data:
+        data["class"] = data.pop("class_name")
+    return data
 
 
 def _mark_match_ended(match_id: Any) -> None:
@@ -449,20 +945,36 @@ def _build_battle_history_stats(all_battles: list[dict[str, Any]]) -> dict[str, 
     }
 
 
-def _build_newbie_path_payload(progress: dict[str, Any] | None = None) -> dict[str, Any]:
+def _newbie_path_tasks_for_context(*, include_telegram_channel_task: bool = False) -> list[dict[str, Any]]:
+    return [
+        task
+        for task in NEWBIE_PATH_TASKS
+        if include_telegram_channel_task or task.get("id") != TELEGRAM_CHANNEL_TASK_ID
+    ]
+
+
+def _build_newbie_path_payload(
+    progress: dict[str, Any] | None = None,
+    *,
+    include_telegram_channel_task: bool = False,
+) -> dict[str, Any]:
     progress = _json_dict(progress)
     task_progress = _json_dict(progress.get("tasks"))
-    required_task_ids = [task["id"] for task in NEWBIE_PATH_TASKS if task["id"] != "claim_newbie_reward"]
+    visible_tasks = _newbie_path_tasks_for_context(
+        include_telegram_channel_task=include_telegram_channel_task,
+    )
+    required_task_ids = [task["id"] for task in visible_tasks if task["id"] != "claim_newbie_reward"]
     required_claimed = all(bool((task_progress.get(task_id) or {}).get("claimed")) for task_id in required_task_ids)
     action_text = {
         "open_starter_case": "Открыть кейс",
         "view_new_card": "К коллекции",
         "save_first_deck": "К колодам",
         "play_regular_battle": "На арену",
+        TELEGRAM_CHANNEL_TASK_ID: "В канал",
         "claim_newbie_reward": "Забрать",
     }
     tasks: list[dict[str, Any]] = []
-    for task in NEWBIE_PATH_TASKS:
+    for task in visible_tasks:
         state = dict(task_progress.get(task["id"]) or {})
         completed = bool(state.get("completed"))
         if task["id"] == "claim_newbie_reward":
@@ -485,7 +997,11 @@ def _build_newbie_path_payload(progress: dict[str, Any] | None = None) -> dict[s
     }
 
 
-def _build_onboarding_payload(state: dict[str, Any] | None) -> dict[str, Any]:
+def _build_onboarding_payload(
+    state: dict[str, Any] | None,
+    *,
+    include_telegram_channel_task: bool = False,
+) -> dict[str, Any]:
     state = dict(state or {})
     status = state.get("status") or ONBOARDING_STATUS_WELCOME
     return {
@@ -517,15 +1033,25 @@ def _build_onboarding_payload(state: dict[str, Any] | None) -> dict[str, Any]:
                 "button": "Дальше",
             },
         ],
-        "newbie_path": _build_newbie_path_payload(state.get("newbie_path_progress") or {}),
+        "newbie_path": _build_newbie_path_payload(
+            state.get("newbie_path_progress") or {},
+            include_telegram_channel_task=include_telegram_channel_task,
+        ),
     }
 
 
-def _onboarding_gate_payload(state: dict[str, Any]) -> dict[str, Any]:
+def _onboarding_gate_payload(
+    state: dict[str, Any],
+    *,
+    include_telegram_channel_task: bool = False,
+) -> dict[str, Any]:
     return {
         "error": "onboarding_required",
         "message": "Сначала завершите обучение.",
-        "onboarding": _build_onboarding_payload(state),
+        "onboarding": _build_onboarding_payload(
+            state,
+            include_telegram_channel_task=include_telegram_channel_task,
+        ),
     }
 
 
@@ -551,6 +1077,7 @@ async def _handle_onboarding_tutorial_action(
     onboarding_state_before = await db_inst.get_onboarding_state(int(user_id)) if db_inst else {}
 
     if action_type == "complete" and db_inst:
+        include_telegram_channel_task = _request_includes_telegram_channel_task(request, int(user_id))
         before_status = str(onboarding_state_before.get("status") or "")
         before_step = int(onboarding_state_before.get("tutorial_step") or getattr(engine, "tutorial_step", 0) or 0)
         if onboarding_state_before.get("completed") or before_status in (
@@ -566,7 +1093,10 @@ async def _handle_onboarding_tutorial_action(
                     "winner_id": int(user_id),
                 },
                 "redirect_url": "/?onboarding_menu=1",
-                "onboarding": _build_onboarding_payload(onboarding_state_before),
+                "onboarding": _build_onboarding_payload(
+                    onboarding_state_before,
+                    include_telegram_channel_task=include_telegram_channel_task,
+                ),
             }
             _action_cache_set(match_id, user_id, client_action_id, payload, status=200)
             return web.json_response(payload, status=200)
@@ -652,12 +1182,16 @@ async def _handle_onboarding_tutorial_action(
                     )
 
     onboarding_state = await db_inst.get_onboarding_state(int(user_id)) if db_inst else {}
+    include_telegram_channel_task = _request_includes_telegram_channel_task(request, int(user_id))
     if result.get("success") is not False and action_type == "complete":
         payload = {
             "match_id": str(match_id),
             "result": result,
             "redirect_url": "/?onboarding_menu=1",
-            "onboarding": _build_onboarding_payload(onboarding_state),
+            "onboarding": _build_onboarding_payload(
+                onboarding_state,
+                include_telegram_channel_task=include_telegram_channel_task,
+            ),
         }
         _action_cache_set(match_id, user_id, client_action_id, payload, status=status_code)
         return web.json_response(payload, status=status_code)
@@ -667,7 +1201,10 @@ async def _handle_onboarding_tutorial_action(
         "match_id": str(match_id),
         "result": result,
         "state": state,
-        "onboarding": _build_onboarding_payload(onboarding_state),
+        "onboarding": _build_onboarding_payload(
+            onboarding_state,
+            include_telegram_channel_task=include_telegram_channel_task,
+        ),
     }
     if result.get("feedback"):
         payload["feedback"] = result.get("feedback")
@@ -3254,6 +3791,9 @@ COMMUNITY_ADMIN_API_PATHS = frozenset({
 MATCH_SESSIONS: dict[str, dict[int, set[str]]] = {}
 MATCH_LOCKS: dict[str, asyncio.Lock] = {}
 MATCH_INIT_LOCKS: dict[str, asyncio.Lock] = {}
+TELEGRAM_CHANNEL_TASK_ID = "join_telegram_channel"
+TELEGRAM_CHANNEL_CHAT_IDS = ("-1001777559237", "@extraarena")
+TELEGRAM_CHANNEL_MEMBER_STATUSES = {"member", "administrator", "creator"}
 
 # Кеш IP-геолокации: {ip: (country, expiry_timestamp)}
 _ip_geo_cache: dict[str, tuple[str, float]] = {}
@@ -3438,6 +3978,31 @@ def _request_auth_token(request: web.Request) -> str:
     return ""
 
 
+def _telegram_init_data_for_request(
+    request: web.Request,
+    *,
+    expected_user_id: int | None = None,
+) -> dict[str, str] | None:
+    auth_param = _request_auth_token(request)
+    if not auth_param or _looks_like_jwt_bearer(auth_param):
+        return None
+
+    verified_data = _verify_init_data(auth_param, request.app["bot_token"])
+    if not verified_data or not _validate_auth_date(verified_data):
+        return None
+
+    uid = _extract_user_id_from_init_data(verified_data)
+    if not uid:
+        return None
+    if expected_user_id is not None and int(uid) != int(expected_user_id):
+        return None
+    return verified_data
+
+
+def _request_includes_telegram_channel_task(request: web.Request, user_id: int) -> bool:
+    return _telegram_init_data_for_request(request, expected_user_id=int(user_id)) is not None
+
+
 def _set_admin_session_cookie(request: web.Request, response: web.StreamResponse, user_id: int) -> None:
     response.set_cookie(
         ADMIN_SESSION_COOKIE_NAME,
@@ -3545,6 +4110,13 @@ async def require_user_id_from_payload(request, payload: dict) -> int:
         text='{"error":"authentication_required"}',
         content_type="application/json",
     )
+
+
+async def optional_user_id(request) -> int | None:
+    try:
+        return await require_user_id(request)
+    except web.HTTPUnauthorized:
+        return None
 
 
 def _require_user_id_from_init_data_str(init_data_str: str, bot_token: str) -> int | None:
@@ -4218,6 +4790,48 @@ def _create_telegram_api_session():
     ssl_context.check_hostname = False
     ssl_context.verify_mode = ssl.CERT_NONE
     return aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_context))
+
+
+async def _check_telegram_channel_membership(
+    request: web.Request,
+    user_id: int,
+) -> tuple[bool, str | None]:
+    bot_token = str(request.app.get("bot_token") or "").strip()
+    if not bot_token:
+        return False, "telegram_bot_unconfigured"
+
+    last_error: str | None = None
+    async with _create_telegram_api_session() as session:
+        for chat_id in TELEGRAM_CHANNEL_CHAT_IDS:
+            try:
+                url = f"https://api.telegram.org/bot{bot_token}/getChatMember"
+                async with session.get(
+                    url,
+                    params={"chat_id": chat_id, "user_id": int(user_id)},
+                    timeout=15,
+                ) as resp:
+                    data = await resp.json(content_type=None)
+            except Exception as exc:
+                last_error = str(exc) or "telegram_api_error"
+                continue
+
+            if not isinstance(data, dict):
+                last_error = "telegram_api_bad_response"
+                continue
+
+            if data.get("ok"):
+                result = data.get("result") if isinstance(data.get("result"), dict) else {}
+                status = str(result.get("status") or "").lower()
+                if status in TELEGRAM_CHANNEL_MEMBER_STATUSES:
+                    return True, None
+                return False, None
+
+            description = str(data.get("description") or "").lower()
+            if "user_not_participant" in description or "participant" in description or "not found" in description:
+                return False, None
+            last_error = str(data.get("description") or data.get("error_code") or "telegram_api_error")
+
+    return False, last_error or "telegram_api_error"
 
 
 # ============================================================================
@@ -5575,6 +6189,7 @@ def create_web_app(
         "notif_squad_new_member",
         "notif_squad_disbanded",
         "notif_squad_boost",
+        "notif_squad_weekly_tokens",
         "notif_extra_arena_modifiers",
         "notification_delivery_mode",
         "ads_enabled",
@@ -5663,6 +6278,7 @@ def create_web_app(
                 "notif_squad_new_member": settings_record.get("notif_squad_new_member", True),
                 "notif_squad_disbanded": settings_record.get("notif_squad_disbanded", True),
                 "notif_squad_boost": settings_record.get("notif_squad_boost", True),
+                "notif_squad_weekly_tokens": settings_record.get("notif_squad_weekly_tokens", True),
                 "notif_extra_arena_modifiers": settings_record.get("notif_extra_arena_modifiers", True),
                 "notification_delivery_mode": settings_record.get("notification_delivery_mode", "app_then_telegram"),
                 "ads_enabled": settings_record["ads_enabled"],
@@ -5768,6 +6384,7 @@ def create_web_app(
                         "notif_squad_new_member": True,
                         "notif_squad_disbanded": True,
                         "notif_squad_boost": True,
+                        "notif_squad_weekly_tokens": True,
                         "notif_extra_arena_modifiers": True,
                         "notification_delivery_mode": "app_then_telegram",
                         "ads_enabled": False,
@@ -9867,10 +10484,12 @@ def create_web_app(
         modifiers = []
         for m in get_extra_arena_mode_list():
             mid = m["mode_id"]
+            mode_config = resolve_mode_config(mid)
             modifiers.append({
                 "mode_id": mid,
                 "label": m["label"],
                 "description": m.get("description", ""),
+                "mode_config": serialize_mode_config(mode_config),
                 "enabled": (is_admin or enabled_map.get(mid, True)) and extra_arena_enabled,
                 "is_current": rot is not None and rot.mode_id == mid,
             })
@@ -9887,6 +10506,7 @@ def create_web_app(
                 "current_mode_id": rot.mode_id if rot else None,
                 "current_label": rot.label if rot else None,
                 "current_description": rot.description if rot else None,
+                "current_mode_config": serialize_mode_config(resolve_mode_config(rot.mode_id)) if rot else None,
                 "next_rotation_at": rot.next_rotation_at if rot else None,
                 "seconds_to_rotation": rot.seconds_to_rotation if rot else None,
                 "rotation_interval_seconds": ROTATION_INTERVAL_SECONDS,
@@ -12568,6 +13188,9 @@ def create_web_app(
             if isinstance(body, dict) and "tracks_json" in body:
                 payload = _stdlib_json.loads(str(body.get("tracks_json") or "{}"))
             rows = _normalize_reward_track_import_payload(payload, _normalize_extra_pass_season(season))
+            replace = bool(body.get("replace", True)) if isinstance(body, dict) else True
+            if replace and not rows:
+                return web.json_response({"error": "empty_reward_tracks"}, status=400)
             for row in rows:
                 config_error = await _admin_validate_reward_track_config(db, row)
                 if config_error:
@@ -12575,7 +13198,6 @@ def create_web_app(
                         {"error": config_error, "message": _reward_error_message(config_error), "row": row},
                         status=400,
                     )
-            replace = bool(body.get("replace", True)) if isinstance(body, dict) else True
             if replace and hasattr(db, "replace_reward_tracks"):
                 created = await db.replace_reward_tracks(_season_track_types(season), rows)
             else:
@@ -14642,6 +15264,7 @@ def create_web_app(
             "only_creator_can_transfer",
             "only_creator_can_delete",
             "only_creator_can_customize",
+            "boost_required",
             "cannot_move_owner",
             "cannot_kick_owner",
             "not_in_squad",
@@ -14720,6 +15343,7 @@ def create_web_app(
     async def squads_config_handler(request: web.Request) -> web.Response:
         await require_user_id(request)
         config = await db.get_squad_runtime_config()
+        public_upgrades = Database._public_squad_upgrade_catalog(config)
         public_config = {
             "creation_policy": config.get("squad_creation_policy", "beta_free"),
             "weekly_cbrp_enabled": bool(config.get("squad_weekly_cbrp_enabled", True)),
@@ -14733,7 +15357,7 @@ def create_web_app(
             "seasonal_personal_tokens_divisor": config.get("squad_seasonal_personal_tokens_divisor", 200),
             "seasonal_treasury_tokens_divisor": config.get("squad_seasonal_treasury_tokens_divisor", 300),
             "rewards": config.get("squad_rewards", {}),
-            "upgrades": config.get("squad_upgrades", {}),
+            "upgrades": public_upgrades,
             "personal_rewards": config.get("squad_personal_rewards", []),
         }
         return web.json_response(public_config)
@@ -15036,6 +15660,8 @@ def create_web_app(
                         if not field.filename:
                             continue
                         kind = field.name
+                        if kind == "banner" and not bool(clan.get("has_boost")):
+                            raise ValueError("boost_required")
                         content_type = field.headers.get("Content-Type", "")
                         if content_type not in ("image/png", "image/jpeg", "image/webp"):
                             return web.json_response({"error": "invalid_content_type"}, status=400)
@@ -15094,6 +15720,8 @@ def create_web_app(
                 updates["avatar_url"] = avatar_url
             if "banner_url" in data:
                 banner_url = str(data.get("banner_url") or "").strip()[:500] or None
+                if banner_url and not bool(clan.get("has_boost")):
+                    raise ValueError("boost_required")
                 if banner_url and not _validate_local_upload_url(banner_url, "/uploads/squads/"):
                     raise ValueError("invalid_image_url")
                 updates["banner_url"] = banner_url
@@ -15244,6 +15872,8 @@ def create_web_app(
             clan = await _require_squad_role(user_id, ("creator", "officer"))
             data = await request.json()
             upgrade_type = str(data.get("upgrade_type") or data.get("type") or "member_slots")
+            if upgrade_type in {"boost", "customization"}:
+                raise ValueError("unknown_upgrade")
             result = await db.buy_clan_upgrade(int(clan["id"]), user_id, upgrade_type)
             if upgrade_type == "boost":
                 members = await db.get_clan_members(int(clan["id"]))
@@ -15310,6 +15940,8 @@ def create_web_app(
             kind = request.rel_url.query.get("kind", "avatar")
             if kind not in ("avatar", "banner"):
                 return web.json_response({"error": "invalid_kind"}, status=400)
+            if kind == "banner" and not clan.get("has_boost"):
+                return web.json_response({"error": "boost_required"}, status=403)
             content_type = field.headers.get("Content-Type", "")
             if content_type not in ("image/png", "image/jpeg", "image/webp"):
                 return web.json_response({"error": "invalid_content_type"}, status=400)
@@ -17119,6 +17751,12 @@ def create_web_app(
                             "error": "insufficient_coins",
                             "message": f"Недостаточно монет! Нужно {set_price} 💰, у вас {current_coins} 💰"
                         }, status=400)
+                    if result.get("error") == "already_claimed":
+                        return web.json_response({
+                            "success": False,
+                            "error": "already_claimed",
+                            "message": "Набор уже получен"
+                        }, status=409)
                     if not result.get("success"):
                         return web.json_response({
                             "success": False,
@@ -17379,12 +18017,13 @@ def create_web_app(
             placeholders = ",".join(f"${i+1}" for i in range(len(raw_cards)))
             rows = await db.fetch(
                 f"""
-                SELECT c.id,
-                       c.name,
-                       c.rarity,
-                       c.simplified_levelup,
-                       COALESCE(uc.level, 1) AS level,
-                       COALESCE(uc.particles, 0) AS current_particles
+	                SELECT c.id,
+	                       c.name,
+	                       c.rarity,
+	                       c.simplified_levelup,
+	                       uc.card_id IS NOT NULL AS owned,
+	                       COALESCE(uc.level, 1) AS level,
+	                       COALESCE(uc.particles, 0) AS current_particles
                 FROM cards c
                 LEFT JOIN user_cards uc
                   ON uc.card_id = c.id AND uc.user_id = ${len(raw_cards) + 1}
@@ -17423,6 +18062,7 @@ def create_web_app(
                     "particles": cost["particles"],
                     "coins": cost["coins"],
                     "level": level,
+                    "owned": bool(row.get("owned")),
                     "current_particles": current_particles,
                     "upgrade_particles_required": upgrade_particles_required,
                     "progress_pct": progress_pct,
@@ -17676,7 +18316,7 @@ def create_web_app(
             return web.Response(body=image_data, content_type=content_type)
         except Exception as e:
             logger.error("Ошибка загрузки изображения набора: %s", e, exc_info=True)
-            return web.json_response({"error": "image_fetch_failed", "message": str(e)}, status=500)
+            return web.json_response({"error": "image_fetch_failed", "message": "Не удалось загрузить изображение"}, status=500)
         """
         Возвращает изображение карты из локальной файловой системы.
         Изображение берется из DesignAssets/Cards/<card_id>.png
@@ -17749,7 +18389,15 @@ def create_web_app(
         try:
             active_only = request.rel_url.query.get("active_only", "false").lower() == "true"
             sets = await db.get_shop_sets(active_only=active_only)
-            return web.json_response({"sets": sets})
+            public_sets = []
+            for shop_set in sets:
+                payload = _normalize_shop_set_response_payload(shop_set)
+                rewards = await _enrich_shop_set_rewards_for_public(db, payload.get("rewards") or [])
+                if rewards is None:
+                    continue
+                payload["rewards"] = rewards
+                public_sets.append(payload)
+            return web.json_response({"sets": public_sets})
         except Exception as e:
             import logging
             logging.getLogger(__name__).error(f"Ошибка получения наборов: {e}", exc_info=True)
@@ -17769,13 +18417,22 @@ def create_web_app(
             set_data = await db.get_shop_set(set_id)
             if not set_data:
                 return web.json_response({"error": "set_not_found"}, status=404)
-            return web.json_response({"set": set_data})
+            return web.json_response({"set": _normalize_shop_set_response_payload(set_data)})
         except (TypeError, ValueError) as e:
             return web.json_response({"error": "invalid_set_id", "message": str(e)}, status=400)
         except Exception as e:
             import logging
             logging.getLogger(__name__).error(f"Ошибка получения набора: {e}", exc_info=True)
             return web.json_response({"error": "internal_server_error", "message": str(e)}, status=500)
+
+    async def _validate_shop_set_rewards_payload(rewards: Any) -> str | None:
+        if hasattr(db, "validate_shop_set_rewards"):
+            _normalized, rewards_error = await db.validate_shop_set_rewards(rewards)
+            return rewards_error
+        if hasattr(db, "_normalize_shop_set_rewards"):
+            _normalized, rewards_error = db._normalize_shop_set_rewards(rewards)
+            return rewards_error
+        return None if isinstance(rewards, list) and rewards else "empty_rewards"
 
     async def shop_set_create_handler(request: web.Request) -> web.Response:
         """Создать новый набор."""
@@ -17810,8 +18467,8 @@ def create_web_app(
                 return web.json_response({"error": "invalid_currency"}, status=400)
             if not isinstance(rewards, list):
                 return web.json_response({"error": "invalid_rewards"}, status=400)
-            if price > 0:
-                _, rewards_error = db._normalize_shop_set_rewards(rewards)
+            if rewards or price > 0:
+                rewards_error = await _validate_shop_set_rewards_payload(rewards)
                 if rewards_error:
                     return web.json_response({"error": rewards_error}, status=400)
 
@@ -17884,7 +18541,7 @@ def create_web_app(
                 rewards = data.get("rewards") or []
                 if not isinstance(rewards, list):
                     return web.json_response({"error": "invalid_rewards"}, status=400)
-                _, rewards_error = db._normalize_shop_set_rewards(rewards)
+                rewards_error = await _validate_shop_set_rewards_payload(rewards)
                 if rewards_error:
                     return web.json_response({"error": rewards_error}, status=400)
                 update_kwargs["rewards"] = rewards
@@ -17935,11 +18592,245 @@ def create_web_app(
             logging.getLogger(__name__).error(f"Ошибка удаления набора: {e}", exc_info=True)
             return web.json_response({"error": "internal_server_error", "message": str(e)}, status=500)
 
+    async def admin_cosmetics_list_handler(request: web.Request) -> web.Response:
+        user_id = await require_user_id(request)
+        if not await _is_admin_user(db, user_id):
+            return web.json_response({"error": "admin_only"}, status=403)
+        try:
+            active_only = request.rel_url.query.get("active_only", "false").lower() == "true"
+            item_type = str(request.rel_url.query.get("item_type") or "").strip() or None
+            if item_type is not None:
+                item_type = _validate_cosmetic_item_type(item_type)
+            items = await db.list_cosmetic_items(active_only=active_only, item_type=item_type)
+            return web.json_response({"items": [_cosmetic_response_payload(item) for item in items]})
+        except ValueError as exc:
+            error = str(exc)
+            return web.json_response({"error": error}, status=_cosmetic_error_status(error))
+        except Exception as exc:
+            logging.getLogger(__name__).error("Ошибка списка косметики: %s", exc, exc_info=True)
+            return web.json_response({"error": "internal_server_error"}, status=500)
+
+    async def admin_cosmetic_detail_handler(request: web.Request) -> web.Response:
+        user_id = await require_user_id(request)
+        if not await _is_admin_user(db, user_id):
+            return web.json_response({"error": "admin_only"}, status=403)
+        identity = request.match_info.get("identity", "")
+        item = await db.get_cosmetic_item(identity)
+        if not item:
+            return web.json_response({"error": "cosmetic_not_found"}, status=404)
+        return web.json_response({"item": _cosmetic_response_payload(item)})
+
+    async def admin_cosmetic_upload_image_handler(request: web.Request) -> web.Response:
+        user_id = await require_user_id(request)
+        if not await _is_admin_user(db, user_id):
+            return web.json_response({"error": "admin_only"}, status=403)
+        try:
+            reader = await request.multipart()
+            item_type = ""
+            slug = ""
+            file_seen = False
+            filename = ""
+            content_type = ""
+            total = 0
+            chunks: list[bytes] = []
+            while True:
+                field = await reader.next()
+                if field is None:
+                    break
+                if field.name == "file":
+                    file_seen = True
+                    filename = str(field.filename or "")
+                    content_type = field.headers.get("Content-Type", "")
+                    while True:
+                        chunk = await field.read_chunk(65536)
+                        if not chunk:
+                            break
+                        total += len(chunk)
+                        if total > 5 * 1024 * 1024:
+                            return web.json_response({"error": "file_too_large", "max_mb": 5}, status=400)
+                        chunks.append(chunk)
+                    continue
+                if field.name == "item_type":
+                    item_type = (await field.text()).strip()
+                elif field.name == "slug":
+                    slug = (await field.text()).strip()
+            item_type = _validate_cosmetic_item_type(item_type)
+            if item_type == "title":
+                return web.json_response({"error": "image_not_allowed_for_title"}, status=400)
+            if not file_seen:
+                return web.json_response({"error": "file_field_required"}, status=400)
+            if content_type not in COSMETIC_IMAGE_CONTENT_TYPES:
+                return web.json_response({"error": "invalid_image_type"}, status=400)
+            slug_part = _safe_cosmetic_filename_part(slug or filename or item_type)
+            ext = COSMETIC_IMAGE_CONTENT_TYPES[content_type]
+            upload_dir = DESIGN_ASSETS_DIR.joinpath(*COSMETIC_UPLOAD_DIRS[item_type])
+            upload_dir.mkdir(parents=True, exist_ok=True)
+            filename = f"{slug_part}-{uuid.uuid4().hex}{ext}"
+            filepath = upload_dir / filename
+            tmp_path = upload_dir / f".{filename}.tmp"
+            try:
+                data = b"".join(chunks)
+                if not data or not _image_signature_matches(data, content_type):
+                    return web.json_response({"error": "invalid_image_signature"}, status=400)
+                try:
+                    from PIL import Image
+                    from io import BytesIO
+
+                    with Image.open(BytesIO(data)) as img:
+                        width, height = img.size
+                except Exception:
+                    return web.json_response({"error": "invalid_image_signature"}, status=400)
+                expected_width, expected_height = COSMETIC_IMAGE_SIZES[item_type]
+                if (width, height) != (expected_width, expected_height):
+                    return web.json_response(
+                        {
+                            "error": "invalid_image_dimensions",
+                            "expected": {"width": expected_width, "height": expected_height},
+                            "actual": {"width": width, "height": height},
+                        },
+                        status=400,
+                    )
+                tmp_path.write_bytes(data)
+                tmp_path.replace(filepath)
+            finally:
+                if tmp_path.exists():
+                    try:
+                        tmp_path.unlink()
+                    except OSError:
+                        pass
+            relative = filepath.relative_to(DESIGN_ASSETS_DIR).as_posix()
+            asset_path = f"/DesignAssets/{relative}"
+            return web.json_response(
+                {
+                    "success": True,
+                    "asset_path": asset_path,
+                    "bytes": total,
+                    "content_type": content_type,
+                    "dimensions": {"width": width, "height": height},
+                }
+            )
+        except ValueError as exc:
+            error = str(exc)
+            return web.json_response({"error": error}, status=_cosmetic_error_status(error))
+        except Exception as exc:
+            logging.getLogger(__name__).error("Ошибка загрузки косметики: %s", exc, exc_info=True)
+            return web.json_response({"error": "internal_server_error"}, status=500)
+
+    async def admin_cosmetic_create_handler(request: web.Request) -> web.Response:
+        user_id = await require_user_id(request)
+        if not await _is_admin_user(db, user_id):
+            return web.json_response({"error": "admin_only"}, status=403)
+        try:
+            data = await request.json()
+            payload = _normalize_cosmetic_payload(data, require_identity=True)
+            result = await db.create_cosmetic_item(**payload)
+            if result.get("success"):
+                return web.json_response({"success": True, "cosmetic": _cosmetic_response_payload(result.get("cosmetic"))})
+            error = str(result.get("error") or "cosmetic_create_failed")
+            return web.json_response({"error": error}, status=_cosmetic_error_status(error))
+        except ValueError as exc:
+            error = str(exc)
+            return web.json_response({"error": error}, status=_cosmetic_error_status(error))
+        except Exception as exc:
+            logging.getLogger(__name__).error("Ошибка создания косметики: %s", exc, exc_info=True)
+            return web.json_response({"error": "internal_server_error"}, status=500)
+
+    async def admin_cosmetic_update_handler(request: web.Request) -> web.Response:
+        user_id = await require_user_id(request)
+        if not await _is_admin_user(db, user_id):
+            return web.json_response({"error": "admin_only"}, status=403)
+        try:
+            data = await request.json()
+            cosmetic_id = int(data.get("id") or data.get("cosmetic_id") or 0)
+            if cosmetic_id <= 0:
+                return web.json_response({"error": "cosmetic_not_found"}, status=404)
+            if "asset_path" in data and "item_type" not in data:
+                current = await db.get_cosmetic_item(cosmetic_id)
+                if not current:
+                    return web.json_response({"error": "cosmetic_not_found"}, status=404)
+                data = dict(data)
+                data["item_type"] = current.get("item_type")
+            payload = _normalize_cosmetic_payload(data, require_identity=False)
+            if not payload:
+                return web.json_response({"error": "no_fields"}, status=400)
+            result = await db.update_cosmetic_item(cosmetic_id, **payload)
+            if result.get("success"):
+                return web.json_response({"success": True, "cosmetic": _cosmetic_response_payload(result.get("cosmetic"))})
+            error = str(result.get("error") or "cosmetic_update_failed")
+            return web.json_response({"error": error}, status=_cosmetic_error_status(error))
+        except (TypeError, ValueError) as exc:
+            raw_error = str(exc)
+            known_errors = {
+                "invalid_slug",
+                "invalid_item_type",
+                "invalid_class",
+                "invalid_media_type",
+                "invalid_asset_path",
+                "invalid_sort_order",
+                "name_required",
+                "image_not_allowed_for_title",
+                "item_type_required",
+            }
+            error = raw_error if raw_error in known_errors else "invalid_body"
+            return web.json_response({"error": error}, status=_cosmetic_error_status(error))
+        except Exception as exc:
+            logging.getLogger(__name__).error("Ошибка обновления косметики: %s", exc, exc_info=True)
+            return web.json_response({"error": "internal_server_error"}, status=500)
+
+    async def admin_cosmetic_delete_handler(request: web.Request) -> web.Response:
+        user_id = await require_user_id(request)
+        if not await _is_admin_user(db, user_id):
+            return web.json_response({"error": "admin_only"}, status=403)
+        try:
+            data = await request.json()
+            cosmetic_id = int(data.get("id") or data.get("cosmetic_id") or 0)
+            if cosmetic_id <= 0:
+                return web.json_response({"error": "cosmetic_not_found"}, status=404)
+            result = await db.delete_cosmetic_item(cosmetic_id)
+            if result.get("success"):
+                return web.json_response({"success": True, "cosmetic": _cosmetic_response_payload(result.get("cosmetic"))})
+            error = str(result.get("error") or "cosmetic_delete_failed")
+            return web.json_response({"error": error}, status=_cosmetic_error_status(error))
+        except (TypeError, ValueError):
+            return web.json_response({"error": "invalid_body"}, status=400)
+        except Exception as exc:
+            logging.getLogger(__name__).error("Ошибка удаления косметики: %s", exc, exc_info=True)
+            return web.json_response({"error": "internal_server_error"}, status=500)
+
     async def shop_sets_public_handler(request: web.Request) -> web.Response:
         """Получить список активных наборов для магазина (публичный endpoint)."""
         try:
+            surface = str(request.rel_url.query.get("surface") or "game").strip().lower()
+            claimed_set_ids = await _claimed_shop_set_ids_for_request(request, db)
+            owned_card_ids = await _owned_card_ids_for_request(request, db)
             sets = await db.get_shop_sets(active_only=True)
-            return web.json_response({"sets": sets})
+            if surface == "game" and hasattr(db, "get_ruble_products"):
+                products = await db.get_ruble_products(active_only=True)
+                product_set_ids = {
+                    int(product.get("shop_set_id") or 0)
+                    for product in products
+                    if product.get("shop_set_id")
+                }
+                if product_set_ids:
+                    sets = [
+                        shop_set for shop_set in sets
+                        if int(shop_set.get("id") or 0) not in product_set_ids
+                    ]
+            sets = _filter_claimed_shop_sets(sets, claimed_set_ids)
+            public_sets = []
+            for shop_set in sets:
+                payload = _normalize_shop_set_response_payload(shop_set)
+                rewards = await _enrich_shop_set_rewards_for_public(db, payload.get("rewards") or [])
+                if rewards is None:
+                    continue
+                rewards, owned_fallback = _apply_owned_card_public_shop_set_fallback(rewards, owned_card_ids)
+                if rewards is None:
+                    continue
+                payload["rewards"] = rewards
+                if owned_fallback:
+                    payload["owned_card_fallback"] = owned_fallback
+                public_sets.append(payload)
+            return web.json_response({"sets": public_sets})
         except Exception as e:
             import logging
             logging.getLogger(__name__).error(f"Ошибка получения наборов: {e}", exc_info=True)
@@ -17950,6 +18841,8 @@ def create_web_app(
         try:
             products = await db.get_ruble_products(active_only=True, surface="shop")
             catalog = build_shop_catalog(products)
+            if await _starter_once_used_for_request(request, db):
+                catalog = _filter_used_starter_once_from_catalog(catalog)
             catalog["settings"] = {
                 "allow_max_level_particle_purchase": bool(app.get("shop_allow_max_level_particles", False)),
             }
@@ -17966,6 +18859,12 @@ def create_web_app(
     app.router.add_post("/api/admin/shop/sets/create", shop_set_create_handler)
     app.router.add_post("/api/admin/shop/sets/update", shop_set_update_handler)
     app.router.add_post("/api/admin/shop/sets/delete", shop_set_delete_handler)
+    app.router.add_get("/api/admin/cosmetics", admin_cosmetics_list_handler)
+    app.router.add_post("/api/admin/cosmetics/upload-image", admin_cosmetic_upload_image_handler)
+    app.router.add_post("/api/admin/cosmetics/create", admin_cosmetic_create_handler)
+    app.router.add_post("/api/admin/cosmetics/update", admin_cosmetic_update_handler)
+    app.router.add_post("/api/admin/cosmetics/delete", admin_cosmetic_delete_handler)
+    app.router.add_get("/api/admin/cosmetics/{identity}", admin_cosmetic_detail_handler)
     app.router.add_get("/api/shop/sets/image", shop_sets_image_handler)
     app.router.add_get("/api/shop/particles/daily", particles_daily_handler)
     app.router.add_post("/api/shop/particles/buy", particles_buy_handler)
@@ -17973,19 +18872,34 @@ def create_web_app(
 
     # ── Ruble products admin API ──
 
-    RUBLE_PRODUCT_ITEM_TYPES = {"extrapass", "extrapass_ultra", "starter_boost", "gems_package", "shop_set"}
+    RUBLE_PRODUCT_ITEM_TYPES = {"extrapass", "extrapass_ultra", "starter_boost", "squad_boost", "gems_package", "shop_set", "gift_shop_set"}
 
     def _product_error_status(error: str) -> int:
         if error in {"product_code_exists", "duplicate_product_code"} or "duplicate key" in error or "unique" in error.lower():
             return 409
-        if error in {"shop_set_not_found", "product_not_found"}:
+        if error in {"shop_set_not_found", "set_not_found", "product_not_found"}:
             return 404
         if error in {
+            "product_code_required",
             "invalid_item_type",
             "package_type_required",
             "invalid_package_type",
             "shop_set_id_required",
             "invalid_shop_set_id",
+            "not_gift_shop_set",
+            "invalid_gift_price",
+            "product_currency_not_rubles",
+            "empty_rewards",
+            "invalid_rewards_format",
+            "invalid_reward",
+            "invalid_reward_amount",
+            "invalid_reward_card",
+            "invalid_reward_particles",
+            "invalid_reward_cosmetic",
+            "unknown_reward_type",
+            "reward_card_not_found",
+            "reward_cosmetic_not_found",
+            "invalid_code",
             "code_itemtype_name_required",
             "name_required",
             "invalid_price",
@@ -18005,11 +18919,13 @@ def create_web_app(
             sets = []
         return {
             "item_types": [
-                {"value": "extrapass", "label": "ExtraPass", "description": "30-day premium pass", "defaults": {"code": "extrapass", "name": "ExtraPass", "price": 179, "show_in_game": True, "show_in_shop": True}},
-                {"value": "extrapass_ultra", "label": "ExtraPass Ultra", "description": "30-day Ultra pass", "defaults": {"code": "extrapass_ultra", "name": "ExtraPass Ultra", "price": 349, "badge": "popular", "show_in_game": True, "show_in_shop": True}},
+                {"value": "extrapass", "label": "ExtraPass", "description": "Season premium pass", "defaults": {"code": "extrapass", "name": "ExtraPass", "price": 179, "show_in_game": True, "show_in_shop": True}},
+                {"value": "extrapass_ultra", "label": "ExtraPass Ultra", "description": "Season Ultra pass", "defaults": {"code": "extrapass_ultra", "name": "ExtraPass Ultra", "price": 349, "badge": "popular", "show_in_game": True, "show_in_shop": True}},
                 {"value": "starter_boost", "label": "Starter Boost", "description": "Starter paid bundle", "defaults": {"code": "starter_boost", "name": "Starter Boost", "price": 499, "show_in_game": True, "show_in_shop": True}},
+                {"value": "squad_boost", "label": "Squad Boost", "description": "Donor squad status", "defaults": {"code": "squad_boost", "name": "Boost сквада", "price": 299, "badge": "squad", "show_in_game": True, "show_in_shop": False}},
                 {"value": "gems_package", "label": "Gems package", "description": "Real-money gem package", "defaults": {"code": "gems_100", "name": "100 gems", "price": 99, "show_in_game": False, "show_in_shop": True}},
-                {"value": "shop_set", "label": "Shop set", "description": "DB-backed reward set", "defaults": {"code": "shop_set", "name": "Shop Set", "price": 0, "show_in_game": True, "show_in_shop": True}},
+                {"value": "shop_set", "label": "Shop set", "description": "DB-backed paid reward set", "defaults": {"code": "shop_set", "name": "Shop Set", "price": 199, "show_in_game": True, "show_in_shop": True}},
+                {"value": "gift_shop_set", "label": "Gift shop set", "description": "Free once-per-user reward set", "defaults": {"code": "welcome_gift", "name": "Welcome Gift", "price": 0, "show_in_game": True, "show_in_shop": True}},
             ],
             "package_types": {
                 "gems_package": [
@@ -18048,6 +18964,8 @@ def create_web_app(
             code = str(data.get("code") or "").strip()
             if not code:
                 return {}, "code_itemtype_name_required"
+            if not _is_safe_ruble_product_code(code):
+                return {}, "invalid_code"
             normalized["code"] = code
 
         item_type = str(data.get("item_type") if "item_type" in data else existing.get("item_type") or "").strip()
@@ -18069,7 +18987,7 @@ def create_web_app(
                     return {}, "invalid_package_type"
                 normalized["package_type"] = package_text
                 normalized["shop_set_id"] = None
-            elif item_type == "shop_set":
+            elif item_type in {"shop_set", "gift_shop_set"}:
                 if shop_set_id_raw in (None, ""):
                     return {}, "shop_set_id_required"
                 try:
@@ -18102,10 +19020,27 @@ def create_web_app(
             if not math.isfinite(price) or price < 0:
                 return {}, "invalid_price"
             normalized["price"] = price
+        if require_identity or "item_type" in data or "price" in data:
+            try:
+                effective_price = float(normalized.get("price", existing.get("price", 0)) or 0)
+            except (TypeError, ValueError):
+                return {}, "invalid_price"
+            if item_type == "gift_shop_set":
+                if effective_price != 0:
+                    return {}, "invalid_price"
+            elif effective_price <= 0:
+                return {}, "invalid_price"
+
+        if require_identity or "item_type" in data or "currency" in data:
+            effective_currency = str(normalized.get("currency", existing.get("currency", "rubles")) or "rubles")
+            if item_type == "gift_shop_set" and effective_currency != "rubles":
+                return {}, "invalid_currency"
 
         if require_identity or "currency" in data:
             currency = str(data.get("currency") or "rubles")
             if currency not in ("rubles", "gems", "coins"):
+                return {}, "invalid_currency"
+            if item_type == "gift_shop_set" and currency != "rubles":
                 return {}, "invalid_currency"
             normalized["currency"] = currency
 
@@ -18162,6 +19097,17 @@ def create_web_app(
             import logging
             logging.getLogger(__name__).error("Ошибка получения ruble_products: %s", e, exc_info=True)
             return web.json_response({"error": "internal_server_error", "message": str(e)}, status=500)
+
+    async def _get_ruble_product_by_identity(code_or_id: str | int) -> dict[str, Any] | None:
+        if isinstance(code_or_id, str) and hasattr(db, "get_ruble_product"):
+            return await db.get_ruble_product(code_or_id)
+        if isinstance(code_or_id, int) and hasattr(db, "get_ruble_products"):
+            products = await db.get_ruble_products(active_only=False)
+            return next(
+                (product for product in products if int(product.get("id") or 0) == int(code_or_id)),
+                None,
+            )
+        return None
 
     async def ruble_product_detail_handler(request: web.Request) -> web.Response:
         user_id = await require_user_id(request)
@@ -18220,11 +19166,9 @@ def create_web_app(
                 code_or_id = int(code_or_id)
             except (ValueError, TypeError):
                 code_or_id = str(code_or_id)
-            existing = None
-            if isinstance(code_or_id, str) and hasattr(db, "get_ruble_product"):
-                existing = await db.get_ruble_product(code_or_id)
-                if not existing:
-                    return web.json_response({"error": "product_not_found"}, status=404)
+            existing = await _get_ruble_product_by_identity(code_or_id)
+            if not existing:
+                return web.json_response({"error": "product_not_found"}, status=404)
             update_kwargs, error = await _normalize_admin_ruble_product_payload(
                 data,
                 require_identity=False,
@@ -18276,12 +19220,53 @@ def create_web_app(
     async def ruble_products_public_handler(request: web.Request) -> web.Response:
         try:
             surface = request.rel_url.query.get("surface", "shop")
+            if surface not in {"shop", "game"}:
+                surface = "shop"
+            claimed_set_ids = await _claimed_shop_set_ids_for_request(request, db)
+            owned_card_ids = await _owned_card_ids_for_request(request, db)
             products = await db.get_ruble_products(active_only=True, surface=surface)
-            return web.json_response({"products": [_sanitize_ruble_product_payload(product) for product in products]})
+            products = _filter_claimed_shop_set_products(products, claimed_set_ids)
+            public_products = []
+            for product in products:
+                public_product = await _public_ruble_product_payload(
+                    db,
+                    product,
+                    owned_card_ids=owned_card_ids,
+                )
+                if public_product is not None:
+                    public_products.append(public_product)
+            return web.json_response({"products": public_products})
         except Exception as e:
             import logging
             logging.getLogger(__name__).error("Ошибка получения публичных ruble_products: %s", e, exc_info=True)
             return web.json_response({"error": "internal_server_error", "message": str(e)}, status=500)
+
+    async def gift_shop_set_claim_handler(request: web.Request) -> web.Response:
+        user_id = await require_user_id(request)
+        if request.method != "POST":
+            return web.json_response({"error": "method_not_allowed"}, status=405)
+        try:
+            data = await request.json()
+            product_code = str(data.get("product_code") or data.get("code") or "").strip()
+            if not product_code:
+                return web.json_response({"error": "product_code_required"}, status=400)
+            claim_gift = getattr(db, "claim_gift_shop_set", None)
+            if not claim_gift:
+                return web.json_response({"error": "gift_claim_unavailable"}, status=500)
+            result = await claim_gift(user_id, product_code)
+            if result.get("success"):
+                return web.json_response(_serialize_datetime({
+                    "success": True,
+                    "product_code": product_code,
+                    "shop_set_id": result.get("shop_set_id"),
+                    "granted": result.get("granted", []),
+                }))
+            error = str(result.get("error") or "gift_claim_failed")
+            status = 409 if error == "already_claimed" else _product_error_status(error)
+            return web.json_response({"error": error}, status=status)
+        except Exception as e:
+            logging.getLogger(__name__).error("Ошибка gift_shop_set claim: %s", e, exc_info=True)
+            return web.json_response(_safe_internal_error_payload(), status=500)
 
     app.router.add_get("/api/admin/ruble-products", ruble_products_list_handler)
     app.router.add_get("/api/admin/ruble-products/options", ruble_products_options_handler)
@@ -18290,6 +19275,7 @@ def create_web_app(
     app.router.add_post("/api/admin/ruble-products/update", ruble_product_update_handler)
     app.router.add_post("/api/admin/ruble-products/delete", ruble_product_delete_handler)
     app.router.add_get("/api/shop/ruble-products", ruble_products_public_handler)
+    app.router.add_post("/api/shop/gifts/claim", gift_shop_set_claim_handler)
 
     # ── Image upload for admin ──
 
@@ -18558,17 +19544,47 @@ def create_web_app(
         request.app["match_game_modes"][match_id] = "tutorial"
         return engine
 
+    def _onboarding_payload_for_request(
+        request: web.Request,
+        user_id: int,
+        state: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        return _build_onboarding_payload(
+            state,
+            include_telegram_channel_task=_request_includes_telegram_channel_task(request, int(user_id)),
+        )
+
+    def _newbie_path_payload_for_request(
+        request: web.Request,
+        user_id: int,
+        progress: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        return _build_newbie_path_payload(
+            progress,
+            include_telegram_channel_task=_request_includes_telegram_channel_task(request, int(user_id)),
+        )
+
+    def _onboarding_gate_payload_for_request(
+        request: web.Request,
+        user_id: int,
+        state: dict[str, Any],
+    ) -> dict[str, Any]:
+        return _onboarding_gate_payload(
+            state,
+            include_telegram_channel_task=_request_includes_telegram_channel_task(request, int(user_id)),
+        )
+
     async def onboarding_status_handler(request: web.Request) -> web.Response:
         user_id = await require_user_id(request)
         state = await db.get_onboarding_state(user_id)
-        return web.json_response({"onboarding": _build_onboarding_payload(state)})
+        return web.json_response({"onboarding": _onboarding_payload_for_request(request, user_id, state)})
 
     async def onboarding_welcome_complete_handler(request: web.Request) -> web.Response:
         user_id = await require_user_id(request)
         await _ensure_onboarding_user(user_id)
         current_state = await db.get_onboarding_state(user_id)
         if current_state.get("completed") or current_state.get("status") not in (ONBOARDING_STATUS_WELCOME, "not_started"):
-            return web.json_response({"success": True, "onboarding": _build_onboarding_payload(current_state)})
+            return web.json_response({"success": True, "onboarding": _onboarding_payload_for_request(request, user_id, current_state)})
         state = await db.set_onboarding_state(
             user_id,
             status=ONBOARDING_STATUS_TUTORIAL_BATTLE,
@@ -18578,19 +19594,19 @@ def create_web_app(
         )
         await db.mark_welcome_shown(user_id)
         await db.track_onboarding_event(user_id, "welcome_completed", True)
-        return web.json_response({"success": True, "onboarding": _build_onboarding_payload(state)})
+        return web.json_response({"success": True, "onboarding": _onboarding_payload_for_request(request, user_id, state)})
 
     async def onboarding_tutorial_start_handler(request: web.Request) -> web.Response:
         user_id = await require_user_id(request)
         await _ensure_onboarding_user(user_id)
         state = await db.get_onboarding_state(user_id)
         if state.get("completed"):
-            return web.json_response({"success": True, "onboarding": _build_onboarding_payload(state)})
+            return web.json_response({"success": True, "onboarding": _onboarding_payload_for_request(request, user_id, state)})
         if state.get("status") == ONBOARDING_STATUS_MENU_TOUR:
             return web.json_response({
                 "success": True,
                 "redirect_url": "/?onboarding_menu=1",
-                "onboarding": _build_onboarding_payload(state),
+                "onboarding": _onboarding_payload_for_request(request, user_id, state),
             })
         if state.get("status") != ONBOARDING_STATUS_TUTORIAL_BATTLE:
             state = await db.set_onboarding_state(
@@ -18608,7 +19624,7 @@ def create_web_app(
             "match_id": match_id,
             "redirect_url": f"/arena?id={match_id}&onboarding=1",
             "state": engine.get_full_state(viewer_id=user_id),
-            "onboarding": _build_onboarding_payload(await db.get_onboarding_state(user_id)),
+            "onboarding": _onboarding_payload_for_request(request, user_id, await db.get_onboarding_state(user_id)),
         })
 
     async def onboarding_tutorial_action_handler(request: web.Request) -> web.Response:
@@ -18649,14 +19665,14 @@ def create_web_app(
         state = await db.get_onboarding_state(user_id)
         expected_step = str(state.get("menu_step") or "arena")
         if state.get("status") != ONBOARDING_STATUS_MENU_TOUR or int(state.get("tutorial_step") or 0) < TUTORIAL_FINAL_STEP:
-            return web.json_response({"error": "menu_tour_not_ready", "onboarding": _build_onboarding_payload(state)}, status=409)
+            return web.json_response({"error": "menu_tour_not_ready", "onboarding": _onboarding_payload_for_request(request, user_id, state)}, status=409)
         if expected_step == "done":
-            return web.json_response({"success": True, "onboarding": _build_onboarding_payload(state)})
+            return web.json_response({"success": True, "onboarding": _onboarding_payload_for_request(request, user_id, state)})
         if step_id != expected_step:
             return web.json_response({
                 "error": "unexpected_menu_step",
                 "expected_step": expected_step,
-                "onboarding": _build_onboarding_payload(state),
+                "onboarding": _onboarding_payload_for_request(request, user_id, state),
             }, status=409)
         await db.track_onboarding_event(
             user_id,
@@ -18672,13 +19688,13 @@ def create_web_app(
             current_step=ONBOARDING_STATUS_MENU_TOUR,
             menu_step=next_step,
         )
-        return web.json_response({"success": True, "onboarding": _build_onboarding_payload(state)})
+        return web.json_response({"success": True, "onboarding": _onboarding_payload_for_request(request, user_id, state)})
 
     async def onboarding_complete_handler(request: web.Request) -> web.Response:
         user_id = await require_user_id(request)
         current_state = await db.get_onboarding_state(user_id)
         if current_state.get("completed"):
-            return web.json_response({"success": True, "onboarding": _build_onboarding_payload(current_state)})
+            return web.json_response({"success": True, "onboarding": _onboarding_payload_for_request(request, user_id, current_state)})
         if (
             current_state.get("status") != ONBOARDING_STATUS_MENU_TOUR
             or int(current_state.get("tutorial_step") or 0) < TUTORIAL_FINAL_STEP
@@ -18687,7 +19703,7 @@ def create_web_app(
             return web.json_response({
                 "error": "onboarding_not_ready",
                 "message": "Сначала завершите учебный бой и подсказки меню.",
-                "onboarding": _build_onboarding_payload(current_state),
+                "onboarding": _onboarding_payload_for_request(request, user_id, current_state),
             }, status=409)
         state = await db.set_onboarding_state(
             user_id,
@@ -18698,37 +19714,65 @@ def create_web_app(
         )
         await db.mark_welcome_shown(user_id)
         await db.track_onboarding_event(user_id, "mandatory_onboarding_completed", True)
-        return web.json_response({"success": True, "onboarding": _build_onboarding_payload(state)})
+        return web.json_response({"success": True, "onboarding": _onboarding_payload_for_request(request, user_id, state)})
 
     async def onboarding_newbie_path_handler(request: web.Request) -> web.Response:
         user_id = await require_user_id(request)
         state = await db.get_onboarding_state(user_id)
         if not state.get("completed"):
-            return web.json_response(_onboarding_gate_payload(state), status=403)
+            return web.json_response(_onboarding_gate_payload_for_request(request, user_id, state), status=403)
         if request.method == "GET":
-            return web.json_response({"newbie_path": _build_newbie_path_payload(state.get("newbie_path_progress") or {})})
+            return web.json_response({"newbie_path": _newbie_path_payload_for_request(request, user_id, state.get("newbie_path_progress") or {})})
 
         try:
             payload = await request.json()
         except Exception:
             payload = {}
         task_id = str(payload.get("task_id") or "")
-        task = next((item for item in NEWBIE_PATH_TASKS if item["id"] == task_id), None)
+        include_telegram_channel_task = _request_includes_telegram_channel_task(request, user_id)
+        visible_tasks = _newbie_path_tasks_for_context(
+            include_telegram_channel_task=include_telegram_channel_task,
+        )
+        task = next((item for item in visible_tasks if item["id"] == task_id), None)
         if not task:
             return web.json_response({"error": "invalid_task"}, status=400)
 
         progress = dict(state.get("newbie_path_progress") or {})
         task_progress = dict(progress.get("tasks") or {})
-        required_task_ids = [item["id"] for item in NEWBIE_PATH_TASKS if item["id"] != "claim_newbie_reward"]
+        required_task_ids = [item["id"] for item in visible_tasks if item["id"] != "claim_newbie_reward"]
         if task_id == "claim_newbie_reward":
             ready = all(bool((task_progress.get(item_id) or {}).get("claimed")) for item_id in required_task_ids)
             if not ready:
                 return web.json_response({
                     "error": "task_not_completed",
                     "message": "Сначала заверши и забери предыдущие награды.",
-                    "newbie_path": _build_newbie_path_payload(progress),
+                    "newbie_path": _newbie_path_payload_for_request(request, user_id, progress),
                 }, status=409)
             require_completed = False
+        elif task_id == TELEGRAM_CHANNEL_TASK_ID:
+            is_member, membership_error = await _check_telegram_channel_membership(request, user_id)
+            if not is_member:
+                error_code = "telegram_check_failed" if membership_error else "telegram_channel_not_joined"
+                message = (
+                    "Не удалось проверить вступление. Попробуй еще раз чуть позже."
+                    if membership_error
+                    else "Сначала вступи в Telegram-канал ExtraArena, потом нажми «Проверить»."
+                )
+                return web.json_response({
+                    "error": error_code,
+                    "message": message,
+                    "retryable": bool(membership_error),
+                    "newbie_path": _newbie_path_payload_for_request(request, user_id, progress),
+                }, status=409)
+            state = await db.mark_newbie_path_task(user_id, task_id, claimed=False)
+            progress = dict(state.get("newbie_path_progress") or {})
+            await db.track_onboarding_event(
+                user_id,
+                "newbie_path_task_completed",
+                True,
+                metadata={"task_id": task_id, "source": "telegram_channel_check"},
+            )
+            require_completed = True
         else:
             require_completed = True
 
@@ -18744,7 +19788,7 @@ def create_web_app(
             return web.json_response({
                 "error": claim_result.get("error") or "task_not_completed",
                 "message": "Сначала выполни задачу, потом забери награду.",
-                "newbie_path": _build_newbie_path_payload(latest_state.get("newbie_path_progress") or {}),
+                "newbie_path": _newbie_path_payload_for_request(request, user_id, latest_state.get("newbie_path_progress") or {}),
             }, status=409)
 
         already_claimed = bool(claim_result.get("already_claimed"))
@@ -18766,14 +19810,14 @@ def create_web_app(
             "already_claimed": already_claimed,
             "granted_amount": granted_amount,
             "task": {**task, "completed": True, "claimed": True},
-            "newbie_path": _build_newbie_path_payload(state.get("newbie_path_progress") or {}),
+            "newbie_path": _newbie_path_payload_for_request(request, user_id, state.get("newbie_path_progress") or {}),
         })
 
     async def onboarding_newbie_path_progress_handler(request: web.Request) -> web.Response:
         user_id = await require_user_id(request)
         state = await db.get_onboarding_state(user_id)
         if not state.get("completed"):
-            return web.json_response(_onboarding_gate_payload(state), status=403)
+            return web.json_response(_onboarding_gate_payload_for_request(request, user_id, state), status=403)
         try:
             payload = await request.json()
         except Exception:
@@ -18790,7 +19834,7 @@ def create_web_app(
         )
         return web.json_response({
             "success": True,
-            "newbie_path": _build_newbie_path_payload(state.get("newbie_path_progress") or {}),
+            "newbie_path": _newbie_path_payload_for_request(request, user_id, state.get("newbie_path_progress") or {}),
         })
 
     app.router.add_get("/api/generator/status", generator_status_handler)
@@ -18876,6 +19920,7 @@ def create_web_app(
                 "notif_squad_new_member": settings_record.get("notif_squad_new_member", True),
                 "notif_squad_disbanded": settings_record.get("notif_squad_disbanded", True),
                 "notif_squad_boost": settings_record.get("notif_squad_boost", True),
+                "notif_squad_weekly_tokens": settings_record.get("notif_squad_weekly_tokens", True),
                 "notif_extra_arena_modifiers": settings_record.get("notif_extra_arena_modifiers", True),
                 "ads_enabled": settings_record["ads_enabled"],
                 "sound_music": settings_record["sound_music"],
@@ -19086,6 +20131,12 @@ def create_web_app(
             db_item_type = str(db_product.get("item_type") or item_type)
             db_package_type = db_product.get("package_type")
             shop_set_id = db_product.get("shop_set_id")
+            if db_item_type == "gift_shop_set":
+                return {
+                    "error": "gift_checkout_forbidden",
+                    "message": "Подарочный набор доступен только через бесплатное получение.",
+                    "status": 400,
+                }
             if db_item_type == "gems_package":
                 package_text = str(db_package_type or "").strip()
                 if not package_text or package_text not in GEM_PACKAGES:
@@ -19104,8 +20155,15 @@ def create_web_app(
                     return {"error": "set_inactive", "message": "Набор недоступен", "status": 400}
                 if set_data.get("currency") != "rubles":
                     return {"error": "set_currency_not_rubles", "message": "Набор не продаётся за рубли", "status": 400}
+                get_claimed_sets = getattr(db, "get_claimed_shop_set_ids", None)
+                if get_claimed_sets and int(shop_set_id) in await get_claimed_sets(user_id):
+                    return {"error": "already_claimed", "message": "Набор уже получен", "status": 409}
                 rewards_data = set_data.get("rewards") or []
-                if hasattr(db, "_normalize_shop_set_rewards"):
+                if hasattr(db, "validate_shop_set_rewards"):
+                    _rewards, rewards_error = await db.validate_shop_set_rewards(rewards_data)
+                    if rewards_error:
+                        return {"error": rewards_error, "message": "Набор содержит недоступные награды", "status": 400}
+                elif hasattr(db, "_normalize_shop_set_rewards"):
                     _rewards, rewards_error = db._normalize_shop_set_rewards(rewards_data)
                     if rewards_error:
                         return {"error": rewards_error, "message": "Набор не содержит выдаваемых наград", "status": 400}
@@ -19170,12 +20228,12 @@ def create_web_app(
 
         elif item_type == "extrapass":
             amount_rub = 179.0
-            item_name = "ExtraPass (30 дней)"
+            item_name = "ExtraPass на 1 сезон"
             metadata.update({"item_name": item_name, "amount_rub": amount_rub})
 
         elif item_type == "extrapass_ultra":
             amount_rub = 349.0
-            item_name = "ExtraPass Ultra (30 дней)"
+            item_name = "ExtraPass Ultra на 1 сезон"
             metadata.update({"item_name": item_name, "amount_rub": amount_rub})
 
         elif item_type == "extrapass_gift":
@@ -19197,6 +20255,11 @@ def create_web_app(
             item_name = "Starter Boost"
             metadata.update({"item_name": item_name, "amount_rub": amount_rub})
 
+        elif item_type == "squad_boost":
+            amount_rub = 299.0
+            item_name = "Boost сквада"
+            metadata.update({"item_name": item_name, "amount_rub": amount_rub, "product_code": "squad_boost"})
+
         elif item_type.startswith("shop_set_"):
             try:
                 set_id = int(item_type.split("_")[-1])
@@ -19209,6 +20272,9 @@ def create_web_app(
                 return {"error": "set_inactive", "message": "Набор недоступен", "status": 400}
             if set_data.get("currency") != "rubles":
                 return {"error": "set_currency_not_rubles", "message": "Набор не продаётся за рубли", "status": 400}
+            get_claimed_sets = getattr(db, "get_claimed_shop_set_ids", None)
+            if get_claimed_sets and set_id in await get_claimed_sets(user_id):
+                return {"error": "already_claimed", "message": "Набор уже получен", "status": 409}
             amount_rub = float(set_data.get("price", 0))
             item_name = str(set_data.get("name", "") or f"Набор #{set_id}")
             metadata.update({
@@ -19216,6 +20282,13 @@ def create_web_app(
                 "amount_rub": amount_rub,
                 "shop_set_id": set_id,
             })
+
+        elif item_type == "gift_shop_set":
+            return {
+                "error": "gift_checkout_forbidden",
+                "message": "Подарочный набор доступен только через бесплатное получение.",
+                "status": 400,
+            }
 
         else:
             return {"error": "unknown_item_type", "message": f"Неизвестный тип товара: {item_type}", "status": 400}
@@ -19830,14 +20903,41 @@ def create_web_app(
         sets_status, sets_payload = await _json_payload_from_existing_handler(shop_sets_public_handler, request)
         shop_catalog_status, shop_catalog_payload = await _json_payload_from_existing_handler(shop_catalog_handler, request)
         particles_status, particles_payload = await _json_payload_from_existing_handler(particles_daily_handler, request)
+        ruble_products_status = 200
+        ruble_products_payload: dict[str, Any] | None = {"products": []}
+        try:
+            claimed_set_ids = await _claimed_shop_set_ids_for_request(request, db)
+            owned_card_ids = await _owned_card_ids_for_request(request, db)
+            products = await db.get_ruble_products(active_only=True, surface="game")
+            products = _filter_claimed_shop_set_products(products, claimed_set_ids)
+            public_products = []
+            for product in products:
+                public_product = await _public_ruble_product_payload(
+                    db,
+                    product,
+                    owned_card_ids=owned_card_ids,
+                )
+                if public_product is not None:
+                    public_products.append(public_product)
+            ruble_products_payload = {"products": public_products}
+        except Exception as exc:
+            ruble_products_status = 500
+            ruble_products_payload = None
+            logging.getLogger(__name__).warning(
+                "mobile_shop_bootstrap: ruble products unavailable: %s",
+                exc,
+                exc_info=True,
+            )
         payload = {
             "shop_sets": sets_payload if sets_status < 400 else None,
             "shop_catalog": shop_catalog_payload if shop_catalog_status < 400 else None,
             "particles_daily": particles_payload if particles_status < 400 else None,
+            "ruble_products": ruble_products_payload if ruble_products_status < 400 else None,
             "statuses": {
                 "shop_sets": sets_status,
                 "shop_catalog": shop_catalog_status,
                 "particles_daily": particles_status,
+                "ruble_products": ruble_products_status,
             },
             "server_time": int(time.time()),
         }

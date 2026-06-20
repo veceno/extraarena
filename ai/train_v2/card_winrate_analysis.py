@@ -14,12 +14,10 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
-from ai.bot_brain import BerserkInference
 from ai.train_v2.classic_actions_v1 import decode_action
 from ai.train_v2.classic_rl_env import ClassicRLEnv
 from ai.train_v2.onnx_policy import OnnxActionPolicy
 from ai.train_v2.policies import EndTurnPolicy, GreedyFacePolicy, RandomLegalPolicy
-from ai.train_v2.shadow import LegacyBerserkPolicy
 from core.state import CardInstance
 
 
@@ -30,6 +28,9 @@ TRAINV2_ONNX: dict[str, str] = {
     "trainv2_0800": "ai/train_v2/runs/m4_hist_from_0251_20260521_205548/exported/update_0800.onnx",
 }
 
+DEFAULT_OPPONENTS = "trainv2_0251,trainv2_0348,greedy_face"
+LEGACY_OPPONENTS = {"legacy_max", "legacy_medium", "legacy_random_biggest"}
+
 
 def _make_policy(name: str, *, seed: int = 0):
     if name == "random":
@@ -38,18 +39,8 @@ def _make_policy(name: str, *, seed: int = 0):
         return EndTurnPolicy()
     if name == "greedy_face":
         return GreedyFacePolicy()
-    if name == "legacy_max":
-        brain = BerserkInference(
-            profiles={
-                "legacy_max": {
-                    "model_path": "ai/models/extra-lr-v3-max.onnx",
-                    "obs_dim": 997,
-                    "temperature_range": (0.5, 0.5),
-                    "selection": "argmax",
-                }
-            }
-        )
-        return LegacyBerserkPolicy(brain, difficulty="legacy_max")
+    if name in LEGACY_OPPONENTS:
+        raise ValueError(f"legacy opponents are unsupported in the v4 bot pipeline: {name}")
     if name in TRAINV2_ONNX:
         return OnnxActionPolicy(TRAINV2_ONNX[name], mode="argmax", seed=seed, verify_mask=False)
     raise ValueError(f"unknown opponent: {name}")
@@ -279,7 +270,7 @@ def _print_table(title: str, rows: list[dict]) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Analyze cards/decks correlated with TrainV2 candidate wins")
     parser.add_argument("--model", required=True, help="Candidate TrainV2 ONNX path")
-    parser.add_argument("--opponents", default="trainv2_0251,trainv2_0348,legacy_max,greedy_face")
+    parser.add_argument("--opponents", default=DEFAULT_OPPONENTS)
     parser.add_argument("--games", type=int, default=50, help="Seeds per opponent; both sides are played")
     parser.add_argument("--seed", type=int, default=9000)
     parser.add_argument("--max-steps", type=int, default=220)

@@ -75,6 +75,8 @@ class PPOConfig:
     level_handicap_rate: float = 0.0
     learner_level: int = 1
     opponent_level: int = 1
+    focus_scenarios_json: str | None = None
+    focus_deck_rate: float = 0.0
 
 
 TRAIN_PRESETS = {
@@ -140,7 +142,12 @@ def _config_to_worker_dict(config: PPOConfig) -> dict:
         "learner_level": config.learner_level,
         "opponent_level": config.opponent_level,
         "starting_player": config.starting_player,
+        "focus_scenarios_json": config.focus_scenarios_json,
+        "focus_deck_rate": config.focus_deck_rate,
     }
+
+
+LEGACY_OPPONENTS = {"legacy_max", "legacy_medium", "legacy_random_biggest"}
 
 
 def _parse_opponent_mix(mix: str) -> list[tuple[str, float]]:
@@ -157,14 +164,13 @@ def _parse_opponent_mix(mix: str) -> list[tuple[str, float]]:
         name = name.strip()
         if weight <= 0:
             continue
+        if name in LEGACY_OPPONENTS:
+            raise ValueError(f"legacy opponents are unsupported in the v4 bot pipeline: {name}")
         if name not in {
             "self",
             "random",
             "end_turn",
             "greedy_face",
-            "legacy_max",
-            "legacy_medium",
-            "legacy_random_biggest",
             "trainv2_0251",
             "trainv2_0348",
             "trainv2_0156",
@@ -227,6 +233,56 @@ def _choose_starting_player(
             f"starting_player must be random, p1, p2, learner, or opponent; got {mode}"
         )
     return 1 if rng.random() < 0.5 else 2
+
+
+def _parse_focus_scenarios(raw: str | None) -> list[dict]:
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"focus_scenarios_json must be valid JSON: {exc}") from exc
+    if not isinstance(data, list):
+        raise ValueError("focus_scenarios_json must be a JSON list")
+    scenarios: list[dict] = []
+    for idx, item in enumerate(data):
+        if not isinstance(item, dict):
+            raise ValueError(f"focus scenario #{idx} must be an object")
+        deck = item.get("deck")
+        if not isinstance(deck, list) or not deck:
+            raise ValueError(f"focus scenario #{idx} must include non-empty deck")
+        scenario = dict(item)
+        scenario["deck"] = [int(card_id) for card_id in deck]
+        scenario["key"] = str(scenario.get("key") or f"focus_{idx}")
+        if "level" in scenario:
+            scenario["level"] = max(1, min(10, int(scenario["level"])))
+        scenarios.append(scenario)
+    return scenarios
+
+
+def _choose_focus_scenario(config: PPOConfig, rng: rand_mod.Random) -> dict | None:
+    if config.focus_deck_rate <= 0.0:
+        return None
+    scenarios = _parse_focus_scenarios(config.focus_scenarios_json)
+    if not scenarios or rng.random() >= config.focus_deck_rate:
+        return None
+    return rng.choice(scenarios)
+
+
+def _levels_for_focus_scenario(env: ClassicRLEnv, scenario: dict | None) -> tuple[dict[int, int] | None, dict[int, int] | None]:
+    if not scenario:
+        return None, None
+    level = scenario.get("level")
+    p1_level = scenario.get("p1_level", level)
+    p2_level = scenario.get("p2_level", level)
+    p1_levels = _all_card_levels_for_env(env, int(p1_level)) if p1_level is not None else None
+    p2_levels = _all_card_levels_for_env(env, int(p2_level)) if p2_level is not None else None
+    return p1_levels, p2_levels
+
+
+def _all_card_levels_for_env(env: ClassicRLEnv, level: int) -> dict[int, int]:
+    level = max(1, min(10, int(level)))
+    return {int(card_id): level for card_id in env._cards_data.keys()}
 
 
 def collect_policy_episodes_parallel(
@@ -539,10 +595,18 @@ def _init_env(config: PPOConfig, seed: int) -> ClassicRLEnv:
         seed=seed,
         verify_mask=config.verify_mask,
         placement_mode=config.placement_mode,
+        include_legal_actions_in_info=False,
     )
     start_rng = rand_mod.Random(config.seed * 17 + seed)
+    scenario = _choose_focus_scenario(config, start_rng)
+    p1_levels, p2_levels = _levels_for_focus_scenario(env, scenario)
+    deck_ids = scenario.get("deck") if scenario else None
     env.reset(
         seed=seed,
+        p1_deck_ids=list(deck_ids) if deck_ids else None,
+        p2_deck_ids=list(deck_ids) if deck_ids else None,
+        p1_levels=p1_levels,
+        p2_levels=p2_levels,
         starting_player_id=_choose_starting_player(start_rng, config.starting_player),
     )
     return env
@@ -660,12 +724,23 @@ def collect_policy_episode(
     include_action_features: bool = True,
     include_preview_features: bool = False,
     starting_player_id: int | None = None,
+    p1_deck_ids: list[int] | None = None,
+    p2_deck_ids: list[int] | None = None,
+    p1_levels: dict[int, int] | None = None,
+    p2_levels: dict[int, int] | None = None,
 ) -> dict:
     if not include_action_features:
         raise NotImplementedError("action_features are required for action-conditioned PPO v1")
 
     mx.random.seed(seed * 2 + 17)
-    env.reset(seed=seed, starting_player_id=starting_player_id)
+    env.reset(
+        seed=seed,
+        p1_deck_ids=p1_deck_ids,
+        p2_deck_ids=p2_deck_ids,
+        p1_levels=p1_levels,
+        p2_levels=p2_levels,
+        starting_player_id=starting_player_id,
+    )
     transitions: list[dict] = []
 
     for _step in range(max_steps):
@@ -988,7 +1063,11 @@ def train(config: PPOConfig) -> dict:
                     seed=config.seed,
                     verify_mask=config.verify_mask,
                     placement_mode=config.placement_mode,
+                    include_legal_actions_in_info=False,
                 )
+                focus_scenario = _choose_focus_scenario(config, serial_rng)
+                p1_levels, p2_levels = _levels_for_focus_scenario(env, focus_scenario)
+                deck_ids = focus_scenario.get("deck") if focus_scenario else None
                 result = collect_policy_episode(
                     env=env,
                     model=model,
@@ -997,6 +1076,10 @@ def train(config: PPOConfig) -> dict:
                     include_action_features=config.include_action_features,
                     include_preview_features=config.include_preview_features,
                     starting_player_id=starting_player_id,
+                    p1_deck_ids=list(deck_ids) if deck_ids else None,
+                    p2_deck_ids=list(deck_ids) if deck_ids else None,
+                    p1_levels=p1_levels,
+                    p2_levels=p2_levels,
                 )
                 all_transitions.extend(result["transitions"])
                 total_episodes += 1
@@ -1308,7 +1391,7 @@ def _main():
     parser.add_argument("--placement-mode", default=None, choices=["append_only", "full"], help="Action placement mode")
     parser.add_argument("--profile-actions", action="store_true", help="Run action profiling and print results")
     parser.add_argument("--action-features-dtype", default=None, choices=["float32", "float16"])
-    parser.add_argument("--opponent-mix", default=None, help="League mix, e.g. self:0.4,random:0.1,greedy_face:0.3,legacy_max:0.2")
+    parser.add_argument("--opponent-mix", default=None, help="League mix, e.g. self:0.5,random:0.1,greedy_face:0.2,trainv2_0700:0.2")
     parser.add_argument("--learner-side", default=None, choices=["random", "p1", "p2"])
     parser.add_argument("--starting-player", default=None, choices=["random", "p1", "p2", "learner", "opponent"])
     parser.add_argument("--level-handicap-rate", type=float, default=None, help="Fraction of fixed-opponent episodes where learner uses lower card levels")

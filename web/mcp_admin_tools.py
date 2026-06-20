@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
 import inspect
 import json
 import math
@@ -98,7 +99,8 @@ EXTRAPASS_STAGE_COST_ROW_FIELDS = {
     "stage_cost_exponent",
     "stage_cost_cap",
 }
-RUBLE_PRODUCT_ITEM_TYPES = {"extrapass", "extrapass_ultra", "starter_boost", "gems_package", "shop_set"}
+RUBLE_PRODUCT_ITEM_TYPES = {"extrapass", "extrapass_ultra", "starter_boost", "squad_boost", "gems_package", "shop_set", "gift_shop_set"}
+RUBLE_PRODUCT_CODE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,119}$")
 RUBLE_PRODUCT_IMAGE_URL_PREFIX = "/extraShop/uploads/products/"
 RUBLE_PRODUCT_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 PROMOCODE_TYPES = {"permanent", "personal", "welcome"}
@@ -108,6 +110,15 @@ PLAYER_ACCOUNT_UPDATE_FIELDS = {"username", "first_name", "last_name", "trophies
 PLAYER_ACCOUNT_STATUSES = {"active", "warn", "banned"}
 PRODUCT_IMAGE_CONTENT_TYPES = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}
 MAX_PRODUCT_IMAGE_BYTES = 5 * 1024 * 1024
+DESIGN_ASSETS_DIR = Path(__file__).resolve().parents[1] / "DesignAssets"
+COSMETIC_ITEM_TYPES = {"avatar", "profile_background", "title"}
+COSMETIC_IMAGE_CONTENT_TYPES = PRODUCT_IMAGE_CONTENT_TYPES
+COSMETIC_IMAGE_SIZES = {"avatar": (750, 750), "profile_background": (760, 380)}
+COSMETIC_UPLOAD_DIRS = {
+    "avatar": ("PlayerCosmetics", "Avatars", "Admin"),
+    "profile_background": ("PlayerCosmetics", "Background", "Admin"),
+}
+COSMETIC_SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,119}$")
 
 
 class MCPToolInputError(ValueError):
@@ -200,6 +211,15 @@ def _optional_str_arg(args: dict[str, Any], key: str, *, max_length: int | None 
     return value or None
 
 
+def _normalize_ruble_product_code(value: Any) -> str:
+    code = str(value or "").strip()
+    if not code:
+        raise MCPToolInputError("code_required")
+    if not RUBLE_PRODUCT_CODE_RE.fullmatch(code):
+        raise MCPToolInputError("invalid_code")
+    return code
+
+
 def _normalize_shop_set_rewards(rewards: Any) -> list[dict[str, Any]]:
     if not isinstance(rewards, list):
         raise MCPToolInputError("invalid_rewards")
@@ -230,9 +250,46 @@ def _normalize_shop_set_rewards(rewards: Any) -> list[dict[str, Any]]:
             if amount_int <= 0 or not card_id:
                 raise MCPToolInputError("invalid_reward_particles")
             normalized.append({"type": reward_type, "amount": amount_int, "card_id": int(card_id)})
+        elif reward_type == "cosmetic":
+            cosmetic_slug = str(reward.get("cosmetic_slug") or "").strip()
+            if not cosmetic_slug:
+                raise MCPToolInputError("cosmetic_slug_required")
+            normalized.append(
+                {
+                    "type": reward_type,
+                    "cosmetic_slug": cosmetic_slug,
+                    "auto_equip": bool(reward.get("auto_equip", False)),
+                }
+            )
         else:
             raise MCPToolInputError("unknown_reward_type")
     return normalized
+
+
+async def _validated_shop_set_rewards(db: Any, rewards: Any) -> list[dict[str, Any]]:
+    normalized = _normalize_shop_set_rewards(rewards)
+    validator = getattr(db, "validate_shop_set_rewards", None)
+    if validator:
+        validated, error = await _maybe_await(validator(normalized))
+        if error:
+            raise MCPToolInputError(str(error))
+        if isinstance(validated, list):
+            return validated
+    return normalized
+
+
+def _shop_set_response(record: Any) -> dict[str, Any]:
+    item = json_safe(dict(record) if record else {})
+    rewards = item.get("rewards")
+    if isinstance(rewards, str):
+        try:
+            parsed = json.loads(rewards)
+        except Exception:
+            parsed = []
+        item["rewards"] = parsed if isinstance(parsed, list) else []
+    elif not isinstance(rewards, list):
+        item["rewards"] = []
+    return item
 
 
 def _parse_extrapass_datetime(value: Any) -> datetime | None:
@@ -283,12 +340,31 @@ def _normalize_extrapass_season(record: Any) -> dict[str, Any]:
 
 def _extrapass_track_defs(season: dict[str, Any]) -> dict[str, dict[str, Any]]:
     normalized = _normalize_extrapass_season(season)
+    premium = {
+        "id": "premium",
+        "track_type": normalized["pass_track_type"],
+        "access": "extra_pass",
+        "start_position": 1,
+        "end_position": int(normalized["pass_end_position"]),
+    }
     return {
-        "free": {"id": "free", "track_type": normalized["free_track_type"], "access": "free"},
-        "premium": {"id": "premium", "track_type": normalized["pass_track_type"], "access": "extra_pass"},
-        "pass": {"id": "premium", "track_type": normalized["pass_track_type"], "access": "extra_pass"},
-        "extra_pass": {"id": "premium", "track_type": normalized["pass_track_type"], "access": "extra_pass"},
-        "ultra": {"id": "ultra", "track_type": normalized["ultra_track_type"], "access": "ultra"},
+        "free": {
+            "id": "free",
+            "track_type": normalized["free_track_type"],
+            "access": "free",
+            "start_position": 1,
+            "end_position": int(normalized["max_stars"]),
+        },
+        "premium": premium,
+        "pass": premium,
+        "extra_pass": premium,
+        "ultra": {
+            "id": "ultra",
+            "track_type": normalized["ultra_track_type"],
+            "access": "ultra",
+            "start_position": int(normalized["ultra_start_position"]),
+            "end_position": int(normalized["max_stars"]),
+        },
     }
 
 
@@ -427,6 +503,8 @@ def _normalize_extrapass_reward_import_payload(payload: Any, season: dict[str, A
             raise MCPToolInputError("invalid_reward_track_row") from exc
         if position < 1 or position > int(normalized_season["max_stars"]):
             raise MCPToolInputError("invalid_reward_position")
+        if position < int(track_def["start_position"]) or position > int(track_def["end_position"]):
+            raise MCPToolInputError(f"position_out_of_track_scope:{track_def['id']}:{position}")
         reward_type = str(raw.get("reward_type") or raw.get("type") or "").strip()
         if not reward_type:
             raise MCPToolInputError("reward_type_required")
@@ -449,7 +527,7 @@ def _normalize_extrapass_reward_import_payload(payload: Any, season: dict[str, A
             "reward_type": reward_type,
             "reward_amount": reward_amount,
             "reward_meta": reward_meta,
-            "extra_pass_required": bool(raw.get("extra_pass_required", track_def["access"] != "free")),
+            "extra_pass_required": track_def["access"] != "free",
         })
     if not rows:
         raise MCPToolInputError("empty_reward_tracks")
@@ -625,10 +703,7 @@ async def _normalize_ruble_product_payload(
     normalized: dict[str, Any] = {}
 
     if require_identity or "code" in data:
-        code = str(data.get("code") or "").strip()
-        if not code:
-            raise MCPToolInputError("code_required")
-        normalized["code"] = code
+        normalized["code"] = _normalize_ruble_product_code(data.get("code"))
 
     item_type = str(data.get("item_type") if "item_type" in data else existing.get("item_type") or "").strip()
     if require_identity or "item_type" in data or "package_type" in data or "shop_set_id" in data:
@@ -648,7 +723,7 @@ async def _normalize_ruble_product_payload(
                 raise MCPToolInputError("invalid_package_type")
             normalized["package_type"] = package_text
             normalized["shop_set_id"] = None
-        elif item_type == "shop_set":
+        elif item_type in {"shop_set", "gift_shop_set"}:
             if shop_set_id_raw in (None, ""):
                 raise MCPToolInputError("shop_set_id_required")
             try:
@@ -674,11 +749,35 @@ async def _normalize_ruble_product_payload(
         normalized["name"] = name
 
     if require_identity or "price" in data:
-        normalized["price"] = _float_arg(data, "price", 0, minimum=0, maximum=1_000_000)
+        price = _float_arg(data, "price", 0, minimum=0, maximum=1_000_000)
+        if item_type == "gift_shop_set":
+            if price != 0:
+                raise MCPToolInputError("gift_shop_set_price_must_be_zero")
+        elif price <= 0:
+            raise MCPToolInputError("invalid_price")
+        normalized["price"] = price
+
+    if require_identity or "item_type" in data or "price" in data:
+        try:
+            effective_price = float(normalized.get("price", existing.get("price", 0)) or 0)
+        except (TypeError, ValueError) as exc:
+            raise MCPToolInputError("invalid_price") from exc
+        if item_type == "gift_shop_set":
+            if effective_price != 0:
+                raise MCPToolInputError("gift_shop_set_price_must_be_zero")
+        elif effective_price <= 0:
+            raise MCPToolInputError("invalid_price")
+
+    if require_identity or "item_type" in data or "currency" in data:
+        effective_currency = str(normalized.get("currency", existing.get("currency", "rubles")) or "rubles")
+        if item_type == "gift_shop_set" and effective_currency != "rubles":
+            raise MCPToolInputError("invalid_currency")
 
     if require_identity or "currency" in data:
         currency = str(data.get("currency") or "rubles")
         if currency not in {"rubles", "gems", "coins"}:
+            raise MCPToolInputError("invalid_currency")
+        if item_type == "gift_shop_set" and currency != "rubles":
             raise MCPToolInputError("invalid_currency")
         normalized["currency"] = currency
 
@@ -721,10 +820,21 @@ async def _normalize_ruble_product_payload(
 def _ruble_product_identity(args: dict[str, Any]) -> str | int:
     if args.get("id") is not None:
         return _int_arg(args, "id", 0, minimum=1)
-    code = _str_arg(args, "code", "", max_length=120)
-    if not code:
+    if not str(args.get("code") or "").strip():
         raise MCPToolInputError("code_or_id_required")
-    return code
+    return _normalize_ruble_product_code(args.get("code"))
+
+
+async def _get_ruble_product_for_identity(db: Any, identity: str | int) -> dict[str, Any] | None:
+    if isinstance(identity, str):
+        return await _call_db(db, "get_ruble_product", identity, default=None)
+    products = await _call_db(db, "get_ruble_products", default=[], active_only=False)
+    if not isinstance(products, list):
+        return None
+    return next(
+        (product for product in products if isinstance(product, dict) and int(product.get("id") or 0) == int(identity)),
+        None,
+    )
 
 
 def _normalize_shop_set_patch(patch: Any) -> dict[str, Any]:
@@ -882,13 +992,133 @@ def _image_signature_matches(data: bytes, content_type: str) -> bool:
     return False
 
 
+def _normalize_cosmetic_slug(value: Any) -> str:
+    slug = str(value or "").strip()
+    if not slug:
+        raise MCPToolInputError("slug_required")
+    if not COSMETIC_SLUG_RE.fullmatch(slug):
+        raise MCPToolInputError("invalid_slug")
+    return slug
+
+
+def _validate_cosmetic_item_type(value: Any) -> str:
+    item_type = str(value or "").strip()
+    if item_type not in COSMETIC_ITEM_TYPES:
+        raise MCPToolInputError("invalid_item_type")
+    return item_type
+
+
+def _safe_cosmetic_filename_part(value: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_.:-]+", "-", str(value or "").strip()).strip("-._:")
+    return safe[:80] or "cosmetic"
+
+
+def _safe_cosmetic_asset_path(value: Any, item_type: str) -> str | None:
+    if value in (None, ""):
+        return None
+    text = str(value).strip()
+    if item_type == "title":
+        raise MCPToolInputError("image_not_allowed_for_title")
+    parts = COSMETIC_UPLOAD_DIRS.get(item_type)
+    if not parts:
+        raise MCPToolInputError("invalid_item_type")
+    prefix = "/DesignAssets/" + "/".join(parts[:-1]) + "/"
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in text):
+        raise MCPToolInputError("invalid_asset_path")
+    if any(ch in text for ch in ("'", '"', "`", "<", ">")):
+        raise MCPToolInputError("invalid_asset_path")
+    if not text.startswith(prefix):
+        raise MCPToolInputError("invalid_asset_path")
+    relative = text[len("/DesignAssets/"):]
+    parts_tuple = Path(relative).parts
+    if any(not part or part in {".", ".."} for part in parts_tuple):
+        raise MCPToolInputError("invalid_asset_path")
+    suffix = Path(relative).suffix.lower()
+    if suffix not in {".png", ".jpg", ".jpeg", ".webp"}:
+        raise MCPToolInputError("invalid_asset_path")
+    return text
+
+
+def _cosmetic_response(item: Any) -> dict[str, Any]:
+    if not isinstance(item, dict):
+        return {}
+    payload = dict(item)
+    if "class_name" in payload and "class" not in payload:
+        payload["class"] = payload.pop("class_name")
+    return json_safe(payload)
+
+
+def _normalize_cosmetic_payload(args: dict[str, Any], *, require_identity: bool) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    item_type = None
+    if "item_type" in args or require_identity:
+        item_type = _validate_cosmetic_item_type(args.get("item_type"))
+        payload["item_type"] = item_type
+    else:
+        item_type = str(args.get("existing_item_type") or "")
+    if "slug" in args or require_identity:
+        payload["slug"] = _normalize_cosmetic_slug(args.get("slug"))
+    if "name" in args or require_identity:
+        name = _str_arg(args, "name", "", max_length=160)
+        if not name:
+            raise MCPToolInputError("name_required")
+        payload["name"] = name
+    if "class" in args:
+        payload["class_name"] = _str_arg(args, "class", "common", max_length=80) or "common"
+    elif require_identity:
+        payload["class_name"] = "common"
+    if "asset_path" in args:
+        if not item_type:
+            raise MCPToolInputError("item_type_required")
+        payload["asset_path"] = _safe_cosmetic_asset_path(args.get("asset_path"), item_type)
+    if "media_type" in args:
+        media_type = _str_arg(args, "media_type", "", max_length=20)
+        if media_type not in {"image", "text"}:
+            raise MCPToolInputError("invalid_media_type")
+        if item_type == "title" and media_type != "text":
+            raise MCPToolInputError("invalid_media_type")
+        payload["media_type"] = media_type
+    elif require_identity:
+        payload["media_type"] = "text" if item_type == "title" else "image"
+    if item_type == "title":
+        payload.setdefault("asset_path", None)
+        payload.setdefault("media_type", "text")
+    if "has_sound" in args:
+        payload["has_sound"] = bool(args.get("has_sound"))
+    elif require_identity:
+        payload["has_sound"] = False
+    if "sort_order" in args:
+        payload["sort_order"] = _int_arg(args, "sort_order", 0, minimum=0, maximum=1_000_000)
+    elif require_identity:
+        payload["sort_order"] = 0
+    if "is_active" in args:
+        payload["is_active"] = bool(args.get("is_active"))
+    elif require_identity:
+        payload["is_active"] = True
+    return payload
+
+
+def _cosmetic_upload_path(item_type: str, slug: str | None, content_type: str) -> tuple[Path, str]:
+    ext = COSMETIC_IMAGE_CONTENT_TYPES[content_type]
+    base = _safe_cosmetic_filename_part(slug or "cosmetic")
+    filename = f"{base}-{uuid.uuid4().hex}{ext}"
+    relative = Path(*COSMETIC_UPLOAD_DIRS[item_type], filename)
+    return DESIGN_ASSETS_DIR / relative, f"/DesignAssets/{relative.as_posix()}"
+
+
 def semantic_arguments(capability: AdminCapability, arguments: dict[str, Any]) -> dict[str, Any]:
     excluded = {"dry_run", "confirmation_id", "confirmation_token", "idempotency_key"}
-    return {
-        key: value
-        for key, value in arguments.items()
-        if key not in excluded
-    }
+    semantic: dict[str, Any] = {}
+    for key, value in arguments.items():
+        if key in excluded:
+            continue
+        if key == "base64":
+            text = str(value or "")
+            semantic["base64_sha256"] = hashlib.sha256(text.encode("utf-8")).hexdigest()
+            semantic["base64_length"] = len(text)
+            continue
+        semantic[key] = value
+    return semantic
 
 
 async def adapter_read_runtime_status(app: Any, admin_user_id: int, args: dict[str, Any]) -> dict[str, Any]:
@@ -938,10 +1168,98 @@ async def adapter_list_shop_products(app: Any, admin_user_id: int, args: dict[st
 
 async def adapter_list_shop_sets(app: Any, admin_user_id: int, args: dict[str, Any]) -> dict[str, Any]:
     sets = await _call_db(app["db"], "get_shop_sets", active_only=_bool_arg(args, "active_only", False), default=[])
-    return json_safe({"sets": sets})
+    return json_safe({"sets": [_shop_set_response(item) for item in (sets or [])]})
+
+
+async def adapter_list_cosmetics(app: Any, admin_user_id: int, args: dict[str, Any]) -> dict[str, Any]:
+    item_type = args.get("item_type")
+    normalized_type = _validate_cosmetic_item_type(item_type) if item_type else None
+    items = await _call_db(
+        app["db"],
+        "list_cosmetic_items",
+        active_only=_bool_arg(args, "active_only", False),
+        item_type=normalized_type,
+        default=[],
+    )
+    return json_safe({"items": [_cosmetic_response(item) for item in (items or [])]})
+
+
+async def adapter_get_cosmetic_detail(app: Any, admin_user_id: int, args: dict[str, Any]) -> dict[str, Any]:
+    identity: Any = args.get("id")
+    if not identity:
+        identity = _normalize_cosmetic_slug(args.get("slug"))
+    item = await _call_db(app["db"], "get_cosmetic_item", identity, default=None)
+    if not item:
+        raise MCPToolInputError("cosmetic_not_found")
+    return json_safe({"item": _cosmetic_response(item)})
+
+
+async def adapter_create_cosmetic(app: Any, admin_user_id: int, args: dict[str, Any]) -> dict[str, Any]:
+    payload = _normalize_cosmetic_payload(args, require_identity=True)
+    if payload["item_type"] != "title" and not payload.get("asset_path"):
+        raise MCPToolInputError("asset_path_required")
+    if payload["item_type"] == "title" and payload.get("media_type") not in {None, "text"}:
+        raise MCPToolInputError("invalid_media_type")
+    if _bool_arg(args, "dry_run", False):
+        return json_safe({"dry_run": True, "cosmetic": _cosmetic_response(payload)})
+    result = await _call_db(
+        app["db"],
+        "create_cosmetic_item",
+        default={"success": False, "error": "cosmetic_create_unavailable"},
+        **payload,
+    )
+    if not isinstance(result, dict) or not result.get("success"):
+        raise MCPToolInputError(str((result or {}).get("error") or "cosmetic_create_failed"))
+    return json_safe({"dry_run": False, "cosmetic": _cosmetic_response(result.get("cosmetic") or payload)})
+
+
+async def adapter_update_cosmetic(app: Any, admin_user_id: int, args: dict[str, Any]) -> dict[str, Any]:
+    cosmetic_id = _int_arg(args, "id", 0, minimum=1)
+    current = await _call_db(app["db"], "get_cosmetic_item", cosmetic_id, default=None)
+    if not current:
+        raise MCPToolInputError("cosmetic_not_found")
+    normalized_args = dict(args)
+    normalized_args["existing_item_type"] = args.get("item_type") or current.get("item_type")
+    patch = _normalize_cosmetic_payload(normalized_args, require_identity=False)
+    patch.pop("slug", None) if "slug" not in args else None
+    patch.pop("item_type", None) if "item_type" not in args else None
+    if not patch:
+        raise MCPToolInputError("empty_cosmetic_patch")
+    if _bool_arg(args, "dry_run", False):
+        preview = {**_cosmetic_response(current), **_cosmetic_response(patch)}
+        return json_safe({"dry_run": True, "cosmetic": preview})
+    result = await _call_db(
+        app["db"],
+        "update_cosmetic_item",
+        cosmetic_id,
+        default={"success": False, "error": "cosmetic_update_unavailable"},
+        **patch,
+    )
+    if not isinstance(result, dict) or not result.get("success"):
+        raise MCPToolInputError(str((result or {}).get("error") or "cosmetic_update_failed"))
+    return json_safe({"dry_run": False, "cosmetic": _cosmetic_response(result.get("cosmetic") or {})})
+
+
+async def adapter_delete_cosmetic(app: Any, admin_user_id: int, args: dict[str, Any]) -> dict[str, Any]:
+    cosmetic_id = _int_arg(args, "id", 0, minimum=1)
+    current = await _call_db(app["db"], "get_cosmetic_item", cosmetic_id, default=None)
+    if not current:
+        raise MCPToolInputError("cosmetic_not_found")
+    if _bool_arg(args, "dry_run", False):
+        return json_safe({"dry_run": True, "cosmetic": _cosmetic_response(current)})
+    result = await _call_db(
+        app["db"],
+        "delete_cosmetic_item",
+        cosmetic_id,
+        default={"success": False, "error": "cosmetic_delete_unavailable"},
+    )
+    if not isinstance(result, dict) or not result.get("success"):
+        raise MCPToolInputError(str((result or {}).get("error") or "cosmetic_delete_failed"))
+    return json_safe({"dry_run": False, "deleted_id": cosmetic_id})
 
 
 async def adapter_create_shop_set(app: Any, admin_user_id: int, args: dict[str, Any]) -> dict[str, Any]:
+    db = app["db"]
     name = _str_arg(args, "name", "", max_length=120)
     if not name:
         raise MCPToolInputError("name_required")
@@ -949,7 +1267,7 @@ async def adapter_create_shop_set(app: Any, admin_user_id: int, args: dict[str, 
     currency = _str_arg(args, "currency", "rubles", max_length=16) or "rubles"
     if currency not in {"rubles", "gems", "coins"}:
         raise MCPToolInputError("invalid_currency")
-    rewards = _normalize_shop_set_rewards(args.get("rewards"))
+    rewards = await _validated_shop_set_rewards(db, args.get("rewards"))
     description = _optional_str_arg(args, "description", max_length=1_000)
     image_file_id = _optional_str_arg(args, "image_file_id", max_length=500)
     payload = {
@@ -963,7 +1281,7 @@ async def adapter_create_shop_set(app: Any, admin_user_id: int, args: dict[str, 
     }
     if _bool_arg(args, "dry_run", False):
         return {"dry_run": True, "set": payload}
-    result = await _call_db(app["db"], "create_shop_set", default={"success": False, "error": "shop_set_create_unavailable"}, **payload)
+    result = await _call_db(db, "create_shop_set", default={"success": False, "error": "shop_set_create_unavailable"}, **payload)
     if not isinstance(result, dict) or not result.get("success"):
         raise MCPToolInputError(str((result or {}).get("error") or "shop_set_create_failed"))
     return json_safe({"dry_run": False, "set_id": result.get("set_id"), "set": payload})
@@ -973,6 +1291,11 @@ async def adapter_read_seasons_reward_tracks(app: Any, admin_user_id: int, args:
     db = app["db"]
     seasons = await _call_db(db, "get_seasons", default=[])
     reward_tracks = await _call_db(db, "get_all_reward_tracks", default=[])
+    if not _bool_arg(args, "include_inactive_rewards", True):
+        reward_tracks = [
+            row for row in reward_tracks or []
+            if not isinstance(row, dict) or row.get("is_active", True) is not False
+        ]
     reset_summaries = {}
     if _bool_arg(args, "include_reset_summaries", True):
         reset_summaries = await _call_db(db, "get_season_reset_summaries", default={})
@@ -1107,14 +1430,8 @@ async def adapter_set_extrapass_player_entitlement(app: Any, admin_user_id: int,
     mode = _str_arg(args, "mode", "", max_length=16)
     if mode not in {"inactive", "active", "ultra"}:
         raise MCPToolInputError("invalid_mode")
-    days = args.get("days")
-    normalized_days: int | None = None
-    if mode != "inactive":
-        normalized_days = _int_arg(args, "days", 0, minimum=1, maximum=3_650)
-    elif days not in (None, ""):
-        normalized_days = _int_arg(args, "days", 0, minimum=1, maximum=3_650)
     reason = _str_arg(args, "reason", "", max_length=500) or None
-    payload = {"target_user_id": user_id, "mode": mode, "days": normalized_days, "reason": reason}
+    payload = {"target_user_id": user_id, "mode": mode, "reason": reason}
     if _bool_arg(args, "dry_run", False):
         return {"dry_run": True, **payload}
     result = await _call_db(
@@ -1123,7 +1440,7 @@ async def adapter_set_extrapass_player_entitlement(app: Any, admin_user_id: int,
         admin_user_id,
         user_id,
         mode,
-        days=normalized_days,
+        days=None,
         reason=reason,
         default={"error": "extra_pass_set_unavailable"},
     )
@@ -1458,9 +1775,7 @@ async def adapter_read_ruble_product_options(app: Any, admin_user_id: int, args:
 
 
 async def adapter_get_ruble_product_detail(app: Any, admin_user_id: int, args: dict[str, Any]) -> dict[str, Any]:
-    code = _str_arg(args, "code", "", max_length=120)
-    if not code:
-        raise MCPToolInputError("code_required")
+    code = _normalize_ruble_product_code(args.get("code"))
     product = await _call_db(app["db"], "get_ruble_product", code, default=None)
     if not product:
         raise MCPToolInputError("product_not_found")
@@ -1483,8 +1798,8 @@ async def adapter_create_ruble_product(app: Any, admin_user_id: int, args: dict[
 async def adapter_update_ruble_product(app: Any, admin_user_id: int, args: dict[str, Any]) -> dict[str, Any]:
     db = app["db"]
     identity = _ruble_product_identity(args)
-    existing = await _call_db(db, "get_ruble_product", identity, default=None) if isinstance(identity, str) else None
-    if isinstance(identity, str) and not existing:
+    existing = await _get_ruble_product_for_identity(db, identity)
+    if not existing:
         raise MCPToolInputError("product_not_found")
     payload = await _normalize_ruble_product_payload(db, args, require_identity=False, existing=existing)
     if _bool_arg(args, "dry_run", False):
@@ -1511,7 +1826,7 @@ async def adapter_get_shop_set_detail(app: Any, admin_user_id: int, args: dict[s
     shop_set = await _call_db(app["db"], "get_shop_set", set_id, default=None)
     if not shop_set:
         raise MCPToolInputError("shop_set_not_found")
-    return json_safe({"set": shop_set})
+    return json_safe({"set": _shop_set_response(shop_set)})
 
 
 async def adapter_update_shop_set(app: Any, admin_user_id: int, args: dict[str, Any]) -> dict[str, Any]:
@@ -1521,6 +1836,8 @@ async def adapter_update_shop_set(app: Any, admin_user_id: int, args: dict[str, 
     if not current:
         raise MCPToolInputError("shop_set_not_found")
     patch = _normalize_shop_set_patch(args.get("patch"))
+    if "rewards" in patch:
+        patch["rewards"] = await _validated_shop_set_rewards(db, patch["rewards"])
     if _bool_arg(args, "dry_run", False):
         return {"dry_run": True, "set_id": set_id, "current": json_safe(current), "patch": json_safe(patch)}
     result = await _call_db(db, "update_shop_set", set_id, default={"success": False, "error": "shop_set_update_unavailable"}, **patch)
@@ -1980,6 +2297,49 @@ async def adapter_upload_product_image(app: Any, admin_user_id: int, args: dict[
     return {"dry_run": False, "bytes": len(data), "content_type": content_type, "image_url": image_url}
 
 
+async def adapter_upload_cosmetic_image(app: Any, admin_user_id: int, args: dict[str, Any]) -> dict[str, Any]:
+    item_type = _validate_cosmetic_item_type(args.get("item_type"))
+    if item_type == "title":
+        raise MCPToolInputError("title_image_not_supported")
+    content_type = _str_arg(args, "content_type", "", max_length=80)
+    if content_type not in COSMETIC_IMAGE_CONTENT_TYPES:
+        raise MCPToolInputError("invalid_image_type")
+    try:
+        data = base64.b64decode(str(args.get("base64") or ""), validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise MCPToolInputError("invalid_base64") from exc
+    if not data or len(data) > MAX_PRODUCT_IMAGE_BYTES:
+        raise MCPToolInputError("file_too_large")
+    if not _image_signature_matches(data, content_type):
+        raise MCPToolInputError("invalid_image_signature")
+    try:
+        from io import BytesIO
+
+        from PIL import Image
+
+        with Image.open(BytesIO(data)) as image:
+            width, height = image.size
+    except Exception as exc:  # pragma: no cover - Pillow reports several image-specific exceptions.
+        raise MCPToolInputError("invalid_image") from exc
+    expected = COSMETIC_IMAGE_SIZES[item_type]
+    if (width, height) != expected:
+        raise MCPToolInputError(f"invalid_dimensions:{width}x{height}:expected:{expected[0]}x{expected[1]}")
+    slug = args.get("slug")
+    normalized_slug = _normalize_cosmetic_slug(slug) if slug else None
+    path, asset_path = _cosmetic_upload_path(item_type, normalized_slug, content_type)
+    payload = {
+        "bytes": len(data),
+        "content_type": content_type,
+        "dimensions": {"width": width, "height": height},
+        "asset_path": asset_path,
+    }
+    if _bool_arg(args, "dry_run", False):
+        return {"dry_run": True, **payload}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    return {"dry_run": False, **payload}
+
+
 ADAPTERS = {
     "adapter_read_runtime_status": adapter_read_runtime_status,
     "adapter_read_runtime_config": adapter_read_runtime_config,
@@ -1987,6 +2347,11 @@ ADAPTERS = {
     "adapter_get_player_detail": adapter_get_player_detail,
     "adapter_list_shop_products": adapter_list_shop_products,
     "adapter_list_shop_sets": adapter_list_shop_sets,
+    "adapter_list_cosmetics": adapter_list_cosmetics,
+    "adapter_get_cosmetic_detail": adapter_get_cosmetic_detail,
+    "adapter_create_cosmetic": adapter_create_cosmetic,
+    "adapter_update_cosmetic": adapter_update_cosmetic,
+    "adapter_delete_cosmetic": adapter_delete_cosmetic,
     "adapter_create_shop_set": adapter_create_shop_set,
     "adapter_read_seasons_reward_tracks": adapter_read_seasons_reward_tracks,
     "adapter_create_extrapass_season_draft": adapter_create_extrapass_season_draft,
@@ -2038,6 +2403,7 @@ ADAPTERS = {
     "adapter_read_squads_section": adapter_read_squads_section,
     "adapter_execute_squad_action": adapter_execute_squad_action,
     "adapter_upload_product_image": adapter_upload_product_image,
+    "adapter_upload_cosmetic_image": adapter_upload_cosmetic_image,
 }
 ADMIN_TOOL_ADAPTERS = ADAPTERS
 

@@ -65,12 +65,16 @@ def test_dusty_reminder_has_lower_weight():
 def test_social_notification_categories_have_settings_messages_and_sections():
     assert NOTIFICATION_SETTING_BY_CATEGORY["game_invites"] == "notif_game_invites"
     assert NOTIFICATION_SETTING_BY_CATEGORY["friend_requests"] == "notif_friend_requests"
+    assert NOTIFICATION_SETTING_BY_CATEGORY["squad_weekly_tokens"] == "notif_squad_weekly_tokens"
     assert NOTIFICATION_DEFAULTS["notif_game_invites"] is True
     assert NOTIFICATION_DEFAULTS["notif_friend_requests"] is True
+    assert NOTIFICATION_DEFAULTS["notif_squad_weekly_tokens"] is True
     assert notification_section("game_invites", {"invite_id": 77}) == "friends"
     assert notification_section("friend_requests", {"request_id": 12}) == "friends"
+    assert notification_section("squad_weekly_tokens", {}) == "squads"
     assert "вызывает" in format_notification_message("friendly_battle_invite", {"from_name": "Alice"})
     assert "друз" in format_notification_message("friend_request_received", {"from_name": "Alice"})
+    assert "Недельный рассчет" in format_notification_message("squad_weekly_tokens", {})
 
 
 def test_telegram_notification_message_uses_html_formatting_where_configured():
@@ -106,6 +110,7 @@ async def test_update_user_settings_accepts_new_notification_flags():
         notif_shop=True,
         notif_reminders=False,
         notif_squad_member_role=False,
+        notif_squad_weekly_tokens=False,
         notification_delivery_mode="app_only",
         social_disable_talkies=True,
         unknown_key=True,
@@ -115,7 +120,8 @@ async def test_update_user_settings_accepts_new_notification_flags():
     assert "notif_shop" in query
     assert "notif_reminders" in query
     assert "notif_squad_member_role" in query
+    assert "notif_squad_weekly_tokens" in query
     assert "notification_delivery_mode" in query
     assert "social_disable_talkies" in query
     assert "unknown_key" not in query
-    assert args == (True, False, False, "app_only", True, 42)
+    assert args == (True, False, False, False, "app_only", True, 42)

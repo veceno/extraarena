@@ -152,6 +152,86 @@ def test_product_editor_uses_guided_product_selectors():
     assert "/api/admin/ruble-products/options" in html
 
 
+def test_admin_shop_sets_render_content_aware_previews_and_creation_path():
+    html = (ROOT / "extraShop" / "admin.html").read_text(encoding="utf-8")
+
+    assert 'id="btn-create-shop-set"' in html
+    assert "openSetEditor(null)" in html
+    assert "function classifyShopSetPreview(set)" in html
+    assert "function renderShopSetPreview(set)" in html
+    assert "resources-only" in html
+    assert "cosmetics-resources" in html
+    assert "card-pack" in html
+    assert "reward-card-media" in html
+    assert "reward-cosmetic-chip" in html
+    assert "type+(r.card_id?'#'+r.card_id:'')+':'+(r.amount||1)" not in html
+
+
+def test_admin_shop_set_editor_supports_cosmetic_rewards():
+    html = (ROOT / "extraShop" / "admin.html").read_text(encoding="utf-8")
+
+    assert "VALID_REWARD_TYPES=['gems','coins','keys','case','card','particles','cosmetic']" in html
+    assert "var cosmeticCatalog=[]" in html
+    assert "async function loadCosmetics()" in html
+    assert 'data-add-reward="cosmetic"' in html
+    assert "need cosmetic_slug" in html
+    assert 'data-rk="cosmetic_slug"' in html
+    assert '<select data-rf="\'+i+\'" data-rk="cosmetic_slug"' in html
+    assert 'data-rk="auto_equip"' in html
+    assert "bl.cosmetic_slug=''" in html
+    assert "delete editorRewards[idx].slug" in html
+    assert "_ri(t){return{gems:" in html and "cosmetic:" in html
+    assert "editorRewards=JSON.parse(JSON.stringify(rewardList(s)))" in html
+    assert "cosmeticCatalog.find(function(c)" in html
+    assert "if(item.item_type==='profile_background')return'background'" in html
+
+
+def test_admin_cosmetics_tab_is_wired():
+    html = (ROOT / "extraShop" / "admin.html").read_text(encoding="utf-8")
+
+    assert 'data-nav="cosmetics"' in html
+    assert 'id="cosmetics-view"' in html
+    assert 'id="cosmetics-tbody"' in html
+    assert 'id="btn-create-cosmetic"' in html
+    assert "'cosmetics-view'" in html
+    assert "showView('cosmetics-view');loadCosmetics()" in html
+    assert "/api/admin/cosmetics" in html
+    assert "/api/admin/cosmetics/upload-image" in html
+    assert "/api/admin/cosmetics/create" in html
+    assert "/api/admin/cosmetics/delete" in html
+    assert "asset&&c.item_type!=='title'&&c.is_active!==!1" in html
+
+
+def test_bot_equipped_cosmetics_ignore_inactive_catalog_items():
+    source = (ROOT / "infrastructure" / "database.py").read_text(encoding="utf-8")
+
+    start = source.index("async def _get_bot_equipped_cosmetics")
+    end = source.index("async def get_cosmetic_catalog_by_class")
+    function_source = source[start:end]
+
+    assert "JOIN cosmetic_items ci ON ci.id = uec.cosmetic_id" in function_source
+    assert "AND ci.is_active = TRUE" in function_source
+
+
+def test_admin_pack_preview_treats_particles_as_resources_not_cosmetics():
+    html = (ROOT / "extraShop" / "admin.html").read_text(encoding="utf-8")
+
+    assert "r.type==='cosmetic'||r.type==='particles'" not in html
+    assert "['gems','coins','keys','case','particles']" in html
+
+
+def test_admin_product_editor_supports_gift_shop_set_semantics():
+    html = (ROOT / "extraShop" / "admin.html").read_text(encoding="utf-8")
+
+    assert "value:'gift_shop_set'" in html
+    assert "isGiftShopSetType(type)" in html
+    assert "$('#pe-shop-set-field').style.display=isShopSetProductType(type)?'':'none'" in html
+    assert "Gift / Free" in html
+    assert "gift_shop_set_" in html
+    assert "if(isShopSetProductType(it)&&!$('#pe-shop-set-id').value)" in html
+    assert "else if(isShopSetProductType(it))" in html
+
+
 def test_extra_pass_admin_reward_type_selectors_include_case_rewards():
     html = (ROOT / "extraShop" / "admin.html").read_text(encoding="utf-8")
 

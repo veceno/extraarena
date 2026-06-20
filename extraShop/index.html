@@ -476,6 +476,11 @@
       grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: 7px;
     }
+    .pack-products-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
     .gem-card {
       position: relative;
       display: grid;
@@ -509,6 +514,97 @@
       gap: 8px;
       align-items: center;
     }
+
+    .pack-preview {
+      display: grid;
+      gap: 5px;
+      min-width: 0;
+      font-size: 11px;
+    }
+
+    .pack-preview.resources-only .pack-resource {
+      color: var(--gold-2);
+      border-color: rgba(251,191,36,.42);
+      background: rgba(251,191,36,.09);
+    }
+
+    .pack-preview.cosmetics-resources .pack-cosmetic {
+      color: var(--ultra-amethyst);
+      border-color: rgba(167,139,250,.52);
+      background: rgba(167,139,250,.13);
+    }
+
+    .pack-preview.card-pack .pack-card {
+      border-color: rgba(96,165,250,.4);
+      background: rgba(96,165,250,.1);
+    }
+
+    .pack-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      min-width: 0;
+    }
+
+    .pack-resource,
+    .pack-cosmetic {
+      max-width: 100%;
+      padding: 3px 6px;
+      border: 1px solid rgba(74,61,106,.75);
+      border-radius: 999px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      background: rgba(15,10,26,.35);
+      font-weight: 800;
+    }
+
+    .pack-card {
+      display: grid;
+      grid-template-columns: 36px minmax(0, 1fr);
+      gap: 6px;
+      align-items: start;
+      padding: 5px;
+      border: 1px solid rgba(74,61,106,.75);
+      border-radius: 8px;
+      background: rgba(15,10,26,.35);
+    }
+
+    .pack-card img,
+    .pack-card-art {
+      width: 36px;
+      height: 36px;
+      border-radius: 7px;
+      object-fit: cover;
+      display: grid;
+      place-items: center;
+      color: var(--info);
+      background: rgba(96,165,250,.14);
+      font-weight: 900;
+    }
+
+    .pack-card strong,
+    .pack-card span {
+      display: block;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .pack-card span { color: var(--muted); }
+    .pack-card .pack-card-desc,
+    .pack-card .pack-card-mechanics {
+      white-space: normal;
+      display: -webkit-box;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 2;
+      line-height: 1.22;
+    }
+    .pack-card .pack-card-mechanics {
+      color: var(--info);
+      margin-top: 2px;
+    }
     .gem-card.featured .gem-main {
       grid-template-columns: 44px 1fr;
     }
@@ -516,6 +612,116 @@
       width: 44px;
       height: 44px;
       font-size: 23px;
+    }
+    .pack-product-card {
+      min-height: 214px;
+      padding: 29px 10px 10px;
+      border-radius: 14px;
+      background:
+        radial-gradient(circle at 86% 0%, rgba(245,146,30,.14), transparent 36%),
+        linear-gradient(180deg, rgba(45,31,82,.84), rgba(18,11,34,.94));
+      box-shadow: 0 10px 28px rgba(0,0,0,.22), inset 0 1px 0 rgba(255,255,255,.05);
+    }
+    .pack-product-card[data-pack-variant="card-pack"] {
+      border-color: rgba(96,165,250,.44);
+      background:
+        radial-gradient(circle at 86% 0%, rgba(96,165,250,.17), transparent 36%),
+        linear-gradient(180deg, rgba(45,31,82,.84), rgba(18,11,34,.94));
+    }
+    .pack-product-card[data-pack-variant="cosmetics-resources"] {
+      border-color: rgba(167,139,250,.46);
+      background:
+        radial-gradient(circle at 86% 0%, rgba(167,139,250,.18), transparent 36%),
+        linear-gradient(180deg, rgba(45,31,82,.84), rgba(18,11,34,.94));
+    }
+    .pack-product-card[data-item-gift="1"] {
+      border-color: rgba(74,222,128,.48);
+      background:
+        radial-gradient(circle at 86% 0%, rgba(74,222,128,.15), transparent 36%),
+        linear-gradient(180deg, rgba(45,31,82,.84), rgba(18,11,34,.94));
+    }
+    .pack-product-card .buy-btn {
+      width: 100%;
+      min-height: 38px;
+      border: 0;
+      border-radius: 12px;
+      background: linear-gradient(135deg, var(--cta-hover), var(--cta));
+      color: #201005;
+      font-family: var(--font-display);
+      font-size: 14px;
+      font-weight: 900;
+      cursor: pointer;
+      box-shadow: 0 9px 20px rgba(245,146,30,.28);
+      appearance: none;
+      -webkit-appearance: none;
+    }
+    .pack-product-card[data-item-gift="1"] .buy-btn {
+      color: #062012;
+      background: linear-gradient(135deg, #4ade80, #2dd4bf);
+      box-shadow: 0 9px 20px rgba(45,212,191,.22);
+    }
+    .pack-product-card .buy-btn:disabled {
+      cursor: default;
+      color: rgba(255,255,255,.68);
+      background: rgba(122,111,160,.32);
+      box-shadow: none;
+    }
+    .pack-resource {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .pack-resource-icon {
+      width: 16px;
+      height: 16px;
+      display: grid;
+      place-items: center;
+      flex: 0 0 auto;
+    }
+    .pack-resource-icon img,
+    .pack-resource-icon svg {
+      width: 16px;
+      height: 16px;
+      object-fit: contain;
+      display: block;
+    }
+    .pack-resource.keys .pack-resource-icon {
+      border-radius: 50%;
+      background: #bfdbfe;
+    }
+    .pack-resource.keys .pack-resource-icon img {
+      width: 12px;
+      height: 12px;
+    }
+    .pack-cosmetic {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .pack-cosmetic img,
+    .pack-cosmetic-art {
+      width: 18px;
+      height: 18px;
+      flex: 0 0 auto;
+      border-radius: 50%;
+      object-fit: cover;
+      display: grid;
+      place-items: center;
+      background: rgba(167,139,250,.16);
+      color: #ddd6fe;
+      font-size: 10px;
+      font-weight: 900;
+    }
+    .pack-cosmetic.background img { border-radius: 5px; }
+    .pack-cosmetic b,
+    .pack-resource b {
+      color: #fff;
+      margin-right: 3px;
+    }
+    @media (max-width: 680px) {
+      .pack-products-grid {
+        grid-template-columns: 1fr;
+      }
     }
     .reward {
       padding: 4px 7px;
@@ -566,7 +772,7 @@
       color: var(--sub);
       font-size: 13px;
     }
-    .product-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .product-actions { display: grid; grid-template-columns: minmax(0, 220px); justify-content: center; gap: 8px; }
     .purchase-modes {
       display: grid;
       gap: 6px;
@@ -577,7 +783,7 @@
     }
     .purchase-modes strong { font-size: 13px; }
     .purchase-modes span { color: var(--muted); font-size: 12px; }
-    .purchase-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+    .purchase-actions { display: grid; grid-template-columns: minmax(0, 220px); justify-content: center; gap: 7px; }
 
     .checkout-grid, .form-grid { display: grid; gap: 10px; }
     .field {
@@ -980,34 +1186,34 @@
           <p>Пассы, бусты и стартовые предложения.</p>
         </div>
 
-        <article class="product bundle-card" data-item="extrapass" data-item-type="extrapass" data-item-name="ExtraPass" data-item-price="179" data-item-emoji="🎟️" data-item-desc="Без рекламы, премиальная дорожка Battle Pass, +2 пресета колод, x1.2 монет в боях.">
+        <article class="product bundle-card" data-item="extrapass" data-item-type="extrapass" data-item-name="ExtraPass" data-item-price="179" data-item-emoji="🎟️" data-item-desc="Премиальная дорожка Battle Pass, 5 пресетов колод, кейс за 4 победы и премиальное свечение ника.">
           <div class="bundle-art">EP</div>
           <div class="bundle-content">
-            <div class="product-top"><div><h3>ExtraPass</h3><p>Без рекламы, премиальная дорожка Battle Pass, +2 пресета колод, x1.2 монет в боях.</p></div><div class="price">179 ₽</div></div>
-            <div class="rewards"><span class="reward">⭐ ExtraPass · 30 дней</span></div>
+            <div class="product-top"><div><h3>ExtraPass</h3><p>Премиальная дорожка Battle Pass, 5 пресетов колод, кейс за 4 победы и премиальное свечение ника.</p></div><div class="price">179 ₽</div></div>
+            <div class="rewards"><span class="reward">⭐ ExtraPass · на 1 сезон</span></div>
             <div class="product-actions">
               <button class="cta buy-btn" type="button">Купить</button>
             </div>
           </div>
         </article>
 
-        <article class="product bundle-card" data-item="extrapass_ultra" data-item-type="extrapass_ultra" data-item-name="ExtraPass Ultra" data-item-price="349" data-item-emoji="👑" data-item-desc="Всё из ExtraPass + золотой ник, реролл кейсов, расширенная статистика.">
+        <article class="product bundle-card" data-item="extrapass_ultra" data-item-type="extrapass_ultra" data-item-name="ExtraPass Ultra" data-item-price="349" data-item-emoji="👑" data-item-desc="Всё из ExtraPass, 500 гемов, Ultra-финал Battle Pass, улучшенное свечение ника и переоткрытие кейса.">
           <div class="badge-stack"><span class="tag hot">популярно</span></div>
           <div class="bundle-art">UL</div>
           <div class="bundle-content">
-            <div class="product-top"><div><h3>ExtraPass Ultra</h3><p>Всё из ExtraPass + золотой ник, реролл кейсов, расширенная статистика.</p></div><div class="price">349 ₽</div></div>
-            <div class="rewards"><span class="reward">💫 ExtraPass Ultra · 30 дней</span></div>
+            <div class="product-top"><div><h3>ExtraPass Ultra</h3><p>Всё из ExtraPass, 500 гемов, Ultra-финал Battle Pass, улучшенное свечение ника и переоткрытие кейса.</p></div><div class="price">349 ₽</div></div>
+            <div class="rewards"><span class="reward">💫 ExtraPass Ultra · на 1 сезон</span></div>
             <div class="product-actions">
               <button class="cta buy-btn" type="button">Купить</button>
             </div>
           </div>
         </article>
 
-        <article class="product bundle-card" data-item="starter_boost" data-item-type="starter_boost" data-item-name="Starter Boost" data-item-price="499" data-item-emoji="🚀" data-item-desc="ExtraPass на 30 дней, гемы, монеты и кейсы.">
+        <article class="product bundle-card" data-item="starter_boost" data-item-type="starter_boost" data-item-name="Starter Boost" data-item-price="499" data-item-emoji="🚀" data-item-desc="ExtraPass на 1 сезон, гемы, монеты и кейсы.">
           <div class="badge-stack"><span class="tag sale">набор</span></div>
           <div class="bundle-art">SB</div>
           <div class="bundle-content">
-            <div class="product-top"><div><h3>Starter Boost</h3><p>ExtraPass на 30 дней, гемы, монеты и кейсы.</p></div><div class="price">499 ₽</div></div>
+            <div class="product-top"><div><h3>Starter Boost</h3><p>ExtraPass на 1 сезон, гемы, монеты и кейсы.</p></div><div class="price">499 ₽</div></div>
             <div class="rewards"><span class="reward">⭐ Pass · 💎 гемы · 🪙 монеты · 📦 кейсы</span></div>
             <div class="product-actions">
               <button class="cta buy-btn" type="button">Купить</button>
@@ -1017,7 +1223,7 @@
 
         <div class="category-head" id="pass">
           <h2>Подписки</h2>
-          <p>Один блок, два тарифа. Покупается разово на 30 дней.</p>
+          <p>Один блок, два тарифа. Покупается разово на 1 сезон.</p>
         </div>
         <article class="product pass-block selected-card">
           <div class="pass-tabs">
@@ -1026,50 +1232,50 @@
             <label class="pass-tab" for="pass-basic">ExtraPass</label>
             <label class="pass-tab" for="pass-ultra">Ultra</label>
             <div class="pass-plan pass-basic">
-              <div class="badge-stack"><span class="tag sub">подписка</span></div>
+              <div class="badge-stack"><span class="tag sub">сезон</span></div>
               <div class="product-top">
                 <div class="art">🎟️</div>
                 <div>
                   <h3>ExtraPass</h3>
-                  <p>Без рекламы, премиальная дорожка Battle Pass, +2 пресета колод, x1.2 монет в боях.</p>
+                  <p>Премиальная дорожка Battle Pass, 5 пресетов колод, кейс за 4 победы и премиальное свечение ника.</p>
                 </div>
                 <div class="price">179 ₽</div>
               </div>
               <div class="benefit-grid" aria-label="Преимущества ExtraPass">
-                <span class="benefit">Без рекламы</span>
+                <span class="benefit">Премиальное свечение ника</span>
                 <span class="benefit">Премиальная дорожка Battle Pass</span>
-                <span class="benefit">+2 пресета колод</span>
-                <span class="benefit">x1.2 монет в боях</span>
+                <span class="benefit">5 пресетов колод</span>
+                <span class="benefit">Кейс за 4 победы</span>
               </div>
               <div class="purchase-modes">
-                <strong>Покупка на 30 дней</strong>
-                <span>Разовая покупка даёт 30 дней ExtraPass. Автопродление — в будущем.</span>
+                <strong>Покупка на 1 сезон</strong>
+                <span>Разовая покупка даёт ExtraPass до окончания текущего сезона.</span>
                 <div class="purchase-actions">
-                  <button class="cta buy-btn" type="button" data-item="extrapass">Купить 30 дней</button>
+                  <button class="cta buy-btn" type="button" data-item="extrapass">Купить на 1 сезон</button>
                 </div>
               </div>
             </div>
             <div class="pass-plan pass-ultra">
-              <div class="badge-stack"><span class="tag sub">подписка</span><span class="tag hot">популярно</span></div>
+              <div class="badge-stack"><span class="tag sub">сезон</span><span class="tag hot">популярно</span></div>
               <div class="product-top">
                 <div class="art">👑</div>
                 <div>
                   <h3>ExtraPass Ultra</h3>
-                  <p>Всё из ExtraPass + золотой ник, реролл кейсов, расширенная статистика.</p>
+                  <p>Всё из ExtraPass, 500 гемов, Ultra-финал Battle Pass, улучшенное свечение ника и переоткрытие кейса.</p>
                 </div>
                 <div class="price">349 ₽</div>
               </div>
               <div class="benefit-grid" aria-label="Преимущества ExtraPass Ultra">
                 <span class="benefit">Всё из ExtraPass</span>
-                <span class="benefit">Золотой ник</span>
-                <span class="benefit">Реролл кейсов</span>
-                <span class="benefit">Расширенная статистика</span>
+                <span class="benefit">500 гемов</span>
+                <span class="benefit">Улучшенное свечение ника</span>
+                <span class="benefit">Переоткрытие кейса</span>
               </div>
               <div class="purchase-modes">
-                <strong>Покупка на 30 дней</strong>
-                <span>Разовая покупка даёт 30 дней Ultra. Автопродление — в будущем.</span>
+                <strong>Покупка на 1 сезон</strong>
+                <span>Разовая покупка даёт Ultra до окончания текущего сезона.</span>
                 <div class="purchase-actions">
-                  <button class="cta buy-btn" type="button" data-item="extrapass_ultra">Купить 30 дней</button>
+                  <button class="cta buy-btn" type="button" data-item="extrapass_ultra">Купить на 1 сезон</button>
                 </div>
               </div>
             </div>
@@ -1131,16 +1337,16 @@
         <div class="panel-body" style="overflow-x:auto">
           <table class="compare">
             <tr><th>Возможность</th><th>Нет</th><th>Pass</th><th>Ultra</th></tr>
-            <tr><td>Без рекламы</td><td>—</td><td>✓</td><td>✓</td></tr>
+            <tr><td>Свечение ника</td><td>—</td><td>премиум</td><td>улучшенное</td></tr>
             <tr><td>Премиальная дорожка Battle Pass</td><td>—</td><td>✓</td><td>✓ + уникальные позиции</td></tr>
-            <tr><td>Пресеты колод</td><td>2</td><td>4</td><td>4</td></tr>
-            <tr><td>Бонус монет в боях</td><td>—</td><td>x1.2</td><td>x1.2</td></tr>
-            <tr><td>Оформление профиля</td><td>базовое</td><td>премиум</td><td>премиум + золотой ник</td></tr>
-            <tr><td>Создание кланов</td><td>—</td><td>✓</td><td>✓</td></tr>
+            <tr><td>Пресеты колод</td><td>3</td><td>5</td><td>5</td></tr>
+            <tr><td>Кейс за победы</td><td>5</td><td>4</td><td>3</td></tr>
+            <tr><td>Оформление профиля</td><td>базовое</td><td>премиум</td><td>премиум + Ultra</td></tr>
+            <tr><td>Создание сквадов</td><td>—</td><td>✓</td><td>✓</td></tr>
             <tr><td>История боёв</td><td>—</td><td>✓</td><td>✓ + расширенная статистика</td></tr>
             <tr><td>Поддержка</td><td>обычная</td><td>приоритетная</td><td>приоритетная</td></tr>
             <tr><td>Повышенные шансы</td><td>—</td><td>—</td><td>✓</td></tr>
-            <tr><td>Реролл кейсов</td><td>—</td><td>—</td><td>✓</td></tr>
+            <tr><td>Переоткрытие кейса</td><td>—</td><td>—</td><td>✓</td></tr>
             <tr><td>Бонус соклановцам</td><td>—</td><td>—</td><td>✓</td></tr>
           </table>
         </div>
@@ -1149,10 +1355,10 @@
       <article class="panel">
         <div class="panel-head"><div><div class="eyebrow">Купить</div><h2>Выберите тариф</h2></div></div>
         <div class="panel-body checkout-grid">
-          <div class="notice">Покупка даёт 30 дней выбранного тарифа. Автопродление будет добавлено позже.</div>
+          <div class="notice">Покупка даёт выбранный тариф до окончания текущего сезона.</div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
-            <button class="cta buy-btn" type="button" data-item="extrapass" style="font-size:14px">ExtraPass<br><span style="font-size:12px;color:var(--sub);font-weight:400">179 ₽ / 30 дней</span></button>
-            <button class="cta buy-btn" type="button" data-item="extrapass_ultra" style="font-size:14px;background:linear-gradient(135deg,var(--ultra-amethyst),var(--ultra-sky)52%,var(--ultra-rose));color:#12091f">Ultra<br><span style="font-size:12px;color:var(--sub);font-weight:400">349 ₽ / 30 дней</span></button>
+            <button class="cta buy-btn" type="button" data-item="extrapass" style="font-size:14px">ExtraPass<br><span style="font-size:12px;color:var(--sub);font-weight:400">179 ₽ / 1 сезон</span></button>
+            <button class="cta buy-btn" type="button" data-item="extrapass_ultra" style="font-size:14px;background:linear-gradient(135deg,var(--ultra-amethyst),var(--ultra-sky)52%,var(--ultra-rose));color:#12091f">Ultra<br><span style="font-size:12px;color:var(--sub);font-weight:400">349 ₽ / 1 сезон</span></button>
           </div>
         </div>
       </article>
@@ -1617,6 +1823,7 @@
   var selectedItemEmoji = null;
   var selectedItemDesc = null;
   var selectedProductCode = null;
+  var selectedProductIsGift = false;
 
   function setRoute(name) {
     var route = routes.includes(name) ? name : "catalog";
@@ -1637,7 +1844,23 @@
     window.scrollTo({ top: top, behavior: "smooth" });
   }
 
-  function selectProduct(itemType, pkgType, itemName, itemPrice, emoji, desc, productCode) {
+  function isGiftProductType(itemType) {
+    return itemType === 'gift_shop_set';
+  }
+
+  function isGiftProductSelection() {
+    return selectedProductIsGift || selectedItemType === 'gift_shop_set';
+  }
+
+  function giftProductActionMessage() {
+    return 'Это подарок: оплата не нужна. Получение подарка доступно в игре для авторизованного игрока.';
+  }
+
+  function formatProductPriceLabel(price, isGift) {
+    return isGift ? 'Бесплатно' : (price + ' ₽');
+  }
+
+  function selectProduct(itemType, pkgType, itemName, itemPrice, emoji, desc, productCode, isGift) {
     selectedItemType = itemType;
     selectedPackageType = pkgType || null;
     selectedItemName = itemName;
@@ -1645,9 +1868,11 @@
     selectedItemEmoji = emoji;
     selectedItemDesc = desc || '';
     selectedProductCode = productCode || null;
+    selectedProductIsGift = isGift === true || isGiftProductType(itemType);
 
     document.querySelectorAll('.product.selected-card, .gem-card.selected-card').forEach(function(el) { el.classList.remove('selected-card'); });
-    var sel = document.querySelector('[data-item="' + itemType + (pkgType ? ':' + pkgType : '') + '"]');
+    var selector = safeDataItemSelector(itemType + (pkgType ? ':' + pkgType : ''));
+    var sel = selector ? document.querySelector(selector) : null;
     if (sel) sel.classList.add('selected-card');
 
     updateSideCart();
@@ -1661,6 +1886,7 @@
     var sideEmoji = document.getElementById('side-emoji');
     var sideName = document.getElementById('side-name');
     var sidePrice = document.getElementById('side-price');
+    var sideCheckoutBtn = document.getElementById('side-checkout-btn');
 
     if (selectedItemType) {
       if (sideTitle) sideTitle.textContent = selectedItemName;
@@ -1668,11 +1894,13 @@
       if (sideEmpty) sideEmpty.style.display = 'none';
       if (sideEmoji) sideEmoji.textContent = selectedItemEmoji;
       if (sideName) sideName.textContent = selectedItemName;
-      if (sidePrice) sidePrice.textContent = selectedItemPrice + ' ₽';
+      if (sidePrice) sidePrice.textContent = formatProductPriceLabel(selectedItemPrice, isGiftProductSelection());
+      if (sideCheckoutBtn) sideCheckoutBtn.textContent = isGiftProductSelection() ? 'Получить в игре' : 'Перейти к оплате';
     } else {
       if (sideTitle) sideTitle.textContent = 'Не выбран';
       if (sidePicked) sidePicked.style.display = 'none';
       if (sideEmpty) sideEmpty.style.display = '';
+      if (sideCheckoutBtn) sideCheckoutBtn.textContent = 'Перейти к оплате';
     }
   }
 
@@ -1690,13 +1918,13 @@
       if (pickedEl) pickedEl.style.display = 'grid';
       if (emojiEl) emojiEl.textContent = selectedItemEmoji;
       if (nameEl) nameEl.textContent = selectedItemName;
-      if (priceEl) priceEl.textContent = selectedItemPrice + ' ₽';
+      if (priceEl) priceEl.textContent = formatProductPriceLabel(selectedItemPrice, isGiftProductSelection());
       if (summaryEl) summaryEl.innerHTML =
         '<div class="summary-row"><span>Товар</span><strong>' + esc(selectedItemName) + '</strong></div>' +
-        '<div class="summary-row"><span>Тип покупки</span><strong>Разово</strong></div>' +
-        '<div class="summary-row"><span>Способ оплаты</span><strong>Robokassa · карта / СБП</strong></div>' +
-        '<div class="summary-row"><span>Итого</span><strong class="price">' + selectedItemPrice + ' ₽</strong></div>';
-      if (payBtn) { payBtn.disabled = false; payBtn.textContent = 'Оплатить ' + selectedItemPrice + ' ₽'; }
+        '<div class="summary-row"><span>Тип покупки</span><strong>' + (isGiftProductSelection() ? 'Подарок' : 'Разово') + '</strong></div>' +
+        (isGiftProductSelection() ? '<div class="summary-row"><span>Получение</span><strong>В игре после авторизации</strong></div>' : '<div class="summary-row"><span>Способ оплаты</span><strong>Robokassa · карта / СБП</strong></div>') +
+        '<div class="summary-row"><span>Итого</span><strong class="price">' + formatProductPriceLabel(selectedItemPrice, isGiftProductSelection()) + '</strong></div>';
+      if (payBtn) { payBtn.disabled = isGiftProductSelection(); payBtn.textContent = isGiftProductSelection() ? 'Получить в игре' : 'Оплатить ' + selectedItemPrice + ' ₽'; }
     } else {
       if (titleEl) titleEl.textContent = 'Товар не выбран';
       if (pickedEl) pickedEl.style.display = 'none';
@@ -1727,9 +1955,15 @@
     return String(s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
 
+  function safeDataItemSelector(dataItem) {
+    if (!dataItem) return '';
+    if (window.CSS && CSS.escape) return '[data-item="' + CSS.escape(dataItem) + '"]';
+    return '[data-item="' + String(dataItem).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"]';
+  }
+
   function productElementFor(dataItem, fallback) {
     if (!dataItem) return fallback || null;
-    var el = document.querySelector('[data-item="' + dataItem + '"][data-item-name]');
+    var el = document.querySelector(safeDataItemSelector(dataItem) + '[data-item-name]');
     return el || fallback || null;
   }
 
@@ -1755,6 +1989,11 @@
 
     if (!selectedItemType) {
       showCheckoutError('Выберите товар в каталоге.');
+      return;
+    }
+
+    if (isGiftProductSelection()) {
+      showCheckoutError(giftProductActionMessage());
       return;
     }
 
@@ -1826,8 +2065,9 @@
       var emoji = el ? (el.getAttribute('data-item-emoji') || '💎') : '💎';
       var desc = el ? (el.getAttribute('data-item-desc') || '') : '';
       var productCode = el ? (el.getAttribute('data-product-code') || '') : '';
+      var isGift = el ? el.getAttribute('data-item-gift') === '1' : isGiftProductType(it);
 
-      selectProduct(it, pt, name, price, emoji, desc, productCode);
+      selectProduct(it, pt, name, price, emoji, desc, productCode, isGift);
       setRoute('checkout');
       return;
     }
@@ -1854,7 +2094,8 @@
         gemCard.getAttribute('data-item-price'),
         gemCard.getAttribute('data-item-emoji'),
         '',
-        gemCard.getAttribute('data-product-code') || ''
+        gemCard.getAttribute('data-product-code') || '',
+        gemCard.getAttribute('data-item-gift') === '1'
       );
       if (catalogSelectionNeedsCheckoutRoute()) setRoute('checkout');
       return;
@@ -1891,6 +2132,126 @@
   else if (initial) moveToAnchor(initial);
   else setRoute("catalog");
 
+  function normalizePackRewards(product) {
+    var set = product.shop_set || {};
+    var rewards = [];
+    if (Array.isArray(product.rewards)) rewards = product.rewards;
+    else if (Array.isArray(set.rewards)) rewards = set.rewards;
+    return rewards.map(function(reward) {
+      return Object.assign({}, reward, (product.display && product.display[reward.type]) || {});
+    });
+  }
+
+  function packRewardAmount(reward) {
+    return reward.amount != null ? reward.amount : 1;
+  }
+
+  function packCosmeticKind(reward) {
+    var kind = String(reward.cosmetic_type || reward.kind || reward.category || '').toLowerCase();
+    var slug = String(reward.cosmetic_slug || reward.slug || '').toLowerCase();
+    if (kind.indexOf('avatar') > -1 || slug.indexOf('avatar') > -1) return 'avatar';
+    if (kind.indexOf('background') > -1 || slug.indexOf('background') > -1 || slug.indexOf('bg_') === 0) return 'background';
+    if (kind.indexOf('title') > -1 || slug.indexOf('title') > -1) return 'title';
+    return 'cosmetic';
+  }
+
+  function packCosmeticKindLabel(kind) {
+    if (kind === 'avatar') return 'Аватар';
+    if (kind === 'background') return 'Фон';
+    if (kind === 'title') return 'Титул';
+    return 'Косметика';
+  }
+
+  function packCosmeticName(reward) {
+    var kind = packCosmeticKind(reward);
+    return reward.name || reward.title || reward.display_name || packCosmeticKindLabel(kind);
+  }
+
+  function packResourceMeta(type) {
+    if (type === 'gems') {
+      return {
+        className: 'gems',
+        unit: 'гемов',
+        icon: '<svg viewBox="0 0 14 14" aria-hidden="true"><polygon points="7,2 12,5 12,9 7,12 2,9 2,5" fill="#a78bfa"/><polygon points="7,4 10,6 7,10 4,6" fill="#c4b5fd"/></svg>'
+      };
+    }
+    if (type === 'coins') {
+      return {
+        className: 'coins',
+        unit: 'монет',
+        icon: '<svg viewBox="0 0 14 14" aria-hidden="true"><circle cx="7" cy="7" r="6" fill="#f5921e"/><text x="7" y="10.5" text-anchor="middle" font-size="7" fill="white" font-weight="700" font-family="Exo 2">$</text></svg>'
+      };
+    }
+    if (type === 'keys' || type === 'case') {
+      return {
+        className: 'keys',
+        unit: 'ключей',
+        icon: '<img src="/DesignAssets/MainMenu/Generator/Key.png" alt="">'
+      };
+    }
+    if (type === 'particles') {
+      return {className: 'particles', unit: 'частиц', icon: '<span aria-hidden="true">✦</span>'};
+    }
+    return {className: 'resource', unit: 'шт.', icon: '<span aria-hidden="true">+</span>'};
+  }
+
+  function packResourceTypes() {
+    return ['gems', 'coins', 'keys', 'case', 'particles'];
+  }
+
+  function packPreviewVariant(rewards) {
+    var hasCard = rewards.some(function(reward) { return reward.type === 'card'; });
+    var hasCosmetic = rewards.some(function(reward) { return reward.type === 'cosmetic'; });
+    var hasResource = rewards.some(function(reward) { return packResourceTypes().indexOf(reward.type) > -1; });
+    if (hasCard) return 'card-pack';
+    if (hasCosmetic) return 'cosmetics-resources';
+    if (hasResource) return 'resources-only';
+    return 'empty-pack';
+  }
+
+  function renderPackPreview(product) {
+    var rewards = normalizePackRewards(product);
+    if (!rewards.length) return '';
+    var variant = packPreviewVariant(rewards);
+    var resources = rewards.filter(function(reward) { return packResourceTypes().indexOf(reward.type) > -1; });
+    var cosmetics = rewards.filter(function(reward) { return reward.type === 'cosmetic'; });
+    var cards = rewards.filter(function(reward) { return reward.type === 'card'; });
+    var html = variant === 'resources-only' ? '<div class="pack-preview resources-only">' : (variant === 'cosmetics-resources' ? '<div class="pack-preview cosmetics-resources">' : '<div class="pack-preview card-pack">');
+    if (cards.length) {
+      html += cards.map(function(reward) {
+        var img = reward.card_image_url || reward.image_url || '';
+        var name = reward.card_name || reward.name || (reward.card_id ? 'Карта #' + reward.card_id : 'Карта');
+        var description = reward.card_description || reward.description || '';
+        var mechanics = reward.mechanics || reward.mechanics_desc || '';
+        if (Array.isArray(mechanics)) mechanics = mechanics.join(', ');
+        var details = '';
+        if (description) details += '<span class="pack-card-desc">' + esc(description) + '</span>';
+        if (mechanics && mechanics !== description) details += '<span class="pack-card-mechanics">' + esc(mechanics) + '</span>';
+        if (!details) details = '<span class="pack-card-desc">Награда набора</span>';
+        return '<div class="pack-card">' + (img ? '<img src="' + escAttr(img) + '" alt="">' : '<div class="pack-card-art">🂡</div>') + '<div><strong>' + esc(name) + '</strong>' + details + '</div></div>';
+      }).join('');
+    }
+    if (cosmetics.length) {
+      html += '<div class="pack-row">' + cosmetics.map(function(reward) {
+        var kind = packCosmeticKind(reward);
+        var image = reward.image_url || reward.asset_path || '';
+        var typeLabel = packCosmeticKindLabel(kind);
+        var name = packCosmeticName(reward);
+        var art = image
+          ? '<img src="' + escAttr(image) + '" alt="">'
+          : '<span class="pack-cosmetic-art">' + esc(typeLabel.charAt(0)) + '</span>';
+        return '<span class="pack-cosmetic ' + escAttr(kind) + '">' + art + '<span><b>' + esc(typeLabel) + '</b>' + esc(name) + '</span></span>';
+      }).join('') + '</div>';
+    }
+    if (resources.length) {
+      html += '<div class="pack-row">' + resources.map(function(reward) {
+        var meta = packResourceMeta(reward.type);
+        return '<span class="pack-resource ' + escAttr(meta.className) + '"><span class="pack-resource-icon">' + meta.icon + '</span><span><b>' + esc(packRewardAmount(reward)) + '</b>' + esc(meta.unit) + '</span></span>';
+      }).join('') + '</div>';
+    }
+    return html + '</div>';
+  }
+
   // ── Dynamic ruble products loader ──
   (function loadDynamicProducts() {
     var catalogGrid = document.querySelector('.catalog-grid');
@@ -1906,42 +2267,53 @@
         var section = document.createElement('div');
         section.innerHTML = '<div class="category-head" id="dynamic-products"><h2>Магазин</h2><p>Актуальные товары из базы данных.</p></div>';
         var gemsGrid = document.createElement('div');
-        gemsGrid.className = 'gems-grid';
+        gemsGrid.className = 'pack-products-grid';
 
         products.forEach(function(p) {
+          var rewards = normalizePackRewards(p);
+          var variant = packPreviewVariant(rewards);
+          var isGift = isGiftProductType(p.item_type);
+          var display = p.display || {};
+          var priceLabel = isGift ? 'Бесплатно' : (Number(p.price || 0).toLocaleString('ru-RU') + ' ₽');
+          var actionLabel = isGift ? 'Получить в игре' : 'Купить';
+          var emoji = display.emoji || (isGift ? '🎁' : (p.item_type === 'shop_set' ? '★' : '💎'));
           var card = document.createElement('article');
-          card.className = 'gem-card';
+          card.className = 'gem-card pack-product-card';
           if (p.badge === 'popular') card.className += ' featured';
           card.setAttribute('data-item', p.code);
           card.setAttribute('data-product-code', p.code);
+          card.setAttribute('data-pack-variant', variant);
           card.setAttribute('data-item-type', p.item_type);
           if (p.package_type) card.setAttribute('data-item-package', p.package_type);
           card.setAttribute('data-item-name', p.name);
           card.setAttribute('data-item-price', String(p.price));
-          card.setAttribute('data-item-emoji', '💎');
+          card.setAttribute('data-item-emoji', emoji);
+          if (isGift) card.setAttribute('data-item-gift', '1');
 
           var badgesHtml = '';
+          if (isGift) badgesHtml += '<div class="badge-stack"><span class="tag hot">Подарок</span></div>';
           if (p.badge) badgesHtml += '<div class="badge-stack"><span class="tag sale">' + esc(p.badge) + '</span></div>';
 
           card.innerHTML = badgesHtml +
             '<div class="gem-main"></div>' +
-            '<div class="price">' + p.price + ' ₽</div>' +
-            '<button class="buy-btn" type="button" data-item="' + escAttr(p.code) + '">Купить</button>';
+            renderPackPreview(p) +
+            '<div class="price">' + priceLabel + '</div>' +
+            '<button class="buy-btn" type="button" data-item="' + escAttr(p.code) + '"' + (isGift ? ' disabled title="Подарок можно получить в игре после авторизации"' : '') + '>' + actionLabel + '</button>';
 
           var gemMain = card.querySelector('.gem-main');
-          if (p.image_url) {
+          if (p.image_url || display.image_url) {
             var image = document.createElement('img');
             image.width = 48;
             image.height = 48;
             image.style.borderRadius = '8px';
             image.style.objectFit = 'cover';
             image.alt = '';
-            image.src = p.image_url;
+            image.src = p.image_url || display.image_url;
             gemMain.appendChild(image);
           } else {
             var art = document.createElement('div');
             art.className = 'art';
-            art.textContent = '💎';
+            art.textContent = emoji;
             gemMain.appendChild(art);
           }
 

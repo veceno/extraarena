@@ -17,6 +17,7 @@ Feature layout (64 floats, stable):
 """
 from __future__ import annotations
 
+from functools import lru_cache
 import re
 from typing import Optional
 
@@ -70,6 +71,38 @@ SCALAR_NORMALIZERS = {
 }
 
 
+@lru_cache(maxsize=4096)
+def _encode_mechanics_cached(mechanics_tuple: tuple[str, ...]) -> tuple[tuple[float, ...], tuple[float, ...]]:
+    """Cache expensive string/regex mechanics parsing for repeated card shapes."""
+    flags: list[float] = []
+    for mechanic_name in MECHANICS_LIST:
+        has_flag = 0.0
+        for card_mechanic in mechanics_tuple:
+            if card_mechanic == mechanic_name or card_mechanic.startswith(mechanic_name + "_"):
+                has_flag = 1.0
+                break
+        flags.append(has_flag)
+
+    scalars: list[float] = []
+    for scalar_name, pattern in _SCALAR_PATTERNS:
+        best_val = 0.0
+        for card_mechanic in mechanics_tuple:
+            m = pattern.search(card_mechanic)
+            if m:
+                val = float(m.group(1))
+                if val > best_val:
+                    best_val = val
+        if best_val > 0:
+            norm = SCALAR_NORMALIZERS.get(scalar_name, 10.0)
+            scalars.append(min(best_val / norm, 1.0))
+        elif scalar_name == "summon_value_or_flag" and "summon" in mechanics_tuple:
+            scalars.append(1.0)
+        else:
+            scalars.append(0.0)
+
+    return tuple(flags), tuple(scalars)
+
+
 def encode_card_shape(
     card: CardInstance | None,
     *,
@@ -105,28 +138,8 @@ def encode_card_shape(
     out[12] = (board_pos + 1) / 8.0 if board_pos >= 0 else 0.0
     out[13] = (hand_pos + 1) / 5.0 if hand_pos >= 0 else 0.0
 
-    for i, mechanic_name in enumerate(MECHANICS_LIST):
-        for card_mechanic in card.mechanics:
-            if card_mechanic == mechanic_name or card_mechanic.startswith(mechanic_name + "_"):
-                out[14 + i] = 1.0
-                break
-
-    for si, (_, pattern) in enumerate(_SCALAR_PATTERNS):
-        best_val = 0.0
-        for card_mechanic in card.mechanics:
-            m = pattern.search(card_mechanic)
-            if m:
-                val = float(m.group(1))
-                if val > best_val:
-                    best_val = val
-        if best_val > 0:
-            norm = SCALAR_NORMALIZERS.get(_SCALAR_PATTERNS[si][0], 10.0)
-            out[47 + si] = min(best_val / norm, 1.0)
-        elif _SCALAR_PATTERNS[si][0] == "summon_value_or_flag":
-
-            for card_mechanic in card.mechanics:
-                if card_mechanic == "summon":
-                    out[47 + si] = 1.0
-                    break
+    flags, scalars = _encode_mechanics_cached(tuple(card.mechanics))
+    out[14 : 14 + len(flags)] = flags
+    out[47 : 47 + len(scalars)] = scalars
 
     return out

@@ -16,6 +16,7 @@ WEBAPP_SECTION_BY_CATEGORY = {
     "squad_new_member": "squads",
     "squad_disbanded": "squads",
     "squad_boost": "squads",
+    "squad_weekly_tokens": "squads",
     "extra_arena_modifier": "arena",
     "game_invites": "friends",
     "friend_requests": "friends",
@@ -29,6 +30,7 @@ NOTIFICATION_SETTING_BY_CATEGORY = {
     "squad_new_member": "notif_squad_new_member",
     "squad_disbanded": "notif_squad_disbanded",
     "squad_boost": "notif_squad_boost",
+    "squad_weekly_tokens": "notif_squad_weekly_tokens",
     "extra_arena_modifier": "notif_extra_arena_modifiers",
     "game_invites": "notif_game_invites",
     "friend_requests": "notif_friend_requests",
@@ -41,6 +43,7 @@ NOTIFICATION_DEFAULTS = {
     "notif_squad_new_member": True,
     "notif_squad_disbanded": True,
     "notif_squad_boost": True,
+    "notif_squad_weekly_tokens": True,
     "notif_extra_arena_modifiers": True,
     "notif_game_invites": True,
     "notif_friend_requests": True,
@@ -187,6 +190,8 @@ def format_notification_message(event_type: str, payload: dict[str, Any] | None 
     if event_type == "squad_boost":
         squad = payload.get("squad_name") or "У сквада"
         return f"{squad} активировал Boost!"
+    if event_type == "squad_weekly_tokens":
+        return "🌟 Недельный рассчет твоего вклада в CBRP сквада завершен - ты получил токены. Скорее потрать их в магазине сквада!"
     return str(payload.get("text") or "В ExtraArena новое событие!")
 
 
@@ -222,6 +227,8 @@ def format_telegram_notification_message(event_type: str, payload: dict[str, Any
     if event_type == "squad_boost":
         squad = escape(str(payload.get("squad_name") or "У сквада"))
         return f"{squad} активировал Boost!"
+    if event_type == "squad_weekly_tokens":
+        return escape("🌟 Недельный рассчет твоего вклада в CBRP сквада завершен - ты получил токены. Скорее потрать их в магазине сквада!")
     return escape(format_notification_message(event_type, payload))
 
 
@@ -247,6 +254,8 @@ def format_android_notification_title(category: str, event_type: str, payload: d
         return "Заявка в друзья"
     if event_type == "daily_reminder":
         return random.choice(REMINDER_TITLES)
+    if event_type == "squad_weekly_tokens":
+        return "Ты получил токены сквада!"
     if category.startswith("squad_") or event_type.startswith("squad_"):
         squad = payload.get("squad_name") or "Сквад"
         event_labels = {

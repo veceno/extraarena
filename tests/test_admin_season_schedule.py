@@ -1,5 +1,11 @@
-import pytest
+import time
+import uuid
 
+import jwt
+import pytest
+from aiohttp.test_utils import TestClient, TestServer
+
+from infrastructure.config import get_settings
 from web import server
 
 
@@ -196,3 +202,81 @@ def test_extra_pass_json_import_rejects_row_level_stage_costs():
             },
             season,
         )
+
+
+class _SeasonImportExtraIDDB:
+    def __init__(self, session_id: str):
+        self.session_id = session_id
+
+    async def verify_session(self, session_uuid, token: str):
+        if str(session_uuid) != self.session_id:
+            return None
+        return {"session_id": session_uuid, "user_id": 101}
+
+
+class _SeasonImportDB:
+    def __init__(self):
+        self.replaced_reward_tracks = []
+        self.season = _season(
+            1,
+            1,
+            "2026-06-01T00:00:00+00:00",
+            "2026-07-01T00:00:00+00:00",
+            "s1",
+        )
+
+    async def is_admin(self, user_id):
+        return int(user_id) == 101
+
+    async def get_season_by_id(self, season_id):
+        return self.season if int(season_id) == 1 else None
+
+    async def get_seasons(self):
+        return [self.season]
+
+    async def get_all_reward_tracks(self):
+        return []
+
+    async def get_season_reset_summaries(self):
+        return {}
+
+    async def replace_reward_tracks(self, track_types, rows):
+        self.replaced_reward_tracks.append((list(track_types), list(rows)))
+        return []
+
+
+@pytest.mark.asyncio
+async def test_admin_season_rewards_import_rejects_empty_replace(monkeypatch):
+    monkeypatch.setenv("BOT_TOKEN", "bot-token")
+    monkeypatch.setenv("JWT_SECRET", "season-import-jwt-secret-that-is-long-enough-2026")
+    monkeypatch.setenv("ADMIN_SESSION_SECRET", "season-import-admin-session-secret-2026")
+    get_settings.cache_clear()
+    session_id = str(uuid.uuid4())
+    db = _SeasonImportDB()
+    app = server.create_web_app(
+        db,
+        bot_token="bot-token",
+        extraid_db=_SeasonImportExtraIDDB(session_id),
+        webapp_url="https://game.example",
+    )
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    token = jwt.encode(
+        {"user_id": 101, "session_id": session_id, "iat": int(time.time()), "exp": int(time.time()) + 600},
+        get_settings().jwt_secret,
+        algorithm="HS256",
+    )
+    try:
+        response = await client.post(
+            "/api/admin/seasons/1/rewards/import",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"tracks": {}, "replace": True},
+        )
+        payload = await response.json()
+
+        assert response.status == 400
+        assert payload["error"] == "empty_reward_tracks"
+        assert db.replaced_reward_tracks == []
+    finally:
+        await client.close()
+        get_settings.cache_clear()

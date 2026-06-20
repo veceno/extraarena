@@ -244,6 +244,36 @@ class TestClassicRLEnvNewArgs:
         assert env._cache._mask_valid is True
         assert env._cache._features_valid is True
 
+    def test_env_training_info_can_skip_legal_action_recount(self, monkeypatch):
+        env = ClassicRLEnv(
+            seed=42,
+            verify_mask=True,
+            placement_mode="append_only",
+            include_legal_actions_in_info=False,
+        )
+        env.reset(seed=100)
+        aid = env.legal_action_ids()[0]
+
+        def fail_legal_action_ids(*args, **kwargs):
+            raise AssertionError("legal_action_ids should not be recomputed for training-fast info")
+
+        monkeypatch.setattr(env, "legal_action_ids", fail_legal_action_ids)
+        _, _, _, _, info = env.step(aid)
+
+        assert info["legal_actions"] is None
+        assert info["success"] is True
+
+    def test_legal_action_ids_uses_action_cache(self, monkeypatch):
+        env = ClassicRLEnv(seed=42, verify_mask=False, placement_mode="append_only")
+        env.reset(seed=100)
+        expected = env._cache.legal_ids()
+
+        def fail_action_mask(*args, **kwargs):
+            raise AssertionError("legal_action_ids should use ActionCache.legal_ids when available")
+
+        monkeypatch.setattr(env, "action_mask", fail_action_mask)
+        assert env.legal_action_ids() == expected
+
     def test_env_step_rejects_illegal_in_append_only(self):
         env = ClassicRLEnv(seed=42, verify_mask=False, placement_mode="append_only")
         env.reset(seed=100)

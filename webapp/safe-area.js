@@ -3,21 +3,78 @@
   const sides = ['top', 'right', 'bottom', 'left'];
   const KEYBOARD_DELTA_PX = 120;
   const VIEWPORT_RECOVERY_DELAY_MS = 260;
-  let eventsBound = false;
+  const RESYNC_DELAYS_MS = [0, 80, 180, 360, 720];
+  const insetFallbacks = {
+    safe: {
+      out: '--ea-tg-safe-',
+      css: '--tg-safe-area-inset-',
+      values: { top: 0, right: 0, bottom: 0, left: 0 },
+    },
+    content: {
+      out: '--ea-tg-content-safe-',
+      css: '--tg-content-safe-area-inset-',
+      values: { top: 0, right: 0, bottom: 0, left: 0 },
+    },
+  };
+  let boundTelegram = null;
   let lastStableViewportHeight = 0;
   let recoveryTimer = 0;
+  let resyncTimers = [];
 
   const toPx = (value) => {
     const number = Number(value);
     return `${Number.isFinite(number) && number > 0 ? number : 0}px`;
   };
 
-  const applyInsets = (prefix, insets) => {
-    if (!insets || typeof insets !== 'object') return;
+  const toNumber = (value) => {
+    const number = Number.parseFloat(String(value ?? '').trim());
+    return Number.isFinite(number) && number > 0 ? number : 0;
+  };
+
+  const hasInset = (insets) => sides.some((side) => toNumber(insets && insets[side]) > 0);
+
+  const readCssInset = (name) => {
+    try {
+      return toNumber(window.getComputedStyle(root).getPropertyValue(name));
+    } catch (error) {
+      return 0;
+    }
+  };
+
+  const readFallbackInsets = (state) => {
+    sides.forEach((side) => {
+      const cssValue = readCssInset(`${state.css}${side}`);
+      if (cssValue > 0) {
+        state.values[side] = cssValue;
+      }
+    });
+  };
+
+  const normalizeInsets = (insets) => {
+    if (!insets || typeof insets !== 'object') return null;
+    let hasKnownSide = false;
+    const normalized = {};
     sides.forEach((side) => {
       if (Object.prototype.hasOwnProperty.call(insets, side)) {
-        root.style.setProperty(`${prefix}${side}`, toPx(insets[side]));
+        hasKnownSide = true;
+        normalized[side] = toNumber(insets[side]);
       }
+    });
+    return hasKnownSide ? normalized : null;
+  };
+
+  const applyInsets = (state, insets) => {
+    readFallbackInsets(state);
+
+    const normalized = normalizeInsets(insets);
+    if (normalized && (hasInset(normalized) || !hasInset(state.values))) {
+      sides.forEach((side) => {
+        state.values[side] = normalized[side] || 0;
+      });
+    }
+
+    sides.forEach((side) => {
+      root.style.setProperty(`${state.out}${side}`, toPx(state.values[side]));
     });
   };
 
@@ -58,13 +115,18 @@
     recoveryTimer = window.setTimeout(syncSafeArea, VIEWPORT_RECOVERY_DELAY_MS);
   };
 
+  const scheduleResync = () => {
+    resyncTimers.forEach((timer) => window.clearTimeout(timer));
+    resyncTimers = RESYNC_DELAYS_MS.map((delay) => window.setTimeout(syncSafeArea, delay));
+  };
+
   const syncSafeArea = () => {
     const tg = window.Telegram && window.Telegram.WebApp;
     const currentHeight = usableViewportHeight();
 
     if (tg) {
-      applyInsets('--ea-tg-safe-', tg.safeAreaInset);
-      applyInsets('--ea-tg-content-safe-', tg.contentSafeAreaInset);
+      applyInsets(insetFallbacks.safe, tg.safeAreaInset);
+      applyInsets(insetFallbacks.content, tg.contentSafeAreaInset);
     }
 
     if (isKeyboardLikelyOpen()) {
@@ -94,25 +156,38 @@
 
   const bindTelegramEvents = () => {
     const tg = window.Telegram && window.Telegram.WebApp;
-    if (!tg || typeof tg.onEvent !== 'function' || eventsBound) return;
-    eventsBound = true;
+    if (!tg || typeof tg.onEvent !== 'function' || boundTelegram === tg) return;
+    boundTelegram = tg;
 
     ['viewportChanged', 'safeAreaChanged', 'contentSafeAreaChanged', 'fullscreenChanged'].forEach((eventName) => {
       try {
-        tg.onEvent(eventName, syncSafeArea);
+        tg.onEvent(eventName, scheduleResync);
       } catch (error) {
         console.warn('[safe-area] event bind failed:', eventName, error);
       }
     });
   };
 
-  window.ExtraArenaSafeArea = { sync: syncSafeArea };
+  window.ExtraArenaSafeArea = {
+    sync: syncSafeArea,
+    syncSoon: scheduleResync,
+    getInsets: () => ({
+      safe: { ...insetFallbacks.safe.values },
+      content: { ...insetFallbacks.content.values },
+    }),
+  };
 
   syncSafeArea();
   bindTelegramEvents();
 
   window.addEventListener('resize', syncSafeArea, { passive: true });
   window.addEventListener('orientationchange', syncSafeArea, { passive: true });
+  window.addEventListener('pageshow', scheduleResync, { passive: true });
+  window.addEventListener('focus', scheduleResync, { passive: true });
+  window.addEventListener('hashchange', scheduleResync, { passive: true });
+  window.addEventListener('popstate', scheduleResync, { passive: true });
+  document.addEventListener('visibilitychange', scheduleResync, { passive: true });
+  document.addEventListener('pointerup', scheduleResync, { passive: true, capture: true });
   if (window.visualViewport) {
     window.visualViewport.addEventListener('resize', syncSafeArea, { passive: true });
     window.visualViewport.addEventListener('scroll', scheduleViewportRecovery, { passive: true });
@@ -121,5 +196,6 @@
   document.addEventListener('DOMContentLoaded', () => {
     syncSafeArea();
     bindTelegramEvents();
+    scheduleResync();
   });
 })();

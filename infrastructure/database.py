@@ -68,6 +68,12 @@ SEASON_RESET_THRESHOLDS: tuple[tuple[int, int], ...] = (
     (0, 1),
 )
 
+
+class _SeasonActivationResetError(RuntimeError):
+    def __init__(self, result: dict[str, Any]):
+        super().__init__(str(result.get("error") or "season_reset_failed"))
+        self.result = result
+
 RATING_CATEGORIES: tuple[dict[str, str], ...] = (
     {
         "key": "trophies",
@@ -243,6 +249,8 @@ SQUAD_SETTINGS_DEFAULTS: dict[str, Any] = {
     "squad_creation_policy": "beta_free",
     "squad_weekly_cbrp_enabled": True,
     "squad_seasonal_cbrp_enabled": False,
+    "squad_clan_boost_member_slots": 5,
+    "squad_clan_boost_cbrp_multiplier": 1.2,
     "squad_clan_boost_token_multiplier": 1.2,
     "squad_creator_passive_tax_pct": 0.15,
     "squad_weekly_delta_divisor": 25,
@@ -252,12 +260,6 @@ SQUAD_SETTINGS_DEFAULTS: dict[str, Any] = {
     "squad_seasonal_personal_tokens_divisor": 200,
     "squad_seasonal_treasury_tokens_divisor": 300,
     "squad_upgrades": {
-        "boost": {
-            "title": "BOOST",
-            "levels": [
-                {"level": 1, "cost": 1200, "boost": True},
-            ],
-        },
         "member_slots": {
             "title": "Слоты участников",
             "levels": [
@@ -272,12 +274,6 @@ SQUAD_SETTINGS_DEFAULTS: dict[str, Any] = {
                 {"level": 1, "cost": 800, "cbrp_multiplier": 1.05},
                 {"level": 2, "cost": 1600, "cbrp_multiplier": 1.10},
                 {"level": 3, "cost": 3200, "cbrp_multiplier": 1.15},
-            ],
-        },
-        "customization": {
-            "title": "Кастомизация",
-            "levels": [
-                {"level": 1, "cost": 400, "unlock": "avatar_banner"},
             ],
         },
     },
@@ -611,7 +607,7 @@ def _season_reset_boundary_for_trophies(trophies: Any) -> tuple[int, int]:
     return 0, 1
 
 
-def _build_season_reset_player_result(row: Any) -> dict[str, int]:
+def _build_season_reset_player_result(row: Any) -> dict[str, Any]:
     data = dict(row)
     old_trophies = max(0, int(data.get("trophies") or 0))
     old_stars = max(0, int(data.get("stars") or 0))
@@ -627,6 +623,8 @@ def _build_season_reset_player_result(row: Any) -> dict[str, int]:
         "excess_trophies": excess_trophies,
         "granted_keys": int(bonus_units),
         "granted_coins": int(bonus_units * 200),
+        "old_extra_pass": str(data.get("extra_pass") or "inactive"),
+        "old_extra_pass_expires_at": data.get("extra_pass_expires_at"),
     }
 
 
@@ -866,6 +864,8 @@ class Database:
         season_resets_changed = await self._ensure_season_reset_tables()
         shop_sets_changed = await self._ensure_shop_sets_table()
         ruble_products_changed = await self._ensure_ruble_products_table()
+        shop_gift_claims_changed = await self._ensure_shop_gift_claims_table()
+        user_shop_set_claims_changed = await self._ensure_user_shop_set_claims_table()
         payments_changed = await self._ensure_payments_table()
         payment_reward_steps_changed = await self._ensure_payment_reward_steps_table()
         one_time_reservations_changed = await self._ensure_payment_one_time_reservations_table()
@@ -927,6 +927,8 @@ class Database:
             or season_resets_changed
             or shop_sets_changed
             or ruble_products_changed
+            or shop_gift_claims_changed
+            or user_shop_set_claims_changed
             or payments_changed
             or payment_reward_steps_changed
             or one_time_reservations_changed
@@ -2209,6 +2211,7 @@ class Database:
                     notif_squad_new_member BOOLEAN NOT NULL DEFAULT true,
                     notif_squad_disbanded BOOLEAN NOT NULL DEFAULT true,
                     notif_squad_boost BOOLEAN NOT NULL DEFAULT true,
+                    notif_squad_weekly_tokens BOOLEAN NOT NULL DEFAULT true,
                     notif_extra_arena_modifiers BOOLEAN NOT NULL DEFAULT true,
                     ads_enabled BOOLEAN NOT NULL DEFAULT true,
                     sound_music BOOLEAN NOT NULL DEFAULT true,
@@ -2278,6 +2281,10 @@ class Database:
             changed |= await self._add_column_if_missing(
                 "user_settings", columns,
                 "notif_squad_boost BOOLEAN NOT NULL DEFAULT true"
+            )
+            changed |= await self._add_column_if_missing(
+                "user_settings", columns,
+                "notif_squad_weekly_tokens BOOLEAN NOT NULL DEFAULT true"
             )
             changed |= await self._add_column_if_missing(
                 "user_settings", columns,
@@ -2355,6 +2362,7 @@ class Database:
             "notif_generator", "notif_shop", "notif_reminders",
             "notif_squad_member_role", "notif_squad_new_member",
             "notif_squad_disbanded", "notif_squad_boost",
+            "notif_squad_weekly_tokens",
             "notif_extra_arena_modifiers",
 	            "notification_delivery_mode",
 	            "ads_enabled", "sound_music", "sound_sfx", "social_block_friend_requests",
@@ -3781,6 +3789,7 @@ class Database:
             "notif_generator", "notif_shop", "notif_reminders",
             "notif_squad_member_role", "notif_squad_new_member",
             "notif_squad_disbanded", "notif_squad_boost",
+            "notif_squad_weekly_tokens",
             "notif_extra_arena_modifiers",
             "notif_game_invites", "notif_friend_requests",
         }:
@@ -4792,6 +4801,7 @@ class Database:
                     members_count INTEGER NOT NULL DEFAULT 1,
                     max_members INTEGER NOT NULL DEFAULT 15,
                     has_boost BOOLEAN NOT NULL DEFAULT FALSE,
+                    boost_member_slots_applied INTEGER NOT NULL DEFAULT 0,
                     public_id INTEGER UNIQUE,
                     boost_public_id INTEGER UNIQUE,
                     avatar_url TEXT,
@@ -4830,6 +4840,7 @@ class Database:
         changed |= await self._add_column_if_missing("clans", columns, "banner_url TEXT")
         changed |= await self._add_column_if_missing("clans", columns, "public_id INTEGER UNIQUE")
         changed |= await self._add_column_if_missing("clans", columns, "boost_public_id INTEGER UNIQUE")
+        changed |= await self._add_column_if_missing("clans", columns, "boost_member_slots_applied INTEGER NOT NULL DEFAULT 0")
 
         idx_exists = await self.fetchval(
             "SELECT 1 FROM pg_indexes WHERE tablename='clans' AND indexname='clans_tag_unique_idx'"
@@ -6269,6 +6280,18 @@ class Database:
                 if result.get("awarded"):
                     awarded_count += 1
                     total_cbrp += int(result.get("cbrp") or 0)
+                if result.get("awarded") or result.get("reason") == "duplicate":
+                    await self._create_squad_weekly_tokens_notice(
+                        user_id=int(row["user_id"]),
+                        clan_id=int(row["clan_id"]),
+                        source_id=source_id,
+                        period_key=str(row["period_key"]),
+                        delta_trophies=delta,
+                        cbrp=int(result.get("cbrp") or cbrp_value or 0),
+                        personal_tokens=int(result.get("personal_tokens") or personal_value or 0),
+                        treasury_tokens=int(result.get("treasury_tokens") or treasury_value or 0),
+                        owner_tax_tokens=int(result.get("owner_tax_tokens") or 0),
+                    )
 
             await self.execute(
                 """
@@ -6298,6 +6321,83 @@ class Database:
             "awarded": awarded_count,
             "cbrp": total_cbrp,
         }
+
+    async def _create_squad_weekly_tokens_notice(
+        self,
+        *,
+        user_id: int,
+        clan_id: int,
+        source_id: str,
+        period_key: str,
+        delta_trophies: int,
+        cbrp: int,
+        personal_tokens: int,
+        treasury_tokens: int,
+        owner_tax_tokens: int = 0,
+    ) -> dict[str, bool]:
+        dedupe_key = f"squad_weekly_tokens:{source_id}"
+        body = format_notification_message("squad_weekly_tokens", {})
+        event_row = await self.fetchrow(
+            """
+            SELECT cbrp, personal_tokens, treasury_tokens, owner_tax_tokens
+            FROM squad_cbrp_events
+            WHERE user_id = $1
+              AND event_type = 'weekly_trophy_delta'
+              AND source_id = $2
+            LIMIT 1
+            """,
+            user_id,
+            source_id,
+        )
+        if event_row:
+            cbrp = int(event_row["cbrp"] or 0)
+            personal_tokens = int(event_row["personal_tokens"] or 0)
+            treasury_tokens = int(event_row["treasury_tokens"] or 0)
+            owner_tax_tokens = int(event_row["owner_tax_tokens"] or 0)
+        payload = {
+            "section": "squads",
+            "period_key": period_key,
+            "clan_id": clan_id,
+            "delta_trophies": max(0, int(delta_trophies)),
+            "cbrp": max(0, int(cbrp)),
+            "personal_tokens": max(0, int(personal_tokens)),
+            "treasury_tokens": max(0, int(treasury_tokens)),
+            "owner_tax_tokens": max(0, int(owner_tax_tokens)),
+        }
+        enqueued = await self.enqueue_notification(
+            user_id,
+            category="squad_weekly_tokens",
+            event_type="squad_weekly_tokens",
+            payload=payload,
+            dedupe_key=dedupe_key,
+        )
+        existing_mail = await self.fetchrow(
+            """
+            SELECT id FROM user_mail
+            WHERE user_id = $1
+              AND attachments ->> 'dedupe_key' = $2
+            LIMIT 1
+            """,
+            user_id,
+            dedupe_key,
+        )
+        mail_created = False
+        if not existing_mail:
+            result = await self.create_mail(
+                user_id=user_id,
+                sender="ExtraArena",
+                subject="Ты получил токены сквада!",
+                text=body,
+                category="rewards",
+                icon="🌟",
+                attachments={
+                    **payload,
+                    "dedupe_key": dedupe_key,
+                    "source_id": source_id,
+                },
+            )
+            mail_created = bool(result.get("success"))
+        return {"notification_enqueued": bool(enqueued), "mail_created": mail_created}
 
     async def award_squad_seasonal_cbrp(
         self,
@@ -6421,6 +6521,9 @@ class Database:
             cbrp_value = int(math.ceil(cbrp_value * cbrp_multiplier))
 
         if bool(member["has_boost"]):
+            cbrp_multiplier = float(config.get("squad_clan_boost_cbrp_multiplier") or 1.0)
+            if cbrp_value > 0 and cbrp_multiplier > 1.0:
+                cbrp_value = int(math.ceil(cbrp_value * cbrp_multiplier))
             multiplier = float(config.get("squad_clan_boost_token_multiplier") or 1.0)
             personal_value = int(math.ceil(personal_value * multiplier))
             treasury_value = int(math.ceil(treasury_value * multiplier))
@@ -7908,24 +8011,97 @@ class Database:
         )
         return {r["upgrade_type"]: r["level"] for r in rows}
 
+    @staticmethod
+    def _public_squad_upgrade_catalog(config: dict[str, Any]) -> dict[str, Any]:
+        catalog = dict(config.get("squad_upgrades") or {})
+        catalog.pop("boost", None)
+        catalog.pop("customization", None)
+        return catalog
+
     async def get_squad_shop_state(self, clan_id: int, user_id: int) -> dict[str, Any]:
         config = await self.get_squad_runtime_config()
         upgrades = await self.get_clan_upgrades(clan_id)
         has_boost = await self.fetchval("SELECT COALESCE(has_boost, FALSE) FROM clans WHERE id = $1", clan_id)
-        if "boost" in (config.get("squad_upgrades") or {}):
-            upgrades["boost"] = 1 if has_boost else 0
+        upgrades["boost"] = 1 if has_boost else 0
         purchased_rows = await self.fetch(
             "SELECT reward_id, cost, metadata, created_at FROM squad_shop_purchases WHERE user_id = $1 ORDER BY created_at DESC",
             user_id,
         )
         return {
             "upgrades": upgrades,
-            "upgrade_catalog": config.get("squad_upgrades") or {},
+            "upgrade_catalog": self._public_squad_upgrade_catalog(config),
             "personal_rewards": config.get("squad_personal_rewards") or [],
             "purchases": [dict(r) for r in purchased_rows],
         }
 
+    async def activate_clan_boost_from_purchase(self, user_id: int, *, executor: Any = None) -> dict[str, Any]:
+        runner = executor or self
+        row = await runner.fetchrow(
+            """
+            SELECT c.id, c.name, c.has_boost, c.boost_public_id, c.max_members
+            FROM clans c
+            JOIN clan_members cm ON cm.clan_id = c.id AND cm.user_id = $1
+            FOR UPDATE OF c
+            """,
+            user_id,
+        )
+        if not row:
+            raise ValueError("not_in_squad")
+        clan_id = int(row["id"])
+        existing_boost_id = row["boost_public_id"]
+        if bool(row["has_boost"]):
+            return {
+                "status": "already_active",
+                "clan_id": clan_id,
+                "boost_public_id": int(existing_boost_id) if existing_boost_id else None,
+                "member_slots_added": 0,
+            }
+
+        config = await self.get_squad_runtime_config()
+        member_slots_added = max(0, int(config.get("squad_clan_boost_member_slots") or 0))
+        boost_public_id = int(existing_boost_id) if existing_boost_id else await self._generate_unique_clan_public_id(
+            digits=3,
+            column="boost_public_id",
+        )
+        await runner.execute(
+            """
+            UPDATE clans
+            SET has_boost = TRUE,
+                boost_public_id = COALESCE(boost_public_id, $2),
+                max_members = max_members + $3,
+                boost_member_slots_applied = $3
+            WHERE id = $1
+            """,
+            clan_id,
+            boost_public_id,
+            member_slots_added,
+        )
+        await runner.execute(
+            """
+            INSERT INTO clan_upgrades (clan_id, upgrade_type, level)
+            VALUES ($1, 'boost', 1)
+            ON CONFLICT (clan_id, upgrade_type) DO UPDATE SET level = 1
+            """,
+            clan_id,
+        )
+        await runner.execute(
+            """
+            INSERT INTO clan_activity (clan_id, type, text, user_id)
+            VALUES ($1, 'boost', 'Boost сквада активирован', $2)
+            """,
+            clan_id,
+            user_id,
+        )
+        return {
+            "status": "activated",
+            "clan_id": clan_id,
+            "boost_public_id": boost_public_id,
+            "member_slots_added": member_slots_added,
+        }
+
     async def buy_clan_upgrade(self, clan_id: int, actor_id: int, upgrade_type: str) -> dict[str, Any]:
+        if upgrade_type in {"boost", "customization"}:
+            raise ValueError("unknown_upgrade")
         config = await self.get_squad_runtime_config()
         catalog = config.get("squad_upgrades") or {}
         upgrade_cfg = catalog.get(upgrade_type)
@@ -9388,11 +9564,86 @@ class Database:
         await self._seed_ruble_products()
         return changed
 
+    async def _ensure_shop_gift_claims_table(self) -> bool:
+        changed = False
+
+        table_exists = await self.fetchval("SELECT to_regclass('public.shop_gift_claims')")
+        if not table_exists:
+            await self.execute(
+                """
+                CREATE TABLE shop_gift_claims (
+                    id BIGSERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                    product_code TEXT NOT NULL,
+                    shop_set_id INTEGER NOT NULL REFERENCES shop_sets(id),
+                    granted JSONB NOT NULL DEFAULT '[]',
+                    claimed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE(user_id, product_code)
+                )
+                """
+            )
+            changed = True
+
+        columns = await self._get_columns("shop_gift_claims")
+        changed |= await self._add_column_if_missing("shop_gift_claims", columns, "user_id BIGINT NOT NULL")
+        changed |= await self._add_column_if_missing("shop_gift_claims", columns, "product_code TEXT NOT NULL")
+        changed |= await self._add_column_if_missing("shop_gift_claims", columns, "shop_set_id INTEGER NOT NULL")
+        changed |= await self._add_column_if_missing("shop_gift_claims", columns, "granted JSONB NOT NULL DEFAULT '[]'")
+        changed |= await self._add_column_if_missing("shop_gift_claims", columns, "claimed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
+        if not await self._constraint_exists("shop_gift_claims", "shop_gift_claims_user_id_product_code_key"):
+            try:
+                await self.execute(
+                    "ALTER TABLE shop_gift_claims ADD CONSTRAINT shop_gift_claims_user_id_product_code_key UNIQUE (user_id, product_code)"
+                )
+                changed = True
+            except Exception:
+                pass
+        return changed
+
+    async def _ensure_user_shop_set_claims_table(self) -> bool:
+        changed = False
+
+        table_exists = await self.fetchval("SELECT to_regclass('public.user_shop_set_claims')")
+        if not table_exists:
+            await self.execute(
+                """
+                CREATE TABLE user_shop_set_claims (
+                    id BIGSERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                    shop_set_id INTEGER NOT NULL REFERENCES shop_sets(id),
+                    source TEXT NOT NULL DEFAULT 'shop',
+                    source_key TEXT,
+                    granted JSONB NOT NULL DEFAULT '[]',
+                    claimed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE(user_id, shop_set_id)
+                )
+                """
+            )
+            changed = True
+
+        columns = await self._get_columns("user_shop_set_claims")
+        changed |= await self._add_column_if_missing("user_shop_set_claims", columns, "user_id BIGINT NOT NULL")
+        changed |= await self._add_column_if_missing("user_shop_set_claims", columns, "shop_set_id INTEGER NOT NULL")
+        changed |= await self._add_column_if_missing("user_shop_set_claims", columns, "source TEXT NOT NULL DEFAULT 'shop'")
+        changed |= await self._add_column_if_missing("user_shop_set_claims", columns, "source_key TEXT")
+        changed |= await self._add_column_if_missing("user_shop_set_claims", columns, "granted JSONB NOT NULL DEFAULT '[]'")
+        changed |= await self._add_column_if_missing("user_shop_set_claims", columns, "claimed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
+        if not await self._constraint_exists("user_shop_set_claims", "user_shop_set_claims_user_id_shop_set_id_key"):
+            try:
+                await self.execute(
+                    "ALTER TABLE user_shop_set_claims ADD CONSTRAINT user_shop_set_claims_user_id_shop_set_id_key UNIQUE (user_id, shop_set_id)"
+                )
+                changed = True
+            except Exception:
+                pass
+        return changed
+
     async def _seed_ruble_products(self):
         system_products = [
-            {"code": "extrapass",        "item_type": "extrapass",        "package_type": None,      "name": "ExtraPass",                "price": 179,  "badge": None,            "sort_order": 10,  "show_in_game": True,  "show_in_shop": True,  "description": "Без рекламы, премиальная дорожка Battle Pass, +2 пресета колод, x1.2 монет в боях."},
-            {"code": "extrapass_ultra",  "item_type": "extrapass_ultra",  "package_type": None,      "name": "ExtraPass Ultra",          "price": 349,  "badge": "popular",       "sort_order": 20,  "show_in_game": True,  "show_in_shop": True,  "description": "Всё из ExtraPass + золотой ник, реролл кейсов, расширенная статистика."},
-            {"code": "starter_boost",    "item_type": "starter_boost",    "package_type": None,      "name": "Starter Boost",            "price": 499,  "badge": None,            "sort_order": 30,  "show_in_game": True,  "show_in_shop": True,  "description": "ExtraPass на 30 дней, гемы, монеты и кейсы."},
+            {"code": "extrapass",        "item_type": "extrapass",        "package_type": None,      "name": "ExtraPass",                "price": 179,  "badge": None,            "sort_order": 10,  "show_in_game": True,  "show_in_shop": True,  "description": "Премиальная дорожка Battle Pass, 5 пресетов колод, кейс за 4 победы и премиальное свечение ника."},
+            {"code": "extrapass_ultra",  "item_type": "extrapass_ultra",  "package_type": None,      "name": "ExtraPass Ultra",          "price": 349,  "badge": "popular",       "sort_order": 20,  "show_in_game": True,  "show_in_shop": True,  "description": "Всё из ExtraPass, 500 гемов, Ultra-финал Battle Pass, улучшенное свечение ника и переоткрытие кейса."},
+            {"code": "starter_boost",    "item_type": "starter_boost",    "package_type": None,      "name": "Starter Boost",            "price": 499,  "badge": None,            "sort_order": 30,  "show_in_game": True,  "show_in_shop": True,  "description": "ExtraPass до конца сезона, гемы, монеты и кейсы."},
+            {"code": "squad_boost",      "item_type": "squad_boost",      "package_type": None,      "name": "Boost сквада",             "price": 299,  "badge": "squad",         "sort_order": 35,  "show_in_game": True,  "show_in_shop": False, "description": "Донатный Boost для текущего сквада: короткий ID, фон сквада, +5 мест и множитель CBRP."},
             {"code": "gems_starter_once","item_type": "gems_package",     "package_type": "starter_once", "name": "50 гемов (стартовый)",  "price": 49,   "badge": "one-time",      "sort_order": 40,  "show_in_game": False, "show_in_shop": True,  "description": "Стартовый пакет гемов, доступен 1 раз."},
             {"code": "gems_100",         "item_type": "gems_package",     "package_type": "gems_100",     "name": "100 гемов",           "price": 99,   "badge": None,            "sort_order": 50,  "show_in_game": False, "show_in_shop": True,  "description": None},
             {"code": "gems_250",         "item_type": "gems_package",     "package_type": "gems_250",     "name": "250 гемов",           "price": 229,  "badge": "discount",      "sort_order": 60,  "show_in_game": False, "show_in_shop": True,  "description": None},
@@ -9627,6 +9878,71 @@ class Database:
             logging.getLogger(__name__).error("create_community_post failed: %s", e, exc_info=True)
             return {"success": False, "error": "internal_server_error"}
 
+    async def get_claimed_shop_set_ids(self, user_id: int) -> set[int]:
+        rows = await self.fetch(
+            """
+            SELECT shop_set_id
+            FROM user_shop_set_claims
+            WHERE user_id = $1
+            UNION
+            SELECT shop_set_id
+            FROM shop_gift_claims
+            WHERE user_id = $1
+            UNION
+            SELECT (metadata->>'shop_set_id')::int AS shop_set_id
+            FROM payments
+            WHERE user_id = $1
+              AND status = 'succeeded'
+              AND COALESCE(rewards_processed, FALSE) = TRUE
+              AND metadata ? 'shop_set_id'
+              AND (metadata->>'shop_set_id') ~ '^[0-9]+$'
+            UNION
+            SELECT regexp_replace(metadata->>'item_type', '^shop_set_', '')::int AS shop_set_id
+            FROM payments
+            WHERE user_id = $1
+              AND status = 'succeeded'
+              AND COALESCE(rewards_processed, FALSE) = TRUE
+              AND (metadata->>'item_type') ~ '^shop_set_[0-9]+$'
+            """,
+            user_id,
+        )
+        return {int(row["shop_set_id"]) for row in rows if row and row["shop_set_id"] is not None}
+
+    async def _reserve_user_shop_set_claim_on_conn(
+        self,
+        conn,
+        user_id: int,
+        set_id: int,
+        *,
+        source: str,
+        source_key: str | None = None,
+    ) -> int | None:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO user_shop_set_claims (user_id, shop_set_id, source, source_key, granted)
+            VALUES ($1, $2, $3, $4, '[]'::jsonb)
+            ON CONFLICT (user_id, shop_set_id) DO NOTHING
+            RETURNING id
+            """,
+            int(user_id),
+            int(set_id),
+            str(source or "shop"),
+            source_key,
+        )
+        return int(row["id"]) if row else None
+
+    async def _store_user_shop_set_claim_grants_on_conn(
+        self,
+        conn,
+        claim_id: int,
+        granted: list[dict[str, Any]],
+    ) -> None:
+        await conn.execute(
+            "UPDATE user_shop_set_claims SET granted = $2::jsonb WHERE id = $1",
+            int(claim_id),
+            json.dumps(granted, ensure_ascii=False),
+        )
+
     async def grant_shop_set_rewards(
         self, user_id: int, set_id: int
     ) -> dict[str, Any]:
@@ -9641,9 +9957,20 @@ class Database:
                 if not row:
                     return {"success": False, "error": "set_not_found"}
                 rewards, error = self._normalize_shop_set_rewards(row["rewards"])
+                if not error:
+                    error = await self._validate_shop_set_reward_refs(conn, rewards)
                 if error:
                     return {"success": False, "error": error}
+                claim_id = await self._reserve_user_shop_set_claim_on_conn(
+                    conn,
+                    user_id,
+                    set_id,
+                    source="grant",
+                )
+                if not claim_id:
+                    return {"success": False, "error": "already_claimed"}
                 granted = await self._apply_shop_set_rewards_on_conn(conn, user_id, set_id, rewards)
+                await self._store_user_shop_set_claim_grants_on_conn(conn, claim_id, granted)
                 return {"success": True, "granted": granted}
 
     async def grant_shop_set_rewards_on_conn(self, conn, user_id: int, set_id: int) -> dict[str, Any]:
@@ -9654,9 +9981,20 @@ class Database:
         if not row:
             return {"success": False, "error": "set_not_found"}
         rewards, error = self._normalize_shop_set_rewards(row["rewards"])
+        if not error:
+            error = await self._validate_shop_set_reward_refs(conn, rewards)
         if error:
             return {"success": False, "error": error}
+        claim_id = await self._reserve_user_shop_set_claim_on_conn(
+            conn,
+            user_id,
+            set_id,
+            source="payment",
+        )
+        if not claim_id:
+            return {"success": False, "error": "already_claimed"}
         granted = await self._apply_shop_set_rewards_on_conn(conn, user_id, set_id, rewards)
+        await self._store_user_shop_set_claim_grants_on_conn(conn, claim_id, granted)
         return {"success": True, "granted": granted}
 
     async def purchase_shop_set(self, user_id: int, set_id: int) -> dict[str, Any]:
@@ -9671,6 +10009,8 @@ class Database:
                 if not row:
                     return {"success": False, "error": "set_not_found"}
                 rewards, error = self._normalize_shop_set_rewards(row["rewards"])
+                if not error:
+                    error = await self._validate_shop_set_reward_refs(conn, rewards)
                 if error:
                     return {"success": False, "error": error}
 
@@ -9680,6 +10020,18 @@ class Database:
                     return {"success": False, "error": "invalid_currency"}
                 if price <= 0:
                     return {"success": False, "error": "invalid_price"}
+
+                existing_claim = await conn.fetchval(
+                    """
+                    SELECT 1
+                    FROM user_shop_set_claims
+                    WHERE user_id = $1 AND shop_set_id = $2
+                    """,
+                    user_id,
+                    set_id,
+                )
+                if existing_claim:
+                    return {"success": False, "error": "already_claimed"}
 
                 balance_row = await conn.fetchrow(
                     f"""
@@ -9710,7 +10062,16 @@ class Database:
                     float(price),
                     json.dumps({"item_type": f"shop_set_{set_id}", "set_id": set_id}, ensure_ascii=False),
                 )
+                claim_id = await self._reserve_user_shop_set_claim_on_conn(
+                    conn,
+                    user_id,
+                    set_id,
+                    source="shop",
+                )
+                if not claim_id:
+                    raise RuntimeError("shop_set_already_claimed_after_debit")
                 granted = await self._apply_shop_set_rewards_on_conn(conn, user_id, set_id, rewards)
+                await self._store_user_shop_set_claim_grants_on_conn(conn, claim_id, granted)
                 return {
                     "success": True,
                     "granted": granted,
@@ -9718,6 +10079,123 @@ class Database:
                     "price": price,
                     "gems": balance_row["gems"],
                     "coins": balance_row["coins"],
+                }
+
+    async def claim_gift_shop_set(self, user_id: int, product_code: str) -> dict[str, Any]:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        code = str(product_code or "").strip()
+        if not code:
+            return {"success": False, "error": "product_code_required"}
+
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                product = await conn.fetchrow(
+                    """
+                    SELECT * FROM ruble_products
+                    WHERE code = $1
+                      AND is_active = TRUE
+                      AND (show_in_game = TRUE OR show_in_shop = TRUE)
+                    """,
+                    code,
+                )
+                if not product:
+                    return {"success": False, "error": "product_not_found"}
+                product_data = dict(product)
+                if str(product_data.get("item_type") or "") != "gift_shop_set":
+                    return {"success": False, "error": "not_gift_shop_set"}
+                if str(product_data.get("currency") or "rubles") != "rubles":
+                    return {"success": False, "error": "product_currency_not_rubles"}
+                try:
+                    price = float(product_data.get("price") or 0)
+                except (TypeError, ValueError):
+                    price = -1
+                if price != 0:
+                    return {"success": False, "error": "invalid_gift_price"}
+                try:
+                    shop_set_id = int(product_data.get("shop_set_id") or 0)
+                except (TypeError, ValueError):
+                    shop_set_id = 0
+                if shop_set_id <= 0:
+                    return {"success": False, "error": "shop_set_id_required"}
+
+                set_row = await conn.fetchrow(
+                    "SELECT id, rewards FROM shop_sets WHERE id = $1 AND is_active = TRUE",
+                    shop_set_id,
+                )
+                if not set_row:
+                    return {"success": False, "error": "shop_set_not_found"}
+
+                rewards, error = self._normalize_shop_set_rewards(set_row["rewards"])
+                if not error:
+                    error = await self._validate_shop_set_reward_refs(conn, rewards)
+                if error:
+                    return {"success": False, "error": error}
+
+                existing_set_claim = await conn.fetchval(
+                    """
+                    SELECT 1
+                    FROM user_shop_set_claims
+                    WHERE user_id = $1 AND shop_set_id = $2
+                    UNION
+                    SELECT 1
+                    FROM shop_gift_claims
+                    WHERE user_id = $1 AND shop_set_id = $2
+                    UNION
+                    SELECT 1
+                    FROM payments
+                    WHERE user_id = $1
+                      AND status = 'succeeded'
+                      AND COALESCE(rewards_processed, FALSE) = TRUE
+                      AND (
+                        (metadata ? 'shop_set_id' AND (metadata->>'shop_set_id') = $3)
+                        OR (metadata->>'item_type') = $4
+                      )
+                    LIMIT 1
+                    """,
+                    int(user_id),
+                    shop_set_id,
+                    str(shop_set_id),
+                    f"shop_set_{shop_set_id}",
+                )
+                if existing_set_claim:
+                    return {"success": False, "error": "already_claimed"}
+
+                claim_row = await conn.fetchrow(
+                    """
+                    INSERT INTO shop_gift_claims (user_id, product_code, shop_set_id, granted)
+                    VALUES ($1, $2, $3, '[]'::jsonb)
+                    ON CONFLICT (user_id, product_code) DO NOTHING
+                    RETURNING id
+                    """,
+                    int(user_id),
+                    code,
+                    shop_set_id,
+                )
+                if not claim_row:
+                    return {"success": False, "error": "already_claimed"}
+
+                set_claim_id = await self._reserve_user_shop_set_claim_on_conn(
+                    conn,
+                    int(user_id),
+                    shop_set_id,
+                    source="gift",
+                    source_key=code,
+                )
+                if not set_claim_id:
+                    raise RuntimeError("gift_shop_set_already_claimed_after_product_claim")
+                granted = await self._apply_shop_set_rewards_on_conn(conn, int(user_id), shop_set_id, rewards)
+                await conn.execute(
+                    "UPDATE shop_gift_claims SET granted = $2::jsonb WHERE id = $1",
+                    claim_row["id"],
+                    json.dumps(granted, ensure_ascii=False),
+                )
+                await self._store_user_shop_set_claim_grants_on_conn(conn, set_claim_id, granted)
+                return {
+                    "success": True,
+                    "product_code": code,
+                    "shop_set_id": shop_set_id,
+                    "granted": granted,
                 }
 
     def _normalize_shop_set_rewards(self, rewards_data: Any) -> tuple[list[dict[str, Any]], Optional[str]]:
@@ -9744,14 +10222,116 @@ class Database:
             elif r_type == "card":
                 if not card_id:
                     return [], "invalid_reward_card"
-                normalized.append({"type": r_type, "card_id": int(card_id)})
+                try:
+                    card_id_int = int(card_id)
+                except (TypeError, ValueError):
+                    return [], "invalid_reward_card"
+                normalized.append({"type": r_type, "card_id": card_id_int})
             elif r_type == "particles":
                 if amount <= 0 or not card_id:
                     return [], "invalid_reward_particles"
-                normalized.append({"type": r_type, "amount": amount, "card_id": int(card_id)})
+                try:
+                    card_id_int = int(card_id)
+                except (TypeError, ValueError):
+                    return [], "invalid_reward_particles"
+                normalized.append({"type": r_type, "amount": amount, "card_id": card_id_int})
+            elif r_type == "cosmetic":
+                cosmetic_slug = str(reward.get("cosmetic_slug") or "").strip()
+                if not cosmetic_slug:
+                    return [], "invalid_reward_cosmetic"
+                normalized.append({
+                    "type": r_type,
+                    "cosmetic_slug": cosmetic_slug,
+                    "auto_equip": bool(reward.get("auto_equip", False)),
+                })
             else:
                 return [], "unknown_reward_type"
         return normalized, None
+
+    async def validate_shop_set_rewards(self, rewards_data: Any) -> tuple[list[dict[str, Any]], Optional[str]]:
+        rewards, error = self._normalize_shop_set_rewards(rewards_data)
+        if error:
+            return [], error
+        ref_error = await self._validate_shop_set_reward_refs(self, rewards)
+        if ref_error:
+            return [], ref_error
+        return rewards, None
+
+    async def _validate_shop_set_reward_refs(self, executor, rewards: list[dict[str, Any]]) -> Optional[str]:
+        fetchval = getattr(executor, "fetchval", None)
+        if not fetchval:
+            return None
+        for reward in rewards:
+            r_type = reward.get("type")
+            if r_type in {"card", "particles"}:
+                card_exists = await fetchval(
+                    "SELECT 1 FROM cards WHERE id = $1",
+                    int(reward.get("card_id") or 0),
+                )
+                if not card_exists:
+                    return "reward_card_not_found"
+            elif r_type == "cosmetic":
+                cosmetic_exists = await fetchval(
+                    "SELECT 1 FROM cosmetic_items WHERE slug = $1 AND is_active = TRUE",
+                    str(reward.get("cosmetic_slug") or ""),
+                )
+                if not cosmetic_exists:
+                    return "reward_cosmetic_not_found"
+        return None
+
+    async def _grant_cosmetic_by_slug_on_conn(
+        self,
+        conn,
+        user_id: int,
+        slug: str,
+        *,
+        source: str = "grant",
+        auto_equip: bool = False,
+    ) -> dict[str, Any]:
+        item = await conn.fetchrow(
+            """
+            SELECT id, slug, item_type, class, name, asset_path, media_type
+            FROM cosmetic_items
+            WHERE slug = $1 AND is_active = TRUE
+            """,
+            slug,
+        )
+        if not item:
+            raise ValueError("cosmetic_not_found")
+        item_data = dict(item)
+        owned_before = await conn.fetchval(
+            """
+            SELECT 1 FROM user_cosmetics
+            WHERE user_id = $1 AND cosmetic_id = $2
+            """,
+            user_id,
+            item_data["id"],
+        )
+        await conn.execute(
+            """
+            INSERT INTO user_cosmetics (user_id, cosmetic_id, source)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (user_id, cosmetic_id) DO NOTHING
+            """,
+            user_id,
+            item_data["id"],
+            source,
+        )
+        equipped = None
+        if auto_equip:
+            await conn.execute(
+                """
+                INSERT INTO user_equipped_cosmetics (user_id, item_type, cosmetic_id, updated_at)
+                VALUES ($1, $2, $3, NOW())
+                ON CONFLICT (user_id, item_type) DO UPDATE
+                SET cosmetic_id = EXCLUDED.cosmetic_id, updated_at = NOW()
+                """,
+                user_id,
+                item_data["item_type"],
+                item_data["id"],
+            )
+            equipped = item_data
+        return {"item": item_data, "equipped": equipped, "acquired": not bool(owned_before)}
 
     async def _apply_shop_set_rewards_on_conn(
         self,
@@ -9761,6 +10341,30 @@ class Database:
         rewards: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
         from datetime import datetime, timezone
+
+        async def is_background_cosmetic_reward(reward: dict[str, Any]) -> bool:
+            slug = str(reward.get("cosmetic_slug") or "").strip()
+            slug_l = slug.lower()
+            if "background" in slug_l or slug_l.startswith("bg_"):
+                return True
+            fetchrow = getattr(conn, "fetchrow", None)
+            if not fetchrow or not slug:
+                return False
+            item = await fetchrow(
+                "SELECT item_type, slug FROM cosmetic_items WHERE slug = $1",
+                slug,
+            )
+            if not item:
+                return False
+            item_type = str(dict(item).get("item_type") or "").lower()
+            item_slug = str(dict(item).get("slug") or "").lower()
+            return "background" in item_type or "background" in item_slug or item_slug.startswith("bg_")
+
+        has_background_cosmetic = False
+        for reward in rewards:
+            if reward.get("type") == "cosmetic" and await is_background_cosmetic_reward(reward):
+                has_background_cosmetic = True
+                break
 
         granted: list[dict[str, Any]] = []
         for reward in rewards:
@@ -9775,8 +10379,35 @@ class Database:
                 granted.append({"type": "coins", "amount": amount})
             elif r_type in {"keys", "case"}:
                 await conn.execute("UPDATE users SET keys = COALESCE(keys, 0) + $1 WHERE user_id = $2", amount, user_id)
-                granted.append({"type": "keys", "amount": amount})
+                granted.append({"type": r_type, "amount": amount})
             elif r_type == "card":
+                owned_card = False
+                fetchval = getattr(conn, "fetchval", None)
+                if has_background_cosmetic and fetchval:
+                    owned_card = bool(await fetchval(
+                        "SELECT 1 FROM user_cards WHERE user_id = $1 AND card_id = $2",
+                        user_id,
+                        int(card_id),
+                    ))
+                if owned_card:
+                    fallback_gems = 50
+                    await conn.execute("UPDATE users SET gems = COALESCE(gems, 0) + $1 WHERE user_id = $2", fallback_gems, user_id)
+                    granted.append({
+                        "type": "gems",
+                        "amount": fallback_gems,
+                        "fallback_for": "owned_card",
+                        "card_id": int(card_id),
+                    })
+                    await conn.execute(
+                        """
+                        INSERT INTO economy_events (user_id, event_type, resource, amount, source, metadata)
+                        VALUES ($1, 'earn', 'gems', $2, 'shop_set', $3::jsonb)
+                        """,
+                        user_id,
+                        float(fallback_gems),
+                        json.dumps({"set_id": set_id, "fallback_for": "owned_card", "card_id": int(card_id)}, ensure_ascii=False),
+                    )
+                    continue
                 await conn.execute(
                     """
                     INSERT INTO user_cards (user_id, card_id, level, particles, obtained_at)
@@ -9799,6 +10430,42 @@ class Database:
                     user_id, int(card_id), amount,
                 )
                 granted.append({"type": "particles", "amount": amount, "card_id": int(card_id)})
+            elif r_type == "cosmetic":
+                cosmetic_slug = str(reward.get("cosmetic_slug") or "").strip()
+                auto_equip = bool(reward.get("auto_equip", False))
+                if hasattr(conn, "fetchrow") and hasattr(conn, "fetchval"):
+                    grant_result = await self._grant_cosmetic_by_slug_on_conn(
+                        conn,
+                        user_id,
+                        cosmetic_slug,
+                        source="shop_set",
+                        auto_equip=auto_equip,
+                    )
+                else:
+                    grant_cosmetic = getattr(self, "grant_cosmetic_by_slug", None)
+                    if not grant_cosmetic:
+                        grant_result = {"acquired": False}
+                    else:
+                        grant_result = await grant_cosmetic(
+                            user_id,
+                            cosmetic_slug,
+                            source="shop_set",
+                            auto_equip=auto_equip,
+                        )
+                if not grant_result:
+                    granted.append({
+                        "type": "cosmetic",
+                        "cosmetic_slug": cosmetic_slug,
+                        "auto_equip": auto_equip,
+                        "acquired": False,
+                    })
+                else:
+                    granted.append({
+                        "type": "cosmetic",
+                        "cosmetic_slug": cosmetic_slug,
+                        "auto_equip": auto_equip,
+                        "acquired": bool((grant_result or {}).get("acquired", False)),
+                    })
 
             if r_type in {"gems", "coins", "keys", "case"}:
                 resource = "keys" if r_type == "case" else r_type
@@ -12002,11 +12669,6 @@ class Database:
                     tier_order = {"inactive": 0, "active": 1, "ultra": 2}
                     preserve_higher_tier = tier_order.get(current_mode, 0) > tier_order["active"] and (not current_expiry or current_expiry > now)
                     final_mode = current_mode if preserve_higher_tier else "active"
-                    if preserve_higher_tier and current_expiry is None:
-                        expires_at = None
-                    else:
-                        base_expiry = current_expiry if current_expiry and current_expiry > now else now
-                        expires_at = base_expiry + timedelta(days=30)
                     await conn.execute(
                         """
                         UPDATE users
@@ -12015,7 +12677,7 @@ class Database:
                         WHERE user_id = $3
                         """,
                         final_mode,
-                        expires_at,
+                        None,
                         user_id,
                     )
 
@@ -13566,10 +14228,11 @@ class Database:
     ) -> dict[str, Any]:
         season_id = int(season_id)
         await conn.fetchval("SELECT pg_advisory_xact_lock(hashtext('extraarena_season_reset'))")
+        season_track_types: list[str] = []
         if require_active:
             active_row = await conn.fetchrow(
                 """
-                SELECT id
+                SELECT id, free_track_type, pass_track_type, ultra_track_type
                 FROM seasons
                 WHERE id = $1 AND is_active = TRUE
                 FOR UPDATE
@@ -13578,6 +14241,25 @@ class Database:
             )
             if not active_row:
                 return {"error": "season_reset_requires_active_season", "season_id": season_id}
+            for key in ("free_track_type", "pass_track_type", "ultra_track_type"):
+                track_type = str(dict(active_row).get(key) or "").strip()
+                if track_type and track_type not in season_track_types:
+                    season_track_types.append(track_type)
+        else:
+            season_row = await conn.fetchrow(
+                """
+                SELECT id, free_track_type, pass_track_type, ultra_track_type
+                FROM seasons
+                WHERE id = $1
+                FOR UPDATE
+                """,
+                season_id,
+            )
+            if season_row:
+                for key in ("free_track_type", "pass_track_type", "ultra_track_type"):
+                    track_type = str(dict(season_row).get(key) or "").strip()
+                    if track_type and track_type not in season_track_types:
+                        season_track_types.append(track_type)
         existing = await conn.fetchrow(
             """
             SELECT id, status
@@ -13624,16 +14306,37 @@ class Database:
 
         user_rows = await conn.fetch(
             """
-            SELECT user_id, trophies, stars, COALESCE(is_bot, FALSE) AS is_bot
+            SELECT user_id, trophies, stars, keys, coins, extra_pass, extra_pass_expires_at,
+                   COALESCE(is_bot, FALSE) AS is_bot
             FROM users
             WHERE COALESCE(is_bot, FALSE) = FALSE
             ORDER BY user_id
             FOR UPDATE
             """
         )
-        players = [_build_season_reset_player_result(row) for row in user_rows if not bool(dict(row).get("is_bot"))]
+        players = []
+        for row in user_rows:
+            row_data = dict(row)
+            if bool(row_data.get("is_bot")):
+                continue
+            player = _build_season_reset_player_result(row)
+            player["old_keys"] = max(0, int(row_data.get("keys") or 0))
+            player["old_coins"] = max(0, int(row_data.get("coins") or 0))
+            player["old_extra_pass"] = str(row_data.get("extra_pass") or "inactive")
+            player["keys"] = max(0, player["old_keys"] + int(player["granted_keys"] or 0))
+            player["coins"] = max(0, player["old_coins"] + int(player["granted_coins"] or 0))
+            players.append(player)
         summary = _build_season_reset_summary(players)
         mail_subject = "Новый сезон ExtraArena"
+
+        if season_track_types:
+            await conn.execute(
+                """
+                DELETE FROM claimed_rewards
+                WHERE track_type = ANY($1::text[])
+                """,
+                season_track_types,
+            )
 
         for player in players:
             user_id = player["user_id"]
@@ -13645,6 +14348,8 @@ class Database:
                     stars = 0,
                     keys = GREATEST(0, COALESCE(keys, 0) + $4),
                     coins = GREATEST(0, COALESCE(coins, 0) + $5),
+                    extra_pass = 'inactive',
+                    extra_pass_expires_at = NULL,
                     updated_at = NOW()
                 WHERE user_id = $1
                 """,
@@ -13726,10 +14431,38 @@ class Database:
                     "reset_id": reset_id,
                     "old_trophies": player["old_trophies"],
                     "new_trophies": player["new_trophies"],
+                    "keys": player["granted_keys"],
+                    "coins": player["granted_coins"],
                     "granted_keys": player["granted_keys"],
                     "granted_coins": player["granted_coins"],
+                    "old_extra_pass": player["old_extra_pass"],
                 }, ensure_ascii=False),
             )
+
+        await conn.execute(
+            """
+            WITH deactivated AS (
+                UPDATE clans
+                SET has_boost = FALSE,
+                    max_members = GREATEST(
+                        members_count,
+                        max_members - COALESCE(boost_member_slots_applied, 0)
+                    ),
+                    boost_member_slots_applied = 0
+                WHERE has_boost = TRUE
+                RETURNING id
+            )
+            INSERT INTO clan_activity (clan_id, type, text)
+            SELECT id, 'boost', 'Boost сквада завершен: сезонный сброс'
+            FROM deactivated
+            """
+        )
+        await conn.execute(
+            """
+            DELETE FROM clan_upgrades
+            WHERE upgrade_type = 'boost'
+            """
+        )
 
         row = await conn.fetchrow(
             """
@@ -13824,7 +14557,7 @@ class Database:
                         candidate_id,
                     )
                     if season_changed:
-                        await self._execute_season_reset_on_conn(
+                        reset_result = await self._execute_season_reset_on_conn(
                             conn,
                             season_id=candidate_id,
                             previous_season_id=int(current_active_id) if current_active_id else None,
@@ -13833,6 +14566,8 @@ class Database:
                             reason="automatic_season_activation",
                             require_active=True,
                         )
+                        if isinstance(reset_result, dict) and reset_result.get("error"):
+                            raise RuntimeError(str(reset_result.get("error") or "season_reset_failed"))
                     await conn.execute(
                         """
                         UPDATE seasons
@@ -13880,7 +14615,7 @@ class Database:
             candidate_id,
         )
         if season_changed:
-            await self.execute_season_reset(
+            reset_result = await self.execute_season_reset(
                 season_id=candidate_id,
                 previous_season_id=int(current_active_id) if current_active_id else None,
                 trigger="auto",
@@ -13888,6 +14623,8 @@ class Database:
                 reason="automatic_season_activation",
                 require_active=True,
             )
+            if isinstance(reset_result, dict) and reset_result.get("error"):
+                return reset_result
         await self.execute(
             """
             UPDATE seasons
@@ -14105,6 +14842,58 @@ class Database:
         if not updates:
             return existing
 
+        updates.append("updated_at = NOW()")
+        params.append(season_id)
+
+        if hasattr(self._pool, "acquire"):
+            reset_error_result: dict[str, Any] | None = None
+            try:
+                async with self._pool.acquire() as conn:
+                    async with conn.transaction():
+                        if fields.get("is_active") is True or fields.get("status") == "active":
+                            await conn.execute(
+                                """
+                                UPDATE seasons
+                                SET is_active = FALSE,
+                                    status = CASE WHEN status = 'active' THEN 'archived' ELSE status END,
+                                    updated_at = NOW()
+                                WHERE id <> $1 AND is_active = TRUE
+                                """,
+                                season_id,
+                            )
+
+                        row = await conn.fetchrow(
+                            f"""
+                            UPDATE seasons
+                            SET {', '.join(updates)}
+                            WHERE id = ${idx}
+                            RETURNING id, slug, name, subtitle, description, season_number, status,
+                                      auto_switch, preset_key, start_date, end_date, is_active,
+                                      max_stars, stage_cost_min, stage_cost_growth, stage_cost_exponent, stage_cost_cap,
+                                      free_track_type, pass_track_type, ultra_track_type,
+                                      pass_end_position, ultra_start_position, theme, created_at, updated_at
+                            """,
+                            *params,
+                        )
+                        if row and activating_new_season:
+                            reset_result = await self._execute_season_reset_on_conn(
+                                conn,
+                                season_id=season_id,
+                                previous_season_id=int(current_active_id) if current_active_id else None,
+                                trigger="admin",
+                                admin_user_id=int(admin_user_id) if admin_user_id is not None else None,
+                                reason="manual_season_activation",
+                                require_active=True,
+                            )
+                            if isinstance(reset_result, dict) and reset_result.get("error"):
+                                reset_error_result = dict(reset_result)
+                                raise _SeasonActivationResetError(reset_error_result)
+                        return dict(row) if row else {"error": "update_failed"}
+            except _SeasonActivationResetError:
+                if reset_error_result is not None:
+                    return reset_error_result
+                raise
+
         if fields.get("is_active") is True or fields.get("status") == "active":
             await self.execute(
                 """
@@ -14117,8 +14906,6 @@ class Database:
                 season_id,
             )
 
-        updates.append("updated_at = NOW()")
-        params.append(season_id)
         row = await self.fetchrow(
             f"""
             UPDATE seasons
@@ -16111,13 +16898,177 @@ class Database:
                    ci.asset_path, ci.media_type, ci.has_sound
             FROM user_equipped_cosmetics uec
             JOIN cosmetic_items ci ON ci.id = uec.cosmetic_id
-            WHERE uec.user_id = $1
+            WHERE uec.user_id = $1 AND ci.is_active = TRUE
         """, user_id)
 
         items = [dict(r) for r in owned_rows]
         equipped = {r["item_type"]: dict(r) for r in equipped_rows}
 
         return {"items": items, "equipped": equipped}
+
+    async def list_cosmetic_items(
+        self,
+        *,
+        active_only: bool = False,
+        item_type: str | None = None,
+    ) -> list[dict[str, Any]]:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        where: list[str] = []
+        params: list[Any] = []
+        if active_only:
+            where.append("is_active = TRUE")
+        if item_type:
+            params.append(str(item_type))
+            where.append(f"item_type = ${len(params)}")
+        query = """
+            SELECT id, slug, item_type, class, name, asset_path, media_type,
+                   has_sound, is_active, sort_order, created_at
+            FROM cosmetic_items
+        """
+        if where:
+            query += " WHERE " + " AND ".join(where)
+        query += " ORDER BY item_type, sort_order, id"
+        rows = await self.fetch(query, *params)
+        return [_json_safe(dict(row)) for row in rows]
+
+    async def get_cosmetic_item(self, identity: int | str) -> dict[str, Any] | None:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        try:
+            cosmetic_id = int(identity)
+        except (TypeError, ValueError):
+            cosmetic_id = 0
+        if cosmetic_id > 0:
+            row = await self.fetchrow(
+                """
+                SELECT id, slug, item_type, class, name, asset_path, media_type,
+                       has_sound, is_active, sort_order, created_at
+                FROM cosmetic_items
+                WHERE id = $1
+                """,
+                cosmetic_id,
+            )
+        else:
+            row = await self.fetchrow(
+                """
+                SELECT id, slug, item_type, class, name, asset_path, media_type,
+                       has_sound, is_active, sort_order, created_at
+                FROM cosmetic_items
+                WHERE slug = $1
+                """,
+                str(identity or "").strip(),
+            )
+        return _json_safe(dict(row)) if row else None
+
+    async def create_cosmetic_item(
+        self,
+        *,
+        slug: str,
+        item_type: str,
+        class_name: str = "common",
+        name: str,
+        asset_path: str | None = None,
+        media_type: str = "image",
+        has_sound: bool = False,
+        sort_order: int = 0,
+        is_active: bool = True,
+    ) -> dict[str, Any]:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        try:
+            row = await self.fetchrow(
+                """
+                INSERT INTO cosmetic_items
+                    (slug, item_type, class, name, asset_path, media_type, has_sound, sort_order, is_active)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                RETURNING id, slug, item_type, class, name, asset_path, media_type,
+                          has_sound, is_active, sort_order, created_at
+                """,
+                slug,
+                item_type,
+                class_name,
+                name,
+                asset_path,
+                media_type,
+                bool(has_sound),
+                int(sort_order),
+                bool(is_active),
+            )
+            return {"success": True, "cosmetic": _json_safe(dict(row))}
+        except Exception as exc:
+            if _is_unique_violation(exc) or "duplicate key" in str(exc).lower() or "unique" in str(exc).lower():
+                return {"success": False, "error": "cosmetic_slug_exists"}
+            logging.getLogger(__name__).error("create_cosmetic_item failed: %s", exc, exc_info=True)
+            return {"success": False, "error": "internal_server_error"}
+
+    async def update_cosmetic_item(self, cosmetic_id: int, **kwargs: Any) -> dict[str, Any]:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        valid_keys = {
+            "slug",
+            "item_type",
+            "class_name",
+            "name",
+            "asset_path",
+            "media_type",
+            "has_sound",
+            "sort_order",
+            "is_active",
+        }
+        updates: list[str] = []
+        values: list[Any] = []
+        for key, value in kwargs.items():
+            if key not in valid_keys:
+                continue
+            column = "class" if key == "class_name" else key
+            values.append(value)
+            updates.append(f"{column} = ${len(values)}")
+        if not updates:
+            return {"success": False, "error": "no_fields"}
+        values.append(int(cosmetic_id))
+        try:
+            row = await self.fetchrow(
+                f"""
+                UPDATE cosmetic_items
+                SET {', '.join(updates)}
+                WHERE id = ${len(values)}
+                RETURNING id, slug, item_type, class, name, asset_path, media_type,
+                          has_sound, is_active, sort_order, created_at
+                """,
+                *values,
+            )
+            if not row:
+                return {"success": False, "error": "cosmetic_not_found"}
+            return {"success": True, "cosmetic": _json_safe(dict(row))}
+        except Exception as exc:
+            if _is_unique_violation(exc) or "duplicate key" in str(exc).lower() or "unique" in str(exc).lower():
+                return {"success": False, "error": "cosmetic_slug_exists"}
+            logging.getLogger(__name__).error("update_cosmetic_item failed: %s", exc, exc_info=True)
+            return {"success": False, "error": "internal_server_error"}
+
+    async def delete_cosmetic_item(self, cosmetic_id: int) -> dict[str, Any]:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    """
+                    UPDATE cosmetic_items
+                    SET is_active = FALSE
+                    WHERE id = $1
+                    RETURNING id, slug, item_type, class, name, asset_path, media_type,
+                              has_sound, is_active, sort_order, created_at
+                    """,
+                    int(cosmetic_id),
+                )
+                if not row:
+                    return {"success": False, "error": "cosmetic_not_found"}
+                await conn.execute(
+                    "DELETE FROM user_equipped_cosmetics WHERE cosmetic_id = $1",
+                    int(cosmetic_id),
+                )
+                return {"success": True, "cosmetic": _json_safe(dict(row))}
 
     async def equip_cosmetic(self, user_id: int, cosmetic_id: int) -> dict:
         """Надеть предмет. Проверить, что пользователь им владеет."""
@@ -16370,6 +17321,7 @@ class Database:
             FROM user_equipped_cosmetics uec
             JOIN cosmetic_items ci ON ci.id = uec.cosmetic_id
             WHERE uec.user_id = $1
+              AND ci.is_active = TRUE
             """,
             bot_id,
         )
@@ -19411,14 +20363,11 @@ class Database:
                 )
                 payload = {"mode": "inactive"}
             else:
-                if not days or days < 1:
-                    return {"error": "days_required_for_active_mode"}
-                expires = datetime.now(timezone.utc) + timedelta(days=int(days))
                 await self.execute(
-                    "UPDATE users SET extra_pass = $2, extra_pass_expires_at = $3 WHERE user_id = $1",
-                    target_user_id, mode, expires,
+                    "UPDATE users SET extra_pass = $2, extra_pass_expires_at = NULL WHERE user_id = $1",
+                    target_user_id, mode,
                 )
-                payload = {"mode": mode, "days": days, "expires_at": expires.isoformat()}
+                payload = {"mode": mode}
 
             await self.record_admin_account_action(
                 admin_user_id=admin_user_id,
@@ -19432,7 +20381,7 @@ class Database:
                 text = "Администрация отключила ExtraPass на вашем аккаунте."
             else:
                 subject = "Вам выдан ExtraPass"
-                text = f"Администрация выдала вам ExtraPass ({mode}) на {days} дн."
+                text = f"Администрация выдала вам ExtraPass ({mode}) до конца сезона."
             await self._create_admin_mail(
                 target_user_id,
                 subject,

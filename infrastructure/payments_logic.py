@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:  # Импортируем только для подсказок типов, чтобы избежать циклов
@@ -419,7 +419,7 @@ async def _grant_extra_pass_access(
     logger: logging.Logger,
     bonus_gems: int = 0,
     executor=None,
-) -> tuple[bool, str, datetime]:
+) -> tuple[bool, str, datetime | None]:
     now = datetime.now(timezone.utc)
     profile = None
     get_profile = getattr(db, "get_user_profile", None)
@@ -427,15 +427,11 @@ async def _grant_extra_pass_access(
         profile = await get_profile(user_id)
 
     current_mode = str((profile or {}).get("extra_pass") or "inactive")
-    current_expiry = _coerce_utc_datetime((profile or {}).get("extra_pass_expires_at"))
     current_active = _extra_pass_is_effective(profile, now)
     tier_order = {"inactive": 0, "active": 1, "ultra": 2}
     final_mode = requested_mode
     if current_active and tier_order.get(current_mode, 0) > tier_order.get(requested_mode, 0):
         final_mode = current_mode
-
-    base_expiry = current_expiry if current_expiry and current_expiry > now else now
-    expires_at = base_expiry + timedelta(days=30)
 
     if bonus_gems > 0:
         target = executor or db
@@ -449,7 +445,7 @@ async def _grant_extra_pass_access(
             RETURNING 1
             """,
             final_mode,
-            expires_at,
+            None,
             bonus_gems,
             user_id,
         )
@@ -458,12 +454,12 @@ async def _grant_extra_pass_access(
         updated = await target.fetchval(
             "UPDATE users SET extra_pass = $1, extra_pass_expires_at = $2 WHERE user_id = $3 RETURNING 1",
             final_mode,
-            expires_at,
+            None,
             user_id,
         )
     if not updated:
         logger.error("extra_pass: пользователь %s не найден", user_id)
-    return bool(updated), final_mode, expires_at
+    return bool(updated), final_mode, None
 
 
 async def _grant_rewards_for_item(
@@ -636,9 +632,9 @@ async def _grant_rewards_for_item(
             attachments["extrapass"] = True
             if final_mode == "ultra":
                 attachments["extrapass_ultra"] = True
-                rewards_text.append("💫 ExtraPass Ultra продлен на 30 дней")
+                rewards_text.append("💫 ExtraPass Ultra активен до конца сезона")
             else:
-                rewards_text.append("⭐ ExtraPass (30 дней)")
+                rewards_text.append("⭐ ExtraPass активен до конца сезона")
 
         if await _run_payment_reward_step(
             db,
@@ -665,7 +661,7 @@ async def _grant_rewards_for_item(
             _append_currency("gems", 500, "💎 гемов (бонус Ultra)")
             attachments["extrapass"] = True
             attachments["extrapass_ultra"] = True
-            rewards_text.append("💫 ExtraPass Ultra (30 дней)")
+            rewards_text.append("💫 ExtraPass Ultra активен до конца сезона")
 
         if await _run_payment_reward_step(
             db,
@@ -746,9 +742,9 @@ async def _grant_rewards_for_item(
             attachments["extrapass"] = True
             if final_mode == "ultra":
                 attachments["extrapass_ultra"] = True
-                rewards_text.append("💫 ExtraPass Ultra продлен на 30 дней")
+                rewards_text.append("💫 ExtraPass Ultra активен до конца сезона")
             else:
-                rewards_text.append("⭐ ExtraPass (30 дней)")
+                rewards_text.append("⭐ ExtraPass активен до конца сезона")
             _append_currency("gems", 500, "💎 гемов")
 
         if await _run_payment_reward_step(
@@ -834,6 +830,37 @@ async def _grant_rewards_for_item(
                 rewards_given = True
         if granted_cases:
             attachments["cases"] = granted_cases
+
+    elif item_type == "squad_boost":
+        async def grant_squad_boost(executor):
+            activator = getattr(db, "activate_clan_boost_from_purchase", None)
+            if not activator:
+                raise RuntimeError("squad_boost_unavailable")
+            activation = await activator(user_id, executor=executor)
+            clan_id = int(activation.get("clan_id") or 0)
+            attachments["squad_boost"] = True
+            if clan_id:
+                attachments["clan_id"] = clan_id
+            if activation.get("boost_public_id"):
+                attachments["boost_public_id"] = int(activation["boost_public_id"])
+            if activation.get("member_slots_added"):
+                attachments["member_slots_added"] = int(activation["member_slots_added"])
+            if activation.get("status") == "already_active":
+                rewards_text.append("⚡ Boost сквада уже активен")
+            else:
+                rewards_text.append("⚡ Boost сквада активирован")
+                if activation.get("member_slots_added"):
+                    rewards_text.append(f"+{int(activation['member_slots_added'])} мест в скваде")
+
+        if await _run_payment_reward_step(
+            db,
+            payment_id=payment_id,
+            metadata=metadata,
+            step_id="squad_boost_activation",
+            logger=logger,
+            grant_fn=grant_squad_boost,
+        ):
+            rewards_given = True
 
     elif item_type and item_type.startswith("shop_set_"):
         try:
@@ -950,7 +977,12 @@ def _describe_shop_set_grants(granted: List[Dict[str, Any]]) -> List[str]:
             )
         elif r_type == "case":
             tier = reward.get("tier")
-            descriptions.append(f"Кейс T{tier} (ID {reward.get('case_id')})")
+            if tier or reward.get("case_id"):
+                descriptions.append(f"Кейс T{tier} (ID {reward.get('case_id')})")
+            else:
+                descriptions.append(f"{reward.get('amount', 0)} ключей кейса")
+        elif r_type == "cosmetic":
+            descriptions.append(f"Косметика: {reward.get('cosmetic_slug')}")
         else:
             descriptions.append(f"Награда набора: {reward}")
     return descriptions

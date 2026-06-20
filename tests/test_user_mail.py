@@ -50,6 +50,44 @@ class NotificationMailHarness(MailDBHarness):
         return {"success": True}
 
 
+class WeeklyTokensNoticeHarness(MailDBHarness):
+    def __init__(self, existing_mail=False, *, enqueue_result=True):
+        super().__init__()
+        self.existing_mail = existing_mail
+        self.enqueue_result = enqueue_result
+        self.notifications = []
+        self.mail_kwargs = None
+
+    async def fetchrow(self, query, *args):
+        self.fetch_args = (query, args)
+        if "FROM squad_cbrp_events" in query:
+            return {
+                "cbrp": 7,
+                "personal_tokens": 3,
+                "treasury_tokens": 2,
+                "owner_tax_tokens": 1,
+            }
+        if "FROM user_mail" in query:
+            return {"id": 9} if self.existing_mail else None
+        return None
+
+    async def enqueue_notification(self, user_id, *, category, event_type, payload=None, dedupe_key=None):
+        self.notifications.append(
+            {
+                "user_id": user_id,
+                "category": category,
+                "event_type": event_type,
+                "payload": payload or {},
+                "dedupe_key": dedupe_key,
+            }
+        )
+        return self.enqueue_result
+
+    async def create_mail(self, **kwargs):
+        self.mail_kwargs = kwargs
+        return {"success": True}
+
+
 @pytest.mark.asyncio
 async def test_unread_mail_count_reads_asyncpg_mapping_value():
     db = MailDBHarness()
@@ -162,3 +200,69 @@ async def test_enqueue_notification_does_not_duplicate_mail_when_deduped():
 
     assert enqueued is False
     assert db.mail_kwargs is None
+
+
+@pytest.mark.asyncio
+async def test_weekly_squad_tokens_notice_creates_visible_rewards_mail_without_event_type():
+    db = WeeklyTokensNoticeHarness()
+
+    result = await db._create_squad_weekly_tokens_notice(
+        user_id=42,
+        clan_id=10,
+        source_id="weekly_trophy_delta:2026-W24:10:42",
+        period_key="2026-W24",
+        delta_trophies=250,
+        cbrp=0,
+        personal_tokens=0,
+        treasury_tokens=0,
+    )
+
+    assert result == {"notification_enqueued": True, "mail_created": True}
+    assert db.notifications[0]["category"] == "squad_weekly_tokens"
+    assert db.notifications[0]["event_type"] == "squad_weekly_tokens"
+    assert db.notifications[0]["dedupe_key"] == "squad_weekly_tokens:weekly_trophy_delta:2026-W24:10:42"
+    assert db.mail_kwargs["subject"] == "Ты получил токены сквада!"
+    assert db.mail_kwargs["category"] == "rewards"
+    assert db.mail_kwargs["attachments"]["cbrp"] == 7
+    assert db.mail_kwargs["attachments"]["personal_tokens"] == 3
+    assert db.mail_kwargs["attachments"]["treasury_tokens"] == 2
+    assert "event_type" not in db.mail_kwargs["attachments"]
+
+
+@pytest.mark.asyncio
+async def test_weekly_squad_tokens_notice_does_not_duplicate_existing_mail():
+    db = WeeklyTokensNoticeHarness(existing_mail=True)
+
+    result = await db._create_squad_weekly_tokens_notice(
+        user_id=42,
+        clan_id=10,
+        source_id="weekly_trophy_delta:2026-W24:10:42",
+        period_key="2026-W24",
+        delta_trophies=250,
+        cbrp=7,
+        personal_tokens=3,
+        treasury_tokens=2,
+    )
+
+    assert result == {"notification_enqueued": True, "mail_created": False}
+    assert db.mail_kwargs is None
+
+
+@pytest.mark.asyncio
+async def test_weekly_squad_tokens_notice_respects_disabled_push_toggle_but_keeps_mail():
+    db = WeeklyTokensNoticeHarness(enqueue_result=False)
+
+    result = await db._create_squad_weekly_tokens_notice(
+        user_id=42,
+        clan_id=10,
+        source_id="weekly_trophy_delta:2026-W24:10:42",
+        period_key="2026-W24",
+        delta_trophies=250,
+        cbrp=7,
+        personal_tokens=3,
+        treasury_tokens=2,
+    )
+
+    assert result == {"notification_enqueued": False, "mail_created": True}
+    assert db.notifications[0]["category"] == "squad_weekly_tokens"
+    assert db.mail_kwargs["category"] == "rewards"

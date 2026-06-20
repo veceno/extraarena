@@ -76,6 +76,15 @@ def test_android_titles_are_event_specific():
     ).title == "Squad1: новый участник!"
 
 
+def test_android_weekly_squad_tokens_push_uses_requested_copy():
+    payload = build_android_push_payload("squad_weekly_tokens", "squad_weekly_tokens", {})
+
+    assert payload.title == "Ты получил токены сквада!"
+    assert payload.body == "🌟 Недельный рассчет твоего вклада в CBRP сквада завершен - ты получил токены. Скорее потрать их в магазине сквада!"
+    assert payload.data["section"] == "squads"
+    assert payload.data["event_type"] == "squad_weekly_tokens"
+
+
 @pytest.mark.asyncio
 async def test_outbox_delivery_prefers_android_push_without_telegram_when_device_registered():
     from main import _deliver_notification

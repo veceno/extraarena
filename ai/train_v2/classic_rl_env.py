@@ -98,6 +98,7 @@ class ClassicRLEnv:
         mana_per_turn: int = 1,
         verify_mask: bool = True,
         placement_mode: str = "full",
+        include_legal_actions_in_info: bool = True,
     ):
         if cards_data is None:
             self._cards_data = _load_cards_db()
@@ -110,6 +111,7 @@ class ClassicRLEnv:
         self._mana_per_turn = mana_per_turn
         self._verify_mask = verify_mask
         self._placement_mode = placement_mode
+        self._include_legal_actions_in_info = include_legal_actions_in_info
 
         self._available_heroes = [c["id"] for c in self._cards_data.values() if c.get("card_type") == "hero"]
         self._available_nonhero = [c["id"] for c in self._cards_data.values() if c.get("card_type") in ("warrior", "potion")]
@@ -230,7 +232,7 @@ class ClassicRLEnv:
             self._add_reward(cp, -0.05)
             return self.observe(), -0.05, False, False, self._make_info(
                 action_id=action_id, success=False, error="illegal_action", invalid=True,
-                acting_player_id=cp,
+                acting_player_id=cp, legal_actions_count=int(np.count_nonzero(mask)),
             )
 
         action = decode_action(st, cp, action_id)
@@ -313,8 +315,12 @@ class ClassicRLEnv:
         return self.observe(), reward, terminated, truncated, info
 
     def legal_action_ids(self, player_id: int | None = None) -> list[int]:
+        if player_id is None:
+            player_id = self.current_player_id()
+        if self._cache is not None and self._cache._player_id == player_id and self._cache._state is self._env.state:
+            return self._cache.legal_ids()
         mask = self.action_mask(player_id)
-        return [int(i) for i in range(MAX_CANDIDATE_ACTIONS) if mask[i] == 1.0]
+        return [int(i) for i in np.flatnonzero(mask == 1.0)]
 
     def current_player_id(self) -> int:
         return self._env.state.current_turn_owner_id
@@ -414,7 +420,7 @@ class ClassicRLEnv:
             self._p2_reward += value
 
     def _make_info(self, action_id, success, error, invalid=False, acting_reward=0.0,
-                   acting_player_id=None, action=None):
+                   acting_player_id=None, action=None, legal_actions_count=None):
         st = self._env.state
         action_dict = None
         if action is not None:
@@ -424,6 +430,12 @@ class ClassicRLEnv:
             a = decode_action(st, cp, action_id)
             if a:
                 action_dict = a.to_dict()
+
+        if legal_actions_count is None:
+            if self._include_legal_actions_in_info:
+                legal_actions_count = len(self.legal_action_ids())
+            else:
+                legal_actions_count = None
 
         return {
             "acting_player_id": acting_player_id if acting_player_id is not None else st.current_turn_owner_id,
@@ -436,7 +448,7 @@ class ClassicRLEnv:
             "turn_number": st.turn_number,
             "status": st.status.value,
             "winner_id": self.winner_id(),
-            "legal_actions": len(self.legal_action_ids()),
+            "legal_actions": legal_actions_count,
             "p1_hp": st.p1.hero.hp,
             "p2_hp": st.p2.hero.hp,
             "p1_reward": float(self._p1_reward),

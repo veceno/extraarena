@@ -76,9 +76,13 @@ class CheckoutFakeDB:
         self.one_time_reservations = {}
         self.settings = {}
         self.shop_sets = {}
+        self.gift_claims = {}
         self.user_gems = {}
         self.created_mail = []
         self.economy_events = []
+        self.cards = {}
+        self.cosmetics = {}
+        self.owned_cards = []
         self.product = {
             "code": "extrapass",
             "item_type": "extrapass",
@@ -119,12 +123,44 @@ class CheckoutFakeDB:
             rows = [row for row in rows if row.get("is_active", True)]
         return rows
 
+    async def fetchrow(self, query, *args):
+        if "FROM cards" in query:
+            card = self.cards.get(int(args[0]))
+            return dict(card) if card else None
+        if "FROM cosmetic_items" in query:
+            cosmetic = self.cosmetics.get(str(args[0]))
+            return dict(cosmetic) if cosmetic else None
+        return None
+
     async def get_user_settings(self, user_id):
         return dict(self.settings)
 
     async def get_shop_set(self, set_id):
         row = self.shop_sets.get(int(set_id))
         return dict(row) if row else None
+
+    async def get_user_cards(self, user_id):
+        return [dict(card) for card in self.owned_cards]
+
+    async def claim_gift_shop_set(self, user_id, product_code):
+        product = await self.get_ruble_product(product_code)
+        if not product:
+            return {"success": False, "error": "product_not_found"}
+        if product.get("item_type") != "gift_shop_set":
+            return {"success": False, "error": "not_gift_shop_set"}
+        if not product.get("show_in_game", True) and not product.get("show_in_shop", True):
+            return {"success": False, "error": "product_not_found"}
+        if float(product.get("price") or 0) != 0:
+            return {"success": False, "error": "invalid_gift_price"}
+        shop_set_id = int(product.get("shop_set_id") or 0)
+        if shop_set_id <= 0 or shop_set_id not in self.shop_sets:
+            return {"success": False, "error": "shop_set_not_found"}
+        key = (int(user_id), str(product_code))
+        if key in self.gift_claims:
+            return {"success": False, "error": "already_claimed"}
+        granted = [{"type": "gems", "amount": 25}]
+        self.gift_claims[key] = {"shop_set_id": shop_set_id, "granted": granted}
+        return {"success": True, "product_code": str(product_code), "shop_set_id": shop_set_id, "granted": granted}
 
     async def expire_announcements(self):
         return 0
@@ -526,6 +562,376 @@ async def test_payment_create_rejects_misconfigured_shop_set_product():
         assert body["error"] == "empty_rewards"
         assert payment_service.created == []
         assert db.created_payments == []
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_payment_create_rejects_gift_shop_set_before_provider_call():
+    db = CheckoutFakeDB()
+    db.product = {
+        "code": "welcome_gift",
+        "item_type": "gift_shop_set",
+        "package_type": None,
+        "shop_set_id": 9,
+        "name": "Welcome Gift",
+        "price": 0.0,
+        "currency": "rubles",
+        "is_active": True,
+    }
+    db.shop_sets[9] = {
+        "id": 9,
+        "name": "Welcome Gift Set",
+        "price": 0.0,
+        "currency": "rubles",
+        "is_active": True,
+        "rewards": [{"type": "gems", "amount": 25}],
+    }
+    payment_service = FakePaymentService()
+    client, session_id = await _client(db=db, payment_service=payment_service)
+    try:
+        token = _auth_token(session_id)
+        response = await client.post(
+            f"/api/payments/create?_auth={token}",
+            json={"product_code": "welcome_gift"},
+        )
+        body = await response.json()
+
+        assert response.status == 400
+        assert body["error"] == "gift_checkout_forbidden"
+        assert payment_service.created == []
+        assert db.created_payments == []
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_checkout_start_rejects_gift_shop_set_without_session():
+    db = CheckoutFakeDB()
+    db.product = {
+        "code": "welcome_gift",
+        "item_type": "gift_shop_set",
+        "package_type": None,
+        "shop_set_id": 9,
+        "name": "Welcome Gift",
+        "price": 0.0,
+        "currency": "rubles",
+        "is_active": True,
+    }
+    db.shop_sets[9] = {
+        "id": 9,
+        "name": "Welcome Gift Set",
+        "price": 0.0,
+        "currency": "rubles",
+        "is_active": True,
+        "rewards": [{"type": "gems", "amount": 25}],
+    }
+    client, session_id = await _client(db=db)
+    try:
+        token = _auth_token(session_id)
+        response = await client.post(
+            f"/api/payments/checkout/start?_auth={token}",
+            json={"product_code": "welcome_gift"},
+        )
+        body = await response.json()
+
+        assert response.status == 400
+        assert body["error"] == "gift_checkout_forbidden"
+        assert db.checkout_sessions == {}
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_authenticated_gift_shop_set_claim_grants_once_per_product():
+    db = CheckoutFakeDB()
+    db.product = {
+        "code": "welcome_gift",
+        "item_type": "gift_shop_set",
+        "package_type": None,
+        "shop_set_id": 9,
+        "name": "Welcome Gift",
+        "price": 0.0,
+        "currency": "rubles",
+        "is_active": True,
+    }
+    db.shop_sets[9] = {
+        "id": 9,
+        "name": "Welcome Gift Set",
+        "price": 0.0,
+        "currency": "rubles",
+        "is_active": True,
+        "rewards": [{"type": "gems", "amount": 25}],
+    }
+    client, session_id = await _client(db=db)
+    try:
+        token = _auth_token(session_id)
+        first = await client.post(
+            f"/api/shop/gifts/claim?_auth={token}",
+            json={"product_code": "welcome_gift"},
+        )
+        assert first.status == 200
+        first_body = await first.json()
+        second = await client.post(
+            f"/api/shop/gifts/claim?_auth={token}",
+            json={"product_code": "welcome_gift"},
+        )
+        assert second.status == 409
+        second_body = await second.json()
+
+        assert first_body["success"] is True
+        assert first_body["granted"] == [{"type": "gems", "amount": 25}]
+        assert second_body["error"] == "already_claimed"
+        assert len(db.gift_claims) == 1
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_public_ruble_products_enrich_shop_set_rewards_for_pack_cards():
+    db = CheckoutFakeDB()
+    db.product = {
+        "code": "welcome_gift",
+        "item_type": "gift_shop_set",
+        "package_type": None,
+        "shop_set_id": 9,
+        "name": "Welcome Gift",
+        "price": 0.0,
+        "currency": "rubles",
+        "is_active": True,
+        "show_in_shop": True,
+    }
+    db.shop_sets[9] = {
+        "id": 9,
+        "name": "Welcome Gift Set",
+        "description": "Gift pack",
+        "price": 0.0,
+        "currency": "rubles",
+        "is_active": True,
+        "rewards": [
+            {"type": "card", "card_id": 77},
+            {"type": "cosmetic", "cosmetic_slug": "avatar_gold", "auto_equip": True},
+            {"type": "gems", "amount": 25},
+        ],
+    }
+    db.cards[77] = {
+        "id": 77,
+        "name": "Arena Captain",
+        "description": "Leader card",
+        "rarity": "epic",
+        "mechanics": {"description": "Charges first.", "charge": 1},
+        "mechanics_desc": "",
+        "card_type": "warrior",
+        "mana_cost": 4,
+        "base_attack": 6,
+        "base_hp": 7,
+    }
+    db.cosmetics["avatar_gold"] = {
+        "slug": "avatar_gold",
+        "item_type": "avatar",
+        "class": "gold",
+        "name": "Gold Avatar",
+        "asset_path": "/static/avatar_gold.png",
+        "media_type": "image",
+    }
+    client, _session_id = await _client(db=db)
+    try:
+        response = await client.get("/api/shop/ruble-products?surface=shop")
+        body = await response.json()
+
+        assert response.status == 200
+        product = body["products"][0]
+        assert product["is_gift"] is True
+        assert product["shop_set"]["name"] == "Welcome Gift Set"
+        assert product["rewards"][0]["card_name"] == "Arena Captain"
+        assert product["rewards"][0]["mechanics"] == "Charges first."
+        assert product["rewards"][0]["card_mana"] == 4
+        assert product["rewards"][0]["card_attack"] == 6
+        assert product["rewards"][0]["card_hp"] == 7
+        assert product["rewards"][0]["card_image_url"] == "/api/cards/image?card_id=77"
+        assert product["rewards"][1]["cosmetic_slug"] == "avatar_gold"
+        assert product["rewards"][1]["cosmetic_type"] == "avatar"
+        assert product["rewards"][1]["name"] == "Gold Avatar"
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_public_ruble_products_hide_owned_card_only_shop_set():
+    db = CheckoutFakeDB()
+    db.product = {
+        "code": "owned_card_pack",
+        "item_type": "shop_set",
+        "package_type": None,
+        "shop_set_id": 11,
+        "name": "Owned Card Pack",
+        "price": 199.0,
+        "currency": "rubles",
+        "is_active": True,
+        "show_in_game": True,
+    }
+    db.shop_sets[11] = {
+        "id": 11,
+        "name": "Owned Card Set",
+        "description": "Only card",
+        "price": 199.0,
+        "currency": "rubles",
+        "is_active": True,
+        "rewards": [{"type": "card", "card_id": 77}],
+    }
+    db.cards[77] = {
+        "id": 77,
+        "name": "Arena Captain",
+        "description": "Leader card",
+        "rarity": "epic",
+        "mechanics": {},
+        "mechanics_desc": "",
+        "card_type": "warrior",
+        "mana_cost": 4,
+        "base_attack": 6,
+        "base_hp": 7,
+    }
+    db.owned_cards = [{"id": 77}]
+    client, session_id = await _client(db=db)
+    try:
+        response = await client.get(f"/api/shop/ruble-products?surface=game&_auth={_auth_token(session_id)}")
+        body = await response.json()
+
+        assert response.status == 200
+        assert body["products"] == []
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_public_ruble_products_replace_owned_card_cosmetic_set_with_gems():
+    db = CheckoutFakeDB()
+    db.product = {
+        "code": "owned_card_style_pack",
+        "item_type": "shop_set",
+        "package_type": None,
+        "shop_set_id": 12,
+        "name": "Owned Card Style Pack",
+        "price": 299.0,
+        "currency": "rubles",
+        "is_active": True,
+        "show_in_game": True,
+    }
+    db.shop_sets[12] = {
+        "id": 12,
+        "name": "Owned Card Style Set",
+        "description": "Card with style",
+        "price": 299.0,
+        "currency": "rubles",
+        "is_active": True,
+        "rewards": [
+            {"type": "card", "card_id": 77},
+            {"type": "cosmetic", "cosmetic_slug": "bg_gold"},
+        ],
+    }
+    db.cards[77] = {
+        "id": 77,
+        "name": "Arena Captain",
+        "description": "Leader card",
+        "rarity": "epic",
+        "mechanics": {},
+        "mechanics_desc": "",
+        "card_type": "warrior",
+        "mana_cost": 4,
+        "base_attack": 6,
+        "base_hp": 7,
+    }
+    db.cosmetics["bg_gold"] = {
+        "slug": "bg_gold",
+        "item_type": "profile_background",
+        "class": "gold",
+        "name": "Gold Background",
+        "asset_path": "/static/bg_gold.png",
+        "media_type": "image",
+    }
+    db.owned_cards = [{"id": 77}]
+    client, session_id = await _client(db=db)
+    try:
+        response = await client.get(f"/api/shop/ruble-products?surface=game&_auth={_auth_token(session_id)}")
+        body = await response.json()
+
+        assert response.status == 200
+        product = body["products"][0]
+        assert not any(reward["type"] == "card" for reward in product["rewards"])
+        assert {"type": "gems", "amount": 50, "fallback_for": "owned_card", "card_ids": [77]} in product["rewards"]
+        assert product["owned_card_fallback"]["amount"] == 50
+        assert product["owned_card_fallback"]["cards"][0]["card_id"] == 77
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_hidden_gift_shop_set_cannot_be_claimed_by_code():
+    db = CheckoutFakeDB()
+    db.product = {
+        "code": "hidden_gift",
+        "item_type": "gift_shop_set",
+        "package_type": None,
+        "shop_set_id": 9,
+        "name": "Hidden Gift",
+        "price": 0.0,
+        "currency": "rubles",
+        "is_active": True,
+        "show_in_game": False,
+        "show_in_shop": False,
+    }
+    db.shop_sets[9] = {
+        "id": 9,
+        "name": "Hidden Gift Set",
+        "price": 0.0,
+        "currency": "rubles",
+        "is_active": True,
+        "rewards": [{"type": "gems", "amount": 25}],
+    }
+    client, session_id = await _client(db=db)
+    try:
+        response = await client.post(
+            f"/api/shop/gifts/claim?_auth={_auth_token(session_id)}",
+            json={"product_code": "hidden_gift"},
+        )
+        body = await response.json()
+
+        assert response.status == 404
+        assert body["error"] == "product_not_found"
+        assert db.gift_claims == {}
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_public_ruble_products_skip_products_linked_to_inactive_sets():
+    db = CheckoutFakeDB()
+    db.product = {
+        "code": "inactive_set_product",
+        "item_type": "gift_shop_set",
+        "package_type": None,
+        "shop_set_id": 9,
+        "name": "Inactive Set Product",
+        "price": 0.0,
+        "currency": "rubles",
+        "is_active": True,
+        "show_in_shop": True,
+    }
+    db.shop_sets[9] = {
+        "id": 9,
+        "name": "Inactive Gift Set",
+        "price": 0.0,
+        "currency": "rubles",
+        "is_active": False,
+        "rewards": [{"type": "gems", "amount": 25}],
+    }
+    client, _session_id = await _client(db=db)
+    try:
+        response = await client.get("/api/shop/ruble-products?surface=shop")
+        body = await response.json()
+
+        assert response.status == 200
+        assert body["products"] == []
     finally:
         await client.close()
 

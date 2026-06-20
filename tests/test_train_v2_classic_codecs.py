@@ -856,9 +856,7 @@ class TestPlayTargetMaskAlignment:
                 )
 
     def test_random_battlecry_damage_card_masks_as_no_target(self):
-        card = _make_warrior(mana_cost=1, mechanics=["battlecry_damage_1"])
-        card.card_id = 15
-        card.name = "Тока Киришима"
+        card = _make_warrior(mana_cost=1, mechanics=["battlecry_damage_1_random"])
         enemy_unit = _make_warrior(mana_cost=0, attack=1, hp=2)
         p1 = PlayerState(
             user_id=1,

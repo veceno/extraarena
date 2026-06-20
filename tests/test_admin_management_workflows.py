@@ -1,13 +1,17 @@
+import json
 import time
 import uuid
+from io import BytesIO
 
 import jwt
 import pytest
 from aiohttp import FormData
 from aiohttp.test_utils import TestClient, TestServer
+from PIL import Image
 
 from bot.constants import ADMIN_ID
 from infrastructure.config import get_settings
+from web import mcp_admin_tools
 from web import server as web_server
 
 
@@ -67,6 +71,8 @@ class AdminWorkflowDB:
         self.next_reward_id = 1
         self.extra_pass_updates = []
         self.promocodes = []
+        self.cosmetics = {}
+        self.next_cosmetic_id = 1
         self.account_updates = []
         self.resource_adjustments = []
         self.reset_completed = False
@@ -127,6 +133,52 @@ class AdminWorkflowDB:
 
     def _normalize_shop_set_rewards(self, rewards):
         return rewards, None
+
+    async def list_cosmetic_items(self, *, active_only=False, item_type=None):
+        rows = list(self.cosmetics.values())
+        if active_only:
+            rows = [row for row in rows if row.get("is_active", True)]
+        if item_type:
+            rows = [row for row in rows if row.get("item_type") == item_type]
+        return rows
+
+    async def get_cosmetic_item(self, identity):
+        if isinstance(identity, int) or str(identity).isdigit():
+            return self.cosmetics.get(int(identity))
+        return next((row for row in self.cosmetics.values() if row.get("slug") == str(identity)), None)
+
+    async def create_cosmetic_item(self, **kwargs):
+        if any(row["slug"] == kwargs["slug"] for row in self.cosmetics.values()):
+            return {"success": False, "error": "cosmetic_slug_exists"}
+        cosmetic_id = self.next_cosmetic_id
+        self.next_cosmetic_id += 1
+        row = {
+            "id": cosmetic_id,
+            "is_active": True,
+            "sort_order": 0,
+            **kwargs,
+        }
+        self.cosmetics[cosmetic_id] = row
+        return {"success": True, "cosmetic": row}
+
+    async def update_cosmetic_item(self, cosmetic_id, **kwargs):
+        cosmetic_id = int(cosmetic_id)
+        if cosmetic_id not in self.cosmetics:
+            return {"success": False, "error": "cosmetic_not_found"}
+        if "slug" in kwargs and any(
+            row_id != cosmetic_id and row["slug"] == kwargs["slug"]
+            for row_id, row in self.cosmetics.items()
+        ):
+            return {"success": False, "error": "cosmetic_slug_exists"}
+        self.cosmetics[cosmetic_id].update(kwargs)
+        return {"success": True, "cosmetic": self.cosmetics[cosmetic_id]}
+
+    async def delete_cosmetic_item(self, cosmetic_id):
+        cosmetic_id = int(cosmetic_id)
+        if cosmetic_id not in self.cosmetics:
+            return {"success": False, "error": "cosmetic_not_found"}
+        self.cosmetics[cosmetic_id]["is_active"] = False
+        return {"success": True, "cosmetic": self.cosmetics[cosmetic_id]}
 
     async def get_shop_sets(self, active_only=True):
         rows = list(self.sets.values())
@@ -368,6 +420,131 @@ class AdminWorkflowDB:
         return {"success": True, "action": "resource"}
 
 
+@pytest.mark.asyncio
+async def test_mcp_ruble_product_adapter_validates_codes_and_gift_shop_sets():
+    db = AdminWorkflowDB()
+    db.sets[12] = {"id": 12, "name": "Gift Set", "is_active": True}
+
+    with pytest.raises(mcp_admin_tools.MCPToolInputError, match="invalid_code"):
+        await mcp_admin_tools._normalize_ruble_product_payload(
+            db,
+            {
+                "code": 'bad"code',
+                "item_type": "gems_package",
+                "package_type": "gems_100",
+                "name": "Bad Code",
+                "price": 99,
+            },
+            require_identity=True,
+        )
+
+    with pytest.raises(mcp_admin_tools.MCPToolInputError, match="shop_set_id_required"):
+        await mcp_admin_tools._normalize_ruble_product_payload(
+            db,
+            {
+                "code": "gift_missing_set",
+                "item_type": "gift_shop_set",
+                "name": "Gift Missing Set",
+                "price": 0,
+            },
+            require_identity=True,
+        )
+
+    with pytest.raises(mcp_admin_tools.MCPToolInputError, match="gift_shop_set_price_must_be_zero"):
+        await mcp_admin_tools._normalize_ruble_product_payload(
+            db,
+            {
+                "code": "gift_paid",
+                "item_type": "gift_shop_set",
+                "shop_set_id": 12,
+                "name": "Gift Paid",
+                "price": 1,
+            },
+            require_identity=True,
+        )
+
+    with pytest.raises(mcp_admin_tools.MCPToolInputError, match="invalid_currency"):
+        await mcp_admin_tools._normalize_ruble_product_payload(
+            db,
+            {
+                "code": "gift_gems",
+                "item_type": "gift_shop_set",
+                "shop_set_id": 12,
+                "name": "Gift Gems",
+                "price": 0,
+                "currency": "gems",
+            },
+            require_identity=True,
+        )
+
+    normalized = await mcp_admin_tools._normalize_ruble_product_payload(
+        db,
+        {
+            "code": "gift_set_12",
+            "item_type": "gift_shop_set",
+            "shop_set_id": 12,
+            "name": "Gift Set 12",
+            "price": 0,
+        },
+        require_identity=True,
+    )
+
+    assert normalized == {
+        "code": "gift_set_12",
+        "item_type": "gift_shop_set",
+        "shop_set_id": 12,
+        "package_type": None,
+        "name": "Gift Set 12",
+        "price": 0.0,
+        "currency": "rubles",
+    }
+
+
+@pytest.mark.asyncio
+async def test_mcp_ruble_product_update_by_id_preserves_gift_invariants():
+    db = AdminWorkflowDB()
+    db.sets[12] = {"id": 12, "name": "Gift Set", "is_active": True}
+    db.products["paid_set"] = {
+        "id": 7,
+        "code": "paid_set",
+        "item_type": "shop_set",
+        "shop_set_id": 12,
+        "name": "Paid Set",
+        "price": 199.0,
+        "currency": "rubles",
+        "is_active": True,
+    }
+    app = {"db": db}
+
+    with pytest.raises(mcp_admin_tools.MCPToolInputError, match="gift_shop_set_price_must_be_zero"):
+        await mcp_admin_tools.adapter_update_ruble_product(
+            app,
+            1,
+            {
+                "id": 7,
+                "item_type": "gift_shop_set",
+                "shop_set_id": 12,
+                "dry_run": True,
+            },
+        )
+
+    with pytest.raises(mcp_admin_tools.MCPToolInputError, match="invalid_currency"):
+        await mcp_admin_tools.adapter_update_ruble_product(
+            app,
+            1,
+            {
+                "id": 7,
+                "item_type": "gift_shop_set",
+                "shop_set_id": 12,
+                "price": 0,
+                "currency": "gems",
+                "dry_run": True,
+            },
+        )
+
+    assert db.products["paid_set"]["item_type"] == "shop_set"
+
+
 def _admin_token(session_id: str) -> str:
     return _token_for_user(session_id, ADMIN_ID)
 
@@ -516,6 +693,15 @@ async def test_admin_extra_pass_season_rewards_and_player_pass_workflow(monkeypa
         assert updated_season["stage_cost_min"] == 4
         assert updated_season["stage_cost_cap"] == 30
 
+        empty_import_response = await client.post(
+            f"/api/admin/seasons/{draft_id}/rewards/import",
+            headers=headers,
+            json={"replace": True, "tracks": {"free": [], "premium": [], "ultra": []}},
+        )
+        empty_import_body = await empty_import_response.json()
+        assert empty_import_response.status == 400
+        assert empty_import_body["error"] == "empty_reward_tracks"
+
         import_response = await client.post(
             f"/api/admin/seasons/{draft_id}/rewards/import",
             headers=headers,
@@ -594,10 +780,11 @@ async def test_admin_extra_pass_season_rewards_and_player_pass_workflow(monkeypa
         pass_response = await client.post(
             "/api/admin/players/4242/extra-pass",
             headers=headers,
-            json={"mode": "ultra", "days": 30, "reason": "smoke"},
+            json={"mode": "ultra", "reason": "smoke"},
         )
         assert pass_response.status == 200
         assert db.extra_pass_updates[-1]["mode"] == "ultra"
+        assert db.extra_pass_updates[-1]["days"] is None
     finally:
         await client.close()
         get_settings.cache_clear()
@@ -781,7 +968,7 @@ async def test_admin_product_options_and_validation(monkeypatch):
         options_body = await options_response.json()
         assert options_response.status == 200
         item_types = {item["value"] for item in options_body["data"]["item_types"]}
-        assert {"extrapass", "extrapass_ultra", "starter_boost", "gems_package", "shop_set"} <= item_types
+        assert {"extrapass", "extrapass_ultra", "starter_boost", "squad_boost", "gems_package", "shop_set"} <= item_types
         assert "starter_once" in {item["value"] for item in options_body["data"]["package_types"]["gems_package"]}
 
         invalid_type = await client.post(
@@ -1258,6 +1445,208 @@ async def test_admin_product_image_upload_rejects_mismatched_and_oversized_paylo
         )
         assert oversized_response.status == 400
         assert (await oversized_response.json())["error"] == "file_too_large"
+    finally:
+        await client.close()
+        get_settings.cache_clear()
+
+
+def _png_bytes(width: int, height: int) -> bytes:
+    buf = BytesIO()
+    Image.new("RGB", (width, height), (245, 0, 160)).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_admin_cosmetic_upload_create_list_and_delete_flow(monkeypatch, tmp_path):
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    get_settings.cache_clear()
+    monkeypatch.setattr(web_server, "DESIGN_ASSETS_DIR", tmp_path / "DesignAssets")
+    db = AdminWorkflowDB()
+    client, token = await _client(db)
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        avatar = FormData()
+        avatar.add_field("item_type", "avatar")
+        avatar.add_field("slug", "extra_cards_avatar")
+        avatar.add_field(
+            "file",
+            _png_bytes(750, 750),
+            filename="avatar.png",
+            content_type="image/png",
+        )
+        upload_response = await client.post(
+            "/api/admin/cosmetics/upload-image",
+            headers=headers,
+            data=avatar,
+        )
+        upload_payload = await upload_response.json()
+
+        assert upload_response.status == 200
+        assert upload_payload["success"] is True
+        assert upload_payload["dimensions"] == {"width": 750, "height": 750}
+        assert upload_payload["asset_path"].startswith("/DesignAssets/PlayerCosmetics/Avatars/Admin/")
+        assert (tmp_path / upload_payload["asset_path"].lstrip("/")).is_file()
+
+        file_first = FormData()
+        file_first.add_field(
+            "file",
+            _png_bytes(750, 750),
+            filename="avatar-second.png",
+            content_type="image/png",
+        )
+        file_first.add_field("item_type", "avatar")
+        file_first.add_field("slug", "extra_cards_avatar_second")
+        file_first_response = await client.post(
+            "/api/admin/cosmetics/upload-image",
+            headers=headers,
+            data=file_first,
+        )
+        file_first_payload = await file_first_response.json()
+
+        assert file_first_response.status == 200
+        assert file_first_payload["asset_path"].startswith("/DesignAssets/PlayerCosmetics/Avatars/Admin/")
+
+        create_response = await client.post(
+            "/api/admin/cosmetics/create",
+            headers=headers,
+            json={
+                "slug": "extra_cards_avatar",
+                "item_type": "avatar",
+                "class": "rare",
+                "name": "Extra Cards Avatar",
+                "asset_path": upload_payload["asset_path"],
+                "media_type": "image",
+                "sort_order": 77,
+            },
+        )
+        create_payload = await create_response.json()
+
+        assert create_response.status == 200
+        assert create_payload["success"] is True
+        assert create_payload["cosmetic"]["slug"] == "extra_cards_avatar"
+
+        update_response = await client.post(
+            "/api/admin/cosmetics/update",
+            headers=headers,
+            json={
+                "id": create_payload["cosmetic"]["id"],
+                "asset_path": file_first_payload["asset_path"],
+            },
+        )
+        update_payload = await update_response.json()
+
+        assert update_response.status == 200
+        assert update_payload["cosmetic"]["asset_path"] == file_first_payload["asset_path"]
+
+        title_update_response = await client.post(
+            "/api/admin/cosmetics/update",
+            headers=headers,
+            json={
+                "id": create_payload["cosmetic"]["id"],
+                "item_type": "title",
+            },
+        )
+        title_update_payload = await title_update_response.json()
+
+        assert title_update_response.status == 200
+        assert title_update_payload["cosmetic"]["item_type"] == "title"
+        assert title_update_payload["cosmetic"]["media_type"] == "text"
+        assert title_update_payload["cosmetic"]["asset_path"] is None
+
+        title_response = await client.post(
+            "/api/admin/cosmetics/create",
+            headers=headers,
+            json={
+                "slug": "title_extra_old",
+                "item_type": "title",
+                "class": "epic",
+                "name": "Экстра олд",
+                "sort_order": 78,
+            },
+        )
+        assert title_response.status == 200
+
+        invalid_title_response = await client.post(
+            "/api/admin/cosmetics/create",
+            headers=headers,
+            json={
+                "slug": "title_bad_image",
+                "item_type": "title",
+                "class": "epic",
+                "name": "Bad image title",
+                "media_type": "image",
+            },
+        )
+        assert invalid_title_response.status == 400
+        assert (await invalid_title_response.json())["error"] == "invalid_media_type"
+
+        list_response = await client.get("/api/admin/cosmetics", headers=headers)
+        list_payload = await list_response.json()
+        assert list_response.status == 200
+        assert [item["slug"] for item in list_payload["items"]] == [
+            "extra_cards_avatar",
+            "title_extra_old",
+        ]
+
+        duplicate_response = await client.post(
+            "/api/admin/cosmetics/create",
+            headers=headers,
+            json={
+                "slug": "extra_cards_avatar",
+                "item_type": "avatar",
+                "class": "rare",
+                "name": "Duplicate",
+                "asset_path": upload_payload["asset_path"],
+            },
+        )
+        assert duplicate_response.status == 409
+        assert (await duplicate_response.json())["error"] == "cosmetic_slug_exists"
+
+        delete_response = await client.post(
+            "/api/admin/cosmetics/delete",
+            headers=headers,
+            json={"id": create_payload["cosmetic"]["id"]},
+        )
+        assert delete_response.status == 200
+        assert db.cosmetics[create_payload["cosmetic"]["id"]]["is_active"] is False
+    finally:
+        await client.close()
+        get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_shop_set_list_responses_normalize_json_string_rewards(monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    get_settings.cache_clear()
+    db = AdminWorkflowDB()
+    db.sets[1] = {
+        "id": 1,
+        "name": "String rewards",
+        "description": None,
+        "price": 0,
+        "currency": "rubles",
+        "is_active": True,
+        "rewards": json.dumps([
+            {"type": "cosmetic", "cosmetic_slug": "avatar_live"},
+            {"type": "gems", "amount": 50},
+        ]),
+    }
+    client, token = await _client(db)
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        admin_response = await client.get("/api/admin/shop/sets", headers=headers)
+        public_response = await client.get("/api/shop/sets")
+
+        assert admin_response.status == 200
+        assert public_response.status == 200
+        assert (await admin_response.json())["sets"][0]["rewards"] == [
+            {"type": "cosmetic", "cosmetic_slug": "avatar_live"},
+            {"type": "gems", "amount": 50},
+        ]
+        assert (await public_response.json())["sets"][0]["rewards"] == [
+            {"type": "cosmetic", "cosmetic_slug": "avatar_live"},
+            {"type": "gems", "amount": 50},
+        ]
     finally:
         await client.close()
         get_settings.cache_clear()

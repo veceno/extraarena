@@ -11,7 +11,7 @@
 <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js" crossorigin="anonymous"></script>
 <script src="https://unpkg.com/dompurify@3.2.6/dist/purify.min.js" crossorigin="anonymous"></script>
 <link href="https://fonts.googleapis.com/css2?family=Exo+2:wght@400;600;700;900&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
-<link href="/styles.css?v=shop-redesign-20260528" rel="stylesheet">
+<link href="/styles.css?v=shop-pack-ui-20260619" rel="stylesheet">
 
 <audio id="bg-music" loop><source src="/DesignAssets/Sounds/main_theme.mp3" type="audio/mpeg"></audio>
 <audio id="btn-sound" preload="auto"><source src="/DesignAssets/Sounds/button_click.mp3" type="audio/mpeg"></audio>
@@ -2994,7 +2994,8 @@ function invalidateDeckCaches() {
 function invalidateShopCaches() {
   invalidateProfileCaches();
   try { window.eaInvalidateJson?.('/api/mobile/shop-bootstrap'); } catch (_) {}
-  try { window.eaInvalidateJson?.('/api/shop/sets'); } catch (_) {}
+  try { window.eaInvalidateJson?.('/api/shop/sets?surface=game'); } catch (_) {}
+  try { window.eaInvalidateJson?.('/api/shop/ruble-products?surface=game'); } catch (_) {}
   try { window.eaInvalidateJson?.('/api/shop/catalog'); } catch (_) {}
   try { window.eaInvalidateJson?.('/api/shop/particles'); } catch (_) {}
   try { window.eaInvalidateJson?.('/api/shop/particles/daily'); } catch (_) {}
@@ -3270,7 +3271,7 @@ window.loadMobileSquadsBootstrap = async function(options = {}) {
 };
 </script>
 
-<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=4122d7cc5018">
+<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=ed088284fa09">
 // ═══════════════════════════════════════════
 // DESIGN TOKENS
 // ═══════════════════════════════════════════
@@ -3351,7 +3352,7 @@ const AFK_TIMEOUT_MS = 120000;
 const AFK_CHECK_INTERVAL_MS = 5000;
 const BAD_CONNECTION_THRESHOLD_MS = 1200;
 const CONNECTION_PING_INTERVAL_MS = 5000;
-const CONNECTION_FAILURE_DELAY_MS = 10000;
+const CONNECTION_FAILURE_DELAY_MS = 4000;
 
 // ═══════════════════════════════════════════
 // GLORY PATH DATA
@@ -4062,6 +4063,7 @@ const SettingsScreen = ({onClose, profile}) => {
     squadNewMember:    s.notif_squad_new_member  ?? true,
     squadDisbanded:    s.notif_squad_disbanded   ?? true,
     squadBoost:        s.notif_squad_boost       ?? true,
+    squadWeeklyTokens: s.notif_squad_weekly_tokens ?? true,
     extraArenaModifiers: s.notif_extra_arena_modifiers ?? true,
   });
   const [music,  setMusic]  = React.useState(s.sound_music ?? true);
@@ -4092,6 +4094,7 @@ const SettingsScreen = ({onClose, profile}) => {
       squadNewMember: true,
       squadDisbanded: true,
       squadBoost: true,
+      squadWeeklyTokens: true,
       extraArenaModifiers: true,
     },
     music: true,
@@ -4156,6 +4159,7 @@ const SettingsScreen = ({onClose, profile}) => {
         notif_squad_new_member: n.squadNewMember,
         notif_squad_disbanded: n.squadDisbanded,
         notif_squad_boost: n.squadBoost,
+        notif_squad_weekly_tokens: n.squadWeeklyTokens,
         notif_extra_arena_modifiers: n.extraArenaModifiers,
         sound_music: m,
         sound_sfx: s,
@@ -4316,6 +4320,7 @@ const SettingsScreen = ({onClose, profile}) => {
             <Row compact label="Новый участник" hint="Пополнение" value={notifs.squadNewMember} onChange={v=>setNotifs(n=>({...n,squadNewMember:v}))}/>
             <Row compact label="Статус сквада" hint="Важные изменения" value={notifs.squadDisbanded} onChange={v=>setNotifs(n=>({...n,squadDisbanded:v}))}/>
             <Row compact label="Boost активен" hint="Бонусы сквада" value={notifs.squadBoost} onChange={v=>setNotifs(n=>({...n,squadBoost:v}))}/>
+            <Row compact label="Недельные токены" hint="Расчёт вклада" value={notifs.squadWeeklyTokens} onChange={v=>setNotifs(n=>({...n,squadWeeklyTokens:v}))}/>
           </div>
         </Section>
         <Section icon="sound" title="Звук" eyebrow="Аудио в меню и боях">
@@ -4541,7 +4546,9 @@ const IN_GAME_PASS_GIFTS_BETA_ENABLED = false;
 
 const ShopScreen = ({profile, onProfileUpdate}) => {
   const [sets,          setSets]          = React.useState([]);
+  const [rubleProducts, setRubleProducts] = React.useState([]);
   const [shopCatalog,   setShopCatalog]   = React.useState(null);
+  const [shopSeason,    setShopSeason]    = React.useState(null);
   const [particlesData, setParticlesData] = React.useState(null);
   const [particlesTimer, setParticlesTimer] = React.useState('');
   const [loading,       setLoading]       = React.useState(true);
@@ -4550,19 +4557,14 @@ const ShopScreen = ({profile, onProfileUpdate}) => {
   const [showPassModal, setShowPassModal] = React.useState(false);
   const [passTab,       setPassTab]       = React.useState('basic');
   const [payModal,      setPayModal]      = React.useState(null);
+  const [infoPack,      setInfoPack]      = React.useState(null);
   const [starsStep,     setStarsStep]     = React.useState(false);
   const [showGift,      setShowGift]      = React.useState(false);
   const [giftRecipient, setGiftRecipient] = React.useState('');
   const [historyUrl,    setHistoryUrl]    = React.useState(null);
   const [paymentConfig, setPaymentConfig] = React.useState(null);
-
-  React.useEffect(() => {
-    window.__openExtraPassModal = (tab) => {
-      if (tab === 'ultra' || tab === 'basic') setPassTab(tab);
-      setShowPassModal(true);
-    };
-    return () => { delete window.__openExtraPassModal; };
-  }, []);
+  const [pendingPassPurchase, setPendingPassPurchase] = React.useState(null);
+  const [ownedCardIds,  setOwnedCardIds]  = React.useState(function(){ return new Set(); });
 
   React.useEffect(function(){
     if (!profile || !profile.user_id) return;
@@ -4578,6 +4580,15 @@ const ShopScreen = ({profile, onProfileUpdate}) => {
       .then(function(d){ if (d) setPaymentConfig(d); })
       .catch(function(){});
   }, []);
+
+  React.useEffect(function(){
+    var cancelled = false;
+    fetch(_buildAuthUrl('/api/season/current'), {cache:'no-store'})
+      .then(function(r){ return r.ok ? r.json() : null; })
+      .then(function(d){ if (!cancelled && d) setShopSeason(d); })
+      .catch(function(){});
+    return function(){ cancelled = true; };
+  }, [profile?.user_id, profile?.stars]);
 
   var reloadProfile = function(){
     if (onProfileUpdate) {
@@ -4722,8 +4733,9 @@ const ShopScreen = ({profile, onProfileUpdate}) => {
     appPaymentPollRef.current = setInterval(tick, 2000);
   };
 
-  const applyShopData = React.useCallback(function(sr, pr, cr) {
+  const applyShopData = React.useCallback(function(sr, pr, cr, rp) {
     setSets((sr && sr.sets) || []);
+    setRubleProducts((rp && rp.products) || []);
     setShopCatalog(cr || null);
     setParticlesData(pr);
     if (pr && pr.purchased_today) {
@@ -4735,10 +4747,43 @@ const ShopScreen = ({profile, onProfileUpdate}) => {
 
   const [shopLoadError, setShopLoadError] = React.useState('');
 
+  const loadOwnedCardIds = React.useCallback(async function(){
+    if (!profile || !profile.user_id) {
+      setOwnedCardIds(new Set());
+      return;
+    }
+    var next = new Set();
+    var addCard = function(card, ownedOnly) {
+      if (!card) return;
+      if (ownedOnly && card.locked === true) return;
+      if (ownedOnly && card.owned === false) return;
+      var id = Number(card.id || card.card_id || 0);
+      if (id > 0) next.add(id);
+    };
+    try {
+      if (androidShell && window.loadMobileCollectionBootstrap) {
+        var bootstrap = await window.loadMobileCollectionBootstrap({forceFresh: true});
+        var collectionCards = bootstrap?.collection?.cards || bootstrap?.cards || [];
+        if (Array.isArray(collectionCards)) {
+          collectionCards.forEach(function(card){ addCard(card, true); });
+        }
+      }
+      if (!next.size) {
+        var res = await fetch(_buildAuthUrl('/api/cards/user'), {cache:'no-store'});
+        if (res.ok) {
+          var data = await res.json();
+          (data.cards || []).forEach(function(card){ addCard(card, false); });
+        }
+      }
+    } catch (_) {}
+    setOwnedCardIds(next);
+  }, [androidShell, profile?.user_id]);
+
   const loadDataFallback = React.useCallback(async function(){
-    const setsUrl = _buildAuthUrl('/api/shop/sets');
+    const setsUrl = _buildAuthUrl('/api/shop/sets?surface=game');
     const catalogUrl = _buildAuthUrl('/api/shop/catalog');
     const particlesUrl = _buildAuthUrl('/api/shop/particles/daily');
+    const rubleProductsUrl = _buildAuthUrl('/api/shop/ruble-products?surface=game');
 
     setLoading(true);
     setShopLoadError('');
@@ -4751,15 +4796,18 @@ const ShopScreen = ({profile, onProfileUpdate}) => {
       loader(setsUrl),
       loader(catalogUrl),
       loader(particlesUrl),
+      loader(rubleProductsUrl),
     ]);
     const sr = results[0].status === 'fulfilled' ? results[0].value : null;
     const cr = results[1].status === 'fulfilled' ? results[1].value : null;
     const pr = results[2].status === 'fulfilled' ? results[2].value : null;
-    if (sr && cr && pr) {
-      applyShopData(sr, pr, cr);
+    const rp = results[3].status === 'fulfilled' ? results[3].value : null;
+    if (sr && cr && pr && rp) {
+      applyShopData(sr, pr, cr, rp);
     } else {
       if (sr) setSets((sr && sr.sets) || []);
       if (cr) setShopCatalog(cr);
+      if (rp) setRubleProducts((rp && rp.products) || []);
       if (pr) {
         setParticlesData(pr);
         if (pr && pr.purchased_today) {
@@ -4772,17 +4820,19 @@ const ShopScreen = ({profile, onProfileUpdate}) => {
     if (results.some(function(item){ return item.status === 'rejected'; })) {
       setShopLoadError('Не удалось обновить часть магазина. Проверь соединение и попробуй снова.');
     }
+    await loadOwnedCardIds();
     setLoading(false);
-  }, [profile?.user_id, applyShopData]);
+  }, [profile?.user_id, applyShopData, loadOwnedCardIds]);
 
   const loadData = React.useCallback(async function(){
     if (androidShell && window.loadMobileShopBootstrap) {
       setLoading(true);
       try {
         const data = await window.loadMobileShopBootstrap({forceFresh: true});
-        if (data?.shop_sets && data?.particles_daily) {
-          applyShopData(data.shop_sets, data.particles_daily, data.shop_catalog);
+        if (data?.shop_sets && data?.particles_daily && data?.ruble_products) {
+          applyShopData(data.shop_sets, data.particles_daily, data.shop_catalog, data.ruble_products);
           setShopLoadError('');
+          await loadOwnedCardIds();
           setLoading(false);
           return;
         }
@@ -4791,9 +4841,17 @@ const ShopScreen = ({profile, onProfileUpdate}) => {
       }
     }
     await loadDataFallback();
-  }, [androidShell, profile?.user_id, applyShopData, loadDataFallback]);
+  }, [androidShell, profile?.user_id, applyShopData, loadDataFallback, loadOwnedCardIds]);
 
   React.useEffect(function(){ loadData(); }, [loadData]);
+
+  const [packHeroTick, setPackHeroTick] = React.useState(0);
+  React.useEffect(function(){
+    var timer = setInterval(function(){
+      setPackHeroTick(function(v){ return (v + 1) % 1000000; });
+    }, 3000);
+    return function(){ clearInterval(timer); };
+  }, []);
 
   React.useEffect(function(){
     if (!particlesData || !particlesData.next_rotation_ts) return;
@@ -4879,6 +4937,7 @@ const ShopScreen = ({profile, onProfileUpdate}) => {
         if (pk) meta.package_type = pk;
         if (mt.recipient_id) meta.recipient_id = mt.recipient_id;
         var body = {item_type: it || mt.item_type || '', package_type: pk || mt.package_type || ''};
+        if (mt.product_code) body.product_code = mt.product_code;
         if (mt.recipient_id) body.recipient_id = mt.recipient_id;
         if (mt.ultra !== undefined) body.ultra = mt.ultra;
         var paymentEndpoint = androidShell ? '/api/payments/create' : '/api/payments/checkout/start';
@@ -4915,6 +4974,7 @@ const ShopScreen = ({profile, onProfileUpdate}) => {
       setBuying(it || pk || 'rustore');
       try {
         var rbody = {item_type: it || mt.item_type || '', package_type: pk || mt.package_type || ''};
+        if (mt.product_code) rbody.product_code = mt.product_code;
         if (mt.recipient_id) rbody.recipient_id = mt.recipient_id;
         if (mt.ultra !== undefined) rbody.ultra = mt.ultra;
         var rres = await fetch(_buildAuthUrl('/api/payments/rustore/create'), {
@@ -5057,29 +5117,75 @@ const ShopScreen = ({profile, onProfileUpdate}) => {
 
   var hasExtraPass = profile?.extra_pass === 'active' || profile?.extra_pass === 'ultra';
   var hasUltraPass = profile?.extra_pass === 'ultra';
-  var extraExpiry = profile?.extra_pass_expires_at;
   var catalogCasePacks = Array.isArray(shopCatalog?.case_packs) ? shopCatalog.case_packs : [];
   var catalogCoinOffers = Array.isArray(shopCatalog?.coin_offers) ? shopCatalog.coin_offers : [];
   var catalogGemProducts = Array.isArray(shopCatalog?.gem_products) ? shopCatalog.gem_products : [];
   var catalogPassProducts = Array.isArray(shopCatalog?.pass_products) ? shopCatalog.pass_products : [];
+  var catalogRublePacks = Array.isArray(rubleProducts)
+    ? rubleProducts.filter(function(p){ return p && (p.item_type === 'shop_set' || p.item_type === 'gift_shop_set'); })
+    : [];
+  var SHOP_CASE_ART = {
+    case_pack_1: '/DesignAssets/Cases/shop-case-1.png',
+    case_pack_3: '/DesignAssets/Cases/shop-case-3.png',
+    case_pack_5: '/DesignAssets/Cases/shop-case-5.png',
+    case_pack_10: '/DesignAssets/Cases/shop-case-10.png',
+  };
+  var caseArtForPack = function(pack) {
+    var key = String((pack && (pack.id || pack.item_type)) || '');
+    return SHOP_CASE_ART[key] || '/DesignAssets/Cases/Case.png';
+  };
+  var linkedRubleSetIds = new Set(catalogRublePacks.map(function(p){ return Number(p.shop_set_id || p.shop_set?.id || 0); }).filter(Boolean));
   var basicPassProduct = catalogPassProducts.find(function(p){ return p.item_type === 'extrapass'; }) || null;
   var ultraPassProduct = catalogPassProducts.find(function(p){ return p.item_type === 'extrapass_ultra'; }) || null;
 
   var fmtShopNum = function(v){ return Number(v || 0).toLocaleString('ru-RU'); };
   var rubPrice = function(v){ return fmtShopNum(Number(v || 0)) + ' ₽'; };
-  var gemsPrice = function(v){ return fmtShopNum(Number(v || 0)) + ' 💎'; };
+  var gemsPrice = function(v){ return fmtShopNum(Number(v || 0)) + ' гемов'; };
+  var formatSeasonEnd = function(value) {
+    if (!value) return '';
+    var date = new Date(value);
+    if (isNaN(date.getTime())) return '';
+    return date.toLocaleDateString('ru-RU', {day:'numeric', month:'long', year:'numeric'});
+  };
+  var seasonEndLabel = formatSeasonEnd(shopSeason?.end_date);
 
   var parseRewards = function(rewards) {
     try { return typeof rewards === 'string' ? JSON.parse(rewards) : (Array.isArray(rewards) ? rewards : []); }
     catch(e) { return []; }
   };
+  var resourceMeta = function(type) {
+    if (type === 'gems') return {label:'Гемы', unit:'гемов', className:'gems', icon:<IconGem size={16}/>};
+    if (type === 'coins') return {label:'Монеты', unit:'монет', className:'coins', icon:<IconCoin size={16}/>};
+    if (type === 'keys' || type === 'case') return {label:'Ключи', unit:'ключей', className:'keys', icon:<img src="/DesignAssets/MainMenu/Generator/Key.png" alt="" loading="lazy" decoding="async"/>};
+    if (type === 'particles') return {label:'Частицы', unit:'частиц', className:'particles', icon:<span aria-hidden="true">✦</span>};
+    return {label:'Ресурс', unit:'шт.', className:'generic', icon:<span aria-hidden="true">+</span>};
+  };
+  var cosmeticKind = function(r) {
+    var kind = String(r.cosmetic_type || r.item_type || r.kind || '').toLowerCase();
+    var slug = String(r.cosmetic_slug || r.slug || '').toLowerCase();
+    if (kind.indexOf('avatar') >= 0 || slug.indexOf('avatar') >= 0) return 'avatar';
+    if (kind.indexOf('background') >= 0 || slug.indexOf('background') >= 0 || slug.indexOf('bg_') === 0) return 'background';
+    if (kind.indexOf('title') >= 0 || slug.indexOf('title') >= 0) return 'title';
+    return 'cosmetic';
+  };
+  var cosmeticKindLabel = function(kind) {
+    if (kind === 'avatar') return 'Аватар';
+    if (kind === 'background') return 'Фон';
+    if (kind === 'title') return 'Титул';
+    return 'Косметика';
+  };
+  var rewardAmount = function(r) {
+    var amount = Number(r.amount || r.reward_amount || 0);
+    return amount > 0 ? amount : 1;
+  };
   var rewardLabel = function(r) {
     var amount = Number(r.amount || r.reward_amount || 0);
-    if (r.type === 'gems') return fmtShopNum(amount) + ' 💎';
-    if (r.type === 'coins') return fmtShopNum(amount) + ' 🪙';
-    if (r.type === 'keys' || r.type === 'case') return fmtShopNum(amount || 1) + ' кейс';
-    if (r.type === 'particles') return fmtShopNum(amount) + ' ✨';
-    if (r.type === 'card') return r.name || r.card_name || 'карта';
+    if (['gems','coins','keys','case','particles'].indexOf(r.type) >= 0) {
+      var meta = resourceMeta(r.type);
+      return fmtShopNum(amount || 1) + ' ' + meta.unit;
+    }
+    if (r.type === 'card') return r.card_name || r.name || 'Карта';
+    if (r.type === 'cosmetic') return r.name || cosmeticKindLabel(cosmeticKind(r));
     return '';
   };
   var setImageUrl = function(s) {
@@ -5093,6 +5199,449 @@ const ShopScreen = ({profile, onProfileUpdate}) => {
     if (s.currency === 'coins') return fmtShopNum(price) + ' 🪙';
     return rubPrice(price);
   };
+  var productPriceLabel = function(p) {
+    if (p.item_type === 'gift_shop_set' || p.is_gift) return 'Бесплатно';
+    return rubPrice(p.price);
+  };
+  var packHasInfo = function(pack) {
+    return !!pack && !pack.isGift && Number(pack.price || 0) > 0;
+  };
+  var normalizeRublePack = function(p) {
+    var shopSet = p.shop_set || {};
+    return {
+      source: 'ruble_product',
+      product: p,
+      id: p.shop_set_id || shopSet.id || p.code,
+      code: p.code,
+      item_type: p.item_type,
+      isGift: p.item_type === 'gift_shop_set' || !!p.is_gift,
+      name: p.name || shopSet.name || 'Набор',
+      description: p.description || shopSet.description || '',
+      price: Number(p.price || 0),
+      currency: p.currency || 'rubles',
+      badge: p.badge || '',
+      rewards: parseRewards(p.rewards && p.rewards.length ? p.rewards : shopSet.rewards),
+      image_url: p.image_url || p.display?.image_url || shopSet.image_url || '',
+      cardOwnedFallback: !!(p.owned_card_fallback || shopSet.owned_card_fallback),
+      ownedCardFallback: p.owned_card_fallback || shopSet.owned_card_fallback || null,
+    };
+  };
+  var normalizeLegacySet = function(s) {
+    return {
+      source: 'shop_set',
+      rawSet: s,
+      id: s.id,
+      code: 'shop_set_' + s.id,
+      item_type: 'shop_set',
+      isGift: false,
+      name: s.name || 'Набор',
+      description: s.description || '',
+      price: Number(s.price || 0),
+      currency: s.currency || 'rubles',
+      badge: '',
+      rewards: parseRewards(s.rewards),
+      image_url: setImageUrl(s),
+      cardOwnedFallback: !!s.owned_card_fallback,
+      ownedCardFallback: s.owned_card_fallback || null,
+    };
+  };
+  var rawVisiblePacks = catalogRublePacks.map(normalizeRublePack).concat(
+    sets.filter(function(s){ return !linkedRubleSetIds.has(Number(s.id || 0)); }).map(normalizeLegacySet)
+  );
+  var packVariant = function(pack) {
+    var rewards = pack.rewards || [];
+    if (rewards.some(function(r){ return r.type === 'card'; })) return 'card';
+    if (rewards.some(function(r){ return r.type === 'cosmetic'; })) return 'cosmetic';
+    return 'resources';
+  };
+  var packEyebrow = function(pack) {
+    if (pack.isGift) return 'Подарок';
+    var variant = packVariant(pack);
+    if (variant === 'card') return 'Карточный набор';
+    if (variant === 'cosmetic') return 'Стиль профиля';
+    return 'Ресурсный набор';
+  };
+  var visiblePackBadge = function(pack) {
+    var text = String((pack && pack.badge) || '').trim();
+    var normalized = text.toLowerCase();
+    var technicalBadges = {
+      '3.1': true,
+      '3.2': true,
+      'fallback': true,
+      'owned fallback': true,
+      'owned_fallback': true,
+      'owned-card': true,
+      'owned_card': true,
+      'card-only': true,
+      'card_cosmetic': true,
+      'card-cosmetic': true,
+      'demo': true,
+      'debug': true,
+      'smoke': true,
+      'test': true,
+    };
+    return technicalBadges[normalized] ? '' : text;
+  };
+  var renderResourcePill = function(reward, idx) {
+    var meta = resourceMeta(reward.type);
+    return (
+      <span className={'ea-shop-pack-resource ' + meta.className} key={'res-' + idx}>
+        <span className="ea-shop-pack-resource-icon">{meta.icon}</span>
+        <span><b>{fmtShopNum(rewardAmount(reward))}</b>{meta.unit}</span>
+      </span>
+    );
+  };
+  var renderCosmeticThumb = function(reward, idx) {
+    var kind = cosmeticKind(reward);
+    var imageUrl = reward.image_url || reward.asset_path || '';
+    var title = reward.name || cosmeticKindLabel(kind);
+    return (
+      <span className={'ea-shop-pack-cosmetic ' + kind} key={'cos-' + idx} title={title}>
+        {imageUrl
+          ? <img src={imageUrl} alt="" loading="lazy" decoding="async" onError={function(e){ e.currentTarget.style.display='none'; }}/>
+          : <i>{kind === 'title' ? 'T' : '★'}</i>}
+        <span><b>{cosmeticKindLabel(kind)}</b>{title}</span>
+      </span>
+    );
+  };
+  var rewardImageUrl = function(reward) {
+    return reward.card_image_url || reward.image_url || reward.asset_path || '';
+  };
+  var rewardTitle = function(reward) {
+    if (reward.type === 'card') return reward.card_name || reward.name || 'Карта';
+    if (reward.type === 'cosmetic') return reward.name || cosmeticKindLabel(cosmeticKind(reward));
+    return rewardLabel(reward);
+  };
+  var rarityLabel = function(rarity) {
+    var key = String(rarity || '').toLowerCase();
+    var map = {
+      start: 'Базовая',
+      common: 'Обычная',
+      rare: 'Редкая',
+      superrare: 'С.Редкая',
+      unique: 'Уникум',
+      epic: 'Эпик',
+      legendary: 'Легенда',
+      mythic: 'Мифик',
+      divine: 'Дивайн',
+      limited: 'Лимитед',
+    };
+    return map[key] || String(rarity || 'Редкость');
+  };
+  var rarityAccent = function(rarity) {
+    var key = String(rarity || '').toLowerCase();
+    var map = {
+      start: {a:'#94a3b8', b:'#60a5fa', glow:'rgba(148,163,184,0.24)'},
+      common: {a:'#94a3b8', b:'#64748b', glow:'rgba(148,163,184,0.24)'},
+      rare: {a:'#60a5fa', b:'#3b82f6', glow:'rgba(96,165,250,0.3)'},
+      superrare: {a:'#2dd4bf', b:'#14b8a6', glow:'rgba(45,212,191,0.3)'},
+      unique: {a:'#c084fc', b:'#a78bfa', glow:'rgba(192,132,252,0.3)'},
+      epic: {a:'#a78bfa', b:'#8b5cf6', glow:'rgba(167,139,250,0.32)'},
+      legendary: {a:'#fbbf24', b:'#f59e0b', glow:'rgba(251,191,36,0.34)'},
+      mythic: {a:'#f472b6', b:'#ec4899', glow:'rgba(244,114,182,0.34)'},
+      divine: {a:'#e0e7ff', b:'#fbbf24', glow:'rgba(224,231,255,0.36)'},
+      limited: {a:'#f87171', b:'#ef4444', glow:'rgba(248,113,113,0.34)'},
+    };
+    return map[key] || {a:'#60a5fa', b:'#2dd4bf', glow:'rgba(96,165,250,0.3)'};
+  };
+  var firstRewardValue = function() {
+    for (var i = 0; i < arguments.length; i++) {
+      var value = arguments[i];
+      if (value === 0) return 0;
+      if (value !== undefined && value !== null && String(value).trim() !== '') return value;
+    }
+    return null;
+  };
+  var cardStatItems = function(card) {
+    if (!card) return [];
+    var stats = [];
+    var mana = firstRewardValue(card.card_mana, card.mana_cost, card.mana);
+    var attack = firstRewardValue(card.card_attack, card.base_attack, card.attack, card.current_attack);
+    var hp = firstRewardValue(card.card_hp, card.base_hp, card.hp, card.current_hp);
+    if (card.rarity) stats.push({label:'Редкость', value:rarityLabel(card.rarity), text:true, className:'rarity-' + String(card.rarity || '').toLowerCase()});
+    if (mana !== null) stats.push({label:'Мана', value:mana});
+    if (attack !== null) stats.push({label:'Атака', value:attack});
+    if (hp !== null) stats.push({label:'ХП', value:hp});
+    return stats;
+  };
+  var cardMechanicsText = function(card) {
+    if (!card) return '';
+    var mech = card.mechanics || card.mechanics_desc || '';
+    if (Array.isArray(mech)) return mech.join(', ');
+    if (mech && typeof mech === 'object') {
+      return mech.description || mech.text || mech.label || mech.name || Object.keys(mech).map(function(k){ return mech[k]; }).filter(Boolean).join(', ');
+    }
+    return String(mech || '');
+  };
+  var firstPackCard = function(pack) {
+    var rewards = pack && Array.isArray(pack.rewards) ? pack.rewards : [];
+    return rewards.find(function(r){ return r && r.type === 'card'; }) || null;
+  };
+  var renderCardStats = function(card, className) {
+    var stats = cardStatItems(card);
+    if (!stats.length) return null;
+    return (
+      <div className={className || 'ea-shop-pack-card-stats'}>
+        {stats.map(function(stat){
+          return <span className={stat.className || ''} key={stat.label}><b>{stat.label}</b>{stat.text ? stat.value : fmtShopNum(stat.value)}</span>;
+        })}
+      </div>
+    );
+  };
+  var renderPackCardDetails = function(pack) {
+    var card = firstPackCard(pack);
+    if (!card) return null;
+    var desc = card.card_description || card.description || '';
+    var mech = cardMechanicsText(card);
+    return (
+      <div className="ea-shop-pack-card-details">
+        <span className="ea-shop-pack-card-name">Карта: {rewardTitle(card)}</span>
+        {renderCardStats(card)}
+        {desc && <span className="ea-shop-pack-card-description">{desc}</span>}
+        {mech && mech !== desc && <em className="ea-shop-pack-card-mechanics">{mech}</em>}
+      </div>
+    );
+  };
+  var packRewardGroups = function(pack) {
+    var rewards = pack.rewards || [];
+    return {
+      cards: rewards.filter(function(r){ return r.type === 'card'; }),
+      cosmetics: rewards.filter(function(r){ return r.type === 'cosmetic'; }),
+      resources: rewards.filter(function(r){ return ['gems','coins','keys','case','particles'].indexOf(r.type) >= 0; }),
+    };
+  };
+  var packHasBackground = function(pack) {
+    return packRewardGroups(pack).cosmetics.some(function(r){ return cosmeticKind(r) === 'background'; });
+  };
+  var packCardMode = function(pack) {
+    if (!firstPackCard(pack)) return '';
+    return packHasBackground(pack) ? 'card-cosmetic' : 'card-only';
+  };
+  var playerOwnsPackCard = function(pack) {
+    var card = firstPackCard(pack);
+    if (!card) return false;
+    var id = Number(card.card_id || card.id || 0);
+    return id > 0 && ownedCardIds.has(id);
+  };
+  var resolvePackForOwnedCards = function(pack) {
+    var card = firstPackCard(pack);
+    if (!card || !playerOwnsPackCard(pack)) return pack;
+    if (!packHasBackground(pack)) return null;
+    var cardId = Number(card.card_id || card.id || 0);
+    return Object.assign({}, pack, {
+      cardOwnedFallback: true,
+      ownedCardFallback: {type:'owned_card', amount:50, resource:'gems', cards:[{card_id:cardId, card_name:card.card_name || card.name || '', rarity:card.rarity}]},
+      originalCardReward: card,
+      rewards: (pack.rewards || []).filter(function(r){ return !(r && r.type === 'card' && Number(r.card_id || r.id || 0) === cardId); }).concat([{
+        type: 'gems',
+        amount: 50,
+        fallback_for: 'owned_card',
+        card_id: cardId,
+      }]),
+    });
+  };
+  var paidPacksFirst = function(packs) {
+    return packs
+      .map(function(pack, index){ return {pack: pack, index: index}; })
+      .sort(function(a, b){
+        var giftA = a.pack && a.pack.isGift ? 1 : 0;
+        var giftB = b.pack && b.pack.isGift ? 1 : 0;
+        return giftA - giftB || a.index - b.index;
+      })
+      .map(function(item){ return item.pack; });
+  };
+  var visiblePacks = paidPacksFirst(rawVisiblePacks.map(resolvePackForOwnedCards).filter(Boolean));
+  var packCardForAccent = function(pack) {
+    if (firstPackCard(pack)) return firstPackCard(pack);
+    if (pack.originalCardReward) return pack.originalCardReward;
+    var fallbackCard = pack.ownedCardFallback && Array.isArray(pack.ownedCardFallback.cards)
+      ? pack.ownedCardFallback.cards[0]
+      : null;
+    return fallbackCard || null;
+  };
+  var packStyleVars = function(pack) {
+    var card = packCardForAccent(pack);
+    if (!card) return {};
+    var colors = rarityAccent(card.rarity);
+    return {
+      '--pack-accent': colors.a,
+      '--pack-accent-2': colors.b,
+      '--pack-glow': colors.glow,
+    };
+  };
+  var renderCosmeticHeroFrame = function(cosmetics) {
+    var backgrounds = cosmetics.filter(function(r){ return cosmeticKind(r) === 'background' && rewardImageUrl(r); });
+    var avatars = cosmetics.filter(function(r){ return cosmeticKind(r) === 'avatar' && rewardImageUrl(r); });
+    var slideCount = Math.max(backgrounds.length || 0, avatars.length || 0, 1);
+    var slideIndex = slideCount > 1 ? packHeroTick % slideCount : 0;
+    var bg = backgrounds.length ? backgrounds[slideIndex % backgrounds.length] : null;
+    var avatar = avatars.length ? avatars[slideIndex % avatars.length] : null;
+    return (
+      <div className={'ea-shop-pack-hero-cosmetics' + (slideCount > 1 ? ' is-rotating' : '')}>
+        <div className="ea-shop-pack-cosmetic-frame" key={(bg?.cosmetic_slug || bg?.name || 'no-bg') + ':' + (avatar?.cosmetic_slug || avatar?.name || 'no-avatar') + ':' + slideIndex}>
+          {bg
+            ? <img className="ea-shop-pack-bg-full" src={rewardImageUrl(bg)} alt="" loading="lazy" decoding="async"/>
+            : <span className="ea-shop-pack-bg-placeholder">Стиль профиля</span>}
+          {avatar && <img className="ea-shop-pack-avatar-corner" src={rewardImageUrl(avatar)} alt="" loading="lazy" decoding="async"/>}
+        </div>
+      </div>
+    );
+  };
+  var renderCardArtwork = function(card, className) {
+    var img = card.card_image_url || card.image_url || (card.card_id ? cardPreviewUrl(card.card_id) : '');
+    return (
+      <div className={className || 'ea-shop-pack-card-art'}>
+        {img ? <img src={img} alt="" loading="lazy" decoding="async" onError={function(e){ if (!fallbackPreviewToFull(e, card.card_id || card)) e.currentTarget.style.display='none'; }}/> : <span>🂡</span>}
+      </div>
+    );
+  };
+  var renderPackHero = function(pack) {
+    var groups = packRewardGroups(pack);
+    var cards = groups.cards;
+    var cosmetics = groups.cosmetics;
+    var resources = groups.resources;
+    if (cards.length) {
+      var card = cards[0];
+      var name = card.card_name || card.name || 'Карта';
+      if (packCardMode(pack) === 'card-cosmetic') {
+        return (
+          <div className="ea-shop-pack-card-showcase">
+            {renderCosmeticHeroFrame(cosmetics)}
+            <div className="ea-shop-pack-card-line">
+              {renderCardArtwork(card, 'ea-shop-pack-card-art ea-shop-pack-card-art-inline')}
+              {renderPackCardDetails(pack)}
+            </div>
+          </div>
+        );
+      }
+      return (
+        <div className="ea-shop-pack-hero-card" title={name}>
+          {renderCardArtwork(card)}
+        </div>
+      );
+    }
+    if (cosmetics.length) {
+      return renderCosmeticHeroFrame(cosmetics);
+    }
+    return (
+      <div className="ea-shop-pack-hero-resources">
+        {resources.slice(0, 4).map(function(r, idx){
+          var meta = resourceMeta(r.type);
+          return <span className={meta.className} key={idx}>{meta.icon}<b>{fmtShopNum(rewardAmount(r))}</b></span>;
+        })}
+      </div>
+    );
+  };
+  var renderPackRewards = function(pack) {
+    var groups = packRewardGroups(pack);
+    var cards = groups.cards;
+    var cosmetics = groups.cosmetics;
+    var resources = groups.resources;
+    if (packCardMode(pack) === 'card-cosmetic') {
+      if (!resources.length) return null;
+      return <div className="ea-shop-pack-rewards">{resources.map(renderResourcePill)}</div>;
+    }
+    return (
+      <div className="ea-shop-pack-rewards">
+        {resources.map(renderResourcePill)}
+        {cosmetics.map(renderCosmeticThumb)}
+        {cards.slice(1).map(function(r, idx){ return <span className="ea-shop-pack-cosmetic card" key={'card-' + idx}>{r.card_name || r.name || 'Карта'}</span>; })}
+      </div>
+    );
+  };
+  var renderPackInfoModal = function(pack) {
+    if (!packHasInfo(pack)) return null;
+    var groups = packRewardGroups(pack);
+    return (
+      <div className="ea-shop-info-modal" role="dialog" aria-modal="true" aria-label="Состав набора" onClick={function(){ setInfoPack(null); }}>
+        <div className="ea-shop-info-sheet" onClick={function(e){ e.stopPropagation(); }}>
+          <div className="ea-shop-info-head">
+            <div>
+              <span className="ea-shop-eyebrow">{packEyebrow(pack)}</span>
+              <h3>{pack.name || 'Набор'}</h3>
+              {pack.description && <p>{pack.description}</p>}
+            </div>
+            <button type="button" className="ea-shop-info-close" onClick={function(){ setInfoPack(null); }} aria-label="Закрыть">×</button>
+          </div>
+          {groups.cards.length > 0 && (
+            <div className="ea-shop-info-section">
+              <h4>Карты</h4>
+              {groups.cards.map(function(card, idx){
+                var img = rewardImageUrl(card) || (card.card_id ? cardPreviewUrl(card.card_id) : '');
+                var mech = cardMechanicsText(card);
+                return (
+                  <div className="ea-shop-info-card-row" key={'card-info-' + idx}>
+                    {img && <img src={img} alt="" loading="lazy" decoding="async" onError={function(e){ if (!fallbackPreviewToFull(e, card.card_id || card)) e.currentTarget.style.display='none'; }}/>}
+                    <div>
+                      <strong>{rewardTitle(card)}</strong>
+                      {renderCardStats(card, 'ea-shop-info-card-stats')}
+                      {card.card_description && <span>{card.card_description}</span>}
+                      {mech && mech !== card.card_description && <em>{mech}</em>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {groups.cosmetics.length > 0 && (
+            <div className="ea-shop-info-section">
+              <h4>Косметика</h4>
+              <div className="ea-shop-info-cosmetics">
+                {groups.cosmetics.map(function(item, idx){
+                  var kind = cosmeticKind(item);
+                  var img = rewardImageUrl(item);
+                  return (
+                    <div className={'ea-shop-info-cosmetic ' + kind} key={'cos-info-' + idx}>
+                      {img ? <img src={img} alt="" loading="lazy" decoding="async"/> : <i>{kind === 'title' ? 'T' : '★'}</i>}
+                      <span><b>{cosmeticKindLabel(kind)}</b>{rewardTitle(item)}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+          {groups.resources.length > 0 && (
+            <div className="ea-shop-info-section">
+              <h4>Ресурсы</h4>
+              <div className="ea-shop-info-resources">
+                {groups.resources.map(renderResourcePill)}
+              </div>
+            </div>
+          )}
+          <div className="ea-shop-info-actions">
+            <button type="button" className="ea-shop-pack-buy" onClick={function(){ setInfoPack(null); buyPack(pack); }} disabled={buying != null}>
+              <span>Купить</span>
+              <strong>{pack.source === 'ruble_product' ? productPriceLabel(pack.product) : setPriceLabel(pack)}</strong>
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+  var claimGiftPack = async function(pack) {
+    if (!pack.code) return;
+    setBuying(pack.code);
+    try {
+      var res = await fetch(_buildAuthUrl('/api/shop/gifts/claim'), {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({product_code: pack.code}),
+      });
+      var d = await res.json();
+      if (res.ok && d.success) {
+        invalidateShopCaches();
+        invalidateInventoryCaches();
+        window.showToast('Подарок получен!', 'success', 2500);
+        reloadProfile();
+        await loadData();
+      } else {
+        window.showToast(d.message || (d.error === 'already_claimed' ? 'Подарок уже получен' : 'Не удалось получить подарок'), 'error');
+      }
+    } catch(e) {
+      window.showToast('Ошибка сети', 'error');
+    }
+    setBuying(null);
+  };
   var buySet = function(s) {
     var itemType = 'shop_set_' + s.id;
     if (s.currency === 'gems' || s.currency === 'coins') {
@@ -5100,6 +5649,28 @@ const ShopScreen = ({profile, onProfileUpdate}) => {
       return;
     }
     openPaymentModal(itemType, s.name || 'Набор', Number(s.price || 0), {item_type:itemType, item_name:s.name || 'Набор'}, null);
+  };
+  var buyPack = function(pack) {
+    if (pack.isGift) {
+      claimGiftPack(pack);
+      return;
+    }
+    if (pack.source === 'ruble_product' && pack.product) {
+      openPaymentModal(
+        pack.product.item_type,
+        pack.name || 'Набор',
+        Number(pack.price || 0),
+        {
+          item_type: pack.product.item_type,
+          item_name: pack.name || 'Набор',
+          product_code: pack.product.code,
+          shop_set_id: pack.product.shop_set_id,
+        },
+        pack.product.package_type || null
+      );
+      return;
+    }
+    buySet(pack.rawSet || pack);
   };
   var passProductFor = function(tab) {
     return tab === 'ultra' ? ultraPassProduct : basicPassProduct;
@@ -5113,7 +5684,7 @@ const ShopScreen = ({profile, onProfileUpdate}) => {
     if (hasUltraPass && tab === 'basic') return 'Ultra уже активен';
     var product = passProductFor(tab);
     if (!product) return 'Нет в каталоге';
-    var suffix = ' / мес';
+    var suffix = ' / 1 сезон';
     if ((hasUltraPass && tab === 'ultra') || (hasExtraPass && tab === 'basic')) suffix = ' / продлить';
     if (hasExtraPass && !hasUltraPass && tab === 'ultra') suffix = ' / улучшить';
     return rubPrice(product.rub_price) + suffix;
@@ -5131,6 +5702,30 @@ const ShopScreen = ({profile, onProfileUpdate}) => {
     openPaymentModal(product.item_type, product.title || (tab === 'ultra' ? 'ExtraPass Ultra' : 'ExtraPass'), Number(product.rub_price || 0), {item_type:product.item_type}, product.package_type || null);
     if (closePassModal) setShowPassModal(false);
   };
+  React.useEffect(function(){
+    window.__openExtraPassModal = function(tab, options) {
+      var nextTab = tab === 'ultra' ? 'ultra' : 'basic';
+      setPassTab(nextTab);
+      setShowGift(false);
+      if (options && options.showDetails) {
+        setShowPassModal(true);
+        return;
+      }
+      if (!passProductFor(nextTab)) {
+        setPendingPassPurchase(nextTab);
+        return;
+      }
+      setPendingPassPurchase(null);
+      openPassPurchase(nextTab, true);
+    };
+    return function(){ delete window.__openExtraPassModal; };
+  });
+  React.useEffect(function(){
+    if (!pendingPassPurchase || !passProductFor(pendingPassPurchase)) return;
+    var nextTab = pendingPassPurchase;
+    setPendingPassPurchase(null);
+    openPassPurchase(nextTab, true);
+  }, [pendingPassPurchase, basicPassProduct, ultraPassProduct, hasExtraPass, hasUltraPass]);
   var rarityGlow = function(color) {
     if (typeof color === 'string' && color[0] === '#' && color.length === 7) return color + '44';
     return 'rgba(96,165,250,0.28)';
@@ -5156,44 +5751,63 @@ const ShopScreen = ({profile, onProfileUpdate}) => {
         </div>
       )}
 
-      {/* ═══════ Section 1: Наборы ═══════ */}
-      {sets.length > 0 && (
+      {/* ═══════ Section 1: Игровые наборы ═══════ */}
+      {visiblePacks.length > 0 && (
         <section className="ea-shop-section" data-shop-section="sets">
           <div className="ea-shop-section-title">
-            <h2>Наборы</h2>
-            <span>сезонное предложение</span>
+            <h2>Игровые наборы</h2>
+            <span>карты, ресурсы и стиль</span>
           </div>
-          <div className="ea-shop-bundles">
-            {sets.map(function(s,i){
-              var rewards = parseRewards(s.rewards);
-              var rewardLabels = rewards.map(rewardLabel).filter(Boolean);
-              var imageUrl = setImageUrl(s);
-              var price = Number(s.price || 0);
+          <div className="ea-shop-pack-grid">
+            {visiblePacks.map(function(pack,i){
+              var variant = packVariant(pack);
+              var cardMode = packCardMode(pack);
+              var badge = visiblePackBadge(pack);
+              var price = Number(pack.price || 0);
+              var busy = buying === pack.code || buying === pack.item_type || buying != null;
               return (
-                <article className="ea-shop-bundle" key={s.id || i}>
-                  <div className="ea-shop-bundle-copy">
-                    <div className="ea-shop-eyebrow">Игровой набор</div>
-                    <h3>{s.name || 'Набор'}</h3>
-                    {s.description && <p>{s.description}</p>}
-                    {rewardLabels.length > 0 && (
-                      <div className="ea-shop-reward-line">
-                        {rewardLabels.map(function(label, idx){
-                          return <span className="ea-shop-chip" key={idx}>{label}</span>;
-                        })}
-                      </div>
-                    )}
-                    <div className="ea-shop-cta-row">
-                      <button className="ea-shop-price" onClick={function(){ buySet(s); }} disabled={buying!=null}>
-                        {setPriceLabel(s)}
-                      </button>
-                      {!androidShell && (s.currency || 'rubles') === 'rubles' && price > 0 && (
-                        <span className="ea-shop-ghost-price">≈ {calcStars(price)} ⭐</span>
-                      )}
+                <article
+                  className={'ea-shop-pack-card ea-shop-pack-variant-' + variant + (cardMode ? ' ea-shop-pack-card-mode-' + cardMode : '') + (pack.cardOwnedFallback ? ' ea-shop-pack-card-owned-fallback' : '') + (pack.isGift ? ' ea-shop-pack-gift' : '')}
+                  data-pack-code={pack.code}
+                  data-pack-variant={variant}
+                  data-card-mode={cardMode || undefined}
+                  style={packStyleVars(pack)}
+                  key={pack.code || pack.id || i}>
+                  <div className="ea-shop-pack-copy">
+                    <div className="ea-shop-pack-topline">
+                      <span className="ea-shop-eyebrow">{packEyebrow(pack)}</span>
+                      {badge && <span className="ea-shop-pack-badge">{badge}</span>}
                     </div>
+                    <h3>{pack.name || 'Набор'}</h3>
+                    {pack.description && <p>{pack.description}</p>}
+                    {variant === 'card' && cardMode !== 'card-cosmetic' && renderPackCardDetails(pack)}
+                    {pack.cardOwnedFallback && <p className="ea-shop-pack-fallback-note">Карта уже в коллекции — заменили её на 50 гемов.</p>}
                   </div>
-                  <div className="ea-shop-bundle-art" aria-hidden="true">
-                    {imageUrl && <img className="ea-shop-card-mini" src={imageUrl} alt="" onError={function(e){ e.currentTarget.style.display='none'; }}/>}
-                    <img className="ea-shop-case-art" src="/DesignAssets/Cases/Case.png" alt=""/>
+                  <div className="ea-shop-pack-media" aria-hidden="true">
+                    {renderPackHero(pack)}
+                  </div>
+                  {renderPackRewards(pack)}
+                  <div className="ea-shop-pack-footer">
+                    <button
+                      className="ea-shop-pack-buy"
+                      onClick={function(){ buyPack(pack); }}
+                      disabled={busy}
+                      aria-busy={busy ? 'true' : 'false'}>
+                      <span>{pack.isGift ? 'Получить' : 'Купить'}</span>
+                      <strong>{pack.isGift ? 'Бесплатно' : (pack.source === 'ruble_product' ? productPriceLabel(pack.product) : setPriceLabel(pack))}</strong>
+                    </button>
+                    {packHasInfo(pack) && (
+                      <button
+                        type="button"
+                        className="ea-shop-pack-info"
+                        onClick={function(e){ e.stopPropagation(); setInfoPack(pack); }}
+                        aria-label={'Состав набора ' + (pack.name || '')}>
+                        i
+                      </button>
+                    )}
+                    {!pack.isGift && !androidShell && (pack.currency || 'rubles') === 'rubles' && price > 0 && (
+                      <span className="ea-shop-ghost-price">≈ {calcStars(price)} ⭐</span>
+                    )}
                   </div>
                 </article>
               );
@@ -5201,6 +5815,8 @@ const ShopScreen = ({profile, onProfileUpdate}) => {
           </div>
         </section>
       )}
+
+      {renderPackInfoModal(infoPack)}
 
       {/* ═══════ Section 2: ExtraPass ═══════ */}
       <section className="ea-shop-section" data-shop-section="extrapass">
@@ -5219,20 +5835,20 @@ const ShopScreen = ({profile, onProfileUpdate}) => {
               <div>
                 <h3>{passTab === 'ultra' ? 'ExtraPass ULTRA' : 'ExtraPass'}</h3>
                 <p>{passTab === 'ultra'
-                  ? 'Максимальный режим сезона: отдельные ULTRA-награды, реролл кейсов и быстрый прогресс.'
-                  : 'Базовый премиум: меньше ожидания, больше наград, без рекламы и с быстрым прогрессом.'}</p>
+                  ? 'Максимальный режим сезона: Ultra-награды, повышенные шансы, 500 гемов и переоткрытие кейса.'
+                  : 'Базовый премиум: дорожка Battle Pass, 5 пресетов колод, кейс за 4 победы и свечение ника.'}</p>
               </div>
             </div>
             {hasExtraPass && (
               <div className="ea-shop-pass-active">
                 {hasUltraPass ? 'Ultra активен' : 'ExtraPass активен'}
-                {extraExpiry ? ' до ' + new Date(extraExpiry).toLocaleDateString('ru-RU',{day:'numeric',month:'long',year:'numeric'}) : ''}
+                {seasonEndLabel ? ' до конца сезона: ' + seasonEndLabel : ' до конца сезона'}
               </div>
             )}
             <div className="ea-shop-value-strip">
               {(passTab === 'ultra'
-                ? [['3','победы до кейса'], ['41-45','ULTRA этапы БП'], ['best','реролл кейсов']]
-                : [['4','победы до кейса'], ['5','пресетов колод'], ['×1.2','монет в боях']]
+                ? [['3','победы до кейса'], ['41-45','ULTRA этапы БП'], ['↻','переоткрытие кейса']]
+                : [['4','победы до кейса'], ['5','пресетов колод'], ['★','свечение ника']]
               ).map(function(v){
                 return <div className="ea-shop-value" key={v[1]}><strong>{v[0]}</strong><span>{v[1]}</span></div>;
               })}
@@ -5240,8 +5856,8 @@ const ShopScreen = ({profile, onProfileUpdate}) => {
           </div>
           <div className="ea-shop-benefits">
             {(passTab === 'ultra'
-              ? [['Все из ExtraPass','База Premium остается включенной.'], ['Реролл кейсов','При открытии выбирается лучший результат.'], ['Золотой ник','Статус виден в профиле и социальных местах.'], ['Генератор быстрее','Уровни генератора дают больший лимит ключей.']]
-              : [['Реклама отключена','Игрок не теряет темп между боями.'], ['2 дорожка БП','Премиальная линия наград сезона.'], ['+2 пресета','3 бесплатных колоды превращаются в 5.'], ['Профиль и сквады','Оформление профиля, создание сквадов, токены.']]
+              ? [['Все из ExtraPass','База Premium остается включенной.'], ['Переоткрытие кейса','После открытия можно вручную открыть кейс повторно.'], ['Улучшенное свечение ника','Ultra-статус виден в боях, профиле и социальных местах.'], ['500 гемов','Начисляются вместе с покупкой Ultra.']]
+              : [['Премиум-ник','ExtraPass включает отдельное свечение никнейма.'], ['Премиум БП','Премиальная линия наград сезона.'], ['5 пресетов','3 бесплатных колоды превращаются в 5.'], ['Профиль и сквады','Оформление профиля и создание сквадов.']]
             ).map(function(item){
               return <div className="ea-shop-benefit" key={item[0]}><strong>{item[0]}</strong><span>{item[1]}</span></div>;
             })}
@@ -5251,9 +5867,9 @@ const ShopScreen = ({profile, onProfileUpdate}) => {
             <div className="ea-shop-compare-row"><div>Кейс за победы</div><div>4</div><div>3</div></div>
             <div className="ea-shop-compare-row"><div>Пресеты колод</div><div>5</div><div>5</div></div>
             <div className="ea-shop-compare-row"><div>Боевой пропуск</div><div>Premium</div><div>Premium + Ultra</div></div>
-            <div className="ea-shop-compare-row"><div>Кейсы</div><div>обычно</div><div>реролл</div></div>
+            <div className="ea-shop-compare-row"><div>Кейсы</div><div>обычно</div><div>переоткрытие</div></div>
           </div>
-          <div className="ea-shop-pass-actions">
+          <div className={'ea-shop-pass-actions ' + (IN_GAME_PASS_GIFTS_BETA_ENABLED ? 'has-secondary' : '')}>
             <button onClick={function(){ openPassPurchase(passTab, false); }} disabled={buying!=null || isPassPurchaseDisabled(passTab)}>
               {passPurchaseLabel(passTab)}
             </button>
@@ -5277,7 +5893,7 @@ const ShopScreen = ({profile, onProfileUpdate}) => {
             {catalogCasePacks.map(function(p){
               return (
                 <article className={'ea-shop-case-card ' + (p.badge ? 'popular' : '')} key={p.id}>
-                  <img src="/DesignAssets/Cases/Case.png" alt=""/>
+                  <img src={caseArtForPack(p)} alt=""/>
                   <div>
                     <strong>{p.title}</strong>
                     <span>{p.subtitle}</span>
@@ -5303,7 +5919,7 @@ const ShopScreen = ({profile, onProfileUpdate}) => {
             <div className="ea-shop-particles-head">
               <div>
                 <div className="ea-shop-eyebrow blue">Сегодня в продаже</div>
-                <p className="ea-shop-small-copy">Видно, кому именно покупается прогресс и сколько осталось до апгрейда.</p>
+                <p className="ea-shop-small-copy">Добирай частицы до следующего уровня. Ротация обновится по таймеру.</p>
               </div>
               <div className="ea-shop-timer">⏳ {particlesTimer || '0:00:00'}</div>
             </div>
@@ -5393,32 +6009,6 @@ const ShopScreen = ({profile, onProfileUpdate}) => {
         </section>
       )}
 
-      {/* ═══════ Debug Section ═══════ */}
-      {profile?.user_id === 6803854304 && !androidShell && (
-        <div style={{padding:'20px 16px 0'}}>
-          <div style={{fontSize:'17px',fontWeight:900,color:T.orange,fontFamily:"'Exo 2',sans-serif",marginBottom:'12px'}}>🔧 Дебаг</div>
-          <div style={{background:T.bgCard,border:'1px dashed '+T.orange+'44',borderRadius:'16px',padding:'16px',textAlign:'center'}}>
-            <div style={{fontSize:'13px',color:T.grey2,marginBottom:'10px',fontFamily:"'Exo 2',sans-serif"}}>🗝️ 1 ключ за 1 ⭐</div>
-            <button onClick={async function(){
-              setBuying('debug_key');
-              try {
-                var res = await fetch(_buildAuthUrl('/api/payments/stars/create'), {
-                  method:'POST', headers:{'Content-Type':'application/json'},
-                  body: JSON.stringify({amount_rub: 3, description: '1 ключ (дебаг)', metadata: {item_type: 'keys', keys_amount: 1, item_name: '1 ключ (дебаг)'}}),
-                });
-                var d = await res.json();
-                if (d.success) window.showToast('Счёт отправлен в чат', 'success', 5000);
-                else window.showToast(d.message || d.error, 'error');
-              } catch(e){ window.showToast('Ошибка', 'error'); }
-              setBuying(null);
-            }} disabled={buying!=null}
-              style={{background:'linear-gradient(135deg,'+T.orange+','+T.orangeD+')',border:'none',borderRadius:'10px',padding:'10px 20px',color:'white',fontSize:'13px',fontWeight:800,fontFamily:"'Exo 2',sans-serif",cursor:'pointer',opacity:buying!=null?0.6:1}}>
-              1 ⭐ — 1 ключ
-            </button>
-          </div>
-        </div>
-      )}
-
       {/* ═══ ExtraPass Modal ═══ */}
       {showPassModal && (
         <div onClick={function(){ setShowPassModal(false); setShowGift(false); }} style={{position:'absolute',inset:0,background:'rgba(5,2,12,0.92)',backdropFilter:'blur(10px)',zIndex:100,display:'flex',alignItems:'flex-end',justifyContent:'center',padding:'20px',animation:'fadeIn 0.2s'}}>
@@ -5441,15 +6031,13 @@ const ShopScreen = ({profile, onProfileUpdate}) => {
                   <div style={{fontSize:'36px',textAlign:'center'}}>⭐</div>
                   <div style={{fontSize:'18px',fontWeight:900,background:'linear-gradient(135deg,#ff4d2e,#f5921e)',WebkitBackgroundClip:'text',WebkitTextFillColor:'transparent',fontFamily:"'Exo 2',sans-serif",textAlign:'center'}}>ExtraPass</div>
                   <div style={{fontSize:'11px',color:T.grey2,lineHeight:1.7}}>
-                    • Отсутствие рекламы<br/>
-                    • 2 дорожка Battle Pass<br/>
-                    • +2 пресета колод<br/>
-                    • ×1.2 монет в боях<br/>
+                    • Премиальная дорожка Battle Pass<br/>
+                    • 5 пресетов колод<br/>
+                    • Кейс за 4 победы<br/>
+                    • Премиальное свечение ника<br/>
                     • Оформление профиля<br/>
                     • Создание сквадов<br/>
-                    • История боёв<br/>
-                    • Сквадовые токены<br/>
-                    • Приоритетная поддержка
+                    • История боёв
                   </div>
                   <button onClick={function(){ openPassPurchase('basic', true); }} disabled={isPassPurchaseDisabled('basic')}
                     style={{background:'linear-gradient(135deg,#ff4d2e,#f5921e)',border:'none',borderRadius:'10px',padding:'10px',color:'white',fontWeight:800,fontFamily:"'Exo 2',sans-serif",cursor:isPassPurchaseDisabled('basic')?'default':'pointer',opacity:isPassPurchaseDisabled('basic')?0.62:1,boxShadow:'0 10px 28px rgba(255,77,46,0.28)'}}>
@@ -5462,12 +6050,11 @@ const ShopScreen = ({profile, onProfileUpdate}) => {
                   <div style={{fontSize:'18px',fontWeight:900,background:'linear-gradient(135deg,#ff5fa2,#2dd4bf)',WebkitBackgroundClip:'text',WebkitTextFillColor:'transparent',fontFamily:"'Exo 2',sans-serif",textAlign:'center'}}>ExtraPass Ultra</div>
                   <div style={{fontSize:'11px',color:T.grey2,lineHeight:1.7}}>
                     • Всё из ExtraPass<br/>
-                    • Золотой ник<br/>
-                    • Повышенные шансы<br/>
-                    • Реролл кейсов<br/>
-                    • Расширенная статистика<br/>
-                    • Уникальные позиции в БП<br/>
-                    • Эксклюзивные сезонные бонусы
+                    • 500 гемов при покупке<br/>
+                    • Ultra-финал Battle Pass<br/>
+                    • Улучшенное свечение ника<br/>
+                    • Повышенные шансы кейсов<br/>
+                    • Переоткрытие кейса
                   </div>
                   <button onClick={function(){ openPassPurchase('ultra', true); }} disabled={isPassPurchaseDisabled('ultra')}
                     style={{background:'linear-gradient(135deg,#ff5fa2,#2dd4bf)',border:'none',borderRadius:'10px',padding:'10px',color:'white',fontWeight:800,fontFamily:"'Exo 2',sans-serif",cursor:isPassPurchaseDisabled('ultra')?'default':'pointer',opacity:isPassPurchaseDisabled('ultra')?0.62:1,boxShadow:'0 10px 28px rgba(255,95,162,0.28)'}}>
@@ -5733,7 +6320,7 @@ const CaseOpenScreen = ({onClose, onDone, profile}) => {
     if (!openingToken || !canReroll || rerolling || claiming) return;
     window._playCaseSfx?.('case-reroll-ultra-sound', {volume:0.64});
     setRerolling(true);
-    setLoadingText('Готовим Ultra-реролл...');
+    setLoadingText('Готовим переоткрытие кейса...');
     setPhase('opening');
     try {
       const res = await fetch(apiUrl('/api/cases/reroll-from-keys'), {
@@ -5745,7 +6332,7 @@ const CaseOpenScreen = ({onClose, onDone, profile}) => {
       if (!res.ok || !d.success) {
         setRerolling(false);
         setPhase('reveal');
-        window.showToast?.(d.message || d.error || 'Реролл не запустился', 'error', 3200);
+        window.showToast?.(d.message || d.error || 'Переоткрытие кейса не запустилось', 'error', 3200);
         return;
       }
       const seq = Array.isArray(d.tap_results) && d.tap_results.length === 4 ? d.tap_results : [1,1,1,1];
@@ -5764,7 +6351,7 @@ const CaseOpenScreen = ({onClose, onDone, profile}) => {
   };
 
   const openRerollCase = async () => {
-    setLoadingText('Открываем реролл...');
+    setLoadingText('Переоткрываем кейс...');
     setPhase('opening');
     try {
       const res = await fetch(apiUrl('/api/cases/open-reroll-from-keys'), {
@@ -5790,7 +6377,7 @@ const CaseOpenScreen = ({onClose, onDone, profile}) => {
         setRerolling(false);
         setRerollToken(null);
         setPhase('reveal');
-        window.showToast?.(d.message || d.error || 'Реролл не завершён. Текущие награды сохранены.', 'error', 3200);
+        window.showToast?.(d.message || d.error || 'Переоткрытие кейса не завершено. Текущие награды сохранены.', 'error', 3200);
       }
     } catch(e) {
       setRerolling(false);
@@ -6001,7 +6588,7 @@ const CaseOpenScreen = ({onClose, onDone, profile}) => {
 
               {result.rewards?.extra_pass_bonus?.tier === 'ultra' && (
                 <div style={{background:'linear-gradient(135deg,rgba(124,58,237,0.18),rgba(96,165,250,0.10))',border:'1px solid rgba(167,139,250,0.45)',borderRadius:'14px',padding:'10px 14px',marginBottom:'10px',color:'#ddd6fe',fontSize:'12px',fontWeight:700,textAlign:'center',fontFamily:"'Exo 2',sans-serif"}}>
-                  {canReroll ? 'ExtraPass ULTRA: доступен один бесплатный реролл' : 'ExtraPass ULTRA: бонусные шансы применены'}
+                  {canReroll ? 'ExtraPass ULTRA: доступно одно бесплатное переоткрытие кейса' : 'ExtraPass ULTRA: бонусные шансы применены'}
                 </div>
               )}
             </div>
@@ -6012,7 +6599,7 @@ const CaseOpenScreen = ({onClose, onDone, profile}) => {
             {canReroll && (
               <button data-no-global-click-sound="true" onClick={startReroll} disabled={claiming || rerolling}
                 style={{flex:'1 1 100%',height:'50px',background:'linear-gradient(135deg,#ff5fa2,#2dd4bf)',border:'none',borderRadius:'14px',color:'white',fontSize:'15px',fontWeight:'900',fontFamily:"'Exo 2',sans-serif",cursor:(claiming||rerolling)?'default':'pointer',boxShadow:'0 8px 24px rgba(255,95,162,0.35)',opacity:(claiming||rerolling)?0.64:1}}>
-                Реролл ULTRA
+                Переоткрыть кейс
               </button>
             )}
             {(result.remaining_keys||0) > 0 ? (
@@ -7847,6 +8434,9 @@ const GeneratorScreen = ({onBack, profile}) => {
     : Math.max(0, Math.min(100, (1 - (nextS / Math.max(1, intervalSeconds))) * 100));
   const filledSlots = Math.max(0, Math.min(acc, cap));
   const compactHeight = typeof window !== 'undefined' && window.innerHeight < 760;
+  const artTop = compactHeight ? 'calc(var(--ea-safe-top) + 72px)' : 'calc(var(--ea-safe-top) + 76px)';
+  const artWidth = compactHeight ? 'min(116%, 430px)' : 'min(112%, 500px)';
+  const artSpacerHeight = compactHeight ? 'clamp(188px, 29dvh, 224px)' : 'clamp(226px, 32dvh, 304px)';
   const fmt2 = (n) => String(n).padStart(2, '0');
   const errorText = ({
     not_enough_gems: `Недостаточно гемов: нужно ${gemCost || status?.upgrade_cost?.gems || 0}`,
@@ -7863,12 +8453,12 @@ const GeneratorScreen = ({onBack, profile}) => {
   return (
     <div style={{flex:1,minHeight:0,height:'var(--ea-viewport-height, 100dvh)',position:'relative',overflowY:'auto',overflowX:'hidden',background:'#120b24',animation:'fadeIn 0.2s',overscrollBehaviorY:'contain',WebkitOverflowScrolling:'touch'}}>
       <div style={{position:'absolute',top:0,left:0,right:0,zIndex:0,height:'var(--ea-viewport-height, 100dvh)',minHeight:620,overflow:'hidden',background:'#1a0f2d',pointerEvents:'none'}}>
-        <img src="/DesignAssets/MainMenu/Generator/MidoriyaArt.JPG" alt="" style={{position:'absolute',top:0,left:'50%',width:'112%',height:'auto',minHeight:0,objectFit:'contain',objectPosition:'50% 0%',transform:'translateX(-50%)',filter:'saturate(1.18) contrast(1.03)'}}/>
-        <div style={{position:'absolute',inset:0,background:'linear-gradient(180deg,rgba(9,5,23,0.06) 0%,rgba(9,5,23,0.02) 38%,rgba(18,11,36,0.26) 55%,rgba(18,11,36,0.78) 72%,#120b24 100%),linear-gradient(90deg,rgba(12,7,24,0.18),transparent 36%,transparent 66%,rgba(12,7,24,0.2))'}}/>
+        <img src="/DesignAssets/MainMenu/Generator/MidoriyaArt.JPG" alt="" style={{position:'absolute',top:artTop,left:'50%',width:artWidth,height:'auto',minHeight:0,objectFit:'contain',objectPosition:'50% 0%',transform:'translateX(-50%)',filter:'saturate(1.16) contrast(1.04) drop-shadow(0 20px 30px rgba(4,2,10,0.34))'}}/>
+        <div style={{position:'absolute',inset:0,background:'radial-gradient(circle at 50% 23%,rgba(245,146,30,0.13),transparent 28%),linear-gradient(180deg,rgba(9,5,23,0.3) 0%,rgba(9,5,23,0.04) 26%,rgba(18,11,36,0.12) 46%,rgba(18,11,36,0.74) 70%,#120b24 100%),linear-gradient(90deg,rgba(12,7,24,0.2),transparent 34%,transparent 66%,rgba(12,7,24,0.24))'}}/>
       </div>
 
       <div style={{position:'relative',zIndex:2,minHeight:'var(--ea-viewport-height, 100dvh)',padding:'0 12px calc(16px + var(--ea-safe-bottom-soft))'}}>
-        <header style={{position:'sticky',top:0,zIndex:6,display:'grid',gridTemplateColumns:'42px 1fr auto',alignItems:'center',gap:10,padding:'max(16px, var(--ea-safe-top-generator)) calc(12px + var(--ea-safe-right)) 12px calc(12px + var(--ea-safe-left))',margin:'0 -12px',background:'linear-gradient(180deg,rgba(18,11,36,0.82),rgba(18,11,36,0.48) 78%,rgba(18,11,36,0))',backdropFilter:'blur(12px)',WebkitBackdropFilter:'blur(12px)',transform:'translateZ(0)'}}>
+        <header style={{position:'sticky',top:0,zIndex:6,display:'grid',gridTemplateColumns:'42px 1fr auto',alignItems:'center',gap:10,padding:'max(16px, var(--ea-safe-top-generator)) calc(12px + var(--ea-safe-right)) 12px calc(12px + var(--ea-safe-left))',margin:'0 -12px',background:'linear-gradient(180deg,rgba(18,11,36,0.9),rgba(18,11,36,0.62) 72%,rgba(18,11,36,0))',backdropFilter:'blur(14px)',WebkitBackdropFilter:'blur(14px)',transform:'translateZ(0)'}}>
           <button onClick={onBack} type="button" aria-label="Назад" style={{display:'grid',placeItems:'center',width:42,height:42,border:'1px solid rgba(255,255,255,0.16)',borderRadius:8,background:'rgba(21,12,39,0.58)',color:'#fff8e8',backdropFilter:'blur(10px)',cursor:'pointer'}}>
             <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true">
               <path d="M15 18l-6-6 6-6" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"/>
@@ -7883,9 +8473,9 @@ const GeneratorScreen = ({onBack, profile}) => {
           </div>
         </header>
 
-        <div style={{height:compactHeight?'30dvh':'38dvh',minHeight:compactHeight?190:260,maxHeight:380}}/>
+        <div style={{height:artSpacerHeight}}/>
 
-        <section style={{padding:compactHeight?12:14,border:'1px solid rgba(255,233,174,0.18)',borderRadius:12,background:'linear-gradient(180deg,rgba(38,26,66,0.76),rgba(23,14,41,0.86)),rgba(29,20,52,0.78)',boxShadow:'0 -12px 34px rgba(5,3,15,0.34)',backdropFilter:'blur(16px)',WebkitBackdropFilter:'blur(16px)'}}>
+        <section style={{padding:compactHeight?12:14,border:'1px solid rgba(255,233,174,0.2)',borderRadius:12,background:'linear-gradient(180deg,rgba(40,27,70,0.84),rgba(21,13,38,0.92)),rgba(29,20,52,0.84)',boxShadow:'0 -10px 28px rgba(5,3,15,0.26),0 16px 42px rgba(5,3,15,0.34),inset 0 1px 0 rgba(255,248,232,0.08)',backdropFilter:'blur(18px)',WebkitBackdropFilter:'blur(18px)'}}>
         <div style={{display:'grid',gridTemplateColumns:'1fr auto',alignItems:'start',gap:12,marginBottom:14}}>
           <div>
             <p style={{margin:'0 0 6px',fontSize:19,fontWeight:800,letterSpacing:0,lineHeight:1.12,color:'#fff8e8',fontFamily:"'Exo 2',sans-serif"}}>Хранилище ключей</p>
@@ -7947,7 +8537,7 @@ const GeneratorScreen = ({onBack, profile}) => {
           </div>
         </div>
 
-        <div style={{position:'sticky',bottom:'calc(8px + var(--ea-safe-bottom-soft))',display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,alignItems:'center',paddingTop:4}}>
+        <div style={{position:'sticky',bottom:'calc(8px + var(--ea-safe-bottom-soft))',display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,alignItems:'center',paddingTop:6}}>
           <button onClick={doClaim} disabled={!statusReady || !canClaim || busy || loading} type="button" style={{display:'inline-grid',gridTemplateColumns:'auto auto',alignItems:'center',justifyContent:'center',gap:9,minHeight:52,border:0,borderRadius:8,background:canClaim?'linear-gradient(180deg,#ffd46e,#f4a529)':'rgba(255,255,255,0.08)',color:canClaim?'#2f1800':'rgba(255,248,232,0.42)',font:'inherit',fontSize:16,fontWeight:900,letterSpacing:0,boxShadow:canClaim?'0 8px 0 #8f4f12,0 15px 26px rgba(244,179,63,0.28)':'none',cursor:canClaim && !busy ? 'pointer':'default',fontFamily:"'Exo 2',sans-serif"}}>
             <KeyIcon size={21}/>
             {!statusReady || loading ? 'Загрузка...' : busy ? 'Загрузка...' : canClaim ? `Забрать ${acc}` : 'Нет ключей'}
@@ -8036,6 +8626,8 @@ const CardDetailScreen = ({card, profile, onBack, onCardUpgraded}) => {
   const hasParticles = pHave >= pNeeded;
   const hasCoins = coinsHave >= cNeeded;
   const canUp   = !locked && !isMax && hasParticles && hasCoins;
+  const detailArtHeight = 300;
+  const detailArtLift = 96;
 
   const firstMechanic = mechanics[0] || null;
   const mechanicIcon  = firstMechanic ? _getMechanicIcon(firstMechanic) : _ICON.mechSample;
@@ -8088,14 +8680,21 @@ const CardDetailScreen = ({card, profile, onBack, onCardUpgraded}) => {
 
   return (
     <div className="tg-safe-screen" style={{position:'absolute',inset:0,background:T.bg,zIndex:100,display:'flex',flexDirection:'column',animation:'slideInRight 0.25s ease-out forwards',overflow:'hidden'}}>
+      <button
+        onClick={onBack}
+        aria-label="Назад"
+        style={{position:'absolute',top:12,left:12,width:36,height:36,borderRadius:10,background:'rgba(0,0,0,0.56)',backdropFilter:'blur(10px)',WebkitBackdropFilter:'blur(10px)',border:'1px solid rgba(255,255,255,0.16)',color:'white',fontSize:17,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',zIndex:40,boxShadow:'0 6px 18px rgba(0,0,0,0.32)'}}
+      >
+        ←
+      </button>
       <div style={{flex:1,overflowY:'auto',scrollbarWidth:'none',position:'relative'}}>
 
         {/* ── Hero art block ── */}
-        <div style={{position:'relative'}}>
-          <div onClick={()=>setShowArt(true)} style={{width:'100%',height:300,background:T.bgCard,cursor:'zoom-in',position:'relative',overflow:'hidden',display:'flex',alignItems:'center',justifyContent:'center'}}>
+        <div style={{position:'relative',height:detailArtHeight}}>
+          <div onClick={()=>setShowArt(true)} style={{position:'absolute',top:-detailArtLift,left:0,right:0,height:detailArtHeight+detailArtLift,background:T.bgCard,cursor:'zoom-in',overflow:'hidden',display:'flex',alignItems:'center',justifyContent:'center'}}>
             {!imgErr
               ? <img src={cardFullUrl(localCard)} alt={localCard.name} onError={()=>setImgErr(true)}
-                  style={{width:'100%',height:'100%',objectFit:'cover',objectPosition:'top', opacity: locked ? 0.4 : 1}}/>
+                  style={{width:'100%',height:'100%',objectFit:'cover',objectPosition:'50% 0%', opacity: locked ? 0.4 : 1,filter:'saturate(1.04) contrast(1.02)'}}/>
               : <span style={{fontSize:64,opacity:0.2}}>🃏</span>
             }
             {locked && (
@@ -8106,13 +8705,13 @@ const CardDetailScreen = ({card, profile, onBack, onCardUpgraded}) => {
           </div>
 
           {/* Gradient fade over art bottom */}
-          <div style={{position:'absolute',bottom:0,left:0,right:0,height:180,background:`linear-gradient(to bottom,transparent 0%,${T.bg}ee 55%,${T.bg} 100%)`,pointerEvents:'none'}}/>
+          <div style={{position:'absolute',bottom:0,left:0,right:0,height:190,background:`linear-gradient(to bottom,transparent 0%,${T.bg}dd 50%,${T.bg} 100%)`,pointerEvents:'none'}}/>
 
           {/* Overlaid info */}
           <div style={{position:'absolute',bottom:0,left:0,right:0,padding:'0 16px 14px',display:'flex',flexDirection:'column',gap:8}}>
             <div>
               <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:4}}>
-                <span style={{fontSize:20,fontWeight:800,color:'white',fontFamily:"'Exo 2',sans-serif",textShadow:'0 2px 8px rgba(0,0,0,0.6)'}}>{localCard.name}</span>
+                <span style={{fontSize:21,fontWeight:900,color:'white',fontFamily:"'Exo 2',sans-serif",textShadow:'0 2px 10px rgba(0,0,0,0.66)',lineHeight:1.08}}>{localCard.name}</span>
               </div>
               <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
                 <div style={{display:'inline-block',padding:'2px 10px',background:`${rc}22`,border:`1px solid ${rc}44`,borderRadius:6,fontSize:11,fontWeight:700,color:rc,fontFamily:"'Exo 2',sans-serif"}}>{RARITY_LABEL[localCard.rarity]||localCard.rarity}</div>
@@ -8126,28 +8725,25 @@ const CardDetailScreen = ({card, profile, onBack, onCardUpgraded}) => {
             {/* Stat pills */}
             <div style={{display:'flex',gap:6}}>
               {showHpStat && (
-                <div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',gap:5,background:'rgba(74,222,128,0.12)',border:'1px solid rgba(74,222,128,0.25)',borderRadius:10,padding:'8px 0'}}>
+                <div style={{flex:1,minHeight:44,display:'flex',alignItems:'center',justifyContent:'center',gap:6,background:'rgba(74,222,128,0.13)',border:'1px solid rgba(74,222,128,0.28)',borderRadius:10,padding:'8px 0',boxShadow:'inset 0 1px 0 rgba(255,255,255,0.04)'}}>
                   <div style={{fontSize:8,color:T.grey2,fontWeight:600,fontFamily:"'Exo 2',sans-serif"}}>ХП</div>
                   <div style={{fontSize:18,fontWeight:800,color:'white',fontFamily:"'Exo 2',sans-serif",background:'rgba(74,222,128,0.3)',borderRadius:6,padding:'1px 8px'}}>{localCard.current_hp??localCard.base_hp??0}</div>
                 </div>
               )}
               {showAttackStat && (
-                <div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',gap:5,background:'rgba(248,113,113,0.12)',border:'1px solid rgba(248,113,113,0.25)',borderRadius:10,padding:'8px 0'}}>
+                <div style={{flex:1,minHeight:44,display:'flex',alignItems:'center',justifyContent:'center',gap:6,background:'rgba(248,113,113,0.13)',border:'1px solid rgba(248,113,113,0.28)',borderRadius:10,padding:'8px 0',boxShadow:'inset 0 1px 0 rgba(255,255,255,0.04)'}}>
                   <div style={{fontSize:8,color:T.grey2,fontWeight:600,fontFamily:"'Exo 2',sans-serif"}}>АТК</div>
                   <div style={{fontSize:18,fontWeight:800,color:'white',fontFamily:"'Exo 2',sans-serif",background:'rgba(248,113,113,0.3)',borderRadius:6,padding:'1px 8px'}}>{localCard.current_attack??localCard.base_attack??0}</div>
                 </div>
               )}
               {showManaStat && (
-                <div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',gap:5,background:'rgba(251,146,60,0.08)',border:'1px solid rgba(251,146,60,0.18)',borderRadius:10,padding:'8px 0'}}>
+                <div style={{flex:1,minHeight:44,display:'flex',alignItems:'center',justifyContent:'center',gap:6,background:'rgba(251,146,60,0.1)',border:'1px solid rgba(251,146,60,0.22)',borderRadius:10,padding:'8px 0',boxShadow:'inset 0 1px 0 rgba(255,255,255,0.04)'}}>
                   <div style={{fontSize:8,color:T.grey2,fontWeight:600,fontFamily:"'Exo 2',sans-serif"}}>МАНА</div>
                   <div style={{fontSize:18,fontWeight:800,color:'white',fontFamily:"'Exo 2',sans-serif",background:'rgba(251,146,60,0.25)',borderRadius:6,padding:'1px 8px',opacity:0.9}}>{localCard.mana_cost??0}</div>
                 </div>
               )}
             </div>
           </div>
-
-          {/* Floating back button */}
-          <button onClick={onBack} style={{position:'absolute',top:12,left:12,width:34,height:34,borderRadius:10,background:'rgba(0,0,0,0.45)',backdropFilter:'blur(8px)',WebkitBackdropFilter:'blur(8px)',border:'1px solid rgba(255,255,255,0.12)',color:'white',fontSize:16,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',zIndex:10}}>←</button>
 
           {/* Zoom hint */}
           <div style={{position:'absolute',top:12,right:12,background:'rgba(0,0,0,0.45)',borderRadius:6,backdropFilter:'blur(8px)',WebkitBackdropFilter:'blur(8px)',padding:'3px 8px',fontSize:9,color:'rgba(255,255,255,0.5)',fontFamily:"'Exo 2',sans-serif",zIndex:10}}>
@@ -8203,7 +8799,7 @@ const CardDetailScreen = ({card, profile, onBack, onCardUpgraded}) => {
 
           {/* Description */}
           {localCard.description && (
-            <div style={{background:'rgba(255,255,255,0.03)',border:`1px solid ${T.purple1}`,borderRadius:12,padding:'12px 14px'}}>
+            <div style={{background:'rgba(255,255,255,0.035)',border:`1px solid ${T.purple1}`,borderRadius:12,padding:'12px 14px',boxShadow:'inset 0 1px 0 rgba(255,255,255,0.025)'}}>
               <div style={{fontSize:10,color:T.grey2,fontWeight:600,fontFamily:"'Exo 2',sans-serif",letterSpacing:'0.03em',marginBottom:5}}>ОПИСАНИЕ</div>
               <div style={{fontSize:13,color:T.grey1,lineHeight:1.6,fontFamily:"'Exo 2',sans-serif"}}>{localCard.description}</div>
             </div>
@@ -8211,14 +8807,14 @@ const CardDetailScreen = ({card, profile, onBack, onCardUpgraded}) => {
 
           {/* Mechanic card */}
           {localCard.mechanics_desc && (
-            <div style={{background:`${T.purpleHL}10`,border:`1px solid ${T.purpleHL}30`,borderRadius:12,padding:'14px',display:'flex',flexDirection:'column',gap:8}}>
+            <div style={{background:`${T.purpleHL}10`,border:`1px solid ${T.purpleHL}32`,borderRadius:12,padding:'14px',display:'flex',flexDirection:'column',gap:9,boxShadow:'inset 0 1px 0 rgba(255,255,255,0.025)'}}>
               <div style={{display:'flex',alignItems:'center',gap:8}}>
                 <div style={{width:36,height:36,borderRadius:10,background:`${T.purpleHL}20`,border:`1px solid ${T.purpleHL}35`,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
                   <img src={mechanicIcon} alt="" style={{width:20,height:20,filter:'invert(1)',opacity:0.9}}/>
                 </div>
                 <div style={{fontSize:14,fontWeight:700,color:T.purpleLt,fontFamily:"'Exo 2',sans-serif"}}>МЕХАНИКА</div>
               </div>
-              <div style={{fontSize:12,color:T.grey1,lineHeight:1.55,fontFamily:"'Exo 2',sans-serif",paddingLeft:44}}>{localCard.mechanics_desc}</div>
+              <div style={{fontSize:13,color:T.grey1,lineHeight:1.55,fontFamily:"'Exo 2',sans-serif"}}>{localCard.mechanics_desc}</div>
             </div>
           )}
         </div>
@@ -9204,21 +9800,21 @@ const SQUAD_ROLE_META = {
     short: 'Играет и приносит вклад',
     description: 'Базовая роль сквада: зарабатывает CBRP и личные токены, участвует в общем прогрессе и покупает личные награды.',
     privileges: ['Получает личные токены за вклад', 'Видит вклад и активность сквада', 'Может покупать личные награды'],
-    path: ['Участник', 'Офицер', 'Создатель'],
+    path: ['Участник', 'Офицер', 'Глава'],
   },
   officer: {
     title: 'Офицер',
     short: 'Помогает управлять составом',
     description: 'Доверенная роль для управления составом. Офицер помогает принимать заявки и поддерживать порядок в скваде.',
     privileges: ['Принимает и отклоняет заявки', 'Исключает участников', 'Покупает улучшения за общак'],
-    path: ['Участник', 'Офицер', 'Создатель'],
+    path: ['Участник', 'Офицер', 'Глава'],
   },
   creator: {
-    title: 'Создатель',
-    short: 'Владелец бизнеса',
+    title: 'Глава',
+    short: 'Владелец сквада',
     description: 'Полный контроль над сквадом: настройки, роли, персонализация, улучшения, роспуск и передача владения.',
     privileges: ['Меняет настройки и косметику сквада', 'Назначает офицеров', 'Передаёт владение', 'Распускает сквад'],
-    path: ['Создатель', 'Передача владения'],
+    path: ['Глава', 'Передача владения'],
   },
 };
 
@@ -9338,6 +9934,7 @@ const SquadsScreen = ({profile,onReloadProfile,onNoticeChange,onOpenAnnouncement
   const myRole = clan?.memberRole || clan?.member_role;
   const canManage = myRole === 'creator' || myRole === 'owner' || myRole === 'officer';
   const isOwner = myRole === 'creator' || myRole === 'owner';
+  const clanHasBoost = !!(clan?.boost || clan?.has_boost || clan?.clan_has_boost);
   const [settingsForm,setSettingsForm] = React.useState(null);
   const [savingSettings,setSavingSettings] = React.useState(false);
   const [uploading,setUploading] = React.useState(null);
@@ -9345,7 +9942,79 @@ const SquadsScreen = ({profile,onReloadProfile,onNoticeChange,onOpenAnnouncement
   const [pendingPreviews,setPendingPreviews] = React.useState({avatar:null,banner:null});
   const [shopState,setShopState] = React.useState(null);
   const [shopLoading,setShopLoading] = React.useState(false);
+  const [squadBoostProduct,setSquadBoostProduct] = React.useState(null);
+  const [buyingSquadBoost,setBuyingSquadBoost] = React.useState(false);
   const [confirmAction,setConfirmAction] = React.useState(null);
+  const boostCyanButtonStyle = {
+    background:'linear-gradient(135deg,#14b8a6,#38bdf8)',
+    color:'#06121f',
+    boxShadow:'0 10px 26px rgba(45,212,191,.34), inset 0 1px 0 rgba(255,255,255,.42)',
+    border:'none',
+    fontWeight:900
+  };
+  const boostCardStyle = {
+    position:'relative',
+    overflow:'hidden',
+    borderRadius:20,
+    padding:18,
+    border:'1px solid rgba(45,212,191,.42)',
+    background:'radial-gradient(circle at 84% -8%,rgba(191,252,255,.3),transparent 32%),radial-gradient(circle at 8% 100%,rgba(56,189,248,.18),transparent 34%),linear-gradient(160deg,rgba(20,184,166,.2),rgba(15,10,26,.98) 54%,rgba(56,189,248,.16))',
+    boxShadow:'0 18px 46px rgba(20,184,166,.2), inset 0 1px 0 rgba(255,255,255,.1)'
+  };
+  const boostTitleStyle = {
+    margin:'6px 0 0',
+    fontFamily:"'Exo 2',sans-serif",
+    fontSize:25,
+    lineHeight:1.05,
+    fontWeight:900,
+    color:'#bffcff',
+    background:'linear-gradient(95deg,#bffcff 0%,#38f5df 34%,#73d7ff 62%,#efffff 82%,#38f5df 100%)',
+    backgroundSize:'220% 100%',
+    WebkitBackgroundClip:'text',
+    backgroundClip:'text',
+    WebkitTextFillColor:'transparent',
+    textShadow:'0 0 14px rgba(45,212,191,.42)',
+    animation:'titleShimmer 3.2s linear infinite'
+  };
+  const boostBenefitTileStyle = {
+    aspectRatio:'1 / 1',
+    minHeight:126,
+    borderRadius:16,
+    border:'1px solid rgba(45,212,191,.26)',
+    background:'radial-gradient(circle at 78% 8%,rgba(191,252,255,.16),transparent 36%),linear-gradient(180deg,rgba(26,16,48,.94),rgba(8,9,23,.98))',
+    padding:13,
+    display:'flex',
+    flexDirection:'column',
+    justifyContent:'space-between',
+    gap:10,
+    color:T.grey1,
+    fontSize:12,
+    fontWeight:850,
+    lineHeight:1.25,
+    boxShadow:'0 10px 24px rgba(0,0,0,.26), inset 0 1px 0 rgba(255,255,255,.06)'
+  };
+  const boostBenefitTileIconStyle = {
+    width:42,
+    height:42,
+    borderRadius:14,
+    background:'linear-gradient(135deg,rgba(20,184,166,.25),rgba(56,189,248,.22))',
+    border:'1px solid rgba(191,252,255,.28)',
+    display:'grid',
+    placeItems:'center',
+    color:'#bffcff',
+    fontSize:14,
+    fontStyle:'normal',
+    fontWeight:900,
+    boxShadow:'0 0 18px rgba(45,212,191,.18)'
+  };
+  const boostBenefitTiles = [
+    {icon:'+5', title:'+5 мест', caption:'больше участников', accent:'#2dd4bf'},
+    {icon:'×1.2', title:'×1.2 CBRP', caption:'множитель вклада', accent:'#38bdf8'},
+    {icon:'BG', title:'Фон сквада', caption:'загрузка баннера', accent:'#67e8f9'},
+    {icon:'ID', title:'Boost ID', caption:'короткий поиск', accent:'#5eead4'},
+    {icon:'◇', title:'Бирюзовый стиль', caption:'визуальный статус', accent:'#22d3ee'},
+    {icon:'★', title:'Сезонный Boost', caption:'донатный статус', accent:'#bffcff'},
+  ];
   const openLink = (url) => {
     const webApp = window.Telegram?.WebApp;
     if (typeof webApp?.openTelegramLink === 'function') webApp.openTelegramLink(url);
@@ -9420,7 +10089,20 @@ const SquadsScreen = ({profile,onReloadProfile,onNoticeChange,onOpenAnnouncement
     } finally { setShopLoading(false); }
   }, [clan?.id]);
 
+  const loadSquadBoostProduct = React.useCallback(async () => {
+    try {
+      const r = await fetch(_buildAuthUrl('/api/shop/ruble-products?surface=game'), {cache:'no-store'});
+      const d = await r.json();
+      if(!r.ok || d.error) throw new Error(d.error || 'products_failed');
+      const product = (d.products || []).find(p => p && (p.code === 'squad_boost' || p.item_type === 'squad_boost')) || null;
+      setSquadBoostProduct(product);
+    } catch(e) {
+      setSquadBoostProduct(null);
+    }
+  }, []);
+
   React.useEffect(()=>{ if(tab === 'shop') loadShop(); }, [tab, loadShop]);
+  React.useEffect(()=>{ if(tab === 'boost' && !clanHasBoost) loadSquadBoostProduct(); }, [tab, clanHasBoost, loadSquadBoostProduct]);
 
   const randomJoin = async () => {
     try {
@@ -9500,6 +10182,10 @@ const SquadsScreen = ({profile,onReloadProfile,onNoticeChange,onOpenAnnouncement
 
   const uploadSquadImage = async (kind, file) => {
     if(!file) return;
+    if(kind === 'banner' && !clanHasBoost) {
+      window.showToast?.('Фон сквада доступен с Boost','error',2400);
+      return;
+    }
     const allowed = ['image/png','image/jpeg','image/webp'];
     if(!allowed.includes(file.type)) { window.showToast?.('Нужен PNG, JPG или WEBP','error',2400); return; }
     const maxSize = kind === 'banner' ? 6 * 1024 * 1024 : 4 * 1024 * 1024;
@@ -9605,6 +10291,50 @@ const SquadsScreen = ({profile,onReloadProfile,onNoticeChange,onOpenAnnouncement
     } catch(e) { window.showToast?.(squadErrText(e.message),'error',2600); }
   };
 
+  const buySquadBoost = async () => {
+    if(clanHasBoost || buyingSquadBoost) return;
+    if(!squadBoostProduct) {
+      window.showToast?.('Boost временно недоступен','error',2600);
+      return;
+    }
+    setBuyingSquadBoost(true);
+    try {
+      const androidShell = isAndroidAppShell();
+      const endpoint = androidShell ? '/api/payments/create' : '/api/payments/checkout/start';
+      const body = {
+        item_type:'squad_boost',
+        product_code:squadBoostProduct.code || 'squad_boost',
+      };
+      const r = await fetch(_buildAuthUrl(endpoint), {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      const d = await r.json().catch(() => ({}));
+      if(!r.ok || d.error || d.success === false) throw new Error(d.message || d.error || 'payment_failed');
+      const paymentUrl = androidShell ? d.confirmation_url : d.checkout_url;
+      writePendingPurchaseContext({
+        provider:d.provider || 'yookassa',
+        payment_id:d.payment_id,
+        item_type:'squad_boost',
+        item_name:squadBoostProduct.name || 'Boost сквада',
+        amount_rub:Number(squadBoostProduct.price || squadBoostProduct.rub_price || 0),
+        metadata:{item_type:'squad_boost', product_code:squadBoostProduct.code || 'squad_boost'},
+      });
+      if(d.checkout_jti) sessionStorage.setItem('pending_checkout_jti', d.checkout_jti || '');
+      if(d.payment_id) sessionStorage.setItem('pending_payment_id', d.payment_id);
+      sessionStorage.setItem('pending_payment_item', 'squad_boost');
+      sessionStorage.setItem('pending_payment_timestamp', String(Date.now()));
+      sessionStorage.setItem('pending_payment_method', d.provider || 'yookassa');
+      if(paymentUrl) {
+        openExternalPaymentUrl(paymentUrl);
+        window.showToast?.('Открыли оплату Boost. После оплаты вернитесь в игру.','success',4200);
+      } else {
+        window.showToast?.('Платёж создан. Завершите оплату и вернитесь в игру.','success',3600);
+      }
+    } catch(e) {
+      window.showToast?.(e.message || 'Не удалось открыть оплату Boost','error',3200);
+    } finally {
+      setBuyingSquadBoost(false);
+    }
+  };
+
   const deleteSquad = async () => {
     try {
       const r = await fetch(_buildAuthUrl('/api/squads/delete'), {method:'POST'});
@@ -9657,7 +10387,7 @@ const SquadsScreen = ({profile,onReloadProfile,onNoticeChange,onOpenAnnouncement
   };
 
   const SQUAD_WARS_BETA_ENABLED = false;
-  const tabs = clan ? [['hub','Хаб'],['members','Участники'],['role','Роль'],['contrib','Вклад'],['shop','Магазин'],...(SQUAD_WARS_BETA_ENABLED?[['wars','Войны']]:[]),['search','Поиск'],...(isOwner?[['settings','Настройки']]:[])] : [['home','Главная'],['search','Поиск']];
+  const tabs = clan ? [['hub','Хаб'],['members','Участники'],['role','Роль'],['contrib','Вклад'],['boost','Boost'],['shop','Магазин'],...(SQUAD_WARS_BETA_ENABLED?[['wars','Войны']]:[]),['search','Поиск'],...(isOwner?[['settings','Настройки']]:[])] : [['home','Главная'],['search','Поиск']];
 
   if(loading) return <div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',color:T.grey2}}>Загрузка...</div>;
 
@@ -9709,6 +10439,7 @@ const SquadsScreen = ({profile,onReloadProfile,onNoticeChange,onOpenAnnouncement
               <SquadStat label="Мои токены" value={(clan.myTokens||0).toLocaleString()} color={T.ai}/>
             </div>
             <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:9}}>
+              {!clanHasBoost && <SquadButton onClick={()=>setTab('boost')} style={{...boostCyanButtonStyle,gridColumn:'1 / -1',minHeight:46}}>Boost клана</SquadButton>}
               <SquadButton onClick={()=>setTab('contrib')}>Мой вклад</SquadButton>
               <SquadButton secondary onClick={onOpenAnnouncements}>Объявления</SquadButton>
               <SquadButton secondary onClick={shareSquad}>Поделиться</SquadButton>
@@ -9774,8 +10505,10 @@ const SquadsScreen = ({profile,onReloadProfile,onNoticeChange,onOpenAnnouncement
                 const isSelf = String(m.user_id) === String(resolveUserId());
                 const canTouch = canManage && !isSelf && rid !== 'creator';
                 return <div key={m.user_id} style={{display:'grid',gridTemplateColumns:canTouch?'minmax(0,1fr) 48px':'1fr',gap:7,alignItems:'stretch'}}>
-                  <div style={{position:'relative',minHeight:116,borderRadius:16,overflow:'hidden',background:m.profile_background_url?`linear-gradient(90deg,rgba(8,4,18,.94) 0%,rgba(8,4,18,.78) 58%,rgba(8,4,18,.34) 100%), center/cover url(${m.profile_background_url})`:`linear-gradient(135deg,${T.bgCard},${T.bgDeep})`,border:`1px solid ${rid==='creator'?T.orange+'66':rid==='officer'?T.purpleLt+'55':T.purple1}`,boxShadow:rid==='creator'?`0 0 22px ${T.orange}18`:'none'}}>
-                    <div style={{position:'relative',display:'flex',gap:12,padding:13,alignItems:'center',minHeight:116}}>
+                  <div style={{position:'relative',minHeight:116,borderRadius:16,overflow:'hidden',background:`linear-gradient(135deg,${T.bgCard},${T.bgDeep})`,border:`1px solid ${rid==='creator'?T.orange+'66':rid==='officer'?T.purpleLt+'55':T.purple1}`,boxShadow:rid==='creator'?`0 0 22px ${T.orange}18`:'none'}}>
+                    {m.profile_background_url && <div aria-hidden="true" style={{position:'absolute',inset:0,background:`center/cover url(${m.profile_background_url})`}}/>}
+                    {m.profile_background_url && <div aria-hidden="true" style={{position:'absolute',inset:0,background:'linear-gradient(90deg,rgba(8,4,18,.96) 0%,rgba(8,4,18,.82) 58%,rgba(8,4,18,.38) 100%)'}}/>}
+                    <div style={{position:'relative',zIndex:1,display:'flex',gap:12,padding:13,alignItems:'center',minHeight:116}}>
                       <SquadAvatar name={m.nick} size={58} url={m.avatar_url}/>
                       <div style={{flex:1,minWidth:0}}>
                         <div style={{display:'flex',alignItems:'center',gap:7,flexWrap:'wrap'}}>
@@ -9861,7 +10594,7 @@ const SquadsScreen = ({profile,onReloadProfile,onNoticeChange,onOpenAnnouncement
 	                      <PremiumNickname name={m.nick} player={m} style={{fontSize:13,fontWeight:900,fontFamily:"'Exo 2',sans-serif"}}/>
                       <div style={{fontSize:11,color:T.grey2}}>{squadRoleTitle(m.role)} · {(m.trophies||0).toLocaleString()} трофеев</div>
                     </div>
-                    <HoldSquadButton onHold={()=>requestMemberAction('transfer',m.user_id)} style={{height:34,width:112,padding:0,borderColor:T.orange,color:T.orange}}>Удержать</HoldSquadButton>
+                    <HoldSquadButton onHold={()=>requestMemberAction('transfer',m.user_id)} style={{height:34,width:112,padding:0,borderColor:T.orange,color:T.orange}}>Удерживай</HoldSquadButton>
                   </div>)}
                 </div>
               )}
@@ -9910,20 +10643,6 @@ const SquadsScreen = ({profile,onReloadProfile,onNoticeChange,onOpenAnnouncement
             {shopState && (
               <>
                 <div style={{background:T.bgCard,border:`1px solid ${T.purple1}`,borderRadius:14,overflow:'hidden'}}>
-                  <div style={{padding:'12px 14px',fontSize:13,fontWeight:900,color:T.white,fontFamily:"'Exo 2',sans-serif"}}>Улучшения</div>
-                  {Object.entries(shopState.upgrade_catalog||{}).map(([key,u]) => {
-                    const current = upgrades[key] || shopState.upgrades?.[key] || 0;
-                    const next = (u.levels||[]).find(x => x.level === current + 1);
-                    return <div key={key} style={{display:'flex',alignItems:'center',gap:10,padding:'12px 14px',borderTop:`1px solid ${T.purple1}66`}}>
-                      <div style={{flex:1,minWidth:0}}>
-                        <div style={{fontSize:13,fontWeight:900,color:T.white}}>{u.title || key}</div>
-                        <div style={{fontSize:11,color:T.grey2}}>Уровень {current}{next ? ` → ${next.level}` : ' · максимум'}</div>
-                      </div>
-                      {next ? <SquadButton onClick={()=>buyUpgrade(key)} disabled={!canManage} style={{height:34,width:96,padding:0}}><SquadToken treasury size={12}/>{next.cost}</SquadButton> : <span style={{fontSize:12,color:T.grey2}}>Макс.</span>}
-                    </div>;
-                  })}
-                </div>
-                <div style={{background:T.bgCard,border:`1px solid ${T.purple1}`,borderRadius:14,overflow:'hidden'}}>
                   <div style={{padding:'12px 14px',fontSize:13,fontWeight:900,color:T.white,fontFamily:"'Exo 2',sans-serif"}}>Личные награды</div>
                   {(shopState.personal_rewards||[]).map(r => {
                     const bought = (shopState.purchases||[]).some(p => p.reward_id === r.id);
@@ -9936,8 +10655,78 @@ const SquadsScreen = ({profile,onReloadProfile,onNoticeChange,onOpenAnnouncement
                     </div>;
                   })}
                 </div>
+                <div style={{background:T.bgCard,border:`1px solid ${T.purple1}`,borderRadius:14,overflow:'hidden'}}>
+                  <div style={{padding:'12px 14px',fontSize:13,fontWeight:900,color:T.white,fontFamily:"'Exo 2',sans-serif"}}>Бонусы сквада</div>
+                  {Object.entries(shopState.upgrade_catalog||{}).filter(([key]) => !['boost','customization'].includes(key)).map(([key,u]) => {
+                    const current = upgrades[key] || shopState.upgrades?.[key] || 0;
+                    const next = (u.levels||[]).find(x => x.level === current + 1);
+                    return <div key={key} style={{display:'flex',alignItems:'center',gap:10,padding:'12px 14px',borderTop:`1px solid ${T.purple1}66`}}>
+                      <div style={{flex:1,minWidth:0}}>
+                        <div style={{fontSize:13,fontWeight:900,color:T.white}}>{u.title || key}</div>
+                        <div style={{fontSize:11,color:T.grey2}}>Уровень {current}{next ? ` → ${next.level}` : ' · максимум'}</div>
+                      </div>
+                      {next ? <SquadButton onClick={()=>buyUpgrade(key)} disabled={!canManage} style={{height:34,width:96,padding:0}}><SquadToken treasury size={12}/>{next.cost}</SquadButton> : <span style={{fontSize:12,color:T.grey2}}>Макс.</span>}
+                    </div>;
+                  })}
+                </div>
               </>
             )}
+          </div>
+        )}
+
+        {clan && tab === 'boost' && (
+          <div style={{display:'flex',flexDirection:'column',gap:12}}>
+            <div style={boostCardStyle}>
+              <div aria-hidden="true" style={{position:'absolute',right:-38,top:-46,width:130,height:130,borderRadius:'50%',background:'radial-gradient(circle,rgba(191,252,255,.2),transparent 62%)'}}/>
+              <div aria-hidden="true" style={{position:'absolute',left:18,right:18,top:0,height:1,background:'linear-gradient(90deg,transparent,rgba(191,252,255,.62),transparent)'}}/>
+              <div style={{position:'relative'}}>
+              <div style={{color:'#2dd4bf',textTransform:'uppercase',letterSpacing:'.08em',fontSize:10,fontWeight:900}}> {clanHasBoost ? 'Boost активен' : 'Сезонное усиление'} </div>
+              <div style={boostTitleStyle}>Boost сквада</div>
+              {!clanHasBoost && (
+                <>
+                  <div style={{marginTop:10,color:T.grey1,fontSize:13,lineHeight:1.45,fontWeight:600}}>Донатный статус для текущего сквада: +5 мест, ×1.2 CBRP за вклад, короткий Boost ID, загрузка фона и голубо-бирюзовый визуал.</div>
+                  <div style={{marginTop:14,display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>
+                    <div style={{borderRadius:13,padding:'10px 11px',background:'rgba(45,212,191,.1)',border:'1px solid rgba(45,212,191,.22)'}}>
+                      <div style={{fontSize:20,fontFamily:"'Exo 2',sans-serif",fontWeight:900,color:'#bffcff',lineHeight:1}}>{squadBoostProduct ? `${Number(squadBoostProduct.price || squadBoostProduct.rub_price || 0).toLocaleString('ru-RU')} ₽` : '—'}</div>
+                      <div style={{color:T.grey2,fontSize:10,fontWeight:800,marginTop:5}}>стоимость</div>
+                    </div>
+                    <div style={{borderRadius:13,padding:'10px 11px',background:'rgba(56,189,248,.09)',border:'1px solid rgba(56,189,248,.2)'}}>
+                      <div style={{fontSize:20,fontFamily:"'Exo 2',sans-serif",fontWeight:900,color:'#bffcff',lineHeight:1}}>1 сезон</div>
+                      <div style={{color:T.grey2,fontSize:10,fontWeight:800,marginTop:5}}>для сквада</div>
+                    </div>
+                  </div>
+                  <SquadButton onClick={buySquadBoost} disabled={buyingSquadBoost || !squadBoostProduct} style={{...boostCyanButtonStyle,marginTop:14,width:'100%',minHeight:45}}>
+                    {buyingSquadBoost ? 'Открываем...' : squadBoostProduct ? 'Купить Boost' : 'Boost недоступен'}
+                  </SquadButton>
+                </>
+              )}
+              {clanHasBoost && (
+                <div style={{marginTop:13,display:'grid',gap:7,borderRadius:13,padding:12,background:'rgba(45,212,191,.12)',border:'1px solid rgba(45,212,191,.3)'}}>
+                  <strong style={{color:'#bffcff',fontSize:14,fontWeight:900}}>Boost активен</strong>
+                  <span style={{color:T.grey1,fontSize:12,lineHeight:1.4,fontWeight:700}}>+5 мест, ×1.2 CBRP за вклад, фон сквада, короткий Boost ID и бирюзовый статус доступны участникам.</span>
+                  <span style={{color:T.grey1,fontSize:12,lineHeight:1.4,fontWeight:700}}>ID {clan.displayId || clan.publicId || clan.id} доступен для поиска, пока Boost активен.</span>
+                </div>
+              )}
+              </div>
+            </div>
+            <div style={{display:'grid',gap:10}}>
+              <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:10}}>
+                <div style={{fontSize:14,fontWeight:900,color:T.white,fontFamily:"'Exo 2',sans-serif"}}>Преимущества Boost</div>
+                <div style={{fontSize:10,fontWeight:900,color:'#bffcff',padding:'4px 8px',borderRadius:999,background:'rgba(45,212,191,.12)',border:'1px solid rgba(45,212,191,.28)'}}>6 бонусов</div>
+              </div>
+              <div style={{display:'grid',gridTemplateColumns:'repeat(2,minmax(0,1fr))',gridTemplateRows:'repeat(3,1fr)',gap:9}}>
+                {boostBenefitTiles.map((item) => (
+                  <div key={item.icon} style={{...boostBenefitTileStyle,border:`1px solid ${item.accent}44`,background:`radial-gradient(circle at 78% 8%,${item.accent}24,transparent 36%),linear-gradient(180deg,rgba(26,16,48,.94),rgba(8,9,23,.98))`}}>
+                    <i style={{...boostBenefitTileIconStyle,color:item.accent,boxShadow:`0 0 20px ${item.accent}22`}}>{item.icon}</i>
+                    <div>
+                      <span style={{display:'block',fontSize:13,fontWeight:900,color:T.white,fontFamily:"'Exo 2',sans-serif",lineHeight:1.12}}>{item.title}</span>
+                      <span style={{display:'block',fontSize:10,color:T.grey2,fontWeight:800,lineHeight:1.25,marginTop:5}}>{item.caption}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div style={{fontSize:10,color:T.grey3,fontWeight:800,textAlign:'center'}}>Boost активирует весь набор сразу для текущего сквада.</div>
+            </div>
           </div>
         )}
 
@@ -9961,9 +10750,9 @@ const SquadsScreen = ({profile,onReloadProfile,onNoticeChange,onOpenAnnouncement
                 {pendingImages.avatar?'Аватар выбран':'Аватар'}
                 <input type="file" accept="image/png,image/jpeg,image/webp" onChange={e=>uploadSquadImage('avatar', e.target.files?.[0])} style={{display:'none'}}/>
               </label>
-              <label style={{height:40,borderRadius:12,border:`1px solid ${T.purple2}`,background:T.bgCard,color:T.grey1,fontSize:12,fontWeight:900,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer'}}>
-                {pendingImages.banner?'Фон выбран':'Фон'}
-                <input type="file" accept="image/png,image/jpeg,image/webp" onChange={e=>uploadSquadImage('banner', e.target.files?.[0])} style={{display:'none'}}/>
+              <label title={clanHasBoost ? 'Фон сквада' : 'Фон сквада доступен с Boost'} style={{height:40,borderRadius:12,border:`1px solid ${clanHasBoost?T.purple2:T.purple1}`,background:T.bgCard,color:clanHasBoost?T.grey1:T.grey3,fontSize:12,fontWeight:900,display:'flex',alignItems:'center',justifyContent:'center',cursor:clanHasBoost?'pointer':'default',opacity:clanHasBoost?1:.62}}>
+                {pendingImages.banner?'Фон выбран':clanHasBoost?'Фон':'Фон · Boost'}
+                {clanHasBoost && <input type="file" accept="image/png,image/jpeg,image/webp" onChange={e=>uploadSquadImage('banner', e.target.files?.[0])} style={{display:'none'}}/>}
               </label>
             </div>
             <input value={settingsForm.name} maxLength={24} onChange={e=>setSettingsForm(f=>({...f,name:e.target.value}))} placeholder="Название" style={{background:T.bgCard,border:`1px solid ${T.purple2}`,borderRadius:12,padding:'12px 14px',color:T.white,fontSize:14,outline:'none'}}/>
@@ -12195,9 +12984,9 @@ const GAME_MODES = [
   {
     id: 'extra_arena',
     icon: '🌀',
-    label: 'Extra Arena',
+    label: 'ExtraArena',
     time: '1–5 минут',
-    desc: 'Особый режим с модификаторами. Блиц — стремительный темп, Драфт — выбери карты перед боем.',
+    desc: 'Особый режим с ротацией модификаторов. Правила меняются каждые несколько часов.',
     color: '#c084fc',
     bg: `rgba(192,132,252,0.08)`,
     border: `rgba(192,132,252,0.3)`,
@@ -12209,46 +12998,261 @@ const GAME_MODES = [
 ];
 
 // ─── Extra Arena info modal ───────────────────────────────────────────────────
-const ExtraArenaInfoModal = ({onClose}) => {
+const EXTRA_ARENA_MODE_UI = {
+  'extra_arena:blitz': {
+    icon: '⚡',
+    label: 'Блиц',
+    short: 'Короткие ходы, ускоренная мана и меньше здоровья у героев.',
+  },
+  'extra_arena:blitzkrieg': {
+    icon: '⚡',
+    label: 'Блицкриг',
+    short: 'Ускоренные ходы, существа готовы атаковать сразу после выхода.',
+  },
+  'extra_arena:spellstorm': {
+    icon: '✦',
+    label: 'Буря заклинаний',
+    short: 'Заклинания стоят 0 маны, темп партии резко растет.',
+  },
+  'extra_arena:sudden_death': {
+    icon: '-HP',
+    label: 'Внезапная смерть',
+    short: 'Герои теряют здоровье каждый ход, затягивать партию опасно.',
+  },
+  'extra_arena:powermax': {
+    icon: '10',
+    label: 'Максимум силы',
+    short: 'Все карты играют на максимальном уровне.',
+  },
+  'extra_arena:draft': {
+    icon: '🃏',
+    label: 'Драфт',
+    short: 'Перед боем собираешь колоду из случайного набора.',
+  },
+};
+
+const EXTRA_ARENA_MODE_FALLBACKS = {
+  'extra_arena:blitz': {
+    mode_id: 'extra_arena:blitz',
+    label: 'ExtraArena Blitz',
+    ruleset: 'classic',
+    classic: {turn_duration_seconds: 5, mana_per_turn: 2, hero_health_multiplier: 0.5, card_level_mode: 'normal'},
+    rewards: {enabled: true},
+  },
+  'extra_arena:blitzkrieg': {
+    mode_id: 'extra_arena:blitzkrieg',
+    label: 'ExtraArena Blitzkrieg',
+    ruleset: 'classic',
+    classic: {turn_duration_seconds: 10, mana_per_turn: 1, hero_health_multiplier: 1, card_level_mode: 'normal', summon_ready_on_play: true},
+    rewards: {enabled: true},
+  },
+  'extra_arena:spellstorm': {
+    mode_id: 'extra_arena:spellstorm',
+    label: 'ExtraArena Spellstorm',
+    ruleset: 'classic',
+    classic: {turn_duration_seconds: 25, mana_per_turn: 1, hero_health_multiplier: 1, card_level_mode: 'normal', spells_free: true},
+    rewards: {enabled: true},
+  },
+  'extra_arena:sudden_death': {
+    mode_id: 'extra_arena:sudden_death',
+    label: 'ExtraArena Sudden Death',
+    ruleset: 'classic',
+    classic: {turn_duration_seconds: 25, mana_per_turn: 1, hero_health_multiplier: 1, card_level_mode: 'normal', sudden_death_enabled: true, sudden_death_damage_start: 1, sudden_death_damage_step: 1},
+    rewards: {enabled: true},
+  },
+  'extra_arena:powermax': {
+    mode_id: 'extra_arena:powermax',
+    label: 'ExtraArena PowerMax',
+    ruleset: 'classic',
+    classic: {turn_duration_seconds: 25, mana_per_turn: 1, hero_health_multiplier: 1, card_level_mode: 'max'},
+    rewards: {enabled: true},
+  },
+};
+
+const humanExtraArenaMode = (modeId, fallbackLabel = '') => {
+  const key = String(modeId || '').toLowerCase().replace(/^extraarena:/, 'extra_arena:');
+  if (EXTRA_ARENA_MODE_UI[key]) return EXTRA_ARENA_MODE_UI[key];
+  const cleaned = String(fallbackLabel || '')
+    .replace(/^ExtraArena\s+/i, '')
+    .replace(/^extra_arena:/i, '')
+    .replace(/^extraarena:/i, '')
+    .replace(/_/g, ' ')
+    .trim();
+  return {icon:'✦', label: cleaned || 'Особый режим', short:'Особые правила текущей ротации.'};
+};
+
+const cleanModeConfigLabel = (modeConfig, modifier) => {
+  const modeId = modeConfig?.mode_id || modifier?.mode_id;
+  return humanExtraArenaMode(modeId, modeConfig?.label || modifier?.label).label;
+};
+
+const collectMenuModeEffects = (modeConfig, modifier) => {
+  const cfg = modeConfig || modifier?.mode_config || EXTRA_ARENA_MODE_FALLBACKS[modifier?.mode_id] || {};
+  const classic = cfg.classic || {};
+  const rewards = cfg.rewards || {};
+  const modeId = cfg.mode_id || modifier?.mode_id || '';
+  const ui = humanExtraArenaMode(modeId, cfg.label || modifier?.label);
+  const turnDuration = classic.turn_duration_seconds ?? 25;
+  const manaPerTurn = classic.mana_per_turn ?? 1;
+  const heroMultiplier = classic.hero_health_multiplier ?? 1;
+  const rewardsEnabled = rewards.enabled !== false;
+
+  let summary = ui.short;
+  if (classic.spells_free === true) {
+    summary = 'Все заклинания стоят 0 маны.';
+  } else if (classic.summon_ready_on_play === true) {
+    summary = 'Существа готовы атаковать сразу после выхода на доску.';
+  } else if (classic.sudden_death_enabled === true) {
+    const start = classic.sudden_death_damage_start || 1;
+    const step = classic.sudden_death_damage_step || 1;
+    summary = `Герои теряют здоровье каждый ход: старт ${start}, затем +${step}.`;
+  } else if (classic.card_level_mode === 'max') {
+    summary = 'Все карты играют на максимальном уровне.';
+  }
+
+  let levelValue = 'Стандартный';
+  let levelDescription = 'Берется текущий уровень из коллекции.';
+  if (classic.card_level_mode === 'max') {
+    levelValue = 'Максимальный';
+    levelDescription = 'Все карты считаются максимального уровня.';
+  } else if (classic.card_level_mode === 'disabled') {
+    levelValue = 'Первый';
+    levelDescription = 'Уровни карт в этом режиме не учитываются.';
+  }
+
+  const advanced = [];
+  if (classic.spells_free === true) {
+    advanced.push({title:'Заклинания', value:'0 маны', description:'Любое заклинание можно сыграть без траты маны.'});
+  }
+  if (classic.summon_ready_on_play === true) {
+    advanced.push({title:'Готовность существ', value:'Сразу', description:'Существо может атаковать в ход выставления.'});
+  }
+  if (classic.sudden_death_enabled === true) {
+    advanced.push({
+      title:'Внезапная смерть',
+      value:`${classic.sudden_death_damage_start || 1} + ${classic.sudden_death_damage_step || 1}`,
+      description:'Урон герою в начале своих ходов: стартовое значение и рост.'
+    });
+  }
+  if (classic.overdraw_to_discard === true) {
+    advanced.push({title:'Перебор карт', value:'Сброс', description:'Лишние карты сбрасываются при переполнении руки.'});
+  }
+
+  const details = [
+    {title:'Длина хода', value:`${turnDuration}с`, description:'Время на решение до автозавершения.'},
+    {title:'Мана за ход', value:`+${manaPerTurn}`, description:'В начале вашего хода.'},
+    {title:'Здоровье героя', value:heroMultiplier === 1 ? '100%' : `${Math.round(heroMultiplier * 100)}%`, description:'Множитель стартового здоровья.'},
+    {title:'Уровень карт', value:levelValue, description:levelDescription},
+    {title:'Награды', value:rewardsEnabled ? 'Активны' : 'Отключены', description:rewardsEnabled ? 'Трофеи, монеты, звезды и победы.' : 'Матч без изменения рейтинга и наград.'},
+    ...advanced,
+  ];
+
+  return {
+    ui,
+    summary: {title: ui.label, description: summary, status: modifier?.is_current ? 'Сейчас' : modifier?.enabled === false ? 'Закрыт' : 'В ротации'},
+    details,
+  };
+};
+
+const normalizeExtraArenaModifiers = (extraArenaMeta) => {
+  const apiMods = Array.isArray(extraArenaMeta?.modifiers) ? extraArenaMeta.modifiers : [];
+  const fromApi = apiMods.map(mod => {
+    const modeId = mod.mode_id || mod.modeId;
+    return {
+      ...mod,
+      mode_id: modeId,
+      label: cleanModeConfigLabel(mod.mode_config, mod),
+      description: humanExtraArenaMode(modeId, mod.label).short,
+      mode_config: mod.mode_config || EXTRA_ARENA_MODE_FALLBACKS[modeId],
+      is_current: !!mod.is_current || (!!extraArenaMeta?.current_mode_id && extraArenaMeta.current_mode_id === modeId),
+    };
+  }).filter(mod => mod.mode_id);
+  if (fromApi.length) return fromApi;
+  return Object.keys(EXTRA_ARENA_MODE_FALLBACKS).filter(id => id !== 'extra_arena:blitz').map(id => ({
+    mode_id: id,
+    label: humanExtraArenaMode(id).label,
+    description: humanExtraArenaMode(id).short,
+    enabled: true,
+    is_current: extraArenaMeta?.current_mode_id === id,
+    mode_config: EXTRA_ARENA_MODE_FALLBACKS[id],
+  }));
+};
+
+const ExtraArenaInfoModal = ({onClose, extraArenaMeta, eaTimer = 0}) => {
   const MODE_COLOR = '#c084fc';
-  const subs = GAME_MODES.find(m => m.id === 'extra_arena')?.subMods || [];
+  const modifiers = normalizeExtraArenaModifiers(extraArenaMeta);
+  const currentId = extraArenaMeta?.current_mode_id || modifiers.find(m => m.is_current)?.mode_id || modifiers[0]?.mode_id;
+  const [selectedId, setSelectedId] = React.useState(currentId);
+  React.useEffect(() => {
+    if (currentId) setSelectedId(currentId);
+  }, [currentId]);
+  const selected = modifiers.find(m => m.mode_id === selectedId) || modifiers.find(m => m.is_current) || modifiers[0] || {};
+  const modeEffects = collectMenuModeEffects(selected.mode_config, selected);
+  const timerText = eaTimer > 0 ? `${Math.floor(eaTimer / 60)}:${String(eaTimer % 60).padStart(2,'0')}` : 'скоро';
   return (
-    <div style={{position:'absolute',inset:0,background:'rgba(5,3,14,0.88)',backdropFilter:'blur(12px)',zIndex:50,display:'flex',alignItems:'center',justifyContent:'center',padding:'20px'}} onClick={onClose}>
+    <div style={{position:'absolute',inset:0,background:'rgba(5,3,14,0.72)',backdropFilter:'blur(12px)',zIndex:50,display:'flex',alignItems:'center',justifyContent:'center',padding:'18px'}} onClick={onClose}>
       <div onClick={e=>e.stopPropagation()}
-        style={{width:'100%',maxWidth:'380px',background:'linear-gradient(180deg,#1e1445 0%,#130d26 100%)',borderRadius:'22px',border:`1.5px solid ${MODE_COLOR}44`,boxShadow:`0 20px 60px rgba(0,0,0,0.7),0 0 40px ${MODE_COLOR}18`,overflow:'hidden',animation:'fadeIn 0.18s'}}>
+        style={{width:'100%',maxWidth:'392px',maxHeight:'84vh',background:'linear-gradient(180deg,#1e1445 0%,#130d26 100%)',borderRadius:'22px',border:`1.5px solid ${MODE_COLOR}44`,boxShadow:`0 20px 60px rgba(0,0,0,0.7),0 0 40px ${MODE_COLOR}18`,overflow:'hidden',animation:'fadeIn 0.18s',display:'flex',flexDirection:'column'}}>
         {/* header */}
-        <div style={{padding:'18px 20px 14px',borderBottom:`1px solid ${MODE_COLOR}22`,background:`${MODE_COLOR}08`}}>
+        <div style={{padding:'16px 18px 12px',borderBottom:`1px solid ${MODE_COLOR}22`,background:`${MODE_COLOR}08`,flexShrink:0}}>
           <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
             <div style={{display:'flex',alignItems:'center',gap:'10px'}}>
               <div style={{width:'40px',height:'40px',borderRadius:'12px',background:`${MODE_COLOR}20`,border:`1px solid ${MODE_COLOR}55`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'22px'}}>🌀</div>
               <div>
-                <div style={{fontSize:'17px',fontWeight:'900',color:'white',fontFamily:"'Exo 2',sans-serif"}}>Extra Arena</div>
-                <div style={{fontSize:'11px',color:MODE_COLOR,fontWeight:'600',marginTop:'1px'}}>1–5 минут · Особый режим</div>
+                <div style={{fontSize:'17px',fontWeight:'900',color:'white',fontFamily:"'Exo 2',sans-serif"}}>ExtraArena</div>
+                <div style={{fontSize:'11px',color:MODE_COLOR,fontWeight:'700',marginTop:'1px'}}>Ротация · смена через {timerText}</div>
               </div>
             </div>
             <button onClick={onClose} style={{width:'30px',height:'30px',borderRadius:'10px',background:'rgba(255,255,255,0.06)',border:`1px solid ${MODE_COLOR}33`,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',color:MODE_COLOR,fontSize:'16px',fontWeight:'700',fontFamily:'monospace'}}>✕</button>
           </div>
-          <div style={{marginTop:'12px',fontSize:'13px',color:'#d1c4fe',lineHeight:1.6}}>
-            Extra Arena — режим с модификаторами, меняющими правила игры. Перед боем ты выбираешь модификатор, и именно по этим правилам пройдёт матч.
-          </div>
         </div>
-        {/* sub-modifiers */}
-        <div style={{padding:'14px 20px 20px'}}>
-          <div style={{fontSize:'11px',color:'rgba(255,255,255,0.4)',textTransform:'uppercase',letterSpacing:'0.6px',marginBottom:'10px'}}>Модификаторы</div>
-          <div style={{display:'flex',flexDirection:'column',gap:'10px'}}>
-            {subs.map(s => (
-              <div key={s.id} style={{background:`${MODE_COLOR}0a`,border:`1px solid ${MODE_COLOR}33`,borderRadius:'14px',padding:'13px 15px',display:'flex',gap:'12px',alignItems:'flex-start'}}>
-                <div style={{width:'38px',height:'38px',borderRadius:'10px',background:`${MODE_COLOR}18`,border:`1px solid ${MODE_COLOR}44`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'20px',flexShrink:0}}>{s.icon}</div>
-                <div>
-                  <div style={{fontSize:'14px',fontWeight:'800',color:'white',fontFamily:"'Exo 2',sans-serif",marginBottom:'4px'}}>{s.label}</div>
-                  <div style={{fontSize:'12px',color:'#c4b5fd',lineHeight:1.55}}>{s.desc}</div>
-                </div>
+        <div style={{padding:'12px 14px 16px',overflowY:'auto'}}>
+          <section style={{padding:'12px 10px 10px',border:`1px solid ${MODE_COLOR}33`,borderRadius:'16px',background:'linear-gradient(180deg,rgba(255,255,255,0.055),rgba(255,255,255,0.015)),rgba(26,16,48,0.78)',marginBottom:'12px'}}>
+            <div style={{display:'grid',gridTemplateColumns:`repeat(${Math.max(1, modifiers.length)}, minmax(0, 1fr))`,alignItems:'center',position:'relative',minHeight:'42px'}}>
+              <div style={{position:'absolute',left:'17px',right:'17px',top:'20px',height:'3px',borderRadius:'999px',background:`linear-gradient(90deg,${T.orange},${MODE_COLOR},#2dd4bf)`,opacity:0.48}}/>
+              {modifiers.map(mod => {
+                const ui = humanExtraArenaMode(mod.mode_id, mod.label);
+                const active = mod.mode_id === selected.mode_id;
+                const current = mod.is_current;
+                return (
+                  <button key={mod.mode_id} onClick={()=>setSelectedId(mod.mode_id)}
+                    style={{position:'relative',zIndex:1,justifySelf:'center',width:active?'42px':'28px',height:active?'42px':'28px',borderRadius:'50%',display:'grid',placeItems:'center',background:active?`${MODE_COLOR}26`:'rgba(36,21,68,0.95)',border:`${active?2:1}px solid ${active?MODE_COLOR:'rgba(122,111,160,0.72)'}`,boxShadow:active?`0 0 22px ${MODE_COLOR}88`:current?`0 0 14px ${T.orange}55`:'none',color:active?'white':'#d8cbff',fontSize:ui.icon.length > 2 ? '9px' : '15px',fontWeight:'900',fontFamily:"'Exo 2',sans-serif",cursor:'pointer',opacity:mod.enabled===false?0.45:1,transition:'all 0.15s'}}>
+                    {ui.icon}
+                  </button>
+                );
+              })}
+            </div>
+            <div style={{display:'flex',justifyContent:'space-between',gap:'8px',marginTop:'8px',color:'#c4b5fd',fontSize:'10px',fontWeight:700,lineHeight:1.25}}>
+              <span>{modifiers[0]?.label || 'Старт'}</span>
+              <span style={{textAlign:'right'}}>{modifiers[modifiers.length - 1]?.label || 'Финиш'}</span>
+            </div>
+          </section>
+
+          <article style={{padding:'12px 13px',border:`1px solid ${MODE_COLOR}55`,borderRadius:'16px',background:'linear-gradient(135deg,rgba(192,132,252,0.18),rgba(26,16,48,0.88))',marginBottom:'10px',boxShadow:'inset 0 1px 0 rgba(255,255,255,0.08)'}}>
+            <div style={{display:'grid',gridTemplateColumns:'minmax(0,1fr) auto',gap:'10px',alignItems:'start'}}>
+              <div>
+                <div style={{fontSize:'16px',fontWeight:'900',color:'white',fontFamily:"'Exo 2',sans-serif",lineHeight:1.05}}>{modeEffects.summary.title}</div>
+                <p style={{margin:'7px 0 0',fontSize:'12px',lineHeight:1.45,color:'#e7ddff'}}>{modeEffects.summary.description}</p>
               </div>
+              <strong style={{color:selected.is_current?T.orangeLt:MODE_COLOR,fontSize:'10px',fontFamily:"'Exo 2',sans-serif",textTransform:'uppercase',lineHeight:1.1}}>{modeEffects.summary.status}</strong>
+            </div>
+          </article>
+
+          <div style={{display:'grid',gridTemplateColumns:'repeat(2,minmax(0,1fr))',gap:'8px'}}>
+            {modeEffects.details.map(item => (
+              <article key={item.title} style={{minHeight:'102px',padding:'10px 11px',border:`1px solid ${MODE_COLOR}2e`,borderRadius:'12px',background:'rgba(26,16,48,0.78)',boxShadow:'inset 0 1px 0 rgba(255,255,255,0.055)'}}>
+                <h2 style={{margin:0,color:'white',fontSize:'12px',lineHeight:1.08,fontFamily:"'Exo 2',sans-serif",fontWeight:900}}>{item.title}</h2>
+                <strong style={{display:'block',marginTop:'10px',color:T.orangeLt,fontSize:'16px',lineHeight:1,fontFamily:"'Exo 2',sans-serif",fontWeight:900}}>{item.value}</strong>
+                <p style={{margin:'7px 0 0',color:'#d8cbff',fontSize:'10.5px',lineHeight:1.28}}>{item.description}</p>
+              </article>
             ))}
           </div>
-          <div style={{marginTop:'14px',background:'rgba(255,255,255,0.04)',borderRadius:'10px',padding:'10px 12px',fontSize:'11px',color:'rgba(255,255,255,0.4)',lineHeight:1.6}}>
-            💡 Набор модификаторов обновляется сезонно.
-          </div>
+
+          {selected.enabled === false && (
+            <div style={{marginTop:'10px',background:'rgba(251,191,36,0.10)',border:'1px solid rgba(251,191,36,0.28)',borderRadius:'12px',padding:'9px 11px',fontSize:'11px',color:'#fde68a',lineHeight:1.45}}>
+              Этот режим есть в ротации, но сейчас закрыт для матчмейкинга.
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -12256,10 +13260,10 @@ const ExtraArenaInfoModal = ({onClose}) => {
 };
 
 // ─── Generic mode info modal (placeholder) ────────────────────────────────────
-const ModeInfoModal = ({modeId, onClose}) => {
+const ModeInfoModal = ({modeId, onClose, extraArenaMeta, eaTimer}) => {
   const m = GAME_MODES.find(x => x.id === modeId);
   if (!m) return null;
-  if (modeId === 'extra_arena') return <ExtraArenaInfoModal onClose={onClose}/>;
+  if (modeId === 'extra_arena') return <ExtraArenaInfoModal onClose={onClose} extraArenaMeta={extraArenaMeta} eaTimer={eaTimer}/>;
   return (
     <div style={{position:'absolute',inset:0,background:'rgba(5,3,14,0.88)',backdropFilter:'blur(12px)',zIndex:50,display:'flex',alignItems:'center',justifyContent:'center',padding:'20px'}} onClick={onClose}>
       <div onClick={e=>e.stopPropagation()}
@@ -12372,13 +13376,17 @@ const GameModeSheet = ({onClose, onConfirm, runtimeStatus}) => {
         if (!r.ok) return;
         const d = await r.json();
         setMatchModesMeta(d);
-        if (d?.extra_arena) setExtraArenaMeta(d.extra_arena);
+        if (d?.extra_arena) {
+          setExtraArenaMeta(d.extra_arena);
+          if (d.extra_arena.seconds_to_rotation != null) {
+            setEaTimer(d.extra_arena.seconds_to_rotation);
+          }
+        }
       } catch(e){}
     })();
   }, []);
 
   React.useEffect(() => {
-    if (mode !== 'extra_arena') return;
     let timerRef = null;
     const tick = async () => {
       try {
@@ -12400,7 +13408,7 @@ const GameModeSheet = ({onClose, onConfirm, runtimeStatus}) => {
       });
     }, 1000);
     return () => clearInterval(timerRef);
-  }, [mode]);
+  }, []);
 
   const selectedDeck = presets.find(p => String(p.preset_number) === deckId);
   const selectedDeckValidity = getDeckPresetValidity(selectedDeck);
@@ -12419,11 +13427,19 @@ const GameModeSheet = ({onClose, onConfirm, runtimeStatus}) => {
     const sec = s % 60;
     return `${m}:${String(sec).padStart(2,'0')}`;
   };
+  const openModeInfo = (event, modeId) => {
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
+    setInfoFor(modeId);
+  };
+  const keepModeInfoTapOnButton = (event) => {
+    event?.stopPropagation?.();
+  };
 
   return (
     <div style={{position:'absolute',inset:0,background:'rgba(5,3,14,0.78)',backdropFilter:'blur(10px)',zIndex:20,display:'flex',flexDirection:'column',justifyContent:'flex-end'}} onClick={onClose}>
       {/* Info modal overlay */}
-      {infoFor && <ModeInfoModal modeId={infoFor} onClose={()=>setInfoFor(null)}/>}
+      {infoFor && <ModeInfoModal modeId={infoFor} onClose={()=>setInfoFor(null)} extraArenaMeta={extraArenaMeta} eaTimer={eaTimer}/>}
 
       <div onClick={e=>e.stopPropagation()} className="safe-pad-bottom"
         style={{'--ea-safe-pad-bottom-base':'24px',background:'linear-gradient(180deg,#1a1238 0%,#130d26 100%)',borderRadius:'24px 24px 0 0',padding:'16px 18px 24px',border:`1px solid ${T.purple1}`,borderBottom:'none',boxShadow:'0 -20px 60px rgba(0,0,0,0.6)',animation:'slideUp 0.28s cubic-bezier(0.32,0.72,0,1)'}}>
@@ -12435,10 +13451,12 @@ const GameModeSheet = ({onClose, onConfirm, runtimeStatus}) => {
           {GAME_MODES.map(m => {
             const disabled = !isModeEnabled(m.id) || (m.id === 'extra_arena' && extraArenaMeta && extraArenaMeta.enabled === false);
             return (
-            <div key={m.id}>
-              <button onClick={()=>disabled?showTempUnavailable():setMode(m.id)}
+            <div key={m.id} style={{position:'relative'}}>
+              <div role="button" tabIndex={0}
+                onClick={()=>disabled?showTempUnavailable():setMode(m.id)}
+                onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();disabled?showTempUnavailable():setMode(m.id);}}}
                 style={{
-                  width:'100%',display:'flex',gap:'14px',padding:'14px 16px',
+                  width:'100%',display:'flex',gap:'14px',padding:m.id==='extra_arena'?'14px 54px 14px 16px':'14px 16px',
                   background: mode===m.id ? m.bg : T.bgCard,
                   border:`1.5px solid ${mode===m.id?m.color:T.purple1}`,
                   borderRadius:'16px',cursor:'pointer',textAlign:'left',opacity:disabled?0.55:1,
@@ -12464,14 +13482,11 @@ const GameModeSheet = ({onClose, onConfirm, runtimeStatus}) => {
                   {disabled && <div style={{fontSize:'11px',color:'#fbbf24',marginTop:'4px',fontWeight:'800'}}>Сейчас закрыт</div>}
                   {mode==='extra_arena' && m.id==='extra_arena' && extraArenaMeta && (
                     <div style={{fontSize:'11px',color:'#c084fc',marginTop:'4px',fontWeight:'700'}}>
-                      Сейчас: {extraArenaMeta.current_label || '…'} · Смена через {fmtTimer(eaTimer)}
+                      Сейчас: {humanExtraArenaMode(extraArenaMeta.current_mode_id, extraArenaMeta.current_label).label} · Смена через {fmtTimer(eaTimer)}
                     </div>
                   )}
                 </div>
                 <div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:'6px',flexShrink:0,alignSelf:'center'}}>
-                  {/* ? info button */}
-                  <button onClick={e=>{e.stopPropagation();setInfoFor(m.id);}}
-                    style={{width:'22px',height:'22px',borderRadius:'50%',background:'rgba(255,255,255,0.08)',border:`1px solid ${m.color}55`,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',fontSize:'11px',fontWeight:'900',color:m.color,fontFamily:'monospace',flexShrink:0}}>?</button>
                   {/* radio dot */}
                   {mode===m.id && (
                     <div style={{width:'20px',height:'20px',borderRadius:'50%',border:`2px solid ${m.color}`,display:'flex',alignItems:'center',justifyContent:'center'}}>
@@ -12479,7 +13494,18 @@ const GameModeSheet = ({onClose, onConfirm, runtimeStatus}) => {
                     </div>
                   )}
                 </div>
-              </button>
+              </div>
+              {m.id === 'extra_arena' && (
+                <button
+                  type="button"
+                  aria-label="Описание ExtraArena"
+                  onPointerDown={keepModeInfoTapOnButton}
+                  onTouchStart={keepModeInfoTapOnButton}
+                  onClick={e=>openModeInfo(e, m.id)}
+                  style={{position:'absolute',right:'15px',top:'14px',zIndex:8,width:'32px',height:'32px',borderRadius:'50%',background:'linear-gradient(180deg,rgba(192,132,252,0.28),rgba(192,132,252,0.12))',border:`1.5px solid ${m.color}`,boxShadow:`0 0 18px ${m.color}55,inset 0 1px 0 rgba(255,255,255,0.18)`,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',fontSize:'15px',fontWeight:'1000',color:'#f4ecff',fontFamily:"'Exo 2',sans-serif",lineHeight:1,WebkitTapHighlightColor:'transparent',touchAction:'manipulation'}}>
+                  ?
+                </button>
+              )}
             </div>
           )})}
         </div>
@@ -12544,17 +13570,163 @@ const GameModeSheet = ({onClose, onConfirm, runtimeStatus}) => {
 };
 
 // ═══════════════════════════════════════════
+// NEW SEASON RESET NOTICE
+// ═══════════════════════════════════════════
+const normalizeMailAttachments = (attachments) => {
+  if (!attachments) return {};
+  if (typeof attachments === 'string') {
+    try { return JSON.parse(attachments) || {}; } catch (_) { return {}; }
+  }
+  return typeof attachments === 'object' ? attachments : {};
+};
+
+function newSeasonSeenKey(userId, resetId) {
+  return `ea:new-season-modal:v1:${userId}:${resetId}`;
+}
+
+function newSeasonLegacySeenKey(userId, resetId) {
+  return 'ea_seen_season_reset_' + userId + '_' + resetId;
+}
+
+function newSeasonResetSeen(userId, resetId) {
+  try {
+    return !!localStorage.getItem(newSeasonSeenKey(userId, resetId))
+      || !!localStorage.getItem(newSeasonLegacySeenKey(userId, resetId));
+  } catch (_) {
+    return false;
+  }
+}
+
+function markSeasonResetSeen(reset) {
+  if (!reset) return;
+  try { localStorage.setItem(newSeasonSeenKey(reset.userId, reset.resetId), '1'); } catch (_) {}
+  try { localStorage.setItem(newSeasonLegacySeenKey(reset.userId, reset.resetId), '1'); } catch (_) {}
+  if (!reset.mailId) return;
+  try {
+    fetch(_buildAuthUrl('/api/mail/read'), {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({mail_id: reset.mailId}),
+      keepalive: true,
+    }).catch(() => {});
+  } catch (_) {}
+}
+
+function extractSeasonResetFromMail(mail, userId) {
+  const attachments = normalizeMailAttachments(mail?.attachments);
+  const resetId = attachments.reset_id ?? attachments.resetId ?? mail?.reset_id ?? null;
+  if (resetId == null || resetId === '') return null;
+  return {
+    userId: String(userId || mail?.user_id || ''),
+    resetId: String(resetId),
+    mailId: mail?.id || mail?.mail_id,
+    subject: mail?.subject || 'Новый сезон ExtraArena',
+    oldTrophies: Number(attachments.old_trophies ?? attachments.oldTrophies ?? 0),
+    newTrophies: Number(attachments.new_trophies ?? attachments.newTrophies ?? 0),
+    grantedKeys: Number(attachments.granted_keys ?? attachments.keys ?? 0),
+    grantedCoins: Number(attachments.granted_coins ?? attachments.coins ?? 0),
+  };
+}
+
+const NewSeasonModal = ({reset, onClose, onOpenExtraPass}) => {
+  if (!reset) return null;
+  const oldTrophies = Number(reset.oldTrophies || 0);
+  const newTrophies = Number(reset.newTrophies || 0);
+  const trophyDelta = newTrophies - oldTrophies;
+  const rewardItems = [];
+  if (reset.grantedKeys) rewardItems.push({
+    className:'keys',
+    icon:<img src="/DesignAssets/MainMenu/Generator/Key.png" alt="" loading="lazy" decoding="async"/>,
+    label:'ключи',
+    value:reset.grantedKeys.toLocaleString('ru-RU'),
+  });
+  if (reset.grantedCoins) rewardItems.push({
+    className:'coins',
+    icon:<IconCoin size={16}/>,
+    label:'монеты',
+    value:reset.grantedCoins.toLocaleString('ru-RU'),
+  });
+  return (
+    <div className="ea-shop-info-modal" role="dialog" aria-modal="true" aria-label="Новый сезон ExtraArena" data-new-season-modal="true" onClick={onClose} style={{alignItems:'flex-end',background:'radial-gradient(circle at 50% 18%,rgba(251,191,36,0.22),transparent 34%),rgba(5,2,12,0.90)'}}>
+      <section
+        className="ea-shop-info-sheet"
+        onClick={(e) => e.stopPropagation()}
+        style={{'--pack-accent':'#fbbf24','--pack-accent-2':'#9c7de0','--pack-glow':'rgba(251,191,36,0.36)',padding:0,overflow:'hidden',boxShadow:'0 28px 90px rgba(0,0,0,0.72),0 0 44px rgba(251,191,36,0.18)'}}>
+        <div style={{position:'relative',padding:'16px 16px 14px'}}>
+          <div style={{position:'absolute',inset:'-42px 0 auto',height:190,background:'radial-gradient(circle at 52% 35%,rgba(251,191,36,0.26),transparent 58%)',pointerEvents:'none'}}/>
+          <div className="ea-shop-info-head" style={{position:'relative',marginBottom:12}}>
+            <div>
+              <span className="ea-shop-eyebrow">Набор сезона открыт</span>
+              <h3 style={{fontSize:24}}>{reset.subject || 'Новый сезон ExtraArena'}</h3>
+              <p>Трофеи пересчитаны, компенсация уже в аккаунте.</p>
+            </div>
+            <button type="button" className="ea-shop-info-close" onClick={onClose} aria-label="Закрыть">×</button>
+          </div>
+
+          <div style={{position:'relative',borderRadius:18,overflow:'hidden',border:'1px solid rgba(255,255,255,0.11)',background:'linear-gradient(135deg,rgba(251,191,36,0.18),rgba(156,125,224,0.16)),rgba(5,2,12,0.42)',boxShadow:'inset 0 1px 0 rgba(255,255,255,0.08)'}}>
+            <div style={{display:'grid',gridTemplateColumns:'112px minmax(0,1fr)',gap:12,alignItems:'center',padding:'14px'}}>
+              <div style={{height:112,borderRadius:16,display:'grid',placeItems:'center',background:'radial-gradient(circle at 38% 24%,rgba(255,255,255,0.22),transparent 32%),linear-gradient(135deg,#fbbf24,#9c7de0)',boxShadow:'0 18px 38px rgba(0,0,0,0.32),0 0 30px rgba(251,191,36,0.26)',fontSize:48,lineHeight:1}} aria-hidden="true">🏆</div>
+              <div style={{minWidth:0}}>
+                <div style={{display:'inline-flex',alignItems:'center',gap:6,marginBottom:8,padding:'5px 8px',borderRadius:999,background:'rgba(5,2,12,0.44)',border:'1px solid rgba(255,255,255,0.1)',color:'#fed7aa',fontSize:10,fontWeight:900,textTransform:'uppercase',fontFamily:"'Exo 2',sans-serif"}}>Сезон завершён</div>
+                <div style={{display:'grid',gridTemplateColumns:'1fr auto 1fr',gap:8,alignItems:'center'}}>
+                  <div style={{minWidth:0,padding:'9px 8px',borderRadius:12,background:'rgba(5,2,12,0.32)',border:'1px solid rgba(255,255,255,0.08)'}}>
+                    <span style={{display:'block',color:T.grey2,fontSize:10,fontWeight:900,textTransform:'uppercase'}}>Было</span>
+                    <b style={{display:'block',color:T.white,fontSize:18,lineHeight:1.05,fontFamily:"'Exo 2',sans-serif",fontVariantNumeric:'tabular-nums'}}>{oldTrophies.toLocaleString('ru-RU')}</b>
+                  </div>
+                  <span style={{color:'#ffd166',fontSize:18,fontWeight:1000}}>→</span>
+                  <div style={{minWidth:0,padding:'9px 8px',borderRadius:12,background:'rgba(5,2,12,0.32)',border:'1px solid rgba(255,255,255,0.08)'}}>
+                    <span style={{display:'block',color:T.grey2,fontSize:10,fontWeight:900,textTransform:'uppercase'}}>Стало</span>
+                    <b style={{display:'block',color:T.white,fontSize:18,lineHeight:1.05,fontFamily:"'Exo 2',sans-serif",fontVariantNumeric:'tabular-nums'}}>{newTrophies.toLocaleString('ru-RU')}</b>
+                  </div>
+                </div>
+                <div style={{marginTop:8,color:trophyDelta < 0 ? '#fed7aa' : '#bbf7d0',fontSize:11,fontWeight:900,fontFamily:"'Exo 2',sans-serif",fontVariantNumeric:'tabular-nums'}}>
+                  {trophyDelta < 0 ? trophyDelta.toLocaleString('ru-RU') : '+'+trophyDelta.toLocaleString('ru-RU')} трофеев
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {rewardItems.length > 0 && (
+            <div className="ea-shop-info-section" style={{position:'relative',paddingTop:13,paddingBottom:4}}>
+              <h4>Компенсация</h4>
+              <div className="ea-shop-pack-rewards" style={{paddingBottom:0,gap:8}}>
+                {rewardItems.map(item => (
+                  <span className={'ea-shop-pack-resource ' + item.className} key={item.label} style={{padding:'8px 10px',fontSize:12}}>
+                    <span className="ea-shop-pack-resource-icon">{item.icon}</span>
+                    <b>+{item.value}</b>{item.label}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="ea-shop-info-actions" style={{position:'relative',bottom:'auto',display:'grid',gridTemplateColumns:'42px minmax(0,1fr)',gap:10,paddingTop:12,background:'transparent'}}>
+            <button type="button" className="ea-shop-info-close" onClick={onClose} data-haptic="medium" aria-label="Понятно">✓</button>
+            <button type="button" className="ea-shop-pack-buy" onClick={() => { onClose?.(); onOpenExtraPass?.(); }} data-haptic="medium" style={{minHeight:48}}>
+              <span>Открыть</span>
+              <strong>ExtraPass</strong>
+            </button>
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+};
+
+// ═══════════════════════════════════════════
 // MAIL SCREEN
 // ═══════════════════════════════════════════
 const MAIL_CATEGORY_ICONS = {rewards:'🎁', system:'🛡️'};
 const MAIL_CATEGORY_LABELS = {rewards:'Награды', system:'Статус'};
 
 const AttachmentBadge = ({attachments}) => {
-  if (!attachments) return null;
+  attachments = normalizeMailAttachments(attachments);
   const items = [];
+  const keys = Number(attachments.granted_keys ?? attachments.keys ?? 0);
+  const coins = Number(attachments.granted_coins ?? attachments.coins ?? 0);
   if (attachments.gems)   items.push({icon:<IconGem size={12}/>,   val:attachments.gems,   color:'#c4b5fd'});
-  if (attachments.coins)  items.push({icon:<IconCoin size={12}/>,  val:attachments.coins,  color:T.orange});
-  if (attachments.keys)   items.push({icon:<span style={{fontSize:'12px'}}>🗝️</span>, val:attachments.keys,   color:T.orangeLt});
+  if (coins)  items.push({icon:<IconCoin size={12}/>,  val:coins,  color:T.orange});
+  if (keys)   items.push({icon:<span style={{fontSize:'12px'}}>🗝️</span>, val:keys,   color:T.orangeLt});
   if (attachments.stars)  items.push({icon:<span style={{fontSize:'12px'}}>⭐</span>, val:attachments.stars,  color:'#fbbf24'});
   if (!items.length) return null;
   return (
@@ -12806,7 +13978,8 @@ const PreBattleScreen = ({data, onClose}) => {
 
   const gameMode = data?.gameMode || 'classic';
   const modeConfigLabel = data?.mode_config?.label || data?.modeConfig?.label || null;
-  const modifierLabel = modeConfigLabel ? {icon: '🌀', text: modeConfigLabel.replace('ExtraArena ', '')} : null;
+  const modifierModeId = data?.mode_config?.mode_id || data?.modeConfig?.mode_id || gameMode;
+  const modifierLabel = modeConfigLabel ? {icon: '🌀', text: humanExtraArenaMode(modifierModeId, modeConfigLabel).label} : null;
   const isExtra = gameMode.startsWith('extra_arena');
 
   const handleTap = () => {
@@ -12965,17 +14138,25 @@ const BattleHistorySheet = ({onClose, profile}) => {
 
   const modeLabels = {
     classic: 'Классика',
-    'extra_arena:sudden_death': 'ExtraArena SuddenDeath',
-    'extra_arena:blitz': 'ExtraArena Блиц',
-    'etxra_arena:blitz': 'ExtraArena Блиц',
-    'extra_arena:draft': 'ExtraArena Драфт',
+    'extra_arena:sudden_death': 'ExtraArena: Внезапная смерть',
+    'extra_arena:blitzkrieg': 'ExtraArena: Блицкриг',
+    'extra_arena:spellstorm': 'ExtraArena: Буря заклинаний',
+    'extra_arena:powermax': 'ExtraArena: Максимум силы',
+    'extra_arena:blitz': 'ExtraArena: Блиц',
+    'etxra_arena:blitz': 'ExtraArena: Блиц',
+    'extra_arena:draft': 'ExtraArena: Драфт',
     friendly: 'Дружеский бой',
     training: 'Тренировка',
     pvp: 'Классика',
-    blitz: 'ExtraArena Блиц',
-    draft: 'ExtraArena Драфт',
+    blitz: 'ExtraArena: Блиц',
+    draft: 'ExtraArena: Драфт',
   };
-  const getModeLabel = (mode) => modeLabels[mode] || modeLabels[String(mode || '').toLowerCase()] || String(mode || 'Классика').replace(/^extra_arena:/, 'ExtraArena ');
+  const getModeLabel = (mode) => {
+    const key = String(mode || '').toLowerCase();
+    if (modeLabels[mode] || modeLabels[key]) return modeLabels[mode] || modeLabels[key];
+    if (key.startsWith('extra_arena:') || key.startsWith('extraarena:')) return 'ExtraArena: ' + humanExtraArenaMode(key).label;
+    return String(mode || 'Классика');
+  };
   const resultThemes = {
     win:  {accent:'#16a34a', bg:'rgba(22,101,52,0.82)', bg2:'rgba(20,83,45,0.92)', border:'rgba(74,222,128,0.45)', soft:'#dcfce7', muted:'#bbf7d0'},
     lose: {accent:'#dc2626', bg:'rgba(127,29,29,0.84)', bg2:'rgba(69,10,10,0.94)', border:'rgba(248,113,113,0.48)', soft:'#fee2e2', muted:'#fecaca'},
@@ -13487,7 +14668,7 @@ const MenuTourOverlay = ({onboarding, onAdvance, onNavigate, busy=false}) => {
   );
 };
 
-const NewbiePathPanel = ({onboarding, visible, onClose, onTask, claiming = {}}) => {
+const NewbiePathPanel = ({onboarding, visible, onClose, onTask, claiming = {}, telegramChannelTaskOpened = false}) => {
   if (!visible || !onboarding?.completed) return null;
 	  const path = onboarding.newbie_path || {};
 	  const tasks = path.tasks || [];
@@ -13516,7 +14697,7 @@ const NewbiePathPanel = ({onboarding, visible, onClose, onTask, claiming = {}}) 
 	            const claimable = !!task.claimable;
 	            const taskBusy = !!claiming[task.id];
 	            const taskLocked = anyBusy && !taskBusy;
-	            const actionLabel = taskBusy ? '...' : (task.claimed ? 'Готово' : (claimable ? 'Забрать' : (task.action_text || 'Перейти')));
+		            const actionLabel = taskBusy ? '...' : (task.claimed ? 'Готово' : (claimable ? 'Забрать' : (task.id === 'join_telegram_channel' && telegramChannelTaskOpened ? 'Проверить' : (task.action_text || 'Перейти'))));
 	            return (
 	            <button key={task.id} type="button" onClick={()=>onTask(task)} disabled={task.claimed || taskBusy || taskLocked} aria-busy={taskBusy?'true':'false'} style={{width:'100%',display:'flex',alignItems:'center',gap:10,textAlign:'left',borderRadius:12,border:`1px solid ${task.claimed?'rgba(74,222,128,0.32)':claimable?`${T.orange}77`:'rgba(255,255,255,0.1)'}`,background:task.claimed?'linear-gradient(180deg,rgba(34,197,94,0.13),rgba(34,197,94,0.05))':claimable?`linear-gradient(180deg,${T.orange}1f,${T.orange}0d)`:'linear-gradient(180deg,rgba(255,255,255,0.055),rgba(255,255,255,0.028))',boxShadow:'inset 0 1px 0 rgba(255,255,255,0.06)',animation:(claimable&&!task.claimed)?'onbClaimablePulse 2s ease-in-out infinite':'none',padding:'11px 12px',color:T.white,cursor:(task.claimed || taskBusy || taskLocked)?'default':'pointer',opacity:(task.claimed || taskBusy || taskLocked)?0.78:1}}>
               <span style={{width:28,height:28,borderRadius:9,display:'grid',placeItems:'center',flexShrink:0,background:task.claimed?'rgba(74,222,128,0.18)':claimable?`linear-gradient(160deg,${T.orangeLt}44,${T.orange}26)`:'rgba(255,255,255,0.06)',border:`1px solid ${task.claimed?'rgba(74,222,128,0.3)':claimable?`${T.orange}55`:'rgba(255,255,255,0.08)'}`,color:task.claimed?'#4ade80':claimable?T.orangeLt:T.grey1,fontWeight:1000,textShadow:claimable?`0 0 8px ${T.orange}66`:'none'}}>{task.claimed?'✓':claimable?'★':'›'}</span>
@@ -13626,7 +14807,7 @@ const CosmeticPickerSheet = ({type, ownedItems, selectedItem, onSelect, onClose}
 
           {type === 'avatar' && (
             /* === GRID 3 COLUMNS FOR AVATARS === */
-            <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'10px'}}>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(3,minmax(0,1fr))',gap:'10px'}}>
               {displayItems.map(item => {
                 const meta = COSMETIC_CLASS_META[item.class] || COSMETIC_CLASS_META.starter;
                 const isSelected = selectedItem === item.id;
@@ -13638,6 +14819,8 @@ const CosmeticPickerSheet = ({type, ownedItems, selectedItem, onSelect, onClose}
                     style={{
                       display:'flex',flexDirection:'column',alignItems:'center',gap:'7px',
                       padding:'8px 6px 10px',
+                      boxSizing:'border-box',
+                      minWidth:0,
                       background: isSelected ? meta.bg : 'rgba(255,255,255,0.03)',
                       border:`1.5px solid ${isSelected ? meta.color : 'rgba(255,255,255,0.08)'}`,
                       borderRadius:'16px',
@@ -13648,9 +14831,9 @@ const CosmeticPickerSheet = ({type, ownedItems, selectedItem, onSelect, onClose}
                       position:'relative',
                     }}
                   >
-                    <div style={{width:'100%',aspectRatio:'1/1',borderRadius:'12px',overflow:'hidden',background:meta.bg,position:'relative'}}>
+                    <div style={{width:'64px',height:'64px',maxWidth:'100%',borderRadius:'12px',overflow:'hidden',background:meta.bg,position:'relative',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
                       {item.asset_path
-                        ? <img src={item.asset_path} alt={item.name} style={{width:'100%',height:'100%',objectFit:'cover',display:'block'}}/>
+                        ? <img src={item.asset_path} alt={item.name} style={{width:'54px',height:'54px',maxWidth:'84%',maxHeight:'84%',objectFit:'contain',display:'block',margin:0}}/>
                         : <div style={{width:'100%',height:'100%',display:'flex',alignItems:'center',justifyContent:'center',fontSize:'28px'}}>👤</div>
                       }
                       {isSelected && (
@@ -14417,7 +15600,7 @@ const ProfileScreen = ({profile, onClose}) => {
   );
 };
 
-const ConnectionHealthOverlay = ({afkVisible, connectionModal, badConnection, onRestart, onDismissBadConnection}) => {
+const ConnectionHealthOverlay = ({afkVisible, connectionModal, badConnection, restartInProgress, onRestart, onDismissBadConnection}) => {
   const modal = afkVisible
     ? {
         tone: 'afk',
@@ -14478,9 +15661,15 @@ const ConnectionHealthOverlay = ({afkVisible, connectionModal, badConnection, on
                 </svg>
               </div>
               <h2 style={{margin:0,color:T.white,fontSize:'24px',lineHeight:1.05,fontWeight:1000,fontFamily:"'Exo 2',sans-serif",textShadow:'0 0 18px rgba(255,255,255,0.16)'}}>{modal.title}</h2>
-              <p style={{margin:'10px auto 18px',color:T.grey1,fontSize:'13px',lineHeight:1.55,maxWidth:'300px',fontFamily:"'Inter',sans-serif"}}>{modal.text}</p>
-              <button type="button" onClick={onRestart} data-haptic="medium" style={{width:'100%',height:'50px',border:0,borderRadius:'15px',background:`linear-gradient(135deg,${T.orange},${T.orangeD})`,color:'#201005',fontSize:'16px',fontWeight:1000,fontFamily:"'Exo 2',sans-serif",cursor:'pointer',boxShadow:'0 12px 30px rgba(245,146,30,0.32)'}}>
-                Перезапустить
+              <p style={{margin:'10px auto 14px',color:T.grey1,fontSize:'13px',lineHeight:1.55,maxWidth:'300px',fontFamily:"'Inter',sans-serif"}}>{modal.text}</p>
+              {restartInProgress && (
+                <div role="status" aria-live="polite" style={{margin:'0 auto 14px',display:'inline-flex',alignItems:'center',justifyContent:'center',gap:'8px',minHeight:'28px',padding:'6px 10px',borderRadius:'999px',background:'rgba(255,255,255,0.07)',border:'1px solid rgba(255,255,255,0.09)',color:T.orangeLt,fontSize:'12px',fontWeight:900,fontFamily:"'Exo 2',sans-serif"}}>
+                  <span aria-hidden="true" style={{width:'14px',height:'14px',borderRadius:'50%',border:'2px solid rgba(255,179,71,0.28)',borderTopColor:T.orangeLt,animation:'spin .75s linear infinite'}}/>
+                  <span>Перезапуск начался</span>
+                </div>
+              )}
+              <button type="button" onClick={onRestart} disabled={restartInProgress} aria-busy={restartInProgress ? 'true' : 'false'} data-haptic="medium" style={{width:'100%',height:'50px',border:0,borderRadius:'15px',background:`linear-gradient(135deg,${T.orange},${T.orangeD})`,color:'#201005',fontSize:'16px',fontWeight:1000,fontFamily:"'Exo 2',sans-serif",cursor:restartInProgress?'wait':'pointer',boxShadow:'0 12px 30px rgba(245,146,30,0.32)',opacity:restartInProgress?0.82:1}}>
+                {restartInProgress ? 'Перезапускаем...' : 'Перезапустить'}
               </button>
             </section>
           </div>
@@ -14526,17 +15715,21 @@ const App = () => {
   const [onboarding,     setOnboarding]     = React.useState(null);
   const [showNewbiePath, setShowNewbiePath] = React.useState(false);
   const [newbiePathClaiming, setNewbiePathClaiming] = React.useState({});
+  const [telegramChannelTaskOpened, setTelegramChannelTaskOpened] = React.useState(false);
+  const [seasonResetNotice, setSeasonResetNotice] = React.useState(null);
   const [onboardingStarting, setOnboardingStarting] = React.useState(false);
   const [onboardingTourSaving, setOnboardingTourSaving] = React.useState(false);
   const [collectionTabIntent, setCollectionTabIntent] = React.useState('cards');
   const [afkVisible,     setAfkVisible]     = React.useState(false);
   const [connectionModal,setConnectionModal]= React.useState(null);
   const [badConnection,  setBadConnection]  = React.useState(null);
+  const [restartInProgress, setRestartInProgress] = React.useState(false);
   const [badPingDismissed, setBadPingDismissed] = React.useState(false);
   const [connectionPingStopped, setConnectionPingStopped] = React.useState(false);
   const [maintenanceRestartRequired, setMaintenanceRestartRequired] = React.useState(false);
   const lastInteractionRef = React.useRef(Date.now());
   const connectionIssueSinceRef = React.useRef(null);
+  const connectionFailureTimerRef = React.useRef(null);
   const onboardingStartingRef = React.useRef(false);
   const onboardingTourSavingRef = React.useRef(false);
   const newbiePathClaimingRef = React.useRef({});
@@ -14553,6 +15746,33 @@ const App = () => {
     setToast({message: msg, type: type, id: id});
     setTimeout(function(){ setToast(function(t){ return t && t.id === id ? null : t; }); }, ms);
   };
+
+  React.useEffect(() => {
+    const userId = profile?.user_id;
+    if (!userId) {
+      setSeasonResetNotice(null);
+      return;
+    }
+    let stopped = false;
+    (async () => {
+      try {
+        const res = await fetch(_buildAuthUrl('/api/mail?category=system&limit=20'), {cache:'no-store'});
+        if (!res.ok) return;
+        const data = await res.json();
+        const mail = (data.mail || []).find(item => {
+          const attachments = normalizeMailAttachments(item?.attachments);
+          if (!attachments.reset_id && !attachments.resetId) return false;
+          return !!extractSeasonResetFromMail(item, userId);
+        });
+        if (stopped || !mail) return;
+        const reset = extractSeasonResetFromMail(mail, userId);
+        if (reset && !mail.is_read && !newSeasonResetSeen(userId, reset.resetId)) {
+          setSeasonResetNotice(reset);
+        }
+      } catch (_) {}
+    })();
+    return () => { stopped = true; };
+  }, [profile?.user_id]);
 
   React.useEffect(() => {
     let stopped = false;
@@ -14640,7 +15860,7 @@ const App = () => {
     };
   }, []);
 
-  const hasOverlay = squadsOpen || communityOpen || showAI || showGenerator || showMenu || showSettings || showBattlePick || showGameMode || showMail || showNews || showCaseOpen || showInfo || showGloryPath || showLeagueInfo || showBattlePass || showPreBattle || showSupport || showInvite || showBattles || showFriends || showProfile || showExtraID || onboardingBlocking || onboardingTourActive || newbiePathOpen;
+  const hasOverlay = squadsOpen || communityOpen || showAI || showGenerator || showMenu || showSettings || showBattlePick || showGameMode || showMail || showNews || showCaseOpen || showInfo || showGloryPath || showLeagueInfo || showBattlePass || showPreBattle || showSupport || showInvite || showBattles || showFriends || showProfile || showExtraID || onboardingBlocking || onboardingTourActive || newbiePathOpen || !!seasonResetNotice;
 
   React.useEffect(()=>{ window.__rootSetPreBattle = setShowPreBattle; window.__updateProfile = setProfile; window.__initExtraIDData = async ()=>{ const ad = resolveExtraIDAuthData(); const ed = await loadExtraIDProfile(ad); if(ed) setExtraIDData(ed); }; return ()=>window.__rootSetPreBattle=null; }, []);
 
@@ -14699,14 +15919,22 @@ const App = () => {
     onboardingBlocking, onboardingTourActive, newbiePathOpen
   ]);
 
-  const restartClient = React.useCallback(() => {
-    window.location.reload();
-  }, []);
-
   const stopConnectionPing = React.useCallback(() => {
+    if (connectionFailureTimerRef.current) {
+      clearTimeout(connectionFailureTimerRef.current);
+      connectionFailureTimerRef.current = null;
+    }
     setConnectionPingStopped(true);
     setBadConnection(null);
   }, []);
+
+  const restartClient = React.useCallback(() => {
+    if (restartInProgress) return;
+    setRestartInProgress(true);
+    stopConnectionPing();
+    window.setLoadingProgress?.(15, 'Перезапускаем клиент...');
+    setTimeout(() => window.location.reload(), 80);
+  }, [restartInProgress, stopConnectionPing]);
 
   const dismissBadConnection = React.useCallback(() => {
     setBadPingDismissed(true);
@@ -14837,16 +16065,16 @@ const App = () => {
     }
   }, [refreshOnboarding]);
 
-	  const handleNewbieTask = React.useCallback(async (task) => {
-	    const taskId = typeof task === 'string' ? task : task?.id;
-	    if (!taskId) return;
-	    if (Object.keys(newbiePathClaimingRef.current || {}).length > 0) return;
-	    if (newbiePathClaimingRef.current[taskId]) return;
-    if (!task?.claimable && !task?.completed) {
-      if (taskId === 'open_starter_case') {
-        setShowNewbiePath(false);
-        setNavTab(2);
-        setTimeout(()=>setShowCaseOpen(true), 120);
+		  const handleNewbieTask = React.useCallback(async (task) => {
+		    const taskId = typeof task === 'string' ? task : task?.id;
+		    if (!taskId) return;
+		    if (Object.keys(newbiePathClaimingRef.current || {}).length > 0) return;
+		    if (newbiePathClaimingRef.current[taskId]) return;
+	    if (!task?.claimable && !task?.completed && !(taskId === 'join_telegram_channel' && telegramChannelTaskOpened)) {
+	      if (taskId === 'open_starter_case') {
+	        setShowNewbiePath(false);
+	        setNavTab(2);
+	        setTimeout(()=>setShowCaseOpen(true), 120);
       } else if (taskId === 'view_new_card') {
         setShowNewbiePath(false);
         setCollectionTabIntent('cards');
@@ -14855,13 +16083,17 @@ const App = () => {
         setShowNewbiePath(false);
         setCollectionTabIntent('decks');
         setNavTab(1);
-      } else if (taskId === 'play_regular_battle') {
-        setShowNewbiePath(false);
-        setNavTab(2);
-        setTimeout(()=>setShowGameMode(true), 120);
-      } else if (taskId === 'claim_newbie_reward') {
-        window.showToast?.('Сначала забери предыдущие награды', 'info', 2600);
-      }
+	      } else if (taskId === 'play_regular_battle') {
+	        setShowNewbiePath(false);
+	        setNavTab(2);
+	        setTimeout(()=>setShowGameMode(true), 120);
+	      } else if (taskId === 'join_telegram_channel') {
+	        const opened = task?.action_url ? window.openExternalLink?.(task.action_url) : false;
+	        if (!opened && task?.action_url) window.open(task.action_url, '_blank', 'noopener,noreferrer');
+	        setTelegramChannelTaskOpened(true);
+	      } else if (taskId === 'claim_newbie_reward') {
+	        window.showToast?.('Сначала забери предыдущие награды', 'info', 2600);
+	      }
       return;
     }
     const auth = resolveUiAuth();
@@ -14883,12 +16115,13 @@ const App = () => {
       if (grantedAmount > 0 && window.reloadFreshProfile) {
         window.reloadFreshProfile().then(profileData => { if (profileData) setProfile(profileData); });
       }
-      if (data.already_claimed) {
-        window.showToast?.('Награда уже получена', 'info', 2400);
-      } else {
-        window.showToast?.(grantedAmount ? `Награда получена: ${grantedAmount} монет` : 'Задача отмечена', 'success', 2600);
-      }
-    } catch (error) {
+	      if (data.already_claimed) {
+	        window.showToast?.('Награда уже получена', 'info', 2400);
+	      } else {
+	        window.showToast?.(grantedAmount ? `Награда получена: ${grantedAmount} монет` : 'Задача отмечена', 'success', 2600);
+	      }
+	      if (taskId === 'join_telegram_channel') setTelegramChannelTaskOpened(false);
+	    } catch (error) {
       console.warn('[onboarding] newbie task failed:', error);
       window.showToast?.(error?.message || 'Не удалось забрать награду', 'error', 3000);
     } finally {
@@ -14897,7 +16130,7 @@ const App = () => {
       newbiePathClaimingRef.current = nextClaiming;
       setNewbiePathClaiming(nextClaiming);
     }
-  }, []);
+	  }, [telegramChannelTaskOpened]);
 
   React.useEffect(() => {
     window.__extraArenaRestartClient = restartClient;
@@ -14957,19 +16190,35 @@ const App = () => {
     if (maintenanceBlocked) return;
 
     let cancelled = false;
+    const showConnectionModal = (modal) => {
+      if (cancelled) return;
+      if (connectionFailureTimerRef.current) {
+        clearTimeout(connectionFailureTimerRef.current);
+        connectionFailureTimerRef.current = null;
+      }
+      setConnectionModal(modal);
+      stopConnectionPing();
+    };
     const markFailure = () => {
       const now = Date.now();
       if (!connectionIssueSinceRef.current) {
         connectionIssueSinceRef.current = now;
+        if (connectionFailureTimerRef.current) clearTimeout(connectionFailureTimerRef.current);
+        connectionFailureTimerRef.current = setTimeout(() => {
+          showConnectionModal({
+            title: 'Соединение разорвано',
+            text: 'Похоже, связь с ареной пропала или сервер временно недоступен. Перезапусти клиент, чтобы восстановить подключение.',
+            accent: T.red,
+          });
+        }, CONNECTION_FAILURE_DELAY_MS);
         return;
       }
       if (now - connectionIssueSinceRef.current < CONNECTION_FAILURE_DELAY_MS) return;
-      setConnectionModal({
+      showConnectionModal({
         title: 'Соединение разорвано',
         text: 'Похоже, связь с ареной пропала или сервер временно недоступен. Перезапусти клиент, чтобы восстановить подключение.',
         accent: T.red,
       });
-      stopConnectionPing();
     };
 
     const pingGame = async () => {
@@ -14986,16 +16235,19 @@ const App = () => {
 
         if (response.ok) {
           connectionIssueSinceRef.current = null;
+          if (connectionFailureTimerRef.current) {
+            clearTimeout(connectionFailureTimerRef.current);
+            connectionFailureTimerRef.current = null;
+          }
           if (data) setRuntimeStatus(data);
 
           if (maintenanceBlocksClient(data)) {
             setMaintenanceRestartRequired(true);
-            setConnectionModal({
+            showConnectionModal({
               title: 'Соединение разорвано',
               text: 'На сервере включили технические работы. Перезапусти клиент, и ты сразу увидишь экран обслуживания.',
               accent: T.purpleHL,
             });
-            stopConnectionPing();
             return;
           }
 
@@ -15011,12 +16263,11 @@ const App = () => {
 
         if (response.status === 503 && data?.error === 'maintenance_mode') {
           setMaintenanceRestartRequired(true);
-          setConnectionModal({
+          showConnectionModal({
             title: 'Соединение разорвано',
             text: 'Сервер перешел в режим технических работ. Перезапусти клиент, чтобы открыть экран обслуживания.',
             accent: T.purpleHL,
           });
-          stopConnectionPing();
           return;
         }
 
@@ -15031,6 +16282,10 @@ const App = () => {
     return () => {
       cancelled = true;
       clearInterval(interval);
+      if (connectionFailureTimerRef.current) {
+        clearTimeout(connectionFailureTimerRef.current);
+        connectionFailureTimerRef.current = null;
+      }
     };
   }, [
     profile, afkVisible, connectionModal, connectionPingStopped,
@@ -15368,6 +16623,7 @@ const App = () => {
         afkVisible={afkVisible}
         connectionModal={connectionModal}
         badConnection={badConnection}
+        restartInProgress={restartInProgress}
         onRestart={restartClient}
         onDismissBadConnection={dismissBadConnection}
       />
@@ -15436,7 +16692,12 @@ const App = () => {
 
       <OnboardingGate onboarding={onboarding} onStart={startOnboardingBattle} onLogin={openExistingAccountLogin} starting={onboardingStarting}/>
       <MenuTourOverlay onboarding={onboarding} onAdvance={advanceMenuTour} onNavigate={navigateOnboardingTour} busy={onboardingTourSaving}/>
-      <NewbiePathPanel onboarding={onboarding} visible={newbiePathOpen} onClose={()=>setShowNewbiePath(false)} onTask={handleNewbieTask} claiming={newbiePathClaiming}/>
+      <NewbiePathPanel onboarding={onboarding} visible={newbiePathOpen} onClose={()=>setShowNewbiePath(false)} onTask={handleNewbieTask} claiming={newbiePathClaiming} telegramChannelTaskOpened={telegramChannelTaskOpened}/>
+      <NewSeasonModal reset={seasonResetNotice} onClose={() => {
+        const reset = seasonResetNotice;
+        markSeasonResetSeen(reset);
+        setSeasonResetNotice(null);
+      }} onOpenExtraPass={() => setShowBattlePass(true)}/>
 
       {/* League Up Modal */}
       {leagueUp && (()=>{
@@ -15674,10 +16935,10 @@ const BattlePassSheet = ({onClose, profile, onGoToShop}) => {
   const [loading, setLoading] = React.useState(true);
   const [battlePassLoadError, setBattlePassLoadError] = React.useState(null);
   const [claiming, setClaiming] = React.useState({});
+  const [claimResult, setClaimResult] = React.useState([]);
   const [detail, setDetail] = React.useState(null);
   const trackRef = React.useRef(null);
 
-  const gems = Number(profile?.gems || 0);
   const season = payload?.season || {};
   const progress = payload?.progress || {value:Number(profile?.stars || 0),capped_value:Number(profile?.stars || 0),max:45,percent:0};
   const tiers = payload?.tiers || [];
@@ -15696,11 +16957,11 @@ const BattlePassSheet = ({onClose, profile, onGoToShop}) => {
 
   const s = {
     shell: {position:'absolute',inset:0,zIndex:200,display:'flex',flexDirection:'column',animation:'fadeIn 0.25s',background:'radial-gradient(circle at 18% 4%,rgba(124,92,191,0.34),transparent 32%),radial-gradient(circle at 94% 10%,rgba(245,146,30,0.18),transparent 28%),radial-gradient(circle at 50% 100%,rgba(152,32,204,0.14),transparent 40%),linear-gradient(165deg,#090512 0%,#0f0a1a 48%,#170d2e 100%)',overflow:'hidden'},
-    topbar: {height:'calc(54px + var(--ea-safe-top))',padding:'var(--ea-safe-top) 14px 0',display:'flex',alignItems:'center',gap:10,background:'rgba(15,10,26,0.94)',borderBottom:'1px solid rgba(74,61,106,0.72)',backdropFilter:'blur(14px)',flexShrink:0},
-    back: {width:34,height:34,borderRadius:11,border:'1px solid rgba(122,111,160,0.44)',background:'rgba(26,16,48,0.92)',display:'grid',placeItems:'center',cursor:'pointer',color:T.grey1,flexShrink:0},
+    topbar: {height:'calc(54px + var(--ea-safe-top))',padding:'var(--ea-safe-top) 14px 0',display:'grid',gridTemplateColumns:'42px minmax(0,1fr) 42px',alignItems:'center',gap:8,flexShrink:0},
+    back: {width:38,height:38,borderRadius:12,border:'1px solid rgba(245,146,30,0.34)',background:'rgba(26,16,48,0.78)',display:'grid',placeItems:'center',cursor:'pointer',color:T.white},
     main: {flex:1,minHeight:0,overflowY:'auto',overflowX:'hidden',padding:'12px 14px calc(24px + var(--ea-safe-bottom-soft))'},
     hero: {borderRadius:20,padding:'14px 13px',background:'radial-gradient(circle at 84% 18%,rgba(245,146,30,0.22),transparent 38%),linear-gradient(135deg,rgba(115,24,154,0.55),rgba(45,31,82,0.92) 58%,rgba(26,16,48,0.96))',border:'1px solid rgba(255,148,0,0.34)',boxShadow:'0 14px 34px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.08)',overflow:'hidden',position:'relative'},
-    tile: {minHeight:72,borderRadius:14,padding:'9px 10px',display:'grid',gridTemplateColumns:'46px minmax(0,1fr)',gap:9,alignItems:'center',border:'1px solid rgba(122,111,160,0.3)',background:'linear-gradient(160deg,rgba(45,31,82,0.78),rgba(19,13,38,0.9))',cursor:'pointer',position:'relative',overflow:'hidden',width:'100%',textAlign:'left',boxShadow:'inset 0 1px 0 rgba(255,255,255,0.05), 0 4px 12px rgba(0,0,0,0.28)'},
+    tile: {minHeight:76,borderRadius:16,padding:10,display:'grid',gridTemplateColumns:'38px minmax(0,1fr)',gap:9,alignItems:'center',border:'1px solid rgba(245,146,30,0.2)',background:'linear-gradient(180deg,rgba(255,255,255,0.055),rgba(255,255,255,0.018)),rgba(26,16,48,0.78)',cursor:'pointer',position:'relative',overflow:'hidden',width:'100%',textAlign:'left',boxShadow:'inset 0 1px 0 rgba(255,255,255,0.08)'},
   };
 
   const ruPlural = (n, forms) => {
@@ -15738,6 +16999,21 @@ const BattlePassSheet = ({onClose, profile, onGoToShop}) => {
       return {type:'specific_card',title:title,amount:1,cardId:cardId,text:'Конкретная карта из сезонной награды.',raw:reward};
     }
     return {type:'gift',title:'Награда',amount:reward?.reward_amount || 0,text:'Сезонная награда ExtraPass.',raw:reward};
+  };
+
+  const describeGrantedRewards = (granted) => {
+    if (!Array.isArray(granted) || !granted.length) return '';
+    const parts = granted.map(item => {
+      const type = item?.reward_type || item?.type;
+      const amount = Number(item?.reward_amount ?? item?.amount ?? 0);
+      if (type === 'coins') return '+' + amount.toLocaleString('ru-RU') + ' ' + ruPlural(amount, ['монета','монеты','монет']);
+      if (type === 'gems') return '+' + amount.toLocaleString('ru-RU') + ' ' + ruPlural(amount, ['гем','гема','гемов']);
+      if (type === 'keys') return '+' + amount.toLocaleString('ru-RU') + ' ' + ruPlural(amount, ['ключ','ключа','ключей']);
+      if (type === 'case') return 'T' + (item?.case_tier || amount || 1) + ' кейс';
+      if (type === 'specific_card' || type === 'card') return item?.card_name || 'Карта';
+      return '';
+    }).filter(Boolean);
+    return parts.length ? 'Награда получена: ' + parts.join(', ') : '';
   };
 
   const load = async () => {
@@ -15794,8 +17070,12 @@ const BattlePassSheet = ({onClose, profile, onGoToShop}) => {
       });
       const d = await r.json();
       if (r.ok && d.success) {
+        const grantedSummary = describeGrantedRewards(d.granted);
+        setClaimResult(Array.isArray(d.granted) ? d.granted : []);
         window._playSfx?.('success-sound');
-        window.showToast?.('Награда получена', 'success');
+        invalidateInventoryCaches();
+        try { window.eaInvalidateJson?.('/api/rewards/extra-pass'); } catch (_) {}
+        window.showToast?.(grantedSummary || 'Награда получена', 'success');
         setDetail(null);
         await load();
         window.reloadFreshProfile?.().then(p => { if (p && window.__updateProfile) window.__updateProfile(p); });
@@ -15836,17 +17116,18 @@ const BattlePassSheet = ({onClose, profile, onGoToShop}) => {
 
   const RewardArt = ({reward, locked, size = 42}) => {
     const tint = rewardTint(reward);
-    const base = {width:size,height:size,borderRadius:Math.max(12, Math.round(size*0.28)),display:'grid',placeItems:'center',position:'relative',background:'radial-gradient(circle at 50% 36%,'+tint+'3d 0%,transparent 68%),linear-gradient(160deg,rgba(38,25,70,0.94),rgba(15,10,30,0.97))',border:'1px solid '+tint+'4d',boxShadow:'inset 0 1px 0 rgba(255,255,255,0.1), 0 0 14px '+tint+'24',color:T.white,flexShrink:0,overflow:'hidden',filter:locked?'saturate(0.4) brightness(0.66)':'none'};
+    const base = {width:size,height:size,borderRadius:Math.max(12, Math.round(size*0.3)),display:'grid',placeItems:'center',position:'relative',background:tint+'18',border:'1px solid '+tint+'4d',boxShadow:'none',color:T.white,flexShrink:0,overflow:'hidden',filter:locked?'saturate(0.55) brightness(0.72)':'none'};
+    const keyRewardImageStyle = {width:'74%',height:'74%',objectFit:'contain',filter:'brightness(0) invert(1) drop-shadow(0 5px 10px rgba(0,0,0,0.45))'};
     if (!reward) {
       return <div style={{...base,opacity:0.5}}/>;
     }
-    const lock = locked ? <span style={{position:'absolute',right:3,bottom:2,width:size*0.36,height:size*0.36,borderRadius:'50%',display:'grid',placeItems:'center',background:'rgba(5,2,12,0.78)',border:'1px solid rgba(255,255,255,0.2)',fontSize:size*0.2}}>🔒</span> : null;
-    const amountBadge = (reward.amount > 1 && (reward.type === 'case' || reward.type === 'keys' || reward.type === 'card' || reward.type === 'specific_card'))
+    const lock = null;
+    const amountBadge = (reward.type !== 'case' && reward.amount > 1 && (reward.type === 'keys' || reward.type === 'card' || reward.type === 'specific_card'))
       ? <span style={{position:'absolute',left:3,bottom:2,minWidth:size*0.36,height:size*0.34,padding:'0 4px',borderRadius:size*0.17,display:'grid',placeItems:'center',background:'rgba(5,2,12,0.82)',border:'1px solid '+tint+'66',color:tint,fontSize:Math.max(9,size*0.2),fontWeight:900,fontFamily:"'Exo 2',sans-serif",lineHeight:1}}>x{reward.amount}</span>
       : null;
     const emojiArt = (glyph) => (
       <div style={base}>
-        <span style={{fontSize:size*0.54,lineHeight:1,filter:'drop-shadow(0 3px 6px rgba(0,0,0,0.5)) drop-shadow(0 0 10px '+tint+'55)'}}>{glyph}</span>
+        <span style={{fontSize:size*0.54,lineHeight:1,filter:'drop-shadow(0 2px 5px rgba(0,0,0,0.36))'}}>{glyph}</span>
         {amountBadge}{lock}
       </div>
     );
@@ -15862,7 +17143,7 @@ const BattlePassSheet = ({onClose, profile, onGoToShop}) => {
     if (reward.type === 'coins') return emojiArt('💰');
     if (reward.type === 'gems') return emojiArt('💎');
     if (reward.type === 'keys') {
-      return <div style={base}><img src="/DesignAssets/MainMenu/Generator/Key.png" alt="" style={{width:'74%',height:'74%',objectFit:'contain',filter:'drop-shadow(0 5px 10px rgba(0,0,0,0.45))'}}/>{amountBadge}{lock}</div>;
+      return <div style={base}><img src="/DesignAssets/MainMenu/Generator/Key.png" alt="" style={keyRewardImageStyle}/>{amountBadge}{lock}</div>;
     }
     if (reward.type === 'card' || reward.type === 'specific_card') {
       return <div style={base}><img src="/DesignAssets/MainMenu/Collection/CardNotOpenedYet.png" alt="" style={{width:'76%',height:'86%',objectFit:'contain',filter:'drop-shadow(0 5px 10px rgba(0,0,0,0.45))'}}/>{amountBadge}{lock}</div>;
@@ -15875,37 +17156,35 @@ const BattlePassSheet = ({onClose, profile, onGoToShop}) => {
     const rewards = (lane.rewards || []).map(normalizeReward);
     const available = lane.available;
     const locked = lane.locked && !available && !lane.claimed;
-    const accent = trackAccent(lane.track_id);
     const key = lane.track_type + ':' + lane.position;
-    const actionText = claiming[key] ? '...' : laneStatus(lane);
     const isPremium = lane.track_id === 'premium';
     const isUltra = lane.track_id === 'ultra';
-    const border = available ? T.orange : lane.claimed ? 'rgba(74,222,128,0.42)' : isUltra ? 'rgba(255,215,0,0.42)' : isPremium ? 'rgba(245,146,30,0.36)' : 'rgba(122,111,160,0.3)';
-    const bg = isUltra
-      ? 'radial-gradient(circle at 14% 0%,rgba(255,215,0,0.16),transparent 44%),linear-gradient(160deg,rgba(64,42,12,0.6),rgba(35,22,60,0.94))'
-      : isPremium
-        ? 'radial-gradient(circle at 14% 0%,rgba(245,146,30,0.16),transparent 44%),linear-gradient(160deg,rgba(58,33,12,0.42),rgba(30,19,56,0.94))'
+    const helperText = claiming[key] ? 'забираем...'
+      : lane.claimed ? 'уже получено'
+        : available ? 'можно забрать сейчас'
+          : lane.access_locked ? (lane.access === 'ultra' ? 'откроется с Ultra' : 'откроется с ExtraPass')
+              : lane.progress_locked ? 'откроется по прогрессу'
+                : lane.track_id === 'free' ? 'бесплатная дорожка'
+                  : isUltra ? 'Ultra-дорожка' : 'ExtraPass-дорожка';
+    const border = available ? 'rgba(245,146,30,0.56)' : lane.claimed ? 'rgba(74,222,128,0.34)' : isUltra ? 'rgba(251,191,36,0.28)' : isPremium ? 'rgba(52,152,219,0.24)' : 'rgba(245,146,30,0.2)';
+    const bg = available
+      ? 'radial-gradient(circle at 82% 8%,rgba(245,146,30,0.18),transparent 42%),rgba(26,16,48,0.84)'
+      : isUltra
+        ? 'linear-gradient(180deg,rgba(251,191,36,0.08),rgba(255,255,255,0.018)),rgba(26,16,48,0.78)'
         : s.tile.background;
     return (
       <button key={lane.track_id} onClick={() => setDetail({...lane, rewards})} style={{
         ...s.tile,
         border:'1px solid '+border,
         background:bg,
-        boxShadow: available ? '0 0 20px rgba(245,146,30,0.3), inset 0 1px 0 rgba(255,255,255,0.1)' : s.tile.boxShadow,
-        animation: available ? 'onbClaimablePulse 2.2s ease-in-out infinite' : 'none',
-        opacity: lane.claimed ? 0.74 : 1,
+        boxShadow: available ? '0 0 0 1px rgba(245,146,30,0.14), inset 0 1px 0 rgba(255,255,255,0.1)' : s.tile.boxShadow,
+        opacity: lane.claimed ? 0.72 : 1,
       }}>
-        <RewardArt reward={rewards[0]} locked={locked} size={46}/>
-        <span style={{minWidth:0,display:'grid',gap:3,alignContent:'center'}}>
-          <span style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:6}}>
-            <span style={{color:accent,fontSize:9,fontWeight:900,fontFamily:"'Exo 2',sans-serif",textTransform:'uppercase',letterSpacing:'0.4px',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{lane.label}</span>
-            <span style={{color:available?T.orangeLt:lane.claimed?'#4ade80':locked&&lane.extra_pass_required?accent:T.grey3,fontSize:8.5,fontWeight:900,fontFamily:"'Exo 2',sans-serif",textTransform:'uppercase',whiteSpace:'nowrap'}}>{actionText}</span>
-          </span>
-          <span style={{fontSize:12,color:T.white,fontWeight:900,fontFamily:"'Exo 2',sans-serif",lineHeight:1.15,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{rewards[0].title}</span>
-          {rewards.length > 1 && <span style={{fontSize:9.5,color:T.grey2,fontWeight:800,lineHeight:1.1}}>+ ещё {rewards.length - 1}</span>}
+        <RewardArt reward={rewards[0]} locked={locked} size={36}/>
+        <span style={{minWidth:0,display:'grid',gap:5,alignContent:'center'}}>
+          <span style={{fontSize:13,color:T.white,fontWeight:900,fontFamily:"'Exo 2',sans-serif",lineHeight:1.08,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{rewards[0].title}</span>
+          <span style={{fontSize:10.5,color:T.grey3,fontWeight:750,lineHeight:1.2,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{rewards.length > 1 ? helperText + ' · +' + (rewards.length - 1) : helperText}</span>
         </span>
-        {available && <span style={{position:'absolute',inset:0,pointerEvents:'none',background:'linear-gradient(120deg,transparent 0 44%,rgba(255,255,255,0.1) 50%,transparent 58%)'}}/>}
-        {lane.claimed && <span style={{position:'absolute',right:6,top:5,width:16,height:16,borderRadius:'50%',display:'grid',placeItems:'center',background:'rgba(34,197,94,0.2)',border:'1px solid rgba(74,222,128,0.45)',color:'#4ade80',fontSize:9,fontWeight:900,lineHeight:1}}>✓</span>}
       </button>
     );
   };
@@ -15929,14 +17208,11 @@ const BattlePassSheet = ({onClose, profile, onGoToShop}) => {
         <button onClick={onClose} aria-label="Назад" style={s.back}>
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 3L5 7L9 11" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
         </button>
-        <div style={{minWidth:0,flex:1}}>
-          <div style={{fontSize:17,lineHeight:1.05,fontWeight:900,color:T.white,fontFamily:"'Exo 2',sans-serif",whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>ExtraPass</div>
-          <div style={{fontSize:10.5,lineHeight:1.2,fontWeight:800,color:T.grey3,textTransform:'uppercase',marginTop:3}}>Сезонный пропуск</div>
+        <div style={{minWidth:0,textAlign:'center'}}>
+          <div style={{fontSize:18,lineHeight:1.05,fontWeight:900,color:T.white,fontFamily:"'Exo 2',sans-serif",whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>ExtraPass</div>
+          <div style={{fontSize:10.5,lineHeight:1.2,fontWeight:800,color:T.grey3,textTransform:'uppercase',marginTop:3}}>Season rewards</div>
         </div>
-        {passMode !== 'f2p' && (
-          <div style={{height:31,padding:'0 10px',borderRadius:999,display:'flex',alignItems:'center',gap:4,background:passMode==='ultra'?'linear-gradient(160deg,rgba(255,215,0,0.2),rgba(61,26,110,0.9))':'linear-gradient(160deg,rgba(245,146,30,0.2),rgba(45,31,82,0.92))',border:'1px solid '+(passMode==='ultra'?'rgba(255,215,0,0.5)':'rgba(245,146,30,0.5)'),color:passMode==='ultra'?'#fbbf24':T.orangeLt,fontSize:10,fontWeight:900,fontFamily:"'Exo 2',sans-serif",textTransform:'uppercase',whiteSpace:'nowrap'}}>{passMode==='ultra'?'💫 Ultra':'⭐ Pass'}</div>
-        )}
-        <div style={{height:31,padding:'0 10px',borderRadius:999,display:'flex',alignItems:'center',gap:5,background:'rgba(45,31,82,0.92)',border:'1px solid rgba(122,111,160,0.38)',color:T.orangeLt,fontSize:12,fontWeight:900,fontFamily:"'Exo 2',sans-serif",whiteSpace:'nowrap'}}>💎 {gems.toLocaleString()}</div>
+        <span aria-hidden="true" style={{width:38,height:38}}/>
       </div>
 
       <div style={s.main}>
@@ -15966,25 +17242,32 @@ const BattlePassSheet = ({onClose, profile, onGoToShop}) => {
           </div>
         </section>
 
-        <section style={{display:'grid',gridTemplateColumns:'1fr auto',gap:8,alignItems:'center',margin:'10px 0',padding:'10px 11px',borderRadius:14,background:'radial-gradient(circle at 0% 0%,rgba(245,146,30,0.1),transparent 42%),linear-gradient(180deg,rgba(26,16,48,0.92),rgba(15,10,30,0.94))',border:'1px solid rgba(245,146,30,0.3)',boxShadow:'inset 0 1px 0 rgba(255,255,255,0.05), 0 6px 16px rgba(0,0,0,0.3)'}}>
-          <div>
-            <strong style={{display:'block',fontFamily:"'Exo 2',sans-serif",fontSize:13,fontWeight:900,lineHeight:1.15,color:T.white}}>{ctaTitle}</strong>
-            <small style={{display:'block',marginTop:3,color:T.grey1,fontSize:10.5,lineHeight:1.35,fontWeight:600}}>{ctaCopy}</small>
-          </div>
-          <button disabled={!canUseBattlePassCta} onClick={() => { if (!canUseBattlePassCta) return; passMode === 'ultra' ? scrollToStep(currentStep) : buyPass(ctaTarget); }} style={{border:0,borderRadius:12,minHeight:38,padding:'0 14px',background:passMode==='ultra'?'linear-gradient(135deg,#7c5cbf,#5b3fa0)':'linear-gradient(135deg,'+T.orange+','+T.orangeD+')',color:'white',fontFamily:"'Exo 2',sans-serif",fontSize:12,fontWeight:900,cursor:canUseBattlePassCta?'pointer':'default',opacity:canUseBattlePassCta?1:0.58,boxShadow:'0 5px 18px rgba(245,146,30,0.28)',whiteSpace:'nowrap'}}>
-            {ctaButtonText}
-          </button>
-        </section>
+        {passMode === 'f2p' && (
+          <section style={{display:'grid',gridTemplateColumns:'1fr auto',gap:8,alignItems:'center',margin:'10px 0',padding:'10px 11px',borderRadius:14,background:'radial-gradient(circle at 0% 0%,rgba(245,146,30,0.1),transparent 42%),linear-gradient(180deg,rgba(26,16,48,0.92),rgba(15,10,30,0.94))',border:'1px solid rgba(245,146,30,0.3)',boxShadow:'inset 0 1px 0 rgba(255,255,255,0.05), 0 6px 16px rgba(0,0,0,0.3)'}}>
+            <div>
+              <strong style={{display:'block',fontFamily:"'Exo 2',sans-serif",fontSize:13,fontWeight:900,lineHeight:1.15,color:T.white}}>{ctaTitle}</strong>
+              <small style={{display:'block',marginTop:3,color:T.grey1,fontSize:10.5,lineHeight:1.35,fontWeight:600}}>{ctaCopy}</small>
+            </div>
+            <button disabled={!canUseBattlePassCta} onClick={() => { if (!canUseBattlePassCta) return; buyPass(ctaTarget); }} style={{border:0,borderRadius:12,minHeight:38,padding:'0 14px',background:'linear-gradient(135deg,'+T.orange+','+T.orangeD+')',color:'white',fontFamily:"'Exo 2',sans-serif",fontSize:12,fontWeight:900,cursor:canUseBattlePassCta?'pointer':'default',opacity:canUseBattlePassCta?1:0.58,boxShadow:'0 5px 18px rgba(245,146,30,0.28)',whiteSpace:'nowrap'}}>
+              {ctaButtonText}
+            </button>
+          </section>
+        )}
+
+        {claimResult.length > 0 && (
+          <section data-extra-pass-claim-result style={{display:'flex',gap:6,flexWrap:'wrap',alignItems:'center',margin:'-2px 0 10px',padding:'9px 10px',borderRadius:13,background:'rgba(34,197,94,0.1)',border:'1px solid rgba(74,222,128,0.28)'}}>
+            <span style={{color:'#4ade80',fontSize:10,fontWeight:900,fontFamily:"'Exo 2',sans-serif",textTransform:'uppercase'}}>Получено</span>
+            {claimResult.map((reward, index) => (
+              <span key={index} style={{padding:'4px 8px',borderRadius:9,background:'rgba(15,10,26,0.72)',border:'1px solid rgba(74,222,128,0.24)',color:T.grey1,fontSize:11,fontWeight:800,fontFamily:"'Exo 2',sans-serif"}}>
+                {describeGrantedRewards([reward]).replace('Награда получена: ', '')}
+              </span>
+            ))}
+          </section>
+        )}
 
         <section>
-          <div style={{display:'flex',justifyContent:'space-between',alignItems:'end',gap:12,margin:'8px 2px 10px'}}>
-            <div>
-              <div style={{color:T.orangeLt,fontSize:10,lineHeight:1.3,fontWeight:900,textTransform:'uppercase'}}>{tracks.map(t => t.label).join(' + ')}</div>
-              <h2 style={{margin:0,fontFamily:"'Exo 2',sans-serif",fontSize:18,lineHeight:1,fontWeight:900,color:T.white}}>Награды сезона</h2>
-            </div>
-            <div style={{display:'inline-flex',alignItems:'baseline',gap:2,padding:'7px 9px',borderRadius:12,background:'rgba(19,13,38,0.76)',border:'1px solid rgba(245,146,30,0.3)',color:T.grey2,whiteSpace:'nowrap'}}>
-              <b style={{color:T.orangeLt,fontFamily:"'Exo 2',sans-serif",fontSize:16,lineHeight:1,fontWeight:900}}>{unlockedStage}</b><span style={{color:T.grey3,fontSize:10,fontWeight:800}}>/{stageCount} этапов</span>
-            </div>
+          <div style={{display:'flex',justifyContent:'center',alignItems:'center',margin:'18px 2px 12px',textAlign:'center'}}>
+            <h2 style={{margin:0,fontFamily:"'Exo 2',sans-serif",fontSize:21,lineHeight:1,fontWeight:1000,color:T.white,textShadow:'0 2px 10px rgba(245,146,30,0.22)'}}>Награды сезона</h2>
           </div>
 
           {battlePassLoadError ? (
@@ -16413,6 +17696,6 @@ const LeagueInfoSheet = ({onClose, onOpenGloryPath, profile}) => {
 
 ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
 </script>
-<script src="index.compiled.js?v=4122d7cc5018"></script>
+<script src="index.compiled.js?v=ed088284fa09"></script>
 </body>
 </html>

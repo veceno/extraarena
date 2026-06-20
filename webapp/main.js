@@ -766,6 +766,7 @@ function getDefaultSettings() {
     notif_squad_new_member: true,
     notif_squad_disbanded: true,
     notif_squad_boost: true,
+    notif_squad_weekly_tokens: true,
     ads_enabled: true,
     sound_music: true,
     sound_sfx: true,
@@ -1237,6 +1238,10 @@ function renderSettings(settings) {
       <div class="setting-item">
         <span class="setting-label">Сквад Boost</span>
         <div class="toggle-switch ${mergedSettings.notif_squad_boost ? "active" : ""}" data-setting="notif_squad_boost"></div>
+      </div>
+      <div class="setting-item">
+        <span class="setting-label">Сквад: недельные токены</span>
+        <div class="toggle-switch ${mergedSettings.notif_squad_weekly_tokens ? "active" : ""}" data-setting="notif_squad_weekly_tokens"></div>
       </div>
     </div>
 
@@ -3032,139 +3037,6 @@ function initEventHandlers() {
       
       // Запускаем матчмейкинг с выбранной колодой и параметрами
       await startMatchmaking(deck, mode, matchType, difficulty);
-    });
-    
-    // Функция проверки готовности к тренировке
-    function checkTrainingReady() {
-      const playBtn = document.getElementById("play-training-btn");
-      const footer = document.getElementById("training-play-footer");
-      
-      const friendsSelected = document.getElementById("training-friends")?.classList.contains("selected");
-      const botSelected = document.getElementById("training-bot")?.classList.contains("selected");
-      
-      let ready = false;
-      
-      if (friendsSelected) {
-        const modeSelected = document.querySelector('input[name="training-mode"]:checked');
-        // Для друзей пока не требуется выбор друга (заглушка)
-        ready = !!modeSelected;
-      } else if (botSelected) {
-        const difficultySelected = document.querySelector('input[name="difficulty"]:checked');
-        ready = !!difficultySelected;
-      }
-      
-      if (ready && playBtn && footer) {
-        playBtn.disabled = false;
-        footer.style.display = "block";
-      } else if (footer) {
-        footer.style.display = "none";
-        if (playBtn) playBtn.disabled = true;
-      }
-    }
-    
-    // Обработчики выбора типа тренировки
-    document.getElementById("training-friends")?.addEventListener("click", () => {
-      const friendsOption = document.getElementById("training-friends");
-      const botOption = document.getElementById("training-bot");
-      const friendsSelection = document.getElementById("friends-mode-selection");
-      const botDifficulty = document.getElementById("bot-difficulty");
-      const trainingOptions = document.getElementById("training-options");
-      
-      // Снимаем выделение с бота
-      botOption?.classList.remove("selected");
-      
-      // Выделяем друзей
-      friendsOption?.classList.add("selected");
-      
-      // Показываем выбор режима для друзей
-      if (friendsSelection) {
-        friendsSelection.style.display = "block";
-      }
-      
-      // Скрываем выбор сложности бота
-      if (botDifficulty) {
-        botDifficulty.style.display = "none";
-      }
-      
-      // Скрываем опции выбора
-      if (trainingOptions) {
-        trainingOptions.style.display = "none";
-      }
-      
-      checkTrainingReady();
-    });
-    
-    document.getElementById("training-bot")?.addEventListener("click", () => {
-      const friendsOption = document.getElementById("training-friends");
-      const botOption = document.getElementById("training-bot");
-      const friendsSelection = document.getElementById("friends-mode-selection");
-      const botDifficulty = document.getElementById("bot-difficulty");
-      const trainingOptions = document.getElementById("training-options");
-      
-      // Снимаем выделение с друзей
-      friendsOption?.classList.remove("selected");
-      
-      // Выделяем бота
-      botOption?.classList.add("selected");
-      
-      // Показываем выбор сложности бота
-      if (botDifficulty) {
-        botDifficulty.style.display = "block";
-      }
-      
-      // Скрываем выбор режима для друзей
-      if (friendsSelection) {
-        friendsSelection.style.display = "none";
-      }
-      
-      // Скрываем опции выбора
-      if (trainingOptions) {
-        trainingOptions.style.display = "none";
-      }
-      
-      checkTrainingReady();
-    });
-    
-    // Обработчики режимов для друзей
-    document.addEventListener("change", (e) => {
-      if (e.target.classList.contains("training-mode-radio")) {
-        const mode = e.target.value;
-        console.log("Выбран режим для друзей:", mode);
-        const friendsSelection = document.getElementById("friends-selection");
-        if (friendsSelection) {
-          friendsSelection.style.display = "block";
-        }
-        checkTrainingReady();
-      }
-    });
-    
-    // Обработчики сложности бота
-    document.addEventListener("change", (e) => {
-      if (e.target.classList.contains("difficulty-radio")) {
-        const difficulty = e.target.value;
-        console.log("Выбрана сложность:", difficulty);
-        lastBattleSelection.difficulty = difficulty;
-        lastBattleSelection.matchType = 'training';
-        checkTrainingReady();
-      }
-    });
-    
-    // Кнопка "Играть" для тренировки
-    document.getElementById("play-training-btn")?.addEventListener("click", () => {
-      const friendsSelected = document.getElementById("training-friends")?.classList.contains("selected");
-      const botSelected = document.getElementById("training-bot")?.classList.contains("selected");
-      
-      if (friendsSelected) {
-        const mode = document.querySelector('input[name="training-mode"]:checked')?.value;
-        console.log("Тренировка с другом:", mode);
-        closeModal("training-modal");
-        alert(`Тренировка с другом (${mode}) скоро будет доступна!`);
-      } else if (botSelected) {
-        const difficulty = document.querySelector('input[name="difficulty"]:checked')?.value;
-        console.log("Тренировка с ботом:", difficulty);
-        closeModal("training-modal");
-        alert(`Тренировка с ботом (${difficulty}) скоро будет доступна!`);
-      }
     });
   }, 100);
   
@@ -4987,7 +4859,7 @@ function showPurchaseSuccessModal(rewards, mail) {
               <div class="reward-icon-large reward-icon-extrapass">${reward.icon}</div>
               <div class="reward-amount-large">
                 <div class="reward-extrapass-title">ExtraPass</div>
-                <div class="reward-extrapass-subtitle">Активирован на 30 дней</div>
+                <div class="reward-extrapass-subtitle">Активирован на 1 сезон</div>
               </div>
             </div>
           `;
@@ -5174,7 +5046,7 @@ function showItemDetailModal(itemCard) {
           <div class="feature-icon">⏱️</div>
           <div class="feature-text">
             <div class="feature-title">Длительность</div>
-            <div class="feature-desc">30 дней активной подписки</div>
+            <div class="feature-desc">Активен до окончания сезона</div>
           </div>
         </div>
         <div class="item-detail-feature">
@@ -6943,7 +6815,7 @@ function renderCaseRewards(rewards) {
   if (noteEl) {
     const ultraBonus = rewards.extra_pass_bonus;
     if (ultraBonus?.tier === "ultra" && ultraBonus.reroll_attempts > 0) {
-      noteEl.textContent = `Ultra-реролл применен: выбран лучший результат из ${ultraBonus.total_attempts}. Награды уже зачислены.`;
+      noteEl.textContent = `Ultra-переоткрытие применено. Награды уже зачислены.`;
     } else {
       noteEl.textContent = "Награды уже зачислены на ваш аккаунт.";
     }

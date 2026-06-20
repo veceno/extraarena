@@ -5,6 +5,8 @@ import importlib
 import json
 import time
 import uuid
+from base64 import b64encode
+from io import BytesIO
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any
@@ -12,6 +14,7 @@ from typing import Any
 import jwt
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
+from PIL import Image
 
 from infrastructure.config import DatabaseSettings, get_settings
 from infrastructure.database import Database
@@ -54,7 +57,7 @@ def _mcp_auth_module():
     return importlib.import_module("web.mcp_auth")
 
 
-def test_mcp_config_defaults_to_disabled_with_dev_safe_values(monkeypatch):
+def test_mcp_config_defaults_to_enabled_with_dev_safe_values(monkeypatch):
     monkeypatch.setenv("BOT_TOKEN", "bot-token")
     monkeypatch.setenv("ENVIRONMENT", "development")
     monkeypatch.delenv("MCP_ENABLED", raising=False)
@@ -66,7 +69,7 @@ def test_mcp_config_defaults_to_disabled_with_dev_safe_values(monkeypatch):
 
     settings = get_settings()
 
-    assert getattr(settings, "mcp_enabled", None) is False
+    assert getattr(settings, "mcp_enabled", None) is True
     assert settings.mcp_token_secret != settings.jwt_secret
     assert settings.mcp_endpoint_path.startswith("/")
     assert settings.mcp_session_path.startswith("/api/admin/")
@@ -227,6 +230,11 @@ class GatewayMCPDB:
         self.idempotency = {}
         self.fail_runtime_config = False
         self.cards = {46: {"id": 46, "name": "Warrior", "card_type": "warrior"}}
+        self.shop_sets = {1: {"id": 1, "name": "Arena Set", "is_active": True}}
+        self.ruble_products = {}
+        self.cosmetics = {}
+        self.next_cosmetic_id = 1
+        self.reward_tracks = [{"id": 1, "track_type": "s1_free", "position": 1, "is_active": True}]
 
     async def is_admin(self, user_id):
         return int(user_id) == 101
@@ -247,10 +255,71 @@ class GatewayMCPDB:
         return [{"mode_id": "classic", "enabled": True}]
 
     async def get_ruble_products(self, active_only=False, surface=None):
-        return [{"code": "starter", "name": "Starter", "is_active": True}]
+        return list(self.ruble_products.values()) or [{"code": "starter", "name": "Starter", "is_active": True}]
+
+    async def get_ruble_product(self, code):
+        return self.ruble_products.get(str(code))
 
     async def get_shop_sets(self, active_only=False):
-        return [{"id": 1, "name": "Arena Set", "is_active": True}]
+        return list(self.shop_sets.values())
+
+    async def get_shop_set(self, set_id):
+        return self.shop_sets.get(int(set_id))
+
+    async def validate_shop_set_rewards(self, rewards):
+        normalized = mcp_admin_tools._normalize_shop_set_rewards(rewards)
+        for reward in normalized:
+            if reward.get("type") == "card" and int(reward.get("card_id") or 0) not in self.cards:
+                return [], "reward_card_not_found"
+            if reward.get("type") == "particles" and int(reward.get("card_id") or 0) not in self.cards:
+                return [], "reward_card_not_found"
+            if reward.get("type") == "cosmetic":
+                item = next(
+                    (
+                        row for row in self.cosmetics.values()
+                        if row.get("slug") == reward.get("cosmetic_slug") and row.get("is_active", True)
+                    ),
+                    None,
+                )
+                if not item:
+                    return [], "reward_cosmetic_not_found"
+        return normalized, None
+
+    async def list_cosmetic_items(self, *, active_only=False, item_type=None):
+        rows = list(self.cosmetics.values())
+        if active_only:
+            rows = [row for row in rows if row.get("is_active", True)]
+        if item_type:
+            rows = [row for row in rows if row.get("item_type") == item_type]
+        return rows
+
+    async def get_cosmetic_item(self, identity):
+        if isinstance(identity, int) or str(identity).isdigit():
+            return self.cosmetics.get(int(identity))
+        return next((row for row in self.cosmetics.values() if row.get("slug") == str(identity)), None)
+
+    async def create_cosmetic_item(self, **kwargs):
+        if any(row.get("slug") == kwargs.get("slug") for row in self.cosmetics.values()):
+            return {"success": False, "error": "cosmetic_slug_exists"}
+        cosmetic_id = self.next_cosmetic_id
+        self.next_cosmetic_id += 1
+        row = {"id": cosmetic_id, "is_active": True, "sort_order": 0, **kwargs}
+        self.cosmetics[cosmetic_id] = row
+        return {"success": True, "cosmetic": row}
+
+    async def update_cosmetic_item(self, cosmetic_id, **kwargs):
+        cosmetic_id = int(cosmetic_id)
+        if cosmetic_id not in self.cosmetics:
+            return {"success": False, "error": "cosmetic_not_found"}
+        self.cosmetics[cosmetic_id].update(kwargs)
+        return {"success": True, "cosmetic": self.cosmetics[cosmetic_id]}
+
+    async def delete_cosmetic_item(self, cosmetic_id):
+        cosmetic_id = int(cosmetic_id)
+        if cosmetic_id not in self.cosmetics:
+            return {"success": False, "error": "cosmetic_not_found"}
+        self.cosmetics[cosmetic_id]["is_active"] = False
+        return {"success": True, "cosmetic": self.cosmetics[cosmetic_id]}
 
     async def create_shop_set(
         self,
@@ -279,7 +348,7 @@ class GatewayMCPDB:
         return [{"id": 1, "slug": "s1", "status": "active"}]
 
     async def get_all_reward_tracks(self):
-        return [{"id": 1, "track_type": "s1_free", "position": 1}]
+        return list(self.reward_tracks)
 
     async def get_reward_track_by_id(self, reward_id):
         return {
@@ -635,6 +704,31 @@ def test_mcp_mutating_capabilities_require_confirmation_and_idempotency():
         assert "confirmation_token" in properties
 
 
+def test_admin_shop_schemas_expose_gift_sets_and_cosmetic_rewards():
+    from web.admin_capabilities import ADMIN_CAPABILITIES
+    from web.commerce_admin_mcp_specs import COMMERCE_ADMIN_CAPABILITY_SPECS
+
+    capability_by_id = {capability.id: capability for capability in ADMIN_CAPABILITIES}
+    create_set_rewards = capability_by_id["admin.shop.sets.create"].input_schema["properties"]["rewards"]["items"]
+    create_product_item_type = capability_by_id["admin.shop.products.create"].input_schema["properties"]["item_type"]
+
+    assert "cosmetic" in create_set_rewards["properties"]["type"]["enum"]
+    assert "cosmetic_slug" in create_set_rewards["properties"]
+    assert create_set_rewards["properties"]["cosmetic_slug"]["minLength"] == 1
+    assert create_set_rewards["properties"]["auto_equip"]["type"] == "boolean"
+    assert "gift_shop_set" in create_product_item_type["enum"]
+
+    commerce_by_id = {spec["id"]: spec for spec in COMMERCE_ADMIN_CAPABILITY_SPECS}
+    commerce_rewards = (
+        commerce_by_id["admin.shop.sets.update"]["input_schema"]["properties"]["patch"]["properties"]["rewards"]["items"]
+    )
+    commerce_item_type = commerce_by_id["admin.shop.products.create"]["input_schema"]["properties"]["item_type"]
+
+    assert "cosmetic" in commerce_rewards["properties"]["type"]["enum"]
+    assert "cosmetic_slug" in commerce_rewards["properties"]
+    assert "gift_shop_set" in commerce_item_type["enum"]
+
+
 def test_mcp_admin_full_extraadmin_coverage_is_registered():
     from web.admin_capabilities import ADMIN_CAPABILITIES
     from web.mcp_admin_tools import ADAPTERS
@@ -675,6 +769,12 @@ def test_mcp_admin_full_extraadmin_coverage_is_registered():
         "admin.stars_test_mode.toggle",
         "admin.squads.read",
         "admin.squads.action.execute",
+        "admin.cosmetics.read",
+        "admin.cosmetics.detail.read",
+        "admin.cosmetics.create",
+        "admin.cosmetics.update",
+        "admin.cosmetics.delete",
+        "admin.uploads.cosmetic_image.create",
         "admin.uploads.product_image.create",
         "admin.configs.summary.read",
         "admin.runtime.tps.read",
@@ -687,6 +787,208 @@ def test_mcp_admin_full_extraadmin_coverage_is_registered():
         if capability.adapter_function not in ADAPTERS
     ]
     assert missing_adapters == []
+
+
+def _test_png_base64(width: int, height: int) -> str:
+    buf = BytesIO()
+    Image.new("RGB", (width, height), (245, 0, 160)).save(buf, format="PNG")
+    return b64encode(buf.getvalue()).decode("ascii")
+
+
+@pytest.mark.asyncio
+async def test_mcp_cosmetic_upload_create_read_and_delete(monkeypatch, tmp_path):
+    monkeypatch.setattr(mcp_admin_tools, "DESIGN_ASSETS_DIR", tmp_path / "DesignAssets")
+    client, db, admin_auth_token = await _gateway_client(monkeypatch)
+    try:
+        token = await _mcp_token(client, admin_auth_token)
+        upload_args = {
+            "item_type": "avatar",
+            "slug": "extra_cards_avatar",
+            "content_type": "image/png",
+            "base64": _test_png_base64(750, 750),
+            "dry_run": True,
+            "idempotency_key": "cosmetic-upload-avatar",
+        }
+        upload_dry = await _mcp_call(
+            client,
+            token,
+            "tools/call",
+            {"name": "admin.uploads.cosmetic_image.create", "arguments": upload_args},
+        )
+        upload_dry_payload = await upload_dry.json()
+        upload_token = upload_dry_payload["result"]["structuredContent"]["confirmation"]["confirmation_token"]
+        upload_apply = await _mcp_call(
+            client,
+            token,
+            "tools/call",
+            {
+                "name": "admin.uploads.cosmetic_image.create",
+                "arguments": {
+                    **upload_args,
+                    "dry_run": False,
+                    "confirmation_token": upload_token,
+                },
+            },
+        )
+        upload_payload = await upload_apply.json()
+        upload_content = upload_payload["result"]["structuredContent"]
+
+        assert upload_dry.status == 200
+        assert upload_content["dry_run"] is False
+        assert upload_content["dimensions"] == {"width": 750, "height": 750}
+        assert upload_content["asset_path"].startswith("/DesignAssets/PlayerCosmetics/Avatars/Admin/")
+        assert (tmp_path / upload_content["asset_path"].lstrip("/")).is_file()
+
+        create_args = {
+            "slug": "extra_cards_avatar",
+            "item_type": "avatar",
+            "class": "rare",
+            "name": "Extra Cards Avatar",
+            "asset_path": upload_content["asset_path"],
+            "media_type": "image",
+            "dry_run": True,
+            "idempotency_key": "cosmetic-create-avatar",
+        }
+        create_dry = await _mcp_call(
+            client,
+            token,
+            "tools/call",
+            {"name": "admin.cosmetics.create", "arguments": create_args},
+        )
+        create_token = (await create_dry.json())["result"]["structuredContent"]["confirmation"]["confirmation_token"]
+        create_apply = await _mcp_call(
+            client,
+            token,
+            "tools/call",
+            {
+                "name": "admin.cosmetics.create",
+                "arguments": {
+                    **create_args,
+                    "dry_run": False,
+                    "confirmation_token": create_token,
+                },
+            },
+        )
+        created = (await create_apply.json())["result"]["structuredContent"]["cosmetic"]
+
+        assert created["slug"] == "extra_cards_avatar"
+        assert created["asset_path"] == upload_content["asset_path"]
+
+        read_response = await _mcp_call(
+            client,
+            token,
+            "tools/call",
+            {"name": "admin.cosmetics.read", "arguments": {"active_only": True}},
+        )
+        read_payload = await read_response.json()
+        assert read_payload["result"]["structuredContent"]["items"][0]["slug"] == "extra_cards_avatar"
+
+        delete_args = {
+            "id": created["id"],
+            "dry_run": True,
+            "idempotency_key": "cosmetic-delete-avatar",
+        }
+        delete_dry = await _mcp_call(
+            client,
+            token,
+            "tools/call",
+            {"name": "admin.cosmetics.delete", "arguments": delete_args},
+        )
+        delete_token = (await delete_dry.json())["result"]["structuredContent"]["confirmation"]["confirmation_token"]
+        delete_apply = await _mcp_call(
+            client,
+            token,
+            "tools/call",
+            {
+                "name": "admin.cosmetics.delete",
+                "arguments": {
+                    **delete_args,
+                    "dry_run": False,
+                    "confirmation_token": delete_token,
+                },
+            },
+        )
+
+        assert delete_apply.status == 200
+        assert db.cosmetics[created["id"]]["is_active"] is False
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_mcp_rejects_title_cosmetic_image_fields(monkeypatch):
+    client, db, admin_auth_token = await _gateway_client(monkeypatch)
+    db.cosmetics[1] = {
+        "id": 1,
+        "slug": "avatar_to_title",
+        "item_type": "avatar",
+        "class": "rare",
+        "name": "Avatar To Title",
+        "asset_path": "/DesignAssets/PlayerCosmetics/Avatars/Admin/avatar_to_title.png",
+        "media_type": "image",
+        "is_active": True,
+    }
+    try:
+        token = await _mcp_token(client, admin_auth_token)
+        update_to_title = await _mcp_call(
+            client,
+            token,
+            "tools/call",
+            {
+                "name": "admin.cosmetics.update",
+                "arguments": {
+                    "id": 1,
+                    "item_type": "title",
+                    "dry_run": True,
+                    "idempotency_key": "avatar-to-title",
+                },
+            },
+        )
+        with_asset = await _mcp_call(
+            client,
+            token,
+            "tools/call",
+            {
+                "name": "admin.cosmetics.create",
+                "arguments": {
+                    "slug": "title_with_asset",
+                    "item_type": "title",
+                    "class": "rare",
+                    "name": "Title With Asset",
+                    "asset_path": "/DesignAssets/PlayerCosmetics/Avatars/Admin/title.png",
+                    "dry_run": True,
+                    "idempotency_key": "title-with-asset",
+                },
+            },
+        )
+        with_media = await _mcp_call(
+            client,
+            token,
+            "tools/call",
+            {
+                "name": "admin.cosmetics.create",
+                "arguments": {
+                    "slug": "title_with_image_media",
+                    "item_type": "title",
+                    "class": "rare",
+                    "name": "Title With Image Media",
+                    "media_type": "image",
+                    "dry_run": True,
+                    "idempotency_key": "title-with-image-media",
+                },
+            },
+        )
+
+        assert with_asset.status == 200
+        assert with_media.status == 200
+        update_preview = (await update_to_title.json())["result"]["structuredContent"]["cosmetic"]
+        assert update_preview["asset_path"] is None
+        assert update_preview["media_type"] == "text"
+        assert db.cosmetics[1]["item_type"] == "avatar"
+        assert (await with_asset.json())["error"]["message"] == "image_not_allowed_for_title"
+        assert (await with_media.json())["error"]["message"] == "invalid_media_type"
+    finally:
+        await client.close()
 
 
 @pytest.mark.asyncio
@@ -835,6 +1137,236 @@ async def test_mcp_can_create_shop_set_with_confirmation_and_idempotency(monkeyp
                 "rewards": [{"type": "coins", "amount": 25}],
             }
         ]
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_mcp_shop_set_create_dry_run_accepts_cosmetic_reward(monkeypatch):
+    client, db, admin_auth_token = await _gateway_client(monkeypatch)
+    db.cosmetics[1] = {
+        "id": 1,
+        "slug": "avatar_frame_gold",
+        "item_type": "avatar",
+        "class": "rare",
+        "name": "Avatar Frame Gold",
+        "asset_path": "/DesignAssets/PlayerCosmetics/Avatars/Admin/avatar_frame_gold.png",
+        "media_type": "image",
+        "is_active": True,
+    }
+    try:
+        token = await _mcp_token(client, admin_auth_token)
+        response = await _mcp_call(
+            client,
+            token,
+            "tools/call",
+            {
+                "name": "admin.shop.sets.create",
+                "arguments": {
+                    "name": "Cosmetic MCP Set",
+                    "price": 0,
+                    "currency": "rubles",
+                    "rewards": [
+                        {
+                            "type": "cosmetic",
+                            "cosmetic_slug": "avatar_frame_gold",
+                            "auto_equip": True,
+                        }
+                    ],
+                    "dry_run": True,
+                    "idempotency_key": "shop-set-cosmetic",
+                },
+            },
+        )
+        payload = await response.json()
+
+        assert response.status == 200
+        assert payload["result"]["structuredContent"]["dry_run"] is True
+        assert payload["result"]["structuredContent"]["set"]["rewards"] == [
+            {
+                "type": "cosmetic",
+                "cosmetic_slug": "avatar_frame_gold",
+                "auto_equip": True,
+            }
+        ]
+        assert db.created_shop_sets == []
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_mcp_shop_set_create_rejects_missing_cosmetic_reward(monkeypatch):
+    client, db, admin_auth_token = await _gateway_client(monkeypatch)
+    try:
+        token = await _mcp_token(client, admin_auth_token)
+        response = await _mcp_call(
+            client,
+            token,
+            "tools/call",
+            {
+                "name": "admin.shop.sets.create",
+                "arguments": {
+                    "name": "Missing Cosmetic MCP Set",
+                    "price": 0,
+                    "currency": "rubles",
+                    "rewards": [{"type": "cosmetic", "cosmetic_slug": "missing_cosmetic"}],
+                    "dry_run": True,
+                    "idempotency_key": "shop-set-missing-cosmetic",
+                },
+            },
+        )
+        payload = await response.json()
+
+        assert response.status == 200
+        assert payload["error"]["message"] == "reward_cosmetic_not_found"
+        assert db.created_shop_sets == []
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_mcp_shop_set_read_normalizes_legacy_string_rewards(monkeypatch):
+    client, db, admin_auth_token = await _gateway_client(monkeypatch)
+    db.shop_sets[42] = {
+        "id": 42,
+        "name": "Legacy Rewards Set",
+        "is_active": True,
+        "rewards": json.dumps([{"type": "cosmetic", "cosmetic_slug": "bg_old"}]),
+    }
+    try:
+        token = await _mcp_token(client, admin_auth_token)
+        list_response = await _mcp_call(
+            client,
+            token,
+            "tools/call",
+            {"name": "admin.shop.sets.read", "arguments": {"active_only": False}},
+        )
+        detail_response = await _mcp_call(
+            client,
+            token,
+            "tools/call",
+            {"name": "admin.shop.sets.detail.read", "arguments": {"set_id": 42}},
+        )
+        listed_sets = (await list_response.json())["result"]["structuredContent"]["sets"]
+        detail_set = (await detail_response.json())["result"]["structuredContent"]["set"]
+
+        assert next(item for item in listed_sets if item["id"] == 42)["rewards"] == [
+            {"type": "cosmetic", "cosmetic_slug": "bg_old"}
+        ]
+        assert detail_set["rewards"] == [{"type": "cosmetic", "cosmetic_slug": "bg_old"}]
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_mcp_shop_set_create_rejects_empty_cosmetic_slug(monkeypatch):
+    client, db, admin_auth_token = await _gateway_client(monkeypatch)
+    try:
+        token = await _mcp_token(client, admin_auth_token)
+        response = await _mcp_call(
+            client,
+            token,
+            "tools/call",
+            {
+                "name": "admin.shop.sets.create",
+                "arguments": {
+                    "name": "Bad Cosmetic MCP Set",
+                    "price": 0,
+                    "currency": "rubles",
+                    "rewards": [{"type": "cosmetic", "cosmetic_slug": ""}],
+                    "dry_run": True,
+                    "idempotency_key": "shop-set-bad-cosmetic",
+                },
+            },
+        )
+        payload = await response.json()
+
+        assert "cosmetic_slug" in payload["error"]["message"]
+        assert db.created_shop_sets == []
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_mcp_gift_shop_set_product_requires_set_id_and_zero_price(monkeypatch):
+    client, db, admin_auth_token = await _gateway_client(monkeypatch)
+    db.shop_sets[77] = {
+        "id": 77,
+        "name": "Giftable Set",
+        "price": 0,
+        "currency": "rubles",
+        "is_active": True,
+    }
+    try:
+        token = await _mcp_token(client, admin_auth_token)
+        missing_set = await _mcp_call(
+            client,
+            token,
+            "tools/call",
+            {
+                "name": "admin.shop.products.create",
+                "arguments": {
+                    "code": "gift_missing_set",
+                    "item_type": "gift_shop_set",
+                    "name": "Gift Missing Set",
+                    "price": 0,
+                    "dry_run": True,
+                    "idempotency_key": "gift-missing-set",
+                },
+            },
+        )
+        paid_gift = await _mcp_call(
+            client,
+            token,
+            "tools/call",
+            {
+                "name": "admin.shop.products.create",
+                "arguments": {
+                    "code": "gift_paid",
+                    "item_type": "gift_shop_set",
+                    "name": "Paid Gift",
+                    "price": 1,
+                    "shop_set_id": 77,
+                    "dry_run": True,
+                    "idempotency_key": "gift-paid",
+                },
+            },
+        )
+        valid_gift = await _mcp_call(
+            client,
+            token,
+            "tools/call",
+            {
+                "name": "admin.shop.products.create",
+                "arguments": {
+                    "code": "gift_set_77",
+                    "item_type": "gift_shop_set",
+                    "name": "Gift Set 77",
+                    "price": 0,
+                    "shop_set_id": 77,
+                    "dry_run": True,
+                    "idempotency_key": "gift-set-77",
+                },
+            },
+        )
+
+        missing_payload = await missing_set.json()
+        paid_payload = await paid_gift.json()
+        valid_payload = await valid_gift.json()
+
+        assert missing_payload["error"]["message"] == "shop_set_id_required"
+        assert paid_payload["error"]["message"] == "gift_shop_set_price_must_be_zero"
+        assert valid_gift.status == 200
+        assert valid_payload["result"]["structuredContent"]["product"] == {
+            "code": "gift_set_77",
+            "item_type": "gift_shop_set",
+            "shop_set_id": 77,
+            "package_type": None,
+            "name": "Gift Set 77",
+            "price": 0.0,
+            "currency": "rubles",
+        }
+        assert db.created_shop_sets == []
     finally:
         await client.close()
 
@@ -997,7 +1529,6 @@ async def test_mcp_extrapass_admin_tools_cover_draft_update_rewards_and_reset(mo
                 "arguments": {
                     "user_id": 201,
                     "mode": "ultra",
-                    "days": 30,
                     "reason": "test entitlement",
                     "dry_run": True,
                     "idempotency_key": "ep-entitlement-set",
@@ -1014,7 +1545,6 @@ async def test_mcp_extrapass_admin_tools_cover_draft_update_rewards_and_reset(mo
                 "arguments": {
                     "user_id": 201,
                     "mode": "ultra",
-                    "days": 30,
                     "reason": "test entitlement",
                     "dry_run": False,
                     "idempotency_key": "ep-entitlement-set",
@@ -1047,7 +1577,7 @@ async def test_mcp_extrapass_admin_tools_cover_draft_update_rewards_and_reset(mo
                 "admin_user_id": 101,
                 "target_user_id": 201,
                 "mode": "ultra",
-                "days": 30,
+                "days": None,
                 "reason": "test entitlement",
             }
         ]
@@ -1087,6 +1617,84 @@ def test_mcp_extrapass_reward_import_accepts_specific_card_and_rejects_bad_card_
         )
 
 
+def test_mcp_extrapass_reward_import_validates_lane_bounds_and_derives_access():
+    season = {
+        "free_track_type": "bp_free",
+        "pass_track_type": "bp_premium",
+        "ultra_track_type": "bp_ultra",
+        "max_stars": 45,
+        "pass_end_position": 40,
+        "ultra_start_position": 41,
+    }
+
+    rows = mcp_admin_tools._normalize_extrapass_reward_import_payload(
+        {
+            "free": [{"position": 45, "reward_type": "coins", "reward_amount": 100, "extra_pass_required": True}],
+            "premium": [{"position": 40, "reward_type": "gems", "reward_amount": 10, "extra_pass_required": False}],
+            "ultra": [{"position": 41, "reward_type": "keys", "reward_amount": 1, "extra_pass_required": False}],
+        },
+        season,
+    )
+
+    assert [row["extra_pass_required"] for row in rows] == [False, True, True]
+
+    with pytest.raises(mcp_admin_tools.MCPToolInputError, match="position_out_of_track_scope"):
+        mcp_admin_tools._normalize_extrapass_reward_import_payload(
+            {"premium": [{"position": 41, "reward_type": "gems", "reward_amount": 10}]},
+            season,
+        )
+    with pytest.raises(mcp_admin_tools.MCPToolInputError, match="position_out_of_track_scope"):
+        mcp_admin_tools._normalize_extrapass_reward_import_payload(
+            {"ultra": [{"position": 40, "reward_type": "keys", "reward_amount": 1}]},
+            season,
+        )
+
+
+def test_mcp_extrapass_reward_import_validates_lane_bounds_and_derives_pass_access():
+    season = {
+        "free_track_type": "bp_free",
+        "pass_track_type": "bp_premium",
+        "ultra_track_type": "bp_ultra",
+        "max_stars": 45,
+        "pass_end_position": 40,
+        "ultra_start_position": 41,
+    }
+
+    rows = mcp_admin_tools._normalize_extrapass_reward_import_payload(
+        {"premium": [{"position": 2, "reward_type": "coins", "reward_amount": 100, "extra_pass_required": False}]},
+        season,
+    )
+
+    assert rows[0]["extra_pass_required"] is True
+    with pytest.raises(mcp_admin_tools.MCPToolInputError, match="position_out_of_track_scope:ultra:1"):
+        mcp_admin_tools._normalize_extrapass_reward_import_payload(
+            {"ultra": [{"position": 1, "reward_type": "coins", "reward_amount": 100}]},
+            season,
+        )
+    with pytest.raises(mcp_admin_tools.MCPToolInputError, match="position_out_of_track_scope:premium:41"):
+        mcp_admin_tools._normalize_extrapass_reward_import_payload(
+            {"premium": [{"position": 41, "reward_type": "coins", "reward_amount": 100}]},
+            season,
+        )
+
+
+@pytest.mark.asyncio
+async def test_mcp_seasons_reward_tracks_read_filters_inactive_rewards():
+    db = GatewayMCPDB()
+    db.reward_tracks = [
+        {"id": 1, "track_type": "s1_free", "position": 1, "is_active": True},
+        {"id": 2, "track_type": "s1_free", "position": 2, "is_active": False},
+    ]
+
+    payload = await mcp_admin_tools.adapter_read_seasons_reward_tracks(
+        {"db": db},
+        101,
+        {"include_inactive_rewards": False},
+    )
+
+    assert payload["reward_tracks"] == [{"id": 1, "track_type": "s1_free", "position": 1, "is_active": True}]
+
+
 @pytest.mark.asyncio
 async def test_mcp_extrapass_reward_import_validates_specific_card_exists_and_is_warrior():
     db = GatewayMCPDB()
@@ -1113,6 +1721,30 @@ async def test_mcp_extrapass_reward_import_validates_specific_card_exists_and_is
                 "dry_run": True,
             },
         )
+
+
+@pytest.mark.asyncio
+async def test_mcp_seasons_reward_tracks_read_can_include_inactive_rewards():
+    db = GatewayMCPDB()
+    db.reward_tracks = [
+        {"id": 1, "track_type": "bp_free", "position": 1, "is_active": True},
+        {"id": 2, "track_type": "bp_free", "position": 2, "is_active": False},
+        {"id": 3, "track_type": "bp_premium", "position": 3},
+    ]
+
+    filtered = await mcp_admin_tools.adapter_read_seasons_reward_tracks(
+        {"db": db},
+        101,
+        {"include_inactive_rewards": False, "include_reset_summaries": False},
+    )
+    unfiltered = await mcp_admin_tools.adapter_read_seasons_reward_tracks(
+        {"db": db},
+        101,
+        {"include_inactive_rewards": True, "include_reset_summaries": False},
+    )
+
+    assert [row["id"] for row in filtered["reward_tracks"]] == [1, 3]
+    assert [row["id"] for row in unfiltered["reward_tracks"]] == [1, 2, 3]
 
 
 @pytest.mark.asyncio

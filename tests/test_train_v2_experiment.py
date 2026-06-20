@@ -9,12 +9,47 @@ import pytest
 
 from ai.train_v2.experiment import (
     ExperimentConfig,
+    _experiment_overrides,
     run_experiment,
     run_preview_ablation,
 )
 
 
 class TestRunExperiment:
+    def test_explicit_default_cli_value_overrides_preset(self, tmp_path):
+        config = ExperimentConfig(
+            name="explicit_default",
+            output_dir=str(tmp_path),
+            preset="m4_night",
+            updates=3,
+            explicit_overrides=("updates",),
+        )
+
+        overrides = _experiment_overrides(
+            config,
+            tmp_path / "run",
+            str(tmp_path / "metrics.jsonl"),
+            tmp_path / "checkpoints",
+        )
+
+        assert overrides["total_updates"] == 3
+
+    def test_preset_defaults_are_not_overridden_when_not_explicit(self, tmp_path):
+        config = ExperimentConfig(
+            name="preset_default",
+            output_dir=str(tmp_path),
+            preset="smoke",
+        )
+
+        overrides = _experiment_overrides(
+            config,
+            tmp_path / "run",
+            str(tmp_path / "metrics.jsonl"),
+            tmp_path / "checkpoints",
+        )
+
+        assert "total_updates" not in overrides
+
     def test_run_experiment_smoke(self):
         config = ExperimentConfig(
             name="smoke_test",

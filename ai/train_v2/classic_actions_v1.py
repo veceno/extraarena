@@ -368,7 +368,7 @@ def _verify_mask(state, player_id, mask):
 
 def _make_preview_env(state: GameState) -> ArenaEnvironment:
     env = ArenaEnvironment.__new__(ArenaEnvironment)
-    env.state = copy.deepcopy(state)
+    env.state = _clone_state_for_preview(state)
     env.mana_per_turn = 1
     try:
         from infrastructure.match_modes import ClassicParams
@@ -382,6 +382,65 @@ def _make_preview_env(state: GameState) -> ArenaEnvironment:
 
     env._apply_aura_bonuses = _preview_apply_aura_bonuses.__get__(env, ArenaEnvironment)
     return env
+
+
+def _clone_card_for_preview(card: CardInstance) -> CardInstance:
+    return CardInstance(
+        instance_id=card.instance_id,
+        card_id=card.card_id,
+        name=card.name,
+        card_type=card.card_type,
+        rarity=card.rarity,
+        mana_cost=card.mana_cost,
+        attack=card.attack,
+        hp=card.hp,
+        max_hp=card.max_hp,
+        mechanics=list(card.mechanics),
+        is_ready=card.is_ready,
+        is_frozen=card.is_frozen,
+        description=card.description,
+        mechanics_desc=card.mechanics_desc,
+        level=card.level,
+        simplified_levelup=card.simplified_levelup,
+        base_attack=card.base_attack,
+        base_hp=card.base_hp,
+        base_max_hp=card.base_max_hp,
+        base_mana_cost=card.base_mana_cost,
+        base_mechanics=list(card.base_mechanics) if card.base_mechanics is not None else None,
+        instant_kill_used=card.instant_kill_used,
+    )
+
+
+def _clone_player_for_preview(player: PlayerState) -> PlayerState:
+    return PlayerState(
+        user_id=player.user_id,
+        is_bot=player.is_bot,
+        replacement_status=player.replacement_status,
+        hero=_clone_card_for_preview(player.hero),
+        mana=player.mana,
+        max_mana=player.max_mana,
+        hand=[_clone_card_for_preview(c) for c in player.hand],
+        board=[_clone_card_for_preview(c) for c in player.board],
+        deck=[_clone_card_for_preview(c) for c in player.deck],
+        graveyard=[_clone_card_for_preview(c) for c in player.graveyard],
+        trophies=player.trophies,
+        surrender_processed=player.surrender_processed,
+    )
+
+
+def _clone_state_for_preview(state: GameState) -> GameState:
+    return GameState(
+        p1=_clone_player_for_preview(state.p1),
+        p2=_clone_player_for_preview(state.p2),
+        current_turn_owner_id=state.current_turn_owner_id,
+        turn_number=state.turn_number,
+        history=[dict(item) for item in state.history],
+        action_history=list(state.action_history),
+        status=state.status,
+        sudden_death_turns_by_player=dict(state.sudden_death_turns_by_player),
+        sudden_death_last_applied_turn_by_player=dict(state.sudden_death_last_applied_turn_by_player),
+        pending_mana_drain_by_player=dict(state.pending_mana_drain_by_player),
+    )
 
 
 # ============================================================================

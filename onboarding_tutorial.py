@@ -52,6 +52,13 @@ NEWBIE_PATH_TASKS = [
         "reward": {"type": "coins", "amount": 100},
     },
     {
+        "id": "join_telegram_channel",
+        "title": "Вступи в Telegram-канал ExtraArena",
+        "completion_text": "Ты в канале. Теперь важные новости точно не пройдут мимо.",
+        "action_url": "https://t.me/extraarena",
+        "reward": {"type": "coins", "amount": 100},
+    },
+    {
         "id": "claim_newbie_reward",
         "title": "Забери награду новичка",
         "completion_text": "Маршрут новичка закрыт. Дальше уже по-взрослому.",

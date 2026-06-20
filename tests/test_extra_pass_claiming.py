@@ -209,6 +209,169 @@ class _PartialSeasonResetConn:
         raise AssertionError("partial reset should stop before mutations")
 
 
+class _SeasonResetMutationConn:
+    def __init__(self):
+        self.fetch_calls = []
+        self.fetchrow_calls = []
+        self.execute_calls = []
+        self.reset_id = 55
+
+    async def fetchval(self, query, *args):
+        if "pg_advisory_xact_lock" in query:
+            return None
+        if "COUNT(*)" in query and "season_reset_results" in query:
+            return 0
+        return None
+
+    async def fetchrow(self, query, *args):
+        self.fetchrow_calls.append((query, args))
+        if "FROM seasons" in query:
+            return {
+                "id": int(args[0]),
+                "free_track_type": "s2_free",
+                "pass_track_type": "s2_pass",
+                "ultra_track_type": "s2_ultra",
+            }
+        if "FROM season_resets" in query:
+            return None
+        if "INSERT INTO season_resets" in query:
+            return {"id": self.reset_id}
+        if "UPDATE season_resets" in query:
+            return {
+                "id": self.reset_id,
+                "season_id": int(args[0] and 2),
+                "previous_season_id": 1,
+                "trigger": "admin",
+                "admin_user_id": 101,
+                "reason": "test",
+                "status": "completed",
+                "processed_players": 1,
+                "total_trophies_reduced": 299,
+                "total_keys_granted": 2,
+                "total_coins_granted": 400,
+                "total_stars_reset": 12,
+                "created_at": None,
+                "completed_at": None,
+                "updated_at": None,
+            }
+        return None
+
+    async def fetch(self, query, *args):
+        self.fetch_calls.append((query, args))
+        if "FROM users" in query:
+            return [
+                {
+                    "user_id": 201,
+                    "trophies": 1499,
+                    "stars": 12,
+                    "keys": 5,
+                    "coins": 200,
+                    "is_bot": False,
+                    "extra_pass": "ultra",
+                    "extra_pass_expires_at": "2026-07-01T00:00:00+00:00",
+                }
+            ]
+        return []
+
+    async def execute(self, query, *args):
+        self.execute_calls.append((query, args))
+        return "OK"
+
+
+class _RollbackTransaction:
+    def __init__(self):
+        self.rolled_back = False
+        self.committed = False
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        self.rolled_back = exc_type is not None
+        self.committed = exc_type is None
+        return False
+
+
+class _ActivationRollbackConn:
+    def __init__(self):
+        self.transaction_state = _RollbackTransaction()
+        self.execute_calls = []
+        self.fetchrow_calls = []
+
+    def transaction(self):
+        return self.transaction_state
+
+    async def fetchrow(self, query, *args):
+        self.fetchrow_calls.append((query, args))
+        if "UPDATE seasons" in query:
+            return {
+                "id": int(args[-1]),
+                "slug": "season-2",
+                "name": "Season 2",
+                "subtitle": "",
+                "description": "",
+                "season_number": 2,
+                "status": "active",
+                "auto_switch": True,
+                "preset_key": "blank",
+                "start_date": None,
+                "end_date": None,
+                "is_active": True,
+                "max_stars": 45,
+                "stage_cost_min": 3,
+                "stage_cost_growth": 0.07,
+                "stage_cost_exponent": 1.5,
+                "stage_cost_cap": 25,
+                "free_track_type": "s2_free",
+                "pass_track_type": "s2_pass",
+                "ultra_track_type": "s2_ultra",
+                "pass_end_position": 40,
+                "ultra_start_position": 41,
+                "theme": {},
+                "created_at": None,
+                "updated_at": None,
+            }
+        return None
+
+    async def execute(self, query, *args):
+        self.execute_calls.append((query, args))
+        return "OK"
+
+
+class _ActivationRollbackAcquire:
+    def __init__(self, conn):
+        self.conn = conn
+
+    async def __aenter__(self):
+        return self.conn
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
+class _ActivationRollbackPool:
+    def __init__(self, conn):
+        self.conn = conn
+
+    def acquire(self):
+        return _ActivationRollbackAcquire(self.conn)
+
+
+class _ActivationRollbackDB(Database):
+    def __init__(self):
+        self.conn = _ActivationRollbackConn()
+        self._pool = _ActivationRollbackPool(self.conn)
+
+    async def get_season_by_id(self, season_id):
+        return {"id": int(season_id), "is_active": False, "status": "scheduled"}
+
+    async def fetchval(self, query, *args):
+        return 1
+
+    async def _execute_season_reset_on_conn(self, conn, **kwargs):
+        return {"error": "season_reset_failed", "season_id": kwargs.get("season_id")}
+
+
 class _RewardClaimDB:
     def __init__(self, *, extra_pass="active", row_extra_pass_required=True):
         self.claim_attempts = []
@@ -730,6 +893,17 @@ async def test_reward_extrapass_promocode_preserves_indefinite_ultra_expiry():
 
 
 @pytest.mark.asyncio
+async def test_reward_extrapass_promocode_grants_season_entitlement_without_expiry():
+    db = _PromoDB()
+    db.user_pass_row = {"extra_pass": "inactive", "extra_pass_expires_at": None}
+
+    result = await db.use_promocode(1001, "PASS")
+
+    assert result["success"] is True
+    assert db.pass_update == {"mode": "active", "expires_at": None, "user_id": 1001}
+
+
+@pytest.mark.asyncio
 async def test_season_reset_preview_math_excludes_bots_and_summarizes():
     db = _SeasonResetPreviewDB()
 
@@ -832,3 +1006,69 @@ async def test_execute_season_reset_partial_running_row_does_not_regrant():
     assert result == {"error": "season_reset_in_progress", "season_id": 2}
     assert conn.fetch_calls == []
     assert conn.execute_calls == []
+
+
+@pytest.mark.asyncio
+async def test_execute_season_reset_revokes_extra_pass_and_cleans_season_claims():
+    db = Database.__new__(Database)
+    conn = _SeasonResetMutationConn()
+
+    result = await db._execute_season_reset_on_conn(
+        conn,
+        season_id=2,
+        previous_season_id=1,
+        trigger="admin",
+        admin_user_id=101,
+        reason="test",
+        require_active=True,
+    )
+
+    assert result["status"] == "completed"
+    update_user_call = next(call for call in conn.execute_calls if "UPDATE users" in call[0])
+    assert "extra_pass = 'inactive'" in update_user_call[0]
+    assert "extra_pass_expires_at = NULL" in update_user_call[0]
+    assert any("DELETE FROM claimed_rewards" in query for query, _ in conn.execute_calls)
+    mail_call = next(call for call in conn.execute_calls if "INSERT INTO user_mail" in call[0])
+    mail_attachments = mail_call[1][3]
+    assert '"keys": 2' in mail_attachments
+    assert '"coins": 400' in mail_attachments
+    assert '"granted_keys": 2' in mail_attachments
+    assert '"granted_coins": 400' in mail_attachments
+    assert '"old_extra_pass": "ultra"' in mail_attachments
+
+
+@pytest.mark.asyncio
+async def test_execute_season_reset_deactivates_squad_boosts():
+    db = Database.__new__(Database)
+    conn = _SeasonResetMutationConn()
+
+    result = await db._execute_season_reset_on_conn(
+        conn,
+        season_id=2,
+        previous_season_id=1,
+        trigger="admin",
+        admin_user_id=101,
+        reason="test",
+        require_active=True,
+    )
+
+    assert result["status"] == "completed"
+    boost_reset_call = next(call for call in conn.execute_calls if "UPDATE clans" in call[0] and "has_boost = FALSE" in call[0])
+    assert "max_members - COALESCE(boost_member_slots_applied, 0)" in boost_reset_call[0]
+    assert "boost_member_slots_applied = 0" in boost_reset_call[0]
+    assert "Boost сквада завершен: сезонный сброс" in boost_reset_call[0]
+    assert any(
+        "DELETE FROM clan_upgrades" in query and "upgrade_type = 'boost'" in query
+        for query, _args in conn.execute_calls
+    )
+
+
+@pytest.mark.asyncio
+async def test_manual_season_activation_rolls_back_when_reset_fails():
+    db = _ActivationRollbackDB()
+
+    result = await db.update_season(2, status="active", is_active=True, admin_user_id=4242)
+
+    assert result == {"error": "season_reset_failed", "season_id": 2}
+    assert db.conn.transaction_state.rolled_back is True
+    assert any("UPDATE seasons" in query for query, _ in db.conn.fetchrow_calls)

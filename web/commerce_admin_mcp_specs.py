@@ -11,11 +11,13 @@ RUBLE_PRODUCT_ITEM_TYPES = (
     "extrapass",
     "extrapass_ultra",
     "starter_boost",
+    "squad_boost",
     "gems_package",
     "shop_set",
+    "gift_shop_set",
 )
 PROMOCODE_TYPES = ("permanent", "personal", "welcome")
-SHOP_SET_REWARD_TYPES = ("gems", "coins", "keys", "case", "card", "particles")
+SHOP_SET_REWARD_TYPES = ("gems", "coins", "keys", "case", "card", "particles", "cosmetic")
 
 SOURCE_REFS = {
     "promocode_http": "web/server.py:5543",
@@ -92,6 +94,7 @@ def _string_schema(
     min_length: int | None = None,
     max_length: int | None = None,
     enum: tuple[str, ...] | None = None,
+    pattern: str | None = None,
 ) -> JsonSchema:
     schema: JsonSchema = {"type": "string"}
     if min_length is not None:
@@ -100,6 +103,8 @@ def _string_schema(
         schema["maxLength"] = max_length
     if enum is not None:
         schema["enum"] = list(enum)
+    if pattern is not None:
+        schema["pattern"] = pattern
     return schema
 
 
@@ -122,6 +127,8 @@ def _shop_set_reward_schema() -> JsonSchema:
             "type": _string_schema(enum=SHOP_SET_REWARD_TYPES),
             "amount": _int_schema(minimum=0, maximum=1_000_000),
             "card_id": _int_schema(minimum=1, maximum=1_000_000),
+            "cosmetic_slug": _string_schema(min_length=1, max_length=120),
+            "auto_equip": _boolean_schema(default=False),
         },
         required=("type",),
     )
@@ -144,7 +151,7 @@ def _shop_set_patch_schema() -> JsonSchema:
 def _ruble_product_patch_schema() -> JsonSchema:
     return _object_schema(
         {
-            "code": _string_schema(min_length=1, max_length=120),
+            "code": _string_schema(min_length=1, max_length=120, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,119}$"),
             "item_type": _string_schema(enum=RUBLE_PRODUCT_ITEM_TYPES),
             "package_type": _string_schema(max_length=120),
             "shop_set_id": _int_schema(minimum=1),

@@ -55,6 +55,8 @@ RARITY_SHOP_ORDER: dict[str, int] = {
     "unique": 9,
 }
 
+UNOWNED_CARD_RARITY_PENALTY = 2
+
 
 def _as_int(value: Any, default: int = 0) -> int:
     try:
@@ -90,6 +92,18 @@ def _coin_amount(item_type: str) -> int:
     return _as_int(item_type.replace("coins_", "", 1))
 
 
+def _case_pack_title(keys: int) -> str:
+    if keys % 100 in range(11, 15):
+        form = "кейсов"
+    elif keys % 10 == 1:
+        form = "кейс"
+    elif keys % 10 in (2, 3, 4):
+        form = "кейса"
+    else:
+        form = "кейсов"
+    return f"{keys} {form}"
+
+
 def build_shop_catalog(ruble_products: list[dict[str, Any]] | None = None) -> dict[str, list[dict[str, Any]]]:
     """Build the in-game shop catalog from server-owned pricing sources."""
     ruble_products = ruble_products or []
@@ -100,12 +114,12 @@ def build_shop_catalog(ruble_products: list[dict[str, Any]] | None = None) -> di
         case_packs.append({
             "id": pack_id,
             "item_type": pack_id,
-            "title": f"{keys} кейс" if keys == 1 else f"{keys} кейса",
+            "title": _case_pack_title(keys),
             "subtitle": {
-                1: "быстрый шанс карты",
-                3: "серия открытий",
-                5: "популярно",
-                10: "запас на вечер",
+                1: "Открыть один кейс",
+                3: "Три открытия подряд",
+                5: "Выгодный набор",
+                10: "Большой запас кейсов",
             }.get(keys, "кейсы для открытия"),
             "keys": keys,
             "gems_price": _as_int(pack.get("gems")),
@@ -186,14 +200,14 @@ def order_particles_for_shop(cards: list[dict[str, Any]], rotation_date: str) ->
         return list(cards)
 
     indexed_cards = [(index, dict(card)) for index, card in enumerate(cards)]
-    highest_rarity = max(
-        RARITY_SHOP_ORDER.get(str(card.get("rarity") or "common"), 0)
+    highest_rarity_score = max(
+        _particle_rarity_score(card)
         for _, card in indexed_cards
     )
     rarity_candidates = [
         (index, card)
         for index, card in indexed_cards
-        if RARITY_SHOP_ORDER.get(str(card.get("rarity") or "common"), 0) == highest_rarity
+        if _particle_rarity_score(card) == highest_rarity_score
     ]
     highest_particles = max(_as_int(card.get("particles")) for _, card in rarity_candidates)
     candidates = [
@@ -212,3 +226,10 @@ def order_particles_for_shop(cards: list[dict[str, Any]], rotation_date: str) ->
         selected_index, featured = sorted(candidates, key=lambda item: str(item[1].get("id") or ""))[selected_candidate]
 
     return [featured] + [card for index, card in indexed_cards if index != selected_index]
+
+
+def _particle_rarity_score(card: dict[str, Any]) -> int:
+    score = RARITY_SHOP_ORDER.get(str(card.get("rarity") or "common"), 0)
+    if card.get("owned") is False:
+        score = max(0, score - UNOWNED_CARD_RARITY_PENALTY)
+    return score

@@ -65,44 +65,8 @@ def _train_v2_profile(model_path: str, *, selection: str, temperature: tuple[flo
     }
 
 
-def _legacy_profile(model_path: str, obs_dim: int, *, selection: str = "argmax") -> dict[str, Any]:
-    return {
-        "model_path": model_path,
-        "obs_dim": obs_dim,
-        "temperature_range": (0.01, 0.01),
-        "selection": selection,
-    }
-
-
 def generation_specs() -> list[BotSpec]:
     return [
-        BotSpec(
-            key="extra_lr_v1",
-            label="extra-lr-v1",
-            model_name="OnlyVersusRandomBiggest",
-            profile=_legacy_profile("ai/models/OnlyVersusRandomBiggest.onnx", 621),
-            difficulty="lite",
-            trophy_range="0-50",
-            player_max_level=1,
-        ),
-        BotSpec(
-            key="extra_lr_v2",
-            label="extra-lr-v2",
-            model_name="extra-lr-v3-medium",
-            profile=_legacy_profile("ai/models/extra-lr-v3-medium.onnx", 997),
-            difficulty="medium",
-            trophy_range="151-500",
-            player_max_level=5,
-        ),
-        BotSpec(
-            key="extra_lr_v3_max",
-            label="extra-lr-v3-max",
-            model_name="extra-lr-v3-max",
-            profile=_legacy_profile("ai/models/extra-lr-v3-max.onnx", 997),
-            difficulty="max",
-            trophy_range="1001+",
-            player_max_level=10,
-        ),
         BotSpec(
             key="extra_lr_v4_max",
             label="extra-lr-v4-max",

@@ -12,11 +12,12 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-from ai.bot_brain import BerserkInference
 from ai.train_v2.classic_rl_env import ClassicRLEnv
 from ai.train_v2.onnx_policy import OnnxActionPolicy
 from ai.train_v2.policies import GreedyFacePolicy, RandomLegalPolicy
-from ai.train_v2.shadow import LegacyBerserkPolicy
+
+
+LEGACY_MODEL_NAMES = {"legacy_max", "legacy_medium", "legacy_random_biggest"}
 
 
 MODEL_REGISTRY: dict[str, dict[str, Any]] = {
@@ -33,15 +34,14 @@ MODEL_REGISTRY: dict[str, dict[str, Any]] = {
     "b1107": {"kind": "onnx", "path": "ai/train_v2/runs/m4_balanced_from_0950_20260522_144431/exported/update_1107.onnx", "stage": "balanced_from_0950"},
     "b1187": {"kind": "onnx", "path": "ai/train_v2/runs/m4_balanced_from_0950_20260522_144431/exported/update_1187.onnx", "stage": "balanced_from_0950"},
     "b1190": {"kind": "onnx", "path": "ai/train_v2/runs/m4_balanced_from_0950_20260522_144431/exported/update_1190.onnx", "stage": "balanced_from_0950"},
-    "legacy_max": {"kind": "legacy", "profile": "legacy_max", "path": "ai/models/extra-lr-v3-max.onnx", "obs_dim": 997, "stage": "legacy"},
-    "legacy_medium": {"kind": "legacy", "profile": "legacy_medium", "path": "ai/models/extra-lr-v3-medium.onnx", "obs_dim": 997, "stage": "legacy"},
-    "legacy_random_biggest": {"kind": "legacy", "profile": "legacy_random_biggest", "path": "ai/models/OnlyVersusRandomBiggest.onnx", "obs_dim": 621, "stage": "legacy"},
     "greedy_face": {"kind": "greedy", "stage": "baseline"},
     "random": {"kind": "random", "stage": "baseline"},
 }
 
 
 def _make_policy(name: str, seed: int = 0):
+    if name in LEGACY_MODEL_NAMES:
+        raise ValueError(f"legacy opponents are unsupported in the v4 bot pipeline: {name}")
     spec = MODEL_REGISTRY[name]
     kind = spec["kind"]
     if kind == "onnx":
@@ -50,19 +50,6 @@ def _make_policy(name: str, seed: int = 0):
         return GreedyFacePolicy()
     if kind == "random":
         return RandomLegalPolicy(seed=seed)
-    if kind == "legacy":
-        profile = spec["profile"]
-        brain = BerserkInference(
-            profiles={
-                profile: {
-                    "model_path": spec["path"],
-                    "obs_dim": int(spec["obs_dim"]),
-                    "temperature_range": (0.5, 0.5),
-                    "selection": "argmax",
-                }
-            }
-        )
-        return LegacyBerserkPolicy(brain, difficulty=profile)
     raise ValueError(f"unknown policy kind: {kind}")
 
 
@@ -298,7 +285,7 @@ def _print_summary(result: dict, top: int = 20) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run notable-bot TrainV2 tournament")
-    parser.add_argument("--models", default="u0156,u0251,u0348,u0408,u0700,u0800,u0900,u0950,u0958,u0966,legacy_max,legacy_medium,legacy_random_biggest,greedy_face,random")
+    parser.add_argument("--models", default="u0156,u0251,u0348,u0408,u0700,u0800,u0900,u0950,u0958,u0966,greedy_face,random")
     parser.add_argument("--games", type=int, default=12, help="Seeds per unordered pair; both sides are played")
     parser.add_argument("--seed", type=int, default=15000)
     parser.add_argument("--max-steps", type=int, default=220)
@@ -307,6 +294,12 @@ def main() -> None:
     args = parser.parse_args()
 
     models = [item.strip() for item in args.models.split(",") if item.strip()]
+    legacy_requested = [name for name in models if name in LEGACY_MODEL_NAMES]
+    if legacy_requested:
+        raise SystemExit(
+            "legacy opponents are unsupported in the v4 bot pipeline: "
+            + ",".join(legacy_requested)
+        )
     unknown = [name for name in models if name not in MODEL_REGISTRY]
     if unknown:
         raise ValueError(f"unknown models: {unknown}")

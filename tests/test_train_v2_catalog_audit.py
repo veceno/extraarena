@@ -65,6 +65,17 @@ class TestCatalogAudit:
         result = audit_catalog()
         assert result["encoding"]["identity_leakage_checked"] is True
 
+    def test_beta_catalog_excludes_summon_mechanics_while_runtime_is_stubbed(self):
+        catalog = load_current_catalog()
+        summon_mechanics = []
+
+        for cid, item in sorted(catalog.items()):
+            for mechanic in item.get("mechanics", []):
+                if mechanic == "summon" or mechanic.startswith("summon_"):
+                    summon_mechanics.append((cid, mechanic))
+
+        assert summon_mechanics == []
+
 
 class TestProfileEnv:
     def test_benchmark_env_smoke(self):

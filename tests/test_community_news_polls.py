@@ -468,43 +468,35 @@ def test_news_webapp_editor_uses_runtime_admin_status():
     assert "<NewsSheet       onClose={()=>setShowNews(false)} isAdmin={!!runtimeStatus?.is_admin}/>" in source
 
 
-def test_telegram_and_web_news_paths_dual_write_to_both_feeds():
+def test_telegram_bot_exposes_only_start_id_and_broadcast_commands():
     bot_source = Path("bot/handlers.py").read_text(encoding="utf-8")
-    server_source = Path("web/server.py").read_text(encoding="utf-8")
-    bot_block = bot_source.split("async def handle_news_post", 1)[1].split(
-        "@router.message(Command(\"community_post\"))",
-        1,
-    )[0]
-    server_block = server_source.split("async def community_news_create_handler", 1)[1].split(
-        "async def community_news_like_handler",
-        1,
-    )[0]
 
-    assert "create_news_post" in bot_block
-    assert "content_html" in bot_block
-    assert "create_news_entry" in server_block
-    assert "button_url" in server_block
+    assert "@router.message(CommandStart())" in bot_source
+    assert '@router.message(Command("id"))' in bot_source
+    assert '@router.message(Command("broadcast"))' in bot_source
+
+    removed_commands = [
+        'Command("tps")',
+        'Command("stat")',
+        'Command("del")',
+        'Command("news_post")',
+        'Command("community_post")',
+    ]
+    for command in removed_commands:
+        assert command not in bot_source
 
 
-def test_telegram_news_renderer_sanitizes_links_splits_long_entries_and_handles_bad_requests():
+def test_telegram_broadcast_uses_html_preview_and_confirm_flow():
     source = Path("bot/handlers.py").read_text(encoding="utf-8")
-    render_block = source.split("def _render_news_entry", 1)[1].split(
-        "def _build_news_keyboard",
-        1,
-    )[0]
-    pages_block = source.split("def _build_news_pages", 1)[1].split(
-        "def _render_news_entry",
-        1,
-    )[0]
 
-    assert "NEWS_ENTRY_MAX_CHARS" in source
-    assert "def _safe_news_url" in source
-    assert "escape(item[\"button_url\"], quote=True)" in render_block
-    assert "_safe_news_url" in render_block
-    assert "entry_len > NEWS_MAX_CHARS" in pages_block
+    assert "BROADCAST_PENDING" in source
+    assert "Предпросмотр рассылки" in source
+    assert "BROADCAST_CONFIRM_CALLBACK" in source
+    assert "BROADCAST_CANCEL_CALLBACK" in source
+    assert "def _build_broadcast_confirm_keyboard" in source
+    assert 'parse_mode="HTML"' in source
     assert "TelegramBadRequest" in source
-    assert "_send_news_page" in source
-    assert "answer_photo" in source
+    assert "Проверьте HTML-разметку" in source
 
 
 def test_beta_release_checklist_documents_config_policy_risks():

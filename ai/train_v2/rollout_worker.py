@@ -7,6 +7,7 @@ Does NOT import MLX or train_ppo.
 """
 from __future__ import annotations
 
+import json
 import multiprocessing as mp
 import signal
 from typing import Any, Dict
@@ -98,6 +99,58 @@ def _episode_level_overrides(
     return opponent_levels, learner_levels, True
 
 
+def _parse_focus_scenarios(raw: str | None) -> list[dict]:
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"focus_scenarios_json must be valid JSON: {exc}") from exc
+    if not isinstance(data, list):
+        raise ValueError("focus_scenarios_json must be a JSON list")
+
+    scenarios: list[dict] = []
+    for idx, item in enumerate(data):
+        if not isinstance(item, dict):
+            raise ValueError(f"focus scenario #{idx} must be an object")
+        deck = item.get("deck")
+        if not isinstance(deck, list) or not deck:
+            raise ValueError(f"focus scenario #{idx} must include non-empty deck")
+        scenario = dict(item)
+        scenario["key"] = str(scenario.get("key") or f"focus_{idx}")
+        scenario["deck"] = [int(card_id) for card_id in deck]
+        if "level" in scenario:
+            scenario["level"] = max(1, min(10, int(scenario["level"])))
+        scenarios.append(scenario)
+    return scenarios
+
+
+def _choose_focus_scenario(
+    scenarios: list[dict],
+    *,
+    rng: np.random.Generator,
+    rate: float,
+) -> dict | None:
+    if not scenarios or rate <= 0.0 or rng.random() >= rate:
+        return None
+    idx = int(rng.integers(0, len(scenarios)))
+    return scenarios[idx]
+
+
+def _focus_levels(
+    env: ClassicRLEnv,
+    scenario: dict | None,
+) -> tuple[dict[int, int] | None, dict[int, int] | None]:
+    if not scenario:
+        return None, None
+    level = scenario.get("level")
+    p1_level = scenario.get("p1_level", level)
+    p2_level = scenario.get("p2_level", level)
+    p1_levels = _all_card_levels(env, int(p1_level)) if p1_level is not None else None
+    p2_levels = _all_card_levels(env, int(p2_level)) if p2_level is not None else None
+    return p1_levels, p2_levels
+
+
 def _summary_payload(
     env: ClassicRLEnv,
     *,
@@ -125,33 +178,7 @@ def _summary_payload(
 
 
 def _make_legacy_policy(kind: str):
-    from ai.bot_brain import BerserkInference
-    from ai.train_v2.shadow import LegacyBerserkPolicy
-
-    profiles = {
-        "legacy_max": {
-            "model_path": "ai/models/extra-lr-v3-max.onnx",
-            "obs_dim": 997,
-            "temperature_range": (0.5, 0.5),
-            "selection": "argmax",
-        },
-        "legacy_medium": {
-            "model_path": "ai/models/extra-lr-v3-medium.onnx",
-            "obs_dim": 997,
-            "temperature_range": (0.5, 0.5),
-            "selection": "argmax",
-        },
-        "legacy_random_biggest": {
-            "model_path": "ai/models/OnlyVersusRandomBiggest.onnx",
-            "obs_dim": 621,
-            "temperature_range": (0.5, 0.5),
-            "selection": "argmax",
-        },
-    }
-    if kind not in profiles:
-        raise ValueError(f"unknown legacy opponent kind: {kind}")
-    brain = BerserkInference(profiles={kind: profiles[kind]})
-    return LegacyBerserkPolicy(brain, difficulty=kind)
+    raise ValueError(f"legacy opponents are unsupported in the v4 bot pipeline: {kind}")
 
 
 def _make_train_v2_onnx_policy(kind: str):
@@ -242,6 +269,7 @@ def _worker_loop(
             seed=config_dict.get("seed", 42),
             verify_mask=config_dict.get("verify_mask", True),
             placement_mode=config_dict.get("placement_mode", "full"),
+            include_legal_actions_in_info=False,
         )
     except Exception as exc:
         conn.send({"error": f"env_init_failed: {exc}", "worker_id": worker_id})
@@ -262,6 +290,13 @@ def _worker_loop(
     level_handicap_rate = float(config_dict.get("level_handicap_rate", 0.0) or 0.0)
     learner_level = int(config_dict.get("learner_level", 1) or 1)
     opponent_level = int(config_dict.get("opponent_level", 1) or 1)
+    focus_deck_rate = float(config_dict.get("focus_deck_rate", 0.0) or 0.0)
+    try:
+        focus_scenarios = _parse_focus_scenarios(config_dict.get("focus_scenarios_json"))
+    except Exception as exc:
+        conn.send({"error": f"focus_scenarios_invalid: {exc}", "worker_id": worker_id})
+        return
+    current_focus_scenario: dict | None = None
 
     # Pre-compute include_preview flag
     include_preview = config_dict.get("include_preview_features", False)
@@ -298,6 +333,14 @@ def _worker_loop(
             current_starting_player_id = starting_player_id
             try:
                 level_rng = np.random.default_rng(seed + worker_id * 7919)
+                focus_rng = np.random.default_rng(seed * 104729 + worker_id * 7919)
+                focus_scenario = _choose_focus_scenario(
+                    focus_scenarios,
+                    rng=focus_rng,
+                    rate=focus_deck_rate,
+                )
+                current_focus_scenario = focus_scenario
+                focus_p1_levels, focus_p2_levels = _focus_levels(env, focus_scenario)
                 p1_levels, p2_levels, used_level_handicap = _episode_level_overrides(
                     env,
                     rng=level_rng,
@@ -306,9 +349,14 @@ def _worker_loop(
                     learner_level=learner_level,
                     opponent_level=opponent_level,
                 )
+                if focus_scenario is not None:
+                    p1_levels, p2_levels = focus_p1_levels, focus_p2_levels
+                    used_level_handicap = False
                 current_level_handicap = used_level_handicap
                 env.reset(
                     seed=seed,
+                    p1_deck_ids=list(focus_scenario["deck"]) if focus_scenario else None,
+                    p2_deck_ids=list(focus_scenario["deck"]) if focus_scenario else None,
                     p1_levels=p1_levels,
                     p2_levels=p2_levels,
                     starting_player_id=starting_player_id,
@@ -349,6 +397,8 @@ def _worker_loop(
                                 "level_handicap": used_level_handicap,
                                 "learner_level": learner_level if used_level_handicap else None,
                                 "opponent_level": opponent_level if used_level_handicap else None,
+                                "focus_scenario": focus_scenario.get("key") if focus_scenario else None,
+                                "focus_level": focus_scenario.get("level") if focus_scenario else None,
                             },
                             "next_state": None,
                         })
@@ -364,6 +414,8 @@ def _worker_loop(
                     "learner_player_id": learner_player_id,
                     "starting_player_id": current_starting_player_id,
                     "level_handicap": used_level_handicap,
+                    "focus_scenario": focus_scenario.get("key") if focus_scenario else None,
+                    "focus_level": focus_scenario.get("level") if focus_scenario else None,
                     **payload,
                 })
             except Exception as exc:
@@ -416,6 +468,8 @@ def _worker_loop(
                     summary["level_handicap"] = current_level_handicap
                     summary["learner_level"] = learner_level if current_level_handicap else None
                     summary["opponent_level"] = opponent_level if current_level_handicap else None
+                    summary["focus_scenario"] = current_focus_scenario.get("key") if current_focus_scenario else None
+                    summary["focus_level"] = current_focus_scenario.get("level") if current_focus_scenario else None
                 else:
                     next_state = _state_payload(env, include_preview=include_preview, af_dtype=af_dtype)
 

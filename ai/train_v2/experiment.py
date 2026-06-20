@@ -11,7 +11,7 @@ import argparse
 import json
 import os
 import time
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from pathlib import Path
 from typing import Any, Dict
 
@@ -41,6 +41,8 @@ class ExperimentConfig:
     max_steps: int = 100
     hidden_dim: int = 64
     action_hidden_dim: int = 32
+    learning_rate: float | None = None
+    entropy_coef: float | None = None
     include_preview_features: bool = False
     eval_games: int = 4
     eval_max_steps: int = 200
@@ -58,6 +60,9 @@ class ExperimentConfig:
     level_handicap_rate: float | None = None
     learner_level: int | None = None
     opponent_level: int | None = None
+    focus_scenarios_json: str | None = None
+    focus_deck_rate: float | None = None
+    explicit_overrides: tuple[str, ...] = field(default_factory=tuple)
 
 
 # ============================================================================
@@ -80,6 +85,8 @@ def _experiment_overrides(config: ExperimentConfig, run_dir: Path, metrics_path:
         "max_steps": "max_steps_per_episode",
         "hidden_dim": "hidden_dim",
         "action_hidden_dim": "action_hidden_dim",
+        "learning_rate": "learning_rate",
+        "entropy_coef": "entropy_coef",
         "include_preview_features": "include_preview_features",
         "rollout_workers": "rollout_workers",
         "verify_mask": "verify_mask",
@@ -92,11 +99,17 @@ def _experiment_overrides(config: ExperimentConfig, run_dir: Path, metrics_path:
         "level_handicap_rate": "level_handicap_rate",
         "learner_level": "learner_level",
         "opponent_level": "opponent_level",
+        "focus_scenarios_json": "focus_scenarios_json",
+        "focus_deck_rate": "focus_deck_rate",
     }
 
     for exp_field, ppo_field in mapping.items():
-        if getattr(config, exp_field) != getattr(defaults, exp_field):
-            overrides[ppo_field] = getattr(config, exp_field)
+        value = getattr(config, exp_field)
+        is_explicit = exp_field in config.explicit_overrides
+        is_non_preset_default = not config.preset and value is not None
+        is_changed = value is not None and value != getattr(defaults, exp_field)
+        if is_explicit or is_non_preset_default or is_changed:
+            overrides[ppo_field] = value
 
     return overrides
 
@@ -300,6 +313,8 @@ def _main():
     parser.add_argument("--max-steps", type=int, default=None)
     parser.add_argument("--hidden-dim", type=int, default=None)
     parser.add_argument("--action-hidden-dim", type=int, default=None)
+    parser.add_argument("--learning-rate", type=float, default=None)
+    parser.add_argument("--entropy-coef", type=float, default=None)
     parser.add_argument("--include-preview-features", action="store_true")
     parser.add_argument("--eval-games", type=int, default=None)
     parser.add_argument("--eval-max-steps", type=int, default=None)
@@ -310,12 +325,14 @@ def _main():
     parser.add_argument("--placement-mode", default=None, choices=["append_only", "full"], help="Action placement mode")
     parser.add_argument("--action-features-dtype", default=None, choices=["float32", "float16"])
     parser.add_argument("--profile-actions", action="store_true")
-    parser.add_argument("--opponent-mix", default=None, help="League mix, e.g. self:0.4,random:0.1,greedy_face:0.3,legacy_max:0.2")
+    parser.add_argument("--opponent-mix", default=None, help="League mix, e.g. self:0.5,random:0.1,greedy_face:0.2,trainv2_0700:0.2")
     parser.add_argument("--learner-side", default=None, choices=["random", "p1", "p2"])
     parser.add_argument("--starting-player", default=None, choices=["random", "p1", "p2", "learner", "opponent"])
     parser.add_argument("--level-handicap-rate", type=float, default=None)
     parser.add_argument("--learner-level", type=int, default=None)
     parser.add_argument("--opponent-level", type=int, default=None)
+    parser.add_argument("--focus-scenarios-json", default=None)
+    parser.add_argument("--focus-deck-rate", type=float, default=None)
     args = parser.parse_args()
 
     if args.ablation:
@@ -360,6 +377,8 @@ def _main():
             "max_steps": args.max_steps,
             "hidden_dim": args.hidden_dim,
             "action_hidden_dim": args.action_hidden_dim,
+            "learning_rate": args.learning_rate,
+            "entropy_coef": args.entropy_coef,
             "eval_games": args.eval_games,
             "eval_max_steps": args.eval_max_steps,
             "rollout_workers": args.rollout_workers,
@@ -373,11 +392,18 @@ def _main():
             "level_handicap_rate": args.level_handicap_rate,
             "learner_level": args.learner_level,
             "opponent_level": args.opponent_level,
+            "focus_scenarios_json": args.focus_scenarios_json,
+            "focus_deck_rate": args.focus_deck_rate,
         }
 
         for k, v in optional_map.items():
             if v is not None:
                 cfg_kwargs[k] = v
+                if k != "profile_actions" or v:
+                    cfg_kwargs.setdefault("explicit_overrides", []).append(k)
+
+        if "explicit_overrides" in cfg_kwargs:
+            cfg_kwargs["explicit_overrides"] = tuple(cfg_kwargs["explicit_overrides"])
 
         cfg = ExperimentConfig(**cfg_kwargs)
         result = run_experiment(cfg)

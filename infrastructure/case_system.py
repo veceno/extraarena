@@ -57,7 +57,7 @@ RARITY_SCORE = {
 
 
 def normalize_extra_pass_status(extra_pass: Optional[str], expires_at: Any = None) -> str:
-    """Вернуть активный для кейсов уровень подписки с учетом срока действия."""
+    """Вернуть активный для кейсов уровень ExtraPass с учетом legacy-срока."""
     pass_status = (extra_pass or "inactive").lower()
     if pass_status not in {"active", "ultra"}:
         return "inactive"

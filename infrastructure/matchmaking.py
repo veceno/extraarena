@@ -156,7 +156,7 @@ class Matchmaker:
             return StreakAdjustment()
 
         normalized_kind = "loss" if kind == "lose" else kind
-        if trophies_value < MM_TROPHY_LIMIT_CLASSIC:
+        if trophies_value <= MM_TROPHY_LIMIT_CLASSIC:
             loss_threshold = 2
             win_threshold = 5
         elif trophies_value >= 5000:

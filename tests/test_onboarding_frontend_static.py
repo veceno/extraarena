@@ -127,11 +127,36 @@ def test_arena_tutorial_overlay_is_wired_to_state_actions_and_feedback():
     assert "if (isOnboardingTutorialState()) return;\n    showTalkieFullscreen(data);" in script
 
 
+def test_arena_tutorial_click_guard_blocks_card_info_and_allows_modal_close():
+    script = ARENA_JS.read_text(encoding="utf-8")
+    guard_block = script.split("function installOnboardingClickGuard()", 1)[1].split(
+        "async function sendOnboardingTutorialControl",
+        1,
+    )[0]
+
+    assert "activeBattleModal && event.target.closest('#battle-modal-layer')" in guard_block
+    assert ".card-info-btn" in guard_block
+    assert guard_block.index(".card-info-btn") < guard_block.index(
+        "targetMatchesOnboardingSelectors(event.target, allowedSelectors)"
+    )
+
+
+def test_arena_tutorial_blocks_timer_keyboard_shortcut():
+    script = ARENA_JS.read_text(encoding="utf-8")
+    keydown_block = script.split("timerBtn.addEventListener('keydown', function(e)", 1)[1].split(
+        "openTurnTimerModal();",
+        1,
+    )[0] + "openTurnTimerModal();"
+
+    assert "if (isOnboardingTutorialState())" in keydown_block
+    assert keydown_block.index("if (isOnboardingTutorialState())") < keydown_block.index("openTurnTimerModal();")
+
+
 def test_arena_shell_cache_busts_battle_assets_for_telegram_webapp():
     markup = ARENA_HTML.read_text(encoding="utf-8")
     server = SERVER.read_text(encoding="utf-8")
 
-    version = "arena-onboarding-20260610-5"
+    version = "arena-onboarding-20260620-1"
     assert f'content="{version}"' in markup
     assert f"safe-area.js?v={version}" in markup
     assert f"arena-styles.css?v={version}" in markup
@@ -228,7 +253,16 @@ def test_onboarding_server_guards_ordering_and_newbie_rewards():
     assert "onboarding_not_ready" in server
     assert "claim_newbie_path_task" in server
     assert "task_not_completed" in server
+    assert "join_telegram_channel" in server
+    assert "https://t.me/extraarena" in server
+    assert "_check_telegram_channel_membership" in server
+    assert "getChatMember" in server
+    assert "_newbie_path_tasks_for_context" in server
     assert "/api/onboarding/newbie-path/progress" in source
+    assert "telegramChannelTaskOpened" in source
+    assert "window.openExternalLink?.(task.action_url)" in source
+    assert "'Проверить'" in source
+    assert "task.id === 'join_telegram_channel'" in source
     assert 'task_id != "view_new_card"' in server
     assert "newbie_path_task_claimed" in server
     assert "const [newbiePathClaiming, setNewbiePathClaiming] = React.useState({});" in source

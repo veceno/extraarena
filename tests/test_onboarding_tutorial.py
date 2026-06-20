@@ -1,4 +1,8 @@
+import hashlib
+import hmac
 import json
+import time
+from urllib.parse import quote, urlencode
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
@@ -21,6 +25,40 @@ class _AsyncContext:
 
     async def __aexit__(self, exc_type, exc, tb):
         return False
+
+
+class _FakeTelegramResponse:
+    def __init__(self, payload, *, status=200):
+        self.payload = payload
+        self.status = status
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def json(self, *args, **kwargs):
+        return self.payload
+
+
+class _FakeTelegramSession:
+    def __init__(self, payloads):
+        self.payloads = list(payloads)
+        self.requests = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    def get(self, url, **kwargs):
+        self.requests.append((url, kwargs))
+        payload = self.payloads.pop(0) if self.payloads else {"ok": False, "description": "no fake response"}
+        if isinstance(payload, Exception):
+            raise payload
+        return _FakeTelegramResponse(payload)
 
 
 class _NewbiePathClaimConn:
@@ -107,6 +145,19 @@ class _TutorialRouteDB:
         self.state["user_id"] = int(user_id)
         return await self.get_onboarding_state(user_id)
 
+    async def mark_newbie_path_task(self, user_id, task_id, *, claimed=False):
+        progress = dict(self.state.get("newbie_path_progress") or {})
+        tasks = dict(progress.get("tasks") or {})
+        entry = dict(tasks.get(task_id) or {})
+        entry["completed"] = True
+        if claimed:
+            entry["claimed"] = True
+        entry["completed_at"] = entry.get("completed_at") or "2026-06-10T00:00:00+00:00"
+        tasks[str(task_id)] = entry
+        progress["tasks"] = tasks
+        self.state["newbie_path_progress"] = progress
+        return await self.get_onboarding_state(user_id)
+
     async def claim_newbie_path_task(self, user_id, task_id, *, reward_coins=0, require_completed=True):
         progress = dict(self.state.get("newbie_path_progress") or {})
         tasks = dict(progress.get("tasks") or {})
@@ -145,6 +196,33 @@ async def _onboarding_route_client(monkeypatch, db):
     client = TestClient(TestServer(app))
     await client.start_server()
     return client
+
+
+def _signed_init_data(user_id=USER_ID, bot_token="bot-token"):
+    params = {
+        "auth_date": str(int(time.time())),
+        "query_id": "test-query",
+        "user": json.dumps({"id": int(user_id), "first_name": "Test"}, separators=(",", ":")),
+    }
+    data_check_string = "\n".join(f"{key}={value}" for key, value in sorted(params.items()))
+    secret_key = hmac.new(b"WebAppData", bot_token.encode(), hashlib.sha256).digest()
+    params["hash"] = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
+    return urlencode(params)
+
+
+def _signed_auth_query(user_id=USER_ID, bot_token="bot-token"):
+    return quote(_signed_init_data(user_id=user_id, bot_token=bot_token), safe="")
+
+
+def _completed_original_newbie_progress():
+    return {
+        "tasks": {
+            "open_starter_case": {"completed": True, "claimed": True},
+            "view_new_card": {"completed": True, "claimed": True},
+            "save_first_deck": {"completed": True, "claimed": True},
+            "play_regular_battle": {"completed": True, "claimed": True},
+        }
+    }
 
 
 def _tutorial(engine: TutorialBattleEngine) -> dict:
@@ -675,6 +753,192 @@ async def test_newbie_path_route_duplicate_claim_reports_no_grant_without_claim_
         assert body["granted_amount"] == 0
         assert db.coins_granted == 0
         assert all(event[1] != "newbie_path_task_claimed" for event in db.events)
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_newbie_path_telegram_init_data_includes_channel_task(monkeypatch):
+    db = _TutorialRouteDB({
+        "status": "completed",
+        "current_step": "completed",
+        "tutorial_step": TUTORIAL_FINAL_STEP,
+        "newbie_path_progress": {},
+    })
+    client = await _onboarding_route_client(monkeypatch, db)
+
+    try:
+        response = await client.get(f"/api/onboarding/status?_auth={_signed_auth_query()}")
+        body = await response.json()
+
+        assert response.status == 200
+        task_ids = [task["id"] for task in body["onboarding"]["newbie_path"]["tasks"]]
+        assert "join_telegram_channel" in task_ids
+        assert task_ids[-2] == "join_telegram_channel"
+        channel_task = next(task for task in body["onboarding"]["newbie_path"]["tasks"] if task["id"] == "join_telegram_channel")
+        assert channel_task["action_url"] == "https://t.me/extraarena"
+        assert channel_task["reward"]["amount"] == 100
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_newbie_path_android_dev_excludes_channel_task_and_can_finish(monkeypatch):
+    db = _TutorialRouteDB({
+        "status": "completed",
+        "current_step": "completed",
+        "tutorial_step": TUTORIAL_FINAL_STEP,
+        "newbie_path_progress": _completed_original_newbie_progress(),
+    })
+    client = await _onboarding_route_client(monkeypatch, db)
+
+    try:
+        status_response = await client.get(
+            f"/api/onboarding/status?user_id={USER_ID}&ea_platform=android_app&ea_shell=android&ea_telegram=0"
+        )
+        status_body = await status_response.json()
+        task_ids = [task["id"] for task in status_body["onboarding"]["newbie_path"]["tasks"]]
+
+        assert status_response.status == 200
+        assert "join_telegram_channel" not in task_ids
+        assert task_ids == [
+            "open_starter_case",
+            "view_new_card",
+            "save_first_deck",
+            "play_regular_battle",
+            "claim_newbie_reward",
+        ]
+
+        claim_response = await client.post(
+            f"/api/onboarding/newbie-path?user_id={USER_ID}&ea_platform=android_app&ea_shell=android&ea_telegram=0",
+            json={"task_id": "claim_newbie_reward"},
+        )
+        claim_body = await claim_response.json()
+
+        assert claim_response.status == 200
+        assert claim_body["granted_amount"] == 150
+        assert db.coins_granted == 150
+        assert all(task["claimed"] for task in claim_body["newbie_path"]["tasks"])
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_newbie_path_android_dev_rejects_hidden_channel_task(monkeypatch):
+    db = _TutorialRouteDB({
+        "status": "completed",
+        "current_step": "completed",
+        "tutorial_step": TUTORIAL_FINAL_STEP,
+        "newbie_path_progress": {},
+    })
+    client = await _onboarding_route_client(monkeypatch, db)
+
+    try:
+        response = await client.post(
+            f"/api/onboarding/newbie-path?user_id={USER_ID}&ea_platform=android_app&ea_shell=android&ea_telegram=0",
+            json={"task_id": "join_telegram_channel"},
+        )
+        body = await response.json()
+
+        assert response.status == 400
+        assert body["error"] == "invalid_task"
+        assert db.coins_granted == 0
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_newbie_path_telegram_channel_membership_success_grants_reward(monkeypatch):
+    db = _TutorialRouteDB({
+        "status": "completed",
+        "current_step": "completed",
+        "tutorial_step": TUTORIAL_FINAL_STEP,
+        "newbie_path_progress": {},
+    })
+    fake_session = _FakeTelegramSession([
+        {"ok": True, "result": {"status": "member"}},
+    ])
+    monkeypatch.setattr(web_server, "_create_telegram_api_session", lambda: fake_session)
+    client = await _onboarding_route_client(monkeypatch, db)
+
+    try:
+        response = await client.post(
+            f"/api/onboarding/newbie-path?_auth={_signed_auth_query()}",
+            json={"task_id": "join_telegram_channel"},
+        )
+        body = await response.json()
+
+        assert response.status == 200
+        assert body["granted_amount"] == 100
+        assert db.coins_granted == 100
+        progress = db.state["newbie_path_progress"]["tasks"]["join_telegram_channel"]
+        assert progress["completed"] is True
+        assert progress["claimed"] is True
+        assert fake_session.requests[0][1]["params"]["chat_id"] == "-1001777559237"
+        assert any(event[1] == "newbie_path_task_completed" for event in db.events)
+        assert any(event[1] == "newbie_path_task_claimed" for event in db.events)
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_newbie_path_telegram_channel_non_member_grants_nothing(monkeypatch):
+    db = _TutorialRouteDB({
+        "status": "completed",
+        "current_step": "completed",
+        "tutorial_step": TUTORIAL_FINAL_STEP,
+        "newbie_path_progress": {},
+    })
+    monkeypatch.setattr(
+        web_server,
+        "_create_telegram_api_session",
+        lambda: _FakeTelegramSession([{"ok": True, "result": {"status": "left"}}]),
+    )
+    client = await _onboarding_route_client(monkeypatch, db)
+
+    try:
+        response = await client.post(
+            f"/api/onboarding/newbie-path?_auth={_signed_auth_query()}",
+            json={"task_id": "join_telegram_channel"},
+        )
+        body = await response.json()
+
+        assert response.status == 409
+        assert body["error"] == "telegram_channel_not_joined"
+        assert body["retryable"] is False
+        assert db.coins_granted == 0
+        assert "join_telegram_channel" not in db.state["newbie_path_progress"].get("tasks", {})
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_newbie_path_telegram_channel_api_failure_grants_nothing(monkeypatch):
+    db = _TutorialRouteDB({
+        "status": "completed",
+        "current_step": "completed",
+        "tutorial_step": TUTORIAL_FINAL_STEP,
+        "newbie_path_progress": {},
+    })
+    monkeypatch.setattr(
+        web_server,
+        "_create_telegram_api_session",
+        lambda: _FakeTelegramSession([RuntimeError("telegram down"), RuntimeError("still down")]),
+    )
+    client = await _onboarding_route_client(monkeypatch, db)
+
+    try:
+        response = await client.post(
+            f"/api/onboarding/newbie-path?_auth={_signed_auth_query()}",
+            json={"task_id": "join_telegram_channel"},
+        )
+        body = await response.json()
+
+        assert response.status == 409
+        assert body["error"] == "telegram_check_failed"
+        assert body["retryable"] is True
+        assert db.coins_granted == 0
+        assert "join_telegram_channel" not in db.state["newbie_path_progress"].get("tasks", {})
     finally:
         await client.close()
 

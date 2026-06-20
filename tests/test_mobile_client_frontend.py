@@ -188,11 +188,15 @@ def test_android_only_notification_settings_are_conditionally_visible_and_includ
     main = Path("main.py").read_text(encoding="utf-8")
 
     assert "notif_extra_arena_modifiers" in source
+    assert "notif_squad_weekly_tokens" in source
+    assert "Недельные токены" in source
     assert "Модификаторы ExtraArena" in source
     assert "canUseTelegramDelivery" in source
     assert "extraid_linked_telegram" in server
     assert "notif_extra_arena_modifiers BOOLEAN NOT NULL DEFAULT true" in database
+    assert "notif_squad_weekly_tokens BOOLEAN NOT NULL DEFAULT true" in database
     assert "\"extra_arena_modifier\": \"notif_extra_arena_modifiers\"" in notifications
+    assert "\"squad_weekly_tokens\": \"notif_squad_weekly_tokens\"" in notifications
     assert "extra_arena_modifier_changed" in notifications
     assert "mobile_only" in main
 
@@ -467,6 +471,17 @@ def test_safe_zone_covers_rating_generator_and_extrapass_controls():
     assert "padding:'calc(18px + var(--ea-safe-top)) calc(12px + var(--ea-safe-right)) calc(18px + var(--ea-safe-bottom-soft)) calc(12px + var(--ea-safe-left))'" in source
 
 
+def test_safe_area_resists_transient_telegram_zero_insets():
+    source = SAFE_AREA.read_text(encoding="utf-8")
+
+    assert "const insetFallbacks" in source
+    assert "hasInset(normalized) || !hasInset(state.values)" in source
+    assert "tg.onEvent(eventName, scheduleResync)" in source
+    assert "document.addEventListener('pointerup', scheduleResync" in source
+    assert "window.addEventListener('pageshow', scheduleResync" in source
+    assert "syncSoon: scheduleResync" in source
+
+
 def test_generator_screen_uses_safe_json_and_http_status_for_api_mutations():
     source = INDEX.read_text(encoding="utf-8")
     generator_block = source.split("const GeneratorScreen", 1)[1].split(
@@ -707,7 +722,7 @@ def test_case_open_ultra_manual_reroll_uses_pending_claim_flow():
     assert "apiUrl('/api/cases/reroll-from-keys')" in case_block
     assert "apiUrl('/api/cases/open-reroll-from-keys')" in case_block
     assert "apiUrl('/api/cases/claim-from-keys')" in case_block
-    assert "Реролл ULTRA" in case_block
+    assert "Переоткрыть кейс" in case_block
     assert "claimCurrentOpening({closeAfter:true, notifyDone:true})" in case_block
     assert "Текущие награды сохранены" in case_block
     assert "<button onClick={closeCaseScreen} disabled={claiming}" in case_block
@@ -752,6 +767,84 @@ def test_case_open_uses_new_compressed_case_sfx_without_global_click_overlap():
         assert asset.exists(), f"missing case SFX asset: {asset}"
         assert 1_000 < asset.stat().st_size < 45_000
         assert f"/DesignAssets/Sounds/cases/{name}.mp3" in source
+
+
+def test_mail_attachment_badges_accept_season_reset_aliases():
+    source = INDEX.read_text(encoding="utf-8")
+    mail_block = source.split("const AttachmentBadge", 1)[1].split(
+        "const MailScreen",
+        1,
+    )[0]
+
+    assert "const keys = Number(attachments.granted_keys ?? attachments.keys ?? 0);" in mail_block
+    assert "const coins = Number(attachments.granted_coins ?? attachments.coins ?? 0);" in mail_block
+    assert "if (keys)   items.push" in mail_block
+    assert "if (coins)  items.push" in mail_block
+
+
+def test_new_season_modal_uses_existing_mail_and_is_once_per_user_reset():
+    source = INDEX.read_text(encoding="utf-8")
+    modal_block = source.split("const NewSeasonModal", 1)[1].split(
+        "// ═══════════════════════════════════════════\n// MAIL SCREEN",
+        1,
+    )[0]
+    app_block = source.split("const App = () =>", 1)[1].split(
+        "{/* League Up Modal */}",
+        1,
+    )[0]
+
+    assert "function newSeasonSeenKey(userId, resetId)" in source
+    assert "`ea:new-season-modal:v1:${userId}:${resetId}`" in source
+    assert "fetch(_buildAuthUrl('/api/mail?category=system&limit=20'), {cache:'no-store'})" in app_block
+    assert "const mail = (data.mail || []).find(item => {" in app_block
+    assert "extractSeasonResetFromMail" in app_block
+    assert "function newSeasonResetSeen(userId, resetId)" in source
+    assert "function markSeasonResetSeen(reset)" in source
+    assert "mailId: mail?.id || mail?.mail_id" in source
+    assert "fetch(_buildAuthUrl('/api/mail/read')," in source
+    assert "body: JSON.stringify({mail_id: reset.mailId})" in source
+    assert "if (reset && !mail.is_read && !newSeasonResetSeen(userId, reset.resetId))" in app_block
+    assert "setSeasonResetNotice(reset);" in app_block
+    assert "markSeasonResetSeen(reset);" in app_block
+    assert "<NewSeasonModal reset={seasonResetNotice}" in app_block
+    assert "reset.grantedKeys" in modal_block
+    assert "reset.grantedCoins" in modal_block
+
+
+def test_extra_pass_case_reward_art_does_not_show_tier_as_quantity_badge():
+    source = INDEX.read_text(encoding="utf-8")
+    sheet_block = source.split("const BattlePassSheet", 1)[1].split(
+        "// ═══════════════════════════════════════════\n// LEAGUE INFO SHEET",
+        1,
+    )[0]
+    reward_art = sheet_block.split("const RewardArt = ({reward, locked, size = 42}) =>", 1)[1].split(
+        "const renderLaneTile",
+        1,
+    )[0]
+
+    assert "reward.type === 'case' || reward.type === 'keys'" not in reward_art
+    assert "reward.type === 'keys' || reward.type === 'card' || reward.type === 'specific_card'" in reward_art
+    assert "x{reward.amount}" in reward_art
+    assert "{reward.tier}</span>" in reward_art
+
+
+def test_extra_pass_claim_invalidates_inventory_caches_and_shows_granted_result():
+    source = INDEX.read_text(encoding="utf-8")
+    sheet_block = source.split("const BattlePassSheet", 1)[1].split(
+        "// ═══════════════════════════════════════════\n// LEAGUE INFO SHEET",
+        1,
+    )[0]
+    claim_block = sheet_block.split("const handleClaim = async (laneState) =>", 1)[1].split(
+        "const laneStatus",
+        1,
+    )[0]
+
+    assert "const describeGrantedRewards = (granted) =>" in sheet_block
+    assert "const grantedSummary = describeGrantedRewards(d.granted);" in claim_block
+    assert "invalidateInventoryCaches();" in claim_block
+    assert "window.eaInvalidateJson?.('/api/rewards/extra-pass')" in claim_block
+    assert "window.showToast?.(grantedSummary || 'Награда получена', 'success')" in claim_block
+    assert claim_block.index("invalidateInventoryCaches();") < claim_block.index("await load();")
 
 
 def test_real_money_payment_success_publishes_fresh_profile_to_react_state():
@@ -799,6 +892,58 @@ def test_battle_pass_load_error_has_retry_state_and_disables_purchase_cta_withou
     assert "Не удалось загрузить ExtraPass" in sheet_block
 
 
+def test_battle_pass_upsell_is_hidden_for_active_pass_modes():
+    source = INDEX.read_text(encoding="utf-8")
+    sheet_block = source.split("const BattlePassSheet", 1)[1].split(
+        "// ═══════════════════════════════════════════\n// LEAGUE INFO SHEET",
+        1,
+    )[0]
+    topbar_block = sheet_block.split("<div style={s.topbar}>", 1)[1].split(
+        "<div style={s.main}>",
+        1,
+    )[0]
+
+    assert "{passMode === 'f2p' && (" in sheet_block
+    assert "ExtraPass ждёт" in sheet_block
+    assert "💎 {gems.toLocaleString()}" not in topbar_block
+    assert "aria-hidden=\"true\" style={{width:38,height:38}}" in topbar_block
+
+
+def test_battle_pass_reward_tiles_do_not_render_internal_status_chips():
+    source = INDEX.read_text(encoding="utf-8")
+    sheet_block = source.split("const BattlePassSheet", 1)[1].split(
+        "// ═══════════════════════════════════════════\n// LEAGUE INFO SHEET",
+        1,
+    )[0]
+    tile_block = sheet_block.split("const renderLaneTile = (lane) =>", 1)[1].split(
+        "const ctaTitle",
+        1,
+    )[0]
+
+    assert "{lane.label}" not in tile_block
+    assert "{actionText}" not in tile_block
+    assert "const helperText =" in tile_block
+    assert "lane.access_locked ? (lane.access === 'ultra' ? 'откроется с Ultra' : 'откроется с ExtraPass')" in tile_block
+    assert "RewardArt reward={rewards[0]} locked={locked} size={36}" in tile_block
+    assert "helperText + ' · +'" in tile_block
+
+
+def test_battle_pass_key_reward_art_inverts_dark_key_asset():
+    source = INDEX.read_text(encoding="utf-8")
+    sheet_block = source.split("const BattlePassSheet", 1)[1].split(
+        "// ═══════════════════════════════════════════\n// LEAGUE INFO SHEET",
+        1,
+    )[0]
+    reward_art_block = sheet_block.split("const RewardArt = ({reward, locked, size = 42}) =>", 1)[1].split(
+        "const renderLaneTile = (lane) =>",
+        1,
+    )[0]
+
+    assert "const keyRewardImageStyle =" in reward_art_block
+    assert "brightness(0) invert(1)" in reward_art_block
+    assert '<img src="/DesignAssets/MainMenu/Generator/Key.png" alt="" style={keyRewardImageStyle}/>' in reward_art_block
+
+
 def test_battle_pass_sheet_distinguishes_specific_cards_and_highlights_ultra_zone():
     source = INDEX.read_text(encoding="utf-8")
     sheet_block = source.split("const BattlePassSheet", 1)[1].split(
@@ -817,6 +962,49 @@ def test_battle_pass_sheet_distinguishes_specific_cards_and_highlights_ultra_zon
     assert ") : detail.access_locked ? (" in sheet_block
 
 
+def test_new_season_modal_uses_mail_reset_notice_once_per_user_and_reset():
+    source = INDEX.read_text(encoding="utf-8")
+    app_block = source.split("const App = () => {", 1)[1].split(
+        "// ═══════════════════════════════════════════\n// TROPHY ROAD SHEET",
+        1,
+    )[0]
+
+    assert "const NewSeasonModal" in source
+    assert "seasonResetNotice" in app_block
+    assert "fetch(_buildAuthUrl('/api/mail?category=system&limit=20'), {cache:'no-store'})" in app_block
+    assert "function newSeasonLegacySeenKey(userId, resetId)" in source
+    assert "newSeasonResetSeen(userId, resetId)" in source
+    assert "markSeasonResetSeen(reset)" in app_block
+    assert "attachments.reset_id" in app_block
+    assert "profile?.user_id" in app_block
+    assert "setShowBattlePass(true)" in source
+
+
+def test_mail_badges_accept_season_reset_granted_aliases():
+    source = INDEX.read_text(encoding="utf-8")
+    badge_block = source.split("const AttachmentBadge", 1)[1].split(
+        "const MailScreen",
+        1,
+    )[0]
+
+    assert "attachments.granted_coins" in badge_block
+    assert "attachments.granted_keys" in badge_block
+
+
+def test_battle_pass_claim_invalidates_inventory_and_displays_granted_payload_without_case_count_badge():
+    source = INDEX.read_text(encoding="utf-8")
+    sheet_block = source.split("const BattlePassSheet", 1)[1].split(
+        "// ═══════════════════════════════════════════\n// LEAGUE INFO SHEET",
+        1,
+    )[0]
+
+    assert "const describeGrantedRewards = (granted) =>" in sheet_block
+    assert "describeGrantedRewards(d.granted)" in sheet_block
+    assert "invalidateInventoryCaches();" in sheet_block
+    assert "window.showToast?.(grantedSummary || 'Награда получена', 'success')" in sheet_block
+    assert "reward.type === 'keys' || reward.type === 'card' || reward.type === 'specific_card'" in sheet_block
+
+
 def test_shop_basic_pass_cta_blocks_ultra_downgrade():
     source = INDEX.read_text(encoding="utf-8")
     shop_block = source.split("const ShopScreen", 1)[1].split(
@@ -831,6 +1019,23 @@ def test_shop_basic_pass_cta_blocks_ultra_downgrade():
     assert "openPassPurchase('basic', true)" in shop_block
     assert "disabled={isPassPurchaseDisabled('basic')}" in shop_block
     assert "disabled={buying!=null || isPassPurchaseDisabled(passTab)}" in shop_block
+    assert "window.__openExtraPassModal = function(tab, options)" in shop_block
+    assert "setPendingPassPurchase(nextTab)" in shop_block
+    assert "if (!pendingPassPurchase || !passProductFor(pendingPassPurchase)) return;" in shop_block
+    assert "openPassPurchase(nextTab, true)" in shop_block
+    assert "options && options.showDetails" in shop_block
+
+
+def test_shop_orders_paid_packs_before_gifts():
+    source = INDEX.read_text(encoding="utf-8")
+    shop_block = source.split("const ShopScreen", 1)[1].split(
+        "// ═══════════════════════════════════════════\n// ARENA MAIN",
+        1,
+    )[0]
+
+    assert "var paidPacksFirst = function(packs)" in shop_block
+    assert "var giftA = a.pack && a.pack.isGift ? 1 : 0;" in shop_block
+    assert "var visiblePacks = paidPacksFirst(rawVisiblePacks.map(resolvePackForOwnedCards).filter(Boolean));" in shop_block
 
 
 def test_mobile_extraid_account_manager_is_exposed_in_menu():
@@ -980,11 +1185,32 @@ def test_mobile_shop_mutations_use_network_first_data_and_invalidate_caches():
 
     assert "function invalidateShopCaches()" in source
     assert "window.loadMobileShopBootstrap({forceFresh: true})" in source
+    assert "data?.shop_sets && data?.particles_daily && data?.ruble_products" in source
     assert "window.eaInvalidateJson?.('/api/mobile/shop-bootstrap')" in source
-    assert "window.eaInvalidateJson?.('/api/shop/sets')" in source
+    assert "window.eaInvalidateJson?.('/api/shop/sets?surface=game')" in source
     assert "window.eaInvalidateJson?.('/api/shop/particles/daily')" in source
     assert len(re.findall(r"invalidateShopCaches\(\);\s*invalidateInventoryCaches\(\);", source)) >= 2
     assert source.count("await loadData();") >= 2
+
+
+def test_profile_avatar_picker_normalizes_image_size_without_cropping():
+    source = INDEX.read_text(encoding="utf-8")
+    picker_block = source.split("const CosmeticPickerSheet", 1)[1].split(
+        "type === 'profile_background'",
+        1,
+    )[0]
+
+    assert "gridTemplateColumns:'repeat(3,minmax(0,1fr))'" in picker_block
+    assert "boxSizing:'border-box'" in picker_block
+    assert "width:'64px'" in picker_block
+    assert "height:'64px'" in picker_block
+    assert "width:'54px'" in picker_block
+    assert "height:'54px'" in picker_block
+    assert "objectFit:'contain'" in picker_block
+    assert "margin:0" in picker_block
+    assert "width:'76%'" not in picker_block
+    assert "margin:'12%'" not in picker_block
+    assert "objectFit:'cover'" not in picker_block
 
 
 def test_mobile_squad_mutations_use_network_first_data_and_invalidate_caches():
@@ -1003,6 +1229,44 @@ def test_mobile_squad_mutations_use_network_first_data_and_invalidate_caches():
     assert "window.eaInvalidateJson?.('/api/squads/shop')" in source
     assert source.count("invalidateSquadCaches();\n      await loadMe();") >= 7
     assert source.count("invalidateSquadCaches();\n      await loadShop();") >= 2
+
+
+def test_squad_beta_polish_ui_copy_and_removed_shop_upgrades_are_present():
+    source = INDEX.read_text(encoding="utf-8")
+    legacy_main = Path("webapp/main.js").read_text(encoding="utf-8")
+
+    assert "title: 'Глава'" in source
+    assert "short: 'Владелец сквада'" in source
+    assert ">Удерживай</HoldSquadButton>" in source
+    assert "aria-hidden=\"true\" style={{position:'absolute',inset:0,background:`center/cover url(${m.profile_background_url})`}}" in source
+    assert ".filter(([key]) => !['boost','customization'].includes(key))" in source
+    assert "['boost','Boost'],['shop','Магазин']" in source
+    assert "if(tab === 'shop') loadShop();" in source
+    assert "Boost клана" in source
+    assert "Фон · Boost" in source
+    assert "linear-gradient(135deg,#14b8a6,#38bdf8)" in source
+    assert "gridTemplateColumns:'repeat(2,minmax(0,1fr))'" in source
+    assert "gridTemplateRows:'repeat(3,1fr)'" in source
+    assert "aspectRatio:'1 / 1'" in source
+    assert "Преимущества Boost" in source
+    assert "6 бонусов" in source
+    assert "title:'+5 мест'" in source
+    assert "title:'×1.2 CBRP'" in source
+    assert "caption:'множитель вклада'" in source
+    assert "×1.2 CBRP за вклад" in source
+    shop_block = source.split("{clan && tab === 'shop'", 1)[1].split("{clan && tab === 'boost'", 1)[0]
+    boost_block = source.split("{clan && tab === 'boost'", 1)[1].split("{SQUAD_WARS_BETA_ENABLED", 1)[0]
+    assert "Бонусы сквада" in shop_block
+    assert "Бонусы сквада" not in boost_block
+    assert "Общак" not in boost_block
+    assert "Мои токены" not in boost_block
+    assert "токен" not in boost_block.lower()
+    assert "customizationUnlocked" not in source
+    assert "Кастомизация сквада не открыта" not in source
+    assert "Аватар закрыт" not in source
+    assert "Фон закрыт" not in source
+    assert "notif_squad_weekly_tokens: true" in legacy_main
+    assert 'data-setting="notif_squad_weekly_tokens"' in legacy_main
 
 
 def test_mobile_social_and_community_fetches_bypass_browser_cache_after_mutations():

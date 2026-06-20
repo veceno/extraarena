@@ -74,3 +74,10 @@ graphify-out/
 # Rust
 target/
 Cargo.lock
+
+# Graphify project configuration
+!.codex/
+!.codex/**
+!.graphifyignore
+!docs/GRAPHIFY.md
+!scripts/graphify_project.sh

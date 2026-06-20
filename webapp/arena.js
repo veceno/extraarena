@@ -506,7 +506,7 @@ const SURRENDER_TROPHY_TIERS = [
 
 const ARENA_BAD_CONNECTION_THRESHOLD_MS = 1200;
 const ARENA_HEALTH_PING_INTERVAL_MS = 15000;
-const ARENA_CONNECTION_FAILURE_DELAY_MS = 10000;
+const ARENA_CONNECTION_FAILURE_DELAY_MS = 4000;
 let arenaHealthInterval = null;
 let arenaHealthStopped = false;
 let arenaBadPingDismissed = false;
@@ -2745,6 +2745,16 @@ function installOnboardingClickGuard() {
     if (!isOnboardingTutorialState() || !getOnboardingTutorial()) return;
     if (event.target.closest('.arena-onboarding-coach')) return;
     if (event.target.closest('.arena-onboarding-victory')) return;
+    if (activeBattleModal && event.target.closest('#battle-modal-layer')) return;
+    if (event.target.closest('.card-info-btn, #opponent-info-btn, #battle-log-btn, #effects-btn, #turn-timer-container, #surrender-hold-btn')) {
+      event.preventDefault();
+      event.stopPropagation();
+      arenaHaptic('warning', { key: 'onboarding-blocked-click', minInterval: 160 });
+      const feedback = getOnboardingTutorial()?.wrong_action_feedback?.generic || 'Сейчас не туда. Следуй подсветке.';
+      playOnboardingSfx('onboardingBlocked', { volume: 0.5 });
+      showOnboardingTutorialFeedback(feedback);
+      return;
+    }
     const allowedSelectors = getOnboardingAllowedClickSelectors();
     if (targetMatchesOnboardingSelectors(event.target, allowedSelectors)) return;
     event.preventDefault();
@@ -2986,8 +2996,16 @@ function showArenaConnectionModal(message) {
     + "<button type=\"button\" id=\"arena-connection-restart\" style=\"width:100%;height:50px;border:0;border-radius:15px;background:linear-gradient(135deg,#f5921e,#d97510);color:#201005;font:1000 16px 'Exo 2',sans-serif;cursor:pointer;box-shadow:0 12px 30px rgba(245,146,30,.32)\">Перезапустить</button>"
     + '</section></div>';
   root.appendChild(modal);
-  document.getElementById('arena-connection-restart')?.addEventListener('click', () => {
-    window.location.reload();
+  document.getElementById('arena-connection-restart')?.addEventListener('click', (event) => {
+    const button = event.currentTarget;
+    if (button.dataset.restarting === '1') return;
+    button.dataset.restarting = '1';
+    button.disabled = true;
+    button.setAttribute('aria-busy', 'true');
+    button.style.cursor = 'wait';
+    button.style.opacity = '.82';
+    button.innerHTML = '<span style="display:inline-flex;align-items:center;justify-content:center;gap:8px"><span aria-hidden="true" style="width:14px;height:14px;border-radius:50%;border:2px solid rgba(32,16,5,.22);border-top-color:#201005;animation:spin .75s linear infinite"></span><span>Перезапускаем...</span></span>';
+    setTimeout(() => window.location.reload(), 80);
   });
 }
 
@@ -7505,6 +7523,13 @@ function bindUIHandlers() {
     timerBtn.addEventListener('keydown', function(e) {
       if (e.key !== 'Enter' && e.key !== ' ') return;
       e.preventDefault();
+      if (isOnboardingTutorialState()) {
+        e.stopPropagation();
+        arenaHaptic('warning', { key: 'onboarding-blocked-click', minInterval: 160 });
+        playOnboardingSfx('onboardingBlocked', { volume: 0.5 });
+        showOnboardingTutorialFeedback(getOnboardingGenericFeedback());
+        return;
+      }
       openTurnTimerModal();
     });
   }

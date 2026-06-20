@@ -629,8 +629,11 @@ def test_streak_adjustment_thresholds_and_exact_multiples():
     assert Matchmaker._streak_adjustment_for(250, "win", 5).n == 1
     assert Matchmaker._streak_adjustment_for(250, "win", 6).active is False
 
-    assert Matchmaker._streak_adjustment_for(300, "loss", 5).n == 1
-    assert Matchmaker._streak_adjustment_for(300, "loss", 6).active is False
+    assert Matchmaker._streak_adjustment_for(300, "loss", 2).n == 1
+    assert Matchmaker._streak_adjustment_for(300, "win", 5).n == 1
+    assert Matchmaker._streak_adjustment_for(300, "loss", 5).active is False
+    assert Matchmaker._streak_adjustment_for(300, "loss", 6).n == 3
+    assert Matchmaker._streak_adjustment_for(301, "loss", 5).n == 1
     assert Matchmaker._streak_adjustment_for(1200, "win", 6).n == 2
 
     assert Matchmaker._streak_adjustment_for(5000, "loss", 5).active is False

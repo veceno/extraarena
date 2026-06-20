@@ -4,6 +4,7 @@ Tests for TrainV2 ONNX runtime in BerserkInference (Task 08).
 import json
 import random as rand_mod
 import shutil
+from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -77,6 +78,13 @@ class TestTrainV2Profile:
 
         for key in ("extra-lr-v4-micro", "extra-lr-v4-lite", "extra-lr-v4-opti", "extra-lr-v4-max"):
             assert BOT_MODEL_PROFILES[key]["include_preview_features"] is False
+
+    def test_production_model_registry_excludes_legacy_profiles(self):
+        from infrastructure.config import BOT_MODEL_PROFILES
+
+        assert "extra-lr-v1" not in BOT_MODEL_PROFILES
+        assert "extra-lr-v2" not in BOT_MODEL_PROFILES
+        assert "extra-lr-v3-max" not in BOT_MODEL_PROFILES
 
     def test_train_v2_profile_loads(self, train_v2_onnx_model):
         from ai.bot_brain import BerserkInference
@@ -206,7 +214,7 @@ class TestTrainV2Profile:
             "selection": "softmax",
         }
 
-        brain = BerserkInference(profiles={"legacy": profile}, action_dim=200)
+        brain = BerserkInference(profiles={"legacy": profile})
         assert brain.sessions == {}
 
     def test_action_matching_helper(self):
@@ -278,8 +286,76 @@ class TestTrainV2Profile:
             idx = brain.get_action(gs, 1, legal, difficulty="test")
             assert 0 <= idx < len(legal), f"decode=None fallback: illegal index {idx}"
 
+    def test_legal_fallback_prefers_hero_attack_then_attack_play_card_end_turn(self):
+        from ai.bot_brain import _legal_fallback
+
+        end_turn = EndTurnAction()
+        play_card = PlayCardAction(hand_index=0)
+        board_attack = AttackAction(attacker_id="a1", target_id="unit1", target_is_hero=False)
+        hero_attack = AttackAction(attacker_id="a2", target_id=None, target_is_hero=True)
+
+        assert _legal_fallback([end_turn, play_card, board_attack, hero_attack]) == 3
+        assert _legal_fallback([end_turn, play_card, board_attack]) == 2
+        assert _legal_fallback([end_turn, play_card]) == 1
+        assert _legal_fallback([end_turn]) == 0
+        assert _legal_fallback([]) == 0
+
+    def test_decode_none_fallback_logs_reason_and_uses_simple_legal_policy(
+        self, train_v2_onnx_model, caplog, monkeypatch
+    ):
+        from ai.bot_brain import BerserkInference
+        import ai.train_v2.classic_actions_v1 as action_codec
+
+        profile = {
+            "model_path": train_v2_onnx_model,
+            "format": "train_v2_classic_v1",
+            "obs_dim": 1456,
+            "action_feature_dim": 171,
+            "max_candidate_actions": 601,
+            "temperature_range": (1.0, 1.0),
+            "selection": "argmax",
+        }
+
+        brain = BerserkInference(profiles={"test": profile})
+        h1 = _make_hero(30)
+        h2 = _make_hero(30)
+        attacker = _make_warrior(name="Ready", attack=3)
+        p1 = PlayerState(user_id=1, hero=h1, mana=0, max_mana=0, hand=[], board=[attacker], deck=[])
+        p2 = PlayerState(user_id=2, hero=h2, mana=0, max_mana=0, hand=[], board=[], deck=[])
+        gs = GameState(p1=p1, p2=p2, current_turn_owner_id=1)
+        legal = ArenaEnvironment(gs).get_legal_actions(1)
+
+        mask = np.zeros(601, dtype=np.float32)
+        mask[0] = 1.0
+        monkeypatch.setattr(
+            action_codec,
+            "build_action_mask",
+            lambda *_args, **_kwargs: mask,
+        )
+
+        with patch("ai.train_v2.classic_actions_v1.decode_action", return_value=None):
+            idx = brain.get_action(gs, 1, legal, difficulty="test")
+
+        assert legal[idx].to_dict()["type"] == "attack"
+        assert legal[idx].to_dict()["target_is_hero"] is True
+        assert "decode_action returned None, fallback" in caplog.text
+
 
 class TestTrainV2IONames:
+    def test_train_v2_logits_only_outputs_are_runnable(self):
+        from ai.bot_brain import BerserkInference
+
+        obs_name, af_name, output_names = BerserkInference._resolve_train_v2_io_names(
+            {
+                "input_names": ["observation", "action_features"],
+                "output_names": ["logits"],
+            }
+        )
+
+        assert obs_name == "observation"
+        assert af_name == "action_features"
+        assert output_names == ["logits"]
+
     def test_train_v2_uses_session_input_names(self, train_v2_onnx_model):
         from ai.bot_brain import BerserkInference
 
@@ -372,17 +448,9 @@ class TestTrainV2IONames:
         assert 0 <= idx < len(legal)
         assert seen_include_preview == [False]
 
-    @pytest.mark.parametrize(
-        "profile_update",
-        [
-            {"obs_dim": 999},
-            {"action_feature_dim": 170},
-            {"max_candidate_actions": 600},
-            {"temperature_range": (0.0, 0.0)},
-        ],
-    )
-    def test_train_v2_profile_contract_errors_skip_profile(self, train_v2_onnx_model, profile_update):
+    def test_train_v2_profile_defaults_preview_features_to_false(self, train_v2_onnx_model, monkeypatch):
         from ai.bot_brain import BerserkInference
+        import ai.train_v2.classic_actions_v1 as action_codec
 
         profile = {
             "model_path": train_v2_onnx_model,
@@ -393,7 +461,85 @@ class TestTrainV2IONames:
             "temperature_range": (1.0, 1.0),
             "selection": "argmax",
         }
+
+        seen_include_preview = []
+        real_encode = action_codec.encode_action_features
+
+        def wrapped_encode_action_features(*args, **kwargs):
+            seen_include_preview.append(kwargs.get("include_preview", True))
+            return real_encode(*args, **kwargs)
+
+        monkeypatch.setattr(action_codec, "encode_action_features", wrapped_encode_action_features)
+
+        brain = BerserkInference(profiles={"test": profile})
+        gs, legal = _classic_state_with_actions()
+        idx = brain.get_action(gs, 1, legal, difficulty="test")
+
+        assert 0 <= idx < len(legal)
+        assert seen_include_preview == [False]
+
+    @pytest.mark.parametrize(
+        "profile_update",
+        [
+            {"obs_dim": 999},
+            {"action_feature_dim": 170},
+            {"max_candidate_actions": 600},
+            {"temperature_range": (0.0, 0.0)},
+            {"selection": "roulette"},
+            {"placement_mode": "sideways"},
+            {"action_codec": "classic_actions_v0"},
+            {"observation_codec": "classic_obs_v0"},
+        ],
+    )
+    def test_train_v2_profile_contract_errors_skip_profile(self, tmp_path, monkeypatch, profile_update):
+        from ai.bot_brain import BerserkInference
+
+        model_path = tmp_path / "model.onnx"
+        model_path.write_bytes(b"fake onnx")
+
+        class FakeSession:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def get_inputs(self):
+                return [
+                    SimpleNamespace(name="observation", shape=[1, 1456]),
+                    SimpleNamespace(name="action_features", shape=[1, 601, 171]),
+                ]
+
+            def get_outputs(self):
+                return [
+                    SimpleNamespace(name="logits", shape=[1, 601]),
+                    SimpleNamespace(name="value", shape=[1]),
+                ]
+
+        monkeypatch.setattr("ai.bot_brain.ort.InferenceSession", FakeSession)
+
+        profile = {
+            "model_path": str(model_path),
+            "format": "train_v2_classic_v1",
+            "obs_dim": 1456,
+            "action_feature_dim": 171,
+            "max_candidate_actions": 601,
+            "temperature_range": (1.0, 1.0),
+            "selection": "argmax",
+        }
         profile.update(profile_update)
+
+        brain = BerserkInference(profiles={"test": profile})
+        assert brain.sessions == {}
+
+    def test_malformed_profile_without_model_path_does_not_crash_startup(self):
+        from ai.bot_brain import BerserkInference
+
+        profile = {
+            "format": "train_v2_classic_v1",
+            "obs_dim": 1456,
+            "action_feature_dim": 171,
+            "max_candidate_actions": 601,
+            "temperature_range": (1.0, 1.0),
+            "selection": "argmax",
+        }
 
         brain = BerserkInference(profiles={"test": profile})
         assert brain.sessions == {}
@@ -428,10 +574,18 @@ class TestTrainV2IONames:
         }
 
         brain = BerserkInference(profiles={"test": profile})
+        assert brain.has_profile("test") is True
+        assert brain.has_profile("missing") is False
         gs, legal = _classic_state_with_actions()
 
         with pytest.raises(ValueError, match="Unknown Berserk difficulty"):
             brain.get_action(gs, 1, legal, difficulty="missing")
+
+    def test_constructor_rejects_removed_action_dim_argument(self):
+        from ai.bot_brain import BerserkInference
+
+        with pytest.raises(TypeError):
+            BerserkInference(profiles={}, action_dim=200)
 
     @pytest.mark.asyncio(loop_scope="function")
     async def test_get_action_async_offloads_sync_inference(self, train_v2_onnx_model):
@@ -490,9 +644,39 @@ class TestTrainV2IONames:
         from ai.bot_brain import BerserkInference
 
         brain = BerserkInference.__new__(BerserkInference)
-        brain.action_dim = 200
         brain.sessions = {}
 
         gs, legal = _classic_state_with_actions()
         with pytest.raises(ValueError, match="Unknown Berserk difficulty"):
             brain.get_action(gs, 1, legal, difficulty="legacy")
+
+    def test_argmax_empty_mask_falls_back_without_decoding(self, train_v2_onnx_model, monkeypatch):
+        from ai.bot_brain import BerserkInference, _legal_fallback
+        import ai.train_v2.classic_actions_v1 as action_codec
+
+        profile = {
+            "model_path": train_v2_onnx_model,
+            "format": "train_v2_classic_v1",
+            "obs_dim": 1456,
+            "action_feature_dim": 171,
+            "max_candidate_actions": 601,
+            "temperature_range": (1.0, 1.0),
+            "selection": "argmax",
+        }
+
+        brain = BerserkInference(profiles={"test": profile})
+        gs, legal = _classic_state_with_actions()
+        fallback_idx = _legal_fallback(legal)
+
+        monkeypatch.setattr(
+            action_codec,
+            "build_action_mask",
+            lambda *_args, **_kwargs: np.zeros(601, dtype=np.float32),
+        )
+
+        def fail_decode(*_args, **_kwargs):
+            raise AssertionError("decode_action should not run when the mask has no legal actions")
+
+        monkeypatch.setattr(action_codec, "decode_action", fail_decode)
+
+        assert brain.get_action(gs, 1, legal, difficulty="test") == fallback_idx

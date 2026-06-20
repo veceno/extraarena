@@ -355,7 +355,7 @@ class Settings:
     jwt_secret: str = DEFAULT_JWT_SECRET
     admin_session_secret: str = DEFAULT_ADMIN_SESSION_SECRET
     jwt_expiry_days: int = 30
-    mcp_enabled: bool = False
+    mcp_enabled: bool = True
     mcp_token_secret: str = DEFAULT_MCP_TOKEN_SECRET
     mcp_endpoint_path: str = DEFAULT_MCP_ENDPOINT_PATH
     mcp_session_path: str = DEFAULT_MCP_SESSION_PATH
@@ -571,7 +571,7 @@ def get_settings() -> Settings:
     web_host = os.getenv("WEBAPP_HOST", "127.0.0.1").strip()
     jwt_secret = os.getenv("JWT_SECRET", DEFAULT_JWT_SECRET).strip()
     admin_session_secret = os.getenv("ADMIN_SESSION_SECRET", DEFAULT_ADMIN_SESSION_SECRET).strip()
-    mcp_enabled = _env_bool("MCP_ENABLED", False)
+    mcp_enabled = _env_bool("MCP_ENABLED", True)
     mcp_token_secret = os.getenv("MCP_TOKEN_SECRET", DEFAULT_MCP_TOKEN_SECRET).strip()
     mcp_endpoint_path = _normalize_endpoint_path("MCP_ENDPOINT_PATH", DEFAULT_MCP_ENDPOINT_PATH)
     mcp_session_path = _normalize_endpoint_path("MCP_SESSION_PATH", DEFAULT_MCP_SESSION_PATH)

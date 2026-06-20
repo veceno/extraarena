@@ -7,9 +7,9 @@ EXTRASHOP_ADMIN = Path(__file__).resolve().parents[1] / "extraShop" / "admin.htm
 EXTRASHOP_DIR = Path(__file__).resolve().parents[1] / "extraShop"
 
 SERVER_RUBLE_PRODUCT_DESCRIPTIONS = {
-    "extrapass": "Без рекламы, премиальная дорожка Battle Pass, +2 пресета колод, x1.2 монет в боях.",
-    "extrapass_ultra": "Всё из ExtraPass + золотой ник, реролл кейсов, расширенная статистика.",
-    "starter_boost": "ExtraPass на 30 дней, гемы, монеты и кейсы.",
+    "extrapass": "Премиальная дорожка Battle Pass, 5 пресетов колод, кейс за 4 победы и премиальное свечение ника.",
+    "extrapass_ultra": "Всё из ExtraPass, 500 гемов, Ultra-финал Battle Pass, улучшенное свечение ника и переоткрытие кейса.",
+    "starter_boost": "ExtraPass на 1 сезон, гемы, монеты и кейсы.",
 }
 
 
@@ -46,7 +46,7 @@ def test_dynamic_product_images_are_created_with_dom_api():
     assert "image.style.borderRadius = '8px';" in html
     assert "image.style.objectFit = 'cover';" in html
     assert "image.alt = '';" in html
-    assert "image.src = p.image_url;" in html
+    assert "image.src = p.image_url || display.image_url;" in html
     assert "gemMain.appendChild(image);" in html
 
 
@@ -62,8 +62,49 @@ def test_mobile_product_card_selection_routes_to_checkout_when_side_panel_hidden
     assert "window.getComputedStyle(side).display === 'none'" in html
     assert "if (catalogSelectionNeedsCheckoutRoute()) setRoute('checkout');" in card_handler
     assert "function escAttr(s)" in public_shop_block
-    assert '\'<button class="buy-btn" type="button" data-item="\' + escAttr(p.code) + \'">Купить</button>\'' in html
+    assert "'<button class=\"buy-btn\" type=\"button\" data-item=\"' + escAttr(p.code)" in html
+    assert "actionLabel = isGift ? 'Получить в игре' : 'Купить'" in html
     assert "console.warn('[ExtraShop] Dynamic products unavailable:', error);" in html
+
+
+def test_public_shop_uses_safe_dynamic_selectors_and_pack_previews():
+    html = EXTRASHOP_INDEX.read_text(encoding="utf-8")
+    public_shop_block = html.split("// ==================== PUBLIC SHOP (no ?checkout) ====================", 1)[1]
+
+    assert "function safeDataItemSelector(dataItem)" in public_shop_block
+    assert "window.CSS && CSS.escape" in public_shop_block
+    assert "document.querySelector(safeDataItemSelector(dataItem) + '[data-item-name]')" in public_shop_block
+    assert "'[data-item=\"' + dataItem" not in public_shop_block
+    assert "function renderPackPreview(product)" in public_shop_block
+    assert "normalizePackRewards(product)" in public_shop_block
+    assert "pack-preview resources-only" in public_shop_block
+    assert "pack-preview cosmetics-resources" in public_shop_block
+    assert "pack-preview card-pack" in public_shop_block
+    assert "reward.card_image_url || reward.image_url" in public_shop_block
+    assert "reward.card_description || reward.description" in public_shop_block
+    assert "reward.mechanics || reward.mechanics_desc" in public_shop_block
+    assert "pack-card-desc" in public_shop_block
+    assert "pack-card-mechanics" in public_shop_block
+    assert "reward.cosmetic_slug || reward.slug" in public_shop_block
+
+
+def test_public_shop_gift_products_do_not_start_public_checkout():
+    html = EXTRASHOP_INDEX.read_text(encoding="utf-8")
+    start_block = html.split("function startPublicCheckout()", 1)[1].split(
+        "// Click handlers for \"Купить\" / \"Подарить\" buttons",
+        1,
+    )[0]
+
+    assert "function isGiftProductSelection()" in html
+    assert "function giftProductActionMessage()" in html
+    assert "selectedItemType === 'gift_shop_set'" in html
+    assert "showCheckoutError(giftProductActionMessage());" in start_block
+    assert "fetch('/api/payments/checkout/public/start'" in start_block
+    assert start_block.index("showCheckoutError(giftProductActionMessage());") < start_block.index("fetch('/api/payments/checkout/public/start'")
+    assert "Подарок" in html
+    assert "Бесплатно" in html
+    assert "Получить в игре" in html
+    assert "Robokassa · карта / СБП" in html
 
 
 def test_payment_open_uses_single_popup_attempt():
@@ -129,6 +170,13 @@ def test_static_catalog_cards_have_stable_polished_layout_rules():
     assert ".gem-card .price { justify-self: end; align-self: end; }" in html
     assert ".benefit-grid {" in html
     assert "grid-template-columns: repeat(auto-fit, minmax(142px, 1fr));" in html
+
+
+def test_pack_preview_treats_particles_as_resources_not_cosmetics():
+    html = EXTRASHOP_INDEX.read_text(encoding="utf-8")
+
+    assert "return ['gems', 'coins', 'keys', 'case', 'particles'];" in html
+    assert "reward.type === 'cosmetic' || reward.type === 'particles'" not in html
 
 
 def test_admin_extra_pass_reward_editor_splits_random_and_specific_card_rewards():

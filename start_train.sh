@@ -29,9 +29,11 @@ Common env overrides:
   VERIFY_MASK=false
   PLACEMENT_MODE=append_only
   AF_DTYPE=float32        # float32 | float16
-  OPPONENT_MIX=self:1.0   # e.g. self:0.4,random:0.1,greedy_face:0.3,legacy_max:0.2
+  OPPONENT_MIX=self:1.0   # e.g. self:0.4,random:0.1,greedy_face:0.3,v4_lite:0.2
   LEARNER_SIDE=random     # random | p1 | p2
   STARTING_PLAYER=random  # random | p1 | p2 | learner | opponent
+  FOCUS_SCENARIOS_JSON='[{"key":"demo","deck":[1,27,29,31,34,40,41,42,46],"level":1}]'
+  FOCUS_DECK_RATE=1.0     # 0 disables focus decks, 1 forces them every episode
   EXPORT_ONNX=0           # quick/night default 0, smoke default 1
   EVAL_GAMES=1
   EVAL_MAX_STEPS=20
@@ -80,6 +82,8 @@ run_experiment() {
   local opponent_mix="${OPPONENT_MIX:-self:1.0}"
   local learner_side="${LEARNER_SIDE:-random}"
   local starting_player="${STARTING_PLAYER:-random}"
+  local focus_scenarios_json="${FOCUS_SCENARIOS_JSON:-}"
+  local focus_deck_rate="${FOCUS_DECK_RATE:-}"
   local export_onnx="${EXPORT_ONNX:-$default_export}"
   local eval_games="${EVAL_GAMES:-$default_eval_games}"
   local eval_max_steps="${EVAL_MAX_STEPS:-$default_eval_steps}"
@@ -100,6 +104,13 @@ run_experiment() {
     --eval-games "$eval_games"
     --eval-max-steps "$eval_max_steps"
   )
+
+  if [[ -n "$focus_scenarios_json" ]]; then
+    cmd+=(--focus-scenarios-json "$focus_scenarios_json")
+  fi
+  if [[ -n "$focus_deck_rate" ]]; then
+    cmd+=(--focus-deck-rate "$focus_deck_rate")
+  fi
 
   if [[ "$export_onnx" != "1" && "$export_onnx" != "true" ]]; then
     cmd+=(--no-export-onnx)
