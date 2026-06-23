@@ -26,7 +26,7 @@ except ModuleNotFoundError:
     bcrypt = None  # type: ignore
 
 from infrastructure.config import DECK_SIZE, MAX_FREE_DECK_PRESETS, MAX_TOTAL_DECK_PRESETS, DatabaseSettings, get_league_by_trophies_fn, LEAGUE_CONFIG
-from infrastructure.case_config import UNI_CARD_ID, RARITY_ORDER, fallback_coins_for_rarity
+from infrastructure.case_config import UNI_CARD_ID
 from infrastructure.notifications import (
     NOTIFICATION_DEFAULTS,
     NOTIFICATION_SETTING_BY_CATEGORY,
@@ -2109,6 +2109,41 @@ class Database:
             "users", columns, "auth_source TEXT NOT NULL DEFAULT 'telegram'"
         )
 
+        # Ежедневные награды за вход.
+        changed |= await self._add_column_if_missing(
+            "users", columns, "daily_login_streak INTEGER NOT NULL DEFAULT 0"
+        )
+        changed |= await self._add_column_if_missing(
+            "users", columns, "daily_login_streak_day INTEGER NOT NULL DEFAULT 0"
+        )
+        changed |= await self._add_column_if_missing(
+            "users", columns, "daily_login_available_at TIMESTAMPTZ"
+        )
+        changed |= await self._add_column_if_missing(
+            "users", columns, "daily_login_reward_type TEXT"
+        )
+        changed |= await self._add_column_if_missing(
+            "users", columns, "daily_login_reward_amount INTEGER"
+        )
+        changed |= await self._add_column_if_missing(
+            "users", columns, "daily_login_multiplier INTEGER NOT NULL DEFAULT 1"
+        )
+        changed |= await self._add_column_if_missing(
+            "users", columns, "daily_login_claimed BOOLEAN NOT NULL DEFAULT FALSE"
+        )
+        changed |= await self._add_column_if_missing(
+            "users", columns, "daily_login_notified BOOLEAN NOT NULL DEFAULT FALSE"
+        )
+        changed |= await self._add_column_if_missing(
+            "users", columns, "daily_login_last_claim_at TIMESTAMPTZ"
+        )
+        changed |= await self._add_column_if_missing(
+            "users", columns, "daily_login_claimed_reward_type TEXT"
+        )
+        changed |= await self._add_column_if_missing(
+            "users", columns, "daily_login_claimed_reward_amount INTEGER"
+        )
+
         if not await self._constraint_exists("users", "users_status_check"):
             await self.execute(
                 """
@@ -2339,6 +2374,29 @@ class Database:
                 "user_settings", columns,
                 "hide_player_id_public BOOLEAN NOT NULL DEFAULT false"
             )
+
+        # Напоминания арены по умолчанию ВЫКЛ — заменены системой ежедневных наград за вход.
+        await self.execute(
+            """
+            ALTER TABLE user_settings
+            ALTER COLUMN notif_reminders SET DEFAULT FALSE
+            """
+        )
+        existing_reminders_default = await self.fetchrow(
+            """
+            SELECT column_default
+            FROM information_schema.columns
+            WHERE table_name = 'user_settings' AND column_name = 'notif_reminders'
+            """
+        )
+        if existing_reminders_default and "false" in str(existing_reminders_default["column_default"]).lower():
+            changed = True
+
+        # Одноразовый сброс: выключаем напоминания у всех существующих пользователей,
+        # у кого они сейчас включены. Идемпотентно: повторный запуск ничего не меняет.
+        await self.execute(
+            "UPDATE user_settings SET notif_reminders = FALSE WHERE notif_reminders = TRUE"
+        )
 
         return changed
 
@@ -3026,9 +3084,7 @@ class Database:
         for row in ranked_rows:
             result = row.get("result")
             if result not in {"win", "loss"}:
-                if current_length == 0:
-                    continue
-                break
+                continue
             if current_kind is None:
                 current_kind = str(result)
                 current_length = 1
@@ -3269,9 +3325,7 @@ class Database:
         for r in ranked_rows:
             result = r.get("result")
             if result not in ("win", "lose"):
-                if current_streak_count == 0:
-                    continue
-                break
+                continue
             if current_streak_result is None:
                 current_streak_result = result
                 current_streak_count = 1
@@ -3279,6 +3333,17 @@ class Database:
                 current_streak_count += 1
             else:
                 break
+
+        max_win_streak = 0
+        win_run = 0
+        for r in ranked_rows:
+            result = r.get("result")
+            if result == "win":
+                win_run += 1
+                if win_run > max_win_streak:
+                    max_win_streak = win_run
+            elif result == "lose":
+                win_run = 0
 
         return {
             "history_total": all_count,
@@ -3293,6 +3358,8 @@ class Database:
             "favorite_mode": max(mode_counts.items(), key=lambda item: item[1])[0] if mode_counts else None,
             "current_streak_result": current_streak_result,
             "current_streak_count": current_streak_count,
+            "current_win_streak": current_streak_count if current_streak_result == "win" else 0,
+            "max_win_streak": max_win_streak,
         }
 
     @staticmethod
@@ -3792,6 +3859,7 @@ class Database:
             "notif_squad_weekly_tokens",
             "notif_extra_arena_modifiers",
             "notif_game_invites", "notif_friend_requests",
+            "notif_daily_rewards",
         }:
             return True
         row = await self.fetchrow(f"SELECT {setting} FROM user_settings WHERE user_id = $1", user_id)
@@ -15307,11 +15375,10 @@ class Database:
                             rarities = raw_rarities if isinstance(raw_rarities, list) else [str(raw_rarities)]
                         card = await conn.fetchrow(
                             """
-                            SELECT id, name, rarity
+                            SELECT id, name
                             FROM cards
                             WHERE rarity = ANY($1::text[])
                               AND card_type = 'warrior'
-                              AND rarity NOT IN ('limited', 'start')
                               AND NOT EXISTS (
                                   SELECT 1
                                   FROM user_cards
@@ -15340,8 +15407,6 @@ class Database:
                                     "reward_amount": 1,
                                     "card_id": int(card["id"]),
                                     "card_name": card["name"] or "",
-                                    "rarity": card["rarity"] or "",
-                                    "requested_rarities": rarities,
                                 })
                                 await conn.execute(
                                     """
@@ -15354,14 +15419,12 @@ class Database:
                                         "position": position,
                                         "card_id": int(card["id"]),
                                         "card_name": card["name"],
-                                        "rarity": card["rarity"],
                                     }, ensure_ascii=False),
                                 )
                             else:
                                 card = None
                         if not card:
-                            chosen_rarity = next((r for r in rarities if r in RARITY_ORDER), "common")
-                            fallback_coins = fallback_coins_for_rarity(chosen_rarity)
+                            fallback_coins = 100
                             await conn.execute(
                                 """
                                 UPDATE users
@@ -15375,8 +15438,6 @@ class Database:
                                 "reward_type": "coins",
                                 "reward_amount": fallback_coins,
                                 "fallback_for": "card",
-                                "requested_rarities": rarities,
-                                "fallback_rarity": chosen_rarity,
                             })
                             await conn.execute(
                                 """
@@ -15388,196 +15449,104 @@ class Database:
                                     "track_type": track_type,
                                     "position": position,
                                     "fallback_for": "card",
-                                    "fallback_rarity": chosen_rarity,
-                                }, ensure_ascii=False),
+                                    }, ensure_ascii=False),
                             )
                     elif reward_type == "specific_card":
-                       card_id = int((reward_meta or {}).get("card_id") or 0)
-                       card_name = str((reward_meta or {}).get("card_name") or "")
-                       card_rarity = str((reward_meta or {}).get("rarity") or "")
-                       if not card_rarity:
-                           rarity_row = await conn.fetchrow("SELECT rarity FROM cards WHERE id = $1", card_id)
-                           card_rarity = str(rarity_row["rarity"]) if rarity_row else "common"
-                       inserted_card = await conn.fetchrow(
-                           """
-                           INSERT INTO user_cards (user_id, card_id, level, particles)
-                           VALUES ($1, $2, 1, 0)
-                           ON CONFLICT (user_id, card_id) DO NOTHING
-                           RETURNING card_id
-                           """,
-                           user_id,
-                           card_id,
-                       )
-                       if inserted_card:
-                           granted.append({
-                               "reward_type": "specific_card",
-                               "reward_amount": 1,
-                               "card_id": card_id,
-                               "card_name": card_name,
-                               "rarity": card_rarity,
-                           })
-                           await conn.execute(
-                               """
-                               INSERT INTO economy_events (user_id, event_type, resource, amount, source, metadata)
-                               VALUES ($1, 'earn', 'card', 1, 'reward_track', $2::jsonb)
-                               """,
-                               user_id,
-                               json.dumps({
-                                   "track_type": track_type,
-                                   "position": position,
-                                   "card_id": card_id,
-                                   "card_name": card_name,
-                                   "rarity": card_rarity,
-                                   "reward_type": "specific_card",
-                               }, ensure_ascii=False),
-                           )
-                       else:
-                           fallback_coins = fallback_coins_for_rarity(card_rarity)
-                           await conn.execute(
-                               """
-                               UPDATE users
-                               SET coins = GREATEST(0, COALESCE(coins, 0) + $1),
-                                   updated_at = NOW()
-                               WHERE user_id = $2
-                               """,
-                               fallback_coins,
-                               user_id,
-                           )
-                           granted.append({
-                               "reward_type": "coins",
-                               "reward_amount": fallback_coins,
-                               "fallback_for": "specific_card",
-                               "card_id": card_id,
-                               "fallback_rarity": card_rarity,
-                           })
-                           await conn.execute(
-                               """
-                               INSERT INTO economy_events (user_id, event_type, resource, amount, source, metadata)
-                               VALUES ($1, 'earn', 'coins', $2, 'reward_track', $3::jsonb)
-                               """,
-                               user_id,
-                               fallback_coins,
-                               json.dumps({
-                                   "track_type": track_type,
-                                   "position": position,
-                                   "fallback_for": "specific_card",
-                                   "card_id": card_id,
-                                   "fallback_rarity": card_rarity,
-                               }, ensure_ascii=False),
-                           )
+                        card_id = int((reward_meta or {}).get("card_id") or 0)
+                        card_name = str((reward_meta or {}).get("card_name") or "")
+                        inserted_card = await conn.fetchrow(
+                            """
+                            INSERT INTO user_cards (user_id, card_id, level, particles)
+                            VALUES ($1, $2, 1, 0)
+                            ON CONFLICT (user_id, card_id) DO NOTHING
+                            RETURNING card_id
+                            """,
+                            user_id,
+                            card_id,
+                        )
+                        if inserted_card:
+                            granted.append({
+                                "reward_type": "specific_card",
+                                "reward_amount": 1,
+                                "card_id": card_id,
+                                "card_name": card_name,
+                            })
+                            await conn.execute(
+                                """
+                                INSERT INTO economy_events (user_id, event_type, resource, amount, source, metadata)
+                                VALUES ($1, 'earn', 'card', 1, 'reward_track', $2::jsonb)
+                                """,
+                                user_id,
+                                json.dumps({
+                                    "track_type": track_type,
+                                    "position": position,
+                                    "card_id": card_id,
+                                    "card_name": card_name,
+                                    "reward_type": "specific_card",
+                                }, ensure_ascii=False),
+                            )
+                        else:
+                            fallback_coins = 100
+                            await conn.execute(
+                                """
+                                UPDATE users
+                                SET coins = GREATEST(0, COALESCE(coins, 0) + $1),
+                                    updated_at = NOW()
+                                WHERE user_id = $2
+                                """,
+                                fallback_coins,
+                                user_id,
+                            )
+                            granted.append({
+                                "reward_type": "coins",
+                                "reward_amount": fallback_coins,
+                                "fallback_for": "specific_card",
+                                "card_id": card_id,
+                            })
+                            await conn.execute(
+                                """
+                                INSERT INTO economy_events (user_id, event_type, resource, amount, source, metadata)
+                                VALUES ($1, 'earn', 'coins', $2, 'reward_track', $3::jsonb)
+                                """,
+                                user_id,
+                                fallback_coins,
+                                json.dumps({
+                                    "track_type": track_type,
+                                    "position": position,
+                                    "fallback_for": "specific_card",
+                                    "card_id": card_id,
+                                }, ensure_ascii=False),
+                            )
                     elif reward_type == "case":
-                       case_tier = max(1, min(5, reward_amount or 1))
-                       case_row = await conn.fetchrow(
-                           """
-                           INSERT INTO user_cases (user_id, case_id, tier, status)
-                           VALUES ($1, $2, $3, 'pending')
-                           RETURNING id
-                           """,
-                           user_id, case_tier, case_tier,
-                       )
-                       user_case_id = int(case_row["id"]) if case_row else None
-                       granted.append({
-                           "reward_type": "case",
-                           "reward_amount": case_tier,
-                           "case_tier": case_tier,
-                           "user_case_id": user_case_id,
-                       })
-                       await conn.execute(
-                           """
-                           INSERT INTO economy_events (user_id, event_type, resource, amount, source, metadata)
-                           VALUES ($1, 'earn', 'case', 1, 'reward_track', $2::jsonb)
-                           """,
-                           user_id,
-                           json.dumps({
-                               "track_type": track_type,
-                               "position": position,
-                               "case_tier": case_tier,
-                               "user_case_id": user_case_id,
-                           }, ensure_ascii=False),
-                       )
-                    elif reward_type == "particles":
-                       card_id = int((reward_meta or {}).get("card_id") or 0)
-                       card_name = str((reward_meta or {}).get("card_name") or "")
-                       card_rarity = str((reward_meta or {}).get("rarity") or "common")
-                       owned = await conn.fetchval(
-                           "SELECT 1 FROM user_cards WHERE user_id = $1 AND card_id = $2",
-                           user_id, card_id,
-                       )
-                       if owned:
-                           await conn.execute(
-                               """
-                               UPDATE user_cards
-                               SET particles = COALESCE(particles, 0) + $1
-                               WHERE user_id = $2 AND card_id = $3
-                               """,
-                               reward_amount, user_id, card_id,
-                           )
-                           granted.append({
-                               "reward_type": "particles",
-                               "reward_amount": reward_amount,
-                               "card_id": card_id,
-                               "card_name": card_name,
-                               "rarity": card_rarity,
-                           })
-                           await conn.execute(
-                               """
-                               INSERT INTO economy_events (user_id, event_type, resource, amount, source, metadata)
-                               VALUES ($1, 'earn', 'particles', $2, 'reward_track', $3::jsonb)
-                               """,
-                               user_id, reward_amount,
-                               json.dumps({
-                                   "track_type": track_type,
-                                   "position": position,
-                                   "card_id": card_id,
-                                   "card_name": card_name,
-                               }, ensure_ascii=False),
-                           )
-                       else:
-                           fallback_coins = fallback_coins_for_rarity(card_rarity)
-                           await conn.execute(
-                               """
-                               UPDATE users
-                               SET coins = GREATEST(0, COALESCE(coins, 0) + $1),
-                                   updated_at = NOW()
-                               WHERE user_id = $2
-                               """,
-                               fallback_coins, user_id,
-                           )
-                           granted.append({
-                               "reward_type": "coins",
-                               "reward_amount": fallback_coins,
-                               "fallback_for": "particles",
-                               "card_id": card_id,
-                               "fallback_rarity": card_rarity,
-                           })
-                           await conn.execute(
-                               """
-                               INSERT INTO economy_events (user_id, event_type, resource, amount, source, metadata)
-                               VALUES ($1, 'earn', 'coins', $2, 'reward_track', $3::jsonb)
-                               """,
-                               user_id, fallback_coins,
-                               json.dumps({
-                                   "track_type": track_type,
-                                   "position": position,
-                                   "fallback_for": "particles",
-                                   "card_id": card_id,
-                                   "fallback_rarity": card_rarity,
-                               }, ensure_ascii=False),
-                           )
-                    elif reward_type == "cosmetic":
-                       cosmetic_slug = str((reward_meta or {}).get("cosmetic_slug") or "")
-                       auto_equip = bool((reward_meta or {}).get("auto_equip", False))
-                       grant_result = await self._grant_cosmetic_by_slug_on_conn(
-                           conn, user_id, cosmetic_slug,
-                           source="reward_track", auto_equip=auto_equip,
-                       )
-                       granted.append({
-                           "reward_type": "cosmetic",
-                           "reward_amount": 1,
-                           "cosmetic_slug": cosmetic_slug,
-                            "auto_equip": auto_equip,
-                            "acquired": bool((grant_result or {}).get("acquired", False)),
+                        case_tier = max(1, min(5, reward_amount or 1))
+                        case_row = await conn.fetchrow(
+                            """
+                            INSERT INTO user_cases (user_id, case_id, tier, status)
+                            VALUES ($1, $2, $3, 'pending')
+                            RETURNING id
+                            """,
+                            user_id, case_tier, case_tier,
+                        )
+                        user_case_id = int(case_row["id"]) if case_row else None
+                        granted.append({
+                            "reward_type": "case",
+                            "reward_amount": case_tier,
+                            "case_tier": case_tier,
+                            "user_case_id": user_case_id,
                         })
+                        await conn.execute(
+                            """
+                            INSERT INTO economy_events (user_id, event_type, resource, amount, source, metadata)
+                            VALUES ($1, 'earn', 'case', 1, 'reward_track', $2::jsonb)
+                            """,
+                            user_id,
+                            json.dumps({
+                                    "track_type": track_type,
+                                    "position": position,
+                                    "case_tier": case_tier,
+                                    "user_case_id": user_case_id,
+                                }, ensure_ascii=False),
+                        )
                     else:
                         raise ValueError(f"unsupported_reward_type:{reward_type}")
 

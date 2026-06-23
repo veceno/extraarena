@@ -3273,7 +3273,7 @@ window.loadMobileSquadsBootstrap = async function(options = {}) {
 };
 </script>
 
-<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=922c07d8c318">
+<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=72778738a4d6">
 // ═══════════════════════════════════════════
 // DESIGN TOKENS
 // ═══════════════════════════════════════════
@@ -4064,7 +4064,8 @@ const SettingsScreen = ({onClose, profile}) => {
   const [notifs, setNotifs] = React.useState({
     shop:              s.notif_shop              ?? false,
     generator:         s.notif_generator         ?? true,
-    reminders:         s.notif_reminders         ?? true,
+    reminders:         s.notif_reminders         ?? false,
+    dailyRewards:      s.notif_daily_rewards     ?? true,
     squadMemberRole:   s.notif_squad_member_role ?? true,
     squadNewMember:    s.notif_squad_new_member  ?? true,
     squadDisbanded:    s.notif_squad_disbanded   ?? true,
@@ -4095,7 +4096,8 @@ const SettingsScreen = ({onClose, profile}) => {
     notifs: {
       shop: false,
       generator: true,
-      reminders: true,
+      reminders: false,
+      dailyRewards: true,
       squadMemberRole: true,
       squadNewMember: true,
       squadDisbanded: true,
@@ -4562,6 +4564,7 @@ const ShopScreen = ({profile, onProfileUpdate}) => {
   const [buying,        setBuying]        = React.useState(null);
   const [showPassModal, setShowPassModal] = React.useState(false);
   const [passTab,       setPassTab]       = React.useState('basic');
+  const [showRerollInfo, setShowRerollInfo] = React.useState(false);
   const [payModal,      setPayModal]      = React.useState(null);
   const [infoPack,      setInfoPack]      = React.useState(null);
   const [starsStep,     setStarsStep]     = React.useState(false);
@@ -5841,7 +5844,7 @@ const ShopScreen = ({profile, onProfileUpdate}) => {
               <div>
                 <h3>{passTab === 'ultra' ? 'ExtraPass ULTRA' : 'ExtraPass'}</h3>
                 <p>{passTab === 'ultra'
-                  ? 'Максимальный режим сезона: Ultra-награды, повышенные шансы, 500 гемов и переоткрытие кейса.'
+                  ? 'Максимальный режим сезона: Ultra-награды, повышенные шансы, 500 гемов и Reroll кейсов.'
                   : 'Базовый премиум: дорожка Battle Pass, 5 пресетов колод, кейс за 4 победы и свечение ника.'}</p>
               </div>
             </div>
@@ -5862,10 +5865,17 @@ const ShopScreen = ({profile, onProfileUpdate}) => {
           </div>
           <div className="ea-shop-benefits">
             {(passTab === 'ultra'
-              ? [['Все из ExtraPass','База Premium остается включенной.'], ['Переоткрытие кейса','После открытия можно вручную открыть кейс повторно.'], ['Улучшенное свечение ника','Ultra-статус виден в боях, профиле и социальных местах.'], ['500 гемов','Начисляются вместе с покупкой Ultra.']]
+              ? [['Все из ExtraPass','База Premium остается включенной.'], ['Reroll кейсов','После открытия можно вручную открыть кейс повторно.'], ['Улучшенное свечение ника','Ultra-статус виден в боях, профиле и социальных местах.'], ['500 гемов','Начисляются вместе с покупкой Ultra.']]
               : [['Премиум-ник','ExtraPass включает отдельное свечение никнейма.'], ['Премиум БП','Премиальная линия наград сезона.'], ['5 пресетов','3 бесплатных колоды превращаются в 5.'], ['Профиль и сквады','Оформление профиля и создание сквадов.']]
             ).map(function(item){
-              return <div className="ea-shop-benefit" key={item[0]}><strong>{item[0]}</strong><span>{item[1]}</span></div>;
+              const isReroll = passTab === 'ultra' && item[0] === 'Reroll кейсов';
+              return <div className="ea-shop-benefit" key={item[0]}>
+                <strong>{item[0]}{isReroll && (
+                  <button data-no-global-click-sound="true" aria-label="Что такое Reroll кейсов" onClick={function(e){ e.stopPropagation(); setShowRerollInfo(true); }}
+                    style={{marginLeft:'6px',width:'16px',height:'16px',borderRadius:'50%',display:'inline-flex',alignItems:'center',justifyContent:'center',background:'rgba(255,95,162,0.18)',border:'1px solid rgba(255,95,162,0.55)',color:'#ff5fa2',fontSize:'10px',fontWeight:900,lineHeight:1,cursor:'pointer',verticalAlign:'middle',padding:0}}>?</button>
+                )}</strong>
+                <span>{item[1]}</span>
+              </div>;
             })}
           </div>
           <div className="ea-shop-compare">
@@ -5873,7 +5883,7 @@ const ShopScreen = ({profile, onProfileUpdate}) => {
             <div className="ea-shop-compare-row"><div>Кейс за победы</div><div>4</div><div>3</div></div>
             <div className="ea-shop-compare-row"><div>Пресеты колод</div><div>5</div><div>5</div></div>
             <div className="ea-shop-compare-row"><div>Боевой пропуск</div><div>Premium</div><div>Premium + Ultra</div></div>
-            <div className="ea-shop-compare-row"><div>Кейсы</div><div>обычно</div><div>переоткрытие</div></div>
+            <div className="ea-shop-compare-row"><div>Кейсы</div><div>обычно</div><div>Reroll</div></div>
           </div>
           <div className={'ea-shop-pass-actions ' + (IN_GAME_PASS_GIFTS_BETA_ENABLED ? 'has-secondary' : '')}>
             <button onClick={function(){ openPassPurchase(passTab, false); }} disabled={buying!=null || isPassPurchaseDisabled(passTab)}>
@@ -6060,7 +6070,7 @@ const ShopScreen = ({profile, onProfileUpdate}) => {
                     • Ultra-финал Battle Pass<br/>
                     • Улучшенное свечение ника<br/>
                     • Повышенные шансы кейсов<br/>
-                    • Переоткрытие кейса
+                    • Reroll кейсов
                   </div>
                   <button onClick={function(){ openPassPurchase('ultra', true); }} disabled={isPassPurchaseDisabled('ultra')}
                     style={{background:'linear-gradient(135deg,#ff5fa2,#2dd4bf)',border:'none',borderRadius:'10px',padding:'10px',color:'white',fontWeight:800,fontFamily:"'Exo 2',sans-serif",cursor:isPassPurchaseDisabled('ultra')?'default':'pointer',opacity:isPassPurchaseDisabled('ultra')?0.62:1,boxShadow:'0 10px 28px rgba(255,95,162,0.28)'}}>
@@ -6081,6 +6091,27 @@ const ShopScreen = ({profile, onProfileUpdate}) => {
               <button onClick={function(){ setShowPassModal(false); }} style={{width:'100%',marginTop:'8px',background:'none',border:'1px solid '+T.grey3,borderRadius:'10px',padding:'8px',color:T.grey2,fontSize:'12px',fontWeight:600,fontFamily:"'Exo 2',sans-serif",cursor:'pointer'}}>
                 Отмена
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ═══ Reroll Cases Info Modal ═══ */}
+      {showRerollInfo && (
+        <div onClick={function(){ setShowRerollInfo(false); }} style={{position:'absolute',inset:0,background:'rgba(5,2,12,0.92)',backdropFilter:'blur(10px)',zIndex:110,display:'flex',alignItems:'center',justifyContent:'center',padding:'20px',animation:'fadeIn 0.2s'}}>
+          <div onClick={function(e){ e.stopPropagation(); }} style={{width:'100%',maxWidth:'380px',background:'linear-gradient(180deg,#1b1140 0%,#120c24 100%)',borderRadius:'22px',border:'1px solid #2dd4bf55',boxShadow:'0 20px 60px rgba(0,0,0,0.7), 0 0 40px rgba(45,212,191,0.18)',overflow:'hidden',animation:'popIn 0.2s'}}>
+            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'16px 18px 12px',borderBottom:'1px solid rgba(45,212,191,0.22)',background:'rgba(45,212,191,0.06)'}}>
+              <div style={{display:'flex',alignItems:'center',gap:'10px'}}>
+                <div style={{width:'36px',height:'36px',borderRadius:'12px',background:'rgba(255,95,162,0.18)',border:'1px solid rgba(255,95,162,0.55)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:'18px'}}>↻</div>
+                <div style={{fontSize:'17px',fontWeight:900,background:'linear-gradient(135deg,#ff5fa2,#2dd4bf)',WebkitBackgroundClip:'text',WebkitTextFillColor:'transparent',fontFamily:"'Exo 2',sans-serif"}}>Reroll кейсов</div>
+              </div>
+              <button onClick={function(){ setShowRerollInfo(false); }} aria-label="Закрыть" style={{width:'30px',height:'30px',borderRadius:'10px',background:'rgba(255,255,255,0.06)',border:'1px solid rgba(45,212,191,0.33)',display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',color:'#2dd4bf',fontSize:'16px',fontWeight:700,fontFamily:'monospace'}}>✕</button>
+            </div>
+            <div style={{padding:'16px 18px 18px'}}>
+              <p style={{margin:0,fontSize:'13px',lineHeight:1.55,color:'#e7ddff',fontFamily:"'Inter',sans-serif"}}>
+                При открытии кейса, если тебя не устроил лут, его можно прокрутить заново. Зачислена будет только последняя награда.
+              </p>
+              <button onClick={function(){ setShowRerollInfo(false); }} style={{width:'100%',marginTop:'14px',background:'linear-gradient(135deg,#ff5fa2,#2dd4bf)',border:'none',borderRadius:'12px',padding:'11px',color:'white',fontSize:'13px',fontWeight:800,fontFamily:"'Exo 2',sans-serif",cursor:'pointer',boxShadow:'0 10px 28px rgba(255,95,162,0.28)'}}>Понятно</button>
             </div>
           </div>
         </div>
@@ -6811,6 +6842,7 @@ const BattlePickSheet = ({onClose, profile, runtimeStatus}) => {
     invite_declined: 'Вызов отклонён',
     friendly_invites_blocked_by_friend: 'Игрок запретил вызовы на дружеские бои от друзей',
     friendly_invites_blocked_by_non_friend: 'Игрок принимает вызовы только от друзей',
+    active_battle_exists: 'Этот игрок уже в бою — попробуй позже!',
     feature_unavailable: 'Дружеские бои временно недоступны',
     card_unavailable: 'В колоде есть временно недоступная карта',
     network_error: 'Сервер не ответил на запрос',
@@ -7619,6 +7651,44 @@ const InfoSheet = ({onClose}) => {
 };
 
 // ═══════════════════════════════════════════
+// WIN STREAK INFO SHEET
+// ═══════════════════════════════════════════
+const WinStreakInfoSheet = ({onClose}) => {
+  const rows = [
+    {t:'Серия побед', d:'Побеждай подряд на арене, чтобы накапливать серию побед. Каждая победа увеличивает счётчик на кнопке «В бой».'},
+    {t:'Бонусные трофеи', d:'Победа при активной серии приносит дополнительно +N трофеев к награде, где N — длина серии до этого боя (но не более +10).'},
+    {t:'Поражение обнуляет серию', d:'Любое поражение полностью сбрасывает серию побед и связанные бонусы. Начинай новую серию с нуля.'},
+    {t:'Ничья не сбрасывает', d:'Бой, завершившийся ничьей, не обнуляет серию побед, но и не добавляет к ней новую победу. Бонусные трофеи за ничью не начисляются.'},
+    {t:'Максимум +10', d:'Дополнительные трофеи за серию побед capped на +10 — даже при длинной серии больше не получишь.'},
+    {t:'Лучшая серия', d:'Твоя максимальная длина серии побед сохраняется и отображается в разделе «История боёв → Моя статистика».'},
+  ];
+  return (
+    <div style={{position:'absolute',inset:0,background:'rgba(5,3,14,0.72)',backdropFilter:'blur(8px)',zIndex:20,display:'flex',flexDirection:'column',justifyContent:'flex-end'}} onClick={onClose}>
+      <div onClick={e=>e.stopPropagation()} className="safe-pad-bottom" style={{'--ea-safe-pad-bottom-base':'24px',background:`linear-gradient(180deg,#1a1238 0%,#130d26 100%)`,borderRadius:'24px 24px 0 0',padding:'16px 18px 24px',animation:'slideUp 0.28s cubic-bezier(0.32,0.72,0,1)',border:`1px solid ${T.purple1}`,borderBottom:'none',boxShadow:'0 -16px 50px rgba(0,0,0,0.5)',maxHeight:'calc(var(--ea-viewport-height, 100dvh) - var(--ea-safe-top))',overflowY:'auto',WebkitOverflowScrolling:'touch'}}>
+        <div style={{width:'36px',height:'4px',borderRadius:'2px',background:T.purple2,margin:'0 auto 16px'}}/>
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'18px'}}>
+          <span style={{display:'flex',alignItems:'center',gap:'12px',fontSize:'22px',fontWeight:'900',color:T.white,fontFamily:"'Exo 2',sans-serif"}}>
+            <img src="/DesignAssets/MainMenu/Icons/Wins.png" alt="" style={{width:'26px',height:'26px',filter:'brightness(0) invert(1)'}}/>
+            Серия побед
+          </span>
+          <button onClick={onClose} style={{width:'34px',height:'34px',borderRadius:'50%',background:T.bgCard,border:`1px solid ${T.purple1}`,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer'}}>
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 2L10 10M10 2L2 10" stroke={T.grey1} strokeWidth="1.8" strokeLinecap="round"/></svg>
+          </button>
+        </div>
+        <div style={{display:'flex',flexDirection:'column',gap:'10px'}}>
+          {rows.map((r,i)=>(
+            <div key={i} style={{background:T.bgCard,border:`1px solid ${T.purple1}`,borderRadius:'14px',padding:'14px 16px'}}>
+              <div style={{fontSize:'14px',fontWeight:'700',color:T.white,fontFamily:"'Exo 2',sans-serif",marginBottom:'6px'}}>{r.t}</div>
+              <div style={{fontSize:'12px',color:T.grey1,lineHeight:'1.5'}}>{r.d}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ═══════════════════════════════════════════
 // SUPPORT SHEET
 // ═══════════════════════════════════════════
 const SupportSheet = ({onClose}) => {
@@ -7672,10 +7742,41 @@ const ArenaScreen = ({onMenu, onAI, onGenerator, onOpenBattles, onBattlePick, on
   const [genStatus,   setGenStatus]   = React.useState(null);
   const [genTick,     setGenTick]     = React.useState(0);
   const [seasonInfo,  setSeasonInfo]  = React.useState(null);
+  const [winStreak,   setWinStreak]   = React.useState(0);
+  const [showWinStreakInfo, setShowWinStreakInfo] = React.useState(false);
 
   React.useEffect(()=>{
     setHasCases((profile?.keys || profile?.cases_count || 0) > 0);
   },[profile]);
+
+  React.useEffect(()=>{
+    let alive = true;
+    const url = _buildAuthUrl('/api/battles/history');
+    const doFetch = async () => {
+      try {
+        let data;
+        if (window.eaCachedJson) {
+          data = await window.eaCachedJson(url);
+        } else {
+          const r = await fetch(url);
+          if (!r.ok) return;
+          data = await r.json();
+        }
+        if (alive && data && data.stats) {
+          setWinStreak(parseInt(data.stats.current_win_streak || 0, 10) || 0);
+        }
+      } catch(_e) {}
+    };
+    doFetch();
+    return ()=>{ alive = false; };
+  },[]);
+
+  React.useEffect(()=>{
+    if (!showWinStreakInfo) return;
+    const onKey = (e) => { if (e.key === 'Escape') setShowWinStreakInfo(false); };
+    window.addEventListener('keydown', onKey);
+    return ()=>{ window.removeEventListener('keydown', onKey); };
+  },[showWinStreakInfo]);
 
   React.useEffect(() => {
     const fetch_ = async () => {
@@ -7900,7 +8001,16 @@ const ArenaScreen = ({onMenu, onAI, onGenerator, onOpenBattles, onBattlePick, on
           onTouchEnd={()=>setBattleHover(false)}
           onClick={()=>(onStartBattle||window.startBattle)(profile)}
           style={{flex:1,height:'60px',background:battleHover?`linear-gradient(135deg,${T.orangeLt},${T.orange})`:`linear-gradient(135deg,${T.orange},${T.orangeD})`,border:'none',borderRadius:'16px',color:'white',fontSize:'22px',fontWeight:'900',fontFamily:"'Exo 2',sans-serif",letterSpacing:'2px',cursor:'pointer',position:'relative',overflow:'hidden',boxShadow:battleHover?`0 10px 36px ${T.orange}88`:`0 5px 22px ${T.orange}44`,transform:battleHover?'translateY(-1px)':'none',transition:'all 0.15s'}}>
-          В БОЙ
+          <span style={{display:'inline-flex',alignItems:'center',justifyContent:'center',gap:'14px',width:'100%'}}>
+            <span>В БОЙ</span>
+            {winStreak > 0 && (
+              <span style={{display:'inline-flex',alignItems:'center',gap:'8px',background:'rgba(0,0,0,0.28)',padding:'4px 10px 4px 12px',borderRadius:'10px',position:'relative'}}>
+                <span style={{fontSize:'20px',fontWeight:'900',fontFamily:"'Exo 2',sans-serif",letterSpacing:'0',animation:winStreak>5?'winStreakGlow 1.4s ease-in-out infinite':'none'}}>{winStreak}</span>
+                <img src="/DesignAssets/MainMenu/Icons/Wins.png" alt="" style={{width:'20px',height:'20px',filter:'brightness(0) invert(1)',animation:winStreak>5?'winStreakGlow 1.4s ease-in-out infinite':'none'}}/>
+                <span onClick={(e)=>{e.stopPropagation(); e.preventDefault(); setShowWinStreakInfo(true);}} title="Описание механики серии побед" style={{marginLeft:'2px',width:'18px',height:'18px',borderRadius:'50%',background:'rgba(0,0,0,0.4)',border:'1px solid rgba(255,255,255,0.55)',color:'white',fontSize:'11px',fontWeight:'900',display:'inline-flex',alignItems:'center',justifyContent:'center',cursor:'pointer',letterSpacing:'0'}}>?</span>
+              </span>
+            )}
+          </span>
           {shineAnim && <div style={{position:'absolute',top:0,width:'35%',height:'100%',background:'linear-gradient(90deg,transparent,rgba(255,255,255,0.18),transparent)',transform:'skewX(-18deg)',pointerEvents:'none',animation:'shine 0.5s ease forwards'}}/>}
         </button>
         <button onClick={onBattlePick} style={{width:'60px',height:'60px',background:T.bgCard,border:`1px solid ${T.purple2}`,borderRadius:'16px',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,transition:'all 0.15s'}}>
@@ -7963,6 +8073,7 @@ const ArenaScreen = ({onMenu, onAI, onGenerator, onOpenBattles, onBattlePick, on
           </>
         )}
       </div>
+      {showWinStreakInfo && <WinStreakInfoSheet onClose={()=>setShowWinStreakInfo(false)} />}
     </div>
   );
 };
@@ -10910,6 +11021,7 @@ function friendlyInviteErrorText(code) {
     friendly_invites_blocked_by_non_friend: 'Игрок принимает вызовы только от друзей.',
     invite_expired: 'Вызов истек.',
     invite_already_responded: 'На этот вызов уже ответили.',
+    active_battle_exists: 'Этот игрок уже в бою — попробуй позже!',
     network_error: 'Сервер не ответил на запрос дружеского боя.',
     friendly_invite_bad_response: 'Сервер вернул некорректный ответ дружеского боя.',
   }[code] || 'Не удалось принять вызов. Отправьте его заново.');
@@ -14567,6 +14679,7 @@ const BattleHistorySheet = ({onClose, profile}) => {
                 ['Среднее время', stats?.avg_duration_seconds ? formatDuration(stats.avg_duration_seconds) : 'нет данных'],
                 ['Любимый режим', stats?.favorite_mode ? getModeLabel(stats.favorite_mode) : 'нет данных'],
                 ['Текущая серия', stats?.current_streak_count ? `${stats.current_streak_count} ${stats.current_streak_result === 'win' ? 'побед' : 'поражений'} подряд` : 'нет серии'],
+                ['Лучшая серия побед', stats?.max_win_streak ? `${stats.max_win_streak} подряд` : 'нет данных'],
               ].map(([label, value])=>(
                 <div key={label} style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:'10px',padding:'8px 10px',borderRadius:'9px',background:'rgba(255,255,255,0.045)',border:'1px solid rgba(255,255,255,0.07)'}}>
                   <span style={{fontSize:'11px',color:T.grey2,fontWeight:800}}>{label}</span>
@@ -17926,6 +18039,6 @@ const LeagueInfoSheet = ({onClose, onOpenGloryPath, profile}) => {
 
 ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
 </script>
-<script src="index.compiled.js?v=922c07d8c318"></script>
+<script src="index.compiled.js?v=72778738a4d6"></script>
 </body>
 </html>
