@@ -81,7 +81,8 @@ class _DailyLoginFakeConnection:
 
     async def execute(self, query, *args):
         self.executed.append((query, args))
-        if "UPDATE users SET daily_login_streak" in query and "daily_login_claimed = TRUE" in query:
+        q_flat = " ".join(query.split())
+        if "UPDATE users SET daily_login_streak" in q_flat and "daily_login_claimed = TRUE" in q_flat:
             # Финальный апдейт после клейма: обновляем серию и следующий цикл.
             self.row["daily_login_streak"] = args[1]
             self.row["daily_login_streak_day"] = args[2]
@@ -90,18 +91,18 @@ class _DailyLoginFakeConnection:
             self.row["daily_login_reward_amount"] = args[5]
             self.row["daily_login_multiplier"] = args[6]
             self.row["daily_login_claimed"] = True
-        elif "UPDATE users SET daily_login_streak = 0" in query:
+        elif "UPDATE users SET daily_login_streak = 0" in q_flat:
             self.row["daily_login_streak"] = 0
             self.row["daily_login_streak_day"] = 0
-        elif "SET coins = GREATEST" in query and "COALESCE(coins" in query:
+        elif "SET coins = GREATEST" in q_flat and "COALESCE(coins" in q_flat:
             self.balance["coins"] = max(0, self.balance["coins"] + int(args[0]))
-        elif "SET gems = GREATEST" in query and "COALESCE(gems" in query:
+        elif "SET gems = GREATEST" in q_flat and "COALESCE(gems" in q_flat:
             self.balance["gems"] = max(0, self.balance["gems"] + int(args[0]))
-        elif "SET stars = GREATEST" in query and "COALESCE(stars" in query:
+        elif "SET stars = GREATEST" in q_flat and "COALESCE(stars" in q_flat:
             self.balance["stars"] = max(0, self.balance["stars"] + int(args[0]))
-        elif "SET keys = COALESCE(keys" in query:
+        elif "SET keys = COALESCE(keys" in q_flat:
             self.balance["keys"] = self.balance["keys"] + int(args[0])
-        elif "INSERT INTO economy_events" in query:
+        elif "INSERT INTO economy_events" in q_flat:
             pass  # аудит
 
 
@@ -326,3 +327,87 @@ def test_get_daily_login_status_next_is_special_for_streak_day_3():
     assert status["days_to_special"] == 0  # Сегодня особая.
     # streak_day+1 = 4 → next is not special.
     assert status["next_is_special"] is False
+
+
+def test_get_daily_login_status_streak_break_resets_notified():
+    """Обрыв серии сбрасывает daily_login_notified, чтобы новое уведомление отправилось."""
+    now = datetime.now(timezone.utc)
+    conn = _DailyLoginFakeConnection(
+        available_at=now - timedelta(hours=25), claimed=False, notified=True,
+        streak=5, streak_day=5, reward_type="coins", reward_amount=50, multiplier=1, coins=0,
+    )
+    db = _db_with_conn(conn)
+    import asyncio
+    status = asyncio.new_event_loop().run_until_complete(db.get_daily_login_status(200))
+    # streak должен быть сброшен в БД
+    assert conn.row["daily_login_streak"] == 0
+    assert conn.row["daily_login_streak_day"] == 0
+    assert status["streak_broken"] is True
+    # Должен быть вызван UPDATE с daily_login_notified = FALSE (через self.execute → conn.execute).
+    reset_calls = [
+        (q, a) for q, a in conn.executed
+        if "UPDATE users SET daily_login_streak = 0" in " ".join(q.split())
+        and "daily_login_notified = FALSE" in " ".join(q.split())
+    ]
+    assert len(reset_calls) >= 1, (
+        f"Expected UPDATE with daily_login_notified = FALSE in streak_break; "
+        f"got executed queries: {[' '.join(q.split())[:80] for q, _ in conn.executed]}"
+    )
+
+
+def test_claim_daily_login_after_streak_break_picks_new_reward():
+    """После обрыва серии (streak=0, streak_day=0) claim подбирает новую случайную награду."""
+    now = datetime.now(timezone.utc)
+    conn = _DailyLoginFakeConnection(
+        available_at=now - timedelta(hours=25), claimed=False, streak=0, streak_day=0,
+        reward_type="coins", reward_amount=50, multiplier=1, coins=100,
+    )
+    db = _db_with_conn(conn)
+    import asyncio
+    result = asyncio.new_event_loop().run_until_complete(db.claim_daily_login_reward(300))
+    assert result["success"] is True
+    # Новая серия началась
+    assert result["granted"]["streak_day_before"] == 0
+    assert result["next"]["streak_day"] == 1
+    assert result["next"]["streak"] == 1
+
+
+def test_enqueue_daily_login_notifications_honors_toggle():
+    """Пользователи с notif_daily_rewards=FALSE не должны получать уведомления."""
+    from unittest.mock import AsyncMock
+    now = datetime.now(timezone.utc)
+    conn = _DailyLoginFakeConnection(
+        available_at=now - timedelta(minutes=1), claimed=False, notified=False,
+        streak=0, streak_day=1, reward_type="coins", reward_amount=50, coins=0,
+    )
+    db = _db_with_conn(conn)
+    db.fetch = AsyncMock(return_value=[])
+    db.enqueue_notification = AsyncMock(return_value=True)
+    db.execute = AsyncMock()
+    import asyncio
+    enqueued = asyncio.new_event_loop().run_until_complete(db.enqueue_due_daily_login_notifications(limit=10))
+    db.enqueue_notification.assert_not_called()
+    assert enqueued == 0
+
+
+def test_enqueue_daily_login_notifications_enqueues_when_pending():
+    from unittest.mock import AsyncMock
+    now = datetime.now(timezone.utc)
+    conn = _DailyLoginFakeConnection(
+        available_at=now - timedelta(minutes=1), claimed=False, notified=False,
+        streak=0, streak_day=1, reward_type="coins", reward_amount=50, coins=0,
+    )
+    db = _db_with_conn(conn)
+    db.fetch = AsyncMock(return_value=[{"user_id": 42, "daily_login_available_at": conn.row["daily_login_available_at"]}])
+    db.enqueue_notification = AsyncMock(return_value=True)
+    db.execute = AsyncMock()
+    import asyncio
+    enqueued = asyncio.new_event_loop().run_until_complete(db.enqueue_due_daily_login_notifications(limit=10))
+    assert enqueued == 1
+    db.enqueue_notification.assert_called_once()
+    call_kwargs = db.enqueue_notification.call_args.kwargs
+    assert call_kwargs["category"] == "daily_rewards"
+    assert call_kwargs["event_type"] == "daily_login_reward"
+    assert "Забери свою награду за вход" in call_kwargs["payload"]["text"]
+    update_calls = [c for c in db.execute.call_args_list if c.args and "daily_login_notified = TRUE" in c.args[0]]
+    assert len(update_calls) >= 1

@@ -790,6 +790,29 @@ class Database:
             return 0
 
     async def get_daily_login_status(self, user_id: int) -> dict[str, Any]:
+        """Вернуть статус ежедневной награды за вход для UI.
+
+        Ответ содержит:
+          - enabled, streak, streak_day, claimed, notified: текущее состояние.
+          - available_at, time_left_seconds, is_claimable: таймер до следующего цикла.
+          - reward_type, reward_amount, base_amount, multiplier, is_special,
+            days_to_special: текущий цикл (заблюренный если claimed=True).
+          - claimed_reward_type, claimed_reward_amount: последняя полученная награда
+            (для блока 'Награда получена!').
+          - next_reward_type, next_is_special: данные о СЛЕДУЮЩЕМ клейме (streak_day+1).
+          - streak_broken: флаг обрыва серии.
+          - last_claim_at: timestamp последнего клейма.
+
+        Поведение:
+          - Ленивая инициализация: если available_at IS NULL (новый пользователь),
+            создаётся streak_day=1 cycle с случайной наградой.
+          - Обрыв серии: если now > available_at + 24ч и не claimed, streak/streak_day
+            сбрасываются в 0, notified сбрасывается (чтобы новое уведомление отправилось).
+          - Если claimed=True и now >= available_at, _advance_daily_login_cycle
+            инициализирует следующий цикл (max 2 итерации чтобы избежать бесконечной петли).
+          - next_is_special = (streak_day > 0 and (streak_day + 1) % 3 == 0) — true когда
+            награда СЛЕДУЮЩЕГО клейма (streak_day+1) будет особой (x3).
+        """
         if not self._pool:
             raise RuntimeError("База данных не подключена.")
         row = await self.fetchrow(
@@ -857,6 +880,7 @@ class Database:
                         """
                         UPDATE users
                         SET daily_login_streak = 0, daily_login_streak_day = 0,
+                            daily_login_notified = FALSE,
                             updated_at = NOW()
                         WHERE user_id = $1
                         """,
@@ -869,12 +893,47 @@ class Database:
             if claimed:
                 time_left = max(0, int((available_at - now).total_seconds()))
                 is_claimable = now >= available_at
-                if is_claimable:
-                    await self._advance_daily_login_cycle(user_id, now)
-                    return await self.get_daily_login_status(user_id)
             else:
                 is_claimable = now >= available_at
                 time_left = max(0, int((available_at - now).total_seconds()))
+
+        # If new cycle became available, advance and refresh local state.
+        # Loop at most once: _advance sets claimed=False and available_at=now,
+        # so the next iteration sees is_claimable=True via the elapsed-time branch below.
+        max_iterations = 2
+        iter_count = 0
+        while is_claimable and iter_count < max_iterations:
+            await self._advance_daily_login_cycle(user_id, now)
+            # Re-read the row in-place instead of recursing.
+            row = await self.fetchrow(
+                """
+                SELECT daily_login_streak, daily_login_streak_day, daily_login_available_at,
+                       daily_login_reward_type, daily_login_reward_amount, daily_login_multiplier,
+                       daily_login_claimed, daily_login_notified, daily_login_last_claim_at,
+                       daily_login_claimed_reward_type, daily_login_claimed_reward_amount
+                FROM users
+                WHERE user_id = $1
+                """,
+                user_id,
+            )
+            if not row:
+                return {"enabled": False}
+            available_at = row["daily_login_available_at"]
+            claimed = bool(row["daily_login_claimed"])
+            streak = int(row["daily_login_streak"] or 0)
+            streak_day = int(row["daily_login_streak_day"] or 0)
+            reward_type = row["daily_login_reward_type"]
+            base_amount = row["daily_login_reward_amount"]
+            multiplier = int(row["daily_login_multiplier"] or 1)
+            notified = bool(row["daily_login_notified"])
+            if available_at is not None:
+                if claimed:
+                    time_left = max(0, int((available_at - now).total_seconds()))
+                    is_claimable = now >= available_at
+                else:
+                    is_claimable = now >= available_at
+                    time_left = max(0, int((available_at - now).total_seconds()))
+            iter_count += 1
 
         max_window = self.DAILY_LOGIN_INTERVAL_SECONDS
         if time_left > max_window:
@@ -1143,6 +1202,23 @@ class Database:
         }
 
     async def enqueue_due_daily_login_notifications(self, limit: int = 100) -> int:
+        """Поставить уведомления 'награда доступна' для пользователей.
+
+        Выбирает пользователей у которых:
+          - daily_login_available_at <= now (цикл начался)
+          - daily_login_claimed = FALSE (ещё не забрали)
+          - daily_login_notified = FALSE (уведомление ещё не отправлено)
+          - notif_daily_rewards = TRUE (пользователь не отключил)
+
+        Идемпотентность: dedupe_key=f"daily_login_reward:{uid}:{available_at_iso}".
+        После enqueue устанавливает daily_login_notified=TRUE чтобы не дублировать.
+        При обрыве серии get_daily_login_status сбрасывает notified=FALSE,
+        так что следующий цикл снова получит уведомление.
+
+        Использует индекс daily_login_pending_notif_idx для эффективности.
+
+        Returns: количество поставленных в очередь уведомлений.
+        """
         if not self._pool:
             return 0
         now = datetime.now(timezone.utc)
@@ -2593,6 +2669,14 @@ class Database:
         )
         changed |= await self._add_column_if_missing(
             "users", columns, "daily_login_claimed_reward_amount INTEGER"
+        )
+
+        await self.execute(
+            """
+            CREATE INDEX IF NOT EXISTS daily_login_pending_notif_idx
+            ON users (daily_login_available_at)
+            WHERE daily_login_claimed = FALSE AND daily_login_notified = FALSE
+            """
         )
 
         if not await self._constraint_exists("users", "users_status_check"):
