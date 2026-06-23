@@ -79,16 +79,16 @@ def test_social_notification_categories_have_settings_messages_and_sections():
 
 def test_telegram_notification_message_uses_html_formatting_where_configured():
     assert format_telegram_notification_message("generator_new_key", {"keys": 3}) == (
-        "<b>Новый ключ уже готов!</b> - скорее открой кейс! В генераторе уже 3 ключ(ей)."
+        "🔑 <b>Новый ключ уже готов!</b> - скорее открой кейс! В генераторе уже 3 ключ(ей)."
     )
     assert format_telegram_notification_message("generator_full_on_new_key", {"cap": 5}) == (
-        "<b>Генератор уже переполнен</b> - собери ключ и открой кейс, чтобы генератор заработал!"
+        "⚠️ <b>Генератор уже переполнен</b> - собери ключ и открой кейс, чтобы генератор заработал!"
     )
 
 
 def test_plain_notification_message_does_not_include_telegram_html():
     assert format_notification_message("generator_new_key", {"keys": 3}) == (
-        "Новый ключ уже готов! - скорее открой кейс! В генераторе уже 3 ключ(ей)."
+        "🔑 Новый ключ уже готов! - скорее открой кейс! В генераторе уже 3 ключ(ей)."
     )
     assert "<b>" not in format_notification_message("generator_full_on_new_key", {"cap": 5})
 

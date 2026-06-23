@@ -15,7 +15,7 @@ from infrastructure.push_notifications import (
 def test_android_push_payload_reuses_telegram_notification_text():
     payload = build_android_push_payload("generator", "generator_new_key", {"keys": 2})
 
-    assert payload.title == "Новый ключ готов!"
+    assert payload.title == "🔑 Новый ключ готов!"
     assert payload.body == format_notification_message("generator_new_key", {"keys": 2})
     assert "<b>" not in payload.body
     assert payload.data["type"] == "game_notification"
@@ -26,8 +26,8 @@ def test_android_push_payload_reuses_telegram_notification_text():
 def test_android_update_push_uses_required_app_update_contract():
     payload = build_android_push_payload("app_update", "app_update_required", {})
 
-    assert payload.title == "Хорошие новости!"
-    assert payload.body == "Вышло обновление, скачай новую версию, чтобы продолжить игру"
+    assert payload.title == "⬇️ Хорошие новости!"
+    assert payload.body == "⬇️ Вышло обновление, скачай новую версию, чтобы продолжить игру"
     assert payload.data["type"] == "app_update_required"
     assert payload.data["url"] == "https://t.me/extraarenamobile"
     assert payload.data["android_channel_id"] == "extraarena_updates"
@@ -50,36 +50,36 @@ def test_android_friendly_invite_push_preserves_accept_metadata():
     )
 
     assert payload.data["section"] == "friends"
-    assert payload.title == "Alice вызвал тебя на бой!"
+    assert payload.title == "⚔️ Alice вызвал тебя на бой!"
     assert payload.data["invite_id"] == "77"
     assert payload.data["invite_action"] == "accept"
     assert payload.data["event_type"] == "friendly_battle_invite"
 
 
 def test_android_titles_are_event_specific():
-    assert build_android_push_payload("generator", "generator_full_blocked_key", {}).title == "Генератор переполнен!"
-    assert build_android_push_payload("shop", "shop_particles", {}).title == "Новые частицы карт в магазине!"
+    assert build_android_push_payload("generator", "generator_full_blocked_key", {}).title == "🚫 Генератор переполнен!"
+    assert build_android_push_payload("shop", "shop_particles", {}).title == "✨ Новые частицы карт в магазине!"
     assert build_android_push_payload(
         "extra_arena_modifier",
         "extra_arena_modifier_changed",
         {"label": "Двойная энергия"},
-    ).title == "Двойная энергия в ExtraArena!"
+    ).title == "🌀 Двойная энергия в ExtraArena!"
     assert build_android_push_payload(
         "friend_requests",
         "friend_request_received",
         {"from_name": "Alice"},
-    ).title == "Заявка в друзья"
+    ).title == "👋 Заявка в друзья"
     assert build_android_push_payload(
         "squad_new_member",
         "squad_new_member",
         {"squad_name": "Squad1"},
-    ).title == "Squad1: новый участник!"
+    ).title == "Squad1: 🎉 новый участник!"
 
 
 def test_android_weekly_squad_tokens_push_uses_requested_copy():
     payload = build_android_push_payload("squad_weekly_tokens", "squad_weekly_tokens", {})
 
-    assert payload.title == "Ты получил токены сквада!"
+    assert payload.title == "🌟 Ты получил токены сквада!"
     assert payload.body == "🌟 Недельный рассчет твоего вклада в CBRP сквада завершен - ты получил токены. Скорее потрать их в магазине сквада!"
     assert payload.data["section"] == "squads"
     assert payload.data["event_type"] == "squad_weekly_tokens"
@@ -140,8 +140,8 @@ async def test_outbox_delivery_prefers_android_push_without_telegram_when_device
     await _deliver_notification(bot, db, "https://example.com/game", notif, push_sender=sender)
 
     assert sender.calls[0]["token"] == "fcm-token"
-    assert sender.calls[0]["title"] == "Новый ключ готов!"
-    assert sender.calls[0]["body"] == "Новый ключ уже готов! - скорее открой кейс! В генераторе уже 2 ключ(ей)."
+    assert sender.calls[0]["title"] == "🔑 Новый ключ готов!"
+    assert sender.calls[0]["body"] == "🔑 Новый ключ уже готов! - скорее открой кейс! В генераторе уже 2 ключ(ей)."
     assert sender.calls[0]["data"]["section"] == "generator"
     assert bot.messages == []
     assert db.sent == [77]
@@ -191,7 +191,7 @@ async def test_outbox_delivery_falls_back_to_telegram_when_no_android_device():
 
     await _deliver_notification(bot, db, "https://example.com/game", notif, push_sender=FakeSender())
 
-    assert bot.messages[0]["text"] == "<b>Новый ключ уже готов!</b> - скорее открой кейс! В генераторе уже 1 ключ(ей)."
+    assert bot.messages[0]["text"] == "🔑 <b>Новый ключ уже готов!</b> - скорее открой кейс! В генераторе уже 1 ключ(ей)."
     assert bot.messages[0]["parse_mode"] == "HTML"
     assert db.sent == [78]
 
@@ -291,7 +291,7 @@ async def test_outbox_delivery_respects_telegram_only_mode():
 
     await _deliver_notification(bot, db, "https://example.com/game", notif, push_sender=FakeSender())
 
-    assert bot.messages[0]["text"] == "<b>Новый ключ уже готов!</b> - скорее открой кейс! В генераторе уже 1 ключ(ей)."
+    assert bot.messages[0]["text"] == "🔑 <b>Новый ключ уже готов!</b> - скорее открой кейс! В генераторе уже 1 ключ(ей)."
     assert bot.messages[0]["parse_mode"] == "HTML"
     assert db.sent == [79]
 

@@ -53,7 +53,7 @@ NOTIFICATION_DEFAULTS = {
 }
 
 REMINDER_DUSTY_WEIGHT = 1
-REMINDER_TITLES = ("Вперед в бой", "Задай им тряски!")
+REMINDER_TITLES = ("⚔️ Вперед в бой", "⚔️ Задай им тряски!")
 
 
 def wins_required_for_case(extra_pass: str | None) -> int:
@@ -101,7 +101,7 @@ def choose_reminder_payload(profile: dict[str, Any], *, rng: random.Random | Non
             3,
             {
                 "template": "arena_next_league",
-                "text": f"До новой лиги осталось {league_remaining} кубков - поднажми, вперед в бой!",
+                "text": f"🏆 До новой лиги осталось {league_remaining} кубков - поднажми, вперед в бой!",
                 "section": "arena",
             },
         ))
@@ -111,7 +111,7 @@ def choose_reminder_payload(profile: dict[str, Any], *, rng: random.Random | Non
         3,
         {
             "template": "arena_case_reward",
-            "text": f"До награды за бои осталось всего {wins_remaining} победы! Вперед в бой",
+            "text": f"🎁 До награды за бои осталось всего {wins_remaining} победы! Вперед в бой",
             "section": "arena",
         },
     ))
@@ -119,7 +119,7 @@ def choose_reminder_payload(profile: dict[str, Any], *, rng: random.Random | Non
         2,
         {
             "template": "general_memory",
-            "text": "О твоих похождениях помнит ВСЯ арена! Но скоро забудет... Вперед в бой",
+            "text": "⚔️ О твоих похождениях помнит ВСЯ арена! Но скоро забудет... Вперед в бой",
             "section": "arena",
         },
     ))
@@ -127,7 +127,7 @@ def choose_reminder_payload(profile: dict[str, Any], *, rng: random.Random | Non
         REMINDER_DUSTY_WEIGHT,
         {
             "template": "general_dusty_deck",
-            "text": "Скорее в бой - колода уже покрылась пылью, а скоро и вовсе отсыреет",
+            "text": "🃏 Скорее в бой - колода уже покрылась пылью, а скоро и вовсе отсыреет",
             "section": "arena",
         },
     ))
@@ -136,7 +136,7 @@ def choose_reminder_payload(profile: dict[str, Any], *, rng: random.Random | Non
             2,
             {
                 "template": "squad_missed",
-                "text": "В твоем скваде по тебе соскучились - вперед в бой!",
+                "text": "👥 В твоем скваде по тебе соскучились - вперед в бой!",
                 "section": "squads",
             },
         ))
@@ -158,82 +158,82 @@ def _with_reminder_title(payload: dict[str, Any], rng: random.Random) -> dict[st
 def format_notification_message(event_type: str, payload: dict[str, Any] | None = None) -> str:
     payload = payload or {}
     if event_type in {"app_update", "app_update_required"}:
-        return str(payload.get("body") or "Хорошие новости! Вышло обновление, скачай новую версию, чтобы продолжить игру")
+        return str(payload.get("body") or "⬇️ Хорошие новости! Вышло обновление, скачай новую версию, чтобы продолжить игру")
     if event_type == "generator_new_key":
         count = int(payload.get("keys") or 1)
-        return f"Новый ключ уже готов! - скорее открой кейс! В генераторе уже {count} ключ(ей)."
+        return f"🔑 Новый ключ уже готов! - скорее открой кейс! В генераторе уже {count} ключ(ей)."
     if event_type == "generator_full_on_new_key":
-        return "Генератор уже переполнен - собери ключ и открой кейс, чтобы генератор заработал!"
+        return "⚠️ Генератор уже переполнен - собери ключ и открой кейс, чтобы генератор заработал!"
     if event_type == "generator_full_blocked_key":
-        return "Ты бы мог получить новый ключ, но генератор уже переполнен!"
+        return "🚫 Ты бы мог получить новый ключ, но генератор уже переполнен!"
     if event_type == "shop_particles":
-        return "Новые частицы карт уже в магазине!"
+        return "✨ Новые частицы карт уже в магазине!"
     if event_type == "extra_arena_modifier_changed":
         label = payload.get("label") or payload.get("mode_name") or "новый модификатор"
-        return f"В ExtraArena сменился модификатор: {label}! Ну что, задашь им жару?"
+        return f"🌀 В ExtraArena сменился модификатор: {label}! Ну что, задашь им жару?"
     if event_type == "friendly_battle_invite":
         from_name = payload.get("from_name") or "Друг"
-        return f"{from_name} вызывает тебя на дружеский бой!"
+        return f"⚔️ {from_name} вызывает тебя на дружеский бой!"
     if event_type == "friend_request_received":
         from_name = payload.get("from_name") or "Игрок"
-        return f"{from_name} отправил заявку в друзья."
+        return f"👋 {from_name} отправил заявку в друзья."
     if event_type == "daily_reminder":
-        return str(payload.get("text") or "Пора вернуться на арену!")
+        return str(payload.get("text") or "🔔 Пора вернуться на арену!")
     if event_type == "daily_login_reward":
         return str(payload.get("text") or "📆 Забери свою награду за вход - она уже доступна!")
     if event_type == "squad_member_role":
         nick = payload.get("nick") or "Участник"
         action = payload.get("action") or "изменил роль"
-        return f"{nick}: {action} в твоем скваде."
+        return f"🎖️ {nick}: {action} в твоем скваде."
     if event_type == "squad_new_member":
         nick = payload.get("nick") or "Новый игрок"
         squad = payload.get("squad_name") or "сквад"
-        return f"{nick} вступил в {squad}!"
+        return f"🎉 {nick} вступил в {squad}!"
     if event_type == "squad_disbanded":
         squad = payload.get("squad_name") or "Твой сквад"
-        return f"{squad} расформирован."
+        return f"💔 {squad} расформирован."
     if event_type == "squad_boost":
         squad = payload.get("squad_name") or "У сквада"
-        return f"{squad} активировал Boost!"
+        return f"🚀 {squad} активировал Boost!"
     if event_type == "squad_weekly_tokens":
         return "🌟 Недельный рассчет твоего вклада в CBRP сквада завершен - ты получил токены. Скорее потрать их в магазине сквада!"
-    return str(payload.get("text") or "В ExtraArena новое событие!")
+    return str(payload.get("text") or "🔔 В ExtraArena новое событие!")
 
 
 def format_telegram_notification_message(event_type: str, payload: dict[str, Any] | None = None) -> str:
     payload = payload or {}
     if event_type == "generator_new_key":
         count = int(payload.get("keys") or 1)
-        return f"<b>Новый ключ уже готов!</b> - скорее открой кейс! В генераторе уже {count} ключ(ей)."
+        return f"🔑 <b>Новый ключ уже готов!</b> - скорее открой кейс! В генераторе уже {count} ключ(ей)."
     if event_type == "generator_full_on_new_key":
-        return "<b>Генератор уже переполнен</b> - собери ключ и открой кейс, чтобы генератор заработал!"
+        return "⚠️ <b>Генератор уже переполнен</b> - собери ключ и открой кейс, чтобы генератор заработал!"
     if event_type == "extra_arena_modifier_changed":
         label = escape(str(payload.get("label") or payload.get("mode_name") or "новый модификатор"))
-        return f"В ExtraArena сменился модификатор: {label}! Ну что, задашь им жару?"
+        return f"🌀 В ExtraArena сменился модификатор: {label}! Ну что, задашь им жару?"
     if event_type == "friendly_battle_invite":
         from_name = escape(str(payload.get("from_name") or "Друг"))
-        return f"{from_name} вызывает тебя на дружеский бой!"
+        return f"⚔️ {from_name} вызывает тебя на дружеский бой!"
     if event_type == "friend_request_received":
         from_name = escape(str(payload.get("from_name") or "Игрок"))
-        return f"{from_name} отправил заявку в друзья."
+        return f"👋 {from_name} отправил заявку в друзья."
     if event_type == "daily_reminder":
-        return escape(str(payload.get("text") or "Пора вернуться на арену!"))
+        return escape(str(payload.get("text") or "🔔 Пора вернуться на арену!"))
     if event_type == "daily_login_reward":
         return escape(str(payload.get("text") or "📆 Забери свою награду за вход - она уже доступна!"))
     if event_type == "squad_member_role":
         nick = escape(str(payload.get("nick") or "Участник"))
         action = escape(str(payload.get("action") or "изменил роль"))
-        return f"{nick}: {action} в твоем скваде."
+        return f"🎖️ {nick}: {action} в твоем скваде."
     if event_type == "squad_new_member":
         nick = escape(str(payload.get("nick") or "Новый игрок"))
         squad = escape(str(payload.get("squad_name") or "сквад"))
-        return f"{nick} вступил в {squad}!"
+        return f"🎉 {nick} вступил в {squad}!"
     if event_type == "squad_disbanded":
         squad = escape(str(payload.get("squad_name") or "Твой сквад"))
-        return f"{squad} расформирован."
+        return f"💔 {squad} расформирован."
     if event_type == "squad_boost":
         squad = escape(str(payload.get("squad_name") or "У сквада"))
-        return f"{squad} активировал Boost!"
+        return f"🚀 {squad} активировал Boost!"
     if event_type == "squad_weekly_tokens":
         return escape("🌟 Недельный рассчет твоего вклада в CBRP сквада завершен - ты получил токены. Скорее потрать их в магазине сквада!")
     return escape(format_notification_message(event_type, payload))
@@ -244,37 +244,37 @@ def format_android_notification_title(category: str, event_type: str, payload: d
     if payload.get("title"):
         return str(payload.get("title"))
     if event_type == "generator_new_key":
-        return "Новый ключ готов!"
+        return "🔑 Новый ключ готов!"
     if event_type == "generator_full_on_new_key":
-        return "Новый ключ готов!"
+        return "🔑 Новый ключ готов!"
     if event_type == "generator_full_blocked_key":
-        return "Генератор переполнен!"
+        return "🚫 Генератор переполнен!"
     if event_type == "shop_particles":
-        return "Новые частицы карт в магазине!"
+        return "✨ Новые частицы карт в магазине!"
     if event_type == "extra_arena_modifier_changed":
         label = payload.get("label") or payload.get("mode_name") or "ExtraArena"
-        return f"{label} в ExtraArena!"
+        return f"🌀 {label} в ExtraArena!"
     if event_type == "friendly_battle_invite":
         from_name = payload.get("from_name") or "Друг"
-        return f"{from_name} вызвал тебя на бой!"
+        return f"⚔️ {from_name} вызвал тебя на бой!"
     if event_type == "friend_request_received":
-        return "Заявка в друзья"
+        return "👋 Заявка в друзья"
     if event_type == "daily_reminder":
         return random.choice(REMINDER_TITLES)
     if event_type == "daily_login_reward":
         return str(payload.get("title") or "📆 Забери награду за вход!")
     if event_type == "squad_weekly_tokens":
-        return "Ты получил токены сквада!"
+        return "🌟 Ты получил токены сквада!"
     if category.startswith("squad_") or event_type.startswith("squad_"):
         squad = payload.get("squad_name") or "Сквад"
         event_labels = {
-            "squad_new_member": "новый участник!",
-            "squad_member_role": "роль изменена!",
-            "squad_disbanded": "расформирован!",
-            "squad_boost": "Boost!",
+            "squad_new_member": "🎉 новый участник!",
+            "squad_member_role": "🎖️ роль изменена!",
+            "squad_disbanded": "💔 расформирован!",
+            "squad_boost": "🚀 Boost!",
         }
         return f"{squad}: {event_labels.get(event_type, 'событие!')}"
-    return "ExtraArena"
+    return "🔔 ExtraArena"
 
 
 def notification_section(category: str, payload: dict[str, Any] | None = None) -> str:

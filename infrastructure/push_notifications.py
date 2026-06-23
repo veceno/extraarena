@@ -17,8 +17,8 @@ from infrastructure.notifications import (
 
 logger = logging.getLogger(__name__)
 
-UPDATE_TITLE = "Хорошие новости!"
-UPDATE_BODY = "Вышло обновление, скачай новую версию, чтобы продолжить игру"
+UPDATE_TITLE = "⬇️ Хорошие новости!"
+UPDATE_BODY = "⬇️ Вышло обновление, скачай новую версию, чтобы продолжить игру"
 UPDATE_CHANNEL_URL = "https://t.me/extraarenamobile"
 UPDATE_APK_URL = "https://apk.laveqox.ru"
 ANDROID_PUSH_CLICK_ACTION = "ru.extraarena.app.PUSH"

@@ -40,15 +40,15 @@ public class ExtraArenaMessagingService extends FirebaseMessagingService {
                 : notification != null ? notification.getTitle() : "ExtraArena";
         String body = data.containsKey("body")
                 ? data.get("body")
-                : notification != null ? notification.getBody() : "На арене новое событие";
+                : notification != null ? notification.getBody() : "🔔 На арене новое событие";
         showGameNotification(title, body, data);
     }
 
     private void showUpdateNotification(Map<String, String> data) {
-        String title = data.containsKey("title") ? data.get("title") : "Хорошие новости!";
+        String title = data.containsKey("title") ? data.get("title") : "⬇️ Хорошие новости!";
         String body = data.containsKey("body")
                 ? data.get("body")
-                : "Вышло обновление, скачай новую версию, чтобы продолжить игру";
+                : "⬇️ Вышло обновление, скачай новую версию, чтобы продолжить игру";
         String url = sanitizeUpdateUrl(data.get("url"));
 
         Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
@@ -105,8 +105,8 @@ public class ExtraArenaMessagingService extends FirebaseMessagingService {
         Notification.Builder builder = new Notification.Builder(this)
                 .setSmallIcon(R.drawable.ic_notification)
                 .setContentTitle(title == null || title.isEmpty() ? "ExtraArena" : title)
-                .setContentText(body == null || body.isEmpty() ? "На арене новое событие" : body)
-                .setStyle(new Notification.BigTextStyle().bigText(body == null || body.isEmpty() ? "На арене новое событие" : body))
+                .setContentText(body == null || body.isEmpty() ? "🔔 На арене новое событие" : body)
+                .setStyle(new Notification.BigTextStyle().bigText(body == null || body.isEmpty() ? "🔔 На арене новое событие" : body))
                 .setContentIntent(pendingIntent)
                 .setAutoCancel(true);
 

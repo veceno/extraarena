@@ -178,7 +178,7 @@ async def _require_jwt_user_id_from_request(request: web.Request, data: dict[str
 
 async def _send_telegram_transfer_code(request: web.Request, user_id: int, code: str) -> bool:
     text = (
-        "Код для переноса ExtraArena в приложение: "
+        "🔐 Код для переноса ExtraArena в приложение: "
         f"{code}\n\nОн действует 5 минут. Никому его не показывай."
     )
 

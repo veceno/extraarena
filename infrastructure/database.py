@@ -215,6 +215,10 @@ RUNTIME_FEATURE_DEFAULTS: dict[str, bool] = {
     "classic": True,
     "extra_arena": True,
     "rating": True,
+    # When True, trophies/score rating tops count only human-vs-human battles
+    # (per-battle is_bot/metadata filters enabled). When False, bot-vs-human
+    # battles also count. Bots never become rating candidates regardless.
+    "rating_human_vs_human": False,
 }
 
 RUNTIME_SETTINGS_DEFAULTS: dict[str, Any] = {
@@ -5799,6 +5803,7 @@ class Database:
         conn: Any,
     ) -> dict[str, Any]:
         categories: list[dict[str, Any]] = []
+        human_vs_human = await self.is_feature_enabled("rating_human_vs_human")
         for category in RATING_CATEGORIES:
             entries = await self._rating_fetch_entries(
                 category["key"],
@@ -5807,6 +5812,7 @@ class Database:
                 limit=10,
                 period=period,
                 generated_at=generated_at,
+                human_vs_human=human_vs_human,
             )
             if period == "preview":
                 entries = [
@@ -5838,8 +5844,33 @@ class Database:
         limit: int,
         period: str,
         generated_at: datetime,
+        human_vs_human: bool = True,
     ) -> list[dict[str, Any]]:
         window_start = _rating_window_start(period, generated_at)
+        # rating_human_vs_human: per-battle human-vs-human filters. When human_vs_human is False, the
+        # trophies/score tops also count bot-vs-human battles; bots never
+        # become rating candidates because human_players (base CTE) always
+        # excludes is_bot. Status on opponent (u1/u2) is part of the
+        # "valid active opponent" validation and is gated together with is_bot
+        # because a bot opponent is by definition not a human-vs-human battle.
+        if human_vs_human:
+            _bs_clause = """
+                          AND COALESCE(u1.is_bot, FALSE) = FALSE
+                          AND COALESCE(u2.is_bot, FALSE) = FALSE
+                          AND COALESCE(u1.status, 'active') IN ('active', 'warn')
+                          AND COALESCE(u2.status, 'active') IN ('active', 'warn')
+                          AND COALESCE(bs.metadata->>'p1_is_bot', 'false') <> 'true'
+                          AND COALESCE(bs.metadata->>'p2_is_bot', 'false') <> 'true'
+            """
+            _br_clause = """
+                          AND COALESCE(u1.is_bot, FALSE) = FALSE
+                          AND COALESCE(u2.is_bot, FALSE) = FALSE
+                          AND COALESCE(u1.status, 'active') IN ('active', 'warn')
+                          AND COALESCE(u2.status, 'active') IN ('active', 'warn')
+            """
+        else:
+            _bs_clause = ""
+            _br_clause = ""
         base_cte = f"""
             WITH human_players AS (
                 SELECT u.user_id,
@@ -11490,6 +11521,14 @@ class Database:
         await self.execute("CREATE INDEX IF NOT EXISTS idx_battle_summary_p2_user_id ON battle_summary(p2_user_id)")
         await self.execute("CREATE INDEX IF NOT EXISTS idx_battle_summary_winner_user_id ON battle_summary(winner_user_id)")
         await self.execute("CREATE INDEX IF NOT EXISTS idx_battle_summary_game_mode ON battle_summary(game_mode)")
+        await self.execute("""
+            CREATE INDEX IF NOT EXISTS battle_summary_p1_created_idx
+            ON battle_summary (p1_user_id, created_at)
+        """)
+        await self.execute("""
+            CREATE INDEX IF NOT EXISTS battle_summary_p2_created_idx
+            ON battle_summary (p2_user_id, created_at)
+        """)
 
         return changed
 
@@ -11599,6 +11638,7 @@ class Database:
                         return {
                             "success": False,
                             "error": "active_battle_exists",
+                            "message": "Этот игрок уже в бою — попробуй позже!",
                             "battle_id": active_battle["battle_id"],
                             "invite_id": active_battle["id"],
                         }

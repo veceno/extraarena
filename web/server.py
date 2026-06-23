@@ -7854,6 +7854,7 @@ def create_web_app(
                 return {
                     "success": False,
                     "error": "active_battle_exists",
+                    "message": "Этот игрок уже в бою — попробуй позже!",
                     "battle_id": match_id,
                     "match_id": match_id,
                     "active_user_id": active_user_id,
@@ -7882,6 +7883,7 @@ def create_web_app(
                     return {
                         "success": False,
                         "error": "active_battle_exists",
+                        "message": "Этот игрок уже в бою — попробуй позже!",
                         "battle_id": match_id,
                         "match_id": match_id,
                         "active_user_id": active_user_id,
@@ -7897,6 +7899,7 @@ def create_web_app(
                 return {
                     "success": False,
                     "error": "active_battle_exists",
+                    "message": "Этот игрок уже в бою — попробуй позже!",
                     "battle_id": match_id,
                     "match_id": match_id,
                     "invite_id": active_invite.get("id"),
@@ -8037,6 +8040,7 @@ def create_web_app(
                 {
                     "success": False,
                     "error": "active_battle_exists",
+                    "message": "Этот игрок уже в бою — попробуй позже!",
                     "battle_id": result.get("battle_id"),
                     "match_id": result.get("battle_id"),
                     "invite_id": result.get("invite_id"),

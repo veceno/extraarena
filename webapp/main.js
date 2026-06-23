@@ -761,12 +761,13 @@ function getDefaultSettings() {
     notif_news: false,
     notif_generator: true,
     notif_shop: false,
-    notif_reminders: true,
+    notif_reminders: false,
     notif_squad_member_role: true,
     notif_squad_new_member: true,
     notif_squad_disbanded: true,
     notif_squad_boost: true,
     notif_squad_weekly_tokens: true,
+    notif_extra_arena_modifiers: true,
     ads_enabled: true,
     sound_music: true,
     sound_sfx: true,
@@ -1222,6 +1223,14 @@ function renderSettings(settings) {
       <div class="setting-item">
         <span class="setting-label">Напоминания</span>
         <div class="toggle-switch ${mergedSettings.notif_reminders ? "active" : ""}" data-setting="notif_reminders"></div>
+      </div>
+      <div class="setting-item">
+        <span class="setting-label">Ежедневные награды</span>
+        <div class="toggle-switch ${mergedSettings.notif_daily_rewards ? "active" : ""}" data-setting="notif_daily_rewards"></div>
+      </div>
+      <div class="setting-item">
+        <span class="setting-label">Модификаторы ExtraArena</span>
+        <div class="toggle-switch ${mergedSettings.notif_extra_arena_modifiers ? "active" : ""}" data-setting="notif_extra_arena_modifiers"></div>
       </div>
       <div class="setting-item">
         <span class="setting-label">Сквад: повышение/понижение</span>
