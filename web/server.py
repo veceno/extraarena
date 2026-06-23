@@ -9141,6 +9141,7 @@ def create_web_app(
                 "user_id": user_id,
                 "tap_results": tap_results,
                 "final_tier": final_tier,
+                "base_tier": 1,
                 "extra_pass": extra_pass,
                 "remaining_keys": remaining_keys,
                 "reserved": True,
@@ -9181,6 +9182,7 @@ def create_web_app(
                 final_tier = int(stored_roll.get("final_tier") or (tap_results[-1] if tap_results else 1))
                 extra_pass = str(stored_roll.get("extra_pass") or "inactive")
                 new_keys = int(stored_roll.get("remaining_keys") or 0)
+                base_tier = int(stored_roll.get("base_tier") or 1)
                 CASE_KEY_ROLLS.pop(roll_token, None)
             else:
                 key_row = await db.fetchrow(
@@ -9199,6 +9201,7 @@ def create_web_app(
                 extra_pass = await get_user_case_pass_status(db, user_id)
                 tap_results = simulate_case_tap_results(1, extra_pass)
                 final_tier = tap_results[-1] if tap_results else 1
+                base_tier = 1
 
             final_tier = max(1, min(final_tier, 5))
 
@@ -9218,6 +9221,7 @@ def create_web_app(
                 "roll_token": roll_token,
                 "user_id": user_id,
                 "final_tier": final_tier,
+                "base_tier": base_tier,
                 "tap_results": tap_results,
                 "rewards": rewards,
                 "remaining_keys": new_keys,
@@ -9270,8 +9274,9 @@ def create_web_app(
                 return web.json_response({"success": False, "error": "reroll_already_used", "message": "Реролл уже использован"}, status=400)
 
             extra_pass = str(opening.get("extra_pass") or "inactive")
-            tap_results = simulate_case_tap_results(1, extra_pass)
-            final_tier = tap_results[-1] if tap_results else 1
+            base_tier = max(1, min(int(opening.get("base_tier") or 1), 5))
+            tap_results = simulate_case_tap_results(base_tier, extra_pass)
+            final_tier = tap_results[-1] if tap_results else base_tier
             reroll_token = uuid.uuid4().hex
             opening["reroll_used"] = True
             opening["reroll_started_at"] = datetime.now(timezone.utc)
