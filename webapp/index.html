@@ -121,6 +121,8 @@ html, body {
 @keyframes slideDown { from{opacity:0;transform:translateY(-10px)} to{opacity:1;transform:translateY(0)} }
 @keyframes opponentReveal { from{opacity:0;transform:scale(0.85) translateY(16px)} to{opacity:1;transform:scale(1) translateY(0)} }
 @keyframes opponentGlowPulse { 0%,100%{box-shadow:0 0 12px rgba(245,146,30,0.2),0 0 32px rgba(245,146,30,0.06)} 50%{box-shadow:0 0 20px rgba(245,146,30,0.45),0 0 50px rgba(245,146,30,0.14)} }
+@keyframes winStreakGlow { 0%,100%{filter:brightness(0) invert(1) drop-shadow(0 0 0 rgba(255,255,255,0))} 50%{filter:brightness(0) invert(1) drop-shadow(0 0 6px rgba(255,255,255,0.85))} }
+@keyframes eaLabelSwap     { 0%{opacity:1} 30%{opacity:0.25} 50%{opacity:0} 70%{opacity:0.25} 100%{opacity:1} }
 @keyframes onbCoachFloat { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-6px)} }
 @keyframes onbAuraPulse { 0%,100%{opacity:0.5;transform:translate(-50%,-50%) scale(1)} 50%{opacity:0.85;transform:translate(-50%,-50%) scale(1.12)} }
 @keyframes onbClaimablePulse { 0%,100%{box-shadow:0 0 0 rgba(245,146,30,0)} 50%{box-shadow:0 0 16px rgba(245,146,30,0.35)} }
@@ -3271,7 +3273,7 @@ window.loadMobileSquadsBootstrap = async function(options = {}) {
 };
 </script>
 
-<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=c714c590f773">
+<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=f0b7dc9efcab">
 // ═══════════════════════════════════════════
 // DESIGN TOKENS
 // ═══════════════════════════════════════════
@@ -3878,6 +3880,10 @@ const ICONS = {
   battle:    ICON_ROOT+'Battle.png',
   vsBot:     ICON_ROOT+'vsBotOrFriend.png',
   followingCase: ICON_ROOT+'FollowingCase.png',
+  dailyLogin:    ICON_ROOT+'EveryDayLogin.png',
+  battleHistory: ICON_ROOT+'BattleHistory.png',
+  keyGenerator:  ICON_ROOT+'KeyGenerator.png',
+  goToExtraPass: ICON_ROOT+'GoToExtraPass.png',
   trophyPath: {
     seasonalCut: '/DesignAssets/MainMenu/TropheyPath/seasonalCut.png',
   },
@@ -7693,6 +7699,14 @@ const ArenaScreen = ({onMenu, onAI, onGenerator, onOpenBattles, onBattlePick, on
   const availableGloryCount = gloryTiers.filter(t => t.available).length;
   const nextRewardDistance = nextUnreachedTier ? nextUnreachedTier.position - trophyCount : null;
 
+  // Alternating label/timer display for buttons that carry a countdown.
+  // Generator label and its timer swap every 4s with a brief flicker on swap.
+  const [genShowTimer, setGenShowTimer] = React.useState(false);
+  React.useEffect(() => {
+    const iv = setInterval(() => setGenShowTimer(v => !v), 4000);
+    return () => clearInterval(iv);
+  }, []);
+
   const genLevel = genStatus?.level || 1;
   const canClaimGen = genStatus?.can_claim;
   const genNextSec = genStatus?.next_key_seconds != null
@@ -7720,8 +7734,8 @@ const ArenaScreen = ({onMenu, onAI, onGenerator, onOpenBattles, onBattlePick, on
 
   return (
     <div style={{flex:1,overflowY:'auto',overflowX:'hidden',display:'flex',flexDirection:'column',minHeight:0}}>
-      {/* Season Pass — dynamic, click to open BattlePass */}  
-      <div onClick={()=>onOpenBattlePass()} style={{margin:'12px 16px 0',background:'linear-gradient(135deg,#2d1460,#4a2090)',borderRadius:'16px',padding:'11px 14px',display:'flex',justifyContent:'space-between',alignItems:'center',cursor:'pointer',transition:'all 0.15s',}}>
+      {/* Season Pass — dynamic, click to open BattlePass */}
+      <div onClick={()=>onOpenBattlePass()} style={{margin:'10px 16px 0',background:'linear-gradient(135deg,#2d1460,#4a2090)',borderRadius:'16px',padding:'10px 12px',display:'flex',justifyContent:'space-between',alignItems:'center',cursor:'pointer',transition:'all 0.15s',}}>
         <div>
           <div style={{fontSize:'10px',color:T.grey1,letterSpacing:'0.6px',textTransform:'uppercase',marginBottom:'2px'}}>{seasonInfo?.subtitle || 'Сезонный пропуск'}</div>
           <div style={{fontSize:'16px',fontWeight:'800',color:T.white,fontFamily:"'Exo 2',sans-serif"}}>{passTitle}</div>
@@ -7729,35 +7743,48 @@ const ArenaScreen = ({onMenu, onAI, onGenerator, onOpenBattles, onBattlePick, on
         <div style={{display:'flex',alignItems:'center',gap:'10px'}}>
           <div style={{textAlign:'right'}}>
             <div style={{fontSize:'11px',color:T.grey1,marginBottom:'3px'}}>{passStageText}</div>
-            <div style={{fontSize:'10px',color:T.grey3,marginBottom:'5px'}}>{passStars} / {passStarTarget} ⭐</div>
+            <div style={{fontSize:'11px',color:T.grey1,fontWeight:700,marginBottom:'5px',fontVariantNumeric:'tabular-nums'}}>{passStars} / {passStarTarget} ⭐</div>
             <div style={{width:'100px',height:'5px',background:T.purple1,borderRadius:'3px',overflow:'hidden'}}>
               <div style={{width:`${passBarPercent}%`,height:'100%',background:`linear-gradient(90deg,${T.orange},${T.orangeLt})`,borderRadius:'3px'}}/>
             </div>
           </div>
-          <div style={{background:`linear-gradient(135deg,${T.orange},${T.orangeLt})`,borderRadius:'10px',padding:'7px 14px',color:'white',fontSize:'12px',fontWeight:'800',fontFamily:"'Exo 2',sans-serif",boxShadow:`0 3px 10px ${T.orange}55`}}>📋</div>
+          <div style={{
+            background: ep === 'ultra'
+              ? 'linear-gradient(135deg,#ff5fa2,#2dd4bf)'
+              : ep === 'active'
+                ? 'linear-gradient(135deg,#ff4d2e,#f5921e)'
+                : `linear-gradient(135deg,${T.orange},${T.orangeLt})`,
+            borderRadius:'10px',
+            padding:'7px',
+            display:'flex',
+            alignItems:'center',
+            justifyContent:'center',
+            boxShadow: ep === 'ultra'
+              ? '0 3px 10px rgba(255,95,162,0.55), 0 0 18px rgba(45,212,191,0.35)'
+              : ep === 'active'
+                ? `0 3px 10px rgba(255,77,46,0.55), 0 0 18px ${T.orange}55`
+                : `0 3px 10px ${T.orange}55`,
+            flexShrink:0,
+          }}>
+            <img src={ICONS.goToExtraPass} alt="" style={{width:'22px',height:'22px',objectFit:'contain',filter:'brightness(0) invert(1) drop-shadow(0 0 6px rgba(255,255,255,0.35))'}}/>
+          </div>
         </div>
       </div>
 
       {/* Arena hero */}
       <div style={{position:'relative',margin:'12px 0 0',display:'flex',flexDirection:'column',alignItems:'center'}}>
         <div style={{display:'flex',gap:'8px',marginBottom:'12px',width:'100%',padding:'0 16px'}}>
-          <button onClick={onOpenBattles} style={{flex:1,background:T.bgCard,border:`1px solid ${T.purple1}`,borderRadius:'20px',padding:'7px 14px',color:T.grey1,fontSize:'12px',cursor:'pointer',fontFamily:"'Inter',sans-serif",transition:'all 0.15s'}}>
-            История боёв
+          <button onClick={onOpenBattles} aria-label="Мои бои" style={{flex:1,minWidth:0,display:'flex',alignItems:'center',justifyContent:'center',gap:'6px',background:T.bgCard,border:`1px solid ${T.purple1}`,borderRadius:'14px',padding:'8px 10px',color:T.grey1,fontSize:'12px',fontWeight:700,fontFamily:"'Exo 2',sans-serif",cursor:'pointer',transition:'all 0.15s'}}>
+            <img src={ICONS.battleHistory} alt="" style={{width:'16px',height:'16px',objectFit:'contain',filter:iconWhite,flexShrink:0}}/>
+            <span style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>Мои бои</span>
           </button>
-          <button onClick={onGenerator} style={{flex:1,background:canClaimGen?'rgba(245,146,30,0.15)':T.bgCard,border:`1px solid ${canClaimGen?T.orange:T.purple1}`,borderRadius:'20px',padding:'7px 14px',color:canClaimGen?T.orange:T.grey1,fontSize:'12px',cursor:'pointer',fontFamily:"'Inter',sans-serif",transition:'all 0.15s',boxShadow:canClaimGen?`0 0 10px ${T.orange}44`:'none'}}>
-            <span style={{display:'flex',alignItems:'center',gap:'5px',justifyContent:'center'}}>
-              <span style={{borderRadius:'5px',background:T.ai,color:T.bg,
-                fontSize:'8px',fontWeight:'900',padding:'1px 4px',
-                flexShrink:0,lineHeight:'14px',letterSpacing:'0.3px'}}>
-                LVL {genLevel}
-              </span>
-              <span>Генератор</span>
-              {genTimerStr && (
-                <span style={{fontSize:'10px',color:T.ai,fontWeight:'600',fontVariantNumeric:'tabular-nums'}}>
-                  {genTimerStr}
-                </span>
-              )}
-            </span>
+          <button onClick={onGenerator} aria-label="Генератор" style={{flex:1,minWidth:0,display:'flex',alignItems:'center',justifyContent:'center',gap:'6px',background:canClaimGen?'rgba(245,146,30,0.15)':T.bgCard,border:`1px solid ${canClaimGen?T.orange:T.purple1}`,borderRadius:'14px',padding:'8px 10px',color:canClaimGen?T.orange:T.grey1,fontSize:'12px',fontWeight:700,fontFamily:"'Exo 2',sans-serif",cursor:'pointer',transition:'all 0.15s',boxShadow:canClaimGen?`0 0 10px ${T.orange}44`:'none'}}>
+            <img src={ICONS.keyGenerator} alt="" style={{width:'16px',height:'16px',objectFit:'contain',filter:iconWhite,flexShrink:0}}/>
+            {genShowTimer && genTimerStr ? (
+              <span key="timer" style={{fontSize:'11px',fontWeight:600,color:T.ai,fontVariantNumeric:'tabular-nums',flexShrink:0,whiteSpace:'nowrap',animation:'eaLabelSwap 0.45s ease'}}>{genTimerStr}</span>
+            ) : (
+              <span key="lbl" style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',animation:genTimerStr?'eaLabelSwap 0.45s ease':'none'}}>Генератор</span>
+            )}
           </button>
         </div>
 
@@ -7836,7 +7863,7 @@ const ArenaScreen = ({onMenu, onAI, onGenerator, onOpenBattles, onBattlePick, on
           {shineAnim && <div style={{position:'absolute',top:0,width:'35%',height:'100%',background:'linear-gradient(90deg,transparent,rgba(255,255,255,0.18),transparent)',transform:'skewX(-18deg)',pointerEvents:'none',animation:'shine 0.5s ease forwards'}}/>}
         </button>
         <button onClick={onBattlePick} style={{width:'60px',height:'60px',background:T.bgCard,border:`1px solid ${T.purple2}`,borderRadius:'16px',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,transition:'all 0.15s'}}>
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke={T.purpleLt} strokeWidth="1.4"/><circle cx="12" cy="12" r="4" fill={T.purpleHL}/><path d="M12 3v3M12 18v3M3 12h3M18 12h3" stroke={T.purpleLt} strokeWidth="1.4" strokeLinecap="round"/></svg>
+          <img src={ICONS.vsBot} alt="" style={{width:'30px',height:'30px',objectFit:'contain',filter:iconWhite}}/>
         </button>
       </div>
 
@@ -17812,6 +17839,6 @@ const LeagueInfoSheet = ({onClose, onOpenGloryPath, profile}) => {
 
 ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
 </script>
-<script src="index.compiled.js?v=c714c590f773"></script>
+<script src="index.compiled.js?v=f0b7dc9efcab"></script>
 </body>
 </html>
