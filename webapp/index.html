@@ -3275,7 +3275,7 @@ window.loadMobileSquadsBootstrap = async function(options = {}) {
 };
 </script>
 
-<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=cd5b71469811">
+<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=78c213755a4a">
 // ═══════════════════════════════════════════
 // DESIGN TOKENS
 // ═══════════════════════════════════════════
@@ -8866,13 +8866,13 @@ const DailyLoginSheet = ({onClose, profile, status, onClaimed}) => {
   };
 
   const subLine = () => {
-    if (isSpecial && !alreadyClaimed) return <span style={{color:'#fbbf24',fontSize:11,fontWeight:700}}>Сегодня — особая награда!</span>;
+    if (isSpecial && !alreadyClaimed) return <span style={{color:'#fbbf24',fontSize:11,fontWeight:700}}>Сегодня — особая награда (x3)!</span>;
     if (daysToSpecial === 0 && !alreadyClaimed) return <span style={{color:'#fbbf24',fontSize:11,fontWeight:700}}>Особая награда сегодня!</span>;
-    // Когда уже забрал — ориентируемся на next_is_special (точно про СЛЕДУЮЩИЙ клейм).
+    // Уже забрали — ориентируемся на next_is_special (точно про СЛЕДУЮЩИЙ клейм).
     if (alreadyClaimed && status?.next_is_special) return <span style={{color:'#fbbf24',fontSize:11,fontWeight:600}}>Следующая — особая (x3)!</span>;
-    // До НЕ особой следующей осталось несколько клеймов — "осталось N дней до особой".
-    if (!alreadyClaimed && daysToSpecial === 1) return <span style={{color:'#fbbf24',fontSize:11,fontWeight:700,animation:'pulse 1s ease-in-out infinite'}}>Завтра — особая награда (x3)!</span>;
     if (alreadyClaimed) return <span style={{color:'#7a6fa0',fontSize:11,fontWeight:600}}>Награда получена · следующая скоро</span>;
+    // Не получено: точные дни до особой. day_to_special==1 → "завтра" = streak_day+1=3.
+    if (daysToSpecial === 1) return <span style={{color:'#fbbf24',fontSize:11,fontWeight:700,animation:'pulse 1s ease-in-out infinite'}}>Завтра — особая награда (x3)!</span>;
     return <span style={{color:'#fbbf24',fontSize:11}}>До особой награды осталось {daysToSpecial} дней</span>;
   };
 
@@ -8888,7 +8888,7 @@ const DailyLoginSheet = ({onClose, profile, status, onClaimed}) => {
 
   const totalWindow = 24 * 3600;
   const progressPct = Math.max(0, Math.min(100, (1 - (timeLeft / Math.max(1, totalWindow))) * 100));
-  const nearSpecial = (daysToSpecial === 1 && !isSpecial && !isClaim) || (alreadyClaimed && !!status?.next_is_special);
+  const nearSpecial = daysToSpecial === 1 && !isSpecial && !isClaim && !alreadyClaimed;
   const timerPulseAnim = nearSpecial ? 'timerPulse 1s ease-in-out infinite' : 'none';
 
   return (
@@ -18297,6 +18297,6 @@ const LeagueInfoSheet = ({onClose, onOpenGloryPath, profile}) => {
 
 ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
 </script>
-<script src="index.compiled.js?v=cd5b71469811"></script>
+<script src="index.compiled.js?v=78c213755a4a"></script>
 </body>
 </html>
