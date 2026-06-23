@@ -765,6 +765,430 @@ class Database:
         self.schema_changed_last_run: bool = False
         self.schema_last_updated: Optional[datetime] = None
 
+    DAILY_LOGIN_REWARD_PRESETS = (
+        {"type": "coins", "amount": 50},
+        {"type": "gems", "amount": 5},
+        {"type": "stars", "amount": 3},
+        {"type": "keys", "amount": 1},
+    )
+    DAILY_LOGIN_INTERVAL_SECONDS = 24 * 60 * 60
+    DAILY_LOGIN_STREAK_WINDOW_SECONDS = 24 * 60 * 60
+
+    def _choose_daily_login_reward(self, streak_day: int) -> tuple[str, int, int]:
+        preset = random.choice(self.DAILY_LOGIN_REWARD_PRESETS)
+        base_amount = int(preset["amount"])
+        multiplier = 3 if streak_day > 0 and streak_day % 3 == 0 else 1
+        final_amount = round(base_amount * multiplier)
+        return str(preset["type"]), base_amount, final_amount
+
+    def _daily_login_position_token(self, available_at) -> int:
+        if available_at is None:
+            return 0
+        try:
+            return int(available_at.timestamp())
+        except Exception:
+            return 0
+
+    async def get_daily_login_status(self, user_id: int) -> dict[str, Any]:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        row = await self.fetchrow(
+            """
+            SELECT daily_login_streak, daily_login_streak_day, daily_login_available_at,
+                   daily_login_reward_type, daily_login_reward_amount, daily_login_multiplier,
+                   daily_login_claimed, daily_login_notified, daily_login_last_claim_at,
+                   daily_login_claimed_reward_type, daily_login_claimed_reward_amount
+            FROM users
+            WHERE user_id = $1
+            """,
+            user_id,
+        )
+        if not row:
+            return {"enabled": False}
+
+        now = datetime.now(timezone.utc)
+        available_at = row["daily_login_available_at"]
+        claimed = bool(row["daily_login_claimed"])
+        streak = int(row["daily_login_streak"] or 0)
+        streak_day = int(row["daily_login_streak_day"] or 0)
+        reward_type = row["daily_login_reward_type"]
+        base_amount = row["daily_login_reward_amount"]
+        multiplier = int(row["daily_login_multiplier"] or 1)
+        notified = bool(row["daily_login_notified"])
+
+        if available_at is None:
+            async with self._pool.acquire() as conn:
+                async with conn.transaction():
+                    locked = await conn.fetchrow(
+                        "SELECT daily_login_available_at FROM users WHERE user_id = $1 FOR UPDATE",
+                        user_id,
+                    )
+                    if locked and locked["daily_login_available_at"] is None:
+                        streak = 0
+                        streak_day = 1
+                        reward_type, base_amount, final_amount = self._choose_daily_login_reward(streak_day)
+                        multiplier = 3 if streak_day % 3 == 0 else 1
+                        available_at = now
+                        await conn.execute(
+                            """
+                            UPDATE users
+                            SET daily_login_streak = $2, daily_login_streak_day = $3,
+                                daily_login_available_at = $4, daily_login_reward_type = $5,
+                                daily_login_reward_amount = $6, daily_login_multiplier = $7,
+                                daily_login_claimed = FALSE, daily_login_notified = FALSE,
+                                updated_at = NOW()
+                            WHERE user_id = $1
+                            """,
+                            user_id, streak, streak_day, available_at,
+                            reward_type, final_amount, multiplier,
+                        )
+                    else:
+                        available_at = locked["daily_login_available_at"] if locked else None
+
+        streak_broken = False
+        if available_at is not None and not claimed:
+            window_end = available_at + timedelta(seconds=self.DAILY_LOGIN_STREAK_WINDOW_SECONDS)
+            if now > window_end:
+                if streak != 0 or streak_day != 0:
+                    streak_broken = True
+                    streak = 0
+                    streak_day = 0
+                    await self.execute(
+                        """
+                        UPDATE users
+                        SET daily_login_streak = 0, daily_login_streak_day = 0,
+                            updated_at = NOW()
+                        WHERE user_id = $1
+                        """,
+                        user_id,
+                    )
+
+        time_left = 0
+        is_claimable = False
+        if available_at is not None:
+            if claimed:
+                time_left = max(0, int((available_at - now).total_seconds()))
+                is_claimable = now >= available_at
+                if is_claimable:
+                    await self._advance_daily_login_cycle(user_id, now)
+                    return await self.get_daily_login_status(user_id)
+            else:
+                is_claimable = now >= available_at
+                time_left = max(0, int((available_at - now).total_seconds()))
+
+        max_window = self.DAILY_LOGIN_INTERVAL_SECONDS
+        if time_left > max_window:
+            time_left = max_window
+
+        is_special = multiplier == 3
+        days_to_special = 0
+        if streak_day > 0:
+            next_special = ((streak_day // 3) + 1) * 3
+            days_to_special = max(0, next_special - streak_day)
+            if is_special and not claimed:
+                days_to_special = 0
+
+        return {
+            "enabled": True,
+            "streak": streak,
+            "streak_day": streak_day,
+            "available_at": available_at.isoformat() if available_at else None,
+            "time_left_seconds": time_left,
+            "is_claimable": is_claimable,
+            "reward_type": reward_type,
+            "reward_amount": row["daily_login_reward_amount"] if available_at else None,
+            "base_amount": base_amount,
+            "multiplier": multiplier,
+            "is_special": is_special,
+            "days_to_special": days_to_special,
+            "claimed": claimed,
+            "notified": notified,
+            "last_claim_at": row["daily_login_last_claim_at"].isoformat() if row["daily_login_last_claim_at"] else None,
+            "streak_broken": streak_broken,
+            "claimed_reward_type": row["daily_login_claimed_reward_type"],
+            "claimed_reward_amount": row["daily_login_claimed_reward_amount"],
+        }
+
+    async def _advance_daily_login_cycle(self, user_id: int, now: datetime) -> None:
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                locked = await conn.fetchrow(
+                    """
+                    SELECT daily_login_streak, daily_login_streak_day, daily_login_available_at,
+                           daily_login_claimed, daily_login_reward_type, daily_login_reward_amount,
+                           daily_login_multiplier
+                    FROM users
+                    WHERE user_id = $1
+                    FOR UPDATE
+                    """,
+                    user_id,
+                )
+                if not locked:
+                    return
+                prev_claimed = bool(locked["daily_login_claimed"])
+                prev_available_at = locked["daily_login_available_at"]
+                if prev_available_at is None:
+                    return
+                if now < prev_available_at:
+                    return
+                if prev_claimed:
+                    new_streak_day = int(locked["daily_login_streak_day"] or 0) + 1
+                    new_streak = int(locked["daily_login_streak"] or 0) + 1
+                else:
+                    new_streak_day = 1
+                    new_streak = 0
+                reward_type, base_amount, final_amount = self._choose_daily_login_reward(new_streak_day)
+                multiplier = 3 if new_streak_day % 3 == 0 else 1
+                await conn.execute(
+                    """
+                    UPDATE users
+                    SET daily_login_streak = $2, daily_login_streak_day = $3,
+                        daily_login_available_at = $4, daily_login_reward_type = $5,
+                        daily_login_reward_amount = $6, daily_login_multiplier = $7,
+                        daily_login_claimed = FALSE, daily_login_notified = FALSE,
+                        updated_at = NOW()
+                    WHERE user_id = $1
+                    """,
+                    user_id, new_streak, new_streak_day, now,
+                    reward_type, final_amount, multiplier,
+                )
+
+    async def claim_daily_login_reward(self, user_id: int) -> dict[str, Any]:
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    """
+                    SELECT daily_login_streak, daily_login_streak_day, daily_login_available_at,
+                           daily_login_reward_type, daily_login_reward_amount, daily_login_multiplier,
+                           daily_login_claimed
+                    FROM users
+                    WHERE user_id = $1
+                    FOR UPDATE
+                    """,
+                    user_id,
+                )
+                if not row:
+                    return {"success": False, "error": "user_not_found"}
+
+                available_at = row["daily_login_available_at"]
+                claimed = bool(row["daily_login_claimed"])
+
+                if available_at is None:
+                    streak_day = 1
+                    reward_type, base_amount, final_amount = self._choose_daily_login_reward(streak_day)
+                    multiplier = 3 if streak_day % 3 == 0 else 1
+                    available_at = datetime.now(timezone.utc)
+                    await conn.execute(
+                        """
+                        UPDATE users
+                        SET daily_login_streak = 0, daily_login_streak_day = $2,
+                            daily_login_available_at = $3, daily_login_reward_type = $4,
+                            daily_login_reward_amount = $5, daily_login_multiplier = $6,
+                            daily_login_claimed = FALSE, daily_login_notified = FALSE,
+                            updated_at = NOW()
+                        WHERE user_id = $1
+                        """,
+                        user_id, streak_day, available_at, reward_type, final_amount, multiplier,
+                    )
+                    row = await conn.fetchrow(
+                        """
+                        SELECT daily_login_streak, daily_login_streak_day, daily_login_available_at,
+                               daily_login_reward_type, daily_login_reward_amount, daily_login_multiplier,
+                               daily_login_claimed
+                        FROM users WHERE user_id = $1
+                        """,
+                        user_id,
+                    )
+
+                now = datetime.now(timezone.utc)
+                available_at = row["daily_login_available_at"]
+                claimed = bool(row["daily_login_claimed"])
+
+                streak = int(row["daily_login_streak"] or 0)
+                streak_day = int(row["daily_login_streak_day"] or 0)
+                if not claimed and available_at is not None:
+                    window_end = available_at + timedelta(seconds=self.DAILY_LOGIN_STREAK_WINDOW_SECONDS)
+                    if now > window_end:
+                        streak = 0
+                        streak_day = 0
+
+                if claimed:
+                    return {"success": False, "error": "already_claimed"}
+                if available_at is not None and now < available_at:
+                    return {"success": False, "error": "not_claimable"}
+
+                reward_type = str(row["daily_login_reward_type"] or "coins")
+                reward_amount = int(row["daily_login_reward_amount"] or 0)
+                multiplier = int(row["daily_login_multiplier"] or 1)
+                position_token = self._daily_login_position_token(available_at)
+
+                claim_row = await conn.fetchrow(
+                    """
+                    INSERT INTO claimed_rewards (user_id, track_type, position)
+                    VALUES ($1, 'daily_login', $2)
+                    ON CONFLICT (user_id, track_type, position) DO NOTHING
+                    RETURNING id
+                    """,
+                    user_id, position_token,
+                )
+                if not claim_row:
+                    return {"success": False, "error": "already_claimed"}
+
+                if reward_type == "coins":
+                    await conn.execute(
+                        """
+                        UPDATE users
+                        SET coins = GREATEST(0, COALESCE(coins, 0) + $1), updated_at = NOW()
+                        WHERE user_id = $2
+                        """,
+                        reward_amount, user_id,
+                    )
+                elif reward_type == "gems":
+                    await conn.execute(
+                        """
+                        UPDATE users
+                        SET gems = GREATEST(0, COALESCE(gems, 0) + $1), updated_at = NOW()
+                        WHERE user_id = $2
+                        """,
+                        reward_amount, user_id,
+                    )
+                elif reward_type == "stars":
+                    await conn.execute(
+                        """
+                        UPDATE users
+                        SET stars = GREATEST(0, COALESCE(stars, 0) + $1), updated_at = NOW()
+                        WHERE user_id = $2
+                        """,
+                        reward_amount, user_id,
+                    )
+                elif reward_type == "keys":
+                    await conn.execute(
+                        """
+                        UPDATE users
+                        SET keys = COALESCE(keys, 0) + $1, updated_at = NOW()
+                        WHERE user_id = $2
+                        """,
+                        reward_amount, user_id,
+                    )
+
+                await conn.execute(
+                    """
+                    INSERT INTO economy_events (user_id, event_type, resource, amount, source, metadata)
+                    VALUES ($1, 'earn', $2, $3, 'daily_login', $4::jsonb)
+                    """,
+                    user_id, reward_type, reward_amount,
+                    json.dumps({
+                        "streak_day": streak_day,
+                        "multiplier": multiplier,
+                        "position_token": position_token,
+                        "available_at": available_at.isoformat() if available_at else None,
+                    }, ensure_ascii=False),
+                )
+
+                new_streak_day = streak_day + 1 if (streak != 0 or streak_day != 0) else 1
+                new_streak = streak + 1 if (streak != 0 or streak_day != 0) else 1
+                next_reward_type, next_base, next_final = self._choose_daily_login_reward(new_streak_day)
+                next_multiplier = 3 if new_streak_day % 3 == 0 else 1
+                next_available_at = now + timedelta(seconds=self.DAILY_LOGIN_INTERVAL_SECONDS)
+
+                await conn.execute(
+                    """
+                    UPDATE users
+                    SET daily_login_streak = $2, daily_login_streak_day = $3,
+                        daily_login_available_at = $4, daily_login_reward_type = $5,
+                        daily_login_reward_amount = $6, daily_login_multiplier = $7,
+                        daily_login_claimed = TRUE, daily_login_notified = FALSE,
+                        daily_login_last_claim_at = NOW(),
+                        daily_login_claimed_reward_type = $8,
+                        daily_login_claimed_reward_amount = $9,
+                        updated_at = NOW()
+                    WHERE user_id = $1
+                    """,
+                    user_id, new_streak, new_streak_day, next_available_at,
+                    next_reward_type, next_final, next_multiplier,
+                    reward_type, reward_amount,
+                )
+
+        if reward_type == "keys":
+            try:
+                await self.sync_user_key_cases(user_id)
+            except Exception:
+                pass
+
+        return {
+            "success": True,
+            "granted": {
+                "reward_type": reward_type,
+                "reward_amount": reward_amount,
+                "multiplier": multiplier,
+                "streak_day_before": streak_day,
+            },
+            "next": {
+                "streak": new_streak,
+                "streak_day": new_streak_day,
+                "reward_type": next_reward_type,
+                "reward_amount": next_final,
+                "multiplier": next_multiplier,
+                "available_at": next_available_at.isoformat(),
+                "time_left_seconds": self.DAILY_LOGIN_INTERVAL_SECONDS,
+            },
+        }
+
+    async def enqueue_due_daily_login_notifications(self, limit: int = 100) -> int:
+        if not self._pool:
+            return 0
+        now = datetime.now(timezone.utc)
+        rows = await self.fetch(
+            """
+            SELECT u.user_id, u.daily_login_available_at
+            FROM users u
+            JOIN user_settings us ON us.user_id = u.user_id
+            WHERE u.status = 'active'
+              AND u.daily_login_claimed = FALSE
+              AND u.daily_login_notified = FALSE
+              AND u.daily_login_available_at IS NOT NULL
+              AND u.daily_login_available_at <= $1
+              AND COALESCE(us.notif_daily_rewards, TRUE) = TRUE
+            LIMIT $2
+            """,
+            now, limit,
+        )
+        if not rows:
+            return 0
+        enqueued = 0
+        for row in rows:
+            uid = int(row["user_id"])
+            available_at = row["daily_login_available_at"]
+            try:
+                iso = available_at.isoformat() if available_at else now.isoformat()
+            except Exception:
+                iso = now.isoformat()
+            ok = await self.enqueue_notification(
+                uid,
+                category="daily_rewards",
+                event_type="daily_login_reward",
+                payload={
+                    "title": "📆 Забери награду за вход!",
+                    "text": "📆 Забери свою награду за вход - она уже доступна!",
+                    "section": "arena",
+                },
+                dedupe_key=f"daily_login_reward:{uid}:{iso}",
+            )
+            if ok:
+                enqueued += 1
+                await self.execute(
+                    """
+                    UPDATE users
+                    SET daily_login_notified = TRUE, updated_at = NOW()
+                    WHERE user_id = $1
+                    """,
+                    uid,
+                )
+        return enqueued
+
     async def connect(self) -> None:
         """Создать пул подключений к БД."""
         # Проверяем, что asyncpg доступен, иначе даем явную ошибку о зависимости.
@@ -2256,14 +2680,14 @@ class Database:
                 CREATE TABLE user_settings (
                     user_id BIGINT PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
                     notif_cases BOOLEAN NOT NULL DEFAULT true,
-                    notif_daily_rewards BOOLEAN NOT NULL DEFAULT true,
+                    notif_daily_rewards BOOLEAN NOT NULL DEFAULT false,
                     notif_game_invites BOOLEAN NOT NULL DEFAULT true,
                     notif_friend_requests BOOLEAN NOT NULL DEFAULT true,
                     notif_events BOOLEAN NOT NULL DEFAULT true,
                     notif_news BOOLEAN NOT NULL DEFAULT true,
                     notif_generator BOOLEAN NOT NULL DEFAULT true,
                     notif_shop BOOLEAN NOT NULL DEFAULT false,
-                    notif_reminders BOOLEAN NOT NULL DEFAULT true,
+                    notif_reminders BOOLEAN NOT NULL DEFAULT false,
                     notif_squad_member_role BOOLEAN NOT NULL DEFAULT true,
                     notif_squad_new_member BOOLEAN NOT NULL DEFAULT true,
                     notif_squad_disbanded BOOLEAN NOT NULL DEFAULT true,
@@ -2321,7 +2745,7 @@ class Database:
             )
             changed |= await self._add_column_if_missing(
                 "user_settings", columns,
-                "notif_reminders BOOLEAN NOT NULL DEFAULT true"
+                "notif_reminders BOOLEAN NOT NULL DEFAULT false"
             )
             changed |= await self._add_column_if_missing(
                 "user_settings", columns,
@@ -5600,19 +6024,38 @@ class Database:
             if not row:
                 periods[period] = self._rating_empty_period(period)
                 continue
+            row_status = row["status"] or "pending"
+            row_error = row["error"]
             payload = row["payload"] or {}
+            payload_corrupt = False
             if isinstance(payload, str):
                 try:
                     payload = json.loads(payload)
                 except Exception:
                     payload = {}
+                    payload_corrupt = True
             categories = payload.get("categories") if isinstance(payload, dict) else None
             if not isinstance(categories, list):
                 categories = []
+                if row_status == "ready" and not payload_corrupt and isinstance(payload, dict):
+                    payload_corrupt = True
+            if payload_corrupt and row_status == "ready":
+                logging.getLogger(__name__).warning(
+                    "rating snapshot payload is not a dict for scope=%s period=%s; marking snapshot_status=error",
+                    scope,
+                    period,
+                )
+                snapshot_status = "error"
+                snapshot_error = row_error or "snapshot_payload_corrupt"
+            else:
+                snapshot_status = row_status
+                snapshot_error = row_error
             if period == "preview":
                 categories = self._rating_mask_preview_categories(categories)
             periods[period] = {
-                "status": row["status"] or "pending",
+                "status": row_status,
+                "snapshot_status": snapshot_status,
+                "snapshot_error": snapshot_error,
                 "generated_at": _rating_dt(row["generated_at"]),
                 "next_refresh_at": _rating_dt(row["next_refresh_at"]),
                 "categories": categories,
