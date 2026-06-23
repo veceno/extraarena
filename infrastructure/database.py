@@ -5959,6 +5959,8 @@ class Database:
         now = _rating_utc_now()
         return {
             "status": status,
+            "snapshot_status": status,
+            "snapshot_error": None,
             "generated_at": None,
             "next_refresh_at": _rating_dt(_rating_next_refresh_at(period, now)),
             "categories": [
@@ -6361,7 +6363,7 @@ class Database:
         if category_key == "trophies":
             rows = await conn.fetch(
                 base_cte
-                + """
+                + f"""
                 SELECT hp.*, hp.best_trophies AS metric
                 FROM human_players hp
                 WHERE hp.best_trophies > 0
@@ -6374,12 +6376,7 @@ class Database:
                         WHERE (bs.p1_user_id = hp.user_id OR bs.p2_user_id = hp.user_id)
                           AND bs.created_at >= $2 AND bs.created_at < $3
                           AND bs.winner_user_id IN (bs.p1_user_id, bs.p2_user_id)
-                          AND COALESCE(u1.is_bot, FALSE) = FALSE
-                          AND COALESCE(u2.is_bot, FALSE) = FALSE
-                          AND COALESCE(u1.status, 'active') IN ('active', 'warn')
-                          AND COALESCE(u2.status, 'active') IN ('active', 'warn')
-                          AND COALESCE(bs.metadata->>'p1_is_bot', 'false') <> 'true'
-                          AND COALESCE(bs.metadata->>'p2_is_bot', 'false') <> 'true'
+                          {_bs_clause}
                     )
                     OR EXISTS (
                         SELECT 1
@@ -6392,10 +6389,7 @@ class Database:
                           AND br.p2_id IS NOT NULL
                           AND br.winner_id IN (br.p1_id, br.p2_id)
                           AND (br.match_id IS NULL OR NOT EXISTS (SELECT 1 FROM battle_summary bs WHERE bs.match_id = br.match_id))
-                          AND COALESCE(u1.is_bot, FALSE) = FALSE
-                          AND COALESCE(u2.is_bot, FALSE) = FALSE
-                          AND COALESCE(u1.status, 'active') IN ('active', 'warn')
-                          AND COALESCE(u2.status, 'active') IN ('active', 'warn')
+                          {_br_clause}
                     )
                   )
                 ORDER BY hp.best_trophies DESC, hp.display_name ASC, hp.user_id ASC
@@ -6408,7 +6402,7 @@ class Database:
         elif category_key == "score":
             rows = await conn.fetch(
                 base_cte
-                + """
+                + f"""
                 , human_battle_sides AS (
                     SELECT bs.p1_user_id AS user_id,
                            CASE WHEN bs.winner_user_id = bs.p1_user_id THEN 1 ELSE 0 END AS win
@@ -6417,12 +6411,7 @@ class Database:
                     JOIN users u2 ON u2.user_id = bs.p2_user_id
                     WHERE bs.winner_user_id IN (bs.p1_user_id, bs.p2_user_id)
                       AND bs.created_at >= $2 AND bs.created_at < $3
-                      AND COALESCE(u1.is_bot, FALSE) = FALSE
-                      AND COALESCE(u2.is_bot, FALSE) = FALSE
-                      AND COALESCE(u1.status, 'active') IN ('active', 'warn')
-                      AND COALESCE(u2.status, 'active') IN ('active', 'warn')
-                      AND COALESCE(bs.metadata->>'p1_is_bot', 'false') <> 'true'
-                      AND COALESCE(bs.metadata->>'p2_is_bot', 'false') <> 'true'
+                      {_bs_clause}
                     UNION ALL
                     SELECT bs.p2_user_id AS user_id,
                            CASE WHEN bs.winner_user_id = bs.p2_user_id THEN 1 ELSE 0 END AS win
@@ -6431,12 +6420,7 @@ class Database:
                     JOIN users u2 ON u2.user_id = bs.p2_user_id
                     WHERE bs.winner_user_id IN (bs.p1_user_id, bs.p2_user_id)
                       AND bs.created_at >= $2 AND bs.created_at < $3
-                      AND COALESCE(u1.is_bot, FALSE) = FALSE
-                      AND COALESCE(u2.is_bot, FALSE) = FALSE
-                      AND COALESCE(u1.status, 'active') IN ('active', 'warn')
-                      AND COALESCE(u2.status, 'active') IN ('active', 'warn')
-                      AND COALESCE(bs.metadata->>'p1_is_bot', 'false') <> 'true'
-                      AND COALESCE(bs.metadata->>'p2_is_bot', 'false') <> 'true'
+                      {_bs_clause}
                     UNION ALL
                     SELECT br.p1_id AS user_id,
                            CASE WHEN br.winner_id = br.p1_id THEN 1 ELSE 0 END AS win
@@ -6448,10 +6432,7 @@ class Database:
                       AND br.winner_id IN (br.p1_id, br.p2_id)
                       AND br.created_at >= $2 AND br.created_at < $3
                       AND (br.match_id IS NULL OR NOT EXISTS (SELECT 1 FROM battle_summary bs WHERE bs.match_id = br.match_id))
-                      AND COALESCE(u1.is_bot, FALSE) = FALSE
-                      AND COALESCE(u2.is_bot, FALSE) = FALSE
-                      AND COALESCE(u1.status, 'active') IN ('active', 'warn')
-                      AND COALESCE(u2.status, 'active') IN ('active', 'warn')
+                      {_br_clause}
                     UNION ALL
                     SELECT br.p2_id AS user_id,
                            CASE WHEN br.winner_id = br.p2_id THEN 1 ELSE 0 END AS win
@@ -6463,10 +6444,7 @@ class Database:
                       AND br.winner_id IN (br.p1_id, br.p2_id)
                       AND br.created_at >= $2 AND br.created_at < $3
                       AND (br.match_id IS NULL OR NOT EXISTS (SELECT 1 FROM battle_summary bs WHERE bs.match_id = br.match_id))
-                      AND COALESCE(u1.is_bot, FALSE) = FALSE
-                      AND COALESCE(u2.is_bot, FALSE) = FALSE
-                      AND COALESCE(u1.status, 'active') IN ('active', 'warn')
-                      AND COALESCE(u2.status, 'active') IN ('active', 'warn')
+                      {_br_clause}
                 ),
                 battle_score AS (
                     SELECT user_id,
