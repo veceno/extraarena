@@ -27,6 +27,7 @@ RUNTIME_FEATURE_KEYS = {
     "classic",
     "extra_arena",
     "rating",
+    "rating_human_vs_human",
 }
 MATCH_MODE_CATALOG: tuple[dict[str, Any], ...] = (
     {"mode_id": "classic", "label": "Classic", "available": True},
@@ -88,7 +89,7 @@ EXTRAPASS_SEASON_PATCH_KEYS = {
     "stage_cost_cap",
     "theme",
 }
-EXTRAPASS_REWARD_TYPES = {"coins", "gems", "keys", "card", "specific_card", "case"}
+EXTRAPASS_REWARD_TYPES = {"coins", "gems", "keys", "card", "specific_card", "case", "particles", "cosmetic"}
 EXTRAPASS_STAGE_COST_ROW_FIELDS = {
     "stage_cost",
     "required_stars",
@@ -520,18 +521,37 @@ def _normalize_extrapass_reward_import_payload(payload: Any, season: dict[str, A
                 raise MCPToolInputError("invalid_reward_meta") from exc
         if not isinstance(reward_meta, dict):
             raise MCPToolInputError("invalid_reward_meta")
-        _validate_extrapass_reward_config(reward_type, reward_amount, reward_meta)
+        reward_meta = _reward_meta_with_inline_fields(raw, reward_meta)
+        reward_config = _normalize_extrapass_reward_config(reward_type, reward_amount, reward_meta)
+        _validate_extrapass_reward_config(
+            reward_config["reward_type"],
+            reward_config["reward_amount"],
+            reward_config["reward_meta"],
+        )
         rows.append({
             "track_type": str(track_def["track_type"]),
             "position": position,
-            "reward_type": reward_type,
-            "reward_amount": reward_amount,
-            "reward_meta": reward_meta,
+            "reward_type": reward_config["reward_type"],
+            "reward_amount": reward_config["reward_amount"],
+            "reward_meta": reward_config["reward_meta"],
             "extra_pass_required": track_def["access"] != "free",
         })
     if not rows:
         raise MCPToolInputError("empty_reward_tracks")
     return rows
+
+
+def _reward_meta_with_inline_fields(raw: dict[str, Any], reward_meta: dict[str, Any]) -> dict[str, Any]:
+    meta = dict(reward_meta or {})
+    if "card_id" not in meta and "id" not in meta and raw.get("card_id") is not None:
+        meta["card_id"] = raw.get("card_id")
+    if "cosmetic_slug" not in meta and "slug" not in meta and raw.get("cosmetic_slug") is not None:
+        meta["cosmetic_slug"] = raw.get("cosmetic_slug")
+    if "auto_equip" not in meta and raw.get("auto_equip") is not None:
+        meta["auto_equip"] = bool(raw.get("auto_equip"))
+    if "case_tier" not in meta and "tier" not in meta and raw.get("case_tier") is not None:
+        meta["case_tier"] = raw.get("case_tier")
+    return meta
 
 
 def _specific_card_id_from_reward_meta(reward_meta: dict[str, Any]) -> int | None:
@@ -542,7 +562,37 @@ def _specific_card_id_from_reward_meta(reward_meta: dict[str, Any]) -> int | Non
     return card_id if card_id > 0 else None
 
 
+def _case_tier_from_reward_meta(reward_meta: dict[str, Any]) -> int | None:
+    try:
+        tier = int(reward_meta.get("case_tier") or reward_meta.get("tier") or 0)
+    except (TypeError, ValueError):
+        return None
+    return max(1, min(5, tier)) if tier > 0 else None
+
+
+def _cosmetic_slug_from_reward_meta(reward_meta: dict[str, Any]) -> str | None:
+    slug = str(reward_meta.get("cosmetic_slug") or reward_meta.get("slug") or "").strip()
+    return slug or None
+
+
+def _normalize_extrapass_reward_config(reward_type: str, reward_amount: int, reward_meta: dict[str, Any]) -> dict[str, Any]:
+    reward_type = str(reward_type or "").strip()
+    reward_meta = dict(reward_meta or {})
+    if reward_type == "guaranteed_card":
+        reward_type = "specific_card" if _specific_card_id_from_reward_meta(reward_meta) is not None else "card"
+        reward_amount = 1
+    if reward_type == "case":
+        reward_amount = _case_tier_from_reward_meta(reward_meta) or int(reward_amount or 0)
+    if reward_type == "cosmetic":
+        reward_amount = 1
+    return {"reward_type": reward_type, "reward_amount": int(reward_amount or 0), "reward_meta": reward_meta}
+
+
 def _validate_extrapass_reward_config(reward_type: str, reward_amount: int, reward_meta: dict[str, Any]) -> None:
+    normalized = _normalize_extrapass_reward_config(reward_type, reward_amount, reward_meta)
+    reward_type = normalized["reward_type"]
+    reward_amount = normalized["reward_amount"]
+    reward_meta = normalized["reward_meta"]
     if reward_type not in EXTRAPASS_REWARD_TYPES:
         raise MCPToolInputError("unsupported_reward_type")
     if reward_type in {"coins", "gems", "keys"} and reward_amount <= 0:
@@ -553,6 +603,16 @@ def _validate_extrapass_reward_config(reward_type: str, reward_amount: int, rewa
         raise MCPToolInputError("invalid_card_reward_amount")
     if reward_type == "specific_card" and _specific_card_id_from_reward_meta(reward_meta) is None:
         raise MCPToolInputError("specific_card_id_required")
+    if reward_type == "particles":
+        if reward_amount <= 0:
+            raise MCPToolInputError("invalid_reward_amount")
+        if _specific_card_id_from_reward_meta(reward_meta) is None:
+            raise MCPToolInputError("reward_card_id_required")
+    if reward_type == "cosmetic":
+        if reward_amount < 0:
+            raise MCPToolInputError("invalid_reward_amount")
+        if _cosmetic_slug_from_reward_meta(reward_meta) is None:
+            raise MCPToolInputError("cosmetic_slug_required")
 
 
 async def _validate_extrapass_reward_config_with_db(db: Any, row: dict[str, Any]) -> None:
@@ -562,9 +622,30 @@ async def _validate_extrapass_reward_config_with_db(db: Any, row: dict[str, Any]
         int(row.get("reward_amount") or 0),
         reward_meta,
     )
-    if str(row.get("reward_type") or "") != "specific_card":
+    normalized = _normalize_extrapass_reward_config(
+        str(row.get("reward_type") or ""),
+        int(row.get("reward_amount") or 0),
+        reward_meta,
+    )
+    if normalized["reward_type"] == "particles":
+        card_id = _specific_card_id_from_reward_meta(normalized["reward_meta"])
+        if card_id is None:
+            raise MCPToolInputError("reward_card_id_required")
+        card = await _call_db(db, "get_card_info", card_id, default=None)
+        if not card:
+            raise MCPToolInputError("reward_card_not_found")
         return
-    card_id = _specific_card_id_from_reward_meta(reward_meta)
+    if normalized["reward_type"] == "cosmetic":
+        slug = _cosmetic_slug_from_reward_meta(normalized["reward_meta"])
+        if not slug:
+            raise MCPToolInputError("cosmetic_slug_required")
+        item = await _call_db(db, "get_cosmetic_item", slug, default=None)
+        if not item:
+            raise MCPToolInputError("reward_cosmetic_not_found")
+        return
+    if normalized["reward_type"] != "specific_card":
+        return
+    card_id = _specific_card_id_from_reward_meta(normalized["reward_meta"])
     if card_id is None:
         raise MCPToolInputError("specific_card_id_required")
     card = await _call_db(db, "get_card_info", card_id, default=None)
@@ -919,13 +1000,18 @@ def _normalize_reward_track_row(args: dict[str, Any]) -> dict[str, Any]:
         reward_meta = {}
     if not isinstance(reward_meta, dict):
         raise MCPToolInputError("invalid_reward_meta")
-    _validate_extrapass_reward_config(reward_type, reward_amount, reward_meta)
+    reward_config = _normalize_extrapass_reward_config(reward_type, reward_amount, reward_meta)
+    _validate_extrapass_reward_config(
+        reward_config["reward_type"],
+        reward_config["reward_amount"],
+        reward_config["reward_meta"],
+    )
     return {
         "track_type": track_type,
         "position": position,
-        "reward_type": reward_type,
-        "reward_amount": reward_amount,
-        "reward_meta": reward_meta,
+        "reward_type": reward_config["reward_type"],
+        "reward_amount": reward_config["reward_amount"],
+        "reward_meta": reward_config["reward_meta"],
         "extra_pass_required": bool(args.get("extra_pass_required", False)),
     }
 
@@ -1988,6 +2074,20 @@ async def adapter_patch_reward_track(app: Any, admin_user_id: int, args: dict[st
     patch = _normalize_reward_track_patch(args.get("patch"))
     merged = {**dict(current), **patch}
     await _validate_extrapass_reward_config_with_db(app["db"], merged)
+    if all(key in merged and merged.get(key) not in (None, "") for key in ("reward_type", "reward_amount")):
+        reward_meta = merged.get("reward_meta") if isinstance(merged.get("reward_meta"), dict) else {}
+        reward_config = _normalize_extrapass_reward_config(
+            str(merged.get("reward_type") or ""),
+            int(merged.get("reward_amount") or 0),
+            reward_meta,
+        )
+        patch["reward_type"] = reward_config["reward_type"]
+        patch["reward_amount"] = reward_config["reward_amount"]
+        # Only propagate the normalized reward_meta when the caller actually supplied one
+        # (either via patch or pre-existing on the row). Avoids silently overwriting an
+        # existing meta when the patch was meant to change only type/amount.
+        if "reward_meta" in patch or "reward_meta" in current:
+            patch["reward_meta"] = reward_config["reward_meta"]
     if _bool_arg(args, "dry_run", False):
         return {"dry_run": True, "id": reward_id, "current": json_safe(current), "patch": json_safe(patch)}
     result = await _call_db(app["db"], "update_reward_track", reward_id, default={"error": "reward_track_update_unavailable"}, **patch)

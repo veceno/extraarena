@@ -28,10 +28,16 @@ esac
 LOG_FILE="$DIR/extraarena.log"
 PID_FILE="$DIR/extraarena.pid"
 CLOUDPUB_PID_FILE="$DIR/cloudpub.pid"
+CLOUDFLARED_PID_FILE="$DIR/cloudflared.pid"
 PORT="${WEBAPP_PORT:-${WEB_PORT:-8081}}"
 CLOUDPUB_BIN="${CLOUDPUB_BIN:-/Applications/cloudpub.app/Contents/MacOS/cloudpub}"
 CLOUDPUB_SERVICE_GUID="${CLOUDPUB_SERVICE_GUID:-}"
 CLOUDPUB_PUBLIC_URL="${CLOUDPUB_PUBLIC_URL:-${WEBAPP_URL:-}}"
+CLOUDFLARED_BIN="${CLOUDFLARED_BIN:-cloudflared}"
+CLOUDFLARED_CONFIG="${CLOUDFLARED_CONFIG:-}"
+CLOUDFLARED_TUNNEL="${CLOUDFLARED_TUNNEL:-}"
+CLOUDFLARED_TOKEN="${CLOUDFLARED_TOKEN:-}"
+CLOUDFLARED_PUBLIC_URL="${CLOUDFLARED_PUBLIC_URL:-}"
 export MATCH_STATE_BACKEND="${MATCH_STATE_BACKEND:-memory}"
 export WEB_CONCURRENCY="${WEB_CONCURRENCY:-1}"
 
@@ -76,6 +82,22 @@ if payload.get("status") == "ok" and payload.get("service") == "extraarena-webap
     sys.exit(0)
 sys.exit(1)
 PY
+}
+
+resolve_executable() {
+    local bin="$1"
+    if [ -z "$bin" ]; then
+        return 1
+    fi
+    if command -v "$bin" >/dev/null 2>&1; then
+        command -v "$bin"
+        return 0
+    fi
+    if [ -x "$bin" ]; then
+        printf '%s\n' "$bin"
+        return 0
+    fi
+    return 1
 }
 
 database_tcp_ready() {
@@ -241,6 +263,14 @@ if [ -f "$CLOUDPUB_PID_FILE" ]; then
     rm -f "$CLOUDPUB_PID_FILE"
 fi
 
+if [ -f "$CLOUDFLARED_PID_FILE" ]; then
+    OLD_CLOUDFLARED_PID=$(cat "$CLOUDFLARED_PID_FILE" 2>/dev/null || true)
+    if [ -n "$OLD_CLOUDFLARED_PID" ]; then
+        stop_pid "$OLD_CLOUDFLARED_PID" "старый cloudflared из $CLOUDFLARED_PID_FILE"
+    fi
+    rm -f "$CLOUDFLARED_PID_FILE"
+fi
+
 # Убить orphan-процессы этого проекта, которые реально держат веб-порт.
 PORT_PIDS=$(lsof -tiTCP:"$PORT" -sTCP:LISTEN 2>/dev/null || true)
 for PORT_PID in $PORT_PIDS; do
@@ -365,6 +395,50 @@ if [ "$READY" -ne 1 ]; then
     tail -n 80 "$LOG_FILE" 2>/dev/null || true
     stop_pid "$PID" "неуспешно стартовавший веб-сервер"
     exit 1
+fi
+
+if [ -n "$CLOUDFLARED_TOKEN$CLOUDFLARED_CONFIG$CLOUDFLARED_TUNNEL" ]; then
+    if CLOUDFLARED_RESOLVED_BIN=$(resolve_executable "$CLOUDFLARED_BIN"); then
+        echo "⏳ Запускаю cloudflared-туннель..."
+        CLOUDFLARED_CMD=("$CLOUDFLARED_RESOLVED_BIN" "tunnel")
+        if [ -n "$CLOUDFLARED_TOKEN" ]; then
+            export TUNNEL_TOKEN="$CLOUDFLARED_TOKEN"
+            CLOUDFLARED_CMD+=("run")
+        else
+            if [ -n "$CLOUDFLARED_CONFIG" ]; then
+                CLOUDFLARED_CMD+=("--config" "$CLOUDFLARED_CONFIG")
+            fi
+            CLOUDFLARED_CMD+=("run")
+            if [ -n "$CLOUDFLARED_TUNNEL" ]; then
+                CLOUDFLARED_CMD+=("$CLOUDFLARED_TUNNEL")
+            fi
+        fi
+        nohup "${CLOUDFLARED_CMD[@]}" >> "$LOG_FILE" 2>&1 &
+        CLOUDFLARED_PID=$!
+        disown "$CLOUDFLARED_PID" 2>/dev/null || true
+        echo "$CLOUDFLARED_PID" > "$CLOUDFLARED_PID_FILE"
+        echo "📋 cloudflared PID: $CLOUDFLARED_PID"
+        if [ -n "$CLOUDFLARED_PUBLIC_URL" ]; then
+            CLOUDFLARED_READY=0
+            for _ in $(seq 1 15); do
+                if health_ready "$CLOUDFLARED_PUBLIC_URL/ready"; then
+                    echo "✅ cloudflared готов ($CLOUDFLARED_PUBLIC_URL)"
+                    CLOUDFLARED_READY=1
+                    break
+                fi
+                sleep 2
+            done
+            if [ "$CLOUDFLARED_READY" -ne 1 ]; then
+                echo "⚠️  cloudflared не ответил на $CLOUDFLARED_PUBLIC_URL/ready"
+            fi
+        fi
+        if ! kill -0 "$CLOUDFLARED_PID" 2>/dev/null; then
+            echo "⚠️  cloudflared-процесс завершился сразу после запуска; проверьте настройки tunnel."
+            rm -f "$CLOUDFLARED_PID_FILE"
+        fi
+    else
+        echo "⚠️  cloudflared CLI не найден: $CLOUDFLARED_BIN"
+    fi
 fi
 
 if [ -n "$CLOUDPUB_SERVICE_GUID" ] && [ -x "$CLOUDPUB_BIN" ]; then

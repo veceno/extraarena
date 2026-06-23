@@ -16582,6 +16582,21 @@ def create_web_app(
             logging.getLogger(__name__).error("community_ideas_admin_status error: %s", e, exc_info=True)
             return web.json_response({"error": "internal_server_error"}, status=500)
 
+    async def community_ideas_admin_delete_handler(request: web.Request) -> web.Response:
+        user_id = await require_user_id(request)
+        if not await _is_admin_user(db, user_id):
+            return web.json_response({"error": "admin_access_required"}, status=403)
+        try:
+            data = await request.json()
+            post_id = int(data.get("post_id"))
+            result = await db.delete_idea(post_id)
+            if not result.get("success"):
+                return web.json_response(result, status=400)
+            return web.json_response(result)
+        except Exception as e:
+            logging.getLogger(__name__).error("community_ideas_admin_delete error: %s", e, exc_info=True)
+            return web.json_response({"error": "internal_server_error"}, status=500)
+
     async def community_bugs_list_handler(request: web.Request) -> web.Response:
         user_id = await require_user_id(request)
         if not await _is_admin_user(db, user_id):
@@ -16603,6 +16618,7 @@ def create_web_app(
     app.router.add_post("/api/community/ideas/vote", community_ideas_vote_handler)
     app.router.add_post("/api/community/ideas/admin/approve", community_ideas_admin_approve_handler)
     app.router.add_post("/api/community/ideas/admin/status", community_ideas_admin_status_handler)
+    app.router.add_post("/api/community/ideas/admin/delete", community_ideas_admin_delete_handler)
     app.router.add_get("/api/community/bugs", community_bugs_list_handler)
 
     # ── Announcements ─────────────────────────────────────────────────────────

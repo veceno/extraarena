@@ -42,9 +42,15 @@ def test_rating_queries_exclude_bots_and_banned_without_auth_source_filter():
     end = source.index("    # ── Community CRUD", start)
     rating_block = source[start:end]
 
-    assert "COALESCE(u.is_bot, FALSE) = FALSE" in rating_block
+    # Base CTE always excludes bots/banned from rating candidates (regardless
+    # of the rating_human_vs_human flag, which only gates per-battle filters).
+    assert "WHERE COALESCE(u.is_bot, FALSE) = FALSE" in rating_block
     assert "COALESCE(u.status, 'active') IN ('active', 'warn')" in rating_block
     assert "auth_source" not in rating_block
+    # The per-battle human-vs-human filter is gated behind the runtime flag.
+    assert "human_vs_human: bool" in rating_block
+    assert "_bs_clause" in rating_block
+    assert "_br_clause" in rating_block
 
 
 def test_rating_categories_use_expected_metrics_and_sources():
@@ -64,6 +70,11 @@ def test_rating_categories_use_expected_metrics_and_sources():
 
 def test_rating_payload_passes_period_window_to_category_queries():
     db = Database(DatabaseSettings("localhost", 5432, "user", "pass", "db"))
+
+    async def _feat(_feature_key: str) -> bool:
+        return True
+
+    db.is_feature_enabled = _feat
     conn = _RecordingRatingConn()
     generated_at = datetime(2026, 6, 15, 12, 30, tzinfo=timezone.utc)
 
@@ -79,7 +90,7 @@ def test_rating_payload_passes_period_window_to_category_queries():
 def test_rating_queries_apply_time_windows_to_period_sensitive_sources():
     source = Path("infrastructure/database.py").read_text(encoding="utf-8")
     start = source.index("async def _rating_fetch_entries")
-    end = source.index("        else:", start)
+    end = source.index("    # ── Community CRUD", start)
     rating_block = source[start:end]
 
     assert "bs.created_at >= $" in rating_block
@@ -178,3 +189,203 @@ def test_community_handlers_do_not_return_raw_exception_messages():
 
     assert "str(e)" not in community_block
     assert "str(exc)" not in community_block
+
+
+def _make_rating_db():
+    db = Database(DatabaseSettings("localhost", 5432, "user", "pass", "db"))
+
+    async def _noop(*args, **kwargs):
+        return None
+
+    db._ensure_rating_snapshot_cache_table = _noop
+    db.refresh_due_rating_snapshots = _noop
+    return db
+
+
+def test_community_rating_surfaces_snapshot_status_error_row():
+    import asyncio
+
+    db = _make_rating_db()
+    rows = [
+        {
+            "period": "daily",
+            "status": "error",
+            "payload": None,
+            "generated_at": datetime(2026, 6, 23, tzinfo=timezone.utc),
+            "next_refresh_at": datetime(2026, 6, 23, 1, tzinfo=timezone.utc),
+            "source_count": 0,
+            "error": "refresh_failed",
+        },
+        {
+            "period": "preview",
+            "status": "ready",
+            "payload": '{"categories": []}',
+            "generated_at": datetime(2026, 6, 23, tzinfo=timezone.utc),
+            "next_refresh_at": datetime(2026, 6, 23, 1, tzinfo=timezone.utc),
+            "source_count": 0,
+            "error": None,
+        },
+    ]
+
+    async def fake_fetch(query, *args):
+        return rows
+
+    db.fetch = fake_fetch
+
+    result = asyncio.run(db.get_community_rating(scope="players"))
+    assert result["periods"]["daily"]["snapshot_status"] == "error"
+    assert result["periods"]["daily"]["snapshot_error"] == "refresh_failed"
+    assert result["periods"]["preview"]["snapshot_status"] == "ready"
+
+
+def test_community_rating_surfaces_snapshot_status_ready_with_empty_categories():
+    import asyncio
+
+    db = _make_rating_db()
+    rows = [
+        {
+            "period": "daily",
+            "status": "ready",
+            "payload": {"categories": []},
+            "generated_at": datetime(2026, 6, 23, tzinfo=timezone.utc),
+            "next_refresh_at": datetime(2026, 6, 23, 1, tzinfo=timezone.utc),
+            "source_count": 0,
+            "error": None,
+        },
+        {
+            "period": "preview",
+            "status": "ready",
+            "payload": {"categories": []},
+            "generated_at": datetime(2026, 6, 23, tzinfo=timezone.utc),
+            "next_refresh_at": datetime(2026, 6, 23, 1, tzinfo=timezone.utc),
+            "source_count": 0,
+            "error": None,
+        },
+    ]
+
+    async def fake_fetch(query, *args):
+        return rows
+
+    db.fetch = fake_fetch
+
+    result = asyncio.run(db.get_community_rating(scope="players"))
+    assert result["periods"]["daily"]["snapshot_status"] == "ready"
+    assert result["periods"]["preview"]["snapshot_status"] == "ready"
+
+
+def test_community_rating_marks_corrupt_ready_payload_as_error_and_warns(caplog):
+    import asyncio
+    import logging
+
+    db = _make_rating_db()
+    rows = [
+        {
+            "period": "daily",
+            "status": "ready",
+            "payload": "not-json{corrupt",
+            "generated_at": datetime(2026, 6, 23, tzinfo=timezone.utc),
+            "next_refresh_at": datetime(2026, 6, 23, 1, tzinfo=timezone.utc),
+            "source_count": 0,
+            "error": None,
+        },
+        {
+            "period": "preview",
+            "status": "ready",
+            "payload": {"categories": []},
+            "generated_at": datetime(2026, 6, 23, tzinfo=timezone.utc),
+            "next_refresh_at": datetime(2026, 6, 23, 1, tzinfo=timezone.utc),
+            "source_count": 0,
+            "error": None,
+        },
+    ]
+
+    async def fake_fetch(query, *args):
+        return rows
+
+    db.fetch = fake_fetch
+
+    with caplog.at_level(logging.WARNING, logger="infrastructure.database"):
+        result = asyncio.run(db.get_community_rating(scope="players"))
+
+    assert result["periods"]["daily"]["snapshot_status"] == "error"
+    assert any("payload is not a dict" in record.getMessage() for record in caplog.records)
+    assert result["periods"]["preview"]["snapshot_status"] == "ready"
+
+
+def test_rating_unavailable_response_includes_snapshot_status():
+    db = Database(DatabaseSettings("localhost", 5432, "user", "pass", "db"))
+    response = db._rating_unavailable_response(scope="players")
+    assert response["periods"]["daily"]["snapshot_status"] == "error"
+    assert response["periods"]["preview"]["snapshot_status"] == "error"
+    assert response["periods"]["daily"]["status"] == "error"
+
+
+def _rating_db_with_flag(flag: bool):
+    db = Database(DatabaseSettings("localhost", 5432, "user", "pass", "db"))
+
+    async def _feat(feature_key: str) -> bool:
+        return flag
+
+    db.is_feature_enabled = _feat
+    return db
+
+
+def test_rating_fetch_entries_includes_per_battle_bot_filter_when_human_vs_human_true():
+    import asyncio
+
+    db = _rating_db_with_flag(True)
+    conn = _RecordingRatingConn()
+    generated_at = datetime(2026, 6, 15, 12, 30, tzinfo=timezone.utc)
+
+    asyncio.run(db._build_player_rating_payload(period="daily", generated_at=generated_at, conn=conn))
+
+    assert len(conn.calls) == 4
+    trophies_query = conn.calls[0][0]
+    score_query = conn.calls[1][0]
+    # Per-battle is_bot/metadata filters present (human-vs-human enforced).
+    assert "COALESCE(u1.is_bot, FALSE) = FALSE" in trophies_query
+    assert "COALESCE(bs.metadata->>'p1_is_bot', 'false') <> 'true'" in trophies_query
+    assert "COALESCE(u1.is_bot, FALSE) = FALSE" in score_query
+    assert "COALESCE(bs.metadata->>'p1_is_bot', 'false') <> 'true'" in score_query
+    # Base CTE human_players is_bot filter still present unconditionally.
+    assert "WHERE COALESCE(u.is_bot, FALSE) = FALSE" in trophies_query
+    assert "WHERE COALESCE(u.is_bot, FALSE) = FALSE" in score_query
+
+
+def test_rating_fetch_entries_omits_per_battle_bot_filter_when_human_vs_human_false():
+    import asyncio
+
+    db = _rating_db_with_flag(False)
+    conn = _RecordingRatingConn()
+    generated_at = datetime(2026, 6, 15, 12, 30, tzinfo=timezone.utc)
+
+    asyncio.run(db._build_player_rating_payload(period="daily", generated_at=generated_at, conn=conn))
+
+    assert len(conn.calls) == 4
+    trophies_query = conn.calls[0][0]
+    score_query = conn.calls[1][0]
+    # Per-battle is_bot/metadata filters removed (bot-vs-human battles count).
+    assert "COALESCE(u1.is_bot, FALSE) = FALSE" not in trophies_query
+    assert "COALESCE(u2.is_bot, FALSE) = FALSE" not in trophies_query
+    assert "metadata->>'p1_is_bot'" not in trophies_query
+    assert "COALESCE(u1.is_bot, FALSE) = FALSE" not in score_query
+    assert "COALESCE(u2.is_bot, FALSE) = FALSE" not in score_query
+    assert "metadata->>'p1_is_bot'" not in score_query
+    # Base CTE human_players is_bot filter still present (bots never top candidates).
+    assert "WHERE COALESCE(u.is_bot, FALSE) = FALSE" in trophies_query
+    assert "WHERE COALESCE(u.is_bot, FALSE) = FALSE" in score_query
+
+
+def test_runtime_config_includes_rating_human_vs_human_default_false():
+    import asyncio
+
+    db = _make_rating_db()
+
+    async def fake_fetch(query, *args):
+        return []
+
+    db.fetch = fake_fetch
+
+    config = asyncio.run(db.get_runtime_config())
+    assert "rating_human_vs_human" in config["feature_availability"]
+    assert config["feature_availability"]["rating_human_vs_human"] is False

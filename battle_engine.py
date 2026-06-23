@@ -96,9 +96,9 @@ class BattleEngine:
         self.player_ids = player_ids or []
         self.is_bot_match = is_bot_match
         self.bot_id: Optional[int] = None
-        self.bot_difficulty: str = "medium"  # Inference profile key.
-        self.bot_difficulty_label: str = "medium"
-        self.bot_strength_tier: str = "medium"
+        self.bot_difficulty: str = "lite"  # Inference profile key.
+        self.bot_difficulty_label: str = "lite"
+        self.bot_strength_tier: str = "lite"
         self.bot_brain_profile: Optional[str] = None
         self._active_matches = active_matches if active_matches is not None else ACTIVE_MATCHES
         self._event_emitter = event_emitter
@@ -213,13 +213,13 @@ class BattleEngine:
             
             if p1_data.get("is_bot"):
                 self.bot_id = p1_data["user_id"]
-                self.bot_difficulty = p1_data.get("difficulty", "medium")
+                self.bot_difficulty = p1_data.get("difficulty", "lite")
                 self.bot_difficulty_label = p1_data.get("difficulty_label", self.bot_difficulty)
                 self.bot_strength_tier = p1_data.get("strength_tier", self.bot_difficulty)
                 self.bot_brain_profile = p1_data.get("brain_profile")
             elif p2_data.get("is_bot"):
                 self.bot_id = p2_data["user_id"]
-                self.bot_difficulty = p2_data.get("difficulty", "medium")
+                self.bot_difficulty = p2_data.get("difficulty", "lite")
                 self.bot_difficulty_label = p2_data.get("difficulty_label", self.bot_difficulty)
                 self.bot_strength_tier = p2_data.get("strength_tier", self.bot_difficulty)
                 self.bot_brain_profile = p2_data.get("brain_profile")

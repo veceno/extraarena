@@ -237,7 +237,7 @@ def test_extra_pass_admin_reward_type_selectors_include_case_rewards():
 
     for select_id in ("sr-reward-type", "rt-reward-type"):
         select_markup = html.split(f'<select id="{select_id}">', 1)[1].split("</select>", 1)[0]
-        for reward_type in ("coins", "gems", "keys", "case", "card", "specific_card"):
+        for reward_type in ("coins", "gems", "keys", "case", "card", "specific_card", "particles", "cosmetic", "guaranteed_card"):
             assert f'<option value="{reward_type}"' in select_markup
 
 

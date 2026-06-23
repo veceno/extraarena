@@ -136,12 +136,41 @@ def test_extra_pass_json_import_splits_random_and_specific_card_rewards():
     assert rows[1]["reward_meta"] == {"card_id": 46}
 
 
+def test_extra_pass_json_import_accepts_special_reward_types_and_aliases():
+    season = server._normalize_extra_pass_season({
+        "free_track_type": "season_7_free",
+        "pass_track_type": "season_7_pass",
+        "ultra_track_type": "season_7_ultra",
+        "max_stars": 45,
+    })
+
+    rows = server._normalize_reward_track_import_payload(
+        {
+            "free": [{"position": 1, "reward_type": "particles", "reward_amount": 25, "card_id": 46}],
+            "premium": [{"position": 2, "reward_type": "cosmetic", "cosmetic_slug": "avatar_gold", "auto_equip": True}],
+            "ultra": [{"position": 41, "reward_type": "guaranteed_card", "reward_amount": 99, "meta": {"card_id": 46}}],
+        },
+        season,
+    )
+
+    assert rows[0]["reward_type"] == "particles"
+    assert rows[0]["reward_meta"] == {"card_id": 46}
+    assert rows[1]["reward_type"] == "cosmetic"
+    assert rows[1]["reward_amount"] == 1
+    assert rows[1]["reward_meta"] == {"cosmetic_slug": "avatar_gold", "auto_equip": True}
+    assert rows[2]["reward_type"] == "specific_card"
+    assert rows[2]["reward_amount"] == 1
+    assert rows[2]["reward_meta"] == {"card_id": 46}
+
+
 @pytest.mark.parametrize(
     "row,error",
     [
         ({"position": 1, "reward_type": "coins", "reward_amount": 0}, "invalid_reward_amount"),
         ({"position": 1, "reward_type": "card", "reward_amount": 2, "meta": {"rarity": ["epic"]}}, "invalid_card_reward_amount"),
         ({"position": 1, "reward_type": "specific_card", "reward_amount": 1}, "specific_card_id_required"),
+        ({"position": 1, "reward_type": "particles", "reward_amount": 1}, "reward_card_id_required"),
+        ({"position": 1, "reward_type": "cosmetic", "reward_amount": 1}, "cosmetic_slug_required"),
     ],
 )
 def test_extra_pass_json_import_rejects_invalid_reward_configs(row, error):
@@ -156,28 +185,57 @@ def test_extra_pass_json_import_rejects_invalid_reward_configs(row, error):
         server._normalize_reward_track_import_payload({"free": [row]}, season)
 
 
-class _CardValidationDB:
-    def __init__(self, card):
+class _RewardValidationDB:
+    def __init__(self, card=None, cosmetic=None):
         self.card = card
+        self.cosmetic = cosmetic
 
     async def get_card_info(self, card_id):
         return self.card if int(card_id) == 46 else None
+
+    async def get_cosmetic_item(self, identity):
+        return self.cosmetic if str(identity) == "avatar_gold" else None
 
 
 @pytest.mark.asyncio
 async def test_admin_reward_validation_requires_existing_warrior_specific_card():
     assert await server._admin_validate_reward_track_config(
-        _CardValidationDB({"id": 46, "card_type": "warrior"}),
+        _RewardValidationDB({"id": 46, "card_type": "warrior"}),
         {"reward_type": "specific_card", "reward_amount": 1, "reward_meta": {"card_id": 46}},
     ) is None
     assert await server._admin_validate_reward_track_config(
-        _CardValidationDB(None),
+        _RewardValidationDB(None),
         {"reward_type": "specific_card", "reward_amount": 1, "reward_meta": {"card_id": 46}},
     ) == "specific_card_not_found"
     assert await server._admin_validate_reward_track_config(
-        _CardValidationDB({"id": 46, "card_type": "hero"}),
+        _RewardValidationDB({"id": 46, "card_type": "hero"}),
         {"reward_type": "specific_card", "reward_amount": 1, "reward_meta": {"card_id": 46}},
     ) == "specific_card_must_be_warrior"
+
+
+@pytest.mark.asyncio
+async def test_admin_reward_validation_accepts_particles_and_cosmetics_from_catalog():
+    db = _RewardValidationDB(
+        card={"id": 46, "card_type": "hero"},
+        cosmetic={"id": 7, "slug": "avatar_gold", "is_active": True},
+    )
+
+    assert await server._admin_validate_reward_track_config(
+        db,
+        {"reward_type": "particles", "reward_amount": 25, "reward_meta": {"card_id": 46}},
+    ) is None
+    assert await server._admin_validate_reward_track_config(
+        db,
+        {"reward_type": "cosmetic", "reward_amount": 1, "reward_meta": {"cosmetic_slug": "avatar_gold"}},
+    ) is None
+    assert await server._admin_validate_reward_track_config(
+        _RewardValidationDB(None),
+        {"reward_type": "particles", "reward_amount": 25, "reward_meta": {"card_id": 46}},
+    ) == "reward_card_not_found"
+    assert await server._admin_validate_reward_track_config(
+        _RewardValidationDB(cosmetic=None),
+        {"reward_type": "cosmetic", "reward_amount": 1, "reward_meta": {"cosmetic_slug": "avatar_gold"}},
+    ) == "reward_cosmetic_not_found"
 
 
 def test_extra_pass_json_import_rejects_row_level_stage_costs():

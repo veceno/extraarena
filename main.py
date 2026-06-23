@@ -6,7 +6,7 @@ from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from aiogram import Bot
-from aiogram.exceptions import TelegramNetworkError
+from aiogram.exceptions import TelegramConflictError, TelegramNetworkError, TelegramServerError
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiohttp import web
 
@@ -160,7 +160,7 @@ async def main() -> None:
             logger.info(f"YooKassa shop_id: {settings.yookassa.shop_id}, test_mode: {settings.yookassa.test_mode}")
         except ImportError:
             logger.warning("Модуль YooKassa-платежей недоступен. Платежи будут недоступны.")
-            logger.warning("Проверьте зависимости HTTP-клиента: requests и curl для обхода VPN при необходимости.")
+            logger.warning("Проверьте зависимость HTTP-клиента: requests.")
         except Exception as e:
             logger.error(f"Ошибка инициализации YooKassa: {e}", exc_info=True)
     else:
@@ -308,12 +308,26 @@ async def main() -> None:
         max_client=support_max_client,
         max_admin_id=settings.support_max_admin_id,
     )
+    if support_service is not None:
+        support_service.notifier = web_app["support_admin_notifier"]
 
     logging.getLogger(__name__).info(
         "Бот запущен в окружении %s. WebApp: %s",
         settings.environment,
         settings.webapp_url,
     )
+
+    if support_service is not None:
+        storage_kind = "postgresql" if isinstance(support_db, SupportDatabase) else "json"
+        polling_kind = "active" if (support_telegram_bot and support_telegram_dp) else "inactive"
+        logger.info(
+            "Support subsystem ready: storage=%s telegram_polling=%s admin_channel=%s",
+            storage_kind,
+            polling_kind,
+            settings.support_telegram_admin_id or settings.support_max_admin_id or "none",
+        )
+    else:
+        logger.info("Support subsystem disabled")
 
     await _notify_admin(bot, settings, schema_changed)
 
@@ -385,12 +399,23 @@ async def main() -> None:
 
 async def _support_bot_polling_task(bot: Bot, dp) -> None:
     """Run the separate Telegram support bot without touching the game bot dispatcher."""
+    conflict_logged = False
     while True:
         try:
             await bot.delete_webhook(drop_pending_updates=True, request_timeout=10)
             logger.info("Support Telegram webhook removed before polling")
+            conflict_logged = False
             await dp.start_polling(bot)
-        except TelegramNetworkError as e:
+        except TelegramConflictError as e:
+            if not conflict_logged:
+                logger.error(
+                    "Support Telegram polling conflict (409): another process already polls this bot token. "
+                    "Only one polling process is allowed per token. Message: %s",
+                    e,
+                )
+                conflict_logged = True
+            await asyncio.sleep(30)
+        except (TelegramNetworkError, TelegramServerError) as e:
             logger.warning("Support Telegram polling temporarily unavailable: %s. Retry in 10 seconds.", e)
             await asyncio.sleep(10)
         except asyncio.CancelledError:
@@ -441,6 +466,10 @@ async def _scheduled_notifications_task(db: Database | None) -> None:
             created = await db.enqueue_due_scheduled_notifications(limit=100)
             if created:
                 logger.info("Scheduled notifications queued: %d", created)
+            # Уведомления о доступности ежедневной награды за вход.
+            daily_login_created = await db.enqueue_due_daily_login_notifications(limit=100)
+            if daily_login_created:
+                logger.info("Daily login reward notifications queued: %d", daily_login_created)
         except Exception as e:
             logger.error("Ошибка в задаче расписания уведомлений: %s", e, exc_info=True)
             await asyncio.sleep(10)

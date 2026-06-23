@@ -21,8 +21,10 @@ class TestDifficultyCalculation:
         (299, "tier_easy_0100"),
         (300, "tier_easy_plus_0300"),
         (599, "tier_easy_plus_0300"),
-        (600, "tier_medium_minus_0600"),
-        (1199, "tier_medium_minus_0600"),
+        (600, "tier_easy_plus_0600"),
+        (999, "tier_easy_plus_0600"),
+        (1000, "tier_medium_minus_1000"),
+        (1199, "tier_medium_minus_1000"),
         (1200, "tier_medium_1200"),
         (1999, "tier_medium_1200"),
         (2000, "tier_medium_plus_2000"),
@@ -55,13 +57,13 @@ class TestDifficultyCalculation:
             assert diff != "noob"
 
     def test_streak_difficulty_shift_moves_by_strength_tier(self):
-        assert BotGenerator._shift_difficulty_by_streak("tier_medium_1200", "down", 1) == "tier_medium_minus_0600"
+        assert BotGenerator._shift_difficulty_by_streak("tier_medium_1200", "down", 1) == "tier_medium_minus_1000"
         assert BotGenerator._shift_difficulty_by_streak("tier_medium_1200", "up", 2) == "tier_hard_minus_3000"
 
     def test_streak_difficulty_shift_clamps_and_caps_steps(self):
         assert BotGenerator._shift_difficulty_by_streak("tier_lite_0000", "down", 3) == "tier_lite_0000"
         assert BotGenerator._shift_difficulty_by_streak("tier_hard_4500", "up", 99) == "tier_max_9000"
-        assert BotGenerator._shift_difficulty_by_streak("tier_lite_0000", "up", 99) == "tier_medium_plus_2000"
+        assert BotGenerator._shift_difficulty_by_streak("tier_lite_0000", "up", 99) == "tier_medium_1200"
         assert BotGenerator._shift_difficulty_by_streak("tier_max_9000", "down", 99) == "tier_medium_plus_2000"
         assert BotGenerator._shift_difficulty_by_streak("medium", "up", 1) == "tier_medium_plus_2000"
         assert BotGenerator._shift_difficulty_by_streak("tier_hard_4500", None, 3) == "tier_hard_4500"
@@ -78,7 +80,7 @@ class TestPerCardLevels:
 
     def test_easy_all_1s(self):
         levels = BotGenerator._build_bot_card_levels("easy", 5, 5)
-        assert levels == [2] * 5
+        assert levels == [1] * 5
 
     def test_medium_max_level_5(self):
         for _ in range(20):
@@ -125,7 +127,8 @@ class TestPerCardLevels:
             "tier_lite_0000",
             "tier_easy_0100",
             "tier_easy_plus_0300",
-            "tier_medium_minus_0600",
+            "tier_easy_plus_0600",
+            "tier_medium_minus_1000",
             "tier_medium_1200",
             "tier_medium_plus_2000",
             "tier_hard_minus_3000",
@@ -526,6 +529,77 @@ class TestBotDonorIdentity:
         assert set(payload["deck_ids"]) == set(profile["deck_ids"])
         assert payload["name"] == "Alice Realperson"
         assert payload["avatar_url"] == "https://cdn.example.com/alice.png"
+
+
+class CollidingDonorDB(AtomicCreationDB):
+    """Donor pool where one entry shares the player's display name."""
+    def __init__(self, donors):
+        super().__init__()
+        self._donors = list(donors)
+
+    async def get_random_users_with_avatars(self, *_args, **_kwargs):
+        return list(self._donors)
+
+
+class TestDonorNameCollision:
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_get_random_donor_name_excludes_matching_player_display_name(self):
+        donors = [
+            {"display_name": "Alice", "img": None},
+            {"display_name": "Bob", "img": None},
+        ]
+        bg = BotGenerator(CollidingDonorDB(donors))
+        name, _ = await bg._get_random_donor_name(
+            exclude_user_id=42, player_display_name="Alice",
+        )
+        assert name == "Bob"
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_get_random_donor_name_case_insensitive_collision(self):
+        donors = [
+            {"display_name": "  alice  ", "img": None},
+            {"display_name": "Carol", "img": None},
+        ]
+        bg = BotGenerator(CollidingDonorDB(donors))
+        name, _ = await bg._get_random_donor_name(
+            exclude_user_id=42, player_display_name="ALICE",
+        )
+        assert name == "Carol"
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_get_random_donor_name_falls_back_when_all_donors_collide(self):
+        donors = [
+            {"display_name": "Alice", "img": None},
+            {"display_name": "Alice", "img": None},
+        ]
+        bg = BotGenerator(CollidingDonorDB(donors))
+        name, _ = await bg._get_random_donor_name(
+            exclude_user_id=42, player_display_name="Alice",
+        )
+        assert name.startswith("Бот ")
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_get_random_donor_name_no_filter_when_player_name_none(self):
+        donors = [{"display_name": "Alice", "img": None}]
+        bg = BotGenerator(CollidingDonorDB(donors))
+        name, _ = await bg._get_random_donor_name(
+            exclude_user_id=42, player_display_name=None,
+        )
+        assert name == "Alice"
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_generate_bot_threads_player_display_name_to_donor_lookup(self):
+        donors = [
+            {"display_name": "Alice", "img": None},
+            {"display_name": "Bob", "img": None},
+        ]
+        bg = BotGenerator(CollidingDonorDB(donors))
+        payload = await bg._generate_bot(
+            player_id=42,
+            player_trophies=1200,
+            player_display_name="Alice",
+        )
+        assert payload["name"] == "Bob"
 
 
 class TestPersistenceFallback:

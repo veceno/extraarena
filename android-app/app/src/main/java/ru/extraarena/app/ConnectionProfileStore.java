@@ -6,14 +6,24 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 final class ConnectionProfileStore {
     static final String DEFAULT_PROFILE_ID = "extraarena_worldwide";
+    static final String RU_PROFILE_ID = "extraarena_ru";
+    // Java 8-safe construction (Set.of is a Java 9+ library API and the project has no
+    // core library desugaring, so it would throw NoSuchMethodError on API 26-32).
+    static final Set<String> BUILT_IN_IDS = Collections.unmodifiableSet(
+            new HashSet<>(Arrays.asList(DEFAULT_PROFILE_ID, RU_PROFILE_ID)));
 
     private static final String KEY_PROFILES = "connection_profiles";
     private static final String KEY_SELECTED_PROFILE_ID = "selected_connection_profile_id";
     private static final String KEY_LEGACY_BASE_URL = "base_url";
+    private static final String KEY_AUTO_SELECTED = "pref_auto_selected_profile";
 
     private ConnectionProfileStore() {
     }
@@ -36,10 +46,43 @@ final class ConnectionProfileStore {
 
     static List<ConnectionProfile> getProfiles(Context context) {
         ArrayList<ConnectionProfile> profiles = parseProfiles(SecurePrefs.getString(context, KEY_PROFILES, ""));
-        ensureDefaultProfile(profiles);
+        ensureBuiltInProfiles(profiles);
         migrateLegacyBaseUrl(context, profiles);
         persistProfiles(context, profiles);
         return profiles;
+    }
+
+    static boolean isBuiltIn(String id) {
+        return id != null && BUILT_IN_IDS.contains(id);
+    }
+
+    static ConnectionProfile otherBuiltIn(Context context, String currentId) {
+        if (!isBuiltIn(currentId)) {
+            return null;
+        }
+        String otherId = DEFAULT_PROFILE_ID.equals(currentId) ? RU_PROFILE_ID : DEFAULT_PROFILE_ID;
+        for (ConnectionProfile profile : getProfiles(context)) {
+            if (profile.id.equals(otherId)) {
+                return profile;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * On first run (no persisted selection yet), pick the built-in profile that matches the
+     * device region so RU users hit the direct RU host and everyone else the Cloudflare tunnel.
+     * Runs at most once (guarded by KEY_AUTO_SELECTED); a pre-existing selection is respected.
+     */
+    static void autoSelectIfNeeded(Context context, boolean ru) {
+        if ("1".equals(SecurePrefs.getString(context, KEY_AUTO_SELECTED, ""))) {
+            return;
+        }
+        SecurePrefs.putString(context, KEY_AUTO_SELECTED, "1");
+        if (!SecurePrefs.getString(context, KEY_SELECTED_PROFILE_ID, "").isEmpty()) {
+            return;
+        }
+        selectProfile(context, ru ? RU_PROFILE_ID : DEFAULT_PROFILE_ID);
     }
 
     static ConnectionProfile getSelectedProfile(Context context) {
@@ -70,7 +113,7 @@ final class ConnectionProfileStore {
         if (!replaced) {
             profiles.add(profile);
         }
-        ensureDefaultProfile(profiles);
+        ensureBuiltInProfiles(profiles);
         persistProfiles(context, profiles);
     }
 
@@ -113,19 +156,27 @@ final class ConnectionProfileStore {
         return profiles;
     }
 
-    private static void ensureDefaultProfile(ArrayList<ConnectionProfile> profiles) {
-        ConnectionProfile defaultProfile = defaultProfile();
+    private static void ensureBuiltInProfiles(ArrayList<ConnectionProfile> profiles) {
+        ensureBuiltIn(profiles, defaultProfile(), 0);
+        ensureBuiltIn(profiles, ruProfile(), 1);
+    }
+
+    private static void ensureBuiltIn(
+            ArrayList<ConnectionProfile> profiles,
+            ConnectionProfile builtIn,
+            int preferredIndex
+    ) {
         for (int i = 0; i < profiles.size(); i++) {
-            if (DEFAULT_PROFILE_ID.equals(profiles.get(i).id)) {
-                profiles.set(i, defaultProfile);
-                if (i != 0) {
+            if (builtIn.id.equals(profiles.get(i).id)) {
+                profiles.set(i, builtIn);
+                if (i != preferredIndex) {
                     profiles.remove(i);
-                    profiles.add(0, defaultProfile);
+                    profiles.add(preferredIndex, builtIn);
                 }
                 return;
             }
         }
-        profiles.add(0, defaultProfile);
+        profiles.add(preferredIndex, builtIn);
     }
 
     private static void migrateLegacyBaseUrl(Context context, ArrayList<ConnectionProfile> profiles) {
@@ -171,6 +222,16 @@ final class ConnectionProfileStore {
                 DEFAULT_PROFILE_ID,
                 "ExtraArena Worldwide",
                 BuildConfig.DEFAULT_BASE_URL,
+                false,
+                ""
+        );
+    }
+
+    private static ConnectionProfile ruProfile() {
+        return new ConnectionProfile(
+                RU_PROFILE_ID,
+                "ExtraArena RU",
+                BuildConfig.RU_BASE_URL,
                 false,
                 ""
         );

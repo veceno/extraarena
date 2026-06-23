@@ -898,10 +898,28 @@ body.arena-page::after {
 }
 .player-title-text.has-title,
 .opponent-title-text.has-title { display: block; }
+.player-title-text.title-starter,
+.player-title-text.title-start,
+.player-title-text.title-common,
+.opponent-title-text.title-starter,
+.opponent-title-text.title-start,
+.opponent-title-text.title-common { color: rgba(240,236,255,0.72); }
+.player-title-text.title-rare,
+.opponent-title-text.title-rare { color: #60a5fa; text-shadow: 0 0 8px rgba(96,165,250,0.34); }
+.player-title-text.title-superrare,
+.opponent-title-text.title-superrare { color: #2dd4bf; text-shadow: 0 0 8px rgba(45,212,191,0.34); }
+.player-title-text.title-epic,
+.opponent-title-text.title-epic { color: #a78bfa; text-shadow: 0 0 9px rgba(167,139,250,0.36); }
+.player-title-text.title-legendary,
+.opponent-title-text.title-legendary { color: #fbbf24; text-shadow: 0 0 10px rgba(251,191,36,0.4); }
 .player-title-text.title-mythic,
 .player-title-text.title-mythical,
 .opponent-title-text.title-mythic,
-.opponent-title-text.title-mythical  { color: #ef4444; text-shadow: 0 0 10px rgba(239,68,68,0.4); display: block; }
+.opponent-title-text.title-mythical  { color: #f472b6; text-shadow: 0 0 10px rgba(244,114,182,0.42); display: block; }
+.player-title-text.title-divine,
+.opponent-title-text.title-divine { color: #e0e7ff; text-shadow: 0 0 11px rgba(224,231,255,0.46); }
+.player-title-text.title-unique,
+.opponent-title-text.title-unique { color: #c084fc; text-shadow: 0 0 12px rgba(192,132,252,0.48); }
 .player-title-text.title-limited,
 .opponent-title-text.title-limited {
     background: linear-gradient(90deg,#22d3ee,#f0abfc,#22d3ee);
@@ -969,21 +987,45 @@ body.arena-page::after {
 .player-avatar.has-avatar-img .avatar-letter { display: none; }
 .opponent-avatar, .player-avatar { border: 1px solid #94a3b8; overflow: hidden; }
 .opponent-avatar.avatar-class-starter,
-.player-avatar.avatar-class-starter { border: 1px solid #94a3b8 !important; }
+.opponent-avatar.avatar-class-start,
+.opponent-avatar.avatar-class-common,
+.player-avatar.avatar-class-starter,
+.player-avatar.avatar-class-start,
+.player-avatar.avatar-class-common { border: 1px solid #94a3b8 !important; }
 .opponent-avatar.avatar-class-rare,
 .player-avatar.avatar-class-rare {
   border: 1px solid #60a5fa !important;
   box-shadow: 0 0 10px rgba(96,165,250,0.45) !important;
+}
+.opponent-avatar.avatar-class-superrare,
+.player-avatar.avatar-class-superrare {
+  border: 1px solid #2dd4bf !important;
+  box-shadow: 0 0 11px rgba(45,212,191,0.46) !important;
 }
 .opponent-avatar.avatar-class-epic,
 .player-avatar.avatar-class-epic {
   border: 1px solid #a78bfa !important;
   box-shadow: 0 0 12px rgba(167,139,250,0.5) !important;
 }
+.opponent-avatar.avatar-class-legendary,
+.player-avatar.avatar-class-legendary {
+  border: 1px solid #fbbf24 !important;
+  box-shadow: 0 0 13px rgba(251,191,36,0.52) !important;
+}
 .opponent-avatar.avatar-class-mythic,
 .player-avatar.avatar-class-mythic {
   border: 1px solid #f472b6 !important;
   box-shadow: 0 0 14px rgba(244,114,182,0.55) !important;
+}
+.opponent-avatar.avatar-class-divine,
+.player-avatar.avatar-class-divine {
+  border: 1px solid #e0e7ff !important;
+  box-shadow: 0 0 15px rgba(224,231,255,0.58) !important;
+}
+.opponent-avatar.avatar-class-unique,
+.player-avatar.avatar-class-unique {
+  border: 1px solid #c084fc !important;
+  box-shadow: 0 0 16px rgba(192,132,252,0.58) !important;
 }
 .opponent-avatar.avatar-class-limited,
 .player-avatar.avatar-class-limited {
@@ -3170,10 +3212,17 @@ body.arena-page::after {
   -webkit-box-orient: vertical;
 }
 .prebattle-title-tag:empty { display: none; }
-.prebattle-title-tag.title-mythical {
-  color: #ef4444;
-  text-shadow: 0 0 10px rgba(239,68,68,0.4);
-}
+.prebattle-title-tag.title-starter,
+.prebattle-title-tag.title-start,
+.prebattle-title-tag.title-common { color: rgba(240,236,255,0.72); }
+.prebattle-title-tag.title-rare { color: #60a5fa; text-shadow: 0 0 8px rgba(96,165,250,0.34); }
+.prebattle-title-tag.title-superrare { color: #2dd4bf; text-shadow: 0 0 8px rgba(45,212,191,0.34); }
+.prebattle-title-tag.title-epic { color: #a78bfa; text-shadow: 0 0 9px rgba(167,139,250,0.36); }
+.prebattle-title-tag.title-legendary { color: #fbbf24; text-shadow: 0 0 10px rgba(251,191,36,0.4); }
+.prebattle-title-tag.title-mythic,
+.prebattle-title-tag.title-mythical { color: #f472b6; text-shadow: 0 0 10px rgba(244,114,182,0.42); }
+.prebattle-title-tag.title-divine { color: #e0e7ff; text-shadow: 0 0 11px rgba(224,231,255,0.46); }
+.prebattle-title-tag.title-unique { color: #c084fc; text-shadow: 0 0 12px rgba(192,132,252,0.48); }
 .prebattle-title-tag.title-limited {
   background: linear-gradient(90deg,#22d3ee,#f0abfc,#22d3ee);
   background-size: 200% auto;

@@ -27,13 +27,11 @@ def test_robokassa_test_payment_includes_receipt_and_istest_in_signed_form():
         return_url="https://game.example",
         metadata={"item_name": "ExtraPass", "item_type": "extrapass"},
         inv_id=12345,
-        payment_page_url="https://laveqox.ru/api/payments/robokassa/pay/robokassa_12345",
     )
 
     assert result["success"] is True
     assert result["payment_id"] == "robokassa_12345"
     assert result["confirmation_url"] == result["payment_url"]
-    assert result["payment_page_url"] == "https://laveqox.ru/api/payments/robokassa/pay/robokassa_12345"
     assert result["status"] == "pending"
 
     form = result["form"]
@@ -154,7 +152,6 @@ def test_robokassa_payment_url_contains_no_passwords():
         return_url="https://game.example",
         metadata={"item_name": "Starter gems"},
         inv_id=777,
-        payment_page_url="https://laveqox.ru/api/payments/robokassa/pay/robokassa_777",
     )
     parsed = urlparse(result["payment_url"])
     query = parse_qs(parsed.query)

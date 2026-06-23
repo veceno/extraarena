@@ -337,8 +337,9 @@ class FakeStarsBot:
     invoices = []
     messages = []
 
-    def __init__(self, token):
+    def __init__(self, token, **kwargs):
         self.token = token
+        self.kwargs = kwargs
         self.session = FakeStarsSession()
 
     async def send_message(self, chat_id, text, parse_mode=None):
@@ -1188,6 +1189,47 @@ async def test_checkout_create_with_jti_uses_server_side_session_not_client_body
 
 
 @pytest.mark.asyncio
+async def test_checkout_summary_returns_safe_order_display_fields():
+    db = CheckoutFakeDB()
+    db.product = {
+        "code": "extrapass",
+        "item_type": "extrapass",
+        "package_type": None,
+        "name": "ExtraPass",
+        "price": 179.0,
+        "currency": "rubles",
+        "is_active": True,
+    }
+    client, session_id = await _client(db=db)
+    try:
+        token = _auth_token(session_id)
+        start_response = await client.post(
+            f"/api/payments/checkout/start?_auth={token}",
+            json={"product_code": "extrapass"},
+        )
+        start_body = await start_response.json()
+
+        response = await client.get(
+            f"/api/payments/checkout/summary?jti={start_body['checkout_jti']}",
+        )
+        body = await response.json()
+
+        assert response.status == 200
+        assert body["success"] is True
+        assert body["checkout_jti"] == start_body["checkout_jti"]
+        assert body["item_type"] == "extrapass"
+        assert body["item_name"] == "ExtraPass"
+        assert body["amount_rub"] == 179.0
+        assert body["currency"] == "RUB"
+        assert "user_id" not in body
+        assert "metadata" not in body
+        assert "payment_id" not in body
+        assert "provider" not in body
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
 async def test_checkout_create_uses_robokassa_primary_provider_in_test_mode():
     db = CheckoutFakeDB()
     db.product = {
@@ -1252,15 +1294,68 @@ async def test_checkout_create_uses_robokassa_primary_provider_in_test_mode():
         assert payment_record["metadata"]["robokassa_form"]["Receipt"]
         assert payment_record["metadata"]["robokassa_form"]["SuccessUrl2"] == "https://laveqox.ru/extraShop/payment-success"
         assert payment_record["metadata"]["robokassa_form"]["FailUrl2"] == "https://laveqox.ru/extraShop/payment-fail"
-        assert payment_record["metadata"]["robokassa_payment_page_url"].startswith(
-            "https://laveqox.ru/api/payments/robokassa/pay/"
-        )
+        assert "robokassa_payment_page_url" not in payment_record["metadata"]
     finally:
         await client.close()
 
 
 @pytest.mark.asyncio
-async def test_checkout_create_rewrites_existing_robokassa_internal_url_to_direct_link():
+async def test_checkout_create_falls_back_to_yookassa_when_robokassa_fails():
+    db = CheckoutFakeDB()
+    db.product = {
+        "code": "extrapass",
+        "item_type": "extrapass",
+        "package_type": None,
+        "name": "ExtraPass",
+        "price": 179.0,
+        "currency": "rubles",
+        "is_active": True,
+    }
+
+    class FailingRobokassaPaymentService:
+        def __init__(self):
+            self.created = []
+
+        def create_payment(self, **kwargs):
+            self.created.append(kwargs)
+            return {"success": False, "error": "robokassa_unavailable"}
+
+    yookassa_service = FakePaymentService()
+    robokassa_service = FailingRobokassaPaymentService()
+    client, session_id = await _client(
+        db=db,
+        payment_service=yookassa_service,
+        robokassa_payment_service=robokassa_service,
+    )
+    try:
+        token = _auth_token(session_id)
+        start_response = await client.post(
+            f"/api/payments/checkout/start?_auth={token}",
+            json={"product_code": "extrapass"},
+        )
+        start_body = await start_response.json()
+
+        response = await client.post(
+            "/api/payments/checkout/create",
+            json={"checkout_jti": start_body["checkout_jti"]},
+        )
+        body = await response.json()
+
+        assert response.status == 200
+        assert body["success"] is True
+        assert body["provider"] == "yookassa"
+        assert body["payment_id"] == "pay-1"
+        assert body["confirmation_url"] == "https://pay.example/confirm/1"
+        assert len(robokassa_service.created) == 1
+        assert len(yookassa_service.created) == 1
+        assert len(db.created_payments) == 1
+        assert db.created_payments[0]["metadata"]["provider"] == "yookassa"
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_checkout_create_returns_existing_robokassa_confirmation_url():
     db = CheckoutFakeDB()
     db.product = {
         "code": "extrapass",
@@ -1301,10 +1396,10 @@ async def test_checkout_create_rewrites_existing_robokassa_internal_url_to_direc
             return_url="https://game.example",
             metadata={"item_name": "ExtraPass", "item_type": "extrapass"},
             inv_id=123456,
-            payment_page_url="https://laveqox.ru/api/payments/robokassa/pay/robokassa_123456",
         )
+        legacy_internal_url = "https://laveqox.ru/api/payments/robokassa/pay/robokassa_123456"
         db.checkout_sessions[jti]["payment_id"] = legacy_result["payment_id"]
-        db.checkout_sessions[jti]["confirmation_url"] = legacy_result["payment_page_url"]
+        db.checkout_sessions[jti]["confirmation_url"] = legacy_internal_url
         db.payment_records[legacy_result["payment_id"]] = {
             "payment_id": legacy_result["payment_id"],
             "amount": 179.0,
@@ -1324,8 +1419,7 @@ async def test_checkout_create_rewrites_existing_robokassa_internal_url_to_direc
         assert body["success"] is True
         assert body["provider"] == "robokassa"
         assert body["payment_id"] == "robokassa_123456"
-        assert body["confirmation_url"].startswith("https://auth.robokassa.ru/Merchant/Index.aspx?")
-        assert "IsTest=1" in body["confirmation_url"]
+        assert body["confirmation_url"] == legacy_internal_url
     finally:
         await client.close()
 

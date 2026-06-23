@@ -95,6 +95,11 @@ class FakeSupportDB:
                 if ticket["id"] == args[0]:
                     return ticket
             return None
+        if "from support_tickets t" in normalized and "where t.id = $1" in normalized:
+            for ticket in self.tickets:
+                if ticket["id"] == args[0]:
+                    return {**ticket, "requester_display_name": "", "requester_external_user_id": "", "requester_game_user_id": None, "requester_channel": ticket.get("channel", ""), "requester_channel_id": ticket.get("channel_id", "")}
+            return None
         if "from support_tickets" in normalized and "status <> 'closed'" in normalized:
             channel, channel_id = args[0], args[1]
             for ticket in reversed(self.tickets):
@@ -164,11 +169,13 @@ class FakeSupportDB:
         if "from support_messages" in normalized and "from support_tickets" not in normalized:
             assert "direction <> 'internal'" in normalized
             return [{"id": "message-1", "direction": "inbound"}]
+        if "from support_attachments a" in normalized and "left join support_messages" in normalized:
+            return [attachment for attachment in self.attachments if attachment["ticket_id"] == args[0]]
         if "from support_attachments" in normalized:
             return [attachment for attachment in self.attachments if attachment["ticket_id"] == args[0]]
         if "from support_tickets" in normalized:
             assert "latest_message_body" in normalized
-            return list(self.tickets)
+            return [{**t, "requester_display_name": "", "requester_external_user_id": "", "requester_game_user_id": None, "requester_channel": t.get("channel", ""), "requester_channel_id": t.get("channel_id", "")} for t in self.tickets]
         raise AssertionError(f"Unexpected fetch query: {query}")
 
 

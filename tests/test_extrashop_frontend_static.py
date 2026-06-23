@@ -104,19 +104,26 @@ def test_public_shop_gift_products_do_not_start_public_checkout():
     assert "Подарок" in html
     assert "Бесплатно" in html
     assert "Получить в игре" in html
-    assert "Robokassa · карта / СБП" in html
+    assert "Картой / СБП" in html
 
 
 def test_payment_open_uses_single_popup_attempt():
     html = EXTRASHOP_INDEX.read_text(encoding="utf-8")
     open_block = html.split("function openExternalPayment(url)", 1)[1].split(
-        "function setCopyState",
+        "function createPayment",
         1,
     )[0]
 
     assert "window.open(url, '_blank', 'noopener,noreferrer')" in open_block
     assert "link.click()" not in open_block
     assert "document.createElement('a')" not in open_block
+    assert "id=\"vpn-ready-btn\"" not in html
+    assert "id=\"copy-pay-btn\"" not in html
+    assert "id=\"payment-link\"" not in html
+    assert "Скопировать прямую ссылку Robokassa" not in html
+    assert "Прямая ссылка Robokassa" not in html
+    assert "Выключите VPN" not in html
+    assert "fetch('/api/payments/checkout/summary?jti='" in html
 
 
 def test_checkout_session_uses_jti_and_cleans_legacy_token_url():
@@ -184,9 +191,13 @@ def test_admin_extra_pass_reward_editor_splits_random_and_specific_card_rewards(
 
     assert '<option value="card">random card by rarity</option>' in html
     assert '<option value="specific_card">specific card</option>' in html
+    assert '<option value="particles">particles</option>' in html
+    assert '<option value="cosmetic">cosmetic</option>' in html
+    assert '<option value="guaranteed_card">guaranteed card alias</option>' in html
     assert '"reward_type":"specific_card"' in html or "reward_type:'specific_card'" in html
-    assert "type==='card'||type==='specific_card'?1" in html
-    assert '{"rarity":["epic"]} или {"card_id":46}' in html
+    assert "type==='card'||type==='specific_card'||type==='guaranteed_card'||type==='cosmetic'" in html
+    assert '{"card_id":46} или {"rarity":["epic"]}' in html
+    assert '{"cosmetic_slug":"avatar_gold","auto_equip":true}' in html
 
 
 def test_legal_documents_use_registered_routes_and_canonical_support_email():

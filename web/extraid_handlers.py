@@ -14,12 +14,13 @@ from typing import Any
 
 import bcrypt
 import jwt as pyjwt
-from aiohttp import web, ClientTimeout, ClientSession
+from aiohttp import web, ClientTimeout
 
 from infrastructure.config import get_settings
 from infrastructure.database import Database
-from infrastructure.extraid_database import ExtraIDDatabase
+from infrastructure.extraid_database import ExtraIDDatabase, SYNTHETIC_USER_ID_MIN
 from infrastructure.push_notifications import build_android_push_payload
+from infrastructure.telegram_proxy import create_telegram_aiohttp_session
 
 logger = logging.getLogger(__name__)
 
@@ -161,10 +162,11 @@ async def _require_jwt_user_id_from_request(request: web.Request, data: dict[str
     settings = get_settings()
     data = data or {}
     bearer = _bearer_token_from_request(request)
+    # Do not accept JWT via _auth query param: JWTs in URLs get logged by proxies/CDNs.
+    # Only Bearer header or JSON body `auth` field are accepted.
     token = (
         bearer
         or str(data.get("auth") or "").strip()
-        or request.rel_url.query.get("_auth", "").strip()
     )
     if not token:
         return None
@@ -194,7 +196,7 @@ async def _send_telegram_transfer_code(request: web.Request, user_id: int, code:
 
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     try:
-        async with ClientSession(timeout=ClientTimeout(total=8)) as session:
+        async with create_telegram_aiohttp_session(timeout=ClientTimeout(total=8)) as session:
             async with session.post(url, json={"chat_id": user_id, "text": text}) as resp:
                 body = await resp.json(content_type=None)
                 if resp.status >= 400 or not body.get("ok"):
@@ -244,16 +246,18 @@ async def extraid_register_handler(request: web.Request) -> web.Response:
         tg_auth = request.rel_url.query.get("_auth")
         user_id = None
         auth_source = "email_registration"
+        created_synthetic_user = False
         if bearer_auth:
             jwt_result = await _verify_jwt_token_async_fn(bearer_auth, extraid_db, settings)
             if jwt_result:
                 user_id = jwt_result[0]
                 auth_source = "extraid_mobile" if client in {"android", "android_app", "mobile", "mobile_app"} else "email_registration"
-                existing_extra = await extraid_db.get_extra_account_by_user_id(user_id)
+                existing_extra = await extraid_db.get_any_extra_account_by_user_id(user_id)
                 if existing_extra:
                     return web.json_response({
                         "error": "extraid_already_exists",
                         "display_id": existing_extra["display_id"],
+                        "message": "ExtraID уже создавался для этого аккаунта.",
                     }, status=409)
             else:
                 return web.json_response({"error": "invalid_auth"}, status=401)
@@ -263,6 +267,13 @@ async def extraid_register_handler(request: web.Request) -> web.Response:
                 user_id = _extract_user_id_from_init_data_fn(verified)
                 if user_id:
                     auth_source = "telegram"
+                    existing_extra = await extraid_db.get_any_extra_account_by_user_id(user_id)
+                    if existing_extra:
+                        return web.json_response({
+                            "error": "extraid_already_exists",
+                            "display_id": existing_extra["display_id"],
+                            "message": "ExtraID уже создавался для этого аккаунта.",
+                        }, status=409)
             elif _looks_like_jwt_bearer(tg_auth):
                 return web.json_response({"error": "invalid_auth"}, status=401)
             else:
@@ -270,11 +281,12 @@ async def extraid_register_handler(request: web.Request) -> web.Response:
                 if jwt_result:
                     user_id = jwt_result[0]
                     auth_source = "extraid_mobile" if client in {"android", "android_app", "mobile", "mobile_app"} else "email_registration"
-                    existing_extra = await extraid_db.get_extra_account_by_user_id(user_id)
+                    existing_extra = await extraid_db.get_any_extra_account_by_user_id(user_id)
                     if existing_extra:
                         return web.json_response({
                             "error": "extraid_already_exists",
                             "display_id": existing_extra["display_id"],
+                            "message": "ExtraID уже создавался для этого аккаунта.",
                         }, status=409)
                 else:
                     return web.json_response({"error": "invalid_auth"}, status=401)
@@ -282,16 +294,18 @@ async def extraid_register_handler(request: web.Request) -> web.Response:
         if user_id is None:
             user_id = await extraid_db.get_synthetic_user_id()
             await db.ensure_user(user_id=user_id, username=None, first_name=nickname or email, last_name=None)
+            created_synthetic_user = True
             await db.execute(
                 "UPDATE users SET auth_source = 'email_registration' WHERE user_id = $1",
                 user_id
             )
         else:
-            existing_for_user = await extraid_db.get_extra_account_by_user_id(user_id)
+            existing_for_user = await extraid_db.get_any_extra_account_by_user_id(user_id)
             if existing_for_user:
                 return web.json_response({
                     "error": "extraid_already_exists",
                     "display_id": existing_for_user["display_id"],
+                    "message": "ExtraID уже создавался для этого аккаунта.",
                 }, status=409)
             await db.ensure_user(user_id=user_id, username=None, first_name=nickname or email, last_name=None)
 
@@ -306,22 +320,40 @@ async def extraid_register_handler(request: web.Request) -> web.Response:
             extra = await extraid_db.create_extra_account(user_id, display_id, email, password_hash, nickname)
         except Exception as e:
             constraint = str(getattr(e, "constraint_name", "") or "").lower()
-            if e.__class__.__name__ == "UniqueViolationError" and "email" in constraint:
+            if e.__class__.__name__ == "UniqueViolationError" and ("email" in constraint or "active_email" in constraint):
+                await _compensate_synthetic_user_cleanup(db, user_id, created_synthetic_user)
                 return web.json_response({"error": "email_taken"}, status=409)
             if e.__class__.__name__ == "UniqueViolationError" and "nickname" in constraint:
+                await _compensate_synthetic_user_cleanup(db, user_id, created_synthetic_user)
                 return web.json_response({"error": "nickname_taken"}, status=409)
+            if e.__class__.__name__ == "UniqueViolationError" and "display_id" in constraint:
+                await _compensate_synthetic_user_cleanup(db, user_id, created_synthetic_user)
+                logger.warning("display_id collision during register: %s", display_id)
+                return web.json_response({"error": "server_error", "message": "Внутренняя ошибка сервера"}, status=500)
+            logger.exception("create_extra_account failed during register; cleaning up synthetic user=%s", user_id)
+            await _compensate_synthetic_user_cleanup(db, user_id, created_synthetic_user)
             raise
-        await db.execute(
-            "UPDATE users SET extra_account_id = $1, auth_source = $2 WHERE user_id = $3",
-            extra["id"], auth_source, user_id
-        )
+        try:
+            await db.execute(
+                "UPDATE users SET extra_account_id = $1, auth_source = $2 WHERE user_id = $3",
+                extra["id"], auth_source, user_id
+            )
+        except Exception:
+            logger.exception("Failed to link users.extra_account_id after create_extra_account; rolling back extra_accounts row for user=%s", user_id)
+            await extraid_db.execute("DELETE FROM extra_accounts WHERE id = $1", extra["id"])
+            await _compensate_synthetic_user_cleanup(db, user_id, created_synthetic_user)
+            raise
 
         reg_bonus = False
-        if auth_source == "telegram":
+        if auth_source == "telegram" and not await extraid_db.has_user_claimed_reg_bonus(user_id):
+            try:
+                await db.execute("UPDATE users SET keys = COALESCE(keys, 0) + 3 WHERE user_id = $1", user_id)
+            except Exception:
+                logger.warning("Failed to credit reg bonus keys for user=%s; bonus not marked claimed", user_id, exc_info=True)
+                raise
             reg_bonus_claimed = await extraid_db.mark_reg_bonus_claimed(extra["id"])
             if reg_bonus_claimed is not False:
                 reg_bonus = True
-                await db.execute("UPDATE users SET keys = COALESCE(keys, 0) + 3 WHERE user_id = $1", user_id)
 
         return web.json_response({
             "ok": True,
@@ -333,6 +365,17 @@ async def extraid_register_handler(request: web.Request) -> web.Response:
     except Exception:
         logger.exception("ExtraID register handler error")
         return web.json_response({"error": "server_error", "message": "Внутренняя ошибка сервера"}, status=500)
+
+
+async def _compensate_synthetic_user_cleanup(db: Database, user_id: int, created_synthetic: bool) -> None:
+    """Best-effort cleanup of an orphaned synthetic users row created mid-registration."""
+    if not created_synthetic:
+        return
+    if user_id >= SYNTHETIC_USER_ID_MIN:
+        try:
+            await db.delete_user(user_id)
+        except Exception:
+            logger.warning("Compensating delete_user failed for synthetic user=%s", user_id, exc_info=True)
 
 
 # --- ExtraID: Login ---
@@ -350,10 +393,13 @@ async def extraid_login_handler(request: web.Request) -> web.Response:
         email = (data.get("email") or "").strip().lower()
         password = data.get("password") or ""
 
+        if not email or not password:
+            return web.json_response({"error": "invalid_credentials"}, status=401)
+
         client_key_email = hashlib.sha256(email.encode()).hexdigest()[:16] if email else "empty"
         client_key = f"extraid_login:{getattr(request, 'remote', None) or 'unknown'}:{client_key_email}"
         if not await _check_rate_limit_for_request(request, client_key, 10, 60):
-            return web.json_response({"error": "rate_limited"}, status=429)
+            return web.json_response({"error": "rate_limited", "message": "Слишком много попыток входа. Попробуйте позже."}, status=429)
 
         extra = await extraid_db.get_extra_account_by_email(email)
         if not extra:
@@ -382,11 +428,15 @@ async def extraid_login_handler(request: web.Request) -> web.Response:
         )
 
         reg_bonus = False
-        if not extra["reg_bonus_claimed"]:
+        if not extra["reg_bonus_claimed"] and not await extraid_db.has_user_claimed_reg_bonus(user_id):
+            try:
+                await db.execute("UPDATE users SET keys = COALESCE(keys, 0) + 3 WHERE user_id = $1", user_id)
+            except Exception:
+                logger.warning("Failed to credit reg bonus keys for user=%s; bonus not marked claimed", user_id, exc_info=True)
+                raise
             reg_bonus_claimed = await extraid_db.mark_reg_bonus_claimed(extra["id"])
             if reg_bonus_claimed is not False:
                 reg_bonus = True
-                await db.execute("UPDATE users SET keys = COALESCE(keys, 0) + 3 WHERE user_id = $1", user_id)
 
         return web.json_response({
             "ok": True,
@@ -483,11 +533,12 @@ async def telegram_transfer_request_code_handler(request: web.Request) -> web.Re
         if not user_exists:
             return web.json_response({"error": "telegram_user_not_found"}, status=404)
 
-        existing_extra = await extraid_db.get_extra_account_by_user_id(telegram_id)
+        existing_extra = await extraid_db.get_any_extra_account_by_user_id(telegram_id)
         if existing_extra:
             return web.json_response({
                 "error": "extraid_already_exists",
                 "display_id": existing_extra["display_id"],
+                "message": "ExtraID уже создавался для этого аккаунта.",
             }, status=409)
 
         await extraid_db.cleanup_old_bot_codes(telegram_id)
@@ -550,20 +601,17 @@ async def telegram_transfer_complete_handler(request: web.Request) -> web.Respon
         if int(auth_code["user_id"]) != telegram_id:
             return web.json_response({"error": "code_user_mismatch"}, status=400)
 
-        existing_for_user = await extraid_db.get_extra_account_by_user_id(telegram_id)
+        existing_for_user = await extraid_db.get_any_extra_account_by_user_id(telegram_id)
         if existing_for_user:
             return web.json_response({
                 "error": "extraid_already_exists",
                 "display_id": existing_for_user["display_id"],
+                "message": "ExtraID уже создавался для этого аккаунта.",
             }, status=409)
 
         existing_email = await _get_any_extra_account_by_email(extraid_db, email)
         if existing_email:
             return web.json_response({"error": "email_taken"}, status=409)
-
-        auth_code = await extraid_db.consume_bot_auth_code(code)
-        if not auth_code or int(auth_code["user_id"]) != telegram_id:
-            return web.json_response({"error": "invalid_code"}, status=400)
 
         display_id = _display_id_generator_fn(lambda did: False)
         while await extraid_db.fetchval("SELECT 1 FROM extra_accounts WHERE display_id = $1", display_id):
@@ -576,13 +624,19 @@ async def telegram_transfer_complete_handler(request: web.Request) -> web.Respon
             extra = await extraid_db.create_extra_account(telegram_id, display_id, email, password_hash, None)
         except Exception as e:
             constraint = str(getattr(e, "constraint_name", "") or "").lower()
-            if e.__class__.__name__ == "UniqueViolationError" and "email" in constraint:
+            if e.__class__.__name__ == "UniqueViolationError" and ("email" in constraint or "active_email" in constraint):
                 return web.json_response({"error": "email_taken"}, status=409)
+            logger.exception("create_extra_account failed during telegram transfer for user=%s", telegram_id)
             raise
-        await db.execute(
-            "UPDATE users SET extra_account_id = $1, auth_source = 'telegram_transfer' WHERE user_id = $2",
-            extra["id"], telegram_id
-        )
+        try:
+            await db.execute(
+                "UPDATE users SET extra_account_id = $1, auth_source = 'telegram_transfer' WHERE user_id = $2",
+                extra["id"], telegram_id
+            )
+        except Exception:
+            logger.exception("Failed to link users.extra_account_id after transfer create for user=%s; rolling back", telegram_id)
+            await extraid_db.execute("DELETE FROM extra_accounts WHERE id = $1", extra["id"])
+            raise
 
         session_uuid = uuid.uuid4()
         token, session_exp = _make_jwt_session(telegram_id, session_uuid, settings)
@@ -598,13 +652,24 @@ async def telegram_transfer_complete_handler(request: web.Request) -> web.Respon
             session_exp,
             data.get("device_label"),
         )
+        consumed = await extraid_db.consume_bot_auth_code(code)
+        if not consumed or int(consumed["user_id"]) != telegram_id:
+            logger.warning("transfer complete: bot code consume failed after account creation for telegram_id=%s", telegram_id)
+            await extraid_db.soft_delete_extra_account(extra["id"])
+            await db.execute("UPDATE users SET extra_account_id = NULL, auth_source = 'telegram' WHERE user_id = $1", telegram_id)
+            return web.json_response({"error": "invalid_code"}, status=400)
         await extraid_db.mark_bot_code_used(code, session_uuid)
 
         reg_bonus = False
-        reg_bonus_claimed = await extraid_db.mark_reg_bonus_claimed(extra["id"])
-        if reg_bonus_claimed is not False:
-            reg_bonus = True
-            await db.execute("UPDATE users SET keys = COALESCE(keys, 0) + 3 WHERE user_id = $1", telegram_id)
+        if not await extraid_db.has_user_claimed_reg_bonus(telegram_id):
+            try:
+                await db.execute("UPDATE users SET keys = COALESCE(keys, 0) + 3 WHERE user_id = $1", telegram_id)
+            except Exception:
+                logger.warning("Failed to credit reg bonus keys for user=%s; bonus not marked claimed", telegram_id, exc_info=True)
+                raise
+            reg_bonus_claimed = await extraid_db.mark_reg_bonus_claimed(extra["id"])
+            if reg_bonus_claimed is not False:
+                reg_bonus = True
 
         return web.json_response({
             "ok": True,
@@ -660,15 +725,39 @@ async def extraid_link_handler(request: web.Request) -> web.Response:
             return web.json_response({"error": "extra_account_not_found"}, status=404)
         old_user_id = int(extra.get("user_id") or jwt_user_id)
 
+        # Prevent re-binding an ExtraID that is already linked to a real Telegram account.
+        # Only synthetic (email-only/anonymous) accounts may be linked to Telegram.
+        if old_user_id is not None and old_user_id < SYNTHETIC_USER_ID_MIN and old_user_id != tg_user_id:
+            return web.json_response({
+                "error": "already_linked_to_telegram",
+                "message": "Этот ExtraID уже привязан к Telegram-аккаунту.",
+            }, status=409)
+
         tg_exists = await db.fetchval("SELECT 1 FROM users WHERE user_id = $1", tg_user_id)
         if not tg_exists:
             return web.json_response({"error": "tg_user_not_found"}, status=404)
 
-        await extraid_db.execute("UPDATE extra_accounts SET user_id = $1 WHERE id = $2", tg_user_id, extra["id"])
-        await db.execute("UPDATE users SET extra_account_id = $1, auth_source = 'telegram' WHERE user_id = $2", extra["id"], tg_user_id)
+        # Block if this Telegram ID already had an ExtraID created (even soft-deleted) — prevents duplication.
+        prior_binding = await extraid_db.get_any_extra_account_by_user_id(tg_user_id)
+        if prior_binding:
+            return web.json_response({
+                "error": "telegram_already_linked",
+                "message": "К этому Telegram-аккаунту уже привязан ExtraID.",
+            }, status=409)
+
+        try:
+            await db.execute("UPDATE users SET extra_account_id = $1, auth_source = 'telegram' WHERE user_id = $2", extra["id"], tg_user_id)
+            await extraid_db.execute("UPDATE extra_accounts SET user_id = $1 WHERE id = $2", tg_user_id, extra["id"])
+        except Exception:
+            logger.exception("link: failed to re-point ExtraID ownership for tg_user_id=%s; rolling back users update", tg_user_id)
+            await db.execute("UPDATE users SET extra_account_id = NULL WHERE user_id = $1", tg_user_id)
+            raise
         if old_user_id != tg_user_id:
-            await db.execute("UPDATE users SET extra_account_id = NULL WHERE user_id = $1", old_user_id)
-            await extraid_db.revoke_all_user_sessions(old_user_id)
+            try:
+                await db.execute("UPDATE users SET extra_account_id = NULL WHERE user_id = $1", old_user_id)
+                await extraid_db.revoke_all_user_sessions(old_user_id)
+            except Exception:
+                logger.warning("link: failed to clear old owner user_id=%s (best-effort)", old_user_id, exc_info=True)
 
         return web.json_response({"ok": True, "merged": False, "trophies_transferred": 0})
     except Exception:
@@ -694,7 +783,7 @@ async def extraid_profile_handler(request: web.Request) -> web.Response:
         "email": _mask_email_fn(extra["email"]),
         "is_email_verified": extra["is_email_verified"],
         "reg_date": extra["created_at"].isoformat() if extra.get("created_at") else None,
-        "linked_telegram": (extra["user_id"] is not None and extra["user_id"] < 9000000000000),
+        "linked_telegram": (extra["user_id"] is not None and extra["user_id"] < SYNTHETIC_USER_ID_MIN),
     })
 
 
@@ -753,6 +842,18 @@ async def extraid_delete_account_handler(request: web.Request) -> web.Response:
         if not extra:
             return web.json_response({"error": "extra_account_not_found"}, status=404)
 
+        # Telegram-bound accounts cannot be deleted: prevents the duplication exploit
+        # (pump Telegram-only account -> create ExtraID -> delete -> create new ExtraID).
+        is_telegram_bound = extra["user_id"] is not None and extra["user_id"] < SYNTHETIC_USER_ID_MIN
+        if is_telegram_bound:
+            return web.json_response({
+                "error": "cannot_delete_telegram_bound",
+                "message": "Невозможно удалить ExtraID, привязанный к Telegram. Обратитесь в поддержку.",
+            }, status=403)
+
+        if not password:
+            return web.json_response({"error": "invalid_password"}, status=401)
+
         match = await asyncio.to_thread(
             lambda: bcrypt.checkpw(password.encode(), extra["password_hash"].encode())
         )
@@ -761,10 +862,22 @@ async def extraid_delete_account_handler(request: web.Request) -> web.Response:
 
         await extraid_db.revoke_all_user_sessions(user_id)
         await extraid_db.soft_delete_extra_account(extra["id"])
-        await db.execute(
-            "UPDATE users SET extra_account_id = NULL WHERE user_id = $1",
-            user_id
-        )
+        # Reset auth_source and clear the link on the users row.
+        # For synthetic (email-only/anonymous) accounts, fully remove the orphaned users row.
+        if user_id >= SYNTHETIC_USER_ID_MIN:
+            try:
+                await db.delete_user(user_id)
+            except Exception:
+                logger.warning("delete_user failed for synthetic user=%s during ExtraID delete", user_id, exc_info=True)
+                await db.execute(
+                    "UPDATE users SET extra_account_id = NULL, auth_source = 'telegram' WHERE user_id = $1",
+                    user_id,
+                )
+        else:
+            await db.execute(
+                "UPDATE users SET extra_account_id = NULL, auth_source = 'telegram' WHERE user_id = $1",
+                user_id
+            )
         return web.json_response({"ok": True})
     except Exception:
         logger.exception("ExtraID delete handler error")

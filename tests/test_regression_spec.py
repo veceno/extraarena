@@ -400,12 +400,12 @@ def test_bot_card_level_by_difficulty_table():
     assert BotGenerator._calc_difficulty(0) == "tier_lite_0000"
     assert BotGenerator._calc_difficulty(100) == "tier_easy_0100"
     assert BotGenerator._calc_difficulty(300) == "tier_easy_plus_0300"
-    assert BotGenerator._calc_difficulty(800) == "tier_medium_minus_0600"
+    assert BotGenerator._calc_difficulty(800) == "tier_easy_plus_0600"
     assert BotGenerator._calc_difficulty(2000) == "tier_medium_plus_2000"
     assert BotGenerator._calc_difficulty(9000) == "tier_max_9000"
 
     assert BotGenerator._build_bot_card_levels("lite", 5, 8) == [1] * 8
-    assert BotGenerator._build_bot_card_levels("easy", 5, 8) == [2] * 8
+    assert BotGenerator._build_bot_card_levels("easy", 5, 8) == [1] * 8
 
     # medium/hard no longer get early level advantage
     for _ in range(20):
@@ -432,7 +432,8 @@ def test_ai_profiles_temperature_table():
     profiles = BOT_DIFFICULTY_PROFILES
     assert "tier_lite_0000" in profiles
     assert "tier_easy_0100" in profiles
-    assert "tier_medium_minus_0600" in profiles
+    assert "tier_easy_plus_0600" in profiles
+    assert "tier_medium_minus_1000" in profiles
     assert "tier_medium_plus_2000" in profiles
     assert "tier_max_9000" in profiles
     assert "lite" in profiles
@@ -441,10 +442,10 @@ def test_ai_profiles_temperature_table():
     assert "hard" in profiles
     assert "max" in profiles
 
-    assert profiles["lite"]["temperature_range"] == (5.0, 5.0)
-    assert profiles["tier_easy_0100"]["temperature_range"] == (3.2, 3.2)
-    assert profiles["easy"]["temperature_range"] == (3.2, 3.2)
-    assert profiles["tier_easy_plus_0300"]["temperature_range"] == (2.8, 2.8)
+    assert profiles["lite"]["temperature_range"] == (5.5, 5.5)
+    assert profiles["tier_easy_0100"]["temperature_range"] == (4.0, 4.0)
+    assert profiles["easy"]["temperature_range"] == (4.0, 4.0)
+    assert profiles["tier_easy_plus_0300"]["temperature_range"] == (3.5, 3.5)
     assert profiles["medium"]["temperature_range"] == (1.8, 1.8)
     assert profiles["hard"]["temperature_range"] == (1.6, 1.6)
     assert profiles["tier_max_9000"].get("selection") == "softmax"
@@ -685,14 +686,14 @@ def test_hard_bot_at_800_trophies():
     """Игрок с 800 trophies получает осмысленный mid-game tier."""
     from ai.bot_factory import BotGenerator
     diff = BotGenerator._calc_difficulty(800)
-    assert diff == "tier_medium_minus_0600"
+    assert diff == "tier_easy_plus_0600"
 
 
 def test_lite_easy_always_level_1():
     """lite remains starter-level; easy is still capped below normal play."""
     from ai.bot_factory import BotGenerator
     assert BotGenerator._build_bot_card_levels("lite", 10, 8) == [1] * 8
-    assert BotGenerator._build_bot_card_levels("easy", 10, 8) == [2] * 8
+    assert BotGenerator._build_bot_card_levels("easy", 10, 8) == [1] * 8
 
 
 def test_medium_per_card_level_5():

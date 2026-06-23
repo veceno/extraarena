@@ -21,6 +21,8 @@ def _strong_jwt_secret(monkeypatch):
     monkeypatch.setenv("BOT_TOKEN", "bot-token")
     monkeypatch.setenv("JWT_SECRET", STRONG_TEST_JWT_SECRET)
     monkeypatch.setenv("ADMIN_SESSION_SECRET", "test-admin-session-secret-that-is-long-enough-2026")
+    monkeypatch.setenv("MCP_TOKEN_SECRET", "test-security-mcp-secret-that-is-long-enough-2026")
+    monkeypatch.setenv("MCP_ALLOWED_ORIGINS", "https://test.local")
     monkeypatch.setenv("WEBAPP_HOST", "127.0.0.1")
     get_settings.cache_clear()
     yield
@@ -176,6 +178,11 @@ class SecurityFakeDB:
 
     async def update_idea_status(self, post_id, status):
         return {"success": True, "post_id": post_id, "status": status}
+
+    async def delete_idea(self, post_id):
+        if post_id == 999:
+            return {"success": False, "error": "post_not_found"}
+        return {"success": True, "post_id": post_id}
 
     async def get_bugs_for_admin(self, limit=50, offset=0):
         return [{"id": 1, "title": "Bug"}]
@@ -971,6 +978,68 @@ async def test_community_admin_status_and_bugs_reject_non_admin_header_auth(monk
         assert status_body["error"] == "admin_access_required"
         assert bugs_response.status == 403
         assert bugs_body["error"] == "admin_access_required"
+    finally:
+        await client.close()
+        get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_community_ideas_admin_delete_rejects_query_jwt(monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    get_settings.cache_clear()
+    client, session_id = await _client(db=SecurityFakeDB())
+    try:
+        token = _auth_token(session_id, user_id=web_server.ADMIN_ID)
+        response = await client.post(
+            f"/api/community/ideas/admin/delete?_auth={token}",
+            json={"post_id": 12},
+        )
+        body = await response.json()
+
+        assert response.status == 401
+        assert body["error"] == "query_auth_jwt_not_allowed"
+    finally:
+        await client.close()
+        get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_community_ideas_admin_delete_rejects_non_admin_header_auth(monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    get_settings.cache_clear()
+    client, session_id = await _client(db=SecurityFakeDB())
+    try:
+        token = _auth_token(session_id, user_id=1001)
+        response = await client.post(
+            "/api/community/ideas/admin/delete",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"post_id": 12},
+        )
+        body = await response.json()
+
+        assert response.status == 403
+        assert body["error"] == "admin_access_required"
+    finally:
+        await client.close()
+        get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_community_ideas_admin_delete_allows_admin_header_auth(monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    get_settings.cache_clear()
+    client, session_id = await _client(db=SecurityFakeDB())
+    try:
+        token = _auth_token(session_id, user_id=web_server.ADMIN_ID)
+        response = await client.post(
+            "/api/community/ideas/admin/delete",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"post_id": 12},
+        )
+        body = await response.json()
+
+        assert response.status == 200
+        assert body["success"] is True
     finally:
         await client.close()
         get_settings.cache_clear()

@@ -5,7 +5,7 @@ import asyncio
 import logging
 
 from aiohttp import web
-from aiogram.exceptions import TelegramNetworkError
+from aiogram.exceptions import TelegramConflictError, TelegramNetworkError, TelegramServerError
 
 from infrastructure.config import get_settings
 from infrastructure.support_database import SupportDatabase
@@ -49,6 +49,7 @@ async def main() -> None:
         max_client=support_max_client,
         max_admin_id=settings.support_max_admin_id,
     )
+    support_service.notifier = app["support_admin_notifier"]
     app.router.add_get("/", lambda request: web.HTTPFound("/support/admin"))
     app.router.add_get("/health", lambda request: web.json_response({"status": "ok", "service": "support"}))
     register_support_routes(
@@ -62,7 +63,16 @@ async def main() -> None:
     runner = web.AppRunner(app)
     await runner.setup()
     bound_port = await _start_support_site(runner, host=settings.web_host, port=settings.web_port)
-    logger.info("Support web server started on http://%s:%s", settings.web_host, bound_port)
+    storage_kind = "postgresql" if isinstance(support_db, SupportDatabase) else "json"
+    polling_kind = "active" if (support_telegram_bot and support_telegram_dp) else "inactive"
+    logger.info(
+        "Support web server started on http://%s:%s (storage=%s telegram_polling=%s admin_channel=%s)",
+        settings.web_host,
+        bound_port,
+        storage_kind,
+        polling_kind,
+        settings.support_telegram_admin_id or settings.support_max_admin_id or "none",
+    )
 
     dispatcher = SupportDeliveryDispatcher(
         support_db=support_db,
@@ -124,12 +134,23 @@ async def _start_support_site(runner: web.AppRunner, *, host: str, port: int) ->
 
 
 async def _support_bot_polling_task(bot, dp) -> None:
+    conflict_logged = False
     while True:
         try:
             await bot.delete_webhook(drop_pending_updates=True, request_timeout=10)
             logger.info("Support Telegram webhook removed before polling")
+            conflict_logged = False
             await dp.start_polling(bot)
-        except TelegramNetworkError as exc:
+        except TelegramConflictError as exc:
+            if not conflict_logged:
+                logger.error(
+                    "Support Telegram polling conflict (409): another process already polls this bot token. "
+                    "Only one polling process is allowed per token. Message: %s",
+                    exc,
+                )
+                conflict_logged = True
+            await asyncio.sleep(30)
+        except (TelegramNetworkError, TelegramServerError) as exc:
             logger.warning("Support Telegram polling temporarily unavailable: %s. Retry in 10 seconds.", exc)
             await asyncio.sleep(10)
         except asyncio.CancelledError:

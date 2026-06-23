@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from infrastructure.database import Database
+from web.admin_capabilities import ADMIN_CAPABILITIES
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -10,6 +11,11 @@ ARENA_JS = ROOT / "webapp" / "arena.js"
 ARENA_CSS = ROOT / "webapp" / "arena-styles.css"
 SERVER = ROOT / "web" / "server.py"
 DATABASE = ROOT / "infrastructure" / "database.py"
+
+
+def _admin_tool_enum(tool_id, field):
+    capability = next(cap for cap in ADMIN_CAPABILITIES if cap.id == tool_id)
+    return tuple(capability.input_schema["properties"][field]["enum"])
 
 
 def _fake_db(fetch_returns=None):
@@ -148,6 +154,72 @@ def test_main_ui_uses_shared_premium_nickname_and_public_id_helpers():
 
     assert "PublicPlayerId player={friend}" in source
     assert "PublicPlayerId player={player}" in source
+
+
+def test_profile_cosmetic_class_meta_covers_catalog_rarities_and_unknown_fallback():
+    source = INDEX.read_text(encoding="utf-8")
+    meta_block = source.split("const COSMETIC_CLASS_META = {", 1)[1].split("};", 1)[0]
+    picker_block = source.split("const CosmeticPickerSheet", 1)[1].split(
+        "const ProfileScreen",
+        1,
+    )[0]
+    profile_block = source.split("const ProfileScreen = ", 1)[1].split(
+        "const ConnectionHealthOverlay",
+        1,
+    )[0]
+    admin_rarities = set(_admin_tool_enum("admin.catalog.cards.create", "rarity"))
+    admin_rarities.update(_admin_tool_enum("admin.catalog.items.create", "rarity"))
+
+    for class_name in admin_rarities:
+        assert f"{class_name}:" in meta_block
+        assert f"{class_name}:" in picker_block
+
+    assert "const getCosmeticClassMeta = (className) =>" in source
+    assert "COSMETIC_CLASS_META[key] || COSMETIC_CLASS_META.starter" in source
+    assert "const meta = getCosmeticClassMeta(sel?.class);" in profile_block
+    assert "const bgClass = getCosmeticClassMeta(bgItem?.class);" in profile_block
+    assert "const titleMeta = getCosmeticClassMeta(titleItem?.class);" in profile_block
+    assert "const titleColor = getCosmeticClassMeta(titleRarity).color || accentColor;" in source
+
+    assert "COSMETIC_CLASS_META[sel.class]" not in profile_block
+    assert "COSMETIC_CLASS_META[bgItem.class]" not in profile_block
+    assert "COSMETIC_CLASS_META[titleItem.class]" not in profile_block
+    assert "titleRarity === 'epic'" not in source
+    assert "titleRarity === 'limited'" not in source
+
+
+def test_reward_and_arena_rarity_surfaces_cover_admin_catalog_rarities():
+    source = INDEX.read_text(encoding="utf-8")
+    arena_js = ARENA_JS.read_text(encoding="utf-8")
+    arena_css = ARENA_CSS.read_text(encoding="utf-8")
+    admin_rarities = set(_admin_tool_enum("admin.catalog.cards.create", "rarity"))
+    admin_rarities.update(_admin_tool_enum("admin.catalog.items.create", "rarity"))
+
+    case_block = source.split("const RARITY_COLORS = {", 1)[1].split(
+        "const caseRewardSfxId",
+        1,
+    )[0]
+    collection_block = source.split("const RARITY_COLOR = {", 1)[1].split(
+        "const CARD_TYPE_LABEL",
+        1,
+    )[0]
+    league_reward_block = source.split("const rewardRarityLabel = (rarity) =>", 1)[1].split(
+        "const leagueRewardTitle",
+        1,
+    )[0]
+
+    for rarity in admin_rarities:
+        assert f"{rarity}:" in case_block
+        assert f"{rarity}:" in collection_block
+        assert f"{rarity}:" in league_reward_block
+        assert f"'{rarity}'" in arena_js
+        assert f"title-{rarity}" in arena_css
+        assert f"avatar-class-{rarity}" in arena_css
+
+    assert "function normalizeArenaRarity" in arena_js
+    assert "function applyArenaTitleRarityClass" in arena_js
+    assert "if (rarity === 'mythic'" not in arena_js
+    assert "else if (rarity === 'limited')" not in arena_js
 
 
 def test_arena_uses_tiered_premium_nickname_classes_for_both_players():

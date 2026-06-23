@@ -14,7 +14,9 @@ Legacy `notifications` remains for old cooldown-style notifications such as dice
 | --- | --- | --- |
 | `notif_shop` | `false` | Daily shop particles |
 | `notif_generator` | `true` | Key generator events |
-| `notif_reminders` | `true` | Daily spontaneous reminders |
+| `notif_reminders` | `false` | Daily spontaneous reminders |
+| `notif_daily_rewards` | `true` | Daily login reward availability |
+| `notif_extra_arena_modifiers` | `true` | ExtraArena modifier change events |
 | `notif_squad_member_role` | `true` | Squad promote/demote notifications |
 | `notif_squad_new_member` | `true` | New squad member notifications |
 | `notif_squad_disbanded` | `true` | Squad disband notifications |

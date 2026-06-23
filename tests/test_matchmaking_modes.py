@@ -542,7 +542,145 @@ async def test_explicit_bot_difficulty_override_ignores_streak_adjustment():
 
 
 @pytest.mark.asyncio(loop_scope="function")
-async def test_invalid_explicit_bot_difficulty_returns_controlled_cancel_payload():
+async def test_streak_adjustment_applied_when_no_explicit_override_classic():
+    """Classic mode without difficulty_override MUST apply streak adjustment (loss pity)."""
+    factory = DifficultyCaptureBotFactory()
+    mm = Matchmaker(
+        db=StreakDB("loss", 6),
+        bot_factory=factory,
+        battle_engine=None,
+        soft_start_bot_delay_range=(0.0, 0.0),
+    )
+    # trophies=1200 -> mid band: loss_threshold=5, streak_length=6 -> 6%5!=0 -> inactive.
+    # Use length=5 so 5%5==0 -> n=1 -> shift down 1 from tier_medium_1200 -> tier_medium_minus_1000.
+    mm2 = Matchmaker(
+        db=StreakDB("loss", 5),
+        bot_factory=DifficultyCaptureBotFactory(),
+        battle_engine=None,
+        soft_start_bot_delay_range=(0.0, 0.0),
+    )
+    factory2 = mm2._bot_factory
+    result = await mm2._create_bot_match(
+        user_id=101,
+        trophies=1200,
+        user_max_level=4,
+        selected_deck_id=1,
+        game_mode="classic",
+        streak_adjustment=Matchmaker._streak_adjustment_for(1200, "loss", 5),
+    )
+
+    assert result["status"] == "found"
+    # tier_medium_1200 is index 5; down 1 -> index 4 = tier_medium_minus_1000
+    assert factory2.calls[0]["difficulty"] == "tier_medium_minus_1000"
+    assert result["bot_info"]["difficulty"] == "tier_medium_minus_1000"
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_training_mode_keeps_explicit_difficulty_override_without_streak():
+    """Training mode should honor client difficulty_override and ignore streak entirely."""
+    factory = DifficultyCaptureBotFactory()
+    mm = Matchmaker(
+        db=StreakDB("loss", 5),
+        bot_factory=factory,
+        battle_engine=None,
+        soft_start_bot_delay_range=(0.0, 0.0),
+    )
+
+    result = await mm._create_bot_match(
+        user_id=101,
+        trophies=1200,
+        user_max_level=4,
+        selected_deck_id=1,
+        game_mode="training",
+        difficulty_override="max",
+        streak_adjustment=Matchmaker._streak_adjustment_for(1200, "loss", 5),
+    )
+
+    assert result["status"] == "found"
+    assert factory.calls[0]["difficulty"] == "tier_max_9000"
+    assert result["bot_info"]["difficulty"] == "tier_max_9000"
+
+
+class DisplayNameCaptureFactory(BotGenerator):
+    """BotGenerator stub that records the player_display_name it receives."""
+    def __init__(self):
+        super().__init__(database=FakeDB())
+        self.last_player_display_name = "NOT_CALLED"
+
+    async def get_or_create_bot(
+        self,
+        player_id,
+        player_trophies,
+        difficulty_override=None,
+        player_display_name=None,
+    ):
+        self.last_player_display_name = player_display_name
+        return {
+            "user_id": -900000555,
+            "name": "StubBot",
+            "avatar_url": None,
+            "difficulty": "tier_medium_1200",
+            "deck_ids": list(range(1, 10)),
+            "cosmetics": {},
+            "extra_pass": None,
+            "trophies": 1200,
+            "difficulty_label": "medium",
+            "strength_tier": "tier_medium_1200",
+            "brain_profile": "extra-lr-v4-opti",
+            "selection": "softmax",
+            "temperature": 1.8,
+            "card_level_policy": {"delta_min": 0, "delta_max": 0, "cap": 5, "boost_fraction": 0.0},
+            "deck_policy": "decent_donor",
+        }
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_create_bot_match_threads_player_display_name_to_factory():
+    """_create_bot_match must forward player_display_name to the BotGenerator fallback."""
+    factory = DisplayNameCaptureFactory()
+    mm = Matchmaker(
+        db=FakeDB(),
+        bot_factory=factory,
+        battle_engine=None,
+        soft_start_bot_delay_range=(0.0, 0.0),
+    )
+
+    result = await mm._create_bot_match(
+        user_id=101,
+        trophies=1200,
+        user_max_level=4,
+        selected_deck_id=1,
+        game_mode="classic",
+        player_display_name="Alice",
+    )
+
+    assert result["status"] == "found"
+    assert factory.last_player_display_name == "Alice"
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_create_bot_match_player_display_name_defaults_none_when_omitted():
+    """When no player_display_name is supplied, the factory receives None (no crash)."""
+    factory = DisplayNameCaptureFactory()
+    mm = Matchmaker(
+        db=FakeDB(),
+        bot_factory=factory,
+        battle_engine=None,
+        soft_start_bot_delay_range=(0.0, 0.0),
+    )
+
+    result = await mm._create_bot_match(
+        user_id=101,
+        trophies=1200,
+        user_max_level=4,
+        selected_deck_id=1,
+        game_mode="classic",
+    )
+
+    assert result["status"] == "found"
+    assert factory.last_player_display_name is None
+
+
     mm = Matchmaker(
         db=FakeDB(),
         bot_factory=MinimalBotFactory(),
@@ -629,10 +767,11 @@ def test_streak_adjustment_thresholds_and_exact_multiples():
     assert Matchmaker._streak_adjustment_for(250, "win", 5).n == 1
     assert Matchmaker._streak_adjustment_for(250, "win", 6).active is False
 
-    assert Matchmaker._streak_adjustment_for(300, "loss", 2).n == 1
-    assert Matchmaker._streak_adjustment_for(300, "win", 5).n == 1
-    assert Matchmaker._streak_adjustment_for(300, "loss", 5).active is False
-    assert Matchmaker._streak_adjustment_for(300, "loss", 6).n == 3
+    # 300 trophies now falls in the mid band (< MM_TROPHY_LIMIT_CLASSIC): loss every 5, win every 3.
+    assert Matchmaker._streak_adjustment_for(300, "loss", 2).active is False
+    assert Matchmaker._streak_adjustment_for(300, "win", 3).n == 1
+    assert Matchmaker._streak_adjustment_for(300, "loss", 5).n == 1
+    assert Matchmaker._streak_adjustment_for(300, "loss", 10).n == 2
     assert Matchmaker._streak_adjustment_for(301, "loss", 5).n == 1
     assert Matchmaker._streak_adjustment_for(1200, "win", 6).n == 2
 

@@ -23,6 +23,8 @@ def _strong_jwt_secret(monkeypatch):
     monkeypatch.setenv("BOT_TOKEN", "bot-token")
     monkeypatch.setenv("JWT_SECRET", STRONG_TEST_JWT_SECRET)
     monkeypatch.setenv("ADMIN_SESSION_SECRET", "test-admin-workflow-session-secret-that-is-long-enough-2026")
+    monkeypatch.setenv("MCP_TOKEN_SECRET", "test-admin-workflow-mcp-secret-that-is-long-enough-2026")
+    monkeypatch.setenv("MCP_ALLOWED_ORIGINS", "https://example.test")
     monkeypatch.setenv("WEBAPP_HOST", "127.0.0.1")
     get_settings.cache_clear()
     yield
@@ -146,6 +148,12 @@ class AdminWorkflowDB:
         if isinstance(identity, int) or str(identity).isdigit():
             return self.cosmetics.get(int(identity))
         return next((row for row in self.cosmetics.values() if row.get("slug") == str(identity)), None)
+
+    async def get_card_info(self, card_id):
+        card_id = int(card_id)
+        if card_id == 46:
+            return {"id": 46, "name": "Reward Card", "card_type": "warrior"}
+        return None
 
     async def create_cosmetic_item(self, **kwargs):
         if any(row["slug"] == kwargs["slug"] for row in self.cosmetics.values()):
@@ -735,19 +743,64 @@ async def test_admin_extra_pass_season_rewards_and_player_pass_workflow(monkeypa
         assert tier_response.status == 200
         tier_id = tier_body["tier"]["id"]
 
-        invalid_reward_type = await client.post(
+        cosmetic_create = await client.post(
+            "/api/admin/cosmetics/create",
+            headers=headers,
+            json={
+                "slug": "avatar_gold",
+                "item_type": "avatar",
+                "class": "gold",
+                "name": "Gold Avatar",
+                "asset_path": "/DesignAssets/PlayerCosmetics/Avatars/Admin/avatar_gold.png",
+            },
+        )
+        assert cosmetic_create.status == 200
+
+        particles_reward = await client.post(
             "/api/admin/rewards/tracks/create",
             headers=headers,
             json={
                 "track_type": f"s{draft_id}_pass",
                 "position": 3,
                 "reward_type": "particles",
+                "reward_amount": 25,
+                "reward_meta": {"card_id": 46},
+                "extra_pass_required": True,
+            },
+        )
+        particles_body = await particles_reward.json()
+        assert particles_reward.status == 200
+        assert particles_body["tier"]["reward_type"] == "particles"
+
+        cosmetic_reward = await client.post(
+            "/api/admin/rewards/tracks/create",
+            headers=headers,
+            json={
+                "track_type": f"s{draft_id}_pass",
+                "position": 4,
+                "reward_type": "cosmetic",
+                "reward_amount": 1,
+                "reward_meta": {"cosmetic_slug": "avatar_gold", "auto_equip": True},
+                "extra_pass_required": True,
+            },
+        )
+        cosmetic_body = await cosmetic_reward.json()
+        assert cosmetic_reward.status == 200
+        assert cosmetic_body["tier"]["reward_type"] == "cosmetic"
+
+        invalid_particles = await client.post(
+            "/api/admin/rewards/tracks/create",
+            headers=headers,
+            json={
+                "track_type": f"s{draft_id}_pass",
+                "position": 5,
+                "reward_type": "particles",
                 "reward_amount": 1,
                 "extra_pass_required": True,
             },
         )
-        assert invalid_reward_type.status == 400
-        assert (await invalid_reward_type.json())["error"] == "unsupported_reward_type"
+        assert invalid_particles.status == 400
+        assert (await invalid_particles.json())["error"] == "reward_card_id_required"
 
         out_of_scope = await client.post(
             "/api/admin/rewards/tracks/create",

@@ -18,6 +18,26 @@ The Android shell now owns the first-run account flow:
 - hidden connection switching is available only while the native loading screen
   is visible; the live WebView never receives a transparent dev overlay
 
+## Connection Profiles & Location-Based Routing
+
+Two production hosts back the same backend (see `docs/EXTRAARENA_SPACE_CLOUDFLARE.md`):
+
+- `app.extraarena.space` — Cloudflare tunnel, non-RU traffic (built-in profile `extraarena_worldwide`).
+- `app.laveqox.ru` — direct RU entrypoint (built-in profile `extraarena_ru`).
+
+Both are seeded as built-in connection profiles in `ConnectionProfileStore`. On first run, when
+no profile has been selected yet, the shell auto-selects one from the device region
+(`RegionDetector`: SIM country / network country / locale / timezone — no runtime permission
+required): RU devices get `extraarena_ru`, everyone else `extraarena_worldwide`. This runs at most
+once; a pre-existing selection (including a manual override via the hidden switcher) is respected.
+
+Because the WebView page is served from the APK (`shouldInterceptRequest`), the Cloudflare edge
+RU-redirect (which only rewrites page navigations) does not apply to the Android app — `/api` and
+`/socket.io` go to whatever host the selected profile points at, so the app must pick the host
+itself. If the selected built-in host is unreachable (`/health` probe fails), the shell falls back
+to the other built-in host before loading. `BaseUrlStore.isTestServer()` treats both built-in
+production hosts as production; only custom profiles count as test servers.
+
 The Android shell loads the same web frontend with:
 
 ```text

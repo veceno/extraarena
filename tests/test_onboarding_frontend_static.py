@@ -141,6 +141,55 @@ def test_arena_tutorial_click_guard_blocks_card_info_and_allows_modal_close():
     )
 
 
+def test_arena_tutorial_hides_card_info_controls_and_guards_modal_open():
+    script = ARENA_JS.read_text(encoding="utf-8")
+    helper_block = script.split("function shouldShowCardInfoControls()", 1)[1].split(
+        "function shouldBypassPrebattleForOnboarding",
+        1,
+    )[0]
+    hand_card_block = script.split("function createHandCardElement", 1)[1].split(
+        "function addStatusIcons",
+        1,
+    )[0]
+    board_card_block = script.split("function createBoardCardElement", 1)[1].split(
+        "// ДОБАВЛЕНО: Имя карты на поле",
+        1,
+    )[0]
+    modal_block = script.split("function openCardInfo(card)", 1)[1].split(
+        "function closeCardInfo",
+        1,
+    )[0]
+    tutorial_update_block = script.split("function updateOnboardingTutorialFromState(state)", 1)[1].split(
+        "function showOnboardingTutorialFeedback",
+        1,
+    )[0]
+
+    assert "return !isOnboardingTutorialState();" in helper_block
+    assert "const showCardInfoControls = shouldShowCardInfoControls();" in hand_card_block
+    assert "cardType === 'potion' && showCardInfoControls" in hand_card_block
+    assert hand_card_block.count("if (showCardInfoControls) {") >= 1
+    assert "const showCardInfoControls = shouldShowCardInfoControls();" in board_card_block
+    assert "if (showCardInfoControls) {" in board_card_block
+    assert modal_block.index("if (isOnboardingTutorialState()) return;") < modal_block.index(
+        "openBattleModal('card-info')"
+    )
+    assert "if (activeBattleModal === 'card-info') {" in tutorial_update_block
+    assert "closeBattleModal();" in tutorial_update_block
+
+
+def test_arena_tutorial_wrong_click_keeps_auto_advance_on_enemy_turn():
+    script = ARENA_JS.read_text(encoding="utf-8")
+    feedback_block = script.split("function showOnboardingTutorialFeedback", 1)[1].split(
+        "function handleOnboardingActionPayload",
+        1,
+    )[0]
+
+    assert "const shouldKeepAutoAdvance = Boolean(tutorial?.is_auto_step);" in feedback_block
+    assert "if (!shouldKeepAutoAdvance) {\n    clearOnboardingAutoAdvance();" in feedback_block
+    assert "scheduleOnboardingAutoAdvance(tutorial);" not in feedback_block
+    assert "scheduleOnboardingAutoAdvance(getOnboardingTutorial());" not in feedback_block
+
+
 def test_arena_tutorial_blocks_timer_keyboard_shortcut():
     script = ARENA_JS.read_text(encoding="utf-8")
     keydown_block = script.split("timerBtn.addEventListener('keydown', function(e)", 1)[1].split(
@@ -156,7 +205,7 @@ def test_arena_shell_cache_busts_battle_assets_for_telegram_webapp():
     markup = ARENA_HTML.read_text(encoding="utf-8")
     server = SERVER.read_text(encoding="utf-8")
 
-    version = "arena-onboarding-20260620-1"
+    version = "arena-onboarding-20260622-card-info-1"
     assert f'content="{version}"' in markup
     assert f"safe-area.js?v={version}" in markup
     assert f"arena-styles.css?v={version}" in markup

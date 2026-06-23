@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 
 from core.converter import card_from_db
@@ -105,9 +106,24 @@ def test_startup_schema_runs_repeatable_balance_seed():
 
     assert "async def _seed_balance_cards" in source
     assert "await self._seed_balance_cards()" in source
+    assert "async def _insert_missing_cards_from_json" in source
+    assert "await self._insert_missing_cards_from_json()" in source
     assert source.index("cards_changed = await self._ensure_cards_table()") < source.index(
         "await self._seed_balance_cards()"
     )
+    assert source.index("await self.execute(sql)") < source.index("await self._insert_missing_cards_from_json()")
+
+
+def test_json_catalog_cards_missing_from_balance_seed_are_startup_synced():
+    sql = (ROOT / "infrastructure/sql/2026_05_30_balance_cards.sql").read_text(encoding="utf-8")
+    sql_ids = {int(match) for match in re.findall(r"\(\s*(\d+)\s*,", sql)}
+    cards = _load_cards("cards.json")
+
+    missing_from_seed = sorted(set(cards) - sql_ids)
+
+    assert len(cards) == 44
+    assert len(sql_ids) == 26
+    assert missing_from_seed == [3, 5, 8, 10, 11, 12, 13, 14, 15, 16, 17, 19, 21, 26, 28, 32, 33, 35]
 
 
 def test_startup_schema_forces_touka_random_battlecry():

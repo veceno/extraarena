@@ -43,6 +43,7 @@ class BotGenerator:
         player_id: int,
         player_trophies: int,
         difficulty_override: str | None = None,
+        player_display_name: str | None = None,
     ) -> dict[str, Any]:
         """
         Try to reuse an existing bot; fallback to creation.
@@ -54,6 +55,7 @@ class BotGenerator:
                 player_id,
                 player_trophies,
                 difficulty_override=difficulty,
+                player_display_name=player_display_name,
             )
 
         # 1. Collect recent bot opponents to exclude
@@ -114,16 +116,21 @@ class BotGenerator:
 
         # 3. Fallback: generate a new bot
         self._logger.info("No reusable bot found, generating new one for player %s", player_id)
-        return await self._generate_bot(player_id, player_trophies)
+        return await self._generate_bot(
+            player_id, player_trophies, player_display_name=player_display_name,
+        )
 
     async def create_persistent_bot(
         self,
         player_id: int,
         player_trophies: int,
         player_avg_level: int,
+        player_display_name: str | None = None,
     ) -> dict[str, Any]:
         """Legacy compatibility wrapper."""
-        return await self.get_or_create_bot(player_id, player_trophies)
+        return await self.get_or_create_bot(
+            player_id, player_trophies, player_display_name=player_display_name,
+        )
 
     # ------------------------------------------------------------------
     # Bot generation
@@ -134,6 +141,7 @@ class BotGenerator:
         player_id: int,
         player_trophies: int,
         difficulty_override: str | None = None,
+        player_display_name: str | None = None,
     ) -> dict[str, Any]:
         """Generate a brand new bot and persist everything."""
         # 1. Deck: try donor first
@@ -159,7 +167,9 @@ class BotGenerator:
             self._logger.warning("No donor deck, using random catalog deck")
             deck_ids = await self._build_bot_deck(player_trophies)
         deck_ids = await self._sanitize_deck(deck_ids)
-        bot_name, bot_avatar_url = await self._get_random_donor_name(player_id)
+        bot_name, bot_avatar_url = await self._get_random_donor_name(
+            player_id, player_display_name=player_display_name,
+        )
 
         # 2. Trophies: player ± N, no hard cap, min 0
         n = max(25, min(round(player_trophies * 0.08), 500))
@@ -301,12 +311,26 @@ class BotGenerator:
 
     async def _get_random_donor_name(
         self, exclude_user_id: int,
+        player_display_name: str | None = None,
     ) -> tuple[str, str | None]:
         try:
             users = await self._db.get_random_users_with_avatars(10, exclude_user_id)
             if users:
-                pick = random.choice(users)
-                return pick.get("display_name", f"Бот {random.randint(1000, 9999)}"), pick.get("img")
+                filtered = users
+                if player_display_name:
+                    target = str(player_display_name).strip().lower()
+                    filtered = [
+                        u for u in users
+                        if str(u.get("display_name", "")).strip().lower() != target
+                    ]
+                if filtered:
+                    pick = random.choice(filtered)
+                    return pick.get("display_name", f"Бот {random.randint(1000, 9999)}"), pick.get("img")
+                # Все доноры совпали с ником игрока — используем генерический ник бота.
+                self._logger.info(
+                    "All sampled donor names matched player display_name=%s; using generic bot name",
+                    player_display_name,
+                )
         except Exception as exc:
             self._logger.warning("random donor name lookup failed: %s", exc, exc_info=True)
         name = f"Бот {random.randint(1000, 9999)}"

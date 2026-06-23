@@ -1,0 +1,7 @@
+tunnel: extraarena-space
+credentials-file: /home/veceno/.cloudflared/extraarena-space.json
+
+ingress:
+  - hostname: app.extraarena.space
+    service: http://127.0.0.1:8081
+  - service: http_status:404

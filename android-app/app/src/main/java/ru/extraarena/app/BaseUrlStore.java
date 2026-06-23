@@ -28,8 +28,12 @@ final class BaseUrlStore {
 
     static boolean isTestServer(Context context) {
         ConnectionProfileStore.ConnectionProfile selected = ConnectionProfileStore.getSelectedProfile(context);
-        return !ConnectionProfileStore.DEFAULT_PROFILE_ID.equals(selected.id)
-                || !normalize(BuildConfig.DEFAULT_BASE_URL).equals(selected.baseUrl);
+        if (ConnectionProfileStore.isBuiltIn(selected.id)) {
+            String url = normalize(selected.baseUrl);
+            return !url.equals(normalize(BuildConfig.DEFAULT_BASE_URL))
+                    && !url.equals(normalize(BuildConfig.RU_BASE_URL));
+        }
+        return true;
     }
 
     static String join(String baseUrl, String path) {

@@ -54,6 +54,7 @@ class QueueEntry:
     canonical_mode: str = "classic"
     search_generation: int = 0
     streak_adjustment: StreakAdjustment = field(default_factory=StreakAdjustment)
+    player_display_name: str | None = None
     active_window: TrophySearchWindow = field(
         default_factory=lambda: TrophySearchWindow(-SEARCH_WINDOWS[0], SEARCH_WINDOWS[0], SEARCH_WINDOWS[0])
     )
@@ -156,7 +157,7 @@ class Matchmaker:
             return StreakAdjustment()
 
         normalized_kind = "loss" if kind == "lose" else kind
-        if trophies_value <= MM_TROPHY_LIMIT_CLASSIC:
+        if trophies_value < MM_TROPHY_LIMIT_CLASSIC:
             loss_threshold = 2
             win_threshold = 5
         elif trophies_value >= 5000:
@@ -258,6 +259,7 @@ class Matchmaker:
         game_mode: str = "classic",
         search_generation: int = 0,
         streak_adjustment: StreakAdjustment | None = None,
+        player_display_name: str | None = None,
     ) -> Dict[str, Any]:
         delay = self._soft_start_delay_seconds()
         if delay > 0:
@@ -284,6 +286,7 @@ class Matchmaker:
             selected_deck_id,
             game_mode=game_mode,
             streak_adjustment=streak_adjustment,
+            player_display_name=player_display_name,
         )
         async with self._lock:
             if self._current_user_generation_locked(user_id) != int(search_generation or 0):
@@ -318,6 +321,17 @@ class Matchmaker:
             return {"status": "error", **match_modes.mode_unavailable_payload(canonical)}
 
         streak_adjustment = await self._load_streak_adjustment(user_id, trophies)
+
+        player_display_name: str | None = None
+        try:
+            reader = getattr(self._db, "get_display_name", None)
+            if callable(reader):
+                maybe_name = reader(user_id)
+                resolved = await maybe_name if asyncio.iscoroutine(maybe_name) else maybe_name
+                if isinstance(resolved, str) and resolved.strip():
+                    player_display_name = resolved.strip()
+        except Exception as exc:  # noqa: BLE001
+            self._logger.warning("Failed to load display name for user_id=%s: %s", user_id, exc, exc_info=True)
 
         # Soft Start: only if bots_allowed and trophies < threshold
         if mode_config.classic.bots_allowed and trophies < MM_TROPHY_LIMIT_CLASSIC:
@@ -358,6 +372,7 @@ class Matchmaker:
                                 game_mode=canonical,
                                 search_generation=search_generation,
                                 streak_adjustment=streak_adjustment,
+                                player_display_name=player_display_name,
                             )
                         )
                         self._soft_start_tasks[soft_key] = task
@@ -396,6 +411,7 @@ class Matchmaker:
             game_mode=game_mode,
             canonical_mode=canonical,
             streak_adjustment=streak_adjustment,
+            player_display_name=player_display_name,
         )
 
         async with self._lock:
@@ -669,6 +685,7 @@ class Matchmaker:
                 selected_deck_id=seeker.selected_deck_id,
                 game_mode=game_mode,
                 streak_adjustment=seeker.streak_adjustment,
+                player_display_name=seeker.player_display_name,
             )
         except Exception as exc:
             self._logger.error(
@@ -816,6 +833,7 @@ class Matchmaker:
         difficulty_override: str | None = None,
         difficulty: str | None = None,
         streak_adjustment: StreakAdjustment | None = None,
+        player_display_name: str | None = None,
     ) -> Dict[str, Any]:
         """
         Генерация боя против бота.
@@ -907,6 +925,7 @@ class Matchmaker:
                     "user_max_level": user_max_level,
                     "difficulty": effective_difficulty_override,
                     "difficulty_override": effective_difficulty_override,
+                    "player_display_name": player_display_name,
                 }
                 try:
                     signature = inspect.signature(factory_callable)
@@ -988,6 +1007,7 @@ class Matchmaker:
                 player_id=user_id,
                 player_trophies=trophies,
                 difficulty_override=effective_difficulty_override,
+                player_display_name=player_display_name,
             )
             opponent_id = bot_profile.get("user_id", -1)
             bot_name = bot_profile.get("name")

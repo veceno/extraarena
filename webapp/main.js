@@ -3834,7 +3834,7 @@ async function createPayment(itemType, amount, description, metadata = {}) {
     normalizedMetadata.amount_rub = normalizedMetadata.amount_rub || amount;
 
     const androidShell = isAndroidAppShell();
-    const paymentEndpoint = androidShell ? "/api/payments/create" : "/api/payments/checkout/start";
+    const paymentEndpoint = "/api/payments/checkout/start";
     const response = await fetch(`${paymentEndpoint}?_auth=${authParam}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -3873,7 +3873,7 @@ async function createPayment(itemType, amount, description, metadata = {}) {
       return;
     }
 
-    const paymentUrl = androidShell ? result.confirmation_url : result.checkout_url;
+    const paymentUrl = result.checkout_url;
     if (paymentUrl) {
       const checkoutFullUrl = paymentUrl;
       if (result.checkout_jti) {

@@ -28,6 +28,9 @@ SHOP_PARTICLES_UPDATER = Path("android-app/app/src/main/java/ru/extraarena/app/S
 SHOP_PARTICLES_LAYOUT = Path("android-app/app/src/main/res/layout/widget_shop_particles.xml")
 SHOP_PARTICLES_INFO = Path("android-app/app/src/main/res/xml/shop_particles_widget.xml")
 STRINGS = Path("android-app/app/src/main/res/values/strings.xml")
+CONNECTION_PROFILE_STORE = Path("android-app/app/src/main/java/ru/extraarena/app/ConnectionProfileStore.java")
+BASE_URL_STORE = Path("android-app/app/src/main/java/ru/extraarena/app/BaseUrlStore.java")
+REGION_DETECTOR = Path("android-app/app/src/main/java/ru/extraarena/app/RegionDetector.java")
 
 
 def _battle_history_sheet_source():
@@ -588,6 +591,27 @@ def test_android_webview_auth_prefers_native_session_after_apk_update():
     assert "sessionStorage.getItem(EXTRA_ID_TOKEN_SESSION_KEY)" in source
     assert "public String getAuthToken()" in native
     assert "new URL(location.href).searchParams.get('_auth')" in native
+
+
+def test_telegram_collection_auth_drops_stale_url_session_token():
+    source = INDEX.read_text(encoding="utf-8")
+    candidates_block = source.split("function getUiAuthCandidates", 1)[1].split(
+        "return candidates;",
+        1,
+    )[0]
+
+    assert "TELEGRAM_AUTH_SESSION_MAX_AGE_SECONDS = 23 * 60 * 60" in source
+    assert "function isStaleTelegramInitDataToken(token)" in source
+    assert "sessionStorage.removeItem(EXTRA_URL_AUTH_SESSION_KEY)" in source
+    assert "if (isStaleTelegramInitDataToken(token))" in source
+    assert "if (sessionToken && isStaleTelegramInitDataToken(sessionToken))" in source
+    assert "clean.searchParams.delete('_auth')" in source
+    assert candidates_block.index("add('auth', getNativeAuthToken(), 'native_extra_id')") < candidates_block.index(
+        "add('auth', getUrlAuthToken(), 'url_auth')"
+    )
+    assert candidates_block.index("add('auth', tg?.initData, 'telegram')") < candidates_block.index(
+        "add('auth', getUrlAuthToken(), 'url_auth')"
+    )
 
 
 def test_webapp_moves_jwt_auth_query_params_to_authorization_header():
@@ -1289,6 +1313,27 @@ def test_mobile_social_and_community_fetches_bypass_browser_cache_after_mutation
     assert source.count("invalidateCommunityCaches();") >= 3
 
 
+def test_webapp_ideas_section_has_read_more_and_admin_controls_and_bug_reports():
+    source = INDEX.read_text(encoding="utf-8")
+
+    assert "const IdeaCard = ({item, onVote, isAdmin, onStatusChange, onDelete}) => {" in source
+    assert "const BugCard = ({item, onStatusChange, onDelete}) => {" in source
+    assert "'Читать далее...'" in source
+    assert "const IdeasSubScreen = ({isAdmin}) => {" in source
+    assert "isAdmin={userRole.is_admin}" in source
+    assert "fetch(_buildAuthUrl('/api/community/bugs?limit=50'), {cache:'no-store'})" in source
+    assert "fetch(_buildAuthUrl('/api/community/ideas/admin/delete'),{method:'POST'" in source
+    assert "fetch(_buildAuthUrl('/api/community/ideas/admin/status'),{method:'POST'" in source
+    assert "<option value=\"reviewing\">На рассмотрении</option>" in source
+    assert "<option value=\"in_progress\">В работе</option>" in source
+    assert "<option value=\"rejected\">Отвергнута</option>" in source
+    assert "setView('bugs')" in source
+    assert "setView('ideas')" in source
+    assert "loadBugs" in source
+    assert "handleDelete" in source
+    assert "handleStatusChange" in source
+
+
 def test_server_allows_static_assets_to_be_cached_by_mobile_shell():
     server = WEB_SERVER.read_text(encoding="utf-8")
 
@@ -1332,3 +1377,94 @@ def test_mobile_bootstrap_endpoints_aggregate_existing_game_handlers_without_for
     assert "/api/mobile/battle-bootstrap" in source
     assert "/api/mobile/squads-bootstrap" in source
     assert "loadDataFallback" in source
+
+
+def test_android_app_has_two_built_in_connection_profiles_for_ru_and_worldwide():
+    build = APP_BUILD.read_text(encoding="utf-8")
+    store = CONNECTION_PROFILE_STORE.read_text(encoding="utf-8")
+
+    # Two production hosts compiled in: worldwide (Cloudflare tunnel) + RU-direct.
+    assert "https://app.extraarena.space/" in build
+    assert "https://app.laveqox.ru/" in build
+    assert 'RU_BASE_URL' in build
+    # Staging host is no longer the default.
+    assert "clumsily-deft-guan.cloudpub.ru" not in build
+
+    # Both profiles are seeded as built-ins.
+    assert 'DEFAULT_PROFILE_ID = "extraarena_worldwide"' in store
+    assert 'RU_PROFILE_ID = "extraarena_ru"' in store
+    assert "BUILT_IN_IDS" in store
+    assert "ensureBuiltInProfiles" in store
+    assert "ruProfile()" in store
+    assert "autoSelectIfNeeded" in store
+    assert "otherBuiltIn" in store
+    assert "isBuiltIn" in store
+
+
+def test_android_main_activity_auto_selects_profile_by_region_with_health_fallback():
+    native = MAIN_ACTIVITY.read_text(encoding="utf-8")
+    region = REGION_DETECTOR.read_text(encoding="utf-8")
+    store = CONNECTION_PROFILE_STORE.read_text(encoding="utf-8")
+
+    assert "RegionDetector" in native
+    assert "selectInitialProfileIfNeeded" in native
+    assert "autoSelectIfNeeded" in native
+    # Health-probe fallback to the other built-in host when the selected one is unreachable.
+    assert "otherBuiltIn" in native
+    assert "isBuiltIn" in native
+    assert "isServerAvailable" in native
+
+    assert "isLikelyRu" in region
+    assert "getSimCountryIso" in region
+    assert "getNetworkCountryIso" in region
+    assert "RU_TIMEZONES" in region
+
+    # autoSelect runs at most once and respects a pre-existing manual selection.
+    assert "pref_auto_selected_profile" in store
+    assert 'KEY_AUTO_SELECTED' in store
+
+
+def test_android_base_url_store_treats_both_production_hosts_as_non_test():
+    base = BASE_URL_STORE.read_text(encoding="utf-8")
+    assert "isBuiltIn" in base
+    assert "RU_BASE_URL" in base
+    assert "DEFAULT_BASE_URL" in base
+
+
+def test_webapp_cosmetics_and_squad_images_fall_back_to_bundled_defaults_on_error():
+    source = INDEX.read_text(encoding="utf-8")
+
+    # Bundled default cosmetics used as the standard fallback (tier 3).
+    assert "ratingDefaultAvatar" in source
+    assert "ratingDefaultBackground" in source
+    assert "/DesignAssets/PlayerCosmetics/Avatars/1.png" in source
+    assert "/DesignAssets/PlayerCosmetics/Background/7.png" in source
+    # Cosmetic <img> renders swap to the bundled default on error instead of showing a broken image.
+    assert source.count("e.currentTarget.src=ratingDefaultAvatar") >= 1
+    assert source.count("e.currentTarget.src=ratingDefaultBackground") >= 2
+    # Squad avatar degrades to the letter-avatar on fetch failure (no empty circle).
+    assert "const [imgFailed, setImgFailed]" in source
+    assert "onError={()=>setImgFailed(true)}" in source
+    # Squad banner layers a solid gradient under the image so failure degrades to the gradient.
+    assert source.count(", linear-gradient(145deg,${T.purple3},${T.bgDeep})") >= 3
+
+
+def test_arena_prebattle_background_falls_back_to_default_background_on_error():
+    arena = ARENA.read_text(encoding="utf-8")
+
+    assert "fallbackUrl" in arena
+    assert "img.onerror" in arena
+    assert "/DesignAssets/PlayerCosmetics/Background/7.png" in arena
+    # The prebattle background render passes the default as the fallback URL.
+    assert "profile?.background_url, '/DesignAssets/PlayerCosmetics/Background/7.png'" in arena
+
+
+def test_server_serves_cosmetic_detail_by_id_or_slug_for_mobile_fallback_chain():
+    server = WEB_SERVER.read_text(encoding="utf-8")
+
+    assert "cosmetic_detail_handler" in server
+    assert '"/api/cosmetics/{identity}"' in server or '"/api/cosmetics/{identity}"' in server
+    assert "get_cosmetic_item" in server
+    assert "is_active" in server
+    # Squad images cached long enough to stay "saved locally" on mobile between sessions.
+    assert "max-age=2592000" in server

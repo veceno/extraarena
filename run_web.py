@@ -79,6 +79,13 @@ async def main() -> None:
         from infrastructure.robokassa_payments import RobokassaPaymentService
         robokassa_payment_service = RobokassaPaymentService(settings.robokassa)
 
+    support_admin_notifier = SupportAdminNotifier(
+        max_client=support_max_client,
+        max_admin_id=settings.support_max_admin_id,
+    )
+    if support_service is not None:
+        support_service.notifier = support_admin_notifier
+
     web_app = create_web_app(
         db=db,
         bot_token=settings.bot_token,
@@ -105,10 +112,7 @@ async def main() -> None:
         shop_allow_max_level_particles=settings.shop_allow_max_level_particles,
         support_service=support_service,
         support_max_client=support_max_client,
-        support_admin_notifier=SupportAdminNotifier(
-            max_client=support_max_client,
-            max_admin_id=settings.support_max_admin_id,
-        ),
+        support_admin_notifier=support_admin_notifier,
     )
 
     runner = web.AppRunner(web_app)
@@ -116,6 +120,12 @@ async def main() -> None:
     site = web.TCPSite(runner, host=settings.web_host, port=settings.web_port)
     await site.start()
 
+    if support_service is not None:
+        storage_kind = "postgresql" if isinstance(support_db, SupportDatabase) else "json"
+        logger.info(
+            "Support subsystem ready: storage=%s telegram_polling=inactive (run_web.py does not start support bot polling)",
+            storage_kind,
+        )
     logger.info("WebApp сервер запущен на http://%s:%s", settings.web_host, settings.web_port)
     support_delivery_task = (
         asyncio.create_task(_support_delivery_task(support_delivery_dispatcher))

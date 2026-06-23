@@ -1617,6 +1617,34 @@ def test_mcp_extrapass_reward_import_accepts_specific_card_and_rejects_bad_card_
         )
 
 
+def test_mcp_extrapass_reward_import_accepts_special_reward_types_and_aliases():
+    season = {
+        "free_track_type": "bp_free",
+        "pass_track_type": "bp_premium",
+        "ultra_track_type": "bp_ultra",
+        "max_stars": 45,
+        "pass_end_position": 40,
+        "ultra_start_position": 41,
+    }
+
+    rows = mcp_admin_tools._normalize_extrapass_reward_import_payload(
+        {
+            "free": [{"position": 1, "reward_type": "particles", "reward_amount": 25, "card_id": 46}],
+            "premium": [{"position": 2, "reward_type": "cosmetic", "cosmetic_slug": "avatar_gold", "auto_equip": True}],
+            "ultra": [{"position": 41, "reward_type": "guaranteed_card", "reward_amount": 99, "reward_meta": {"card_id": 46}}],
+        },
+        season,
+    )
+
+    assert rows[0]["reward_type"] == "particles"
+    assert rows[0]["reward_meta"] == {"card_id": 46}
+    assert rows[1]["reward_type"] == "cosmetic"
+    assert rows[1]["reward_amount"] == 1
+    assert rows[1]["reward_meta"] == {"cosmetic_slug": "avatar_gold", "auto_equip": True}
+    assert rows[2]["reward_type"] == "specific_card"
+    assert rows[2]["reward_amount"] == 1
+
+
 def test_mcp_extrapass_reward_import_validates_lane_bounds_and_derives_access():
     season = {
         "free_track_type": "bp_free",
@@ -1718,6 +1746,45 @@ async def test_mcp_extrapass_reward_import_validates_specific_card_exists_and_is
             {
                 "season_id": 1,
                 "tracks": {"ultra": [{"position": 41, "reward_type": "specific_card", "reward_amount": 1, "reward_meta": {"card_id": 46}}]},
+                "dry_run": True,
+            },
+        )
+
+
+@pytest.mark.asyncio
+async def test_mcp_extrapass_reward_import_validates_and_replaces_special_reward_types():
+    db = GatewayMCPDB()
+    db.cosmetics[1] = {"id": 1, "slug": "avatar_gold", "item_type": "avatar", "is_active": True}
+
+    payload = await mcp_admin_tools.adapter_import_extrapass_rewards(
+        {"db": db},
+        101,
+        {
+            "season_id": 1,
+            "tracks": {
+                "free": [{"position": 1, "reward_type": "particles", "reward_amount": 25, "reward_meta": {"card_id": 46}}],
+                "premium": [{"position": 2, "reward_type": "cosmetic", "reward_amount": 0, "reward_meta": {"cosmetic_slug": "avatar_gold"}}],
+                "ultra": [{"position": 41, "reward_type": "guaranteed_card", "reward_amount": 99, "reward_meta": {"card_id": 46}}],
+            },
+            "replace": True,
+        },
+    )
+
+    assert payload["imported"] == 3
+    assert db.replaced_reward_tracks[0][0] == ["bp_free", "bp_premium", "bp_ultra"]
+    rows = db.replaced_reward_tracks[0][1]
+    assert [row["reward_type"] for row in rows] == ["particles", "cosmetic", "specific_card"]
+    assert rows[1]["reward_amount"] == 1
+    assert rows[2]["reward_amount"] == 1
+
+    db.cosmetics.clear()
+    with pytest.raises(mcp_admin_tools.MCPToolInputError, match="reward_cosmetic_not_found"):
+        await mcp_admin_tools.adapter_import_extrapass_rewards(
+            {"db": db},
+            101,
+            {
+                "season_id": 1,
+                "tracks": {"premium": [{"position": 2, "reward_type": "cosmetic", "reward_amount": 1, "reward_meta": {"cosmetic_slug": "avatar_gold"}}]},
                 "dry_run": True,
             },
         )

@@ -606,8 +606,12 @@
     .reward-token.coins::before { border-radius: 50%; background: linear-gradient(135deg, #facc15, #f97316); }
     .reward-token.gems::before { transform: rotate(45deg) scale(0.78); background: linear-gradient(135deg, #67e8f9, #8b5cf6); }
     .reward-token.keys::before { background: linear-gradient(135deg, #fde68a, #f59e0b); clip-path: polygon(15% 40%, 46% 40%, 46% 28%, 80% 28%, 80% 44%, 66% 44%, 66% 58%, 48% 58%, 48% 72%, 15% 72%); }
-    .reward-token.card::before { background: linear-gradient(135deg, #f0abfc, #60a5fa); }
+    .reward-token.card::before,
+    .reward-token.specific_card::before,
+    .reward-token.guaranteed_card::before { background: linear-gradient(135deg, #f0abfc, #60a5fa); }
     .reward-token.case::before { background: linear-gradient(135deg, #fb7185, #fbbf24); }
+    .reward-token.particles::before { border-radius: 50%; background: radial-gradient(circle at 35% 30%, #fff7ed, #22d3ee 42%, #7c3aed); }
+    .reward-token.cosmetic::before { background: linear-gradient(135deg, #34d399, #14b8a6 46%, #f59e0b); }
 
     .price {
       font-variant-numeric: tabular-nums;
@@ -2401,7 +2405,7 @@
               <div class="field"><label>Season</label><select id="sr-season-select"></select></div>
               <div class="field"><label>Lane</label><select id="sr-lane"><option value="free">Free</option><option value="premium">ExtraPass</option><option value="ultra">Ultra</option></select></div>
               <div class="field"><label>Position</label><input id="sr-position" type="number" min="1" value="1"></div>
-              <div class="field"><label>Reward type</label><select id="sr-reward-type"><option value="coins">coins</option><option value="gems">gems</option><option value="keys">keys</option><option value="case">case</option><option value="card">random card by rarity</option><option value="specific_card">specific card</option></select></div>
+              <div class="field"><label>Reward type</label><select id="sr-reward-type"><option value="coins">coins</option><option value="gems">gems</option><option value="keys">keys</option><option value="case">case</option><option value="card">random card by rarity</option><option value="specific_card">specific card</option><option value="particles">particles</option><option value="cosmetic">cosmetic</option><option value="guaranteed_card">guaranteed card alias</option></select></div>
               <div class="field"><label>Amount</label><input id="sr-reward-amount" type="number" min="1" value="1"></div>
               <div class="field"><label>Meta JSON</label><input id="sr-reward-meta" placeholder='{"rarity":["epic"]} или {"card_id":46}'></div>
             </div>
@@ -2505,7 +2509,7 @@
           <div class="form-grid three">
             <div class="field"><label>Track</label><select id="rt-track-type"><option value="bp_free">bp_free</option><option value="bp_premium">bp_premium</option><option value="bp_ultra">bp_ultra</option></select></div>
             <div class="field"><label>Position</label><input id="rt-position" type="number" min="1" value="1"></div>
-            <div class="field"><label>Reward type</label><select id="rt-reward-type"><option value="coins">coins</option><option value="gems">gems</option><option value="keys">keys</option><option value="case">case</option><option value="card">random card by rarity</option><option value="specific_card">specific card</option></select></div>
+            <div class="field"><label>Reward type</label><select id="rt-reward-type"><option value="coins">coins</option><option value="gems">gems</option><option value="keys">keys</option><option value="case">case</option><option value="card">random card by rarity</option><option value="specific_card">specific card</option><option value="particles">particles</option><option value="cosmetic">cosmetic</option><option value="guaranteed_card">guaranteed card alias</option></select></div>
             <div class="field"><label>Amount</label><input id="rt-reward-amount" type="number" min="1" value="1"></div>
             <div class="field"><label>Meta JSON</label><input id="rt-reward-meta" placeholder='{"rarity":["epic"]} или {"card_id":46}'></div>
             <div class="toggle"><span class="toggle-label">ExtraPass required</span><span class="switch" id="rt-extra-pass-switch" data-on="0"></span></div>
@@ -3826,8 +3830,9 @@
       function readDateTime(id){var v=$('#'+id).value;if(!v)return null;var d=new Date(v);return isNaN(d.getTime())?v:d.toISOString()}
       function rewardToken(r){
         var type=String(r.reward_type||'coins');
+        var label={coins:'coins',gems:'gems',keys:'keys',case:'case',card:'random card',specific_card:'specific card',particles:'particles',cosmetic:'cosmetic',guaranteed_card:'guaranteed card'}[type]||type;
         var meta=r.reward_meta?'<span style="color:var(--muted);font-weight:650">'+escHtml(typeof r.reward_meta==='string'?r.reward_meta:JSON.stringify(r.reward_meta))+'</span>':'';
-        return'<span class="reward-token '+escHtml(type)+'">'+escHtml(type)+' × '+fmtNum(r.reward_amount||0)+'</span> '+meta;
+        return'<span class="reward-token '+escHtml(type)+'">'+escHtml(label)+' × '+fmtNum(r.reward_amount||0)+'</span> '+meta;
       }
       function compactSeasonTitle(s){
         if(!s)return'—';
@@ -4120,7 +4125,7 @@
         this.value='';
       });
       $('#btn-season-json-template').addEventListener('click',function(){
-        $('#season-json-import').value=JSON.stringify({free:[{position:1,reward_type:'coins',reward_amount:200}],premium:[{position:1,reward_type:'card',reward_amount:1,reward_meta:{rarity:['rare']}}],ultra:[{position:41,reward_type:'specific_card',reward_amount:1,reward_meta:{card_id:46}}]},null,2);
+        $('#season-json-import').value=JSON.stringify({free:[{position:1,reward_type:'coins',reward_amount:200},{position:3,reward_type:'particles',reward_amount:20,reward_meta:{card_id:46}}],premium:[{position:1,reward_type:'card',reward_amount:1,reward_meta:{rarity:['rare']}},{position:5,reward_type:'cosmetic',reward_amount:1,reward_meta:{cosmetic_slug:'avatar_gold',auto_equip:true}}],ultra:[{position:41,reward_type:'specific_card',reward_amount:1,reward_meta:{card_id:46}},{position:45,reward_type:'case',reward_amount:5}]},null,2);
       });
       function normalizeRewardEditor(prefix){
         var type=$('#'+prefix+'-reward-type').value;
@@ -4131,11 +4136,20 @@
           amount.disabled=true;
           meta.placeholder='{"rarity":["epic"]}';
           if(!meta.value.trim())meta.value='{"rarity":["epic"]}';
-        }else if(type==='specific_card'){
+        }else if(type==='specific_card'||type==='guaranteed_card'){
           amount.value=1;
           amount.disabled=true;
-          meta.placeholder='{"card_id":46}';
+          meta.placeholder=type==='guaranteed_card'?'{"card_id":46} или {"rarity":["epic"]}':'{"card_id":46}';
           if(!meta.value.trim()||meta.value.indexOf('rarity')!==-1)meta.value='{"card_id":46}';
+        }else if(type==='particles'){
+          amount.disabled=false;
+          meta.placeholder='{"card_id":46}';
+          if(!meta.value.trim()||meta.value==='{}')meta.value='{"card_id":46}';
+        }else if(type==='cosmetic'){
+          amount.value=1;
+          amount.disabled=true;
+          meta.placeholder='{"cosmetic_slug":"avatar_gold","auto_equip":true}';
+          if(!meta.value.trim()||meta.value==='{}')meta.value='{"cosmetic_slug":"avatar_gold","auto_equip":true}';
         }else{
           amount.disabled=false;
           meta.placeholder=type==='case'?'{"case_tier":3}':'{}';
@@ -4162,7 +4176,8 @@
         var lane=$('#sr-lane').value,metaRaw=$('#sr-reward-meta').value.trim(),meta=null;
         if(metaRaw){try{meta=JSON.parse(metaRaw)}catch(e){toast('Meta JSON invalid','error');return}}
         var type=$('#sr-reward-type').value;
-        var body={track_type:laneTrackType(s,lane),position:parseInt($('#sr-position').value)||1,reward_type:type,reward_amount:type==='card'||type==='specific_card'?1:(parseInt($('#sr-reward-amount').value)||0),reward_meta:meta,extra_pass_required:lane!=='free'};
+        var fixedAmount=(type==='card'||type==='specific_card'||type==='guaranteed_card'||type==='cosmetic');
+        var body={track_type:laneTrackType(s,lane),position:parseInt($('#sr-position').value)||1,reward_type:type,reward_amount:fixedAmount?1:(parseInt($('#sr-reward-amount').value)||0),reward_meta:meta,extra_pass_required:lane!=='free'};
         try{
           await api('POST','/api/admin/rewards/tracks/create',body);
           toast('Reward saved','success');
@@ -4367,7 +4382,7 @@
           track_type:$('#rt-track-type').value,
           position:parseInt($('#rt-position').value)||1,
           reward_type:type,
-          reward_amount:type==='card'||type==='specific_card'?1:(parseInt($('#rt-reward-amount').value)||0),
+          reward_amount:(type==='card'||type==='specific_card'||type==='guaranteed_card'||type==='cosmetic')?1:(parseInt($('#rt-reward-amount').value)||0),
           reward_meta:meta,
           extra_pass_required:$('#rt-extra-pass-switch').dataset.on==='1'
         };

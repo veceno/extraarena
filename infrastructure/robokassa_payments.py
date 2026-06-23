@@ -142,7 +142,6 @@ class RobokassaPaymentService:
         metadata: dict[str, Any] | None = None,
         idempotence_key: str | None = None,
         inv_id: int | str | None = None,
-        payment_page_url: str | None = None,
     ) -> dict[str, Any]:
         if str(currency or "RUB").upper() != "RUB":
             return {"success": False, "error": "robokassa_supports_rub_only"}
@@ -199,7 +198,6 @@ class RobokassaPaymentService:
             "provider": "robokassa",
             "confirmation_url": payment_url,
             "payment_url": payment_url,
-            "payment_page_url": payment_page_url,
             "status": "pending",
             "amount": out_sum,
             "currency": "RUB",

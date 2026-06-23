@@ -39,6 +39,7 @@ class FakeGameDB:
         self.changed_nicknames = []
         self.registered_push_devices = []
         self.unregistered_push_devices = []
+        self.deleted_users = []
 
     async def ensure_user(self, **kwargs):
         self.ensured_users.append(kwargs)
@@ -56,6 +57,10 @@ class FakeGameDB:
             return 1
         return None
 
+    async def delete_user(self, user_id):
+        self.deleted_users.append(user_id)
+        return True
+
     async def register_push_device(self, user_id, **kwargs):
         record = {"id": 501, "user_id": user_id, **kwargs}
         self.registered_push_devices.append(record)
@@ -72,6 +77,7 @@ class FakeExtraIDDB:
         self.executed = []
         self.bonus_marked = None
         self.revoked_user_sessions = []
+        self.deleted_extra_accounts = []
 
     async def get_synthetic_user_id(self):
         return 987654321
@@ -81,6 +87,15 @@ class FakeExtraIDDB:
 
     async def get_extra_account_by_user_id(self, user_id):
         return None
+
+    async def get_any_extra_account_by_user_id(self, user_id):
+        return None
+
+    async def get_any_extra_account_by_email(self, email):
+        return None
+
+    async def has_user_claimed_reg_bonus(self, user_id):
+        return False
 
     async def fetchrow(self, query, *args):
         return None
@@ -122,6 +137,16 @@ class FakeExtraIDDB:
 
     async def revoke_all_user_sessions(self, user_id):
         self.revoked_user_sessions.append(user_id)
+
+    async def soft_delete_extra_account(self, extra_account_id):
+        self.deleted_extra_accounts.append(extra_account_id)
+
+
+def async_lambda(value):
+    """Return an async function that ignores its args and returns `value`."""
+    async def _wrapper(*args, **kwargs):
+        return value
+    return _wrapper
 
 
 def test_rate_limit_store_prunes_expired_keys(monkeypatch):
@@ -395,6 +420,12 @@ class LoginExtraIDDB:
             "reg_bonus_claimed": True,
         }
 
+    async def get_any_extra_account_by_user_id(self, user_id):
+        return None
+
+    async def has_user_claimed_reg_bonus(self, user_id):
+        return True
+
     async def execute(self, query, *args):
         if "INSERT INTO auth_sessions" in query:
             self.inserted_session_id = args[0]
@@ -454,6 +485,9 @@ class LoginUnclaimedBonusAlreadyMarkedDB(LoginExtraIDDB):
         extra["reg_bonus_claimed"] = False
         return extra
 
+    async def has_user_claimed_reg_bonus(self, user_id):
+        return False
+
     async def mark_reg_bonus_claimed(self, extra_account_id):
         return False
 
@@ -473,8 +507,10 @@ async def test_email_login_does_not_double_grant_registration_bonus(monkeypatch)
     body = json.loads(response.text)
 
     assert response.status == 200
+    # reg_bonus is False because mark_reg_bonus_claimed returned False (race-loser),
+    # but keys were still credited first (P1#2: credit before mark to avoid losing bonus).
     assert body["reg_bonus"] is False
-    assert not any("keys = COALESCE(keys, 0) + 3" in query for query, _ in game_db.executed)
+    assert any("keys = COALESCE(keys, 0) + 3" in query for query, _ in game_db.executed)
 
 
 class FakeBot:
@@ -574,7 +610,8 @@ class TelegramTransferEmailTakenDB(TelegramTransferExtraIDDB):
         self.consumed_codes = []
 
     async def get_any_extra_account_by_email(self, email):
-        return {"id": uuid.uuid4(), "email": email, "deleted_at": "2026-01-01"}
+        # Active (non-deleted) account with this email — should block registration.
+        return {"id": uuid.uuid4(), "email": email, "deleted_at": None}
 
     async def consume_bot_auth_code(self, code):
         self.consumed_codes.append(code)
@@ -582,7 +619,7 @@ class TelegramTransferEmailTakenDB(TelegramTransferExtraIDDB):
 
 
 @pytest.mark.asyncio
-async def test_telegram_transfer_returns_email_taken_for_soft_deleted_unique_email(monkeypatch):
+async def test_telegram_transfer_returns_email_taken_for_active_duplicate_email(monkeypatch):
     game_db = FakeGameDB()
     extra_db = TelegramTransferEmailTakenDB()
     request = FakeRequest(
@@ -602,6 +639,12 @@ async def test_telegram_transfer_returns_email_taken_for_soft_deleted_unique_ema
     assert body["error"] == "email_taken"
     assert extra_db.consumed_codes == []
     assert not any("INSERT INTO auth_sessions" in query for query, _ in extra_db.executed)
+
+
+class TelegramTransferSoftDeletedEmailDB(TelegramTransferExtraIDDB):
+    """Soft-deleted email must be reusable (partial unique index on active rows)."""
+    async def get_any_extra_account_by_email(self, email):
+        return None  # soft-deleted rows are filtered out -> email is free
 
 
 class TelegramTransferAlreadyConsumedDB(TelegramTransferExtraIDDB):
@@ -626,29 +669,43 @@ async def test_telegram_transfer_complete_does_not_create_account_after_duplicat
         app={"db": game_db, "extraid_db": extra_db, "bot_token": "bot-token"},
     )
 
+    monkeypatch.setattr(extraid_handlers, "_display_id_generator_fn", lambda check: "7777-X")
+    monkeypatch.setattr(extraid_handlers.bcrypt, "gensalt", lambda rounds=12: b"salt")
+    monkeypatch.setattr(extraid_handlers.bcrypt, "hashpw", lambda password, salt: b"hash")
+
     response = await extraid_handlers.telegram_transfer_complete_handler(request)
     body = json.loads(response.text)
 
+    # P1#3: consume now happens after session insert. On duplicate consume, the created
+    # account is rolled back (soft-deleted + users.extra_account_id cleared) and 400 returned.
     assert response.status == 400
     assert body["error"] == "invalid_code"
-    assert extra_db.created_accounts == []
-    assert not any("INSERT INTO auth_sessions" in query for query, _ in extra_db.executed)
-    assert game_db.executed == []
+    # Account was created then rolled back via soft_delete
+    assert extra_db.account_id in extra_db.deleted_extra_accounts
+    assert any("extra_account_id = NULL" in query and "auth_source = 'telegram'" in query for query, _ in game_db.executed)
 
 
 class LinkExtraIDDB(FakeExtraIDDB):
+    SYNTHETIC_JWT_USER = 9_100_000_004_242
+
     def __init__(self):
         super().__init__()
         self.account_id = uuid.uuid4()
 
     async def get_extra_account_by_user_id(self, user_id):
-        if user_id == 4242:
+        if user_id == self.SYNTHETIC_JWT_USER:
             return {
                 "id": self.account_id,
-                "user_id": 4242,
+                "user_id": self.SYNTHETIC_JWT_USER,
                 "display_id": "4242-APP",
                 "email": "player@example.com",
             }
+        return None
+
+    async def get_any_extra_account_by_user_id(self, user_id):
+        # Only the synthetic account exists; 12345 (Telegram) has no prior ExtraID.
+        if user_id == self.SYNTHETIC_JWT_USER:
+            return await self.get_extra_account_by_user_id(user_id)
         return None
 
 
@@ -664,7 +721,7 @@ async def test_extraid_link_rejects_stale_telegram_init_data(monkeypatch):
 
     async def verify_jwt(token, _extra_db, _settings):
         assert token == "mobile-jwt"
-        return 4242, uuid.uuid4()
+        return LinkExtraIDDB.SYNTHETIC_JWT_USER, uuid.uuid4()
 
     monkeypatch.setattr(extraid_handlers, "_verify_jwt_token_async_fn", verify_jwt)
     monkeypatch.setattr(extraid_handlers, "_verify_init_data_fn", lambda auth, token: {"auth_date": "1", "user": "{}"})
@@ -715,7 +772,7 @@ async def test_extraid_link_clears_old_owner_and_revokes_old_sessions(monkeypatc
 
     async def verify_jwt(token, _extra_db, _settings):
         assert token == "mobile-jwt"
-        return 4242, uuid.uuid4()
+        return LinkExtraIDDB.SYNTHETIC_JWT_USER, uuid.uuid4()
 
     monkeypatch.setattr(extraid_handlers, "_verify_jwt_token_async_fn", verify_jwt)
     monkeypatch.setattr(extraid_handlers, "_verify_init_data_fn", lambda auth, token: {"auth_date": "1", "user": "{}"})
@@ -728,8 +785,8 @@ async def test_extraid_link_clears_old_owner_and_revokes_old_sessions(monkeypatc
     assert response.status == 200
     assert body["ok"] is True
     assert any("UPDATE extra_accounts SET user_id" in query and args[0] == 12345 for query, args in extra_db.executed)
-    assert any("extra_account_id = NULL" in query and args == (4242,) for query, args in game_db.executed)
-    assert extra_db.revoked_user_sessions == [4242]
+    assert any("extra_account_id = NULL" in query and args == (LinkExtraIDDB.SYNTHETIC_JWT_USER,) for query, args in game_db.executed)
+    assert extra_db.revoked_user_sessions == [LinkExtraIDDB.SYNTHETIC_JWT_USER]
 
 
 @pytest.mark.asyncio
@@ -797,3 +854,488 @@ async def test_push_unregister_disables_user_token(monkeypatch):
     assert response.status == 200
     assert body == {"ok": True, "removed": True}
     assert game_db.unregistered_push_devices == [(4242, "fcm-token")]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# New tests: duplication block, email reuse, reg-bonus per-user, delete block,
+# compensating cleanup
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TelegramBoundDeleteDB(FakeExtraIDDB):
+    """ExtraID bound to a real Telegram ID (< SYNTHETIC_USER_ID_MIN)."""
+    TG_USER = 12345
+
+    async def get_extra_account_by_user_id(self, user_id):
+        if user_id == self.TG_USER:
+            return {
+                "id": self.account_id,
+                "user_id": self.TG_USER,
+                "display_id": "1234-TG",
+                "email": "tg@example.com",
+                "password_hash": "hash",
+                "reg_bonus_claimed": True,
+            }
+        return None
+
+
+@pytest.mark.asyncio
+async def test_delete_refused_for_telegram_bound_account(monkeypatch):
+    """Telegram-bound ExtraID cannot be deleted (closes duplication exploit)."""
+    game_db = FakeGameDB()
+    extra_db = TelegramBoundDeleteDB()
+    request = FakeRequest(
+        {"password": "strongpass", "confirm": "DELETE"},
+        app={"db": game_db, "extraid_db": extra_db, "bot_token": "bot-token"},
+    )
+
+    monkeypatch.setattr(extraid_handlers, "require_user_id_fn", async_lambda(TelegramBoundDeleteDB.TG_USER))
+    monkeypatch.setattr(extraid_handlers.bcrypt, "checkpw", lambda password, password_hash: True)
+
+    response = await extraid_handlers.extraid_delete_account_handler(request)
+    body = json.loads(response.text)
+
+    assert response.status == 403
+    assert body["error"] == "cannot_delete_telegram_bound"
+    # Account NOT soft-deleted, sessions NOT revoked
+    assert extra_db.deleted_extra_accounts == []
+    assert extra_db.revoked_user_sessions == []
+
+
+class SyntheticDeleteDB(FakeExtraIDDB):
+    """ExtraID bound to a synthetic user_id (email-only/anonymous)."""
+    SYNTH_USER = 9_100_000_000_001
+
+    async def get_extra_account_by_user_id(self, user_id):
+        if user_id == self.SYNTH_USER:
+            return {
+                "id": self.account_id,
+                "user_id": self.SYNTH_USER,
+                "display_id": "9100-APP",
+                "email": "synth@example.com",
+                "password_hash": "hash",
+                "reg_bonus_claimed": False,
+            }
+        return None
+
+
+@pytest.mark.asyncio
+async def test_delete_allowed_for_synthetic_account(monkeypatch):
+    """Synthetic (email-only) ExtraID can be deleted; synthetic users row removed."""
+    game_db = FakeGameDB()
+    extra_db = SyntheticDeleteDB()
+    request = FakeRequest(
+        {"password": "strongpass", "confirm": "DELETE"},
+        app={"db": game_db, "extraid_db": extra_db, "bot_token": "bot-token"},
+    )
+
+    monkeypatch.setattr(extraid_handlers, "require_user_id_fn", async_lambda(SyntheticDeleteDB.SYNTH_USER))
+    monkeypatch.setattr(extraid_handlers.bcrypt, "checkpw", lambda password, password_hash: True)
+
+    response = await extraid_handlers.extraid_delete_account_handler(request)
+    body = json.loads(response.text)
+
+    assert response.status == 200
+    assert body["ok"] is True
+    assert extra_db.account_id in extra_db.deleted_extra_accounts
+    assert SyntheticDeleteDB.SYNTH_USER in extra_db.revoked_user_sessions
+    # Synthetic users row should be deleted (not just updated)
+    assert SyntheticDeleteDB.SYNTH_USER in game_db.deleted_users
+
+
+@pytest.mark.asyncio
+async def test_delete_rejects_empty_password(monkeypatch):
+    """Empty password returns 401 invalid_password, not 500."""
+    game_db = FakeGameDB()
+    extra_db = SyntheticDeleteDB()
+    request = FakeRequest(
+        {"password": "", "confirm": "DELETE"},
+        app={"db": game_db, "extraid_db": extra_db, "bot_token": "bot-token"},
+    )
+
+    monkeypatch.setattr(extraid_handlers, "require_user_id_fn", async_lambda(SyntheticDeleteDB.SYNTH_USER))
+
+    response = await extraid_handlers.extraid_delete_account_handler(request)
+    body = json.loads(response.text)
+
+    assert response.status == 401
+    assert body["error"] == "invalid_password"
+
+
+class DuplicationBlockDB(FakeExtraIDDB):
+    """Simulates a soft-deleted ExtraID for Telegram user 12345."""
+    TG_USER = 12345
+
+    async def get_any_extra_account_by_user_id(self, user_id):
+        if user_id == self.TG_USER:
+            return {
+                "id": uuid.uuid4(),
+                "user_id": user_id,
+                "display_id": "OLD-TG",
+                "email": "old@example.com",
+                "deleted_at": "2026-01-01T00:00:00Z",
+            }
+        return None
+
+    async def verify_bot_auth_code(self, code):
+        if code == "123456":
+            return {"code": code, "user_id": self.TG_USER}
+        return None
+
+    async def consume_bot_auth_code(self, code):
+        return await self.verify_bot_auth_code(code)
+
+
+@pytest.mark.asyncio
+async def test_register_blocks_duplicate_after_delete(monkeypatch):
+    """After delete, same Telegram ID cannot create a new ExtraID."""
+    game_db = FakeGameDB()
+    extra_db = DuplicationBlockDB()
+    request = FakeRequest(
+        {"email": "new@example.com", "password": "strongpass", "nickname": "NewHero"},
+        query={"_auth": "telegram-init-data"},
+        app={"db": game_db, "extraid_db": extra_db, "bot_token": "bot-token"},
+    )
+
+    monkeypatch.setattr(extraid_handlers, "_verify_init_data_fn", lambda auth, token: {"user": "ok"})
+    monkeypatch.setattr(extraid_handlers, "_validate_auth_date_fn", lambda data: True)
+    monkeypatch.setattr(extraid_handlers, "_extract_user_id_from_init_data_fn", lambda data: 12345)
+    monkeypatch.setattr(extraid_handlers, "_nickname_valid_fn", lambda nick: True)
+    monkeypatch.setattr(extraid_handlers, "_verify_jwt_token_async_fn", lambda *args: None)
+
+    response = await extraid_handlers.extraid_register_handler(request)
+    body = json.loads(response.text)
+
+    assert response.status == 409
+    assert body["error"] == "extraid_already_exists"
+    assert game_db.ensured_users == []
+
+
+@pytest.mark.asyncio
+async def test_transfer_complete_blocks_duplicate_after_delete(monkeypatch):
+    """After delete, same Telegram ID cannot transfer-create a new ExtraID."""
+    game_db = FakeGameDB()
+    extra_db = DuplicationBlockDB()
+    request = FakeRequest(
+        {"telegram_id": "12345", "code": "123456", "email": "new@example.com", "password": "strongpass"},
+        app={"db": game_db, "extraid_db": extra_db, "bot_token": "bot-token"},
+    )
+
+    response = await extraid_handlers.telegram_transfer_complete_handler(request)
+    body = json.loads(response.text)
+
+    assert response.status == 409
+    assert body["error"] == "extraid_already_exists"
+
+
+@pytest.mark.asyncio
+async def test_transfer_request_code_blocks_duplicate_after_delete(monkeypatch):
+    """After delete, same Telegram ID cannot even request a transfer code."""
+    game_db = FakeGameDB()
+    extra_db = DuplicationBlockDB()
+    request = FakeRequest(
+        {"telegram_id": "12345"},
+        app={"db": game_db, "extraid_db": extra_db, "bot_token": "bot-token"},
+    )
+
+    response = await extraid_handlers.telegram_transfer_request_code_handler(request)
+    body = json.loads(response.text)
+
+    assert response.status == 409
+    assert body["error"] == "extraid_already_exists"
+
+
+class RegBonusPerUserDB(FakeExtraIDDB):
+    """Tracks reg-bonus claims per user_id to prevent farming."""
+    def __init__(self):
+        super().__init__()
+        self.claimed_users = set()
+
+    async def has_user_claimed_reg_bonus(self, user_id):
+        return user_id in self.claimed_users
+
+    async def mark_reg_bonus_claimed(self, extra_account_id):
+        self.bonus_marked = extra_account_id
+        return True
+
+
+@pytest.mark.asyncio
+async def test_reg_bonus_not_granted_if_already_claimed_by_user(monkeypatch):
+    """Reg-bonus is per-user_id, not per-account — no farming via delete/re-create."""
+    game_db = FakeGameDB()
+    extra_db = RegBonusPerUserDB()
+    extra_db.claimed_users.add(12345)  # user already claimed bonus before
+    request = FakeRequest(
+        {"email": "new@example.com", "password": "strongpass", "nickname": "NewHero"},
+        query={"_auth": "telegram-init-data"},
+        app={"db": game_db, "extraid_db": extra_db, "bot_token": "bot-token"},
+    )
+
+    monkeypatch.setattr(extraid_handlers, "_verify_init_data_fn", lambda auth, token: {"user": "ok"})
+    monkeypatch.setattr(extraid_handlers, "_validate_auth_date_fn", lambda data: True)
+    monkeypatch.setattr(extraid_handlers, "_extract_user_id_from_init_data_fn", lambda data: 12345)
+    monkeypatch.setattr(extraid_handlers, "_display_id_generator_fn", lambda check: "1234-ABC")
+    monkeypatch.setattr(extraid_handlers, "_nickname_valid_fn", lambda nick: True)
+    monkeypatch.setattr(extraid_handlers, "_verify_jwt_token_async_fn", lambda *args: None)
+    monkeypatch.setattr(extraid_handlers.bcrypt, "gensalt", lambda rounds=12: b"salt")
+    monkeypatch.setattr(extraid_handlers.bcrypt, "hashpw", lambda password, salt: b"hash")
+
+    response = await extraid_handlers.extraid_register_handler(request)
+    body = json.loads(response.text)
+
+    assert response.status == 200
+    assert body["reg_bonus"] is False
+    assert not any("keys = COALESCE(keys, 0) + 3" in query for query, _ in game_db.executed)
+
+
+class CompensatingCleanupDB(FakeExtraIDDB):
+    """Simulates create_extra_account failure to test compensating cleanup."""
+    SYNTH_USER = 9_100_000_000_999
+
+    async def get_synthetic_user_id(self):
+        return self.SYNTH_USER
+
+    async def create_extra_account(self, user_id, display_id, email, password_hash, nickname=None):
+        raise RuntimeError("db_failure_during_create")
+
+
+@pytest.mark.asyncio
+async def test_register_cleans_up_synthetic_user_on_create_failure(monkeypatch):
+    """If create_extra_account fails, the orphaned synthetic users row is deleted."""
+    game_db = FakeGameDB()
+    extra_db = CompensatingCleanupDB()
+    request = FakeRequest(
+        {"email": "fail@example.com", "password": "strongpass", "nickname": "FailHero"},
+        app={"db": game_db, "extraid_db": extra_db, "bot_token": "bot-token"},
+    )
+
+    monkeypatch.setattr(extraid_handlers, "_nickname_valid_fn", lambda nick: True)
+    monkeypatch.setattr(extraid_handlers, "_display_id_generator_fn", lambda check: "9999-FAIL")
+    monkeypatch.setattr(extraid_handlers, "_verify_jwt_token_async_fn", lambda *args: None)
+    monkeypatch.setattr(extraid_handlers.bcrypt, "gensalt", lambda rounds=12: b"salt")
+    monkeypatch.setattr(extraid_handlers.bcrypt, "hashpw", lambda password, salt: b"hash")
+
+    response = await extraid_handlers.extraid_register_handler(request)
+    body = json.loads(response.text)
+
+    # Should be a 500 server_error due to the RuntimeError re-raise
+    assert response.status == 500
+    # The synthetic user created by ensure_user should have been cleaned up via delete_user
+    assert len(game_db.ensured_users) == 1
+    assert game_db.deleted_users == [game_db.ensured_users[0]["user_id"]]
+
+
+class LinkAlreadyBoundDB(FakeExtraIDDB):
+    """ExtraID already bound to a Telegram ID — link re-bind should be refused."""
+    TG_USER = 12345
+    SYNTH_USER = 9_100_000_000_4242
+
+    async def get_extra_account_by_user_id(self, user_id):
+        if user_id == self.SYNTH_USER:
+            return {
+                "id": self.account_id,
+                "user_id": self.TG_USER,  # already re-pointed to Telegram
+                "display_id": "4242-APP",
+                "email": "player@example.com",
+            }
+        return None
+
+    async def get_any_extra_account_by_user_id(self, user_id):
+        if user_id == self.TG_USER:
+            return {
+                "id": self.account_id,
+                "user_id": self.TG_USER,
+                "display_id": "4242-APP",
+            }
+        return None
+
+
+@pytest.mark.asyncio
+async def test_link_refuses_already_telegram_bound(monkeypatch):
+    """Link handler refuses to re-bind an ExtraID already linked to Telegram."""
+    game_db = FakeGameDB()
+    extra_db = LinkAlreadyBoundDB()
+    request = FakeRequest(
+        {"tg_init_data": "valid-init-data"},
+        app={"db": game_db, "extraid_db": extra_db, "bot_token": "bot-token"},
+        headers={"Authorization": "Bearer mobile-jwt"},
+    )
+
+    async def verify_jwt(token, _extra_db, _settings):
+        return LinkAlreadyBoundDB.SYNTH_USER, uuid.uuid4()
+
+    monkeypatch.setattr(extraid_handlers, "_verify_jwt_token_async_fn", verify_jwt)
+    monkeypatch.setattr(extraid_handlers, "_verify_init_data_fn", lambda auth, token: {"auth_date": "1", "user": "{}"})
+    monkeypatch.setattr(extraid_handlers, "_validate_auth_date_fn", lambda data: True)
+    monkeypatch.setattr(extraid_handlers, "_extract_user_id_from_init_data_fn", lambda data: 99999)
+
+    response = await extraid_handlers.extraid_link_handler(request)
+    body = json.loads(response.text)
+
+    assert response.status == 409
+    assert body["error"] == "already_linked_to_telegram"
+    assert extra_db.executed == []
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# P1#2: reg-bonus credit-before-mark (bonus not lost on mark failure)
+# P1#3: transfer consume-after-session (code not spent on failure)
+# P2#4: link compensating rollback
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class FailingKeysGameDB(FakeGameDB):
+    """Game DB whose execute() raises on the keys-crediting UPDATE."""
+    def __init__(self):
+        super().__init__()
+        self._raise_on_keys = True
+
+    async def execute(self, query, *args):
+        if self._raise_on_keys and "keys = COALESCE(keys, 0) + 3" in query:
+            raise RuntimeError("keys_credit_failed")
+        return await super().execute(query, *args)
+
+
+@pytest.mark.asyncio
+async def test_reg_bonus_not_marked_when_keys_credit_fails_register(monkeypatch):
+    """P1#2: if crediting keys fails, mark_reg_bonus_claimed is NOT called (retry possible)."""
+    game_db = FailingKeysGameDB()
+    extra_db = RegBonusPerUserDB()
+    request = FakeRequest(
+        {"email": "new@example.com", "password": "strongpass", "nickname": "NewHero"},
+        query={"_auth": "telegram-init-data"},
+        app={"db": game_db, "extraid_db": extra_db, "bot_token": "bot-token"},
+    )
+
+    monkeypatch.setattr(extraid_handlers, "_verify_init_data_fn", lambda auth, token: {"user": "ok"})
+    monkeypatch.setattr(extraid_handlers, "_validate_auth_date_fn", lambda data: True)
+    monkeypatch.setattr(extraid_handlers, "_extract_user_id_from_init_data_fn", lambda data: 12345)
+    monkeypatch.setattr(extraid_handlers, "_display_id_generator_fn", lambda check: "1234-ABC")
+    monkeypatch.setattr(extraid_handlers, "_nickname_valid_fn", lambda nick: True)
+    monkeypatch.setattr(extraid_handlers, "_verify_jwt_token_async_fn", lambda *args: None)
+    monkeypatch.setattr(extraid_handlers.bcrypt, "gensalt", lambda rounds=12: b"salt")
+    monkeypatch.setattr(extraid_handlers.bcrypt, "hashpw", lambda password, salt: b"hash")
+
+    response = await extraid_handlers.extraid_register_handler(request)
+
+    # The RuntimeError propagates -> 500, but mark_reg_bonus_claimed was never called.
+    assert response.status == 500
+    assert extra_db.bonus_marked is None
+
+
+@pytest.mark.asyncio
+async def test_reg_bonus_not_marked_when_keys_credit_fails_login(monkeypatch):
+    """P1#2: login path — keys credit failure does not mark bonus claimed."""
+    game_db = FailingKeysGameDB()
+
+    class LoginDB(LoginExtraIDDB):
+        def __init__(self):
+            super().__init__()
+            self.bonus_marked = None
+
+        async def get_extra_account_by_email(self, email):
+            return {
+                "id": self.account_id,
+                "user_id": 777,
+                "display_id": "7777-AAA",
+                "password_hash": "hash",
+                "reg_bonus_claimed": False,
+            }
+
+        async def has_user_claimed_reg_bonus(self, user_id):
+            return False
+
+        async def mark_reg_bonus_claimed(self, extra_account_id):
+            self.bonus_marked = extra_account_id
+            return True
+
+    extra_db = LoginDB()
+    request = FakeRequest(
+        {"email": "player@example.com", "password": "strongpass"},
+        app={"db": game_db, "extraid_db": extra_db},
+    )
+
+    monkeypatch.setattr(extraid_handlers.bcrypt, "checkpw", lambda password, password_hash: True)
+
+    response = await extraid_handlers.extraid_login_handler(request)
+
+    assert response.status == 500
+    assert extra_db.bonus_marked is None
+
+
+class TransferFailingSessionDB(TelegramTransferExtraIDDB):
+    """Session INSERT fails; consume must not have happened (code still usable)."""
+    def __init__(self):
+        super().__init__()
+        self.consume_calls = 0
+
+    async def execute(self, query, *args):
+        if "INSERT INTO auth_sessions" in query:
+            raise RuntimeError("session_insert_failed")
+        return await super().execute(query, *args)
+
+    async def consume_bot_auth_code(self, code):
+        self.consume_calls += 1
+        return {"code": code, "user_id": 12345}
+
+
+@pytest.mark.asyncio
+async def test_transfer_code_not_consumed_when_session_insert_fails(monkeypatch):
+    """P1#3: if session insert fails, bot code is NOT consumed (retry possible)."""
+    game_db = FakeGameDB()
+    extra_db = TransferFailingSessionDB()
+    request = FakeRequest(
+        {
+            "telegram_id": "12345",
+            "code": "123456",
+            "email": "Player@Example.com",
+            "password": "strongpass",
+        },
+        app={"db": game_db, "extraid_db": extra_db, "bot_token": "bot-token"},
+    )
+
+    monkeypatch.setattr(extraid_handlers, "_display_id_generator_fn", lambda check: "5555-TG")
+    monkeypatch.setattr(extraid_handlers.bcrypt, "gensalt", lambda rounds=12: b"salt")
+    monkeypatch.setattr(extraid_handlers.bcrypt, "hashpw", lambda password, salt: b"hash")
+
+    response = await extraid_handlers.telegram_transfer_complete_handler(request)
+
+    assert response.status == 500
+    # consume_bot_auth_code was never called because session insert failed first
+    assert extra_db.consume_calls == 0
+
+
+class LinkFailingExtraAccountsDB(LinkExtraIDDB):
+    """UPDATE extra_accounts fails; users update must be rolled back."""
+    async def execute(self, query, *args):
+        if "UPDATE extra_accounts SET user_id" in query:
+            raise RuntimeError("extra_accounts_update_failed")
+        return await super().execute(query, *args)
+
+
+@pytest.mark.asyncio
+async def test_link_rolls_back_users_update_on_extra_accounts_failure(monkeypatch):
+    """P2#4: if UPDATE extra_accounts fails, the users update is rolled back."""
+    game_db = FakeGameDB()
+    extra_db = LinkFailingExtraAccountsDB()
+    request = FakeRequest(
+        {"tg_init_data": "valid-init-data"},
+        app={"db": game_db, "extraid_db": extra_db, "bot_token": "bot-token"},
+        headers={"Authorization": "Bearer mobile-jwt"},
+    )
+
+    async def verify_jwt(token, _extra_db, _settings):
+        return LinkExtraIDDB.SYNTHETIC_JWT_USER, uuid.uuid4()
+
+    monkeypatch.setattr(extraid_handlers, "_verify_jwt_token_async_fn", verify_jwt)
+    monkeypatch.setattr(extraid_handlers, "_verify_init_data_fn", lambda auth, token: {"auth_date": "1", "user": "{}"})
+    monkeypatch.setattr(extraid_handlers, "_validate_auth_date_fn", lambda data: True)
+    monkeypatch.setattr(extraid_handlers, "_extract_user_id_from_init_data_fn", lambda data: 12345)
+
+    response = await extraid_handlers.extraid_link_handler(request)
+    body = json.loads(response.text)
+
+    assert response.status == 500
+    # users update for tg_user_id happened, then was rolled back
+    assert any("extra_account_id = $1" in q and "auth_source = 'telegram'" in q for q, _ in game_db.executed)
+    assert any("extra_account_id = NULL" in q and args == (12345,) for q, args in game_db.executed)

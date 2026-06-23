@@ -1,9 +1,280 @@
 import pytest
+from datetime import datetime, timezone
 from aiohttp.test_utils import TestClient, TestServer
 
 from infrastructure.config import get_settings
 from infrastructure.database import Database
+from infrastructure.case_config import fallback_coins_for_rarity, RARITY_ORDER
 from web import server as web_server
+
+
+async def _grant_entries_via_mock(db, *, user_id, track_type, position, entries):
+    """Mirror of Database.claim_reward_entries_transaction using mock helper methods.
+
+    The real transactional path requires a live pool/conn; the reward-claim
+    mocks here only expose helper coroutines (get_random_cards_by_rarities,
+    get_card_info, add_card_to_user, update_user_coins, add_particles_to_card,
+    add_user_case, grant_cosmetic_by_slug). This helper dispatches per
+    reward_type exactly like infrastructure/database.py so the mocks can feed
+    the atomic claim endpoint introduced when the legacy non-atomic fallback
+    was removed.
+    """
+    granted = []
+    for entry in entries:
+        rtype = str(entry.get("reward_type") or "")
+        try:
+            ramount = int(entry.get("reward_amount") or 0)
+        except (TypeError, ValueError):
+            return {"success": False, "error": "invalid_reward_amount", "message": "Награда временно недоступна из-за настройки сезона.", "granted": []}
+        rmeta = entry.get("reward_meta")
+        if isinstance(rmeta, str) and rmeta.strip():
+            import json as _json
+            try:
+                rmeta = _json.loads(rmeta)
+            except Exception:
+                return {"success": False, "error": "invalid_reward_meta", "message": "Награда временно недоступна из-за настройки сезона.", "granted": []}
+        elif rmeta in ("", None):
+            rmeta = None
+        if rmeta is None:
+            rmeta = {}
+        if not isinstance(rmeta, dict):
+            rmeta = {}
+        if rtype == "guaranteed_card":
+            card_id = None
+            try:
+                card_id = int(rmeta.get("card_id") or rmeta.get("id") or 0)
+            except (TypeError, ValueError):
+                card_id = None
+            rtype = "specific_card" if card_id and card_id > 0 else "card"
+            ramount = 1
+        if rtype not in {"coins", "gems", "keys", "card", "specific_card", "case", "particles", "cosmetic"}:
+            return {"success": False, "error": f"unsupported_reward_type:{rtype}", "message": "Этот тип награды пока не поддерживается.", "granted": []}
+        if rtype == "case" and isinstance(rmeta, dict):
+            try:
+                meta_tier = int(rmeta.get("case_tier") or rmeta.get("tier") or 0)
+            except (TypeError, ValueError):
+                meta_tier = 0
+            if meta_tier > 0:
+                ramount = max(1, min(5, meta_tier))
+        if rtype in {"coins", "gems", "keys"} and ramount <= 0:
+            return {"success": False, "error": "invalid_reward_amount", "message": "Количество награды должно быть больше нуля.", "granted": []}
+        if rtype == "case" and not 1 <= ramount <= 5:
+            return {"success": False, "error": "invalid_case_tier", "message": "Кейс должен быть от T1 до T5.", "granted": []}
+        if rtype in {"card", "specific_card"} and ramount != 1:
+            return {"success": False, "error": "invalid_card_reward_amount", "message": "Карточная награда выдается по одной карте.", "granted": []}
+        if rtype == "particles":
+            if ramount <= 0:
+                return {"success": False, "error": "invalid_reward_amount", "message": "Количество награды должно быть больше нуля.", "granted": []}
+            card_id = None
+            try:
+                card_id = int(rmeta.get("card_id") or rmeta.get("id") or 0)
+            except (TypeError, ValueError):
+                card_id = None
+            if not card_id or card_id <= 0:
+                return {"success": False, "error": "reward_card_id_required", "message": "Для частиц укажите card_id.", "granted": []}
+            if hasattr(db, "get_card_info"):
+                info = await db.get_card_info(card_id)
+                if info:
+                    rmeta = dict(rmeta)
+                    rmeta["card_id"] = card_id
+                    rmeta["card_name"] = info.get("name", "") or ""
+        if rtype == "cosmetic":
+            if ramount < 0:
+                return {"success": False, "error": "invalid_reward_amount", "message": "Количество награды должно быть больше нуля.", "granted": []}
+            cosmetic_slug = str(rmeta.get("cosmetic_slug") or rmeta.get("slug") or "").strip()
+            if not cosmetic_slug:
+                return {"success": False, "error": "cosmetic_slug_required", "message": "Для косметики укажите cosmetic_slug.", "granted": []}
+            if hasattr(db, "get_cosmetic_item"):
+                item = await db.get_cosmetic_item(cosmetic_slug)
+                if not item:
+                    return {"success": False, "error": "reward_cosmetic_not_found", "message": "Косметический предмет не найден или неактивен.", "granted": []}
+                rmeta = dict(rmeta)
+                rmeta["cosmetic_slug"] = cosmetic_slug
+                rmeta["cosmetic_name"] = item.get("name", "") or ""
+            ramount = 1
+        if rtype == "specific_card":
+            card_id = None
+            try:
+                card_id = int(rmeta.get("card_id") or rmeta.get("id") or 0)
+            except (TypeError, ValueError):
+                card_id = None
+            if not card_id or card_id <= 0:
+                return {"success": False, "error": "specific_card_id_required", "message": "Для конкретной карты укажите card_id.", "granted": []}
+            if hasattr(db, "get_card_info"):
+                info = await db.get_card_info(card_id)
+                if not info:
+                    return {"success": False, "error": "specific_card_not_found", "message": "Карта для награды не найдена.", "granted": []}
+                if str(info.get("card_type") or "warrior") != "warrior":
+                    return {"success": False, "error": "specific_card_must_be_warrior", "message": "В ExtraPass можно выдавать только карты бойцов.", "granted": []}
+                rmeta = dict(rmeta)
+                rmeta["card_id"] = card_id
+                rmeta["card_name"] = info.get("name", "") or ""
+        if rtype == "coins":
+            if hasattr(db, "update_user_coins"):
+                await db.update_user_coins(user_id, ramount)
+            granted.append({"reward_type": "coins", "reward_amount": ramount})
+        elif rtype == "gems":
+            if hasattr(db, "add_gems"):
+                await db.add_gems(user_id, ramount)
+            granted.append({"reward_type": "gems", "reward_amount": ramount})
+        elif rtype == "keys":
+            if hasattr(db, "increment_user_keys"):
+                await db.increment_user_keys(user_id, ramount)
+            granted.append({"reward_type": "keys", "reward_amount": ramount})
+        elif rtype == "card":
+            rarities = ["common", "rare"]
+            if rmeta.get("rarity"):
+                raw_rarities = rmeta.get("rarity")
+                rarities = raw_rarities if isinstance(raw_rarities, list) else [str(raw_rarities)]
+            cards = []
+            if hasattr(db, "get_random_cards_by_rarities"):
+                cards = await db.get_random_cards_by_rarities(rarities, limit=1)
+            owned_ids = set()
+            if hasattr(db, "get_user_cards"):
+                owned = await db.get_user_cards(user_id)
+                owned_ids = {int((c or {}).get("id") or (c or {}).get("card_id") or 0) for c in (owned or [])}
+            cards = [c for c in (cards or []) if int((c or {}).get("id") or 0) not in owned_ids]
+            if cards:
+                card = cards[0]
+                if hasattr(db, "add_card_to_user"):
+                    await db.add_card_to_user(user_id, int(card["id"]))
+                granted.append({
+                    "reward_type": "card",
+                    "reward_amount": 1,
+                    "card_id": int(card["id"]),
+                    "card_name": card.get("name", "") or "",
+                    "rarity": card.get("rarity", "") or "",
+                    "requested_rarities": rarities,
+                })
+            else:
+                chosen_rarity = "common"
+                for r in rarities:
+                    if r in RARITY_ORDER:
+                        chosen_rarity = r
+                        break
+                fallback_coins = fallback_coins_for_rarity(chosen_rarity)
+                if hasattr(db, "update_user_coins"):
+                    await db.update_user_coins(user_id, fallback_coins)
+                granted.append({
+                    "reward_type": "coins",
+                    "reward_amount": fallback_coins,
+                    "fallback_for": "card",
+                    "requested_rarities": rarities,
+                    "fallback_rarity": chosen_rarity,
+                })
+        elif rtype == "specific_card":
+            card_id = int(rmeta.get("card_id") or rmeta.get("id") or 0)
+            card_name = str(rmeta.get("card_name") or "")
+            card_rarity = str(rmeta.get("rarity") or "")
+            if not card_rarity and hasattr(db, "get_card_info"):
+                info = await db.get_card_info(card_id)
+                card_rarity = str((info or {}).get("rarity") or "common")
+            if not card_rarity:
+                card_rarity = "common"
+            if not card_name and hasattr(db, "get_card_info"):
+                info = await db.get_card_info(card_id)
+                card_name = str((info or {}).get("name") or "")
+            owned_ids = set()
+            if hasattr(db, "get_user_cards"):
+                owned = await db.get_user_cards(user_id)
+                owned_ids = {int((c or {}).get("id") or (c or {}).get("card_id") or 0) for c in (owned or [])}
+            if card_id in owned_ids:
+                fallback_coins = fallback_coins_for_rarity(card_rarity)
+                if hasattr(db, "update_user_coins"):
+                    await db.update_user_coins(user_id, fallback_coins)
+                granted.append({
+                    "reward_type": "coins",
+                    "reward_amount": fallback_coins,
+                    "fallback_for": "specific_card",
+                    "card_id": card_id,
+                    "fallback_rarity": card_rarity,
+                })
+            else:
+                if hasattr(db, "add_card_to_user"):
+                    await db.add_card_to_user(user_id, card_id)
+                granted.append({
+                    "reward_type": "specific_card",
+                    "reward_amount": 1,
+                    "card_id": card_id,
+                    "card_name": card_name,
+                    "rarity": card_rarity,
+                })
+        elif rtype == "case":
+            case_tier = max(1, min(5, ramount or 1))
+            case_id = case_tier
+            if hasattr(db, "get_admin_case_id"):
+                case_id = await db.get_admin_case_id(case_tier)
+            user_case_id = None
+            if hasattr(db, "add_user_case"):
+                res = await db.add_user_case(user_id, int(case_id), case_tier)
+                user_case_id = (res or {}).get("id") or (res or {}).get("user_case_id")
+            granted.append({
+                "reward_type": "case",
+                "reward_amount": case_tier,
+                "case_tier": case_tier,
+                "user_case_id": user_case_id,
+            })
+        elif rtype == "particles":
+            card_id = int(rmeta.get("card_id") or rmeta.get("id") or 0)
+            card_name = str(rmeta.get("card_name") or "")
+            card_rarity = str(rmeta.get("rarity") or "")
+            if not card_rarity and hasattr(db, "get_card_info"):
+                info = await db.get_card_info(card_id)
+                card_rarity = str((info or {}).get("rarity") or "common")
+            if not card_rarity:
+                card_rarity = "common"
+            if not card_name and hasattr(db, "get_card_info"):
+                info = await db.get_card_info(card_id)
+                card_name = str((info or {}).get("name") or "")
+            owned_ids = set()
+            if hasattr(db, "get_user_cards"):
+                owned = await db.get_user_cards(user_id)
+                owned_ids = {int((c or {}).get("id") or (c or {}).get("card_id") or 0) for c in (owned or [])}
+            if card_id in owned_ids:
+                if hasattr(db, "add_particles_to_card"):
+                    await db.add_particles_to_card(user_id, card_id, ramount)
+                granted.append({
+                    "reward_type": "particles",
+                    "reward_amount": ramount,
+                    "card_id": card_id,
+                    "card_name": card_name,
+                    "rarity": card_rarity,
+                })
+            else:
+                fallback_coins = fallback_coins_for_rarity(card_rarity)
+                if hasattr(db, "update_user_coins"):
+                    await db.update_user_coins(user_id, fallback_coins)
+                granted.append({
+                    "reward_type": "coins",
+                    "reward_amount": fallback_coins,
+                    "fallback_for": "particles",
+                    "card_id": card_id,
+                    "fallback_rarity": card_rarity,
+                })
+        elif rtype == "cosmetic":
+            cosmetic_slug = str(rmeta.get("cosmetic_slug") or "")
+            cosmetic_name = str(rmeta.get("cosmetic_name") or "")
+            auto_equip = bool(rmeta.get("auto_equip", False))
+            acquired = False
+            if hasattr(db, "grant_cosmetic_by_slug"):
+                res = await db.grant_cosmetic_by_slug(
+                    user_id,
+                    cosmetic_slug,
+                    source="reward_track",
+                    auto_equip=auto_equip,
+                )
+                acquired = bool((res or {}).get("acquired", False))
+            granted.append({
+                "reward_type": "cosmetic",
+                "reward_amount": 1,
+                "cosmetic_slug": cosmetic_slug,
+                "name": cosmetic_name,
+                "auto_equip": auto_equip,
+                "acquired": acquired,
+            })
+        else:
+            return {"success": False, "error": f"unsupported_reward_type:{rtype}", "message": "Этот тип награды пока не поддерживается.", "granted": []}
+    return {"success": True, "granted": granted}
 
 
 class _ClaimDB(Database):
@@ -491,6 +762,15 @@ class _CaseRewardClaimDB:
         self.claimed.add(key)
         return True
 
+    async def claim_reward_entries_transaction(self, *, user_id, track_type, position, entries):
+        return await _grant_entries_via_mock(
+            self,
+            user_id=user_id,
+            track_type=track_type,
+            position=position,
+            entries=entries,
+        )
+
     async def get_admin_case_id(self, tier):
         return tier
 
@@ -502,6 +782,7 @@ class _CaseRewardClaimDB:
             "case_id": case_id,
             "tier": tier,
             "status": "pending",
+            "created_at": datetime(2026, 6, 22, 1, 2, 3, tzinfo=timezone.utc),
         }
         self.cases.append(row)
         return dict(row)
@@ -525,7 +806,7 @@ class _CardRewardClaimDB(_CaseRewardClaimDB):
         self.reward_type = reward_type
         self.reward_meta = reward_meta
         self.random_card = random_card or {"id": 99, "name": "Random Card"}
-        self.card_info = card_info or {"id": 46, "name": "Exact Card", "card_type": "warrior"}
+        self.card_info = card_info or {"id": 46, "name": "Exact Card", "card_type": "warrior", "rarity": "rare"}
         self.owned_cards = list(owned_cards or [])
         self.added_cards = []
         self.coins_added = 0
@@ -569,6 +850,71 @@ class _InvalidSpecificCardRewardClaimDB(_CardRewardClaimDB):
 
     async def claim_reward(self, user_id, track_type, position):
         raise AssertionError("invalid reward config must not mark the tier claimed")
+
+
+class _ParticlesRewardClaimDB(_CardRewardClaimDB):
+    def __init__(self):
+        super().__init__(
+            "particles",
+            {"card_id": 46},
+            card_info={"id": 46, "name": "Particle Card", "card_type": "warrior", "rarity": "rare"},
+            # The player must own the target card before the particles grant takes effect —
+            # otherwise add_particles_to_card's UPDATE silently no-ops and the particles vanish.
+            owned_cards=[{"id": 46, "card_id": 46, "level": 1, "particles": 0}],
+        )
+        self.particles_added = []
+
+    async def get_reward_track_entries(self, track_type, position):
+        return [
+            {
+                "id": 1,
+                "track_type": track_type,
+                "position": position,
+                "reward_type": "particles",
+                "reward_amount": 25,
+                "reward_meta": {"card_id": 46},
+                "extra_pass_required": False,
+                "is_active": True,
+            }
+        ]
+
+    async def add_particles_to_card(self, user_id, card_id, particles):
+        self.particles_added.append({"user_id": int(user_id), "card_id": int(card_id), "particles": int(particles)})
+        return {"success": True}
+
+
+class _CosmeticRewardClaimDB(_CaseRewardClaimDB):
+    def __init__(self):
+        super().__init__()
+        self.cosmetic_grants = []
+
+    async def get_reward_track_entries(self, track_type, position):
+        return [
+            {
+                "id": 1,
+                "track_type": track_type,
+                "position": position,
+                "reward_type": "cosmetic",
+                "reward_amount": 1,
+                "reward_meta": {"cosmetic_slug": "avatar_gold", "auto_equip": True},
+                "extra_pass_required": False,
+                "is_active": True,
+            }
+        ]
+
+    async def get_cosmetic_item(self, identity):
+        if str(identity) == "avatar_gold":
+            return {"id": 7, "slug": "avatar_gold", "item_type": "avatar", "name": "Gold Avatar", "is_active": True}
+        return None
+
+    async def grant_cosmetic_by_slug(self, user_id, slug, *, source="grant", auto_equip=False):
+        self.cosmetic_grants.append({
+            "user_id": int(user_id),
+            "slug": str(slug),
+            "source": source,
+            "auto_equip": bool(auto_equip),
+        })
+        return {"acquired": True, "item": {"slug": str(slug)}}
 
 
 class _PromoTransaction:
@@ -756,10 +1102,52 @@ async def test_reward_track_case_claim_creates_visible_pending_user_case(monkeyp
                 "case_id": 3,
                 "tier": 3,
                 "status": "pending",
+                "created_at": "2026-06-22T01:02:03+00:00",
             }
         ]
     finally:
         await client.close()
+
+
+@pytest.mark.asyncio
+async def test_reward_track_case_claim_uses_meta_case_tier(monkeypatch):
+    monkeypatch.setenv("BOT_TOKEN", "bot-token")
+    monkeypatch.setenv("WEBAPP_HOST", "127.0.0.1")
+    monkeypatch.setenv("ENVIRONMENT", "development")
+    get_settings.cache_clear()
+    db = _CaseRewardClaimDB()
+
+    async def get_entries(track_type, position):
+        return [
+            {
+                "id": 1,
+                "track_type": track_type,
+                "position": position,
+                "reward_type": "case",
+                "reward_amount": 1,
+                "reward_meta": {"case_tier": 5},
+                "extra_pass_required": False,
+                "is_active": True,
+            }
+        ]
+
+    db.get_reward_track_entries = get_entries
+    app = web_server.create_web_app(db, bot_token="bot-token", webapp_url="https://game.example")
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        response = await client.post(
+            "/api/rewards/claim?user_id=1001",
+            json={"track_type": "s1_free", "position": 3},
+        )
+        body = await response.json()
+
+        assert response.status == 200
+        assert body["granted"][0]["case_tier"] == 5
+        assert db.cases[0]["tier"] == 5
+    finally:
+        await client.close()
+        get_settings.cache_clear()
 
 
 @pytest.mark.asyncio
@@ -786,6 +1174,7 @@ async def test_specific_card_reward_claim_grants_configured_card(monkeypatch):
                 "reward_amount": 1,
                 "card_id": 46,
                 "card_name": "Exact Card",
+                "rarity": "rare",
             }
         ]
         assert db.added_cards == [46]
@@ -819,6 +1208,75 @@ async def test_random_card_reward_ignores_specific_card_id_meta(monkeypatch):
         assert body["granted"][0]["reward_type"] == "card"
         assert body["granted"][0]["card_id"] == 99
         assert db.added_cards == [99]
+    finally:
+        await client.close()
+        get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_particles_reward_claim_grants_card_particles(monkeypatch):
+    monkeypatch.setenv("BOT_TOKEN", "bot-token")
+    monkeypatch.setenv("WEBAPP_HOST", "127.0.0.1")
+    monkeypatch.setenv("ENVIRONMENT", "development")
+    get_settings.cache_clear()
+    db = _ParticlesRewardClaimDB()
+    app = web_server.create_web_app(db, bot_token="bot-token", webapp_url="https://game.example")
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        response = await client.post(
+            "/api/rewards/claim?user_id=1001",
+            json={"track_type": "s1_free", "position": 3},
+        )
+        body = await response.json()
+
+        assert response.status == 200
+        assert body["granted"] == [
+            {
+                "reward_type": "particles",
+                "reward_amount": 25,
+                "card_id": 46,
+                "card_name": "Particle Card",
+                "rarity": "rare",
+            }
+        ]
+        assert db.particles_added == [{"user_id": 1001, "card_id": 46, "particles": 25}]
+    finally:
+        await client.close()
+        get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_cosmetic_reward_claim_grants_catalog_item(monkeypatch):
+    monkeypatch.setenv("BOT_TOKEN", "bot-token")
+    monkeypatch.setenv("WEBAPP_HOST", "127.0.0.1")
+    monkeypatch.setenv("ENVIRONMENT", "development")
+    get_settings.cache_clear()
+    db = _CosmeticRewardClaimDB()
+    app = web_server.create_web_app(db, bot_token="bot-token", webapp_url="https://game.example")
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        response = await client.post(
+            "/api/rewards/claim?user_id=1001",
+            json={"track_type": "s1_free", "position": 3},
+        )
+        body = await response.json()
+
+        assert response.status == 200
+        assert body["granted"] == [
+            {
+                "reward_type": "cosmetic",
+                "reward_amount": 1,
+                "cosmetic_slug": "avatar_gold",
+                "name": "Gold Avatar",
+                "auto_equip": True,
+                "acquired": True,
+            }
+        ]
+        assert db.cosmetic_grants == [
+            {"user_id": 1001, "slug": "avatar_gold", "source": "reward_track", "auto_equip": True}
+        ]
     finally:
         await client.close()
         get_settings.cache_clear()
@@ -870,13 +1328,14 @@ async def test_specific_card_reward_duplicate_falls_back_to_coins(monkeypatch):
         assert body["granted"] == [
             {
                 "reward_type": "coins",
-                "reward_amount": 100,
+                "reward_amount": 200,
                 "fallback_for": "specific_card",
                 "card_id": 46,
+                "fallback_rarity": "rare",
             }
         ]
         assert db.added_cards == []
-        assert db.coins_added == 100
+        assert db.coins_added == 200
     finally:
         await client.close()
         get_settings.cache_clear()

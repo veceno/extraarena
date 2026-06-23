@@ -5,6 +5,8 @@ from dataclasses import asdict, dataclass
 from typing import Any, Literal, Mapping
 
 JsonSchema = dict[str, Any]
+
+TRACK_REWARD_TYPES = ("coins", "gems", "keys", "case", "card", "specific_card", "particles", "cosmetic", "guaranteed_card")
 SafetyLevel = Literal["low", "medium", "high", "critical"]
 AuditPolicy = Literal["none", "metadata", "request", "request_and_result"]
 AdapterFunctionName = str
@@ -184,7 +186,7 @@ def _extrapass_reward_row_schema() -> JsonSchema:
             "track": _string_schema(enum=("free", "premium", "pass", "extra_pass", "ultra")),
             "track_type": _string_schema(min_length=1, max_length=80),
             "position": _int_schema(minimum=1, maximum=99),
-            "reward_type": _string_schema(min_length=1, max_length=64),
+            "reward_type": _string_schema(min_length=1, max_length=64, enum=TRACK_REWARD_TYPES),
             "reward_amount": _int_schema(minimum=0, maximum=10_000_000),
             "reward_meta": _freeform_object_schema(),
             "extra_pass_required": _boolean_schema(),
@@ -224,6 +226,7 @@ def _runtime_config_patch_schema() -> JsonSchema:
                     "classic": _boolean_schema(),
                     "extra_arena": _boolean_schema(),
                     "rating": _boolean_schema(),
+                    "rating_human_vs_human": _boolean_schema(),
                 },
             ),
             "disabled_card_ids": {
@@ -1375,7 +1378,7 @@ ADMIN_CAPABILITIES: tuple[AdminCapability, ...] = (
             {
                 "track_type": _string_schema(min_length=1, max_length=80),
                 "position": _int_schema(minimum=1, maximum=100_000),
-                "reward_type": _string_schema(min_length=1, max_length=64),
+                "reward_type": _string_schema(min_length=1, max_length=64, enum=TRACK_REWARD_TYPES),
                 "reward_amount": _int_schema(minimum=0, maximum=10_000_000),
                 "reward_meta": _freeform_object_schema(),
                 "extra_pass_required": _boolean_schema(),

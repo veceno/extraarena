@@ -1055,19 +1055,6 @@
     }
     .checkout-overlay .copy-btn:hover { border-color: var(--active); background: rgba(45,31,82,.65); }
     .checkout-overlay .copy-btn.copied { border-color: var(--success); color: var(--success); }
-    .checkout-overlay .payment-link-wrap { display: grid; gap: 6px; }
-    .checkout-overlay .payment-link-wrap label { color: var(--muted); font-size: 12px; font-weight: 700; }
-    .checkout-overlay .payment-link {
-      width: 100%;
-      min-height: 42px;
-      border: 1px solid rgba(74,61,106,.86);
-      border-radius: 10px;
-      padding: 10px 12px;
-      color: var(--text);
-      background: rgba(9,6,17,.58);
-      font-size: 12px;
-      outline: none;
-    }
     .checkout-overlay .retry-btn {
       width: 100%;
       min-height: 38px;
@@ -1502,14 +1489,25 @@
       return;
     }
 
-    var itemName = payload.item_name || payload.item_type || 'Товар ExtraArena';
-    var amountRub = Number(payload.amount_rub || payload.amount || 0).toFixed(2);
+    var itemName = 'Товар ExtraArena';
+    var amountRub = '0.00';
+    var itemType = '';
     var emoji = '💎';
-    if (payload.item_type === 'extrapass') emoji = '🎟️';
-    else if (payload.item_type === 'extrapass_ultra') emoji = '👑';
-    else if (payload.item_type === 'extrapass_gift') emoji = '🎁';
-    else if (payload.item_type === 'starter_boost') emoji = '🚀';
-    else if (payload.item_type && payload.item_type.indexOf('shop_set_') === 0) emoji = '📦';
+
+    function applyCheckoutPayload(nextPayload) {
+      payload = nextPayload || payload || {};
+      itemType = payload.item_type || '';
+      itemName = payload.item_name || payload.item_type || 'Товар ExtraArena';
+      amountRub = Number(payload.amount_rub || payload.amount || 0).toFixed(2);
+      emoji = '💎';
+      if (itemType === 'extrapass') emoji = '🎟️';
+      else if (itemType === 'extrapass_ultra') emoji = '👑';
+      else if (itemType === 'extrapass_gift') emoji = '🎁';
+      else if (itemType === 'starter_boost') emoji = '🚀';
+      else if (itemType && itemType.indexOf('shop_set_') === 0) emoji = '📦';
+    }
+
+    applyCheckoutPayload(payload);
 
     function renderLoading() {
       overlay.innerHTML =
@@ -1532,11 +1530,11 @@
         '<div class="status-row"><span class="loading-spin"></span><span>Готовим ссылку на оплату…</span></div>';
     }
 
-    function renderVpnStep() {
+    function renderCheckout() {
       overlay.innerHTML =
         '<div class="header">' +
           '<div class="logo"><span class="logo-mark">ES</span>ExtraShop</div>' +
-          '<p class="eyebrow">Перед оплатой</p>' +
+          '<p class="eyebrow">Проверка заказа</p>' +
         '</div>' +
         '<div class="divider"></div>' +
         '<div class="picked-line">' +
@@ -1548,23 +1546,16 @@
           '<div class="price">' + amountRub + ' ₽</div>' +
         '</div>' +
         '<div class="divider"></div>' +
-        '<div class="steps">' +
-          '<strong>Откройте эту страницу во внешнем браузере.</strong>' +
-          '<span>1. В Telegram нажмите ⋯ в правом верхнем углу.</span>' +
-          '<span>2. Выберите «Открыть в…» и браузер: Safari, Chrome или Яндекс.</span>' +
-          '<span>3. Выключите VPN.</span>' +
-          '<span>4. Вернитесь на эту страницу и продолжите.</span>' +
-        '</div>' +
-        '<div class="notice" style="border-color:rgba(245,146,30,.3);background:rgba(245,146,30,.06)">Это не прихоть ExtraArena: Robokassa и банки могут не принимать оплату через VPN и встроенный браузер Telegram.</div>' +
-        '<div class="steps">' +
-          '<strong>Когда VPN выключен:</strong>' +
-          '<span>1. Вернитесь на эту страницу.</span>' +
-          '<span>2. Нажмите кнопку ниже, чтобы подготовить ссылку Robokassa.</span>' +
-        '</div>' +
-        '<button class="cta" id="vpn-ready-btn" type="button">VPN отключен, продолжить</button>' +
-        '<div class="notice">Ссылка Robokassa создастся только после подтверждения. Если вы всё ещё внутри Telegram-браузера, сначала откройте внешний браузер через меню ⋯.</div>';
+        '<div class="summary-row"><span>Способ оплаты</span><strong>Картой / СБП</strong></div>' +
+        '<div class="summary-row"><span>Итого</span><strong class="price" style="font-size:20px">' + amountRub + ' ₽</strong></div>' +
+        '<label class="checkline">' +
+          '<input type="checkbox" id="agree" checked onchange="document.querySelector(\'#open-pay-btn\').disabled=!this.checked">' +
+          '<span>Согласен с <a href=\"/extraShop/oferta\" target=\"_blank\" rel=\"noopener noreferrer\">офертой</a>, <a href=\"/extraShop/privacy\" target=\"_blank\" rel=\"noopener noreferrer\">политикой конфиденциальности</a>, <a href=\"/extraShop/refund\" target=\"_blank\" rel=\"noopener noreferrer\">правилами возврата</a>.</span>' +
+        '</label>' +
+        '<button class="cta" id="open-pay-btn" type="button">Перейти к оплате</button>' +
+        '<div class="notice">После оплаты вернитесь в игру. Награды начисляются автоматически.</div>';
 
-      var btn = document.getElementById('vpn-ready-btn');
+      var btn = document.getElementById('open-pay-btn');
       if (btn) btn.addEventListener('click', createPayment);
     }
 
@@ -1575,7 +1566,7 @@
       overlay.innerHTML =
         '<div class="header">' +
           '<div class="logo"><span class="logo-mark">ES</span>ExtraShop</div>' +
-          '<p class="eyebrow">Ссылка на оплату готова</p>' +
+          '<p class="eyebrow">Переход к оплате</p>' +
         '</div>' +
         '<div class="divider"></div>' +
         '<div class="picked-line">' +
@@ -1587,27 +1578,15 @@
           '<div class="price">' + amountRub + ' ₽</div>' +
         '</div>' +
         '<div class="divider"></div>' +
-        '<div class="summary-row"><span>Способ оплаты</span><strong>Карта / СБП</strong></div>' +
+        '<div class="summary-row"><span>Способ оплаты</span><strong>Картой / СБП</strong></div>' +
         '<div class="summary-row"><span>Итого</span><strong class="price" style="font-size:20px">' + amountRub + ' ₽</strong></div>' +
-        '<label class="checkline">' +
-          '<input type="checkbox" id="agree" checked onchange="document.querySelector(\'#open-pay-btn\').disabled=!this.checked">' +
-          '<span>Согласен с <a href=\"/extraShop/oferta\" target=\"_blank\" rel=\"noopener noreferrer\">офертой</a>, <a href=\"/extraShop/privacy\" target=\"_blank\" rel=\"noopener noreferrer\">политикой конфиденциальности</a>, <a href=\"/extraShop/refund\" target=\"_blank\" rel=\"noopener noreferrer\">правилами возврата</a>.</span>' +
-        '</label>' +
-        '<button class="cta" id="open-pay-btn" type="button">Открыть оплату во внешнем браузере</button>' +
-        '<button class="copy-btn" id="copy-pay-btn" type="button">Скопировать прямую ссылку Robokassa</button>' +
-        '<div class="payment-link-wrap">' +
-          '<label for="payment-link">Прямая ссылка Robokassa</label>' +
-          '<input class="payment-link" id="payment-link" type="text" readonly value="' + escAttr(confirmationUrl) + '">' +
-        '</div>' +
-        '<div class="steps"><strong>Дальше:</strong><span>1. Нажмите «Открыть оплату».</span><span>2. Оплатите на стороне Robokassa.</span><span>3. Если браузер попросит VPN — он должен быть выключен.</span></div>' +
-        '<div class="notice">После оплаты вы будете перенаправлены обратно в игру. Награды зачисляются автоматически.</div>';
+        '<div class="status-row"><span class="loading-spin"></span><span>Открываем платежного провайдера…</span></div>' +
+        '<button class="retry-btn" id="open-pay-btn" type="button">Открыть ещё раз</button>' +
+        '<div class="notice">Если новая вкладка не открылась, нажмите кнопку выше.</div>';
 
       var openBtn = document.getElementById('open-pay-btn');
-      var copyBtn = document.getElementById('copy-pay-btn');
-      var linkInput = document.getElementById('payment-link');
       if (openBtn) openBtn.addEventListener('click', function() { openExternalPayment(paymentUrl); });
-      if (copyBtn) copyBtn.addEventListener('click', function() { copyPaymentUrl(paymentUrl); });
-      if (linkInput) linkInput.addEventListener('click', function() { linkInput.select(); });
+      openExternalPayment(paymentUrl);
     }
 
     function renderError(msg, canRetry) {
@@ -1638,50 +1617,6 @@
       if (!url) return;
       var opened = window.open(url, '_blank', 'noopener,noreferrer');
       if (!opened) window.location.href = url;
-    }
-
-    function setCopyState(ok) {
-      var cb = document.getElementById('copy-pay-btn');
-      if (!cb) return;
-      cb.textContent = ok ? 'Ссылка Robokassa скопирована' : 'Не удалось скопировать: выделите поле ниже';
-      cb.classList.toggle('copied', ok);
-      setTimeout(function() {
-        cb.textContent = 'Скопировать прямую ссылку Robokassa';
-        cb.classList.remove('copied');
-      }, 2800);
-    }
-
-    function fallbackCopy(url) {
-      var input = document.getElementById('payment-link');
-      if (input) {
-        input.focus();
-        input.select();
-        try { if (document.execCommand('copy')) return true; } catch(e) {}
-      }
-      try {
-        var ta = document.createElement('textarea');
-        ta.value = url;
-        ta.style.position = 'fixed';
-        ta.style.left = '-9999px';
-        document.body.appendChild(ta);
-        ta.select();
-        var ok = document.execCommand('copy');
-        document.body.removeChild(ta);
-        return ok;
-      } catch(e) { return false; }
-    }
-
-    function copyPaymentUrl(url) {
-      if (!url) return;
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(url).then(function() {
-          setCopyState(true);
-        }).catch(function() {
-          setCopyState(fallbackCopy(url));
-        });
-      } else {
-        setCopyState(fallbackCopy(url));
-      }
     }
 
     function createPayment() {
@@ -1722,14 +1657,38 @@
       .catch(function(err) {
         if (timeoutId) clearTimeout(timeoutId);
         if (err && err.name === 'AbortError') {
-          renderError('Robokassa слишком долго отвечает. Проверьте, что VPN выключен, и попробуйте ещё раз.', true);
+          renderError('Платежный провайдер слишком долго отвечает. Попробуйте ещё раз.', true);
         } else {
           renderError('Ошибка сети. Проверьте соединение и попробуйте снова.', true);
         }
       });
     }
 
-    renderVpnStep();
+    function loadCheckoutSummary() {
+      if (!checkoutJti) {
+        renderCheckout();
+        return;
+      }
+      renderLoading();
+      fetch('/api/payments/checkout/summary?jti=' + encodeURIComponent(checkoutJti), {cache:'no-store'})
+        .then(function(r) { return r.json().then(function(d) { return {ok:r.ok, data:d}; }); })
+        .then(function(result) {
+          if (result.ok && result.data && result.data.success) {
+            applyCheckoutPayload(result.data);
+            try {
+              sessionStorage.setItem(CHECKOUT_SUMMARY_STORAGE_KEY, JSON.stringify(result.data));
+            } catch (_) {}
+            renderCheckout();
+          } else {
+            renderError(result.data.message || result.data.error || 'Не удалось загрузить заказ', false);
+          }
+        })
+        .catch(function() {
+          renderError('Ошибка сети. Не удалось загрузить заказ.', true);
+        });
+    }
+
+    loadCheckoutSummary();
     return;
   }
 
@@ -1922,7 +1881,7 @@
       if (summaryEl) summaryEl.innerHTML =
         '<div class="summary-row"><span>Товар</span><strong>' + esc(selectedItemName) + '</strong></div>' +
         '<div class="summary-row"><span>Тип покупки</span><strong>' + (isGiftProductSelection() ? 'Подарок' : 'Разово') + '</strong></div>' +
-        (isGiftProductSelection() ? '<div class="summary-row"><span>Получение</span><strong>В игре после авторизации</strong></div>' : '<div class="summary-row"><span>Способ оплаты</span><strong>Robokassa · карта / СБП</strong></div>') +
+        (isGiftProductSelection() ? '<div class="summary-row"><span>Получение</span><strong>В игре после авторизации</strong></div>' : '<div class="summary-row"><span>Способ оплаты</span><strong>Картой / СБП</strong></div>') +
         '<div class="summary-row"><span>Итого</span><strong class="price">' + formatProductPriceLabel(selectedItemPrice, isGiftProductSelection()) + '</strong></div>';
       if (payBtn) { payBtn.disabled = isGiftProductSelection(); payBtn.textContent = isGiftProductSelection() ? 'Получить в игре' : 'Оплатить ' + selectedItemPrice + ' ₽'; }
     } else {

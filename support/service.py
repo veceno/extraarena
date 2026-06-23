@@ -15,9 +15,10 @@ from support.constants import (
 
 
 class SupportService:
-    def __init__(self, *, support_db: Any, game_db: Any | None = None) -> None:
+    def __init__(self, *, support_db: Any, game_db: Any | None = None, notifier: Any | None = None) -> None:
         self.support_db = support_db
         self.game_db = game_db
+        self.notifier = notifier
 
     async def create_ticket(
         self,
@@ -71,6 +72,11 @@ class SupportService:
             body=body,
             metadata=metadata or {},
         )
+        if self.notifier is not None:
+            try:
+                await self.notifier.notify_new_ticket(ticket)
+            except Exception:
+                pass
         return {"identity": identity, "ticket": ticket, "message": message}
 
     async def add_message(
@@ -183,7 +189,12 @@ class SupportService:
                 t.*,
                 latest.body AS latest_message_body,
                 latest.direction AS latest_message_direction,
-                latest.created_at AS latest_message_created_at
+                latest.created_at AS latest_message_created_at,
+                i.display_name AS requester_display_name,
+                i.external_user_id AS requester_external_user_id,
+                i.game_user_id AS requester_game_user_id,
+                i.channel AS requester_channel,
+                i.channel_id AS requester_channel_id
             FROM support_tickets t
             LEFT JOIN LATERAL (
                 SELECT body, direction, created_at
@@ -192,6 +203,7 @@ class SupportService:
                 ORDER BY m.created_at DESC
                 LIMIT 1
             ) latest ON TRUE
+            LEFT JOIN support_identities i ON i.id = t.requester_identity_id
             ORDER BY t.priority_score DESC, t.last_message_at ASC, t.created_at ASC
             LIMIT $1 OFFSET $2
             """,
@@ -202,7 +214,16 @@ class SupportService:
 
     async def get_ticket(self, *, ticket_id: Any) -> dict[str, Any] | None:
         row = await self.support_db.fetchrow(
-            "SELECT * FROM support_tickets WHERE id = $1",
+            """
+            SELECT t.*, i.display_name AS requester_display_name,
+                   i.external_user_id AS requester_external_user_id,
+                   i.game_user_id AS requester_game_user_id,
+                   i.channel AS requester_channel,
+                   i.channel_id AS requester_channel_id
+            FROM support_tickets t
+            LEFT JOIN support_identities i ON i.id = t.requester_identity_id
+            WHERE t.id = $1
+            """,
             ticket_id,
         )
         return dict(row) if row else None
@@ -228,13 +249,42 @@ class SupportService:
         body: str,
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        return await self.add_message(
+        message = await self.add_message(
             ticket_id=ticket["id"],
             identity_id=ticket.get("requester_identity_id"),
             direction=MESSAGE_INBOUND,
             body=body,
             metadata=metadata or {},
         )
+        if self.notifier is not None:
+            try:
+                await self.notifier.notify_new_inbound_message(ticket, message)
+            except Exception:
+                pass
+        return message
+
+    async def add_user_message(
+        self,
+        *,
+        ticket: dict[str, Any],
+        body: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if str(ticket.get("status") or "") == "closed":
+            raise ValueError("ticket_closed")
+        message = await self.add_message(
+            ticket_id=ticket["id"],
+            identity_id=ticket.get("requester_identity_id"),
+            direction=MESSAGE_INBOUND,
+            body=body,
+            metadata=metadata or {},
+        )
+        if self.notifier is not None:
+            try:
+                await self.notifier.notify_new_inbound_message(ticket, message)
+            except Exception:
+                pass
+        return message
 
     async def list_ticket_messages(self, *, ticket_id: Any, public: bool = False) -> list[dict[str, Any]]:
         if public:
@@ -266,6 +316,20 @@ class SupportService:
             FROM support_attachments
             WHERE ticket_id = $1
             ORDER BY created_at ASC
+            """,
+            ticket_id,
+        )
+        return [dict(row) for row in rows]
+
+    async def list_public_ticket_attachments(self, *, ticket_id: Any) -> list[dict[str, Any]]:
+        rows = await self.support_db.fetch(
+            """
+            SELECT a.*
+            FROM support_attachments a
+            LEFT JOIN support_messages m ON m.id = a.message_id
+            WHERE a.ticket_id = $1
+              AND (m.direction IS NULL OR m.direction <> 'internal')
+            ORDER BY a.created_at ASC
             """,
             ticket_id,
         )

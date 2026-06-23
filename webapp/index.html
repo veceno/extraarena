@@ -3271,7 +3271,7 @@ window.loadMobileSquadsBootstrap = async function(options = {}) {
 };
 </script>
 
-<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=ed088284fa09">
+<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=c714c590f773">
 // ═══════════════════════════════════════════
 // DESIGN TOKENS
 // ═══════════════════════════════════════════
@@ -12236,10 +12236,13 @@ const AnnouncementsSubScreen = ({userClan, isClanOwner, onOpenSquads}) => {
 
 const STATUS_COLORS = {reviewing:{label:'На рассмотрении',color:'#9c7de0'},accepted:{label:'Принято',color:'#60a5fa'},in_progress:{label:'В работе',color:T.orange},done:{label:'Реализовано',color:T.green},rejected:{label:'Отклонено',color:'#ef4444'},fixed:{label:'Исправлено',color:T.green}};
 
-const IdeaCard = ({item, onVote}) => {
+const IdeaCard = ({item, onVote, isAdmin, onStatusChange, onDelete}) => {
   const st = STATUS_COLORS[item.status]||STATUS_COLORS.reviewing;
   const score = (item.upvotes||0) - (item.downvotes||0);
   const userVote = item.user_vote;
+  const [expanded, setExpanded] = React.useState(false);
+  const desc = item.description || '';
+  const isLong = desc.length > 120 || desc.split('\n').length > 2;
   return (
     <div style={{background:T.bgCard,borderRadius:C_R.xl||16,padding:14,border:`1px solid ${T.grey3}33`}}>
       <div style={{display:'flex',alignItems:'flex-start',gap:10}}>
@@ -12255,13 +12258,54 @@ const IdeaCard = ({item, onVote}) => {
             {item.admin_approved && <CBadge color={T.green}>✓ Одобрено администрацией</CBadge>}
           </div>
           <div style={{fontSize:14,fontWeight:600,color:T.white,margin:'4px 0',lineHeight:'19px'}}>{item.title}</div>
-          <div style={{fontSize:12,color:T.grey2,lineHeight:'17px',overflow:'hidden',display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical'}}>{item.description}</div>
+          <div style={{fontSize:12,color:T.grey2,lineHeight:'17px',overflow:'hidden',display:'-webkit-box',WebkitLineClamp:expanded?'unset':2,WebkitBoxOrient:'vertical',whiteSpace:expanded?'pre-wrap':'normal'}}>{desc}</div>
+          {isLong && <button onClick={()=>setExpanded(v=>!v)} style={{background:'none',border:'none',padding:'4px 0 0',cursor:'pointer',color:T.orange,fontSize:11,fontWeight:600,fontFamily:"'Inter',sans-serif"}}>{expanded?'Свернуть':'Читать далее...'}</button>}
           <div style={{display:'flex',gap:8,marginTop:6}}>
             <PremiumNickname name={item.author_name} player={item} style={{fontSize:11,color:T.grey2}}/>
             <span style={{fontSize:11,color:T.grey3}}>·</span>
             <span style={{fontSize:11,color:T.grey2}}>{item.created_at?.split('T')[0]}</span>
           </div>
+          {isAdmin && (
+            <div style={{display:'flex',alignItems:'center',gap:8,marginTop:10,paddingTop:10,borderTop:`1px solid ${T.grey3}22`}}>
+              <select value={item.status||'reviewing'} onChange={e=>onStatusChange?.(item.id,e.target.value)} style={{height:30,borderRadius:C_R.sm,background:T.bgDeep,border:`1px solid ${T.grey3}66`,color:T.white,fontSize:11,padding:'0 8px',fontFamily:"'Inter',sans-serif",cursor:'pointer'}}>
+                <option value="reviewing">На рассмотрении</option>
+                <option value="in_progress">В работе</option>
+                <option value="rejected">Отвергнута</option>
+              </select>
+              <div style={{flex:1}}/>
+              <button onClick={()=>{ if(window.confirm('Удалить эту идею?')) onDelete?.(item.id); }} style={{height:30,borderRadius:C_R.sm,background:'rgba(239,68,68,0.12)',border:'1px solid rgba(239,68,68,0.3)',color:'#ef4444',fontSize:11,fontWeight:600,cursor:'pointer',padding:'0 12px',fontFamily:"'Inter',sans-serif"}}>Удалить</button>
+            </div>
+          )}
         </div>
+      </div>
+    </div>
+  );
+};
+
+const BugCard = ({item, onStatusChange, onDelete}) => {
+  const st = STATUS_COLORS[item.status]||STATUS_COLORS.reviewing;
+  return (
+    <div style={{background:T.bgCard,borderRadius:C_R.xl||16,padding:14,border:`1px solid rgba(239,68,68,0.25)`}}>
+      <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:4,flexWrap:'wrap'}}>
+        <CBadge color={'rgba(239,68,68,0.18)'}>🐛 Баг</CBadge>
+        <CBadge color={st.color}>{st.label}</CBadge>
+        {item.moderation_status && item.moderation_status!=='approved' && <CBadge color={T.grey2}>{item.moderation_status}</CBadge>}
+      </div>
+      <div style={{fontSize:14,fontWeight:600,color:T.white,margin:'4px 0',lineHeight:'19px'}}>{item.title}</div>
+      <div style={{fontSize:12,color:T.grey1,lineHeight:'17px',whiteSpace:'pre-wrap'}}>{item.description}</div>
+      <div style={{display:'flex',gap:8,marginTop:6}}>
+        <PremiumNickname name={item.author_name||'Игрок'} player={item} style={{fontSize:11,color:T.grey2}}/>
+        <span style={{fontSize:11,color:T.grey3}}>·</span>
+        <span style={{fontSize:11,color:T.grey2}}>{item.created_at?.split('T')[0]}</span>
+      </div>
+      <div style={{display:'flex',alignItems:'center',gap:8,marginTop:10,paddingTop:10,borderTop:`1px solid ${T.grey3}22`}}>
+        <select value={item.status||'reviewing'} onChange={e=>onStatusChange?.(item.id,e.target.value)} style={{height:30,borderRadius:C_R.sm,background:T.bgDeep,border:`1px solid ${T.grey3}66`,color:T.white,fontSize:11,padding:'0 8px',fontFamily:"'Inter',sans-serif",cursor:'pointer'}}>
+          <option value="reviewing">На рассмотрении</option>
+          <option value="in_progress">В работе</option>
+          <option value="rejected">Отвергнута</option>
+        </select>
+        <div style={{flex:1}}/>
+        <button onClick={()=>{ if(window.confirm('Удалить этот баг-репорт?')) onDelete?.(item.id); }} style={{height:30,borderRadius:C_R.sm,background:'rgba(239,68,68,0.12)',border:'1px solid rgba(239,68,68,0.3)',color:'#ef4444',fontSize:11,fontWeight:600,cursor:'pointer',padding:'0 12px',fontFamily:"'Inter',sans-serif"}}>Удалить</button>
       </div>
     </div>
   );
@@ -12355,13 +12399,17 @@ const IdeaSubmitModal = ({open, onClose, onSubmitted, initialType='idea'}) => {
   );
 };
 
-const IdeasSubScreen = () => {
+const IdeasSubScreen = ({isAdmin}) => {
   const [items, setItems] = React.useState([]);
   const [loaded, setLoaded] = React.useState(false);
   const [ideasError, setIdeasError] = React.useState(null);
   const [sortBy, setSortBy] = React.useState('votes');
   const [formOpen, setFormOpen] = React.useState(false);
   const [formType, setFormType] = React.useState('idea');
+  const [view, setView] = React.useState('ideas');
+  const [bugs, setBugs] = React.useState([]);
+  const [bugsLoaded, setBugsLoaded] = React.useState(false);
+  const [bugsError, setBugsError] = React.useState(null);
 
   const openAs = (t) => { setFormType(t); setFormOpen(true); };
 
@@ -12378,6 +12426,19 @@ const IdeasSubScreen = () => {
   };
   React.useEffect(()=>{load();},[sortBy]);
 
+  const loadBugs = async () => {
+    setBugsLoaded(false);
+    setBugsError(null);
+    try {
+      const r = await fetch(_buildAuthUrl('/api/community/bugs?limit=50'), {cache:'no-store'});
+      const d = await r.json();
+      if(!r.ok||d.success===false) throw new Error(d.error||'bugs_failed');
+      setBugs(d.bugs||[]);
+    } catch(e){ setBugsError(e?.message||'bugs_failed'); }
+    setBugsLoaded(true);
+  };
+  React.useEffect(()=>{ if(isAdmin && view==='bugs') loadBugs(); },[isAdmin,view]);
+
   const handleVote = async (postId, voteType) => {
     try {
       const r = await fetch(_buildAuthUrl('/api/community/ideas/vote'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({post_id:postId,vote_type:voteType})});
@@ -12386,32 +12447,87 @@ const IdeasSubScreen = () => {
     } catch(e){}
   };
 
+  const handleStatusChange = async (postId, status) => {
+    try {
+      const r = await fetch(_buildAuthUrl('/api/community/ideas/admin/status'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({post_id:postId,status})});
+      const d = await r.json();
+      if(d.success){
+        setItems(prev=>prev.map(it=>it.id===postId?{...it,status}:it));
+        if(view==='bugs') setBugs(prev=>prev.map(it=>it.id===postId?{...it,status}:it));
+        window.showToast('Статус обновлён');
+      } else { window.showToast(d.error||'Ошибка','error'); }
+    } catch(e){ window.showToast('Ошибка','error'); }
+  };
+
+  const handleDelete = async (postId) => {
+    try {
+      const r = await fetch(_buildAuthUrl('/api/community/ideas/admin/delete'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({post_id:postId})});
+      const d = await r.json();
+      if(d.success){
+        setItems(prev=>prev.filter(it=>it.id!==postId));
+        setBugs(prev=>prev.filter(it=>it.id!==postId));
+        window.showToast('Удалено');
+      } else { window.showToast(d.error||'Ошибка','error'); }
+    } catch(e){ window.showToast('Ошибка','error'); }
+  };
+
   return (
     <div style={{position:'relative',height:'100%'}}>
       <div style={{padding:'0 0 80px',overflowY:'auto',height:'100%',boxSizing:'border-box'}}>
-        <div style={{display:'flex',alignItems:'center',gap:6,padding:'8px 16px 12px',position:'sticky',top:0,zIndex:5,background:T.bg}}>
-          <button onClick={()=>setSortBy(s=>s==='votes'?'date':'votes')} style={{display:'flex',alignItems:'center',gap:4,marginLeft:'auto',background:'none',border:'none',cursor:'pointer',color:T.grey2,fontSize:11,fontFamily:"'Inter',sans-serif"}}>
+        <div style={{display:'flex',alignItems:'center',gap:6,padding:'8px 16px 12px',position:'sticky',top:0,zIndex:5,background:T.bg,justifyContent:'space-between'}}>
+          {isAdmin ? (
+            <div style={{display:'flex',gap:4}}>
+              <button onClick={()=>setView('ideas')} style={{height:28,borderRadius:C_R.full,border:'none',cursor:'pointer',padding:'0 14px',fontSize:11,fontWeight:600,fontFamily:"'Inter',sans-serif",background:view==='ideas'?T.orange:T.bgCard,color:view==='ideas'?'#fff':T.grey2}}>Идеи</button>
+              <button onClick={()=>setView('bugs')} style={{height:28,borderRadius:C_R.full,border:'none',cursor:'pointer',padding:'0 14px',fontSize:11,fontWeight:600,fontFamily:"'Inter',sans-serif",background:view==='bugs'?T.orange:T.bgCard,color:view==='bugs'?'#fff':T.grey2}}>Баг-репорты</button>
+            </div>
+          ) : <div/>}
+          <button onClick={()=>setSortBy(s=>s==='votes'?'date':'votes')} style={{display:'flex',alignItems:'center',gap:4,background:'none',border:'none',cursor:'pointer',color:T.grey2,fontSize:11,fontFamily:"'Inter',sans-serif"}}>
             ☰ {sortBy==='votes'?'По голосам':'По дате'}
           </button>
         </div>
-        {!loaded ? (
-          <div style={{textAlign:'center',padding:'40px 0',color:T.grey2}}>Загрузка...</div>
-        ) : ideasError ? (
-          <div style={{textAlign:'center',padding:'48px 0'}}>
-            <div style={{fontSize:48,opacity:0.4}}>⚠️</div>
-            <div style={{fontSize:16,fontWeight:700,color:T.grey1,marginTop:12}}>Не удалось загрузить идеи</div>
-            <CBtn variant="ghost" size="sm" onClick={load} style={{marginTop:12}}>Повторить</CBtn>
-          </div>
-        ) : items.length===0 ? (
-          <div style={{textAlign:'center',padding:'48px 0'}}>
-            <div style={{fontSize:48,opacity:0.4}}>💡</div>
-            <div style={{fontSize:16,fontWeight:700,color:T.grey1,marginTop:12}}>Идей пока нет</div>
-            <div style={{fontSize:13,color:T.grey2,marginTop:4}}>Будьте первым!</div>
-          </div>
+        {view==='ideas' ? (
+          <>
+            {!loaded ? (
+              <div style={{textAlign:'center',padding:'40px 0',color:T.grey2}}>Загрузка...</div>
+            ) : ideasError ? (
+              <div style={{textAlign:'center',padding:'48px 0'}}>
+                <div style={{fontSize:48,opacity:0.4}}>⚠️</div>
+                <div style={{fontSize:16,fontWeight:700,color:T.grey1,marginTop:12}}>Не удалось загрузить идеи</div>
+                <CBtn variant="ghost" size="sm" onClick={load} style={{marginTop:12}}>Повторить</CBtn>
+              </div>
+            ) : items.length===0 ? (
+              <div style={{textAlign:'center',padding:'48px 0'}}>
+                <div style={{fontSize:48,opacity:0.4}}>💡</div>
+                <div style={{fontSize:16,fontWeight:700,color:T.grey1,marginTop:12}}>Идей пока нет</div>
+                <div style={{fontSize:13,color:T.grey2,marginTop:4}}>Будьте первым!</div>
+              </div>
+            ) : (
+              <div style={{display:'flex',flexDirection:'column',gap:10,padding:'0 16px'}}>
+                {items.map(it=><IdeaCard key={it.id} item={it} onVote={handleVote} isAdmin={isAdmin} onStatusChange={handleStatusChange} onDelete={handleDelete}/>)}
+              </div>
+            )}
+          </>
         ) : (
-          <div style={{display:'flex',flexDirection:'column',gap:10,padding:'0 16px'}}>
-            {items.map(it=><IdeaCard key={it.id} item={it} onVote={handleVote}/>)}
-          </div>
+          <>
+            {!bugsLoaded ? (
+              <div style={{textAlign:'center',padding:'40px 0',color:T.grey2}}>Загрузка...</div>
+            ) : bugsError ? (
+              <div style={{textAlign:'center',padding:'48px 0'}}>
+                <div style={{fontSize:48,opacity:0.4}}>⚠️</div>
+                <div style={{fontSize:16,fontWeight:700,color:T.grey1,marginTop:12}}>Не удалось загрузить баг-репорты</div>
+                <CBtn variant="ghost" size="sm" onClick={loadBugs} style={{marginTop:12}}>Повторить</CBtn>
+              </div>
+            ) : bugs.length===0 ? (
+              <div style={{textAlign:'center',padding:'48px 0'}}>
+                <div style={{fontSize:48,opacity:0.4}}>🐛</div>
+                <div style={{fontSize:16,fontWeight:700,color:T.grey1,marginTop:12}}>Баг-репортов нет</div>
+              </div>
+            ) : (
+              <div style={{display:'flex',flexDirection:'column',gap:10,padding:'0 16px'}}>
+                {bugs.map(b=><BugCard key={b.id} item={b} onStatusChange={handleStatusChange} onDelete={handleDelete}/>)}
+              </div>
+            )}
+          </>
         )}
       </div>
       <div style={{position:'absolute',bottom:20,right:16,display:'flex',flexDirection:'column',alignItems:'flex-end',gap:8,zIndex:10}}>
@@ -12800,7 +12916,7 @@ const CommunityScreen = ({profile, initialTab=0, onOpenSquads, onBack, runtimeSt
           <>
             {subTab===0 && <RatingScreen runtimeStatus={runtimeStatus} detail={ratingDetail} onDetailChange={setRatingDetail}/>}
             {subTab===1 && <AnnouncementsSubScreen userClan={userRole.clan} isClanOwner={userRole.is_clan_owner} onOpenSquads={onOpenSquads}/>}
-            {subTab===2 && <IdeasSubScreen/>}
+            {subTab===2 && <IdeasSubScreen isAdmin={userRole.is_admin}/>}
           </>
         )}
       </div>
@@ -17696,6 +17812,6 @@ const LeagueInfoSheet = ({onClose, onOpenGloryPath, profile}) => {
 
 ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
 </script>
-<script src="index.compiled.js?v=ed088284fa09"></script>
+<script src="index.compiled.js?v=c714c590f773"></script>
 </body>
 </html>

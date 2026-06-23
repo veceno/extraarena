@@ -87,6 +87,7 @@ import java.util.concurrent.Executors;
 
 public class MainActivity extends Activity {
     private static final String TAG_WEBVIEW = "EAWebView";
+    private static final String TAG = "ExtraArenaApp";
     private static final int SECRET_TAP_WINDOW_MS = 1800;
     private static final int SECRET_TAP_TARGET_DP = 72;
     private static final int EA_BG = Color.rgb(9, 5, 18);
@@ -963,7 +964,15 @@ public class MainActivity extends Activity {
         }
     }
 
+    private void selectInitialProfileIfNeeded() {
+        RegionDetector.Result region = RegionDetector.isLikelyRu(this);
+        ConnectionProfileStore.autoSelectIfNeeded(this, region.ru);
+        ConnectionProfileStore.ConnectionProfile selected = ConnectionProfileStore.getSelectedProfile(this);
+        Log.d(TAG, "Connection profile: " + selected.id + " (" + selected.baseUrl + ") region=" + region.source);
+    }
+
     private void launchAfterUpdateGate(Intent intent) {
+        selectInitialProfileIfNeeded();
         if (updateBlocked) {
             showRequiredUpdateDialog(blockedUpdateInfo);
             return;
@@ -1212,7 +1221,7 @@ public class MainActivity extends Activity {
         if (inviteAction == null && intent != null && intent.getData() != null) {
             inviteAction = intent.getData().getQueryParameter("invite_action");
         }
-        probeAndLoadArena(buildLaunchUrl(section, inviteId, inviteAction));
+        probeAndLoadArena(section, inviteId, inviteAction);
     }
 
     private String buildLaunchUrl(String section) {
@@ -1247,19 +1256,42 @@ public class MainActivity extends Activity {
         return builder.build().toString();
     }
 
-    private void probeAndLoadArena(String url) {
+    private void probeAndLoadArena(String section, String inviteId, String inviteAction) {
         final int generation = ++arenaLoadGeneration;
         if (generation != arenaLoadGeneration || loadingPausedForProfileSwitcher) {
             return;
         }
         arenaProbeExecutor.execute(() -> {
-            boolean available = isServerAvailable(BaseUrlStore.join(BaseUrlStore.getBaseUrl(this), "health"));
+            ConnectionProfileStore.ConnectionProfile selected = ConnectionProfileStore.getSelectedProfile(this);
+            boolean available = isServerAvailable(BaseUrlStore.join(selected.baseUrl, "health"));
+            String switchedTo = null;
+            if (!available && ConnectionProfileStore.isBuiltIn(selected.id)) {
+                // The selected built-in host is unreachable: try the other built-in host so the app
+                // keeps working when one entrypoint (e.g. the Cloudflare tunnel) is down.
+                ConnectionProfileStore.ConnectionProfile other =
+                        ConnectionProfileStore.otherBuiltIn(this, selected.id);
+                if (other != null
+                        && isServerAvailable(BaseUrlStore.join(other.baseUrl, "health"))) {
+                    selected = other;
+                    available = true;
+                    switchedTo = other.id;
+                }
+            }
+            final boolean finalAvailable = available;
+            final String finalSwitchedTo = switchedTo;
+            final ConnectionProfileStore.ConnectionProfile finalSelected = selected;
             runOnUiThread(() -> {
                 if (generation != arenaLoadGeneration || loadingPausedForProfileSwitcher || updateBlocked) {
                     return;
                 }
-                if (available) {
-                    webView.loadUrl(url);
+                if (finalAvailable) {
+                    if (finalSwitchedTo != null) {
+                        // Persist the fallback selection under the generation guard so a manual
+                        // profile choice made during the probe window is not silently overwritten.
+                        ConnectionProfileStore.selectProfile(this, finalSwitchedTo);
+                        Log.w(TAG, "Selected host unreachable; fell back to profile " + finalSwitchedTo);
+                    }
+                    webView.loadUrl(buildLaunchUrl(section, inviteId, inviteAction));
                 } else {
                     showConnectivityError();
                 }

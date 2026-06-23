@@ -22,6 +22,20 @@ RARITY_ORDER = [
     "limited",          # Лимитированная
 ]
 
+
+def rarity_ordinal(rarity: str) -> int:
+    """Вернуть 1-based порядковый номер редкости (от менее редких к более редким). Неизвестная → 1."""
+    try:
+        return RARITY_ORDER.index(rarity) + 1
+    except ValueError:
+        return 1
+
+
+def fallback_coins_for_rarity(rarity: str) -> int:
+    """Компенсация монетами за повторную карту: 100 * n, где n — порядковый номер редкости."""
+    return 100 * rarity_ordinal(rarity)
+
+
 # Максимальные редкости по тиру кейса
 MAX_RARITY_BY_TIER = {
     1: "superrare",      # T1: до Сверхредкой включительно

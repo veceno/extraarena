@@ -20,6 +20,7 @@ WEBAPP_SECTION_BY_CATEGORY = {
     "extra_arena_modifier": "arena",
     "game_invites": "friends",
     "friend_requests": "friends",
+    "daily_rewards": "arena",
 }
 
 NOTIFICATION_SETTING_BY_CATEGORY = {
@@ -34,11 +35,12 @@ NOTIFICATION_SETTING_BY_CATEGORY = {
     "extra_arena_modifier": "notif_extra_arena_modifiers",
     "game_invites": "notif_game_invites",
     "friend_requests": "notif_friend_requests",
+    "daily_rewards": "notif_daily_rewards",
 }
 
 NOTIFICATION_DEFAULTS = {
     "notif_shop": False,
-    "notif_reminders": True,
+    "notif_reminders": False,
     "notif_squad_member_role": True,
     "notif_squad_new_member": True,
     "notif_squad_disbanded": True,
@@ -47,6 +49,7 @@ NOTIFICATION_DEFAULTS = {
     "notif_extra_arena_modifiers": True,
     "notif_game_invites": True,
     "notif_friend_requests": True,
+    "notif_daily_rewards": True,
 }
 
 REMINDER_DUSTY_WEIGHT = 1
@@ -176,6 +179,8 @@ def format_notification_message(event_type: str, payload: dict[str, Any] | None 
         return f"{from_name} отправил заявку в друзья."
     if event_type == "daily_reminder":
         return str(payload.get("text") or "Пора вернуться на арену!")
+    if event_type == "daily_login_reward":
+        return str(payload.get("text") or "📆 Забери свою награду за вход - она уже доступна!")
     if event_type == "squad_member_role":
         nick = payload.get("nick") or "Участник"
         action = payload.get("action") or "изменил роль"
@@ -213,6 +218,8 @@ def format_telegram_notification_message(event_type: str, payload: dict[str, Any
         return f"{from_name} отправил заявку в друзья."
     if event_type == "daily_reminder":
         return escape(str(payload.get("text") or "Пора вернуться на арену!"))
+    if event_type == "daily_login_reward":
+        return escape(str(payload.get("text") or "📆 Забери свою награду за вход - она уже доступна!"))
     if event_type == "squad_member_role":
         nick = escape(str(payload.get("nick") or "Участник"))
         action = escape(str(payload.get("action") or "изменил роль"))
@@ -254,6 +261,8 @@ def format_android_notification_title(category: str, event_type: str, payload: d
         return "Заявка в друзья"
     if event_type == "daily_reminder":
         return random.choice(REMINDER_TITLES)
+    if event_type == "daily_login_reward":
+        return str(payload.get("title") or "📆 Забери награду за вход!")
     if event_type == "squad_weekly_tokens":
         return "Ты получил токены сквада!"
     if category.startswith("squad_") or event_type.startswith("squad_"):

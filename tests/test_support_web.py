@@ -87,12 +87,36 @@ class FakeSupportService:
     async def get_ticket(self, *, ticket_id):
         for ticket in self.tickets:
             if ticket["id"] == ticket_id:
-                return {"id": ticket_id, "channel": "telegram", "channel_id": "123"}
-        return {"id": ticket_id, "channel": "site", "channel_id": "site"}
+                return {
+                    "id": ticket_id, "channel": "telegram", "channel_id": "123",
+                    "requester_display_name": "Test User",
+                    "requester_external_user_id": "tg:123",
+                    "requester_game_user_id": 42,
+                    "requester_channel": "telegram",
+                    "requester_channel_id": "123",
+                    "status": "open",
+                }
+        return {
+            "id": ticket_id, "channel": "site", "channel_id": "site",
+            "requester_display_name": "Site Guest",
+            "requester_external_user_id": "",
+            "requester_game_user_id": None,
+            "requester_channel": "site",
+            "requester_channel_id": "site",
+            "status": "open",
+        }
+
+    async def add_user_message(self, *, ticket, body, metadata=None):
+        self.followups.append({"ticket": ticket, "body": body, "metadata": metadata or {}})
+        return {"id": "message-user-1", "body": body}
+
+    async def list_ticket_attachments(self, *, ticket_id):
+        return [a for a in self.attachments if a["ticket_id"] == ticket_id]
+
+    async def list_public_ticket_attachments(self, *, ticket_id):
+        return [a for a in self.attachments if a["ticket_id"] == ticket_id and a.get("message_id") != "message-internal"]
 
     async def record_attachment(self, **kwargs):
-        assert kwargs.get("message_id") is None
-        assert kwargs.get("uploader_identity_id") is None
         return {"id": "attachment-1", **kwargs.get("metadata", {})}
 
     async def create_admin_reply(self, *, ticket, body, admin_channel_id):
@@ -403,5 +427,231 @@ async def test_support_ticket_messages_api_returns_site_chat_history(app):
 
         denied = await client.get("/api/support/tickets/ticket-1/messages")
         assert denied.status == 401
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_user_can_send_followup_message_to_existing_ticket(app):
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        created = await client.post(
+            "/api/support/tickets",
+            json={"topic": "account", "body": "Initial message", "guest": True},
+        )
+        token = (await created.json())["ticket_access_token"]
+
+        followup = await client.post(
+            "/api/support/tickets/ticket-1/messages",
+            params={"access_token": token},
+            json={"body": "Adding more details"},
+        )
+        payload = await followup.json()
+
+        assert followup.status == 200
+        assert payload["status"] == "ok"
+        assert app["support_service"].followups[-1]["body"] == "Adding more details"
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_user_message_rejects_empty_body(app):
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        created = await client.post(
+            "/api/support/tickets",
+            json={"topic": "account", "body": "Initial", "guest": True},
+        )
+        token = (await created.json())["ticket_access_token"]
+
+        response = await client.post(
+            "/api/support/tickets/ticket-1/messages",
+            params={"access_token": token},
+            json={"body": ""},
+        )
+        assert response.status == 400
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_user_message_rejects_invalid_token(app):
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        response = await client.post(
+            "/api/support/tickets/ticket-1/messages",
+            params={"access_token": "invalid"},
+            json={"body": "Hello"},
+        )
+        assert response.status == 401
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_ticket_attachments_endpoint_returns_attachments(app):
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        created = await client.post(
+            "/api/support/tickets",
+            json={"topic": "account", "body": "Initial", "guest": True},
+        )
+        token = (await created.json())["ticket_access_token"]
+
+        response = await client.get(
+            "/api/support/tickets/ticket-1/attachments",
+            params={"access_token": token},
+        )
+        payload = await response.json()
+
+        assert response.status == 200
+        assert payload["status"] == "ok"
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_admin_ticket_detail_includes_requester_identity(app, monkeypatch):
+    monkeypatch.setattr("support.web.generate_support_code", lambda length=32: "admin-code")
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        await client.post("/api/support/admin/login/request")
+        verify = await client.post("/api/support/admin/login/verify", json={"code": "admin-code"})
+        cookie = verify.cookies[SUPPORT_ADMIN_COOKIE].value
+
+        detail = await client.get(
+            "/api/support/admin/tickets/ticket-ultra",
+            cookies={SUPPORT_ADMIN_COOKIE: cookie},
+        )
+        payload = await detail.json()
+
+        assert detail.status == 200
+        ticket = payload["ticket"]
+        assert "requester_display_name" in ticket
+        assert "requester_external_user_id" in ticket
+        assert "requester_game_user_id" in ticket
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_user_message_works_with_bearer_header_token(app):
+    """F1: SPA must be able to send follow-up with access_token via Bearer header."""
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        created = await client.post(
+            "/api/support/tickets",
+            json={"topic": "account", "body": "Initial", "guest": True},
+        )
+        token = (await created.json())["ticket_access_token"]
+
+        response = await client.post(
+            "/api/support/tickets/ticket-1/messages",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"body": "Follow-up via Bearer header"},
+        )
+        payload = await response.json()
+
+        assert response.status == 200
+        assert payload["status"] == "ok"
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_user_message_works_with_query_access_token(app):
+    """F1: SPA must be able to send follow-up with access_token via query param."""
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        created = await client.post(
+            "/api/support/tickets",
+            json={"topic": "account", "body": "Initial", "guest": True},
+        )
+        token = (await created.json())["ticket_access_token"]
+
+        response = await client.post(
+            f"/api/support/tickets/ticket-1/messages?access_token={token}",
+            json={"body": "Follow-up via query"},
+        )
+        payload = await response.json()
+
+        assert response.status == 200
+        assert payload["status"] == "ok"
+        assert app["support_service"].followups[-1]["body"] == "Follow-up via query"
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_public_attachments_exclude_internal_message_attachments(app):
+    """F2: holder of ticket token must NOT see attachments linked to internal notes."""
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        created = await client.post(
+            "/api/support/tickets",
+            json={"topic": "account", "body": "Initial", "guest": True},
+        )
+        token = (await created.json())["ticket_access_token"]
+
+        service = app["support_service"]
+        public_attachments_before = list(service.attachments)
+        service.attachments = [
+            *public_attachments_before,
+            {
+                "id": "attachment-internal",
+                "ticket_id": "ticket-1",
+                "message_id": "message-internal",
+                "storage_path": "/uploads/support/2026/06/secret.webp",
+                "original_filename": "internal-screenshot.png",
+                "content_type": "image/webp",
+            },
+        ]
+        try:
+            response = await client.get(
+                "/api/support/tickets/ticket-1/attachments",
+                params={"access_token": token},
+            )
+            payload = await response.json()
+
+            assert response.status == 200
+            attachment_ids = [a["id"] for a in payload["attachments"]]
+            assert "attachment-internal" not in attachment_ids
+        finally:
+            service.attachments = public_attachments_before
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_upload_attachment_with_message_id_links_to_message(app):
+    """F3: upload with message_id should link attachment to the user message."""
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        created = await client.post(
+            "/api/support/tickets",
+            json={"topic": "account", "body": "Initial", "guest": True},
+        )
+        token = (await created.json())["ticket_access_token"]
+
+        form = FormData()
+        form.add_field("ticket_id", "ticket-1")
+        form.add_field("message_id", "message-user-1")
+        form.add_field("access_token", token)
+        form.add_field("file", _png_bytes(), filename="screenshot.png", content_type="image/png")
+        response = await client.post("/api/support/attachments", data=form)
+        payload = await response.json()
+
+        assert response.status == 200
+        assert payload["attachment"]["content_type"] == "image/webp"
     finally:
         await client.close()

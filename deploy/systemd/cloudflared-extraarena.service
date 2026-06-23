@@ -1,0 +1,19 @@
+[Unit]
+Description=Cloudflare Tunnel for ExtraArena app.extraarena.space
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=veceno
+EnvironmentFile=/home/veceno/extraarena-secrets/cloudflared-extraarena.env
+ExecStart=/home/veceno/bin/cloudflared tunnel run
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=false
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

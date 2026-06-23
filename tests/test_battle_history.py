@@ -488,7 +488,7 @@ class TestCurrentResultStreak:
         db = _fake_db(fetch_returns=mock_fetch)
         assert _run(db.get_current_result_streak(USER)) == {"kind": "win", "length": 2}
 
-    def test_legacy_loss_streak_dedupes_summary_and_breaks_on_draw(self):
+    def test_legacy_loss_streak_dedupes_summary_and_skips_draw(self):
         async def mock_fetch(query, *args):
             if "FROM battle_results" in query:
                 return [
@@ -514,7 +514,8 @@ class TestCurrentResultStreak:
             return []
 
         db = _fake_db(fetch_returns=mock_fetch)
-        assert _run(db.get_current_result_streak(USER)) == {"kind": "loss", "length": 2}
+        # draw не прерывает серию поражений: loss, loss, (draw пропущен), loss -> 3
+        assert _run(db.get_current_result_streak(USER)) == {"kind": "loss", "length": 3}
 
     def test_same_timestamp_prefers_summary_then_higher_id_deterministically(self):
         async def mock_fetch(query, *args):
@@ -537,3 +538,112 @@ class TestCurrentResultStreak:
 
         db = _fake_db(fetch_returns=mock_fetch)
         assert _run(db.get_current_result_streak(USER)) == {"kind": "win", "length": 1}
+
+
+# ═══════════════════════════════════════════
+# Win-streak / max_win_streak stats tests
+# ═══════════════════════════════════════════
+
+def _stats_row(*, match_id, winner_id, mode="classic", created_at, p1_tc=0, p2_tc=0, turns=5, dur=60):
+    return _row(
+        match_id=match_id,
+        p1_id=USER, p2_id=OPP,
+        winner_id=winner_id,
+        p1_trophy_change=p1_tc, p2_trophy_change=p2_tc,
+        mode=mode,
+        duration_seconds=dur,
+        turns_count=turns,
+        created_at=created_at,
+    )
+
+
+class TestBattleHistoryStatsWinStreak:
+    def test_max_win_streak_basic(self):
+        async def mock_fetch(query, *args):
+            # rows ordered newest -> oldest (matches SQL ORDER BY created_at DESC)
+            return [
+                _stats_row(match_id="w5", winner_id=USER, created_at=NOW + timedelta(seconds=1)),
+                _stats_row(match_id="w4", winner_id=USER, created_at=NOW),
+                _stats_row(match_id="w3", winner_id=USER, created_at=NOW - timedelta(seconds=1)),
+                _stats_row(match_id="l1", winner_id=OPP, created_at=NOW - timedelta(seconds=2)),
+                _stats_row(match_id="w2", winner_id=USER, created_at=NOW - timedelta(seconds=3)),
+                _stats_row(match_id="w1", winner_id=USER, created_at=NOW - timedelta(seconds=4)),
+            ]
+        db = _fake_db(fetch_returns=mock_fetch)
+        stats = _run(db.get_battle_history_stats(USER))
+        assert stats["max_win_streak"] == 3
+        assert stats["current_streak_result"] == "win"
+        assert stats["current_streak_count"] == 3
+        assert stats["current_win_streak"] == 3
+
+    def test_max_win_streak_capped_at_longest_run(self):
+        async def mock_fetch(query, *args):
+            return [
+                _stats_row(match_id="w4", winner_id=USER, created_at=NOW),
+                _stats_row(match_id="l1", winner_id=OPP, created_at=NOW - timedelta(seconds=1)),
+                _stats_row(match_id="w3", winner_id=USER, created_at=NOW - timedelta(seconds=2)),
+                _stats_row(match_id="w2", winner_id=USER, created_at=NOW - timedelta(seconds=3)),
+                _stats_row(match_id="w1", winner_id=USER, created_at=NOW - timedelta(seconds=4)),
+            ]
+        db = _fake_db(fetch_returns=mock_fetch)
+        stats = _run(db.get_battle_history_stats(USER))
+        assert stats["max_win_streak"] == 3
+        assert stats["current_streak_count"] == 1
+        assert stats["current_win_streak"] == 1
+
+    def test_draw_does_not_break_win_streak(self):
+        async def mock_fetch(query, *args):
+            return [
+                _stats_row(match_id="w3", winner_id=USER, created_at=NOW),
+                _stats_row(match_id="d1", winner_id=None, created_at=NOW - timedelta(seconds=1)),
+                _stats_row(match_id="w2", winner_id=USER, created_at=NOW - timedelta(seconds=2)),
+                _stats_row(match_id="w1", winner_id=USER, created_at=NOW - timedelta(seconds=3)),
+            ]
+        db = _fake_db(fetch_returns=mock_fetch)
+        stats = _run(db.get_battle_history_stats(USER))
+        # current streak skips draw: W,W,(D skipped),W -> 3 wins
+        assert stats["current_streak_result"] == "win"
+        assert stats["current_streak_count"] == 3
+        assert stats["current_win_streak"] == 3
+        assert stats["max_win_streak"] == 3
+
+    def test_draw_does_not_break_max_win_streak(self):
+        async def mock_fetch(query, *args):
+            return [
+                _stats_row(match_id="w4", winner_id=USER, created_at=NOW),
+                _stats_row(match_id="w3", winner_id=USER, created_at=NOW - timedelta(seconds=1)),
+                _stats_row(match_id="d1", winner_id=None, created_at=NOW - timedelta(seconds=2)),
+                _stats_row(match_id="w2", winner_id=USER, created_at=NOW - timedelta(seconds=3)),
+                _stats_row(match_id="w1", winner_id=USER, created_at=NOW - timedelta(seconds=4)),
+            ]
+        db = _fake_db(fetch_returns=mock_fetch)
+        stats = _run(db.get_battle_history_stats(USER))
+        # max run: W,W,(D skip),W,W -> 4
+        assert stats["max_win_streak"] == 4
+
+    def test_current_win_streak_zero_on_loss_streak(self):
+        async def mock_fetch(query, *args):
+            return [
+                _stats_row(match_id="l2", winner_id=OPP, created_at=NOW),
+                _stats_row(match_id="l1", winner_id=OPP, created_at=NOW - timedelta(seconds=1)),
+            ]
+        db = _fake_db(fetch_returns=mock_fetch)
+        stats = _run(db.get_battle_history_stats(USER))
+        assert stats["current_streak_result"] == "lose"
+        assert stats["current_streak_count"] == 2
+        assert stats["current_win_streak"] == 0
+        assert stats["max_win_streak"] == 0
+
+    def test_training_and_friendly_excluded_from_streaks(self):
+        async def mock_fetch(query, *args):
+            return [
+                _stats_row(match_id="w2", winner_id=USER, mode="classic", created_at=NOW),
+                _stats_row(match_id="w1", winner_id=USER, mode="classic", created_at=NOW - timedelta(seconds=1)),
+                _stats_row(match_id="f1", winner_id=USER, mode="friendly", created_at=NOW - timedelta(seconds=2)),
+                _stats_row(match_id="t1", winner_id=USER, mode="training", created_at=NOW - timedelta(seconds=3)),
+            ]
+        db = _fake_db(fetch_returns=mock_fetch)
+        stats = _run(db.get_battle_history_stats(USER))
+        assert stats["current_streak_count"] == 2
+        assert stats["current_win_streak"] == 2
+        assert stats["max_win_streak"] == 2

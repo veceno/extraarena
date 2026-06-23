@@ -63,6 +63,31 @@ let currentTurnCount = 0;
 let lastPlayerTurnStartSfxKey = '';
 let lastLowTimeTickSfxKey = '';
 
+const ARENA_RARITY_CLASSES = new Set([
+  'starter',
+  'start',
+  'common',
+  'rare',
+  'superrare',
+  'epic',
+  'legendary',
+  'mythic',
+  'divine',
+  'limited',
+  'unique',
+]);
+
+function normalizeArenaRarity(value, fallback = 'starter') {
+  const rarity = String(value || '').trim().toLowerCase();
+  if (rarity === 'mythical') return 'mythic';
+  return ARENA_RARITY_CLASSES.has(rarity) ? rarity : fallback;
+}
+
+function applyArenaTitleRarityClass(el, rarity) {
+  if (!el) return;
+  el.classList.add('title-' + normalizeArenaRarity(rarity));
+}
+
 const ARENA_SFX = {
   battleStart: 'arena-sfx-battle-start',
   cardAttacked: 'arena-sfx-card-attacked',
@@ -742,14 +767,23 @@ function setText(id, value) {
   if (el) el.textContent = value == null ? '' : String(value);
 }
 
-function setOptionalImage(imgId, wrapperSelector, url) {
+function setOptionalImage(imgId, wrapperSelector, url, fallbackUrl) {
   const img = document.getElementById(imgId);
   const wrapper = img ? img.closest(wrapperSelector) : null;
   if (!img || !wrapper) return;
   const hasUrl = Boolean(url);
   wrapper.classList.toggle('has-image', hasUrl);
-  if (hasUrl) img.src = url;
-  else img.removeAttribute('src');
+  img.onerror = null;
+  if (hasUrl) {
+    img.src = url;
+    // On fetch failure (offline / 404 / broken): either swap to a bundled default image, or drop
+    // back to the letter fallback so we never show a broken-image icon.
+    img.onerror = fallbackUrl
+      ? function () { img.onerror = null; img.src = fallbackUrl; }
+      : function () { img.onerror = null; img.removeAttribute('src'); wrapper.classList.remove('has-image'); };
+  } else {
+    img.removeAttribute('src');
+  }
 }
 
 function applyArenaSoundSettingsFromUserSettings(settings = {}) {
@@ -1861,7 +1895,7 @@ function renderPrebattleProfile(prefix, profile, fallbackName) {
   setText('prebattle-' + prefix + '-letter', firstLetter(name, fallbackName));
   setText('prebattle-' + prefix + '-bg-fallback', firstLetter(name, fallbackName));
   setOptionalImage('prebattle-' + prefix + '-avatar', '.prebattle-avatar', profile?.avatar_url);
-  setOptionalImage('prebattle-' + prefix + '-bg', '.prebattle-profile-bg', profile?.background_url);
+  setOptionalImage('prebattle-' + prefix + '-bg', '.prebattle-profile-bg', profile?.background_url, '/DesignAssets/PlayerCosmetics/Background/7.png');
 
   const titleEl = document.getElementById('prebattle-' + prefix + '-title');
   if (titleEl) {
@@ -1869,8 +1903,7 @@ function renderPrebattleProfile(prefix, profile, fallbackName) {
     titleEl.className = 'prebattle-title-tag';
     if (title) {
       titleEl.classList.add('has-title');
-      if (titleRarity === 'mythic' || titleRarity === 'mythical') titleEl.classList.add('title-mythical');
-      else if (titleRarity === 'limited') titleEl.classList.add('title-limited');
+      applyArenaTitleRarityClass(titleEl, titleRarity);
     }
   }
 }
@@ -2233,6 +2266,10 @@ function isOnboardingTutorialState(state = currentState) {
     || candidateMatchId.startsWith('tutorial-')
   );
   return Boolean(stateSaysTutorial || (onboardingModeHint && String(matchId || '').startsWith('tutorial-')));
+}
+
+function shouldShowCardInfoControls() {
+  return !isOnboardingTutorialState();
 }
 
 function shouldBypassPrebattleForOnboarding(state = currentState) {
@@ -2678,6 +2715,9 @@ function updateOnboardingTutorialFromState(state) {
     return;
   }
   onboardingModeHint = true;
+  if (activeBattleModal === 'card-info') {
+    closeBattleModal();
+  }
   onboardingTutorial = state?.tutorial || onboardingTutorial;
   const stepIndex = Number(onboardingTutorial?.step_index);
   const finalStep = Number(onboardingTutorial?.final_step || ONBOARDING_TUTORIAL_FINAL_STEP);
@@ -2696,8 +2736,12 @@ function updateOnboardingTutorialFromState(state) {
 
 function showOnboardingTutorialFeedback(message, duration = 2300) {
   if (!isOnboardingTutorialState()) return false;
+  const tutorial = getOnboardingTutorial();
+  const shouldKeepAutoAdvance = Boolean(tutorial?.is_auto_step);
   clearOnboardingFollowup();
-  clearOnboardingAutoAdvance();
+  if (!shouldKeepAutoAdvance) {
+    clearOnboardingAutoAdvance();
+  }
   onboardingFeedbackMessage = message || 'Сейчас не туда. Следуй подсветке.';
   if (onboardingFeedbackTimer) clearTimeout(onboardingFeedbackTimer);
   renderOnboardingTutorialLayer();
@@ -4036,16 +4080,14 @@ function renderPlayerPanel(playerState) {
     playerTitleEl.className = 'player-title-text';
     if (titleText) {
       playerTitleEl.classList.add('has-title');
-      const rarity = (playerState.rarity || currentState?.player_rarity || '').toLowerCase();
-      if (rarity === 'mythic' || rarity === 'mythical') playerTitleEl.classList.add('title-mythical');
-      else if (rarity === 'limited') playerTitleEl.classList.add('title-limited');
+      applyArenaTitleRarityClass(playerTitleEl, playerState.rarity || currentState?.player_rarity);
     }
   }
 
   // Avatar rarity class + image
   const playerAvatar = document.getElementById('player-avatar');
   if (playerAvatar) {
-    const rarity = (playerState.rarity || currentState?.player_rarity || '').toLowerCase();
+    const rarity = normalizeArenaRarity(playerState.rarity || currentState?.player_rarity);
     playerAvatar.className = 'player-avatar avatar-class-' + (rarity || 'starter');
 
     const avatarImg = document.getElementById('player-avatar-img');
@@ -4170,9 +4212,7 @@ function renderOpponentPanel(opponentState) {
     opponentTitleEl.className = 'opponent-title-text';
     if (titleText) {
       opponentTitleEl.classList.add('has-title');
-      const rarity = (opponentState.rarity || currentState?.opponent_rarity || '').toLowerCase();
-      if (rarity === 'mythic' || rarity === 'mythical') opponentTitleEl.classList.add('title-mythical');
-      else if (rarity === 'limited') opponentTitleEl.classList.add('title-limited');
+      applyArenaTitleRarityClass(opponentTitleEl, opponentState.rarity || currentState?.opponent_rarity);
     }
   }
 
@@ -4191,7 +4231,7 @@ function renderOpponentPanel(opponentState) {
   // Avatar rarity class + image
   const opponentAvatar = document.getElementById('opponent-avatar');
   if (opponentAvatar) {
-    const rarity = (opponentState.rarity || currentState?.opponent_rarity || '').toLowerCase();
+    const rarity = normalizeArenaRarity(opponentState.rarity || currentState?.opponent_rarity);
     opponentAvatar.className = 'opponent-avatar avatar-class-' + (rarity || 'starter');
 
     const avatarImg = document.getElementById('opponent-avatar-img');
@@ -4269,6 +4309,7 @@ function createHandCardElement(card, index) {
   cardDiv.dataset.instanceId = card.instance_id || '';
   
   const cardType = card.card_type || 'warrior';
+  const showCardInfoControls = shouldShowCardInfoControls();
   cardDiv.dataset.cardType = cardType;
   // Убираем overflow: hidden, чтобы мана не обрезалась
   cardDiv.style.overflow = 'visible'; 
@@ -4361,7 +4402,7 @@ function createHandCardElement(card, index) {
   cardDiv.appendChild(artWrapper);
   cardDiv.appendChild(manaDiv);
 
-  if (cardType === 'potion') {
+  if (cardType === 'potion' && showCardInfoControls) {
     const potionInfoBtn = document.createElement('button');
     potionInfoBtn.className = 'card-info-btn potion-info-btn';
     potionInfoBtn.textContent = 'i';
@@ -4400,21 +4441,22 @@ function createHandCardElement(card, index) {
     atkDiv.className = 'card-stat attack';
     atkDiv.textContent = card.attack || card.atk || 0;
 
-    const infoBtn = document.createElement('button');
-    infoBtn.className = 'card-info-btn';
-    infoBtn.textContent = 'i';
-    infoBtn.title = 'Информация о карте';
-    infoBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      openCardInfo(card);
-    });
-
     const hpDiv = document.createElement('div');
     hpDiv.className = 'card-stat health';
     hpDiv.textContent = card.hp || card.hp_current || 0;
 
     statsDiv.appendChild(atkDiv);
-    statsDiv.appendChild(infoBtn);
+    if (showCardInfoControls) {
+      const infoBtn = document.createElement('button');
+      infoBtn.className = 'card-info-btn';
+      infoBtn.textContent = 'i';
+      infoBtn.title = 'Информация о карте';
+      infoBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openCardInfo(card);
+      });
+      statsDiv.appendChild(infoBtn);
+    }
     statsDiv.appendChild(hpDiv);
     cardDiv.appendChild(statsDiv);
   }
@@ -4549,6 +4591,7 @@ function createBoardCardElement(card, side) {
   cardDiv.style.overflow = 'visible'; // Позволяем элементам выходить за границы
 
   const cardType = card.card_type || 'warrior';
+  const showCardInfoControls = shouldShowCardInfoControls();
   if (cardType === 'potion') {
     cardDiv.classList.add('potion-card-shape');
   }
@@ -4638,15 +4681,6 @@ function createBoardCardElement(card, side) {
     atkDiv.className = 'unit-stat attack';
     atkDiv.textContent = card.attack || card.atk || 0;
 
-    const infoBtn = document.createElement('button');
-    infoBtn.className = 'card-info-btn';
-    infoBtn.textContent = 'i';
-    infoBtn.title = 'Информация о карте';
-    infoBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      openCardInfo(card);
-    });
-    
     const hpDiv = document.createElement('div');
     hpDiv.className = 'unit-stat health';
     const hpValue = unitHpValue;
@@ -4660,7 +4694,17 @@ function createBoardCardElement(card, side) {
     previousUnitHPs[instanceId] = hpValue;
     
     statsDiv.appendChild(atkDiv);
-    statsDiv.appendChild(infoBtn);
+    if (showCardInfoControls) {
+      const infoBtn = document.createElement('button');
+      infoBtn.className = 'card-info-btn';
+      infoBtn.textContent = 'i';
+      infoBtn.title = 'Информация о карте';
+      infoBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openCardInfo(card);
+      });
+      statsDiv.appendChild(infoBtn);
+    }
     statsDiv.appendChild(hpDiv);
     cardDiv.appendChild(statsDiv);
   }
@@ -6427,6 +6471,8 @@ function spawnDamageParticles(element) {
 // ============================================
 
 function openCardInfo(card) {
+  if (isOnboardingTutorialState()) return;
+
   console.log('[ARENA] Card info modal:', card);
   
   const modal = document.getElementById('card-info-modal');

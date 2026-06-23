@@ -107,6 +107,7 @@ class ExtraIDDatabase:
         await self._ensure_bot_auth_codes_table()
         await self._ensure_device_analytics_table()
         await self._ensure_synthetic_user_id_seq()
+        await self._migrate_session_fk_on_delete_set_null()
 
     # ═══════════════════════════════════════════════════════════════════
     # Schema: tables
@@ -119,7 +120,7 @@ class ExtraIDDatabase:
                     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                     user_id         BIGINT,
                     display_id      TEXT UNIQUE NOT NULL,
-                    email           TEXT UNIQUE NOT NULL,
+                    email           TEXT NOT NULL,
                     password_hash   TEXT NOT NULL,
                     nickname        TEXT UNIQUE,
                     is_email_verified       BOOLEAN NOT NULL DEFAULT FALSE,
@@ -132,13 +133,13 @@ class ExtraIDDatabase:
                 )
             """)
             await self.execute("CREATE INDEX IF NOT EXISTS idx_extra_accounts_user_id ON extra_accounts(user_id)")
-            await self.execute("CREATE INDEX IF NOT EXISTS idx_extra_accounts_email ON extra_accounts(email)")
+            await self.execute("CREATE INDEX IF NOT EXISTS idx_extra_accounts_email ON extra_accounts(LOWER(email))")
 
         columns = await self._get_columns("extra_accounts")
         await self._add_column_if_missing("extra_accounts", columns, "id UUID PRIMARY KEY DEFAULT gen_random_uuid()")
         await self._add_column_if_missing("extra_accounts", columns, "user_id BIGINT")
         await self._add_column_if_missing("extra_accounts", columns, "display_id TEXT UNIQUE NOT NULL")
-        await self._add_column_if_missing("extra_accounts", columns, "email TEXT UNIQUE NOT NULL")
+        await self._add_column_if_missing("extra_accounts", columns, "email TEXT NOT NULL")
         await self._add_column_if_missing("extra_accounts", columns, "password_hash TEXT NOT NULL")
         await self._add_column_if_missing("extra_accounts", columns, "nickname TEXT UNIQUE")
         await self._add_column_if_missing("extra_accounts", columns, "is_email_verified BOOLEAN NOT NULL DEFAULT FALSE")
@@ -148,6 +149,11 @@ class ExtraIDDatabase:
         await self._add_column_if_missing("extra_accounts", columns, "created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
         await self._add_column_if_missing("extra_accounts", columns, "updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
         await self._add_column_if_missing("extra_accounts", columns, "deleted_at TIMESTAMPTZ")
+
+        # Drop legacy plain UNIQUE constraints on email that block reuse after soft-delete.
+        # Replaced by a partial unique index scoped to active (non-deleted) rows.
+        await self._drop_legacy_email_unique_constraints()
+
         await self.execute(
             """
             CREATE UNIQUE INDEX IF NOT EXISTS idx_extra_accounts_active_user_id_unique
@@ -155,6 +161,29 @@ class ExtraIDDatabase:
             WHERE user_id IS NOT NULL AND deleted_at IS NULL
             """
         )
+        await self.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_extra_accounts_active_email_unique
+            ON extra_accounts(LOWER(email))
+            WHERE deleted_at IS NULL
+            """
+        )
+
+    async def _drop_legacy_email_unique_constraints(self) -> None:
+        rows = await self.fetch(
+            """
+            SELECT conname
+            FROM pg_constraint
+            WHERE conrelid = 'public.extra_accounts'::regclass
+              AND contype = 'u'
+              AND conname LIKE '%email%'
+            """
+        )
+        for row in rows:
+            try:
+                await self.execute(f"ALTER TABLE extra_accounts DROP CONSTRAINT IF EXISTS {_validate_schema_identifier(row['conname'])}")
+            except Exception:
+                logger.warning("Failed to drop legacy email unique constraint %s", row["conname"], exc_info=True)
 
     async def _ensure_auth_sessions_table(self) -> None:
         if not await self.fetchval("SELECT to_regclass('public.auth_sessions')"):
@@ -302,6 +331,33 @@ class ExtraIDDatabase:
         await self._add_column_if_missing("device_analytics", columns, "raw_user_agent TEXT")
         await self._add_column_if_missing("device_analytics", columns, "created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
 
+    async def _migrate_session_fk_on_delete_set_null(self) -> None:
+        for table in ("bot_auth_codes", "device_analytics"):
+            rows = await self.fetch(
+                """
+                SELECT conname
+                FROM pg_constraint
+                WHERE conrelid = $1::regclass
+                  AND contype = 'f'
+                  AND conname LIKE '%session_id%'
+                """,
+                f"public.{table}",
+            )
+            for row in rows:
+                try:
+                    await self.execute(
+                        f"ALTER TABLE {table} DROP CONSTRAINT IF EXISTS {_validate_schema_identifier(row['conname'])}"
+                    )
+                except Exception:
+                    logger.warning("Failed to drop session_id FK on %s", table, exc_info=True)
+            try:
+                await self.execute(
+                    f"ALTER TABLE {table} ADD CONSTRAINT {table}_session_id_fkg_on_delete_set_null "
+                    f"FOREIGN KEY (session_id) REFERENCES auth_sessions(session_id) ON DELETE SET NULL"
+                )
+            except Exception:
+                logger.warning("Failed to add ON DELETE SET NULL FK on %s.session_id", table, exc_info=True)
+
     async def _ensure_synthetic_user_id_seq(self) -> None:
         await self.execute("""
             CREATE SEQUENCE IF NOT EXISTS synthetic_user_id_seq
@@ -328,6 +384,13 @@ class ExtraIDDatabase:
         )
         return dict(row) if row else None
 
+    async def get_any_extra_account_by_user_id(self, user_id: int) -> dict | None:
+        row = await self.fetchrow(
+            "SELECT * FROM extra_accounts WHERE user_id = $1 ORDER BY deleted_at IS NULL DESC, created_at DESC LIMIT 1",
+            user_id,
+        )
+        return dict(row) if row else None
+
     async def get_extra_account_by_email(self, email: str) -> dict | None:
         row = await self.fetchrow(
             "SELECT * FROM extra_accounts WHERE LOWER(email) = LOWER($1) AND deleted_at IS NULL", email
@@ -339,13 +402,20 @@ class ExtraIDDatabase:
             """
             SELECT *
             FROM extra_accounts
-            WHERE LOWER(email) = LOWER($1)
-            ORDER BY deleted_at IS NULL DESC, created_at DESC
+            WHERE LOWER(email) = LOWER($1) AND deleted_at IS NULL
+            ORDER BY created_at DESC
             LIMIT 1
             """,
             email,
         )
         return dict(row) if row else None
+
+    async def has_user_claimed_reg_bonus(self, user_id: int) -> bool:
+        row = await self.fetchrow(
+            "SELECT 1 FROM extra_accounts WHERE user_id = $1 AND reg_bonus_claimed = TRUE LIMIT 1",
+            user_id,
+        )
+        return row is not None
 
     async def create_extra_account(
         self, user_id: int, display_id: str, email: str,
@@ -390,7 +460,13 @@ class ExtraIDDatabase:
 
     async def soft_delete_extra_account(self, extra_account_id) -> None:
         await self.execute(
-            "UPDATE extra_accounts SET deleted_at = NOW() WHERE id = $1",
+            """
+            UPDATE extra_accounts
+            SET deleted_at = NOW(),
+                email = email || '#deleted-' || id::text,
+                updated_at = NOW()
+            WHERE id = $1
+            """,
             _coerce_uuid(extra_account_id)
         )
 
@@ -419,8 +495,13 @@ class ExtraIDDatabase:
             return None
         row = await self.fetchrow(
             """
-            SELECT * FROM auth_sessions
-            WHERE session_id = $1 AND revoked = FALSE AND expires_at > NOW()
+            SELECT s.*
+            FROM auth_sessions s
+            LEFT JOIN extra_accounts ea ON ea.user_id = s.user_id
+            WHERE s.session_id = $1
+              AND s.revoked = FALSE
+              AND s.expires_at > NOW()
+              AND (ea.id IS NULL OR ea.deleted_at IS NULL)
             """,
             session_id
         )
@@ -468,6 +549,29 @@ class ExtraIDDatabase:
             user_id
         )
         return [dict(r) for r in rows]
+
+    async def cleanup_expired_sessions(self) -> int:
+        result = await self.execute(
+            "DELETE FROM auth_sessions WHERE expires_at < NOW() OR (revoked = TRUE AND revoked_at < NOW() - INTERVAL '7 days')"
+        )
+        try:
+            return int(result.split()[-1])
+        except Exception:
+            return 0
+
+    async def cleanup_old_rate_limits(self) -> int:
+        result = await self.execute("DELETE FROM extraid_rate_limits WHERE reset_at < NOW()")
+        try:
+            return int(result.split()[-1])
+        except Exception:
+            return 0
+
+    async def cleanup_used_bot_codes(self) -> int:
+        result = await self.execute("DELETE FROM bot_auth_codes WHERE used_at IS NOT NULL OR expires_at < NOW()")
+        try:
+            return int(result.split()[-1])
+        except Exception:
+            return 0
 
     # ═══════════════════════════════════════════════════════════════════
     # Bot auth codes

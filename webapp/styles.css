@@ -1166,20 +1166,26 @@ body {
   overflow: hidden;
   border: 1px solid rgba(255, 255, 255, 0.13);
   background: linear-gradient(180deg, rgba(45, 31, 82, 0.94), rgba(26, 16, 48, 0.96));
+  animation: ea-shop-pass-border-glow 2.4s ease-in-out infinite;
+}
+
+@keyframes ea-shop-pass-border-glow {
+  0%, 100% { box-shadow: 0 0 0 rgba(0, 0, 0, 0), 0 0 40px var(--ea-shop-pass-glow, rgba(255, 215, 0, 0.32)), 0 0 80px var(--ea-shop-pass-glow, rgba(255, 215, 0, 0.18)); }
+  50%      { box-shadow: 0 0 0 rgba(0, 0, 0, 0), 0 0 70px var(--ea-shop-pass-glow, rgba(255, 215, 0, 0.6)),  0 0 130px var(--ea-shop-pass-glow, rgba(255, 215, 0, 0.32)); }
 }
 
 .ea-shop-pass-card.ea-shop-mode-pass {
-  --ea-shop-pass-a: rgba(255, 77, 46, 0.86);
-  --ea-shop-pass-b: rgba(245, 146, 30, 0.42);
-  --ea-shop-pass-glow: rgba(255, 215, 0, 0.38);
+  --ea-shop-pass-a: rgba(255, 77, 46, 0.92);
+  --ea-shop-pass-b: rgba(245, 146, 30, 0.5);
+  --ea-shop-pass-glow: rgba(255, 215, 0, 0.55);
   --ea-shop-pass-solid-a: #ff4d2e;
   --ea-shop-pass-solid-b: #f5921e;
 }
 
 .ea-shop-pass-card.ea-shop-mode-ultra {
-  --ea-shop-pass-a: rgba(255, 95, 162, 0.88);
-  --ea-shop-pass-b: rgba(45, 212, 191, 0.48);
-  --ea-shop-pass-glow: rgba(96, 165, 250, 0.42);
+  --ea-shop-pass-a: rgba(255, 95, 162, 0.94);
+  --ea-shop-pass-b: rgba(45, 212, 191, 0.58);
+  --ea-shop-pass-glow: rgba(96, 165, 250, 0.6);
   --ea-shop-pass-solid-a: #ff5fa2;
   --ea-shop-pass-solid-b: #2dd4bf;
 }
@@ -1190,8 +1196,22 @@ body {
   position: relative;
   overflow: hidden;
   background:
-    radial-gradient(circle at 78% 8%, var(--ea-shop-pass-glow), transparent 38%),
+    radial-gradient(circle at 78% 8%, var(--ea-shop-pass-glow), transparent 42%),
     linear-gradient(135deg, var(--ea-shop-pass-a), var(--ea-shop-pass-b));
+  background-size: 220% 220%, 240% 240%;
+  animation: ea-shop-pass-shimmer 2.6s ease-in-out infinite;
+}
+
+@keyframes ea-shop-pass-shimmer {
+  0%, 100% { background-position: 0% 0%, 0% 50%; }
+  50%      { background-position: 100% 0%, 100% 50%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ea-shop-pass-card,
+  .ea-shop-pass-hero {
+    animation: none;
+  }
 }
 
 .ea-shop-pass-tabs {
@@ -1221,7 +1241,16 @@ body {
 .ea-shop-pass-tabs button.active {
   color: #fff;
   background: linear-gradient(135deg, var(--ea-shop-pass-solid-a), var(--ea-shop-pass-solid-b));
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18), 0 8px 18px rgba(0, 0, 0, 0.22);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.28),
+    0 8px 22px rgba(0, 0, 0, 0.32),
+    0 0 16px var(--ea-shop-pass-glow, rgba(255, 215, 0, 0.55));
+  animation: ea-shop-tab-pulse 2.6s ease-in-out infinite;
+}
+
+@keyframes ea-shop-tab-pulse {
+  0%, 100% { filter: brightness(1) saturate(1); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28), 0 8px 22px rgba(0, 0, 0, 0.32), 0 0 16px var(--ea-shop-pass-glow, rgba(255, 215, 0, 0.55)); }
+  50%      { filter: brightness(1.15) saturate(1.2); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.4), 0 8px 26px rgba(0, 0, 0, 0.4), 0 0 28px var(--ea-shop-pass-glow, rgba(255, 215, 0, 0.85)); }
 }
 
 .ea-shop-pass-headline {

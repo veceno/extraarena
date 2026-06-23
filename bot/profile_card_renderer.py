@@ -7,6 +7,7 @@ import aiohttp
 from PIL import Image, ImageDraw, ImageFont
 
 from infrastructure.config import LEAGUE_CONFIG
+from infrastructure.telegram_proxy import create_telegram_aiohttp_session
 
 FONT_DIR = Path(__file__).resolve().parents[1] / "DesignAssets" / "Font"
 
@@ -42,7 +43,7 @@ def _load_font(name: str, size: int) -> ImageFont.FreeTypeFont:
 
 async def _fetch_avatar_bytes(bot_token: str, user_id: int) -> bytes | None:
     try:
-        async with aiohttp.ClientSession() as session:
+        async with create_telegram_aiohttp_session() as session:
             url = f"https://api.telegram.org/bot{bot_token}/getUserProfilePhotos"
             async with session.get(url, params={"user_id": user_id, "limit": 1},
                                    timeout=aiohttp.ClientTimeout(total=5)) as resp:

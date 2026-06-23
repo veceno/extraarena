@@ -8759,6 +8759,30 @@ class Database:
         )
         return {"success": True}
 
+    async def delete_idea(self, post_id: int) -> dict:
+        """Удалить идею/баг (admin). Чистит голоса из community_votes и сам пост."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        try:
+            post = await self.fetchrow(
+                "SELECT id FROM community_posts WHERE id = $1 AND post_type IN ('idea', 'bug')",
+                post_id,
+            )
+            if not post:
+                return {"success": False, "error": "post_not_found"}
+            await self.execute(
+                "DELETE FROM community_votes WHERE post_id = $1",
+                post_id,
+            )
+            await self.execute(
+                "DELETE FROM community_posts WHERE id = $1 AND post_type IN ('idea', 'bug')",
+                post_id,
+            )
+            return {"success": True}
+        except Exception as e:
+            logging.getLogger(__name__).error("delete_idea failed: %s", e, exc_info=True)
+            return {"success": False, "error": "internal_server_error"}
+
     async def get_bugs_for_admin(self, limit: int = 50, offset: int = 0) -> list[dict]:
         """Получить баг-репорты (только для администрации)."""
         if not self._pool:

@@ -101,6 +101,18 @@ class SupportJsonDatabase:
                 return row
             if "select * from support_tickets where id" in normalized:
                 return self._find("tickets", args[0])
+            if "from support_tickets t" in normalized and "where t.id = $1" in normalized:
+                ticket = self._find("tickets", args[0])
+                if not ticket:
+                    return None
+                identity = self._find("identities", ticket.get("requester_identity_id")) if ticket.get("requester_identity_id") else None
+                row = dict(ticket)
+                row["requester_display_name"] = (identity or {}).get("display_name", "")
+                row["requester_external_user_id"] = (identity or {}).get("external_user_id", "")
+                row["requester_game_user_id"] = (identity or {}).get("game_user_id")
+                row["requester_channel"] = (identity or {}).get("channel", "")
+                row["requester_channel_id"] = (identity or {}).get("channel_id", "")
+                return row
             if "from support_tickets" in normalized and "status <> 'closed'" in normalized:
                 rows = [
                     row for row in self._data["tickets"]
@@ -200,6 +212,19 @@ class SupportJsonDatabase:
                         for row in sorted(rows, key=lambda row: row.get("created_at") or "")
                     ]
                 return [dict(row) for row in sorted(rows, key=lambda row: row.get("created_at") or "")]
+            if "from support_attachments a" in normalized and "left join support_messages" in normalized:
+                ticket_id = args[0]
+                rows = []
+                for att in self._data["attachments"]:
+                    if att.get("ticket_id") != ticket_id:
+                        continue
+                    msg_id = att.get("message_id")
+                    if msg_id:
+                        linked_msg = self._find("messages", msg_id)
+                        if linked_msg and linked_msg.get("direction") == "internal":
+                            continue
+                    rows.append(dict(att))
+                return [dict(row) for row in sorted(rows, key=lambda row: row.get("created_at") or "")]
             if "from support_attachments" in normalized:
                 rows = [row for row in self._data["attachments"] if row.get("ticket_id") == args[0]]
                 return [dict(row) for row in sorted(rows, key=lambda row: row.get("created_at") or "")]
@@ -207,10 +232,16 @@ class SupportJsonDatabase:
                 rows = []
                 for ticket in self._data["tickets"]:
                     latest = self._latest_message(ticket["id"])
+                    identity = self._find("identities", ticket.get("requester_identity_id")) if ticket.get("requester_identity_id") else None
                     row = dict(ticket)
                     row["latest_message_body"] = latest.get("body") if latest else None
                     row["latest_message_direction"] = latest.get("direction") if latest else None
                     row["latest_message_created_at"] = latest.get("created_at") if latest else None
+                    row["requester_display_name"] = (identity or {}).get("display_name", "")
+                    row["requester_external_user_id"] = (identity or {}).get("external_user_id", "")
+                    row["requester_game_user_id"] = (identity or {}).get("game_user_id")
+                    row["requester_channel"] = (identity or {}).get("channel", "")
+                    row["requester_channel_id"] = (identity or {}).get("channel_id", "")
                     rows.append(row)
                 rows.sort(
                     key=lambda row: (

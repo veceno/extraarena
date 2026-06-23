@@ -7,13 +7,14 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.filters import Command, CommandStart
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
+from infrastructure.telegram_proxy import create_telegram_bot
 from support.attachments import compress_support_attachment
 from support.bot_client import BotReply, SupportBotConversationManager
 from support.constants import SupportChannel
 
 
 def create_support_bot(token: str, support_service: Any | None = None) -> tuple[Bot, Dispatcher]:
-    bot = Bot(token=token, default=DefaultBotProperties(parse_mode="HTML"))
+    bot = create_telegram_bot(token, default=DefaultBotProperties(parse_mode="HTML"))
     dp = Dispatcher(support_bot=True)
     router = Router(name="support")
     conversation = SupportBotConversationManager(support_service) if support_service is not None else None

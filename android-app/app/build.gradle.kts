@@ -60,10 +60,11 @@ android {
         applicationId = "ru.extraarena.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 45
-        versionName = "0.4.5"
+        versionCode = 46
+        versionName = "0.5.0"
 
-        buildConfigField("String", "DEFAULT_BASE_URL", "\"https://clumsily-deft-guan.cloudpub.ru/\"")
+        buildConfigField("String", "DEFAULT_BASE_URL", "\"https://app.extraarena.space/\"")
+        buildConfigField("String", "RU_BASE_URL", "\"https://app.laveqox.ru/\"")
         buildConfigField("String", "TEST_BASE_URL", "\"http://10.0.2.2:8081/\"")
         buildConfigField("String", "UPDATE_CHANNEL_URL", "\"https://t.me/extraarenamobile\"")
         buildConfigField("String", "UPDATE_APK_URL", "\"https://apk.laveqox.ru\"")
