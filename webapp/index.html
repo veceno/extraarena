@@ -7418,10 +7418,11 @@ const ExtraIDSheet = ({onClose, view, onSetView, extraIDData, onExtraIDData, pro
       ),
       // Submit
       React.createElement('button',{key:'btn',disabled:loading,onClick:doRegister,style:{width:'100%',height:'52px',borderRadius:'14px',background:loading?T.purple2:'linear-gradient(135deg,'+T.orange+','+T.purpleHL+')',border:'none',color:'#fff',fontSize:'16px',fontWeight:'900',cursor:loading?'not-allowed':'pointer',opacity:loading?.6:1,fontFamily:"'Exo 2',sans-serif",boxShadow:loading?'none':'0 4px 20px rgba(245,146,30,0.3)',transition:'all 0.15s'}}, loading?'Создание...':(isTelegramFlow?'Создать и привязать':'Создать аккаунт')),
-      // Footer link — login not available in TG WebApp; direct to support
       React.createElement('div',{key:'footer',style:{marginTop:'14px',textAlign:'center'}},
           React.createElement('span',{style:{fontSize:'13px',color:T.grey3,fontFamily:"'Inter',sans-serif"}},isTelegramFlow?'Нужен вход в существующий ExtraID? ':'Уже есть аккаунт? '),
-        React.createElement('button',{onClick:()=>openLink('https://t.me/extraarena_supbot'),style:{background:'none',border:'none',color:T.orangeLt,fontSize:'13px',fontWeight:'600',cursor:'pointer',fontFamily:"'Inter',sans-serif",padding:0}},'Поддержка')
+        isTelegramFlow
+          ? React.createElement('button',{onClick:()=>openLink('https://t.me/extraarena_supbot'),style:{background:'none',border:'none',color:T.orangeLt,fontSize:'13px',fontWeight:'600',cursor:'pointer',fontFamily:"'Inter',sans-serif",padding:0}},'Поддержка')
+          : React.createElement('button',{onClick:()=>onSetView('login'),style:{background:'none',border:'none',color:T.orangeLt,fontSize:'13px',fontWeight:'600',cursor:'pointer',fontFamily:"'Inter',sans-serif",padding:0}},'Войти')
       ),
     ];
   }
