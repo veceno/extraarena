@@ -3273,7 +3273,7 @@ window.loadMobileSquadsBootstrap = async function(options = {}) {
 };
 </script>
 
-<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=f0b7dc9efcab">
+<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=922c07d8c318">
 // ═══════════════════════════════════════════
 // DESIGN TOKENS
 // ═══════════════════════════════════════════
@@ -6193,10 +6193,10 @@ const caseRewardSfxId = (rewards) => {
   return CASE_REWARD_SFX_BY_RARITY[bestRarity] || 'case-reward-card-common-sound';
 };
 
-const CaseOpenScreen = ({onClose, onDone, profile}) => {
+ const CaseOpenScreen = ({onClose, onDone, profile, userCaseId, initialTier = 1}) => {
   const [phase,    setPhase]    = React.useState('intro');   // intro|tapping|opening|reveal
   const [tapN,     setTapN]     = React.useState(0);         // 0-4
-  const [tierSeq,  setTierSeq]  = React.useState([1,1,1,1]); // cosmetic tiers per tap
+  const [tierSeq,  setTierSeq]  = React.useState([initialTier,initialTier,initialTier,initialTier]); // cosmetic tiers per tap
   const [upgraded, setUpgraded] = React.useState(false);
   const [result,   setResult]   = React.useState(null);
   const [skipping, setSkipping] = React.useState(false);
@@ -6231,7 +6231,7 @@ const CaseOpenScreen = ({onClose, onDone, profile}) => {
   const resetOpening = () => {
     setPhase('intro');
     setTapN(0);
-    setTierSeq([1,1,1,1]);
+    setTierSeq([initialTier,initialTier,initialTier,initialTier]);
     setResult(null);
     setSkipping(false);
     setServerRoll(null);
@@ -6244,6 +6244,13 @@ const CaseOpenScreen = ({onClose, onDone, profile}) => {
   };
 
   const prepareServerRoll = async () => {
+    if (userCaseId) {
+      setLoadingText('Готовим кейс...');
+      setPhase('tapping');
+      setTapN(0);
+      setTierSeq([initialTier,initialTier,initialTier,initialTier]);
+      return null;
+    }
     window._playCaseSfx?.('case-open-init-sound', {volume:0.64});
     setLoadingText('Готовим кейс...');
     setPhase('opening');
@@ -6268,8 +6275,29 @@ const CaseOpenScreen = ({onClose, onDone, profile}) => {
     }
   };
 
-  const doTap = () => {
+  const doTap = async () => {
     if (tapN >= 4 || phase !== 'tapping') return;
+    if (userCaseId) {
+      window._playCaseSfx?.('case-tap-sound', {volume:0.52});
+      const prevTier = tapN === 0 ? initialTier : tierSeq[tapN-1];
+      let newTier = prevTier;
+      try {
+        const res = await fetch(apiUrl('/api/cases/tap'), {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({user_case_id: userCaseId, current_tier: prevTier, tap_number: tapN+1})
+        });
+        const d = await res.json();
+        if (d?.success) newTier = d.new_tier || prevTier;
+      } catch(e) { newTier = prevTier; }
+      const newSeq = [...tierSeq]; newSeq[tapN] = newTier;
+      setTierSeq(newSeq);
+      setUpgraded(newTier > prevTier);
+      if (newTier > prevTier) setTimeout(()=>setUpgraded(false), 600);
+      const nextTap = tapN + 1;
+      setTapN(nextTap);
+      if (nextTap >= 4) { setTimeout(()=>openCase(), 600); }
+      return;
+    }
     window._playCaseSfx?.('case-tap-sound', {volume:0.52});
     const prevTier = tapN === 0 ? 1 : tierSeq[tapN-1];
     const newTier  = serverRoll?.tap_results?.[tapN] || prevTier;
@@ -6287,10 +6315,14 @@ const CaseOpenScreen = ({onClose, onDone, profile}) => {
     setLoadingText('Открываем...');
     setPhase('opening');
     try {
-      const res = await fetch(apiUrl('/api/cases/open-from-keys'), {
+      const endpoint = userCaseId ? '/api/cases/open' : '/api/cases/open-from-keys';
+      const payload = userCaseId
+        ? {user_case_id: userCaseId, tap_results: tierSeq}
+        : {roll_token: serverRoll?.roll_token || null};
+      const res = await fetch(apiUrl(endpoint), {
         method:'POST',
         headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({roll_token: serverRoll?.roll_token || null})
+        body: JSON.stringify(payload)
       });
       const d = await res.json();
       if (d.success) {
@@ -6298,8 +6330,10 @@ const CaseOpenScreen = ({onClose, onDone, profile}) => {
           setTierSeq(d.tap_results);
           setTapN(4);
         }
-        setOpeningToken(d.opening_token || null);
-        setCanReroll(Boolean(d.can_reroll));
+        if (!userCaseId) {
+          setOpeningToken(d.opening_token || null);
+          setCanReroll(Boolean(d.can_reroll));
+        }
         setRerolling(false);
         setRerollToken(null);
         setSkipping(false);
@@ -6394,6 +6428,11 @@ const CaseOpenScreen = ({onClose, onDone, profile}) => {
   };
 
   const claimCurrentOpening = async ({closeAfter = true, notifyDone = true} = {}) => {
+    if (userCaseId) {
+      if (notifyDone) onDone?.(result);
+      if (closeAfter) onClose();
+      return result;
+    }
     if (!openingToken || claiming) {
       if (closeAfter) onClose();
       return result;
@@ -7605,15 +7644,17 @@ const SupportSheet = ({onClose}) => {
           </div>
         </div>
         <div style={{display:'flex',flexDirection:'column',gap:'10px'}}>
-          <button onClick={()=>openLink('https://t.me/extraarena_supbot')} style={{width:'100%',height:'50px',background:`linear-gradient(135deg,${T.orange},${T.orangeD})`,border:'none',borderRadius:'14px',color:'white',fontSize:'16px',fontWeight:'900',fontFamily:"'Exo 2',sans-serif",cursor:'pointer',boxShadow:`0 5px 20px ${T.orange}44`,display:'flex',alignItems:'center',justifyContent:'center',gap:'8px'}}>
+          <button onClick={()=>openLink('https://t.me/extraarena_sup')} style={{width:'100%',height:'50px',background:`linear-gradient(135deg,${T.orange},${T.orangeD})`,border:'none',borderRadius:'14px',color:'white',fontSize:'16px',fontWeight:'900',fontFamily:"'Exo 2',sans-serif",cursor:'pointer',boxShadow:`0 5px 20px ${T.orange}44`,display:'flex',alignItems:'center',justifyContent:'center',gap:'8px'}}>
             Поддержка в Telegram
-          </button>
-          <button onClick={()=>openLink('https://max.ru/se13279035_1_bot')} style={{width:'100%',height:'50px',background:'#1b70f5',border:'none',borderRadius:'14px',color:'white',fontSize:'16px',fontWeight:'900',fontFamily:"'Exo 2',sans-serif",cursor:'pointer',boxShadow:'0 5px 20px rgba(27,112,245,0.28)',display:'flex',alignItems:'center',justifyContent:'center',gap:'8px'}}>
-            Поддержка в MAX
           </button>
           <div style={{width:'100%',minHeight:'50px',boxSizing:'border-box',background:T.bgCard,border:`1px solid ${T.purple1}`,borderRadius:'14px',color:T.grey1,fontSize:'13px',fontWeight:'700',fontFamily:"'Inter',sans-serif",display:'flex',alignItems:'center',justifyContent:'space-between',gap:'8px',padding:'12px 14px'}}>
             <span>support.laveqox.ru</span>
             <span style={{fontSize:'10px',color:T.orangeLt,textTransform:'uppercase',letterSpacing:'0.5px'}}>скоро</span>
+          </div>
+          <div style={{textAlign:'center',marginTop:'6px'}}>
+            <div style={{fontSize:'13px',color:T.grey2,fontFamily:'Inter,sans-serif',lineHeight:1.5}}>
+              Сейчас, поддержка доступна только через Telegram. Всегда рады помочь;)
+            </div>
           </div>
         </div>
       </div>
@@ -15833,6 +15874,7 @@ const App = () => {
   const [showMail,       setShowMail]       = React.useState(false);
   const [showNews,       setShowNews]       = React.useState(false);
   const [showCaseOpen,   setShowCaseOpen]   = React.useState(false);
+  const [pendingCaseOpen, setPendingCaseOpen] = React.useState(null);
   const [showInfo,       setShowInfo]       = React.useState(false);
   const [showGloryPath,  setShowGloryPath]  = React.useState(false);
   const [showLeagueInfo, setShowLeagueInfo] = React.useState(false);
@@ -16003,7 +16045,7 @@ const App = () => {
     };
   }, []);
 
-  const hasOverlay = squadsOpen || communityOpen || showAI || showGenerator || showMenu || showSettings || showBattlePick || showGameMode || showMail || showNews || showCaseOpen || showInfo || showGloryPath || showLeagueInfo || showBattlePass || showPreBattle || showSupport || showInvite || showBattles || showFriends || showProfile || showExtraID || onboardingBlocking || onboardingTourActive || newbiePathOpen || !!seasonResetNotice;
+  const hasOverlay = squadsOpen || communityOpen || showAI || showGenerator || showMenu || showSettings || showBattlePick || showGameMode || showMail || showNews || showCaseOpen || showInfo || showGloryPath || showLeagueInfo || showBattlePass || showPreBattle || showSupport || showInvite || showBattles || showFriends || showProfile || showExtraID || onboardingBlocking || onboardingTourActive || newbiePathOpen || !!seasonResetNotice || !!pendingCaseOpen;
 
   React.useEffect(()=>{ window.__rootSetPreBattle = setShowPreBattle; window.__updateProfile = setProfile; window.__initExtraIDData = async ()=>{ const ad = resolveExtraIDAuthData(); const ed = await loadExtraIDProfile(ad); if(ed) setExtraIDData(ed); }; return ()=>window.__rootSetPreBattle=null; }, []);
 
@@ -16039,6 +16081,7 @@ const App = () => {
       if (showGloryPath) { setShowGloryPath(false); return true; }
       if (showInfo) { setShowInfo(false); return true; }
       if (showCaseOpen) { setShowCaseOpen(false); return true; }
+      if (pendingCaseOpen) { setPendingCaseOpen(null); return true; }
       if (showNews) { setShowNews(false); return true; }
       if (showMail) { setShowMail(false); return true; }
       if (showGameMode) { setShowGameMode(false); return true; }
@@ -16814,12 +16857,13 @@ const App = () => {
       {showMail       && <MailScreen      onClose={()=>setShowMail(false)} userId={profile?.user_id}/>}
       {showNews       && <NewsSheet       onClose={()=>setShowNews(false)} isAdmin={!!runtimeStatus?.is_admin}/>}
       {showCaseOpen   && <CaseOpenScreen onClose={()=>setShowCaseOpen(false)} onDone={()=>{invalidateInventoryCaches();setShowCaseOpen(false);window.reloadFreshProfile().then(d=>{if(d)setProfile(d);});completeNewbieTask('open_starter_case');}} profile={profile}/>}
+      {pendingCaseOpen && <CaseOpenScreen userCaseId={pendingCaseOpen.userCaseId} initialTier={pendingCaseOpen.initialTier} onClose={()=>setPendingCaseOpen(null)} onDone={()=>{invalidateInventoryCaches();setPendingCaseOpen(null);window.reloadFreshProfile().then(d=>{if(d)setProfile(d);});}} profile={profile}/>}
       {showInfo       && <InfoSheet      onClose={()=>setShowInfo(false)}/>}
       {showGloryPath  && <TrophyRoadSheet onClose={()=>setShowGloryPath(false)} profile={profile}/>}
       {showLeagueInfo && <LeagueInfoSheet onClose={()=>setShowLeagueInfo(false)} onOpenGloryPath={()=>{setShowLeagueInfo(false);setShowGloryPath(true);}} profile={profile}/>}
       {showPreBattle  && <PreBattleScreen  data={window.__preBattleData} onClose={()=>{setShowPreBattle(false);window.__preBattleData=null;}}/>}
       {showSupport    && <SupportSheet    onClose={()=>setShowSupport(false)}/>}
-      {showBattlePass && <BattlePassSheet onClose={()=>setShowBattlePass(false)} profile={profile} onGoToShop={()=>featureEnabled(runtimeStatus,'shop')?setNavTab(0):showTempUnavailable()}/>}
+      {showBattlePass && <BattlePassSheet onClose={()=>setShowBattlePass(false)} profile={profile} onGoToShop={()=>featureEnabled(runtimeStatus,'shop')?setNavTab(0):showTempUnavailable()} onOpenExtraPassCase={(c)=>{setPendingCaseOpen({userCaseId:c?.user_case_id, initialTier:c?.case_tier || c?.reward_amount || 1});setShowBattlePass(false);}}/>}
       {showBattles   && <BattleHistorySheet onClose={()=>setShowBattles(false)} profile={profile}/>}
       {showInvite   && incomingInvite && <IncomingInviteModal invite={incomingInvite} profile={profile} onClose={()=>{setShowInvite(false);setIncomingInvite(null);}} onStart={()=>setInBattle(true)}/>}
       {showFriends && <FriendsScreen onClose={()=>{setShowFriends(false);setTimeout(async()=>{try{const r=await fetch(_buildAuthUrl('/api/friends/requests'), {cache:'no-store'});const d=await r.json();setFrPendingCount((d.incoming||[]).length);}catch(e){}},300);}} profile={profile} runtimeStatus={runtimeStatus} onRequestsChanged={setFrPendingCount}/>}
@@ -17073,7 +17117,7 @@ const TrophyRoadSheet = ({onClose, profile}) => {
 // ═══════════════════════════════════════════
 // BATTLE PASS SHEET
 // ═══════════════════════════════════════════
-const BattlePassSheet = ({onClose, profile, onGoToShop}) => {
+const BattlePassSheet = ({onClose, profile, onGoToShop, onOpenExtraPassCase}) => {
   const [payload, setPayload] = React.useState(null);
   const [loading, setLoading] = React.useState(true);
   const [battlePassLoadError, setBattlePassLoadError] = React.useState(null);
@@ -17116,6 +17160,13 @@ const BattlePassSheet = ({onClose, profile, onGoToShop}) => {
     return forms[2];
   };
 
+  const RARITY_RU = {
+    common: 'Обычная', rare: 'Редкая', start: 'Стартовая', superrare: 'Сверхредкая',
+    epic: 'Эпическая', legendary: 'Легендарная', mythic: 'Мифическая',
+    divine: 'Божественная', limited: 'Лимитированная', unique: 'Уникальная'
+  };
+  const rarityNameRu = (r) => RARITY_RU[r] || r || '';
+
   const normalizeReward = (reward) => {
     const meta = reward?.reward_meta || {};
     if (reward?.reward_type === 'case') {
@@ -17131,6 +17182,11 @@ const BattlePassSheet = ({onClose, profile, onGoToShop}) => {
     if (reward?.reward_type === 'coins') return {type:'coins',title:(reward.reward_amount||0).toLocaleString() + ' ' + ruPlural(reward.reward_amount||0,['монета','монеты','монет']),amount:reward.reward_amount,text:'Валюта для прокачки карт.',raw:reward};
     if (reward?.reward_type === 'gems') return {type:'gems',title:(reward.reward_amount||0).toLocaleString() + ' ' + ruPlural(reward.reward_amount||0,['гем','гема','гемов']),amount:reward.reward_amount,text:'Премиум-валюта ExtraArena.',raw:reward};
     if (reward?.reward_type === 'keys') return {type:'keys',title:(reward.reward_amount||0).toLocaleString() + ' ' + ruPlural(reward.reward_amount||0,['ключ','ключа','ключей']),amount:reward.reward_amount,text:'Ключ для открытия кейса.',raw:reward};
+    if (reward?.reward_type === 'particles') {
+      const cardId = meta.card_id || meta.id || reward.card_id;
+      const cardName = meta.card_name || reward.card_name || '';
+      return {type:'particles',title:(reward.reward_amount||0).toLocaleString() + ' ' + ruPlural(reward.reward_amount||0,['частица','частицы','частиц']),amount:reward.reward_amount,cardId:cardId,cardName:cardName,text: cardName ? ('Частицы для карты «' + cardName + '».') : (cardId ? ('Частицы для карты #' + cardId + '.') : 'Частицы для прокачки карты.'),raw:reward};
+    }
     if (reward?.reward_type === 'card') {
       const rarity = Array.isArray(meta.rarity) ? meta.rarity.join('/') : (meta.rarity || 'random');
       return {type:'card',title:'Случайная карта',amount:1,rarity:rarity,text:'Карта из пула редкости: ' + rarity + '.',raw:reward};
@@ -17149,12 +17205,23 @@ const BattlePassSheet = ({onClose, profile, onGoToShop}) => {
     const parts = granted.map(item => {
       const type = item?.reward_type || item?.type;
       const amount = Number(item?.reward_amount ?? item?.amount ?? 0);
-      if (type === 'coins') return '+' + amount.toLocaleString('ru-RU') + ' ' + ruPlural(amount, ['монета','монеты','монет']);
+      if (type === 'coins') {
+        if (item?.fallback_for === 'card') return 'Выпала повторка! Получено ' + amount.toLocaleString('ru-RU') + ' монет';
+        if (item?.fallback_for === 'specific_card') return 'Карта уже собрана. Получено ' + amount.toLocaleString('ru-RU') + ' монет';
+        if (item?.fallback_for === 'particles') return 'Карта не в коллекции. Получено ' + amount.toLocaleString('ru-RU') + ' монет';
+        return '+' + amount.toLocaleString('ru-RU') + ' ' + ruPlural(amount, ['монета','монеты','монет']);
+      }
       if (type === 'gems') return '+' + amount.toLocaleString('ru-RU') + ' ' + ruPlural(amount, ['гем','гема','гемов']);
       if (type === 'keys') return '+' + amount.toLocaleString('ru-RU') + ' ' + ruPlural(amount, ['ключ','ключа','ключей']);
       if (type === 'case') return 'T' + (item?.case_tier || amount || 1) + ' кейс';
-      if (type === 'specific_card' || type === 'card') return item?.card_name || 'Карта';
-      return '';
+      if (type === 'particles') return '+' + amount.toLocaleString('ru-RU') + ' ' + ruPlural(amount, ['частица','частицы','частиц']) + (item?.card_name ? ' для «' + item.card_name + '»' : '');
+      if (type === 'cosmetic') return item?.name || item?.cosmetic_slug || 'Косметика';
+      if (type === 'specific_card' || type === 'card' || type === 'guaranteed_card') {
+        const name = item?.card_name || 'Карта';
+        const r = item?.rarity ? ' (' + rarityNameRu(item.rarity) + ')' : '';
+        return name + r;
+      }
+      return item?.reward_type ? ('Неизвестная награда: ' + item.reward_type) : '';
     }).filter(Boolean);
     return parts.length ? 'Награда получена: ' + parts.join(', ') : '';
   };
@@ -17213,12 +17280,32 @@ const BattlePassSheet = ({onClose, profile, onGoToShop}) => {
       });
       const d = await r.json();
       if (r.ok && d.success) {
-        const grantedSummary = describeGrantedRewards(d.granted);
-        setClaimResult(Array.isArray(d.granted) ? d.granted : []);
+        const granted = Array.isArray(d.granted) ? d.granted : [];
+        setClaimResult(granted);
         window._playSfx?.('success-sound');
         invalidateInventoryCaches();
         try { window.eaInvalidateJson?.('/api/rewards/extra-pass'); } catch (_) {}
-        window.showToast?.(grantedSummary || 'Награда получена', 'success');
+
+        const fallbackItems = granted.filter(i => i && i.fallback_for);
+        const normalItems = granted.filter(i => i && !i.fallback_for && !(i.reward_type === 'case' && i.user_case_id));
+        const caseItems = granted.filter(i => i && i.reward_type === 'case' && i.user_case_id);
+
+        const grantedSummary = describeGrantedRewards(d.granted);
+        if (grantedSummary) window.showToast?.(grantedSummary || 'Награда получена', 'success');
+
+        fallbackItems.forEach(item => {
+          const amt = Number(item?.reward_amount ?? 0);
+          const txt = item?.fallback_for === 'card' ? ('Выпала повторка! Получено ' + amt.toLocaleString('ru-RU') + ' монет')
+            : item?.fallback_for === 'specific_card' ? ('Карта уже собрана. Получено ' + amt.toLocaleString('ru-RU') + ' монет')
+            : item?.fallback_for === 'particles' ? ('Карта не в коллекции. Получено ' + amt.toLocaleString('ru-RU') + ' монет')
+            : ('Получено ' + amt.toLocaleString('ru-RU') + ' монет');
+          window.showToast?.(txt, 'info', 4000);
+        });
+
+        caseItems.forEach(item => {
+          onOpenExtraPassCase?.(item);
+        });
+
         setDetail(null);
         await load();
         window.reloadFreshProfile?.().then(p => { if (p && window.__updateProfile) window.__updateProfile(p); });
@@ -17839,6 +17926,6 @@ const LeagueInfoSheet = ({onClose, onOpenGloryPath, profile}) => {
 
 ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
 </script>
-<script src="index.compiled.js?v=f0b7dc9efcab"></script>
+<script src="index.compiled.js?v=922c07d8c318"></script>
 </body>
 </html>
