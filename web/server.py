@@ -9186,6 +9186,7 @@ def create_web_app(
                 "user_id": user_id,
                 "tap_results": tap_results,
                 "final_tier": final_tier,
+                "base_tier": 1,
                 "extra_pass": extra_pass,
                 "remaining_keys": remaining_keys,
                 "reserved": True,
@@ -9226,6 +9227,7 @@ def create_web_app(
                 final_tier = int(stored_roll.get("final_tier") or (tap_results[-1] if tap_results else 1))
                 extra_pass = str(stored_roll.get("extra_pass") or "inactive")
                 new_keys = int(stored_roll.get("remaining_keys") or 0)
+                base_tier = int(stored_roll.get("base_tier") or 1)
                 CASE_KEY_ROLLS.pop(roll_token, None)
             else:
                 key_row = await db.fetchrow(
@@ -9244,6 +9246,7 @@ def create_web_app(
                 extra_pass = await get_user_case_pass_status(db, user_id)
                 tap_results = simulate_case_tap_results(1, extra_pass)
                 final_tier = tap_results[-1] if tap_results else 1
+                base_tier = 1
 
             final_tier = max(1, min(final_tier, 5))
 
@@ -9263,6 +9266,7 @@ def create_web_app(
                 "roll_token": roll_token,
                 "user_id": user_id,
                 "final_tier": final_tier,
+                "base_tier": base_tier,
                 "tap_results": tap_results,
                 "rewards": rewards,
                 "remaining_keys": new_keys,
@@ -9315,8 +9319,9 @@ def create_web_app(
                 return web.json_response({"success": False, "error": "reroll_already_used", "message": "Реролл уже использован"}, status=400)
 
             extra_pass = str(opening.get("extra_pass") or "inactive")
-            tap_results = simulate_case_tap_results(1, extra_pass)
-            final_tier = tap_results[-1] if tap_results else 1
+            base_tier = max(1, min(int(opening.get("base_tier") or 1), 5))
+            tap_results = simulate_case_tap_results(base_tier, extra_pass)
+            final_tier = tap_results[-1] if tap_results else base_tier
             reroll_token = uuid.uuid4().hex
             opening["reroll_used"] = True
             opening["reroll_started_at"] = datetime.now(timezone.utc)
@@ -13892,160 +13897,12 @@ def create_web_app(
                 )
                 return web.json_response({
                     "success": True,
-                    "track_type": track_type,
-                    "position": position,
-                    "granted": granted,
-                }, headers=NO_STORE_CACHE_HEADERS)
+                     "track_type": track_type,
+                     "position": position,
+                     "granted": granted,
+                 }, headers=NO_STORE_CACHE_HEADERS)
 
-            claimed_now = await db.claim_reward(user_id, track_type, position)
-            if claimed_now is False:
-                return web.json_response({"error": "already_claimed", "message": "Награда уже получена"}, status=409)
-
-            granted = []
-            for entry in entries:
-                rtype = entry["reward_type"]
-                ramount = entry["reward_amount"]
-                rmeta = entry.get("reward_meta")
-
-                if rtype == "coins":
-                    await db.update_user_coins(user_id, ramount)
-                    granted.append({"reward_type": "coins", "reward_amount": ramount})
-                    await _track_economy_safe(db, user_id=user_id, event_type="earn",
-                        resource="coins", amount=ramount, source="reward_track",
-                        metadata={"track_type": track_type, "position": position})
-
-                elif rtype == "gems":
-                    await db.add_gems(user_id, ramount)
-                    granted.append({"reward_type": "gems", "reward_amount": ramount})
-                    await _track_economy_safe(db, user_id=user_id, event_type="earn",
-                        resource="gems", amount=ramount, source="reward_track",
-                        metadata={"track_type": track_type, "position": position})
-
-                elif rtype == "keys":
-                    await db.increment_user_keys(user_id, ramount)
-                    granted.append({"reward_type": "keys", "reward_amount": ramount})
-                    await _track_economy_safe(db, user_id=user_id, event_type="earn",
-                        resource="keys", amount=ramount, source="reward_track",
-                        metadata={"track_type": track_type, "position": position})
-
-                elif rtype == "card":
-                    rarities = ["common", "rare"]
-                    if isinstance(rmeta, dict) and "rarity" in rmeta:
-                        rarities = rmeta["rarity"]
-
-                    cards = await db.get_random_cards_by_rarities(rarities, limit=1)
-                    if cards and hasattr(db, "get_user_cards"):
-                        owned_cards = await db.get_user_cards(user_id)
-                        owned_ids = {int(card.get("id") or card.get("card_id") or 0) for card in owned_cards or []}
-                        cards = [card for card in cards if int(card.get("id") or 0) not in owned_ids]
-                    if cards:
-                        card = cards[0]
-                        await db.add_card_to_user(user_id, card["id"])
-                        granted.append({
-                            "reward_type": "card",
-                            "reward_amount": 1,
-                            "card_id": card["id"],
-                            "card_name": card.get("name", ""),
-                        })
-                        await _track_economy_safe(db, user_id=user_id, event_type="earn",
-                            resource="card", amount=1, source="reward_track",
-                            metadata={"track_type": track_type, "position": position,
-                                      "card_id": card["id"], "card_name": card.get("name")})
-                    else:
-                        fallback_coins = 100
-                        await db.update_user_coins(user_id, fallback_coins)
-                        granted.append({
-                            "reward_type": "coins",
-                            "reward_amount": fallback_coins,
-                            "fallback_for": "card",
-                        })
-                        await _track_economy_safe(db, user_id=user_id, event_type="earn",
-                            resource="coins", amount=fallback_coins, source="reward_track",
-                            metadata={"track_type": track_type, "position": position, "fallback_for": "card"})
-                elif rtype == "specific_card":
-                    card_id = _specific_card_id_from_meta(rmeta)
-                    card = await db.get_card_info(card_id) if hasattr(db, "get_card_info") else None
-                    card_name = (card or {}).get("name", "") if isinstance(card, dict) else ""
-                    already_owned = False
-                    if hasattr(db, "get_user_cards"):
-                        owned_cards = await db.get_user_cards(user_id)
-                        already_owned = any(
-                            int(user_card.get("id") or user_card.get("card_id") or 0) == int(card_id)
-                            for user_card in owned_cards or []
-                        )
-                    if already_owned:
-                        fallback_coins = 100
-                        await db.update_user_coins(user_id, fallback_coins)
-                        granted.append({
-                            "reward_type": "coins",
-                            "reward_amount": fallback_coins,
-                            "fallback_for": "specific_card",
-                            "card_id": card_id,
-                        })
-                        await _track_economy_safe(db, user_id=user_id, event_type="earn",
-                            resource="coins", amount=fallback_coins, source="reward_track",
-                            metadata={"track_type": track_type, "position": position,
-                                      "fallback_for": "specific_card", "card_id": card_id})
-                        continue
-                    result = await db.add_card_to_user(user_id, card_id)
-                    if isinstance(result, dict) and result.get("success") is False:
-                        fallback_coins = 100
-                        await db.update_user_coins(user_id, fallback_coins)
-                        granted.append({
-                            "reward_type": "coins",
-                            "reward_amount": fallback_coins,
-                            "fallback_for": "specific_card",
-                            "card_id": card_id,
-                        })
-                        await _track_economy_safe(db, user_id=user_id, event_type="earn",
-                            resource="coins", amount=fallback_coins, source="reward_track",
-                            metadata={"track_type": track_type, "position": position,
-                                      "fallback_for": "specific_card", "card_id": card_id,
-                                      "grant_error": result.get("error")})
-                        continue
-                    granted.append({
-                        "reward_type": "specific_card",
-                        "reward_amount": 1,
-                        "card_id": card_id,
-                        "card_name": card_name,
-                    })
-                    await _track_economy_safe(db, user_id=user_id, event_type="earn",
-                        resource="card", amount=1, source="reward_track",
-                        metadata={"track_type": track_type, "position": position,
-                                  "card_id": card_id, "card_name": card_name,
-                                  "reward_type": "specific_card"})
-                elif rtype == "case":
-                    case_tier = max(1, min(5, int(ramount or 1)))
-                    if hasattr(db, "get_admin_case_id"):
-                        case_id = await db.get_admin_case_id(case_tier)
-                    else:
-                        case_id = case_tier
-                    if not case_id:
-                        case_id = case_tier
-                    result = await db.add_user_case(user_id, int(case_id), case_tier)
-                    user_case_id = result.get("id") or result.get("user_case_id")
-                    granted.append({
-                        "reward_type": "case",
-                        "reward_amount": case_tier,
-                        "case_tier": case_tier,
-                        "user_case_id": user_case_id,
-                    })
-                    await _track_economy_safe(db, user_id=user_id, event_type="earn",
-                        resource="case", amount=1, source="reward_track",
-                        metadata={"track_type": track_type, "position": position,
-                                  "case_tier": case_tier, "user_case_id": user_case_id})
-
-            logging.getLogger(__name__).info(
-                "Reward claimed: user=%s track=%s pos=%s granted=%s",
-                user_id, track_type, position, _json.dumps(granted),
-            )
-
-            return web.json_response({
-                "success": True,
-                "track_type": track_type,
-                "position": position,
-                "granted": granted,
-            }, headers=NO_STORE_CACHE_HEADERS)
+            return web.json_response({"error": "claim_unavailable", "message": "Сервер не поддерживает атомарную выдачу наград."}, status=500)
         except Exception as e:
             logging.getLogger(__name__).error("claim_reward error: %s", e, exc_info=True)
             return web.json_response({"error": "internal_error", "message": str(e)}, status=500)
