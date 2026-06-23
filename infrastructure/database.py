@@ -907,6 +907,11 @@ class Database:
             "streak_broken": streak_broken,
             "claimed_reward_type": row["daily_login_claimed_reward_type"],
             "claimed_reward_amount": row["daily_login_claimed_reward_amount"],
+            # next_* = данные о награде, которая будет доступна после СЛЕДУЮЩЕГО клейма (streak_day+1).
+            # streak_day+1 % 3 == 0 — особая (x3).
+            "next_reward_type": reward_type,
+            "next_reward_amount": 0,
+            "next_is_special": (streak_day > 0 and (streak_day + 1) % 3 == 0),
         }
 
     async def _advance_daily_login_cycle(self, user_id: int, now: datetime) -> None:

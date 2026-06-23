@@ -28,7 +28,8 @@ class _DailyLoginFakeConnection:
     """Эмулирует asyncpg.Connection для claim_daily_login_reward / get_daily_login_status."""
 
     def __init__(self, *, available_at=None, claimed=False, streak=0, streak_day=0,
-                 reward_type="coins", reward_amount=50, multiplier=1, coins=100, gems=10, stars=3, keys=2):
+                 reward_type="coins", reward_amount=50, multiplier=1, coins=100, gems=10, stars=3, keys=2,
+                 claimed_reward_type=None, claimed_reward_amount=None, last_claim_at=None, notified=False):
         self.row = {
             "daily_login_streak": streak,
             "daily_login_streak_day": streak_day,
@@ -37,6 +38,10 @@ class _DailyLoginFakeConnection:
             "daily_login_reward_amount": reward_amount,
             "daily_login_multiplier": multiplier,
             "daily_login_claimed": claimed,
+            "daily_login_notified": notified,
+            "daily_login_last_claim_at": last_claim_at,
+            "daily_login_claimed_reward_type": claimed_reward_type,
+            "daily_login_claimed_reward_amount": claimed_reward_amount,
         }
         self.balance = {"coins": coins, "gems": gems, "stars": stars, "keys": keys}
         self.executed = []
@@ -269,3 +274,55 @@ def test_claim_keys_reward_calls_sync_user_key_cases():
     assert result["success"] is True
     assert called["sync"] is True
     assert conn.balance["keys"] == 6
+
+
+def test_get_daily_login_status_next_is_special_for_streak_day_2():
+    """Streak_day=2 → next (streak_day+1=3) — особая."""
+    now = datetime.now(timezone.utc)
+    conn = _DailyLoginFakeConnection(
+        available_at=now - timedelta(minutes=1), claimed=False,
+        streak=1, streak_day=2, reward_type="coins", reward_amount=50,
+        multiplier=1, coins=0,
+    )
+    db = _db_with_conn(conn)
+    import asyncio
+    status = asyncio.new_event_loop().run_until_complete(db.get_daily_login_status(99))
+    assert status["streak_day"] == 2
+    assert status["days_to_special"] == 1
+    # streak_day+1 = 3 → next_is_special True.
+    assert status["next_is_special"] is True
+
+
+def test_get_daily_login_status_next_not_special_for_streak_day_1():
+    """Streak_day=1 → next (streak_day+1=2) — НЕ особая."""
+    now = datetime.now(timezone.utc)
+    conn = _DailyLoginFakeConnection(
+        available_at=now - timedelta(minutes=1), claimed=False,
+        streak=0, streak_day=1, reward_type="gems", reward_amount=5,
+        multiplier=1, gems=0,
+    )
+    db = _db_with_conn(conn)
+    import asyncio
+    status = asyncio.new_event_loop().run_until_complete(db.get_daily_login_status(100))
+    assert status["streak_day"] == 1
+    assert status["days_to_special"] == 2
+    # streak_day+1 = 2 → not special.
+    assert status["next_is_special"] is False
+
+
+def test_get_daily_login_status_next_is_special_for_streak_day_3():
+    """Streak_day=3 (текущая особая) → next (streak_day+1=4) — НЕ особая."""
+    now = datetime.now(timezone.utc)
+    conn = _DailyLoginFakeConnection(
+        available_at=now - timedelta(minutes=1), claimed=False,
+        streak=2, streak_day=3, reward_type="stars", reward_amount=9,
+        multiplier=3, stars=0,
+    )
+    db = _db_with_conn(conn)
+    import asyncio
+    status = asyncio.new_event_loop().run_until_complete(db.get_daily_login_status(101))
+    assert status["streak_day"] == 3
+    assert status["is_special"] is True
+    assert status["days_to_special"] == 0  # Сегодня особая.
+    # streak_day+1 = 4 → next is not special.
+    assert status["next_is_special"] is False
