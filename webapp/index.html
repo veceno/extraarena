@@ -3275,7 +3275,7 @@ window.loadMobileSquadsBootstrap = async function(options = {}) {
 };
 </script>
 
-<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=78c213755a4a">
+<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=8aaf888b5bc4">
 // ═══════════════════════════════════════════
 // DESIGN TOKENS
 // ═══════════════════════════════════════════
@@ -3841,10 +3841,21 @@ window.triggerPaymentSuccessFromRecent = triggerPaymentSuccessFromRecent;
 // ═══════════════════════════════════════════
 const COSMETIC_CLASS_META = {
   starter:  {label:'Стартовый',      color:'#94a3b8', bg:'rgba(148,163,184,0.1)',  border:'rgba(148,163,184,0.3)'},
+  start:    {label:'Стартовый',      color:'#94a3b8', bg:'rgba(148,163,184,0.1)',  border:'rgba(148,163,184,0.3)'},
+  common:   {label:'Обычный',        color:'#9ca3af', bg:'rgba(156,163,175,0.1)',  border:'rgba(156,163,175,0.3)'},
   rare:     {label:'Редкий',         color:'#60a5fa', bg:'rgba(96,165,250,0.1)',  border:'rgba(96,165,250,0.3)'},
+  superrare:{label:'Сверхредкий',    color:'#2dd4bf', bg:'rgba(45,212,191,0.1)',  border:'rgba(45,212,191,0.3)'},
   epic:     {label:'Эпический',      color:'#a78bfa', bg:'rgba(167,139,250,0.1)',  border:'rgba(167,139,250,0.3)'},
+  legendary:{label:'Легендарный',    color:'#fbbf24', bg:'rgba(251,191,36,0.1)',  border:'rgba(251,191,36,0.4)'},
   mythic:   {label:'Мифический',     color:'#f472b6', bg:'rgba(244,114,182,0.1)',  border:'rgba(244,114,182,0.3)'},
+  divine:   {label:'Божественный',   color:'#e0e7ff', bg:'rgba(224,231,255,0.12)', border:'rgba(224,231,255,0.45)'},
   limited:  {label:'Лимитированный', color:'#fbbf24', bg:'rgba(251,191,36,0.1)',   border:'rgba(251,191,36,0.4)'},
+  unique:   {label:'Уникальный',     color:'#fb7185', bg:'rgba(251,113,133,0.1)',  border:'rgba(251,113,133,0.35)'},
+};
+
+const getCosmeticClassMeta = (className) => {
+  const key = String(className || 'starter').toLowerCase();
+  return COSMETIC_CLASS_META[key] || COSMETIC_CLASS_META.starter;
 };
 
 const getLeague = (trophies) => {
@@ -14514,10 +14525,7 @@ const PreBattleScreen = ({data, onClose}) => {
   const vsAccentBorder = T.purpleLt;
 
 	  const PlayerCard = ({name, avatar, trophies, clan, title, titleRarity, extraPass, glowDisabled, background, accentColor, accentBg}) => {
-    const titleColor = titleRarity === 'epic' ? '#c084fc' :
-      titleRarity === 'mythic' || titleRarity === 'mythical' ? '#ff6b9d' :
-      titleRarity === 'limited' ? '#ffd700' :
-      titleRarity === 'rare' ? '#5dade2' : accentColor;
+    const titleColor = getCosmeticClassMeta(titleRarity).color || accentColor;
     return (
     <div style={{
       display:'flex',alignItems:'center',gap:'14px',padding:'10px 20px',
@@ -15240,7 +15248,7 @@ const CosmeticPickerSheet = ({type, ownedItems, selectedItem, onSelect, onClose}
   const [isExpanded, setIsExpanded] = React.useState(false);
   const [sortAsc, setSortAsc] = React.useState(true);
 
-  const CLASS_ORDER = {starter:0, rare:1, epic:2, mythic:3, limited:4};
+  const CLASS_ORDER = {starter:0, start:0, common:1, rare:2, superrare:3, epic:4, legendary:5, mythic:6, divine:7, limited:8, unique:9};
   const displayItems = [...ownedItems]
     .sort((a, b) => {
       const diff = (CLASS_ORDER[a.class]??99) - (CLASS_ORDER[b.class]??99);
@@ -15327,7 +15335,7 @@ const CosmeticPickerSheet = ({type, ownedItems, selectedItem, onSelect, onClose}
             /* === GRID 3 COLUMNS FOR AVATARS === */
             <div style={{display:'grid',gridTemplateColumns:'repeat(3,minmax(0,1fr))',gap:'10px'}}>
               {displayItems.map(item => {
-                const meta = COSMETIC_CLASS_META[item.class] || COSMETIC_CLASS_META.starter;
+                const meta = getCosmeticClassMeta(item.class);
                 const isSelected = selectedItem === item.id;
                 const isLocked = !item.owned;
                 return (
@@ -15369,7 +15377,7 @@ const CosmeticPickerSheet = ({type, ownedItems, selectedItem, onSelect, onClose}
                       {item.name}
                     </span>
                     <span style={{fontSize:'9px',color:meta.color,background:meta.bg,borderRadius:'4px',padding:'1px 5px',fontWeight:'600'}}>
-                      {(COSMETIC_CLASS_META[item.class]||COSMETIC_CLASS_META.starter).label}
+                      {meta.label}
                     </span>
                   </div>
                 );
@@ -15381,7 +15389,7 @@ const CosmeticPickerSheet = ({type, ownedItems, selectedItem, onSelect, onClose}
             /* === ONE PER ROW WITH FULL-SIZE IMAGE === */
             <div style={{display:'flex',flexDirection:'column',gap:'10px'}}>
               {displayItems.map(item => {
-                const meta = COSMETIC_CLASS_META[item.class] || COSMETIC_CLASS_META.starter;
+                const meta = getCosmeticClassMeta(item.class);
                 const isSelected = selectedItem === item.id;
                 const isLocked = !item.owned;
                 return (
@@ -15434,7 +15442,7 @@ const CosmeticPickerSheet = ({type, ownedItems, selectedItem, onSelect, onClose}
             /* === LIST FOR TITLES (with real visual style preview) === */
             <div style={{display:'flex',flexDirection:'column',gap:'8px'}}>
               {displayItems.map(item => {
-                const meta = COSMETIC_CLASS_META[item.class] || COSMETIC_CLASS_META.starter;
+                const meta = getCosmeticClassMeta(item.class);
                 const isSelected = selectedItem === item.id;
                 const isLocked = !item.owned;
                 return (
@@ -15746,14 +15754,14 @@ const ProfileScreen = ({profile, onClose}) => {
 
   const slotMeta = (type) => {
     const sel = selectedItem(type);
-    const meta = sel ? COSMETIC_CLASS_META[sel.class] : COSMETIC_CLASS_META.starter;
+    const meta = getCosmeticClassMeta(sel?.class);
     return {name: sel?.name||'Базовый', classLabel: meta.label, color: meta.color, bg: meta.bg, border: meta.border};
   };
 
   const bgItem = selectedItem('profile_background');
-  const bgClass = bgItem ? COSMETIC_CLASS_META[bgItem.class] : COSMETIC_CLASS_META.starter;
+  const bgClass = getCosmeticClassMeta(bgItem?.class);
   const titleItem = selectedItem('title');
-  const titleMeta = titleItem ? COSMETIC_CLASS_META[titleItem.class] : COSMETIC_CLASS_META.starter;
+  const titleMeta = getCosmeticClassMeta(titleItem?.class);
   const equippedAvatarItem = selectedItem('avatar');
 
   const getTitleDisplayStyle = () => {
@@ -18297,6 +18305,6 @@ const LeagueInfoSheet = ({onClose, onOpenGloryPath, profile}) => {
 
 ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
 </script>
-<script src="index.compiled.js?v=78c213755a4a"></script>
+<script src="index.compiled.js?v=8aaf888b5bc4"></script>
 </body>
 </html>
