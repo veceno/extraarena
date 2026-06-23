@@ -3275,7 +3275,7 @@ window.loadMobileSquadsBootstrap = async function(options = {}) {
 };
 </script>
 
-<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=be3a76c082c4">
+<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=6e14fe56d3e2">
 // ═══════════════════════════════════════════
 // DESIGN TOKENS
 // ═══════════════════════════════════════════
@@ -7855,10 +7855,14 @@ const ArenaScreen = ({onMenu, onAI, onGenerator, onOpenBattles, onBattlePick, on
   const nextRewardDistance = nextUnreachedTier ? nextUnreachedTier.position - trophyCount : null;
 
   // Alternating label/timer display for buttons that carry a countdown.
-  // Generator label and its timer swap every 4s with a brief flicker on swap.
-  const [genShowTimer, setGenShowTimer] = React.useState(false);
+  // Generator and Daily Login labels swap with their timers every 4s with a brief flicker.
+  const [genShowTimer,   setGenShowTimer]   = React.useState(false);
+  const [dailyShowTimer, setDailyShowTimer] = React.useState(true);
   React.useEffect(() => {
-    const iv = setInterval(() => setGenShowTimer(v => !v), 4000);
+    const iv = setInterval(() => {
+      setGenShowTimer(v => !v);
+      setDailyShowTimer(v => !v);
+    }, 4000);
     return () => clearInterval(iv);
   }, []);
 
@@ -7933,6 +7937,18 @@ const ArenaScreen = ({onMenu, onAI, onGenerator, onOpenBattles, onBattlePick, on
             <img src={ICONS.battleHistory} alt="" style={{width:'16px',height:'16px',objectFit:'contain',filter:iconWhite,flexShrink:0}}/>
             <span style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>Мои бои</span>
           </button>
+          {onDailyLogin && (
+            <button type="button" onClick={onDailyLogin} aria-label="За вход" style={{flex:1,minWidth:0,display:'flex',alignItems:'center',justifyContent:'center',gap:'6px',background:dailyStatus?.is_claimable?'rgba(74,222,128,0.12)':T.bgCard,border:`1px solid ${dailyStatus?.is_claimable?'rgba(74,222,128,0.4)':T.purple1}`,borderRadius:'14px',padding:'8px 10px',cursor:'pointer',color:dailyStatus?.is_claimable?'#4ade80':T.grey1,fontSize:'12px',fontWeight:700,fontFamily:"'Exo 2',sans-serif",transition:'all 0.15s',boxShadow:dailyStatus?.is_claimable?'0 0 10px rgba(74,222,128,0.18)':'none'}}>
+              <img src={ICONS.dailyLogin} alt="" style={{width:'16px',height:'16px',objectFit:'contain',filter:iconWhite,flexShrink:0}}/>
+              {dailyStatus?.is_claimable ? (
+                <span style={{fontSize:'11px',fontWeight:800,color:'#4ade80',flexShrink:0,animation:'eaLabelSwap 0.45s ease'}}>Готово!</span>
+              ) : dailyShowTimer && dailyTimerLabel ? (
+                <span key="dtimer" style={{fontSize:'11px',fontWeight:600,color:T.grey2,fontVariantNumeric:'tabular-nums',flexShrink:0,whiteSpace:'nowrap',animation:'eaLabelSwap 0.45s ease'}}>{dailyTimerLabel}</span>
+              ) : (
+                <span key="dlbl" style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',animation:dailyTimerLabel?'eaLabelSwap 0.45s ease':'none'}}>За вход</span>
+              )}
+            </button>
+          )}
           <button onClick={onGenerator} aria-label="Генератор" style={{flex:1,minWidth:0,display:'flex',alignItems:'center',justifyContent:'center',gap:'6px',background:canClaimGen?'rgba(245,146,30,0.15)':T.bgCard,border:`1px solid ${canClaimGen?T.orange:T.purple1}`,borderRadius:'14px',padding:'8px 10px',color:canClaimGen?T.orange:T.grey1,fontSize:'12px',fontWeight:700,fontFamily:"'Exo 2',sans-serif",cursor:'pointer',transition:'all 0.15s',boxShadow:canClaimGen?`0 0 10px ${T.orange}44`:'none'}}>
             <img src={ICONS.keyGenerator} alt="" style={{width:'16px',height:'16px',objectFit:'contain',filter:iconWhite,flexShrink:0}}/>
             {genShowTimer && genTimerStr ? (
@@ -7942,20 +7958,6 @@ const ArenaScreen = ({onMenu, onAI, onGenerator, onOpenBattles, onBattlePick, on
             )}
           </button>
         </div>
-
-        {onDailyLogin && (
-          <div style={{display:'flex',justifyContent:'center',width:'100%',padding:'0 16px',marginBottom:'8px'}}>
-            <button type="button" onClick={onDailyLogin} aria-label="Ежедневный вход" style={{display:'flex',alignItems:'center',gap:'8px',background:dailyStatus?.is_claimable?'rgba(74,222,128,0.12)':T.bgCard,border:`1px solid ${dailyStatus?.is_claimable?'rgba(74,222,128,0.4)':T.purple1}`,borderRadius:'14px',padding:'8px 14px',cursor:'pointer',fontFamily:"'Exo 2',sans-serif",color:dailyStatus?.is_claimable?'#4ade80':T.grey1,fontSize:'12px',fontWeight:700,transition:'all 0.15s',boxShadow:dailyStatus?.is_claimable?'0 0 10px rgba(74,222,128,0.18)':'none'}}>
-              <img src={ICONS.dailyLogin} alt="" style={{width:'16px',height:'16px',objectFit:'contain',filter:iconWhite}}/>
-              <span>Ежедневный вход</span>
-              {dailyStatus?.is_claimable ? (
-                <span style={{fontSize:'11px',fontWeight:800,color:'#4ade80'}}>Готово!</span>
-              ) : dailyTimerLabel ? (
-                <span style={{fontSize:'11px',fontWeight:600,color:T.grey2,fontVariantNumeric:'tabular-nums'}}>{dailyTimerLabel}</span>
-              ) : null}
-            </button>
-          </div>
-        )}
 
         <div onClick={()=>onOpenLeagueInfo()} role="button" aria-label="Открыть меню лиг" style={{position:'relative',cursor:'pointer',WebkitTapHighlightColor:'transparent'}}>
           <ArenaArt level={leagueId} size={artSize}/>
@@ -18291,6 +18293,6 @@ const LeagueInfoSheet = ({onClose, onOpenGloryPath, profile}) => {
 
 ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
 </script>
-<script src="index.compiled.js?v=be3a76c082c4"></script>
+<script src="index.compiled.js?v=6e14fe56d3e2"></script>
 </body>
 </html>
