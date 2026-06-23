@@ -8868,10 +8868,13 @@ const DailyLoginSheet = ({onClose, profile, status, onClaimed}) => {
   const subLine = () => {
     if (isSpecial && !alreadyClaimed) return <span style={{color:'#fbbf24',fontSize:11,fontWeight:700}}>Сегодня — особая награда!</span>;
     if (daysToSpecial === 0 && !alreadyClaimed) return <span style={{color:'#fbbf24',fontSize:11,fontWeight:700}}>Особая награда сегодня!</span>;
-    if (daysToSpecial === 1) return <span style={{color:'#fbbf24',fontSize:11,fontWeight:700,animation:'pulse 1s ease-in-out infinite'}}>До особой награды остался 1 день!</span>;
+    if (daysToSpecial === 1 && !alreadyClaimed) return <span style={{color:'#fbbf24',fontSize:11,fontWeight:700,animation:'pulse 1s ease-in-out infinite'}}>Завтра — особая награда (x3)!</span>;
+    if (alreadyClaimed && daysToSpecial === 1) return <span style={{color:'#fbbf24',fontSize:11,fontWeight:600}}>Следующая — особая (x3)!</span>;
     if (alreadyClaimed) return <span style={{color:'#7a6fa0',fontSize:11,fontWeight:600}}>Награда получена · следующая скоро</span>;
     return <span style={{color:'#fbbf24',fontSize:11}}>До особой награды осталось {daysToSpecial} дней</span>;
   };
+
+  const nextIsSpecial = alreadyClaimed && daysToSpecial === 1;
 
   const claimLabel = () => {
     if (!enabled) return '—';
@@ -8919,11 +8922,12 @@ const DailyLoginSheet = ({onClose, profile, status, onClaimed}) => {
               </div>
             )}
             {alreadyClaimed && nextType && (
-              <div style={{marginTop:16,display:'flex',alignItems:'center',gap:8,padding:'8px 14px',borderRadius:12,background:'rgba(124,92,191,0.1)',border:'1px solid rgba(124,92,191,0.2)'}}>
-                <span style={{fontSize:10,color:'#7a6fa0',fontWeight:700,textTransform:'uppercase',letterSpacing:'0.06em',fontFamily:"'Inter',sans-serif"}}>Далее</span>
+              <div style={{marginTop:16,display:'flex',alignItems:'center',gap:8,padding:'8px 14px',borderRadius:12,background:nextIsSpecial?'rgba(251,191,36,0.12)':'rgba(124,92,191,0.1)',border:nextIsSpecial?'1px solid rgba(251,191,36,0.35)':'1px solid rgba(124,92,191,0.2)'}}>
+                <span style={{fontSize:10,color:nextIsSpecial?'#fbbf24':'#7a6fa0',fontWeight:700,textTransform:'uppercase',letterSpacing:'0.06em',fontFamily:"'Inter',sans-serif"}}>{nextIsSpecial?'Следующая особая':'Далее'}</span>
                 <div style={{display:'flex',alignItems:'center',gap:5}}>
                   {rewardIconFor(nextType, 20)}
-                  <span style={{fontSize:13,fontWeight:800,color:'#c4b8e8',fontFamily:"'Exo 2',sans-serif"}}>{nextAmount > 0 ? nextAmount.toLocaleString('ru-RU') : '—'}</span>
+                  <span style={{fontSize:13,fontWeight:800,color:nextIsSpecial?'#fbbf24':'#c4b8e8',fontFamily:"'Exo 2',sans-serif"}}>{nextAmount > 0 ? nextAmount.toLocaleString('ru-RU') : '—'}</span>
+                  {nextIsSpecial && <span style={{fontSize:10,fontWeight:900,color:'#2f1800',background:'linear-gradient(180deg,#ffd46e,#f4a529)',padding:'1px 6px',borderRadius:6,fontFamily:"'Exo 2',sans-serif"}}>x3</span>}
                 </div>
               </div>
             )}
