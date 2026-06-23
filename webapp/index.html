@@ -4320,7 +4320,8 @@ const SettingsScreen = ({onClose, profile}) => {
           <Row label="Новое в магазине" hint="Акции и новые предметы" value={notifs.shop} onChange={v=>setNotifs(n=>({...n,shop:v}))}/>
           <Row label="Генератор ключей" hint="Готовность и важные обновления" value={notifs.generator} onChange={v=>setNotifs(n=>({...n,generator:v}))}/>
           <Row label="Напоминания" hint="Возврат к активностям" value={notifs.reminders} onChange={v=>setNotifs(n=>({...n,reminders:v}))}/>
-          {isAndroidShell && <Row label="Модификаторы ExtraArena" hint="Когда режим ExtraArena меняет правила" value={notifs.extraArenaModifiers} onChange={v=>setNotifs(n=>({...n,extraArenaModifiers:v}))}/>}
+          <Row label="Ежедневные награды" hint="Награда за вход доступна" value={notifs.dailyRewards} onChange={v=>setNotifs(n=>({...n,dailyRewards:v}))}/>
+          <Row label="Модификаторы ExtraArena" hint="Когда режим ExtraArena меняет правила" value={notifs.extraArenaModifiers} onChange={v=>setNotifs(n=>({...n,extraArenaModifiers:v}))}/>
           {canUseTelegramDelivery && <DeliveryMode/>}
         </Section>
         <Section icon="user" title="Сквад" eyebrow="Роли, состав и Boost-события">
