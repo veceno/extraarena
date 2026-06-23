@@ -10425,15 +10425,47 @@ def create_web_app(
         )
 
         matchmaker: Matchmaker = request.app["matchmaker"]
+
+        # Resolve the initiating player's display name so the bot factory can
+        # avoid picking a donor with a colliding nickname (would look like the
+        # player is fighting themselves).
+        player_display_name = (
+            profile.get("display_name")
+            or profile.get("custom_nickname")
+            or profile.get("nickname")
+            or profile.get("name")
+            or profile.get("first_name")
+            or profile.get("username")
+        )
+        if isinstance(player_display_name, str):
+            player_display_name = player_display_name.strip() or None
+
+        # Training mode keeps manual difficulty selection (no streak pressure).
+        # Trophy/ranked modes must always apply streak adjustment and ignore
+        # any client-supplied difficulty — players cannot bypass streak.
+        is_training_mode = game_mode == "training"
         try:
-            result = await matchmaker._create_bot_match(
-                user_id=user_id,
-                trophies=trophies,
-                user_max_level=user_max_level,
-                selected_deck_id=selected_deck_id,
-                game_mode=game_mode,
-                difficulty_override=difficulty,
-            )
+            if is_training_mode:
+                result = await matchmaker._create_bot_match(
+                    user_id=user_id,
+                    trophies=trophies,
+                    user_max_level=user_max_level,
+                    selected_deck_id=selected_deck_id,
+                    game_mode=game_mode,
+                    difficulty_override=difficulty,
+                    player_display_name=player_display_name,
+                )
+            else:
+                streak_adjustment = await matchmaker._load_streak_adjustment(user_id, trophies)
+                result = await matchmaker._create_bot_match(
+                    user_id=user_id,
+                    trophies=trophies,
+                    user_max_level=user_max_level,
+                    selected_deck_id=selected_deck_id,
+                    game_mode=game_mode,
+                    streak_adjustment=streak_adjustment,
+                    player_display_name=player_display_name,
+                )
             if game_mode == "training":
                 result["bot_info"] = _decorate_training_bot_info(result.get("bot_info"))
 

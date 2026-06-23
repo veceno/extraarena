@@ -1568,6 +1568,24 @@ class Database:
         )
         return [{"display_name": row["display_name"], "img": row.get("img")} for row in rows]
 
+    async def get_display_name(self, user_id: int) -> str | None:
+        """Lightweight resolved display name (no full profile load) for bot-name collision checks."""
+        if not self._pool:
+            return None
+        row = await self.fetchrow(
+            """
+            SELECT COALESCE(p.custom_nickname, u.first_name, u.username, 'Бот') AS display_name
+            FROM users u
+            LEFT JOIN profiles p ON p.user_id = u.user_id
+            WHERE u.user_id = $1
+            """,
+            user_id,
+        )
+        if row is None:
+            return None
+        name = row.get("display_name") or ""
+        return name if name and name != "Бот" else None
+
     async def get_random_donor_profile(self, exclude_user_id: int) -> dict[str, Any] | None:
         """
         Возвращает профиль случайного реального игрока-донора для создания бота.
