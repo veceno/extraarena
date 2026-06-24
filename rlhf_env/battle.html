@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>RLHF Arena — Бой</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="/arena_styles.css">
+<link rel="stylesheet" href="/static/rlhf.css">
+</head>
+<body class="arena-page">
+<div id="arena-app">
+  <div id="loading-arena" class="rlhf-banner">Подключение…</div>
+  <div id="arena-container" style="display:none">
+    <div class="arena-battlefield-container" id="battlefield">
+      <!-- зона противника (P2) -->
+      <div class="arena-zone-top">
+        <div id="opponent-panel"></div>
+        <div id="opponent-board" class="board-row"></div>
+      </div>
+      <!-- центр (action history) -->
+      <div class="arena-zone-center">
+        <div id="arena-action-history"></div>
+      </div>
+      <!-- зона игрока (P1) -->
+      <div class="arena-zone-bottom">
+        <div id="player-board" class="board-row"></div>
+        <div id="player-hand" class="arena-player-hand"></div>
+        <div id="player-panel"></div>
+        <div class="end-turn-row">
+          <button id="end-turn-btn" class="end-turn-button-ref">Завершить ход</button>
+        </div>
+      </div>
+    </div>
+    <div id="battle-status" class="rlhf-banner"></div>
+  </div>
+</div>
+
+<script src="/arena_render.js"></script>
+</body>
+</html>

@@ -1,0 +1,246 @@
+/* RLHF Arena — стили обвязки (форма запуска, статус-бар и т.п.) */
+
+:root {
+  --rlhf-bg: #0a0612;
+  --rlhf-bg-card: #1a1030;
+  --rlhf-border: #564487;
+  --rlhf-text: #e0e7ff;
+  --rlhf-text-dim: #8b8ca8;
+  --rlhf-accent: #f5921e;
+  --rlhf-accent-2: #a78bfa;
+  --rlhf-error: #ef4444;
+  --rlhf-success: #51cf66;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  background: var(--rlhf-bg);
+  color: var(--rlhf-text);
+  margin: 0;
+  min-height: 100vh;
+}
+
+.rlhf-container {
+  max-width: 760px;
+  margin: 32px auto;
+  padding: 0 16px;
+}
+
+.rlhf-header {
+  text-align: center;
+  margin-bottom: 32px;
+}
+.rlhf-header h1 {
+  margin: 0;
+  font-size: 2.4rem;
+  background: linear-gradient(90deg, var(--rlhf-accent), var(--rlhf-accent-2));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.rlhf-subtitle { color: var(--rlhf-text-dim); margin-top: 4px; }
+
+.rlhf-form {
+  background: var(--rlhf-bg-card);
+  border: 1px solid var(--rlhf-border);
+  border-radius: 12px;
+  padding: 24px;
+}
+.rlhf-form h2 { margin-top: 0; }
+
+.rlhf-form fieldset {
+  border: 1px solid var(--rlhf-border);
+  border-radius: 8px;
+  padding: 12px 16px 16px;
+  margin-bottom: 16px;
+}
+.rlhf-form legend { padding: 0 8px; color: var(--rlhf-accent-2); }
+
+.rlhf-form label {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--rlhf-text);
+  font-size: 0.95rem;
+}
+.rlhf-form input, .rlhf-form select, .rlhf-form textarea {
+  background: var(--rlhf-bg);
+  color: var(--rlhf-text);
+  border: 1px solid var(--rlhf-border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-family: inherit;
+  font-size: 0.95rem;
+  width: 100%;
+  margin-top: 4px;
+}
+.rlhf-form textarea { font-family: monospace; }
+
+.rlhf-btn-primary {
+  background: linear-gradient(135deg, var(--rlhf-accent), var(--rlhf-accent-2));
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 12px 24px;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  width: 100%;
+  margin-top: 16px;
+}
+.rlhf-btn-primary:hover { filter: brightness(1.15); }
+.rlhf-btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.rlhf-error {
+  color: var(--rlhf-error);
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid var(--rlhf-error);
+  padding: 8px 12px;
+  border-radius: 6px;
+  margin-top: 12px;
+}
+
+.rlhf-banner {
+  background: var(--rlhf-bg-card);
+  border: 1px solid var(--rlhf-border);
+  border-radius: 8px;
+  padding: 16px;
+  text-align: center;
+  margin: 16px 0;
+}
+
+.rlhf-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--rlhf-bg-card);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.rlhf-table th, .rlhf-table td {
+  text-align: left;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--rlhf-border);
+}
+.rlhf-table th { background: rgba(124, 92, 191, 0.15); color: var(--rlhf-accent-2); }
+.rlhf-table a { color: var(--rlhf-accent); text-decoration: none; }
+.rlhf-table a:hover { text-decoration: underline; }
+
+/* Арена */
+.arena-battlefield-container {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  max-width: 1000px;
+  margin: 0 auto;
+}
+.arena-zone-top, .arena-zone-center, .arena-zone-bottom {
+  background: var(--rlhf-bg-card);
+  border: 1px solid var(--rlhf-border);
+  border-radius: 12px;
+  padding: 12px;
+}
+.board-row {
+  display: flex;
+  gap: 8px;
+  min-height: 140px;
+  flex-wrap: wrap;
+}
+.arena-player-hand {
+  display: flex;
+  gap: 8px;
+  min-height: 180px;
+  flex-wrap: wrap;
+}
+.end-turn-row { text-align: center; margin-top: 12px; }
+.end-turn-button-ref {
+  background: linear-gradient(135deg, #222, #444);
+  color: #fff;
+  border: 1px solid var(--rlhf-accent);
+  border-radius: 8px;
+  padding: 10px 24px;
+  font-size: 1rem;
+  cursor: pointer;
+}
+.end-turn-button-ref:hover { filter: brightness(1.2); }
+
+/* HP-блоки (минимальный 1:1) */
+.player-hp-block, .opponent-hp-block {
+  background: var(--rlhf-error);
+  border-radius: 8px;
+  padding: 8px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.hp-value-large { font-size: 1.8rem; font-weight: 900; color: #fff; }
+.player-name-block, .opponent-name-block {
+  display: flex; align-items: center; gap: 8px;
+}
+.player-avatar, .opponent-avatar {
+  width: 32px; height: 32px; border-radius: 6px;
+  background: #2d1f52; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 700; color: #fff;
+}
+
+/* Доска: слоты 95x130 */
+.board-slot {
+  width: 95px; height: 130px;
+  border: 2px dashed rgba(124, 92, 191, 0.45);
+  border-radius: 7px;
+  background: linear-gradient(180deg, #221542, #160e2c);
+  display: flex; align-items: center; justify-content: center;
+  flex-direction: column;
+  position: relative;
+  color: #fff;
+  font-size: 0.8rem;
+  text-align: center;
+  padding: 4px;
+}
+.board-slot .attack { color: #FF6B6B; font-weight: 700; font-size: 1.2rem; }
+.board-slot .hp { color: #51CF66; font-weight: 700; font-size: 1rem; }
+.board-slot.targetable-friendly { box-shadow: 0 0 12px rgba(74, 222, 128, 0.8); cursor: pointer; }
+.board-slot.attack-target { box-shadow: 0 0 12px rgba(239, 68, 68, 0.8); cursor: pointer; }
+
+/* Карты в руке */
+.hand-card {
+  width: 110px; height: 152px;
+  border: 1px solid #564487;
+  border-radius: 8px;
+  background: linear-gradient(180deg, #211441, #150d2a);
+  color: #fff;
+  padding: 6px;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  cursor: pointer;
+  transition: transform 0.2s;
+}
+.hand-card:hover { transform: translateY(-8px); box-shadow: 0 0 16px gold; }
+.hand-card .mana-circle {
+  position: absolute; top: 4px; right: 4px;
+  width: 26px; height: 26px;
+  background: #f5921e;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 900; color: #000;
+  border: 2px solid #000;
+}
+.hand-card.card-disabled { opacity: 0.45; filter: grayscale(0.6); cursor: not-allowed; }
+.hand-card.card-playable { box-shadow: 0 0 8px var(--rlhf-accent); }
+
+/* Лог */
+#arena-action-history {
+  font-family: monospace;
+  font-size: 0.85rem;
+  color: var(--rlhf-text-dim);
+  max-height: 80px;
+  overflow-y: auto;
+  background: var(--rlhf-bg);
+  padding: 8px;
+  border-radius: 6px;
+}

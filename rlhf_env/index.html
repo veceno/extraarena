@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>RLHF Arena — Новая группа</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="/static/rlhf.css">
+</head>
+<body>
+<div class="rlhf-container">
+  <header class="rlhf-header">
+    <h1>RLHF Arena</h1>
+    <p class="rlhf-subtitle">Среда для сбора human-vs-model траекторий · v<span id="version">…</span></p>
+  </header>
+
+  <form id="new-group-form" class="rlhf-form">
+    <h2>Новая группа боёв</h2>
+
+    <fieldset>
+      <legend>Игрок 1 (человек / бот)</legend>
+      <label>Модель P1:
+        <select name="p1_model" id="p1_model">
+          <option value="random">random (baseline)</option>
+          <option value="greedy_face">greedy_face (baseline)</option>
+          <option value="end_turn">end_turn (baseline)</option>
+        </select>
+      </label>
+    </fieldset>
+
+    <fieldset>
+      <legend>Игрок 2 (бот)</legend>
+      <label>Модель P2:
+        <select name="p2_model" id="p2_model">
+          <option value="random">random</option>
+          <option value="greedy_face">greedy_face</option>
+          <option value="end_turn" selected>end_turn</option>
+        </select>
+      </label>
+    </fieldset>
+
+    <fieldset>
+      <legend>Колода</legend>
+      <label>Стратегия:
+        <select name="deck_strategy" id="deck_strategy">
+          <option value="random_arenaenv" selected>Случайные ArenaENV колоды</option>
+          <option value="custom">Загрузить JSON-колоду</option>
+        </select>
+      </label>
+      <div id="custom-deck-block" style="display:none">
+        <label>JSON (массив card_id или {hero, cards}):
+          <textarea name="custom_deck_p1" id="custom_deck_p1" rows="3"
+                    placeholder='[1, 14, 14, 15, 8] или {"hero":1,"cards":[14,14,15,8]}'></textarea>
+        </label>
+        <button type="button" id="btn-sample-deck">Сгенерировать пример</button>
+        <pre id="sample-deck-out"></pre>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Параметры</legend>
+      <label>Количество боёв: <input type="number" name="battles_planned" value="5" min="1" max="100"></label>
+      <label>Seed: <input type="number" name="seed" value="0"></label>
+      <label>Первый ход:
+        <select name="starting_player">
+          <option value="random" selected>Случайно</option>
+          <option value="p1">P1</option>
+          <option value="p2">P2</option>
+        </select>
+      </label>
+      <label>Макс. ходов в бое: <input type="number" name="max_turns" value="60" min="6" max="200"></label>
+    </fieldset>
+
+    <button type="submit" class="rlhf-btn-primary">Создать группу</button>
+    <div id="form-error" class="rlhf-error" style="display:none"></div>
+  </form>
+
+  <p><a href="/groups">Все группы →</a></p>
+</div>
+
+<script src="/static/rlhf.js"></script>
+</body>
+</html>
