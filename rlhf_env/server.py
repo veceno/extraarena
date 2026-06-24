@@ -267,8 +267,9 @@ class WebApp:
         r.add_get("/groups/{gid}", self.handle_group_page)
         # Static (CSS, JS, images)
         r.add_static("/static/", path=str(_HERE / "static"), show_index=False)
-        r.add_static("/css/", path=str(_HERE), show_index=False)
-        r.add_static("/js/", path=str(_HERE), show_index=False)
+        # Точечные роуты для файлов арены (только конкретные файлы, не весь каталог)
+        r.add_get("/css/arena_styles.css", self.handle_arena_css)
+        r.add_get("/js/arena_render.js", self.handle_arena_js)
         # API
         r.add_get("/api/registry/models", self.api_list_models)
         r.add_get("/api/registry/deck-strategies", self.api_deck_strategies)
@@ -295,6 +296,14 @@ class WebApp:
     async def handle_battle_page(self, _request: web.Request) -> web.Response:
         html = (_HERE / "battle.html").read_text(encoding="utf-8")
         return web.Response(text=html, content_type="text/html")
+
+    async def handle_arena_css(self, _request: web.Request) -> web.Response:
+        css = (_HERE / "arena_styles.css").read_text(encoding="utf-8")
+        return web.Response(text=css, content_type="text/css")
+
+    async def handle_arena_js(self, _request: web.Request) -> web.Response:
+        js = (_HERE / "arena_render.js").read_text(encoding="utf-8")
+        return web.Response(text=js, content_type="application/javascript")
 
     async def handle_groups_page(self, _request: web.Request) -> web.Response:
         groups = self.session_manager.list()
