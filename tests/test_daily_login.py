@@ -329,6 +329,74 @@ def test_get_daily_login_status_next_is_special_for_streak_day_3():
     assert status["next_is_special"] is False
 
 
+def test_get_daily_login_status_next_reward_amount_scales_by_next_multiplier():
+    """Bug: UI ранее показывал next_reward_amount = base (5), но с бейджем x3 → визуально «15».
+    Сервер должен возвращать next_reward_amount = base * next_multiplier, чтобы UI и preview
+    согласовались (5 без x3, 15 с x3).
+
+    Streak_day=2 → next (streak_day+1=3) — особая → next_multiplier=3 → next_reward_amount = base*3.
+    """
+    now = datetime.now(timezone.utc)
+    conn = _DailyLoginFakeConnection(
+        available_at=now - timedelta(minutes=1), claimed=False,
+        streak=1, streak_day=2, reward_type="gems", reward_amount=5,
+        multiplier=1, gems=0,
+    )
+    db = _db_with_conn(conn)
+    import asyncio
+    status = asyncio.new_event_loop().run_until_complete(db.get_daily_login_status(110))
+    assert status["streak_day"] == 2
+    assert status["next_is_special"] is True
+    assert status["next_multiplier"] == 3
+    # base_amount=5, next_multiplier=3 → next_reward_amount=15 (а не 5 или 0).
+    assert status["next_reward_amount"] == 15, (
+        f"Expected next_reward_amount=15 (base 5 * x3) for streak_day=2; got {status['next_reward_amount']}"
+    )
+
+
+def test_get_daily_login_status_next_reward_amount_regular_when_not_special():
+    """Streak_day=1 → next (streak_day+1=2) — обычная → next_multiplier=1 → next_reward_amount = base."""
+    now = datetime.now(timezone.utc)
+    conn = _DailyLoginFakeConnection(
+        available_at=now - timedelta(minutes=1), claimed=False,
+        streak=0, streak_day=1, reward_type="coins", reward_amount=50,
+        multiplier=1, coins=0,
+    )
+    db = _db_with_conn(conn)
+    import asyncio
+    status = asyncio.new_event_loop().run_until_complete(db.get_daily_login_status(111))
+    assert status["streak_day"] == 1
+    assert status["next_is_special"] is False
+    assert status["next_multiplier"] == 1
+    # base_amount=50, next_multiplier=1 → next_reward_amount=50 (без x3).
+    assert status["next_reward_amount"] == 50, (
+        f"Expected next_reward_amount=50 for streak_day=1 (regular next); got {status['next_reward_amount']}"
+    )
+
+
+def test_get_daily_login_status_next_reward_amount_not_special_after_special():
+    """Streak_day=3 (сегодня особая) → next (streak_day+1=4) — обычная → next_reward_amount = base.
+    Подтверждает, что цикл корректно сбрасывается после 3-го дня.
+    """
+    now = datetime.now(timezone.utc)
+    conn = _DailyLoginFakeConnection(
+        available_at=now - timedelta(minutes=1), claimed=False,
+        streak=2, streak_day=3, reward_type="stars", reward_amount=9,
+        multiplier=3, stars=0,
+    )
+    db = _db_with_conn(conn)
+    import asyncio
+    status = asyncio.new_event_loop().run_until_complete(db.get_daily_login_status(112))
+    assert status["streak_day"] == 3
+    assert status["is_special"] is True
+    assert status["next_is_special"] is False
+    assert status["next_multiplier"] == 1
+    # base_amount=9, next_multiplier=1 → next_reward_amount=9 (после особой — снова обычная).
+    assert status["next_reward_amount"] == 9, (
+        f"Expected next_reward_amount=9 after special streak_day=3; got {status['next_reward_amount']}"
+    )
+
+
 def test_get_daily_login_status_streak_break_resets_notified():
     """Обрыв серии сбрасывает daily_login_notified, чтобы новое уведомление отправилось."""
     now = datetime.now(timezone.utc)

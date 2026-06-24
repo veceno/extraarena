@@ -3313,7 +3313,7 @@ window.loadMobileSquadsBootstrap = async function(options = {}) {
 };
 </script>
 
-<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=098fc9f17ea7">
+<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=378a219d3199">
 // ═══════════════════════════════════════════
 // DESIGN TOKENS
 // ═══════════════════════════════════════════
@@ -8899,7 +8899,7 @@ const DailyLoginSheet = ({onClose, profile, status, onClaimed}) => {
   const displayType   = alreadyClaimed ? (status?.claimed_reward_type || status?.reward_type) : status?.reward_type;
   const displayAmount = alreadyClaimed ? (status?.claimed_reward_amount ?? 0) : (status?.reward_amount ?? status?.base_amount ?? 0);
   const nextType      = alreadyClaimed ? status?.reward_type : null;
-  const nextAmount    = alreadyClaimed ? (status?.reward_amount ?? 0) : null;
+  const nextAmount    = alreadyClaimed ? (status?.next_reward_amount ?? status?.reward_amount ?? 0) : null;
 
   const rewardIconFor = (type, size=56) => {
     if (type === 'coins') return <IconCoin size={size}/>;
@@ -10464,6 +10464,8 @@ const squadErrText = (code) => ({
   only_creator_can_customize:'Косметику сквада меняет только создатель',
   boost_already_active:'BOOST уже активен',
   cosmetic_not_found:'Предмет не найден в каталоге',
+  invalid_chat_link:'Такие ссылки запрещены',
+  chat_link_too_long:'Слишком длинная ссылка (макс. 200)',
 }[code] || code || 'Ошибка');
 
 const SquadCreatePanel = ({onClose,onCreated}) => {
@@ -10539,6 +10541,7 @@ const SquadsScreen = ({profile,onReloadProfile,onNoticeChange,onOpenAnnouncement
   const [squadBoostProduct,setSquadBoostProduct] = React.useState(null);
   const [buyingSquadBoost,setBuyingSquadBoost] = React.useState(false);
   const [confirmAction,setConfirmAction] = React.useState(null);
+  const [chatLinkModal,setChatLinkModal] = React.useState(null);
   const boostCyanButtonStyle = {
     background:'linear-gradient(135deg,#14b8a6,#38bdf8)',
     color:'#06121f',
@@ -11401,6 +11404,22 @@ const SquadsScreen = ({profile,onReloadProfile,onNoticeChange,onOpenAnnouncement
             <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:9,marginTop:16}}>
               <SquadButton secondary onClick={()=>setConfirmAction(null)}>Отмена</SquadButton>
               <SquadButton onClick={async()=>{ const action = confirmAction; setConfirmAction(null); await action.onConfirm?.(); }} style={confirmAction.tone==='red'?{background:T.red,color:T.bgDeep,boxShadow:`0 5px 18px ${T.red}28`}:confirmAction.tone==='orange'?{}:{background:T.purpleHL,boxShadow:`0 5px 18px ${T.purpleHL}35`}}>{confirmAction.confirmText || 'Подтвердить'}</SquadButton>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {chatLinkModal && (
+        <div style={{position:'absolute',inset:0,zIndex:95,background:'rgba(5,2,12,.78)',backdropFilter:'blur(8px)',display:'flex',alignItems:'center',justifyContent:'center',padding:18}} onClick={()=>setChatLinkModal(null)}>
+          <div onClick={e=>e.stopPropagation()} style={{width:'100%',maxWidth:360,background:T.bgCard,border:`1px solid ${T.purple2}`,borderRadius:18,padding:16,boxShadow:'0 18px 60px rgba(0,0,0,.45)'}}>
+            <div style={{fontSize:18,fontWeight:900,color:T.white,fontFamily:"'Exo 2',sans-serif",marginBottom:12}}>Ссылка на чат сквада</div>
+            <div style={{fontSize:13,color:T.grey1,background:T.bgDeep,padding:'10px 12px',borderRadius:12,border:`1px solid ${T.purple1}`,wordBreak:'break-all',marginBottom:14,lineHeight:1.45}}>{chatLinkModal}</div>
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:9}}>
+              <SquadButton secondary onClick={()=>setChatLinkModal(null)}>Закрыть</SquadButton>
+              <SquadButton onClick={()=>{ try { window.open(chatLinkModal, '_blank', 'noopener,noreferrer'); } catch (e) {} }}>Перейти</SquadButton>
+            </div>
+            <div style={{fontSize:10,color:T.grey3,lineHeight:1.5,marginTop:14,padding:'0 4px'}}>
+              Эта ссылка была добавлена создателем клана. Администрация ExtraArena не несет ответственности за информацию, доступную по этой ссылке. Перед переходом по ссылке убедись в ее безопасности!
             </div>
           </div>
         </div>
@@ -18592,6 +18611,6 @@ const LeagueInfoSheet = ({onClose, onOpenGloryPath, profile}) => {
 
 ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
 </script>
-<script src="index.compiled.js?v=098fc9f17ea7"></script>
+<script src="index.compiled.js?v=378a219d3199"></script>
 </body>
 </html>

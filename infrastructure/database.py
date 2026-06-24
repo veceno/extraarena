@@ -968,6 +968,13 @@ class Database:
             if is_special and not claimed:
                 days_to_special = 0
 
+        # next_* = данные о награде, которая будет доступна после СЛЕДУЮЩЕГО клейма (streak_day+1).
+        # next_multiplier учитывает ту же логику, что и для текущего дня, но на шаг вперёд.
+        # streak_day+1 % 3 == 0 — особая (x3).
+        next_streak_day = streak_day + 1 if streak_day > 0 else 1
+        next_multiplier = 3 if next_streak_day > 0 and next_streak_day % 3 == 0 else 1
+        next_final_amount = int(round((base_amount or 0) * next_multiplier))
+
         return {
             "enabled": True,
             "streak": streak,
@@ -990,8 +997,9 @@ class Database:
             # next_* = данные о награде, которая будет доступна после СЛЕДУЮЩЕГО клейма (streak_day+1).
             # streak_day+1 % 3 == 0 — особая (x3).
             "next_reward_type": reward_type,
-            "next_reward_amount": 0,
-            "next_is_special": (streak_day > 0 and (streak_day + 1) % 3 == 0),
+            "next_reward_amount": next_final_amount,
+            "next_multiplier": next_multiplier,
+            "next_is_special": next_multiplier == 3,
         }
 
     async def _advance_daily_login_cycle(self, user_id: int, now: datetime) -> None:
