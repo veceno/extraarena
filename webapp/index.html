@@ -3313,7 +3313,7 @@ window.loadMobileSquadsBootstrap = async function(options = {}) {
 };
 </script>
 
-<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=378a219d3199">
+<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=7449c1dea37d">
 // ═══════════════════════════════════════════
 // DESIGN TOKENS
 // ═══════════════════════════════════════════
@@ -11373,14 +11373,39 @@ const SquadsScreen = ({profile,onReloadProfile,onNoticeChange,onOpenAnnouncement
                 style={{width:'100%',boxSizing:'border-box',background:T.bgCard,border:`1px solid ${T.purple2}`,borderRadius:12,padding:'12px 14px',color:T.white,fontSize:14,outline:'none'}}
               />
               <div style={{fontSize:10,color:T.grey2,margin:'6px 4px 0'}}>Можно указать без https:// — сервер добавит автоматически. Доступны: t.me, telegram.me, vk.me/vk.com, max.ru, discord.gg/com, ok.ru.</div>
-              <label style={{display:'flex',alignItems:'flex-start',gap:9,padding:'10px 4px 0',cursor:'pointer'}}>
-                <input
-                  type="checkbox"
-                  checked={!!settingsForm.chatLinkConfirmed}
-                  onChange={e=>setSettingsForm(f=>({...f,chatLinkConfirmed:e.target.checked}))}
-                  disabled={!(settingsForm.chatLink || '').trim()}
-                  style={{marginTop:3,accentColor:T.orange}}
-                />
+              <label style={{display:'flex',alignItems:'flex-start',gap:10,padding:'10px 4px 0',cursor:(settingsForm.chatLink||'').trim()?'pointer':'not-allowed'}}>
+                <span
+                  role="checkbox"
+                  aria-checked={!!settingsForm.chatLinkConfirmed}
+                  onClick={()=>{
+                    if(!((settingsForm.chatLink||'').trim())) return;
+                    setSettingsForm(f=>({...f,chatLinkConfirmed:!f.chatLinkConfirmed}));
+                  }}
+                  style={{
+                    marginTop:1,
+                    width:20,
+                    height:20,
+                    flexShrink:0,
+                    borderRadius:6,
+                    border:`2px solid ${settingsForm.chatLinkConfirmed ? T.orange : T.purple2}`,
+                    background: settingsForm.chatLinkConfirmed
+                      ? `linear-gradient(160deg, ${T.orangeLt}, ${T.orange})`
+                      : T.bgCard,
+                    boxShadow: settingsForm.chatLinkConfirmed ? `0 2px 8px ${T.orange}55` : 'none',
+                    display:'inline-flex',
+                    alignItems:'center',
+                    justifyContent:'center',
+                    transition:'transform .15s ease, box-shadow .15s ease, background .15s ease, border-color .15s ease',
+                    transform: settingsForm.chatLinkConfirmed ? 'scale(1)' : 'scale(1)',
+                    opacity:(settingsForm.chatLink||'').trim()?1:.45,
+                  }}
+                >
+                  {settingsForm.chatLinkConfirmed && (
+                    <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+                      <path d="M2 6.5 L5 9 L10 3" fill="none" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/>
+                    </svg>
+                  )}
+                </span>
                 <span style={{fontSize:11,color:T.grey1,lineHeight:1.45}}>
                   Я подтверждаю, что в чате нет рекламы сторонних проектов, нет нарушений оферты ExtraArena, соблюдены все правила ExtraArena.
                 </span>
@@ -18611,6 +18636,6 @@ const LeagueInfoSheet = ({onClose, onOpenGloryPath, profile}) => {
 
 ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
 </script>
-<script src="index.compiled.js?v=378a219d3199"></script>
+<script src="index.compiled.js?v=7449c1dea37d"></script>
 </body>
 </html>
