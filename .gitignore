@@ -27,6 +27,7 @@ ai/model_benchmark/results/
 
 # Local research/workflow scratch
 .codex/
+.codex/skills/
 .graphifyignore
 .workflow/
 TrainV3/
@@ -70,6 +71,17 @@ graphify-out/
 .claude/
 .superpowers/
 .opencode/references/
+.opencode/agents/
+.opencode/commands/
+.opencode/plugins/
+
+# Frontend / runtime scratch
+node_modules/
+.playwright-cli/
+exports/
+
+# Local one-off scripts
+scripts/static_for_playwright.py
 
 # Rust
 target/
@@ -81,3 +93,6 @@ Cargo.lock
 !.graphifyignore
 !docs/GRAPHIFY.md
 !scripts/graphify_project.sh
+
+# Skills not meant for shared tracking
+.codex/skills/extraarena-prod-update/
