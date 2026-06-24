@@ -11411,7 +11411,19 @@ class Database:
                         "confirmation_url": session["confirmation_url"],
                     }
                 if session["status"] == "payment_creating":
-                    return {"success": False, "error": "payment_creation_in_progress"}
+                    updated_at = session.get("updated_at")
+                    stale_claim = False
+                    if isinstance(updated_at, datetime):
+                        if updated_at.tzinfo is None:
+                            updated_at = updated_at.replace(tzinfo=timezone.utc)
+                        stale_claim = datetime.now(timezone.utc) - updated_at.astimezone(timezone.utc) > timedelta(seconds=60)
+                    if not stale_claim:
+                        return {"success": False, "error": "payment_creation_in_progress"}
+                    logging.getLogger(__name__).warning(
+                        "Reclaiming stale checkout payment creation: checkout_jti=%s updated_at=%s",
+                        checkout_jti,
+                        updated_at,
+                    )
                 await conn.execute(
                     """
                     UPDATE payment_checkout_sessions

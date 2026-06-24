@@ -126,6 +126,20 @@ def test_payment_open_uses_single_popup_attempt():
     assert "fetch('/api/payments/checkout/summary?jti='" in html
 
 
+def test_checkout_create_silently_retries_transient_first_failure():
+    html = EXTRASHOP_INDEX.read_text(encoding="utf-8")
+    create_block = html.split("function createPayment(options)", 1)[1].split(
+        "loadCheckoutSummary();",
+        1,
+    )[0]
+
+    assert "function retryCreatePayment(attempt)" in html
+    assert "createPayment({ attempt: attempt + 1 });" in html
+    assert "result.data.error === 'payment_creation_in_progress' && attempt < 1" in create_block
+    assert "if (attempt < 1)" in create_block
+    assert "retryCreatePayment(attempt);" in create_block
+
+
 def test_checkout_session_uses_jti_and_cleans_legacy_token_url():
     html = EXTRASHOP_INDEX.read_text(encoding="utf-8")
     overlay_block = html.split("var CHECKOUT_JTI_STORAGE_KEY = 'extra_shop_checkout_jti';", 1)[1].split(

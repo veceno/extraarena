@@ -224,6 +224,7 @@ class CheckoutFakeDB:
             "confirmation_url": None,
             "status": "created",
             "expires_at": kwargs["expires_at"],
+            "updated_at": time.time(),
         }
         return {"success": True}
 
@@ -244,6 +245,7 @@ class CheckoutFakeDB:
         row["payment_id"] = payment_id
         row["confirmation_url"] = confirmation_url
         row["status"] = "payment_created"
+        row["updated_at"] = time.time()
         return {"success": True, "payment_id": payment_id, "confirmation_url": confirmation_url}
 
     async def claim_checkout_session_for_payment(self, checkout_jti):
@@ -257,9 +259,10 @@ class CheckoutFakeDB:
                 "payment_id": row["payment_id"],
                 "confirmation_url": row["confirmation_url"],
             }
-        if row.get("status") == "payment_creating":
+        if row.get("status") == "payment_creating" and time.time() - float(row.get("updated_at") or 0) <= 60:
             return {"success": False, "error": "payment_creation_in_progress"}
         row["status"] = "payment_creating"
+        row["updated_at"] = time.time()
         return {"success": True, "session": dict(row)}
 
     async def reserve_one_time_payment(self, **kwargs):
@@ -1136,6 +1139,47 @@ async def test_parallel_checkout_create_for_same_jti_makes_one_provider_call():
         assert [response.status for response in responses] == [200, 200]
         assert len(payment_service.created) == 1
         assert {body["payment_id"] for body in bodies} == {"pay-1"}
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_checkout_create_recovers_stale_payment_creating_session():
+    db = CheckoutFakeDB()
+    db.product = {
+        "code": "extrapass",
+        "item_type": "extrapass",
+        "package_type": None,
+        "name": "ExtraPass",
+        "price": 179.0,
+        "currency": "rubles",
+        "is_active": True,
+    }
+    payment_service = FakePaymentService()
+    client, session_id = await _client(db=db, payment_service=payment_service)
+    try:
+        token = _auth_token(session_id)
+        start_response = await client.post(
+            f"/api/payments/checkout/start?_auth={token}",
+            json={"product_code": "extrapass"},
+        )
+        start_body = await start_response.json()
+        assert start_response.status == 200
+
+        checkout_token = start_body["checkout_jti"]
+        db.checkout_sessions[checkout_token]["status"] = "payment_creating"
+        db.checkout_sessions[checkout_token]["updated_at"] = time.time() - 61
+
+        create_response = await client.post(
+            "/api/payments/checkout/create",
+            json={"checkout_jti": checkout_token},
+        )
+        body = await create_response.json()
+
+        assert create_response.status == 200
+        assert body["success"] is True
+        assert body["payment_id"] == "pay-1"
+        assert len(payment_service.created) == 1
     finally:
         await client.close()
 

@@ -1619,7 +1619,14 @@
       if (!opened) window.location.href = url;
     }
 
-    function createPayment() {
+    function retryCreatePayment(attempt) {
+      setTimeout(function() {
+        createPayment({ attempt: attempt + 1 });
+      }, 700);
+    }
+
+    function createPayment(options) {
+      var attempt = options && typeof options.attempt === 'number' ? options.attempt : 0;
       renderLoading();
       var controller = null;
       var timeoutId = null;
@@ -1645,6 +1652,10 @@
         if (result.data.success && result.data.confirmation_url) {
           renderReady(result.data.confirmation_url);
         } else {
+          if (result.data.error === 'payment_creation_in_progress' && attempt < 1) {
+            retryCreatePayment(attempt);
+            return;
+          }
           var msg = result.data.message || result.data.error || 'Неизвестная ошибка';
           var canRetry = !result.data.error || result.data.error === 'payment_service_not_configured' ? false : true;
           if (result.data.error === 'token_expired') {
@@ -1656,6 +1667,10 @@
       })
       .catch(function(err) {
         if (timeoutId) clearTimeout(timeoutId);
+        if (attempt < 1) {
+          retryCreatePayment(attempt);
+          return;
+        }
         if (err && err.name === 'AbortError') {
           renderError('Платежный провайдер слишком долго отвечает. Попробуйте ещё раз.', true);
         } else {

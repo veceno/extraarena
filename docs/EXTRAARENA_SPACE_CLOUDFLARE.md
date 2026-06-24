@@ -219,6 +219,24 @@ Network mode: host
 Internal web port: 18081
 ```
 
+MCP-uploaded profile cosmetics are runtime data, not image data. Keep the
+admin upload directories on the shared disk and bind-mount them into the
+container on every rebuild:
+
+```yaml
+services:
+  app:
+    volumes:
+      - /mnt/veceno1/extraarena/project/shared/DesignAssets/PlayerCosmetics/Avatars/Admin:/app/DesignAssets/PlayerCosmetics/Avatars/Admin
+      - /mnt/veceno1/extraarena/project/shared/DesignAssets/PlayerCosmetics/Background/Admin:/app/DesignAssets/PlayerCosmetics/Background/Admin
+```
+
+Do not rsync or rebuild these `Admin` directories as part of the application
+image, and do not run deploy cleanup with `--delete` against the shared
+`DesignAssets/PlayerCosmetics/*/Admin` paths. Source-controlled starter
+cosmetics may still be copied into the image; the bind mounts overlay only the
+MCP-managed upload directories at runtime.
+
 Restart the app after environment changes:
 
 ```bash
@@ -232,6 +250,14 @@ Container checks:
 sudo docker ps --filter name=extraarena-app
 sudo docker inspect -f '{{.State.Health.Status}}' extraarena-app
 sudo docker logs --tail 120 extraarena-app
+```
+
+MCP cosmetics preservation check after a rebuild:
+
+```bash
+sudo docker compose exec app find /app/DesignAssets/PlayerCosmetics/Avatars/Admin -maxdepth 1 -type f | wc -l
+sudo docker compose exec app find /app/DesignAssets/PlayerCosmetics/Background/Admin -maxdepth 1 -type f | wc -l
+curl -I https://app.extraarena.space/DesignAssets/PlayerCosmetics/Avatars/Admin/<known-file>
 ```
 
 Verify the running environment:
@@ -390,4 +416,3 @@ start.sh
 ```
 
 `deploy/cloudflared/extraarena-space.yml` is useful for locally-managed tunnels. The active server setup currently uses a remote-managed token-based tunnel through systemd.
-
