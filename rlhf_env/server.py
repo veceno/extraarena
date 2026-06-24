@@ -93,10 +93,14 @@ def _state_to_view(state) -> Dict[str, Any]:
 
 
 def _player_to_view(p) -> Dict[str, Any]:
+    hero_view = _card_to_view(p.hero) if p.hero else None
     return {
         "user_id": p.user_id,
         "is_bot": p.is_bot,
-        "hero": _card_to_view(p.hero),
+        "name": (hero_view or {}).get("name") or f"Player {p.user_id}",
+        "hp": (hero_view or {}).get("hp", 0),
+        "max_hp": (hero_view or {}).get("max_hp", 0),
+        "hero": hero_view,
         "hand": [_card_to_view(c) for c in p.hand],
         "board": [_card_to_view(c) for c in p.board],
         "mana": p.mana,
