@@ -695,7 +695,8 @@ public class MainActivity extends Activity {
                 || "main.js".equals(clean)
                 || "styles.css".equals(clean)
                 || "safe-area.js".equals(clean)
-                || "matchmaking-tips.config.js".equals(clean)) {
+                || "matchmaking-tips.config.js".equals(clean)
+                || "index.compiled.js".equals(clean)) {
             return "ea_webapp/" + clean;
         }
         return null;

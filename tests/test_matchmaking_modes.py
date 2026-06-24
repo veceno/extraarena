@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest_asyncio
 
 from ai.bot_factory import BotGenerator
-from infrastructure.config import DECK_SIZE
+from infrastructure.config import DECK_SIZE, BOT_STRENGTH_TIERS
 from infrastructure.matchmaking import Matchmaker, QueueEntry
 from infrastructure.match_modes import (
     EXTRA_ARENA_ROTATING_IDS,
@@ -857,3 +857,269 @@ async def test_stale_cancel_timeout_does_not_publish_old_no_bot_match():
     await mm._handle_cancel_timeout(old, game_mode="extra_arena:spellstorm")
 
     assert await mm.get_status(old.match_id) == {"status": "not_found", "match_id": old.match_id}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Playwright fix verifications — matchmaking bot difficulty adjusts with streak.
+# Named scenarios from the bug ticket:
+#   "N consecutive wins in DB → start battle → next bot difficulty is RAISED".
+#   "M consecutive losses in DB → next bot difficulty is LOWERED".
+#   "After streak BREAK (loss following win streak), difficulty is RESET to base".
+#   "PvP players: same logic applied to search window".
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _trophy_band(trophies):
+    """Return the band label for the player's trophy count (for documentation only)."""
+    if trophies < 300:
+        return "low"
+    if trophies >= 5000:
+        return "high"
+    return "mid"
+
+
+def test_streak_adjustment_raises_bot_difficulty_on_win_streak_mid_band():
+    """N wins in mid band (trophies=2000) → bot difficulty raised by N/threshold steps."""
+    # Mid band win_threshold=3; length=3 -> n=1 (raise by 1); length=6 -> n=2.
+    a = Matchmaker._streak_adjustment_for(2000, "win", 3)
+    assert a.active is True and a.direction == "up" and a.n == 1
+    a6 = Matchmaker._streak_adjustment_for(2000, "win", 6)
+    assert a6.active is True and a6.direction == "up" and a6.n == 2
+
+
+def test_streak_adjustment_lowers_bot_difficulty_on_loss_streak_mid_band():
+    """M losses in mid band (trophies=2000) → bot difficulty lowered by M/threshold steps."""
+    # Mid band loss_threshold=5; length=5 -> n=1 (lower by 1); length=10 -> n=2.
+    a = Matchmaker._streak_adjustment_for(2000, "loss", 5)
+    assert a.active is True and a.direction == "down" and a.n == 1
+    a10 = Matchmaker._streak_adjustment_for(2000, "loss", 10)
+    assert a10.active is True and a10.direction == "down" and a10.n == 2
+
+
+def test_streak_adjustment_inactive_below_threshold():
+    """Below threshold, the streak does NOT shift difficulty."""
+    # Mid band: length=2 < 3 (win) and length=4 < 5 (loss) -> inactive.
+    assert Matchmaker._streak_adjustment_for(2000, "win", 2).active is False
+    assert Matchmaker._streak_adjustment_for(2000, "loss", 4).active is False
+    # Also, length must be an EXACT multiple of the threshold (3, 6, 9...).
+    assert Matchmaker._streak_adjustment_for(2000, "win", 5).active is False  # 5 % 3 != 0
+
+
+def test_streak_adjustment_break_resets_to_inactive():
+    """When a streak is BROKEN (last result is a single loss), the new streak is
+    kind=loss length=1; in mid band length=1 < loss_threshold=5 → inactive.
+
+    This is the named scenario:
+    'N-1 wins in DB → loss → expected streak broken → new battle, win →
+    expect difficulty NOT raised because streak was reset'.
+    """
+    broken = Matchmaker._streak_adjustment_for(2000, "loss", 1)
+    assert broken.active is False, (
+        f"After a streak break (single loss), adjustment must be inactive; got {broken}"
+    )
+
+
+def test_streak_shift_produces_correct_difficulty_key_mid_band_win_3():
+    """Player @ 2000 trophies with win streak length=3 → bot difficulty raises by 1 tier.
+
+    Base tier for 2000 trophies = tier_medium_plus_2000. Shifted up 1 = tier_hard_minus_3000.
+    """
+    from ai.bot_factory import BotGenerator
+    base = BotGenerator._calc_difficulty(2000)
+    shifted = BotGenerator._shift_difficulty_by_streak(base, "up", 1)
+    assert base == "tier_medium_plus_2000"
+    assert shifted == "tier_hard_minus_3000"
+
+
+def test_streak_shift_produces_correct_difficulty_key_mid_band_loss_5():
+    """Player @ 2000 trophies with loss streak length=5 → bot difficulty lowers by 1 tier.
+
+    Base tier for 2000 trophies = tier_medium_plus_2000. Shifted down 1 = tier_medium_1200.
+    """
+    from ai.bot_factory import BotGenerator
+    base = BotGenerator._calc_difficulty(2000)
+    shifted = BotGenerator._shift_difficulty_by_streak(base, "down", 1)
+    assert base == "tier_medium_plus_2000"
+    assert shifted == "tier_medium_1200"
+
+
+def test_streak_shift_low_band_loss_2():
+    """Player @ 100 trophies with loss streak length=2 (low band: threshold=2) → bot difficulty lowers by 1."""
+    from ai.bot_factory import BotGenerator
+    base = BotGenerator._calc_difficulty(100)
+    shifted = BotGenerator._shift_difficulty_by_streak(base, "down", 1)
+    assert base == "tier_easy_0100"
+    assert shifted == "tier_lite_0000"
+
+
+def test_streak_shift_high_band_win_3_raises():
+    """Player @ 5500 trophies with win streak length=3 (high band: threshold=3) → bot difficulty raises by 1."""
+    from ai.bot_factory import BotGenerator
+    base = BotGenerator._calc_difficulty(5500)
+    shifted = BotGenerator._shift_difficulty_by_streak(base, "up", 1)
+    # Base tier for 5500 trophies is hard_plus_6000 (or the tier just above 5000 boundary).
+    # Verify by checking the key exists and the shifted key is exactly 1 step up.
+    tier_keys = [str(t["key"]) for t in BOT_STRENGTH_TIERS]
+    base_idx = tier_keys.index(base)
+    assert shifted == tier_keys[base_idx + 1]
+
+
+def test_streak_shift_clamps_at_top_and_bottom():
+    """Shift is clamped at the topmost/bottommost tier."""
+    from ai.bot_factory import BotGenerator
+    top = BOT_STRENGTH_TIERS[-1]["key"]
+    bottom = BOT_STRENGTH_TIERS[0]["key"]
+    assert BotGenerator._shift_difficulty_by_streak(top, "up", 10) == top
+    assert BotGenerator._shift_difficulty_by_streak(bottom, "down", 10) == bottom
+
+
+def test_find_match_uses_streak_adjusted_difficulty_on_win_streak():
+    """End-to-end: streakDB returns (win, 3), _create_bot_match → factory receives shifted difficulty.
+
+    Player at 2000 trophies (mid band, win_threshold=3, length=3 → n=1, direction=up):
+    base difficulty = tier_medium_plus_2000 → shifted up 1 = tier_hard_minus_3000.
+    """
+    factory = DifficultyCaptureBotFactory()
+    mm = Matchmaker(
+        db=StreakDB("win", 3),
+        bot_factory=factory,
+        battle_engine=None,
+        soft_start_bot_delay_range=(0.0, 0.0),
+    )
+    adjustment = Matchmaker._streak_adjustment_for(2000, "win", 3)
+    loop = asyncio.new_event_loop()
+    try:
+        payload = loop.run_until_complete(
+            mm._create_bot_match(
+                user_id=1, trophies=2000, user_max_level=4,
+                selected_deck_id=1, game_mode="classic",
+                streak_adjustment=adjustment,
+            )
+        )
+    finally:
+        loop.close()
+    assert payload["status"] == "found"
+    assert factory.calls[0]["difficulty"] == "tier_hard_minus_3000", (
+        f"Expected factory to receive tier_hard_minus_3000 after win streak of 3; "
+        f"got {factory.calls[0]['difficulty']}"
+    )
+
+
+def test_find_match_uses_streak_adjusted_difficulty_on_loss_streak():
+    """End-to-end: streakDB returns (loss, 5), _create_bot_match → factory receives shifted (down) difficulty.
+
+    Player at 2000 trophies (mid band, loss_threshold=5, length=5 → n=1, direction=down):
+    base difficulty = tier_medium_plus_2000 → shifted down 1 = tier_medium_1200.
+    """
+    factory = DifficultyCaptureBotFactory()
+    mm = Matchmaker(
+        db=StreakDB("loss", 5),
+        bot_factory=factory,
+        battle_engine=None,
+        soft_start_bot_delay_range=(0.0, 0.0),
+    )
+    adjustment = Matchmaker._streak_adjustment_for(2000, "loss", 5)
+    loop = asyncio.new_event_loop()
+    try:
+        payload = loop.run_until_complete(
+            mm._create_bot_match(
+                user_id=2, trophies=2000, user_max_level=4,
+                selected_deck_id=1, game_mode="classic",
+                streak_adjustment=adjustment,
+            )
+        )
+    finally:
+        loop.close()
+    assert payload["status"] == "found"
+    assert factory.calls[0]["difficulty"] == "tier_medium_1200", (
+        f"Expected factory to receive tier_medium_1200 after loss streak of 5; "
+        f"got {factory.calls[0]['difficulty']}"
+    )
+
+
+def test_find_match_after_streak_break_returns_base_difficulty():
+    """Streak-break reset: after a 3-win streak is broken by 1 loss, get_current_result_streak returns (loss, 1).
+    length=1 < loss_threshold=5 (mid band) → adjustment inactive → factory gets base difficulty.
+    """
+    factory = DifficultyCaptureBotFactory()
+    mm = Matchmaker(
+        db=StreakDB("loss", 1),
+        bot_factory=factory,
+        battle_engine=None,
+        soft_start_bot_delay_range=(0.0, 0.0),
+    )
+    adjustment = Matchmaker._streak_adjustment_for(2000, "loss", 1)
+    assert adjustment.active is False, (
+        f"After streak break (single loss), adjustment must be inactive; got {adjustment}"
+    )
+    loop = asyncio.new_event_loop()
+    try:
+        payload = loop.run_until_complete(
+            mm._create_bot_match(
+                user_id=3, trophies=2000, user_max_level=4,
+                selected_deck_id=1, game_mode="classic",
+                streak_adjustment=adjustment,
+            )
+        )
+    finally:
+        loop.close()
+    assert payload["status"] == "found"
+    # Streak is broken — adjustment inactive → factory gets difficulty=None
+    # (the factory/base bot generator then computes the base tier from trophies=2000,
+    # which would be tier_medium_plus_2000 if it weren't already overridden).
+    # The invariant is: NO explicit override is passed when streak adjustment is inactive.
+    assert factory.calls[0]["difficulty"] is None, (
+        f"After streak break, factory must NOT receive an explicit difficulty override; "
+        f"got {factory.calls[0]['difficulty']}"
+    )
+    assert factory.calls[0]["difficulty_override"] is None, (
+        f"After streak break, difficulty_override must be None; "
+        f"got {factory.calls[0]['difficulty_override']}"
+    )
+
+
+def test_find_match_sequence_break_then_rebuild_resets_correctly():
+    """Sequence: streak=win*3 → streak=loss*1 (broken) → streak=win*1 (rebuild) → streak=win*3.
+    Verifies the entire reset cycle: raised → broken (back to base) → raised again only after threshold.
+
+    When adjustment is inactive (streak<threshold OR broken), the factory receives
+    difficulty=None (no override) — the base tier is then computed from trophies
+    inside the factory/base generator.
+    When adjustment is active, the factory receives the explicit shifted tier key.
+    """
+    factory = DifficultyCaptureBotFactory()
+    sequence_steps = [
+        ("win", 3),   # 1st call: streak of 3 → active up n=1 → tier_hard_minus_3000
+        ("loss", 1),  # 2nd call: streak of 1 (broken) → inactive → difficulty=None
+        ("win", 1),   # 3rd call: streak of 1 (just rebuilt) → inactive → difficulty=None
+        ("win", 3),   # 4th call: streak of 3 again → active up n=1 → tier_hard_minus_3000
+    ]
+    expected_difficulties = [
+        "tier_hard_minus_3000",
+        None,        # inactive after break → no override passed to factory
+        None,        # inactive while rebuilding (< threshold)
+        "tier_hard_minus_3000",
+    ]
+    mm = Matchmaker(
+        db=FakeDB(),
+        bot_factory=factory,
+        battle_engine=None,
+        soft_start_bot_delay_range=(0.0, 0.0),
+    )
+    loop = asyncio.new_event_loop()
+    try:
+        for i, ((kind, length), expected) in enumerate(zip(sequence_steps, expected_difficulties)):
+            adjustment = Matchmaker._streak_adjustment_for(2000, kind, length)
+            payload = loop.run_until_complete(
+                mm._create_bot_match(
+                    user_id=10 + i, trophies=2000, user_max_level=4,
+                    selected_deck_id=1, game_mode="classic",
+                    streak_adjustment=adjustment,
+                )
+            )
+            assert payload["status"] == "found", f"call {i}: not found"
+            actual = factory.calls[i]["difficulty"]
+            assert actual == expected, (
+                f"call {i} (streak={kind}*{length}): expected difficulty={expected}, got {actual}"
+            )
+    finally:
+        loop.close()

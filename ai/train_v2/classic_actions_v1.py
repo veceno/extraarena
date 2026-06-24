@@ -47,7 +47,7 @@ MAX_CANDIDATE_ACTIONS = 601
 ACTION_FEATURE_DIM = 171
 
 _NUM_HAND = 4
-_NUM_BOARD = 7
+_NUM_BOARD = 5
 _NUM_PLAY_POS = 8
 _NUM_PLAY_TARGETS = 17
 _NUM_ATTACK_TARGETS = 8
@@ -376,6 +376,34 @@ def _make_preview_env(state: GameState) -> ArenaEnvironment:
     except Exception:
         pass
     env.sudden_death_turns_by_player = {}
+    # Preview-env обходит __init__, поэтому устанавливаем _rng вручную.
+    # Используется core.engine._handle_end_turn (и эффектами в core.effects)
+    # при взвешенном No-FIFO доборе карт. Без инициализации _rng любой
+    # step, который заканчивает ход, падает с AttributeError и затирает
+    # легальное действие end_turn в action_mask.
+    #
+    # Детерминизм preview-env критичен для _verify_mask: два evaluate_matchup
+    # вызова с одинаковыми seeds должны давать идентичный результат. Если
+    # родительский state.arena_engine уже есть (нормальный flow через
+    # ClassicRLEnv) — клонируем state его _rng через getstate/setstate
+    # (deepcopy Random через pickle дорог, а getstate — O(1)).
+    parent_engine = getattr(state, "arena_engine", None)
+    if parent_engine is not None and hasattr(parent_engine, "_rng"):
+        cloned = rand_mod.Random()
+        cloned.setstate(parent_engine._rng.getstate())
+        env._rng = cloned
+    else:
+        # Cold path: derive deterministic seed from state fingerprint so
+        # the same state always produces the same preview RNG.
+        seed_val = (
+            state.turn_number * 1_000_003
+            ^ state.current_turn_owner_id * 31
+            ^ len(state.p1.hand) * 7919
+            ^ len(state.p2.hand) * 17
+            ^ len(state.p1.deck) * 113
+            ^ len(state.p2.deck) * 257
+        )
+        env._rng = rand_mod.Random(seed_val & 0xFFFFFFFF)
 
     def _preview_apply_aura_bonuses(self, attacker, player):
         return _compute_effective_attack(attacker, player.board, player.hero)
@@ -589,12 +617,12 @@ def _fill_preview_delta(out, state, action_id):
         out[142] = np.clip((hp_after["my_hero"] - hp_before["my_hero"]) / 20.0, -1.0, 1.0)
         out[143] = np.clip((hp_after["enemy_hero"] - hp_before["enemy_hero"]) / 20.0, -1.0, 1.0)
 
-        for i in range(7):
+        for i in range(5):
             out[144 + i] = np.clip(
                 (hp_after.get(f"my_board_{i}", 0) - hp_before.get(f"my_board_{i}", 0)) / 20.0,
                 -1.0, 1.0,
             )
-        for i in range(7):
+        for i in range(5):
             out[151 + i] = np.clip(
                 (hp_after.get(f"enemy_board_{i}", 0) - hp_before.get(f"enemy_board_{i}", 0)) / 20.0,
                 -1.0, 1.0,

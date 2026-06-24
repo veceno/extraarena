@@ -28,6 +28,7 @@ from ai.train_v2.classic_actions_v1 import (
     ACTION_VERSION,
     MAX_CANDIDATE_ACTIONS,
     ACTION_FEATURE_DIM,
+    _NUM_PLAY_POS,
     build_action_mask,
     encode_action_features,
     decode_action,
@@ -455,21 +456,23 @@ class TestPlayPositionMask:
                     positions.add(pos_idx)
         assert positions == {0, 1, 2, 3}, f"board=3: expected positions {{0,1,2,3}}, got {positions}"
 
-    def test_board_size_6_valid_positions_0_6(self):
-        state = self._make_state_with_warrior_in_hand(6)
+    def test_board_size_4_valid_positions_0_4(self):
+        # Лимит поля = 5, поэтому board=4 всё ещё допускает постановку WARRIOR.
+        state = self._make_state_with_warrior_in_hand(4)
         mask = build_action_mask(state, 1)
         positions = set()
         for aid, v in enumerate(mask):
             if v == 1.0 and aid != 0:
                 flat = aid - 1
                 pos_idx, tcode = divmod(flat, 17)
-                hand_idx, pos_idx = divmod(pos_idx, 8)
+                hand_idx, pos_idx = divmod(pos_idx, _NUM_PLAY_POS)
                 if hand_idx == 0:
                     positions.add(pos_idx)
-        assert positions == {0, 1, 2, 3, 4, 5, 6}, f"board=6: expected positions 0..6, got {positions}"
+        assert positions == {0, 1, 2, 3, 4}, f"board=4: expected positions 0..4, got {positions}"
 
-    def test_board_size_7_no_warrior_play(self):
-        state = self._make_state_with_warrior_in_hand(7)
+    def test_board_size_5_no_warrior_play(self):
+        # Лимит поля = 5 (раньше было 7, изменено в задаче Bug 6).
+        state = self._make_state_with_warrior_in_hand(5)
         mask = build_action_mask(state, 1)
         for aid, v in enumerate(mask):
             if v == 1.0 and aid != 0:
@@ -477,7 +480,7 @@ class TestPlayPositionMask:
                 pos_idx, tcode = divmod(flat, 17)
                 hand_idx, pos_idx = divmod(pos_idx, 8)
                 if hand_idx == 0:
-                    pytest.fail(f"board=7: no warrior play should be masked, but action_id={aid} was 1")
+                    pytest.fail(f"board=5: no warrior play should be masked, but action_id={aid} was 1")
 
     def test_potion_uses_position_0_only(self):
         hero = _make_hero(hp=30)

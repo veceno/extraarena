@@ -12,6 +12,26 @@ CLAN_MAX_OFFICERS = 5
 
 TAG_PATTERN = re.compile(r'^[A-Z0-9]{3,5}$')
 
+# Ссылка на чат сквада (опциональная).
+CLAN_CHAT_LINK_MAX = 200
+CLAN_CHAT_LINK_ALLOWED_DOMAINS = (
+    "t.me",
+    "telegram.me",
+    "telegram.org",
+    "vk.me",
+    "vk.com",
+    "max.ru",
+    "discord.gg",
+    "discord.com",
+    "ok.ru",
+)
+CLAN_CHAT_LINK_URL_RE = re.compile(
+    r"^https://(?:[a-zA-Z0-9-]+\.)*(?:"
+    + "|".join(re.escape(d) for d in CLAN_CHAT_LINK_ALLOWED_DOMAINS)
+    + r")(?:[/:?#][^\s]*)?$",
+    re.IGNORECASE,
+)
+
 SLOT_UPGRADES = {
     1: (500, 5),
     2: (1000, 5),

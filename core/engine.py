@@ -34,6 +34,193 @@ def scale_card_by_level(card: CardInstance, level: int) -> CardInstance:
     return _scale_card_by_level(card, level)
 
 
+# Размер руки в classic-режиме. Раньше был захардкожен в нескольких местах
+# (effect_battlecry_draw_card, _handle_end_turn, логике overdraw). Сейчас
+# оставляем константой — менять на параметр ClassicParams имеет смысл только
+# если появятся альтернативные размеры руки (например, 5-card arena).
+HAND_CAP = 4
+
+# Константы для No-FIFO взвешенного добора. Заменяет прежнее
+# `deck.pop(0)` поведение: при выборе карты учитывается, как долго
+# карта «застревала» в колоде (STUCK_BONUS) и обеспечен ли баланс
+# по стоимости маны относительно текущей руки (COST_BIAS).
+STUCK_BONUS = 0.5          # бонус к весу за каждый пропуск добора
+COST_BIAS = 0.3            # бонус к весу при нехватке cost-бакетa в руке
+CHEAP_COST_MAX = 2         # mana_cost <= CHEAP_COST_MAX -> cheap bucket
+EXPENSIVE_COST_MIN = 4     # mana_cost >= EXPENSIVE_COST_MIN -> expensive bucket
+
+
+def _compute_draw_weights(player: PlayerState) -> List[float]:
+    """Рассчитать веса карт в колоде для No-FIFO взвешенного добора.
+
+    Для каждой карты в deck возвращает базовый вес 1.0 плюс бонусы:
+      * STUCK_BONUS * c.skip_count — карты, которые долго не выпадали,
+        получают больший вес (анти-застревание).
+      * COST_BIAS — если в руке не хватает карт соответствующего
+        cost-бакетa (cheap / expensive), этот бакет получает бонус.
+
+    Args:
+        player: PlayerState, для которого считаются веса.
+
+    Returns:
+        Список float-весов той же длины, что и player.deck.
+    """
+    cheap_in_hand = sum(1 for h in player.hand if h.mana_cost <= CHEAP_COST_MAX)
+    expensive_in_hand = sum(1 for h in player.hand if h.mana_cost >= EXPENSIVE_COST_MIN)
+
+    weights: List[float] = []
+    for c in player.deck:
+        base = 1.0
+        stuck = c.skip_count * STUCK_BONUS
+        if c.mana_cost <= CHEAP_COST_MAX:
+            cost_bias = max(0, 1 - cheap_in_hand) * COST_BIAS
+        elif c.mana_cost >= EXPENSIVE_COST_MIN:
+            cost_bias = max(0, 1 - expensive_in_hand) * COST_BIAS
+        else:
+            cost_bias = 0.0
+        weights.append(base + stuck + cost_bias)
+    return weights
+
+
+def _weighted_choice_idx(weights: List[float], rng: random.Random) -> int:
+    """Выбрать индекс по взвешенному распределению.
+
+    Args:
+        weights: список положительных весов.
+        rng: генератор случайных чисел (используется rng.random()).
+
+    Returns:
+        Индекс выбранного элемента. Если total <= 0 — возвращает 0.
+        Если cumulative не превысил target до конца — возвращает
+        len(weights) - 1.
+    """
+    total = sum(weights)
+    if total <= 0:
+        return 0
+    target = rng.random() * total
+    cumulative = 0.0
+    for i, w in enumerate(weights):
+        cumulative += w
+        if cumulative > target:
+            return i
+    return len(weights) - 1
+
+
+def draw_one_from_deck(
+    player: PlayerState,
+    *,
+    overdraw_to_discard: bool,
+    source: str,
+    logger_obj: logging.Logger | None = None,
+    rng: random.Random | None = None,
+) -> bool:
+    """Единая логика добора карты с учётом лимита руки и reshuffle.
+
+    Используется в двух местах: end-of-turn (core.engine._handle_end_turn)
+    и battlecry_draw_card (core.effects). До этой централизации эффект
+    battlecry_draw_card просто делал `deck.pop(0) + hand.append` без
+    reshuffle и без разбора overdraw — что при пустой колоде приводило
+    к тихому провалу (C2: inconsistent overdraw handling) и не
+    соответствовало поведению end-of-turn (M2: divergent code paths).
+
+    Возвращает:
+        True  — карта была успешно добавлена в руку (или, при
+                overdraw_to_discard=True и заполненной руке, перемещена
+                в сброс).
+        False — карта НЕ добавлена (fatigue, или рука полна и
+                overdraw_to_discard=False — top deck card остаётся в deck).
+
+    Args:
+        player: PlayerState, для которого выполняется добор.
+        overdraw_to_discard: см. ClassicParams.overdraw_to_discard —
+            при заполненной руке карта уходит в graveyard вместо того
+            чтобы остаться в deck.
+        source: метка для логирования (e.g. "end_turn", "battlecry_draw_card").
+        logger_obj: опциональный логгер; если None — используется module logger.
+        rng: опциональный генератор случайных чисел; если None — используется
+            модульный random (для обратной совместимости со старыми вызовами).
+    """
+    log = logger_obj or logger
+    rng = rng or random
+
+    # Шаг 1: если колода пуста — пробуем reshuffle из graveyard.
+    if not player.deck:
+        if player.graveyard:
+            log.info(
+                "[RESHUFFLE] source=%s user_id=%s Колода закончилась! Сброс замешан обратно. (%d карт)",
+                source,
+                player.user_id,
+                len(player.graveyard),
+            )
+            for card in player.graveyard:
+                card.reset_to_base_state()
+
+            # Defensive copy: перемешиваем копию, чтобы исходный порядок
+            # в graveyard остался предсказуемым до момента clear().
+            graveyard_cards = list(player.graveyard)
+            rng.shuffle(graveyard_cards)
+            player.deck = graveyard_cards
+            player.graveyard.clear()
+        else:
+            log.info(
+                "[FATIGUE] source=%s user_id=%s Не может взять карту — колода и сброс пусты",
+                source,
+                player.user_id,
+            )
+            return False
+
+    # Шаг 2: проверяем лимит руки. Логика расходится по overdraw_to_discard.
+    # Перед этим инкрементируем skip_count для всех карт в колоде — если
+    # рука полна и добор невозможен, они должны «состариться» в колоде.
+    for c in player.deck:
+        c.skip_count += 1
+
+    if len(player.hand) >= HAND_CAP:
+        if overdraw_to_discard:
+            # Взвешенный выбор карты для сброса — раньше всегда уходила top deck.
+            weights = _compute_draw_weights(player)
+            choice_idx = _weighted_choice_idx(weights, rng)
+            overdrawn_card = player.deck.pop(choice_idx)
+            # Карта, ушедшая в graveyard, тоже «покинула» колоду — её
+            # skip_count сбрасывается, чтобы при следующем reshuffle она
+            # стартовала с чистого состояния.
+            overdrawn_card.skip_count = 0
+            # После изъятия карты из колоды нужно сбросить skip_count
+            # у оставшихся, чтобы при следующем доборе не было двойного
+            # учёта «пропусков» этой итерации.
+            for c in player.deck:
+                c.skip_count = max(0, c.skip_count - 1)
+            player.graveyard.append(overdrawn_card)
+            log.info(
+                "[OVERDRAW_DISCARD] source=%s user_id=%s Hand limit reached, card %s moved to graveyard",
+                source,
+                player.user_id,
+                overdrawn_card.name,
+            )
+            return True
+        log.info(
+            "[OVERDRAW_SKIP] source=%s user_id=%s Hand limit reached, top deck card remains in deck: %s",
+            source,
+            player.user_id,
+            player.deck[0].name if player.deck else "none",
+        )
+        return False
+
+    # Шаг 3: чистый добор (No-FIFO weighted).
+    weights = _compute_draw_weights(player)
+    choice_idx = _weighted_choice_idx(weights, rng)
+    drawn_card = player.deck.pop(choice_idx)
+    # Только что вытянутая карта покидает колоду — её skip_count должен
+    # обнулиться: «пропуски» были накоплены за время ожидания в deck,
+    # и при попадании в hand они уже не нужны для anti-stuck логики.
+    drawn_card.skip_count = 0
+    # Компенсируем инкремент skip_count для оставшихся карт в колоде.
+    for c in player.deck:
+        c.skip_count = max(0, c.skip_count - 1)
+    player.hand.append(drawn_card)
+    return True
+
+
 class ArenaEnvironment:
     """
     Безголовый игровой движок для пошаговых боев.
@@ -46,20 +233,36 @@ class ArenaEnvironment:
         mana_per_turn: int = 1,
         classic_params: ClassicParams | None = None,
         apply_start_effects: bool = True,
+        rng: random.Random | None = None,
     ) -> None:
         """
         Инициализировать среду с начальным состоянием.
-        
+
         Args:
             state: Начальное игровое состояние
             mana_per_turn: Прирост маны за ход (default 1, blitz=2)
             classic_params: параметры режима (переопределяет mana_per_turn и новые флаги)
+            rng: опциональный RNG для воспроизводимых симуляций; если None —
+                создаётся новый random.Random(). Используется при взвешенном
+                доборе карт (No-FIFO draw).
         """
         self.state = state
         if classic_params is None:
             classic_params = ClassicParams(mana_per_turn=mana_per_turn)
         self.classic_params = classic_params
         self.mana_per_turn = self.classic_params.mana_per_turn
+        # Инстанс-RNG для воспроизводимого No-FIFO добора. Сохраняем отдельно
+        # от модульного random, чтобы симуляции/тесты могли задать seed.
+        self._rng = rng or random.Random()
+        # Прокидываем параметры режима и ссылку на движок в GameState,
+        # чтобы эффекты в core.effects могли учитывать правила арены
+        # (overdraw_to_discard и т.п.) без жёсткой связки с классом
+        # ArenaEnvironment. Оба атрибута опциональны; None означает
+        # «classic defaults» — battlecry draw при пустой колоде сделает
+        # reshuffle (C2 fix), но при заполненной руке оставит карту в
+        # колоде, как и в default classic-режиме.
+        self.state.classic_params = classic_params
+        self.state.arena_engine = self
         self._ensure_base_snapshots()
         # Применяем стартовые эффекты героев (например, start_mana)
         if apply_start_effects:
@@ -185,13 +388,15 @@ class ArenaEnvironment:
         # Запись в историю
         self.state.history.append(action.to_dict())
         
-        # Обновляем action_history (последние 100 действий для расширенного лога)
+        # Обновляем action_history. GameState.action_history — это
+        # collections.deque(maxlen=ACTION_HISTORY_MAXLEN), он сам
+        # вытесняет старейшие записи в O(1), поэтому ручной `list[-100:]`
+        # realloc тут больше не нужен (был O(n) на каждом step).
         if action_description:
             self.state.action_history.append(action_description)
             # Если это был EndTurn, добавляем разделитель
             if isinstance(action, EndTurnAction):
                 self.state.action_history.append(turn_separator)
-            self.state.action_history = self.state.action_history[-100:]
 
         return True, ""
 
@@ -207,7 +412,7 @@ class ArenaEnvironment:
         card.ensure_base_snapshot()
         consumes_ally = "consume_ally" in card.mechanics
 
-        if card.card_type == CardType.WARRIOR and len(player.board) >= 7 and not consumes_ally:
+        if card.card_type == CardType.WARRIOR and len(player.board) >= 5 and not consumes_ally:
             return False, "board_full"
 
         # Проверка маны (с учётом spells_free для зелий)
@@ -246,11 +451,17 @@ class ArenaEnvironment:
                 card.attack += consumed_unit.attack
                 card.hp += consumed_unit.hp
                 card.max_hp += consumed_unit.max_hp
-                
-                # Удаляем поглощенного юнита и отправляем в сброс
+
+                # Удаляем поглощенного юнита и отправляем в сброс.
+                # ВАЖНО: deathrattle съеденного юнита НЕ срабатывает —
+                # это by design (consume_ally = «пожирает», не «убивает»).
+                # Если в будущем нужно будет триггерить deathrattle
+                # при поглощении (как Hearthstone Sylvanas/Evil Geenie),
+                # сюда надо добавить явный вызов _execute_deathrattle
+                # ДО удаления с доски (иначе card references ломаются).
                 player.board.remove(consumed_unit)
                 player.graveyard.append(consumed_unit)
-                
+
                 logger.debug(
                     "[CORE] %s поглотил %s: теперь %d/%d (отправлен в сброс)",
                     card.name,
@@ -518,50 +729,16 @@ class ArenaEnvironment:
 
         self._apply_regen(opponent.hero)
 
-        # ЧЕСТНЫЙ ЦИКЛ КОЛОДЫ: Противник тянет карту (лимит руки: 4 карты)
-        # Если колода пуста, перемешиваем сброс обратно
-        if not opponent.deck:
-            if opponent.graveyard:
-                logger.info(
-                    "[RESHUFFLE] Колода закончилась! Сброс замешан обратно. (%s: %d карт)",
-                    opponent.user_id,
-                    len(opponent.graveyard)
-                )
-                # Сбрасываем состояние карт до базового
-                for card in opponent.graveyard:
-                    card.reset_to_base_state()
-                
-                # Перемешиваем и возвращаем в колоду
-                random.shuffle(opponent.graveyard)
-                opponent.deck = opponent.graveyard[:]
-                opponent.graveyard.clear()
-            else:
-                # Fatigue: и колода, и сброс пусты - карта не берется
-                logger.info(
-                    "[FATIGUE] %s не может взять карту - колода и сброс пусты",
-                    opponent.user_id
-                )
-                return
-        
-        # Берем карту из колоды (честный pop)
-        if len(opponent.hand) < 4:
-            drawn_card = opponent.deck.pop(0)
-            opponent.hand.append(drawn_card)
-        else:
-            if self.classic_params.overdraw_to_discard:
-                overdrawn_card = opponent.deck.pop(0)
-                opponent.graveyard.append(overdrawn_card)
-                logger.info(
-                    "[OVERDRAW_DISCARD] Hand limit reached for %s, card %s moved to graveyard",
-                    opponent.user_id,
-                    overdrawn_card.name,
-                )
-                return
-            logger.info(
-                "[OVERDRAW_SKIP] Hand limit reached for %s, top deck card remains in deck: %s",
-                opponent.user_id,
-                opponent.deck[0].name if opponent.deck else "none",
-            )
+        # ЧЕСТНЫЙ ЦИКЛ КОЛОДЫ: противник тянет 1 карту. Логика
+        # reshuffle + hand cap + overdraw теперь живёт в
+        # draw_one_from_deck — она же используется в
+        # effect_battlecry_draw_card (C2+M2 fix: единый путь добора).
+        draw_one_from_deck(
+            opponent,
+            overdraw_to_discard=self.classic_params.overdraw_to_discard,
+            source="end_turn",
+            rng=self._rng,
+        )
 
     def _apply_start_turn_mode_effects(self) -> None:
         """Apply mode effects that trigger at the start of the active player's turn."""
@@ -597,7 +774,6 @@ class ArenaEnvironment:
         self.state.action_history.append(
             ("system", f"Внезапная смерть: {player.hero.name} теряет {damage} здоровья")
         )
-        self.state.action_history = self.state.action_history[-100:]
         self._check_game_over()
 
     def _cleanup_dead_units(self, player: PlayerState) -> None:
@@ -635,7 +811,6 @@ class ArenaEnvironment:
 
                         # Добавляем в лог
                         self.state.action_history.append((log_type, f"{unit.name} взрывается после смерти и наносит {damage} урона всем врагам!"))
-                        self.state.action_history = self.state.action_history[-100:]
                     break  # Обрабатываем только первый deathrattle
             
             # Отправляем мертвое существо в сброс
@@ -940,7 +1115,7 @@ class ArenaEnvironment:
             # Для существ
             if card.card_type == CardType.WARRIOR:
                 # Проверка места на доске
-                if len(player.board) >= 7 and "consume_ally" not in card.mechanics:
+                if len(player.board) >= 5 and "consume_ally" not in card.mechanics:
                     continue
 
                 # Проверка choose_shield_damage: может быть с целью ИЛИ без

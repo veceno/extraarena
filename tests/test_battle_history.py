@@ -647,3 +647,103 @@ class TestBattleHistoryStatsWinStreak:
         assert stats["current_streak_count"] == 2
         assert stats["current_win_streak"] == 2
         assert stats["max_win_streak"] == 2
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Playwright fix verifications — win-streak break on loss.
+# These tests encode the product team's named scenario:
+#   "2 wins in DB → start battle → lose → streak must be broken (current_win_streak=0)".
+# They cover both DB-side (`get_current_result_streak`, `get_battle_history_stats`)
+# and web-side (`_build_battle_history_stats`) code paths.
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestPlaywrightFixWinStreakBreaksOnLoss:
+    """Named scenarios from the bug ticket — must all PASS, not just be in the file."""
+
+    def test_two_wins_then_loss_db_get_current_result_streak_breaks(self):
+        """Scenario A (DB layer): User has 2 wins in DB → starts battle → loses → streak broken."""
+        async def mock_fetch(query, *args):
+            if "FROM battle_results" in query:
+                return []
+            if "FROM battle_summary" in query:
+                return [
+                    _row(id=3, match_id="new-loss", p1_user_id=USER, p2_user_id=OPP,
+                         winner_user_id=OPP, loser_user_id=USER,
+                         game_mode="classic", match_type="pvp",
+                         created_at=NOW + timedelta(seconds=10)),
+                    _row(id=2, match_id="w2", p1_user_id=USER, p2_user_id=OPP,
+                         winner_user_id=USER, loser_user_id=OPP,
+                         game_mode="classic", match_type="pvp",
+                         created_at=NOW + timedelta(seconds=5)),
+                    _row(id=1, match_id="w1", p1_user_id=USER, p2_user_id=OPP,
+                         winner_user_id=USER, loser_user_id=OPP,
+                         game_mode="classic", match_type="pvp",
+                         created_at=NOW),
+                ]
+            return []
+        db = _fake_db(fetch_returns=mock_fetch)
+        streak = _run(db.get_current_result_streak(USER))
+        assert streak == {"kind": "loss", "length": 1}, (
+            f"After 2 wins + 1 loss, streak must be kind=loss, length=1; got {streak}"
+        )
+
+    def test_two_wins_then_loss_db_stats_current_win_streak_zero(self):
+        """Scenario A (DB stats): User has 2 wins in DB → loses → current_win_streak=0."""
+        async def mock_fetch(query, *args):
+            return [
+                _stats_row(match_id="new-loss", winner_id=OPP, created_at=NOW + timedelta(seconds=10)),
+                _stats_row(match_id="w2", winner_id=USER, created_at=NOW + timedelta(seconds=5)),
+                _stats_row(match_id="w1", winner_id=USER, created_at=NOW),
+            ]
+        db = _fake_db(fetch_returns=mock_fetch)
+        stats = _run(db.get_battle_history_stats(USER))
+        assert stats["current_streak_result"] == "lose"
+        assert stats["current_streak_count"] == 1
+        assert stats["current_win_streak"] == 0, (
+            f"current_win_streak must be 0 after a loss; got {stats['current_win_streak']}"
+        )
+        # max_win_streak preserves the historical 2-win run
+        assert stats["max_win_streak"] == 2
+
+    def test_two_wins_then_loss_web_helper_current_win_streak_zero(self):
+        """Scenario A (web helper): _build_battle_history_stats also breaks on loss."""
+        from web import server as web_server
+        def _b(result):
+            return {"mode": "classic", "result": result, "trophies_change": 0,
+                    "turns_count": 5, "duration_seconds": 60}
+        stats = web_server._build_battle_history_stats([
+            _b("lose"),  # newest: the loss
+            _b("win"),
+            _b("win"),
+        ])
+        assert stats["current_streak_result"] == "lose"
+        assert stats["current_streak_count"] == 1
+        assert stats["current_win_streak"] == 0, (
+            f"current_win_streak must be 0 after a loss; got {stats['current_win_streak']}"
+        )
+        assert stats["max_win_streak"] == 2
+
+    def test_five_wins_then_loss_breaks_streak(self):
+        """Scenario B: 5 consecutive wins then a single loss → streak must break (length=1, kind=loss)."""
+        async def mock_fetch(query, *args):
+            if "FROM battle_results" in query:
+                return []
+            if "FROM battle_summary" in query:
+                rows = [
+                    _row(id=6, match_id="loss", p1_user_id=USER, p2_user_id=OPP,
+                         winner_user_id=OPP, loser_user_id=USER,
+                         game_mode="classic", match_type="pvp",
+                         created_at=NOW + timedelta(seconds=5)),
+                ]
+                for i in range(1, 6):
+                    rows.append(_row(id=i, match_id=f"w{i}", p1_user_id=USER, p2_user_id=OPP,
+                                     winner_user_id=USER, loser_user_id=OPP,
+                                     game_mode="classic", match_type="pvp",
+                                     created_at=NOW + timedelta(seconds=5 - i)))
+                return rows
+            return []
+        db = _fake_db(fetch_returns=mock_fetch)
+        streak = _run(db.get_current_result_streak(USER))
+        assert streak == {"kind": "loss", "length": 1}, (
+            f"After 5 wins + 1 loss, streak must be kind=loss, length=1; got {streak}"
+        )

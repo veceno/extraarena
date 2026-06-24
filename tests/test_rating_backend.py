@@ -389,3 +389,127 @@ def test_runtime_config_includes_rating_human_vs_human_default_false():
     config = asyncio.run(db.get_runtime_config())
     assert "rating_human_vs_human" in config["feature_availability"]
     assert config["feature_availability"]["rating_human_vs_human"] is False
+
+
+def test_rating_squad_categories_are_wired():
+    from infrastructure.database import RATING_SQUAD_CATEGORIES, RATING_SCOPES
+
+    keys = [c["key"] for c in RATING_SQUAD_CATEGORIES]
+    assert keys == ["squad_cbrp", "squad_score", "squad_items"]
+    titles = {c["key"]: c["title"] for c in RATING_SQUAD_CATEGORIES}
+    assert titles["squad_cbrp"] == "Истинные короли"
+    assert titles["squad_score"] == "Монополисты на победы"
+    assert titles["squad_items"] == "Золотые сокрома"
+    assert "squads" in RATING_SCOPES
+    assert "players" in RATING_SCOPES
+
+
+def test_squad_rating_payload_uses_period_window_in_each_query():
+    db = Database(DatabaseSettings("localhost", 5432, "user", "pass", "db"))
+
+    class _RecordingSquadConn:
+        def __init__(self):
+            self.calls = []
+
+        async def fetch(self, query, *args):
+            self.calls.append((query, args))
+            return []
+
+    import asyncio
+
+    async def _feat(_feature_key: str) -> bool:
+        return True
+
+    db.is_feature_enabled = _feat
+    conn = _RecordingSquadConn()
+    generated_at = datetime(2026, 6, 15, 12, 30, tzinfo=timezone.utc)
+
+    asyncio.run(db._build_squad_rating_payload(period="preview", generated_at=generated_at, conn=conn))
+
+    assert len(conn.calls) == 3
+    for query, args in conn.calls:
+        assert generated_at in args
+        assert any(getattr(arg, "tzinfo", None) is not None and arg < generated_at for arg in args)
+    # Каждая SQL-ветка должна фильтровать по дате.
+    joined = "\n".join(q for q, _ in conn.calls)
+    assert "squad_cbrp_events" in joined and "e.created_at >= $" in joined
+    assert "battle_summary" in joined and "bs.created_at >= $" in joined
+    assert "user_cosmetics" in joined and "uco.acquired_at >= $" in joined
+
+
+def test_community_rating_supports_squad_scope_dispatch():
+    db = _make_rating_db()
+    rows = [
+        {
+            "period": "daily",
+            "status": "ready",
+            "payload": {"categories": [
+                {"key": "squad_cbrp", "title": "CBRP", "subtitle": "", "metric_label": "CBRP", "entries": [], "status": "empty"},
+            ]},
+            "generated_at": datetime(2026, 6, 23, tzinfo=timezone.utc),
+            "next_refresh_at": datetime(2026, 6, 23, 1, tzinfo=timezone.utc),
+            "source_count": 0,
+            "error": None,
+        },
+        {
+            "period": "preview",
+            "status": "ready",
+            "payload": {"categories": []},
+            "generated_at": datetime(2026, 6, 23, tzinfo=timezone.utc),
+            "next_refresh_at": datetime(2026, 6, 23, 1, tzinfo=timezone.utc),
+            "source_count": 0,
+            "error": None,
+        },
+    ]
+
+    async def fake_fetch(query, *args):
+        return rows
+
+    db.fetch = fake_fetch
+    import asyncio
+
+    result = asyncio.run(db.get_community_rating(scope="squads"))
+    assert result["scope"] == "squads"
+    assert result["success"] is True
+    assert result["periods"]["daily"]["status"] == "ready"
+    # Категории в squad-scope содержат squad_*-ключи
+    cats = result["periods"]["daily"]["categories"]
+    assert any(c["key"] == "squad_cbrp" for c in cats)
+
+
+def test_refresh_due_rating_snapshots_routes_by_scope():
+    db = Database(DatabaseSettings("localhost", 5432, "user", "pass", "db"))
+    source = Path("infrastructure/database.py").read_text(encoding="utf-8")
+    # Блок refresh_due_rating_snapshots: ранний return убран, есть if/elif по scope.
+    start = source.index("async def refresh_due_rating_snapshots")
+    end = source.index("def _rating_entry_from_row", start)
+    block = source[start:end]
+    assert "if scope not in RATING_SCOPES" in block
+    assert "_build_squad_rating_payload" in block
+    assert "_build_player_rating_payload" in block
+
+
+def test_rating_snapshot_refresh_loop_refreshes_both_scopes():
+    server = Path("web/server.py").read_text(encoding="utf-8")
+    start = server.index("async def _rating_snapshot_refresh_loop")
+    end = server.index("async def start_background_tasks", start)
+    loop_block = server[start:end]
+    assert 'for scope in ("players", "squads")' in loop_block
+    assert "refresh_due_rating_snapshots(scope=scope)" in loop_block
+
+
+def test_rating_empty_period_uses_scope_specific_categories():
+    db = Database(DatabaseSettings("localhost", 5432, "user", "pass", "db"))
+    player_empty = db._rating_empty_period("daily", scope="players", status="pending")
+    squad_empty = db._rating_empty_period("daily", scope="squads", status="pending")
+    player_keys = {c["key"] for c in player_empty["categories"]}
+    squad_keys = {c["key"] for c in squad_empty["categories"]}
+    assert {"trophies", "score", "cbrp", "items"} <= player_keys
+    assert {"squad_cbrp", "squad_score", "squad_items"} <= squad_keys
+    assert player_keys.isdisjoint(squad_keys)
+
+
+def test_rating_player_subtitle_uses_russian_formula():
+    source = Path("infrastructure/database.py").read_text(encoding="utf-8")
+    assert "Счет = победы × процент побед." in source
+    assert "score = wins × winrate." not in source

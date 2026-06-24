@@ -13,9 +13,10 @@ from web import server as web_server
 class SquadInvariantDB:
     _public_squad_upgrade_catalog = staticmethod(Database._public_squad_upgrade_catalog)
 
-    def __init__(self, role: str = "officer", has_boost: bool = False):
+    def __init__(self, role: str = "officer", has_boost: bool = False, chat_link: str | None = None):
         self.role = role
         self.has_boost = has_boost
+        self.chat_link = chat_link
         self.settings_updates = []
         self.upgrade_calls = []
 
@@ -48,6 +49,7 @@ class SquadInvariantDB:
             "type": "open",
             "min_trophies": 0,
             "has_boost": self.has_boost,
+            "chat_link": self.chat_link,
         }
 
     async def update_clan_settings(self, clan_id, **fields):
@@ -532,3 +534,187 @@ def test_community_moderation_has_no_hardcoded_key_and_rate_limit_uses_window():
     assert "pza_" not in config_source
     assert "if not MODERATION_API_KEY" in moderation_source
     assert "NOW() - ($2 || ' minutes')::INTERVAL" in moderation_source
+
+
+# ---------- chat_link ----------
+
+
+ALLOWED_CHAT_LINK_HOSTS = [
+    ("https://t.me/aud_squad", "https://t.me/aud_squad"),
+    ("https://telegram.me/aud_squad", "https://telegram.me/aud_squad"),
+    ("https://telegram.org/aud_squad", "https://telegram.org/aud_squad"),
+    ("https://vk.me/aud_squad", "https://vk.me/aud_squad"),
+    ("https://vk.com/aud_squad", "https://vk.com/aud_squad"),
+    ("https://max.ru/aud_squad", "https://max.ru/aud_squad"),
+    ("https://discord.gg/invite", "https://discord.gg/invite"),
+    ("https://discord.com/channels/1", "https://discord.com/channels/1"),
+    ("https://ok.ru/aud_squad", "https://ok.ru/aud_squad"),
+    ("https://join.t.me/aud_squad", "https://join.t.me/aud_squad"),
+]
+
+
+async def _owner_client(monkeypatch, *, chat_link=None):
+    async def approve_moderation(*args, **kwargs):
+        return {"decision": "approve", "reason": ""}
+    monkeypatch.setattr("infrastructure.moderation.moderate_content", approve_moderation)
+    db = SquadInvariantDB(role="creator", chat_link=chat_link)
+    app = web_server.create_web_app(db, bot_token="bot-token")
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    return db, client
+
+
+async def _close_client(client):
+    await client.close()
+    get_settings.cache_clear()
+
+
+@pytest.mark.parametrize("submitted,normalized", ALLOWED_CHAT_LINK_HOSTS)
+@pytest.mark.asyncio
+async def test_owner_can_set_valid_chat_link(monkeypatch, submitted, normalized):
+    monkeypatch.setenv("ENVIRONMENT", "development")
+    monkeypatch.setenv("WEBAPP_HOST", "127.0.0.1")
+    get_settings.cache_clear()
+    db, client = await _owner_client(monkeypatch)
+    try:
+        response = await client.post(
+            "/api/squads/settings?user_id=42",
+            json={"chat_link": submitted},
+        )
+        body = await response.json()
+
+        assert response.status == 200, body
+        assert body["success"] is True
+        last = db.settings_updates[-1]
+        assert last[1].get("chat_link") == normalized
+    finally:
+        await _close_client(client)
+
+
+@pytest.mark.asyncio
+async def test_owner_can_reset_chat_link_to_none(monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "development")
+    monkeypatch.setenv("WEBAPP_HOST", "127.0.0.1")
+    get_settings.cache_clear()
+    db, client = await _owner_client(monkeypatch, chat_link="https://t.me/old")
+    try:
+        response = await client.post(
+            "/api/squads/settings?user_id=42",
+            json={"chat_link": ""},
+        )
+        body = await response.json()
+
+        assert response.status == 200, body
+        last = db.settings_updates[-1]
+        assert last[1].get("chat_link") is None
+    finally:
+        await _close_client(client)
+
+
+@pytest.mark.parametrize("role", ["officer", "member"])
+@pytest.mark.asyncio
+async def test_non_owner_cannot_change_chat_link(monkeypatch, role):
+    monkeypatch.setenv("ENVIRONMENT", "development")
+    monkeypatch.setenv("WEBAPP_HOST", "127.0.0.1")
+    get_settings.cache_clear()
+    db = SquadInvariantDB(role=role)
+    app = web_server.create_web_app(db, bot_token="bot-token")
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        response = await client.post(
+            "/api/squads/settings?user_id=42",
+            json={"chat_link": "https://t.me/aud_squad"},
+        )
+        body = await response.json()
+
+        assert response.status == 403
+        assert body["error"] == "no_permission"
+        assert db.settings_updates == []
+    finally:
+        await _close_client(client)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://example.com/chat",
+        "https://youtube.com/watch?v=x",
+        "https://google.com",
+        "ftp://t.me/aud_squad",
+        "javascript:alert(1)",
+        "http://t.me/aud_squad",
+    ],
+)
+@pytest.mark.asyncio
+async def test_invalid_chat_link_domain_rejected(monkeypatch, url):
+    monkeypatch.setenv("ENVIRONMENT", "development")
+    monkeypatch.setenv("WEBAPP_HOST", "127.0.0.1")
+    get_settings.cache_clear()
+    db, client = await _owner_client(monkeypatch)
+    try:
+        response = await client.post(
+            "/api/squads/settings?user_id=42",
+            json={"chat_link": url},
+        )
+        body = await response.json()
+
+        assert response.status == 400, body
+        assert body["error"] in ("invalid_chat_link", "chat_link_too_long")
+        assert db.settings_updates == []
+    finally:
+        await _close_client(client)
+
+
+@pytest.mark.asyncio
+async def test_chat_link_without_scheme_auto_prefixes_https(monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "development")
+    monkeypatch.setenv("WEBAPP_HOST", "127.0.0.1")
+    get_settings.cache_clear()
+    db, client = await _owner_client(monkeypatch)
+    try:
+        response = await client.post(
+            "/api/squads/settings?user_id=42",
+            json={"chat_link": "t.me/aud_squad"},
+        )
+        body = await response.json()
+
+        assert response.status == 200, body
+        last = db.settings_updates[-1]
+        assert last[1].get("chat_link") == "https://t.me/aud_squad"
+    finally:
+        await _close_client(client)
+
+
+@pytest.mark.asyncio
+async def test_chat_link_too_long_rejected(monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "development")
+    monkeypatch.setenv("WEBAPP_HOST", "127.0.0.1")
+    get_settings.cache_clear()
+    long_url = "https://t.me/" + ("a" * 250)
+    db, client = await _owner_client(monkeypatch)
+    try:
+        response = await client.post(
+            "/api/squads/settings?user_id=42",
+            json={"chat_link": long_url},
+        )
+        body = await response.json()
+
+        assert response.status == 400, body
+        assert body["error"] == "chat_link_too_long"
+        assert db.settings_updates == []
+    finally:
+        await _close_client(client)
+
+
+def test_squad_chat_link_is_supported_in_settings_handler_and_database():
+    settings_source = Path("web/server.py").read_text(encoding="utf-8")
+    db_source = Path("infrastructure/database.py").read_text(encoding="utf-8")
+    settings_block = settings_source.split("async def squads_settings_handler", 1)[1].split("async def squads_members_action_handler", 1)[0]
+    update_block = db_source.split("async def update_clan_settings", 1)[1].split("async def delete_clan", 1)[0]
+
+    assert "CLAN_CHAT_LINK_URL_RE" in settings_block
+    assert "invalid_chat_link" in settings_block
+    assert "chat_link_too_long" in settings_block
+    assert "c.chat_link" in db_source
+    assert "chat_link" in update_block

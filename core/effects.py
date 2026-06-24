@@ -265,10 +265,39 @@ def effect_battlecry_draw_card(
     opponent: PlayerState,
     target_id: Optional[str] = None,
 ) -> None:
-    """Battlecry: взять карту из колоды."""
-    if owner.deck and len(owner.hand) < 4:  # Лимит руки - 4 карты
-        drawn_card = owner.deck.pop(0)
-        owner.hand.append(drawn_card)
+    """Battlecry: взять карту из колоды.
+
+    Делегирует добор в core.engine.draw_one_from_deck — единая логика
+    reshuffle из graveyard + hand cap + overdraw_to_discard. Раньше тут
+    был минимальный ``if owner.deck and len(owner.hand) < 4: pop(0)``,
+    который:
+      * не делал reshuffle при пустой колоде (C2 — inconsistent overdraw);
+      * не учитывал overdraw_to_discard (M2 — divergent code paths);
+      * не различал «рука полна» и «колода пуста».
+
+    Если режим использует overdraw_to_discard=True, карта уйдёт в
+    graveyard; иначе при заполненной руке добор тихо пропускается (top
+    card остаётся в deck) — поведение совпадает с end-of-turn.
+    """
+    # В classic-режиме battlecry выполняется ПОСЛЕ того как разыгранная
+    # карта уже ушла из руки, поэтому battlecry draw на «только что
+    # заполненной» руке работает естественным образом (см. test
+    # test_battlecry_draw_card_draws_after_leaving_full_hand).
+    overdraw_to_discard = bool(
+        getattr(getattr(state, "classic_params", None), "overdraw_to_discard", False)
+    )
+    # Импортируем локально, чтобы не создавать цикл core.engine ↔
+    # core.effects на уровне модулей.
+    from core.engine import draw_one_from_deck
+
+    arena_engine = getattr(state, "arena_engine", None)
+    rng = getattr(arena_engine, "_rng", None) if arena_engine is not None else None
+    draw_one_from_deck(
+        owner,
+        overdraw_to_discard=overdraw_to_discard,
+        source="battlecry_draw_card",
+        rng=rng,
+    )
 
 
 @register_effect("battlecry_aoe_damage_1")
@@ -679,7 +708,7 @@ def effect_summon_generic(
         return
     
     # Проверка места на доске
-    if len(owner.board) >= 7:
+    if len(owner.board) >= 5:
         logger.debug("[EFFECTS] Не удалось призвать существо - доска полная")
         return
     

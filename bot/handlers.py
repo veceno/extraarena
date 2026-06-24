@@ -188,7 +188,29 @@ def register_basic_handlers(dp: Dispatcher, webapp_url: str, db: Database | None
         """Обработчик предварительной проверки платежа через Telegram Stars."""
         logger = logging.getLogger(__name__)
 
+        # Проверяем, что для invoice_payload в БД есть pending-платеж.
+        # Без этой проверки pre-checkout_query принимал любые payload'ы,
+        # и в handle_successful_payment при отсутствии записи создавалась
+        # "фантомная" запись без item_type, из-за чего process_successful_payment
+        # не выдавал товар. Теперь невалидный payload отклоняем заранее.
         try:
+            payment_id = f"stars_{query.invoice_payload}"
+            pending_record = None
+            if db is not None:
+                try:
+                    pending_record = await db.get_payment_by_id(payment_id)
+                except Exception as lookup_exc:
+                    logger.debug("pre_checkout lookup failed for %s: %s", payment_id, lookup_exc)
+            if not pending_record:
+                logger.warning(
+                    "Pre-checkout: pending payment %s не найден, отклоняем", payment_id
+                )
+                await bot.answer_pre_checkout_query(
+                    pre_checkout_query_id=query.id,
+                    ok=False,
+                    error_message="Платёж не найден. Откройте магазин заново.",
+                )
+                return
             await bot.answer_pre_checkout_query(
                 pre_checkout_query_id=query.id,
                 ok=True,
@@ -243,17 +265,20 @@ def register_basic_handlers(dp: Dispatcher, webapp_url: str, db: Database | None
             )
 
             if not payment_record:
-                logger.warning("Платеж %s не найден в БД, создаем запись", payment_id)
-                await db.create_payment(
-                    user_id=user_id,
-                    payment_id=payment_id,
-                    amount=float(payment.total_amount),
-                    currency=payment.currency,
-                    description=payment.invoice_payload,
-                    metadata={"invoice_payload": invoice_payload},
-                    status="succeeded",
+                # Без pending-записи нельзя корректно определить item_type,
+                # поэтому process_successful_payment не выдаст товар. Вместо
+                # создания "фантомной" записи (которая терялась) сообщаем
+                # пользователю и просим обратиться в поддержку.
+                logger.error(
+                    "Платёж Stars %s получен без pending-записи в БД. "
+                    "user_id=%s amount=%s. Не выдаём товар, требуется ручная обработка.",
+                    payment_id, user_id, payment.total_amount,
                 )
-                payment_record = await db.get_payment_by_id(payment_id)
+                await message.answer(
+                    "❌ Платёж получен, но запись о нём не найдена. "
+                    "Обратитесь в поддержку — мы зачислим товар вручную."
+                )
+                return
 
             await db.update_payment_status(
                 payment_id=payment_id,

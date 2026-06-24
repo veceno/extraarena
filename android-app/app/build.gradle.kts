@@ -43,6 +43,7 @@ val syncExtraArenaShellAssets by tasks.registering(Sync::class) {
         include("styles.css")
         include("safe-area.js")
         include("matchmaking-tips.config.js")
+        include("index.compiled.js")
         exclude(".DS_Store")
     }
     from(repoRoot.resolve("DesignAssets")) {
@@ -60,8 +61,8 @@ android {
         applicationId = "ru.extraarena.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 46
-        versionName = "0.5.0"
+        versionCode = 47
+        versionName = "0.5.1"
 
         buildConfigField("String", "DEFAULT_BASE_URL", "\"https://app.extraarena.space/\"")
         buildConfigField("String", "RU_BASE_URL", "\"https://app.laveqox.ru/\"")

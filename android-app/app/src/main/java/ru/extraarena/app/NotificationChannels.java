@@ -8,6 +8,9 @@ import android.os.Build;
 final class NotificationChannels {
     static final String GAME = "extraarena_game";
     static final String UPDATES = "extraarena_updates";
+    static final String GAME_DAILY = "extraarena_daily_rewards";
+    static final String GAME_MODIFIERS = "extraarena_modifiers";
+    static final String GAME_REMINDERS = "extraarena_reminders";
 
     private NotificationChannels() {
     }
@@ -36,7 +39,47 @@ final class NotificationChannels {
         );
         updates.setDescription("Важные обновления приложения");
 
+        NotificationChannel daily = new NotificationChannel(
+                GAME_DAILY,
+                "Ежедневные награды",
+                NotificationManager.IMPORTANCE_DEFAULT
+        );
+        daily.setDescription("Напоминания о ежедневных наградах");
+
+        NotificationChannel modifiers = new NotificationChannel(
+                GAME_MODIFIERS,
+                "Модификаторы ExtraArena",
+                NotificationManager.IMPORTANCE_LOW
+        );
+        modifiers.setDescription("Уведомления о ротации модификаторов ExtraArena");
+
+        NotificationChannel reminders = new NotificationChannel(
+                GAME_REMINDERS,
+                "Напоминания",
+                NotificationManager.IMPORTANCE_LOW
+        );
+        reminders.setDescription("Общие напоминания");
+
         manager.createNotificationChannel(game);
         manager.createNotificationChannel(updates);
+        manager.createNotificationChannel(daily);
+        manager.createNotificationChannel(modifiers);
+        manager.createNotificationChannel(reminders);
+    }
+
+    static String channelForCategory(String category) {
+        if (category == null) {
+            return GAME;
+        }
+        switch (category) {
+            case "daily_rewards":
+                return GAME_DAILY;
+            case "extra_arena_modifiers":
+                return GAME_MODIFIERS;
+            case "reminders":
+                return GAME_REMINDERS;
+            default:
+                return GAME;
+        }
     }
 }

@@ -4,8 +4,8 @@ State observation encoder (v1) — perspective-relative, no card identity in any
 Feature layout (1456 floats):
 
   [0:32]   Global/resource section
-  [32:1312] 20 card slots × 64 (own hero, enemy hero, own board 0..6,
-             enemy board 0..6, own hand 0..3)
+  [32:1312] 20 card slots × 64 (own hero, enemy hero, own board 0..4,
+             enemy board 0..4, own hand 0..3)
   [1312:1456] 3 zone summaries × 48 (own deck, own graveyard, enemy graveyard)
 
 Enemy hand is NEVER encoded in card slots or zone summaries (only hand_size in globals).
@@ -111,14 +111,14 @@ def _encode_card_slots(out, offset, me, enemy):
     out[offset : offset + CARD_SHAPE_DIM] = encode_card_shape(enemy.hero)
     offset += CARD_SHAPE_DIM
 
-    for i in range(7):
+    for i in range(5):
         card = me.board[i] if i < len(me.board) else None
         out[offset : offset + CARD_SHAPE_DIM] = encode_card_shape(
             card, board_pos=i if card else -1
         )
         offset += CARD_SHAPE_DIM
 
-    for i in range(7):
+    for i in range(5):
         card = enemy.board[i] if i < len(enemy.board) else None
         out[offset : offset + CARD_SHAPE_DIM] = encode_card_shape(
             card, board_pos=i if card else -1

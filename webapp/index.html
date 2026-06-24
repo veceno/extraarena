@@ -469,6 +469,27 @@ html, body {
   --rating-cat-rgb: 74,222,128;
   --rating-cat-rgb2: 245,146,30;
 }
+.rating-category.squad_cbrp,
+.rating-detail-page.squad_cbrp {
+  --rating-cat-primary: #fbbf24;
+  --rating-cat-secondary: #8b5cf6;
+  --rating-cat-rgb: 251,191,36;
+  --rating-cat-rgb2: 139,92,246;
+}
+.rating-category.squad_score,
+.rating-detail-page.squad_score {
+  --rating-cat-primary: #7f1d1d;
+  --rating-cat-secondary: #ef4444;
+  --rating-cat-rgb: 127,29,29;
+  --rating-cat-rgb2: 239,68,68;
+}
+.rating-category.squad_items,
+.rating-detail-page.squad_items {
+  --rating-cat-primary: #14b8a6;
+  --rating-cat-secondary: #38bdf8;
+  --rating-cat-rgb: 20,184,166;
+  --rating-cat-rgb2: 56,189,248;
+}
 .rating-category-head {
   margin-bottom: 12px;
   padding: 10px;
@@ -694,6 +715,23 @@ html, body {
   line-height: 1.1;
   letter-spacing: 0.05em;
   text-transform: uppercase;
+}
+.rating-boost-tag {
+  display: inline-block;
+  margin-top: 4px;
+  padding: 2px 6px;
+  border-radius: 6px;
+  background: linear-gradient(135deg, #fbbf24, #f472b6);
+  color: #140b1f;
+  font-family: 'Exo 2', sans-serif;
+  font-size: 9px;
+  font-weight: 1000;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  box-shadow: 0 2px 8px rgba(251,191,36,0.42);
+}
+.rating-player-card.is-squad .rating-card-content {
+  grid-template-columns: 62px 1fr auto;
 }
 .rating-actions {
   display: grid;
@@ -10595,7 +10633,7 @@ const SquadsScreen = ({profile,onReloadProfile,onNoticeChange,onOpenAnnouncement
       }
       setData(d);
       onNoticeChange?.(d.notice_count || 0);
-      if(d.clan) setSettingsForm({name:d.clan.name||'',tag:(d.clan.tag||'').replace('#',''),description:d.clan.description||'',type:d.clan.type||'open',minTrophies:d.clan.minTrophies||0});
+      if(d.clan) setSettingsForm({name:d.clan.name||'',tag:(d.clan.tag||'').replace('#',''),description:d.clan.description||'',type:d.clan.type||'open',minTrophies:d.clan.minTrophies||0,chatLink:d.clan.chat_link||d.clan.chatLink||'',chatLinkConfirmed:false});
       setPendingImages({avatar:null,banner:null});
       setPendingPreviews(prev => {
         if(prev.avatar) URL.revokeObjectURL(prev.avatar);
@@ -10708,6 +10746,11 @@ const SquadsScreen = ({profile,onReloadProfile,onNoticeChange,onOpenAnnouncement
 
   const saveSettings = async () => {
     if(!settingsForm || savingSettings) return;
+    const trimmedChat = (settingsForm.chatLink || '').trim();
+    if(trimmedChat !== '' && !settingsForm.chatLinkConfirmed) {
+      window.showToast?.('Подтвердите согласие, чтобы сохранить ссылку','error',3000);
+      return;
+    }
     setSavingSettings(true);
     try {
       const hasImages = !!(pendingImages.avatar || pendingImages.banner);
@@ -10719,15 +10762,17 @@ const SquadsScreen = ({profile,onReloadProfile,onNoticeChange,onOpenAnnouncement
         body.append('description', settingsForm.description);
         body.append('type', settingsForm.type);
         body.append('min_trophies', String(parseInt(settingsForm.minTrophies)||0));
+        body.append('chat_link', trimmedChat);
         if(pendingImages.avatar) body.append('avatar', pendingImages.avatar);
         if(pendingImages.banner) body.append('banner', pendingImages.banner);
         r = await fetch(_buildAuthUrl('/api/squads/settings'), {method:'POST',body});
       } else {
-        r = await fetch(_buildAuthUrl('/api/squads/settings'), {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:settingsForm.name,tag:settingsForm.tag,description:settingsForm.description,type:settingsForm.type,min_trophies:parseInt(settingsForm.minTrophies)||0})});
+        r = await fetch(_buildAuthUrl('/api/squads/settings'), {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:settingsForm.name,tag:settingsForm.tag,description:settingsForm.description,type:settingsForm.type,min_trophies:parseInt(settingsForm.minTrophies)||0,chat_link:trimmedChat})});
       }
       const d = await r.json();
       if(!r.ok || d.error) { const err = new Error(d.error || 'settings_failed'); err.reason = d.reason || d.message; throw err; }
       window.showToast?.('Настройки сохранены','success',2200);
+      setSettingsForm(f => f ? {...f, chatLinkConfirmed:false} : f);
       invalidateSquadCaches();
       await loadMe();
       onReloadProfile?.();
@@ -11000,6 +11045,7 @@ const SquadsScreen = ({profile,onReloadProfile,onNoticeChange,onOpenAnnouncement
               <SquadButton secondary onClick={onOpenAnnouncements}>Объявления</SquadButton>
               <SquadButton secondary onClick={shareSquad}>Поделиться</SquadButton>
               <SquadButton secondary onClick={()=>setTab(isOwner?'settings':'members')}>{isOwner?'Настройки':'Участники'}</SquadButton>
+              {(clan.chat_link || clan.chatLink) && <SquadButton secondary onClick={()=>setChatLinkModal(clan.chat_link || clan.chatLink)}>Ссылка на чат</SquadButton>}
             </div>
             <div style={{background:`linear-gradient(180deg,${T.bgCard},${T.bgDeep})`,border:`1px solid ${T.purple2}`,borderRadius:14,overflow:'hidden',boxShadow:'inset 0 1px 0 rgba(255,255,255,0.04), 0 4px 14px rgba(0,0,0,0.3)'}}>
               <div style={{padding:'12px 14px',fontSize:13,fontWeight:900,color:T.white,fontFamily:"'Exo 2',sans-serif",background:'rgba(255,255,255,0.02)'}}>Активность</div>
@@ -11314,11 +11360,34 @@ const SquadsScreen = ({profile,onReloadProfile,onNoticeChange,onOpenAnnouncement
             <input value={settingsForm.name} maxLength={24} onChange={e=>setSettingsForm(f=>({...f,name:e.target.value}))} placeholder="Название" style={{background:T.bgCard,border:`1px solid ${T.purple2}`,borderRadius:12,padding:'12px 14px',color:T.white,fontSize:14,outline:'none'}}/>
             <input value={settingsForm.tag} maxLength={5} onChange={e=>setSettingsForm(f=>({...f,tag:e.target.value.toUpperCase().replace(/[^A-Z0-9]/g,'')}))} placeholder="TAG" style={{background:T.bgCard,border:`1px solid ${T.purple2}`,borderRadius:12,padding:'12px 14px',color:T.white,fontSize:14,fontWeight:900,letterSpacing:1,outline:'none'}}/>
             <textarea value={settingsForm.description} maxLength={200} rows={4} onChange={e=>setSettingsForm(f=>({...f,description:e.target.value}))} placeholder="Описание" style={{background:T.bgCard,border:`1px solid ${T.purple2}`,borderRadius:12,padding:'12px 14px',color:T.white,fontSize:14,outline:'none',resize:'none'}}/>
+            <div>
+              <div style={{fontSize:12,color:T.grey1,fontWeight:800,margin:'2px 4px 6px'}}>Ссылка на чат сквада</div>
+              <input
+                value={settingsForm.chatLink || ''}
+                maxLength={200}
+                onChange={e=>setSettingsForm(f=>({...f,chatLink:e.target.value,chatLinkConfirmed:false}))}
+                placeholder="https://t.me/your_squad_chat — Telegram, VK, Discord, OK, MAX"
+                style={{width:'100%',boxSizing:'border-box',background:T.bgCard,border:`1px solid ${T.purple2}`,borderRadius:12,padding:'12px 14px',color:T.white,fontSize:14,outline:'none'}}
+              />
+              <div style={{fontSize:10,color:T.grey2,margin:'6px 4px 0'}}>Можно указать без https:// — сервер добавит автоматически. Доступны: t.me, telegram.me, vk.me/vk.com, max.ru, discord.gg/com, ok.ru.</div>
+              <label style={{display:'flex',alignItems:'flex-start',gap:9,padding:'10px 4px 0',cursor:'pointer'}}>
+                <input
+                  type="checkbox"
+                  checked={!!settingsForm.chatLinkConfirmed}
+                  onChange={e=>setSettingsForm(f=>({...f,chatLinkConfirmed:e.target.checked}))}
+                  disabled={!(settingsForm.chatLink || '').trim()}
+                  style={{marginTop:3,accentColor:T.orange}}
+                />
+                <span style={{fontSize:11,color:T.grey1,lineHeight:1.45}}>
+                  Я подтверждаю, что в чате нет рекламы сторонних проектов, нет нарушений оферты ExtraArena, соблюдены все правила ExtraArena.
+                </span>
+              </label>
+            </div>
             <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>
               {[['open','Открытый'],['closed','По заявкам']].map(([id,label]) => <button key={id} onClick={()=>setSettingsForm(f=>({...f,type:id}))} style={{height:40,borderRadius:12,border:`1px solid ${settingsForm.type===id?T.orange:T.purple2}`,background:settingsForm.type===id?T.orange+'22':T.bgCard,color:settingsForm.type===id?T.orange:T.grey1,fontWeight:800,cursor:'pointer'}}>{label}</button>)}
             </div>
             <input value={settingsForm.minTrophies} type="number" min="0" onChange={e=>setSettingsForm(f=>({...f,minTrophies:e.target.value}))} placeholder="Мин. трофеев" style={{background:T.bgCard,border:`1px solid ${T.purple2}`,borderRadius:12,padding:'12px 14px',color:T.white,fontSize:14,outline:'none'}}/>
-            <SquadButton onClick={saveSettings} disabled={savingSettings}>{savingSettings?'Модерация...':'Сохранить'}</SquadButton>
+            <SquadButton onClick={saveSettings} disabled={savingSettings || ((settingsForm.chatLink||'').trim() !== '' && !settingsForm.chatLinkConfirmed)}>{savingSettings?'Модерация...':'Сохранить'}</SquadButton>
             <HoldSquadButton onHold={requestDeleteSquad} style={{borderColor:T.red,color:T.red}}>Распустить сквад</HoldSquadButton>
           </div>
         )}
@@ -13112,12 +13181,20 @@ const IdeasSubScreen = ({isAdmin}) => {
 
 const RATING_CATEGORY_META = [
   {key:'trophies', title:'Абсолютные чемпионы', subtitle:'Лидеры категории: максимальные трофеи', metric_label:'трофеев'},
-  {key:'score', title:'Властители арены', subtitle:'score = wins × winrate', metric_label:'score'},
+  {key:'score', title:'Властители арены', subtitle:'Счет = победы × процент побед', metric_label:'score'},
   {key:'cbrp', title:'Опора и поддержка', subtitle:'Суммарный вклад CBRP', metric_label:'CBRP'},
   {key:'items', title:'Коллекционеры', subtitle:'Уникальная косметика игрока', metric_label:'предметов'},
 ];
 
-const ratingCategoryMeta = (key) => RATING_CATEGORY_META.find(c => c.key === key) || RATING_CATEGORY_META[0];
+const RATING_SQUAD_CATEGORY_META = [
+  {key:'squad_cbrp',  title:'Истинные короли',      subtitle:'Сумма CBRP всех участников сквада за окно',          metric_label:'CBRP'},
+  {key:'squad_score', title:'Монополисты на победы', subtitle:'Сумма (победы × процент побед) участников / 100', metric_label:'score'},
+  {key:'squad_items', title:'Золотые сокрома',      subtitle:'Сумма уникальных предметов всех участников за окно',  metric_label:'предметов'},
+];
+
+const ratingCategoryMeta = (key) => RATING_CATEGORY_META.find(c => c.key === key)
+  || RATING_SQUAD_CATEGORY_META.find(c => c.key === key)
+  || RATING_CATEGORY_META[0];
 const ratingDefaultAvatar = '/DesignAssets/PlayerCosmetics/Avatars/1.png';
 const ratingDefaultBackground = '/DesignAssets/PlayerCosmetics/Background/7.png';
 const ratingMetric = (value) => {
@@ -13167,48 +13244,61 @@ const RatingEmptyState = ({title='Пока пусто', text='Как тольк�
   </div>
 );
 
-const RatingPlayerCard = ({entry}) => {
+const RatingPlayerCard = ({entry, kind='players'}) => {
   if (!entry) return <RatingEmptyState title="Место свободно" text="Сюда скоро попадет сильный игрок." />;
   const bg = entry.profile_background_url || ratingDefaultBackground;
   const titleClass = ['rating-title', entry.title_class || 'starter'].filter(Boolean).join(' ');
+  const isSquad = kind === 'squads' || entry.clan_id != null;
+  const boostBadge = isSquad && entry.has_boost ? <span className="rating-boost-tag">BOOST</span> : null;
+  const subtitle = isSquad
+    ? `${entry.member_count || 0} участников`
+    : (entry.squad_name || 'Без сквада');
+  const fallbackName = isSquad ? 'Сквад' : 'Игрок';
+  const name = entry.display_name || fallbackName;
+  const titleText = isSquad && entry.squad_tag ? `[${entry.squad_tag}] ${name}` : name;
   return (
-    <article className={`rating-player-card rank-${entry.rank} ${entry.rank === 1 ? 'first' : ''}`}>
+    <article className={`rating-player-card rank-${entry.rank} ${entry.rank === 1 ? 'first' : ''} ${isSquad ? 'is-squad' : ''}`}>
       <img className="rating-profile-bg" src={bg} alt="" onError={e=>{e.currentTarget.src=ratingDefaultBackground;}}/>
       <span className={`rating-place-badge place-${entry.rank}`}>{entry.rank}</span>
       <div className="rating-card-content">
         <img className="rating-avatar" src={entry.avatar_url || ratingDefaultAvatar} alt="" onError={e=>{e.currentTarget.src=ratingDefaultAvatar;}}/>
         <div className="rating-identity">
-          <span className={titleClass}>{entry.title || 'Игрок'}</span>
-          <PremiumNickname name={entry.display_name || 'Игрок'} player={entry} className="rating-name"/>
-          <span className="rating-squad">{entry.squad_name || 'Без сквада'}</span>
+          <span className={titleClass}>{isSquad ? 'Сквад' : (entry.title || 'Игрок')}</span>
+          <PremiumNickname name={titleText} player={entry} className="rating-name"/>
+          <span className="rating-squad">{subtitle}</span>
         </div>
         <div className="rating-metric">
           <strong>{ratingMetric(entry.metric)}</strong>
           <span>{entry.metric_label || ''}</span>
+          {boostBadge}
         </div>
       </div>
     </article>
   );
 };
 
-const RatingCategorySection = ({category, snapshotStatus, onOpenDaily, onOpenPreview}) => {
+const RatingCategorySection = ({category, snapshotStatus, onOpenDaily, onOpenPreview, kind='players'}) => {
   const meta = ratingCategoryMeta(category?.key);
   const entries = (category?.entries || []).slice(0, 3);
   const isErrorState = snapshotStatus === 'error' || snapshotStatus === 'stale';
+  const kickerLabel = kind === 'squads' ? 'Сквады' : 'Игроки';
+  const rowKey = (entry) => kind === 'squads'
+    ? `${category.key}-${entry.rank}-${entry.clan_id}`
+    : `${category.key}-${entry.rank}-${entry.user_id}`;
   return (
     <section className={`rating-category ${meta.key}`}>
       <div className="rating-category-head">
         <div className="rating-category-title">
-          <span className="rating-kicker">Игроки</span>
+          <span className="rating-kicker">{kickerLabel}</span>
           <h3>{category?.title || meta.title}</h3>
           <p>{category?.subtitle || meta.subtitle}</p>
         </div>
       </div>
       {entries.length ? (
         <div className="rating-podium">
-          <RatingPlayerCard entry={entries[0]}/>
+          <RatingPlayerCard entry={entries[0]} kind={kind}/>
           <div className="rating-runner-grid">
-            {entries.slice(1,3).map(entry => <RatingPlayerCard key={`${category.key}-${entry.rank}-${entry.user_id}`} entry={entry}/>)}
+            {entries.slice(1,3).map(entry => <RatingPlayerCard key={rowKey(entry)} entry={entry} kind={kind}/>)}
           </div>
         </div>
       ) : isErrorState ? (
@@ -13224,46 +13314,55 @@ const RatingCategorySection = ({category, snapshotStatus, onOpenDaily, onOpenPre
   );
 };
 
-const RatingRankRow = ({entry}) => {
+const RatingRankRow = ({entry, kind='players'}) => {
   const titleClass = ['rating-title', entry?.title_class || 'starter'].filter(Boolean).join(' ');
+  const isSquad = kind === 'squads' || entry?.clan_id != null;
+  const subtitle = isSquad
+    ? `${entry?.member_count || 0} участников`
+    : (entry?.squad_name || 'Без сквада');
+  const fallbackName = isSquad ? 'Сквад' : 'Игрок';
+  const name = entry?.display_name || fallbackName;
+  const titleText = isSquad && entry?.squad_tag ? `[${entry.squad_tag}] ${name}` : name;
   return (
     <div className="rating-rank-row">
       <div className="rating-rank-no">#{entry.rank}</div>
       <img className="rating-row-avatar" src={entry.avatar_url || ratingDefaultAvatar} alt="" onError={e=>{e.currentTarget.src=ratingDefaultAvatar;}}/>
       <div className="rating-row-main">
-        <PremiumNickname name={entry.display_name || 'Игрок'} player={entry} className="rating-name"/>
-        <div className={titleClass}>{entry.title || 'Игрок'}</div>
-        <div className="rating-row-squad">{entry.squad_name || 'Без сквада'}</div>
+        <PremiumNickname name={titleText} player={entry} className="rating-name"/>
+        <div className={titleClass}>{isSquad ? 'Сквад' : (entry?.title || 'Игрок')}</div>
+        <div className="rating-row-squad">{subtitle}</div>
       </div>
       <div className="rating-row-metric">{ratingMetric(entry.metric)} {entry.metric_label || ''}</div>
     </div>
   );
 };
 
-const RatingMaskedRow = ({rank}) => (
+const RatingMaskedRow = ({rank, kind='players'}) => (
   <div className="rating-masked-row">
     <div className="rating-rank-no">#{rank}</div>
     <div className="rating-mask-copy">
       <b>Скрыто до финального обновления</b>
-      <span>Игрок, сквад и метрика не раскрываются</span>
+      <span>{kind === 'squads' ? 'Сквад и метрика не раскрываются' : 'Игрок, сквад и метрика не раскрываются'}</span>
     </div>
   </div>
 );
 
-const RatingDetailPage = ({period, periodKey, categoryKey, onBack}) => {
+const RatingDetailPage = ({period, periodKey, categoryKey, kind='players', onBack}) => {
   const category = (period?.categories || []).find(c => c.key === categoryKey) || ratingCategoryMeta(categoryKey);
   const meta = ratingCategoryMeta(categoryKey);
   const entries = category?.entries || [];
   const isPreview = periodKey === 'preview';
   const snapshotStatus = period?.snapshot_status || period?.status || null;
   const isErrorState = snapshotStatus === 'error' || snapshotStatus === 'stale';
+  const kickerLabel = kind === 'squads' ? 'Сквады' : 'Игроки';
+  const subjectWord = kind === 'squads' ? 'сквадов' : 'игроков';
   return (
     <div className={`rating-detail-page ${meta.key}`}>
       <div className="rating-detail-head">
         <div className="rating-detail-title">
-          <span className="rating-kicker">{isPreview ? 'Предварительный топ' : 'Полный топ'} · Игроки</span>
+          <span className="rating-kicker">{isPreview ? 'Предварительный топ' : 'Полный топ'} · {kickerLabel}</span>
           <h3>{category?.title || ratingCategoryMeta(categoryKey).title}</h3>
-          <p>{isPreview ? 'Обновляется каждые 15 минут; первые три места скрыты до финального 24-часового среза.' : 'Финальный 24-часовой срез: все 10 участников видны вместе с метрикой, титулом и сквадом.'}</p>
+          <p>{isPreview ? `Обновляется каждые 15 минут; первые три места скрыты до финального 24-часового среза ${subjectWord}.` : `Финальный 24-часовой срез ${subjectWord}: все 10 участников видны вместе с метрикой.`}</p>
           <RatingRotationTimer targetIso={period?.next_refresh_at}/>
           <div className="rating-detail-meta">
             <span>{category?.metric_label || meta.metric_label}</span>
@@ -13275,12 +13374,12 @@ const RatingDetailPage = ({period, periodKey, categoryKey, onBack}) => {
       <div className="rating-rank-list">
         {entries.length ? entries.slice(0,10).map(entry => (
           isPreview && entry.rank <= 3
-            ? <RatingMaskedRow key={`masked-${entry.rank}`} rank={entry.rank}/>
-            : <RatingRankRow key={`${periodKey}-${categoryKey}-${entry.rank}-${entry.user_id}`} entry={entry}/>
+            ? <RatingMaskedRow key={`masked-${entry.rank}`} rank={entry.rank} kind={kind}/>
+            : <RatingRankRow key={`${periodKey}-${categoryKey}-${entry.rank}-${entry.clan_id || entry.user_id}`} entry={entry} kind={kind}/>
         )) : (
           isErrorState
             ? <RatingEmptyState title="Ошибка формирования ТОПа" text="Не удалось собрать рейтинг. Попробуй открыть раздел чуть позже."/>
-            : <RatingEmptyState title="Топ пока пустой" text="Снапшот уже общий, но в этой номинации еще нет подходящих игроков."/>
+            : <RatingEmptyState title="Топ пока пустой" text="Снапшот уже общий, но в этой номинации еще нет подходящих участников."/>
         )}
       </div>
     </div>
@@ -13319,10 +13418,23 @@ const RatingHelpPage = () => (
           <h2>Как считаются номинации</h2>
           <ul className="rating-help-list">
             <li><span className="rating-help-index">07</span><span><strong>Абсолютные чемпионы.</strong> Берём максимум из рекорда трофеев и текущих трофеев игрока.</span></li>
-            <li><span className="rating-help-index">08</span><span><strong>Властители арены.</strong> Считаем только human-vs-human бои: score = wins × winrate.</span></li>
+            <li><span className="rating-help-index">08</span><span><strong>Властители арены.</strong> Считаем только human-vs-human бои: Счет = победы × процент побед.</span></li>
             <li><span className="rating-help-index">09</span><span><strong>Опора и поддержка.</strong> Складываем личный CBRP-вклад игрока.</span></li>
             <li><span className="rating-help-index">10</span><span><strong>Коллекционеры.</strong> Сейчас считаем только уникальные предметы из user_cosmetics.</span></li>
           </ul>
+        </article>
+
+        <article className="rating-help-card">
+          <h2>Рейтинг сквадов</h2>
+          <ul className="rating-help-list">
+            <li><span className="rating-help-index">11</span><span><strong>Истинные короли.</strong> Сумма CBRP всех участников сквада за окно (15м или 24ч).</span></li>
+            <li><span className="rating-help-index">12</span><span><strong>Монополисты на победы.</strong> Складываем Счет = победы × процент побед каждого участника и делим на 100.</span></li>
+            <li><span className="rating-help-index">13</span><span><strong>Золотые сокрома.</strong> Сумма уникальных предметов косметики всех участников за окно.</span></li>
+          </ul>
+          <div className="rating-help-note">
+            <span>Период 15м / 24ч</span>
+            <p>Для сквадов работает то же окно, что и у игроков: 15-минутный срез обновляется чаще, 24-часовой фиксирует итог.</p>
+          </div>
         </article>
 
         <article className="rating-help-card">
@@ -13356,7 +13468,7 @@ const RatingScreen = ({runtimeStatus, detail, onDetailChange}) => {
     setLoaded(false);
     setError(null);
     try {
-      const r = await fetch(_buildAuthUrl('/api/community/rating?scope=players'), {cache:'no-store'});
+      const r = await fetch(_buildAuthUrl(`/api/community/rating?scope=${ratingTab}`), {cache:'no-store'});
       const d = await r.json();
       if (!r.ok || d.success === false) throw new Error(d.message || d.error || 'rating_failed');
       setRatingData(d);
@@ -13364,21 +13476,26 @@ const RatingScreen = ({runtimeStatus, detail, onDetailChange}) => {
       setError(e?.message || 'rating_failed');
     }
     setLoaded(true);
-  }, [ratingEnabled]);
+  }, [ratingEnabled, ratingTab]);
 
-  React.useEffect(()=>{ if (ratingTab === 'players') load(); }, [ratingTab, load]);
+  React.useEffect(()=>{ load(); }, [ratingTab, load]);
 
   const daily = ratingData?.periods?.daily || null;
   const preview = ratingData?.periods?.preview || null;
   const dailySnapshotStatus = daily?.snapshot_status || daily?.status || null;
-  const categories = RATING_CATEGORY_META.map(meta => {
+  const isSquad = ratingTab === 'squads';
+  const metaList = isSquad ? RATING_SQUAD_CATEGORY_META : RATING_CATEGORY_META;
+  const categories = metaList.map(meta => {
     const fromApi = (daily?.categories || []).find(c => c.key === meta.key);
     return {...meta, ...(fromApi || {}), entries: fromApi?.entries || []};
   });
+  const heroSubtitle = isSquad
+    ? 'Сквады сравниваются по CBRP, общему score и собранной косметике. На главной странице всегда показан топ-3 финального 24-часового среза.'
+    : 'Личные достижения, вклад и коллекция. На главной странице всегда показан топ-3 финального 24-часового среза.';
 
   if (detail) {
     const period = detail.period === 'preview' ? preview : daily;
-    return <RatingDetailPage period={period} periodKey={detail.period} categoryKey={detail.categoryKey} onBack={()=>onDetailChange?.(null)}/>;
+    return <RatingDetailPage period={period} periodKey={detail.period} categoryKey={detail.categoryKey} kind={isSquad ? 'squads' : 'players'} onBack={()=>onDetailChange?.(null)}/>;
   }
 
   return (
@@ -13389,16 +13506,14 @@ const RatingScreen = ({runtimeStatus, detail, onDetailChange}) => {
             <div className="rating-hero-brand">ExtraArena</div>
             <h2>Зал боевой славы</h2>
             <RatingRotationTimer targetIso={daily?.next_refresh_at}/>
-            <p>Личные достижения, вклад и коллекция. На главной странице всегда показан топ-3 финального 24-часового среза.</p>
+            <p>{heroSubtitle}</p>
           </div>
         </section>
         <div className="rating-tabs">
           <button type="button" className={`rating-tab ${ratingTab==='players'?'active':''}`} onClick={()=>setRatingTab('players')}>Игроки</button>
           <button type="button" className={`rating-tab ${ratingTab==='squads'?'active':''}`} onClick={()=>setRatingTab('squads')}>Сквады</button>
         </div>
-        {ratingTab === 'squads' ? (
-          <RatingEmptyState title="Сквадовый рейтинг закрыт" text="Сейчас доступен личный рейтинг игроков."/>
-        ) : !ratingEnabled ? (
+        {!ratingEnabled ? (
           <RatingEmptyState title="Топ временно скрыт" text="Раздел рейтинга отключен в runtime-настройках."/>
         ) : error ? (
           <RatingEmptyState title="Не удалось загрузить рейтинг" text="Попробуйте открыть раздел чуть позже."/>
@@ -13415,6 +13530,7 @@ const RatingScreen = ({runtimeStatus, detail, onDetailChange}) => {
                 key={category.key}
                 category={category}
                 snapshotStatus={dailySnapshotStatus}
+                kind={isSquad ? 'squads' : 'players'}
                 onOpenDaily={()=>onDetailChange?.({period:'daily', categoryKey:category.key})}
                 onOpenPreview={()=>onDetailChange?.({period:'preview', categoryKey:category.key})}
               />

@@ -3,10 +3,17 @@
 """
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Dict, List, Optional
+from typing import Deque, Dict, List, Optional
 from uuid import UUID, uuid4
+
+
+# Размер кольцевого буфера истории действий. Соответствует прежнему
+# лимиту в 100 записей, который раньше держался через `list[-100:]`
+# (realloc O(n) на каждом append). deque(maxlen=N) делает это за O(1).
+ACTION_HISTORY_MAXLEN = 100
 
 
 # Фиксированный список всех механик для ML observation (34 механики)
@@ -92,7 +99,8 @@ class CardInstance:
     base_mana_cost: Optional[int] = None
     base_mechanics: Optional[List[str]] = None
     instant_kill_used: bool = False
-    
+    skip_count: int = 0
+
     @property
     def is_asleep(self) -> bool:
         """Существо спит (не готово к атаке) если is_ready=False."""
@@ -119,6 +127,7 @@ class CardInstance:
         self.is_ready = False
         self.is_frozen = False
         self.instant_kill_used = False
+        self.skip_count = 0
 
 
 @dataclass
@@ -150,7 +159,20 @@ class GameState:
     current_turn_owner_id: int
     turn_number: int = 1
     history: List[Dict] = field(default_factory=list)
-    action_history: List[tuple[str, str]] = field(default_factory=list)  # (type, text) - последние 100 действий
+    # Опциональные ссылки на параметры режима и движок, чтобы эффекты
+    # в core.effects могли учитывать правила арены (overdraw_to_discard
+    # и т.п.) без жёсткой связки с ArenaEnvironment. Заполняется
+    # BattleEngine после конструирования GameState; None допустим —
+    # означает "classic defaults".
+    classic_params: Optional["ClassicParams"] = None
+    arena_engine: Optional["ArenaEnvironment"] = None
+    # Кольцевой буфер последних действий. deque(maxlen=N) автоматически
+    # вытесняет старейшие записи при append — никаких ручных `list[-100:]`
+    # realloc на каждом `step`. Совместим с прежним API: поддерживает
+    # `append`, индексацию `[-1]`, `[-100:]`, `len()`, итерацию и `list()`.
+    action_history: Deque[tuple[str, str]] = field(
+        default_factory=lambda: deque(maxlen=ACTION_HISTORY_MAXLEN)
+    )
     status: GameStatus = GameStatus.ONGOING
     sudden_death_turns_by_player: Dict[int, int] = field(default_factory=dict)
     sudden_death_last_applied_turn_by_player: Dict[int, int] = field(default_factory=dict)

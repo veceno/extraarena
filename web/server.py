@@ -1364,7 +1364,7 @@ def _extra_pass_access(extra_pass: Any, expires_at: Any = None) -> dict[str, boo
     }
 
 
-SUPPORTED_REWARD_TYPES = {"coins", "gems", "keys", "card", "specific_card", "case"}
+SUPPORTED_REWARD_TYPES = {"coins", "gems", "keys", "card", "specific_card", "case", "particles", "cosmetic"}
 REWARD_CONFIG_ERROR_MESSAGES = {
     "unsupported_reward_type": "Этот тип награды пока не поддерживается.",
     "invalid_reward_amount": "Количество награды должно быть больше нуля.",
@@ -2092,6 +2092,71 @@ def _serialize_reward_entry(entry: dict[str, Any]) -> dict[str, Any]:
         "reward_amount": entry.get("reward_amount"),
         "reward_meta": _json_dict(entry.get("reward_meta")) if entry.get("reward_meta") is not None else None,
     }
+
+
+_CARD_NAME_REWARD_TYPES = {"particles", "specific_card", "card"}
+
+
+async def _enrich_payload_with_card_names(payload: dict[str, Any], db: Any) -> None:
+    """Обогащает reward_meta.card_name в payload для наград типа
+    particles / specific_card / card, чтобы UI показывал имя карты
+    вместо "Частицы для карты #<id>". Использует локальный кэш."""
+    if not payload or not isinstance(payload, dict):
+        return
+    tiers = payload.get("tiers")
+    if not isinstance(tiers, list):
+        return
+    card_cache: dict[int, dict[str, Any]] = {}
+
+    async def _resolve_card_name(card_id: int) -> tuple[str, str]:
+        if card_id in card_cache:
+            cached = card_cache[card_id]
+            return str(cached.get("name") or ""), str(cached.get("rarity") or "common")
+        try:
+            info = await db.get_card_info(card_id)
+        except Exception:
+            info = None
+        if not info:
+            card_cache[card_id] = {"name": "", "rarity": "common"}
+            return "", "common"
+        card_cache[card_id] = {
+            "name": str(info.get("name") or ""),
+            "rarity": str(info.get("rarity") or "common"),
+        }
+        return card_cache[card_id]["name"], card_cache[card_id]["rarity"]
+
+    for tier in tiers:
+        if not isinstance(tier, dict):
+            continue
+        for track in (tier.get("tracks") or {}).values():
+            if not isinstance(track, dict):
+                continue
+            rewards = track.get("rewards")
+            if not isinstance(rewards, list):
+                continue
+            for entry in rewards:
+                if not isinstance(entry, dict):
+                    continue
+                rtype = entry.get("reward_type")
+                if rtype not in _CARD_NAME_REWARD_TYPES:
+                    continue
+                meta = entry.get("reward_meta")
+                if not isinstance(meta, dict):
+                    continue
+                card_id = meta.get("card_id") or meta.get("id") or 0
+                try:
+                    card_id_int = int(card_id)
+                except (TypeError, ValueError):
+                    continue
+                if card_id_int <= 0:
+                    continue
+                if meta.get("card_name"):
+                    continue
+                name, rarity = await _resolve_card_name(card_id_int)
+                if name:
+                    meta["card_name"] = name
+                if rarity and not meta.get("rarity"):
+                    meta["rarity"] = rarity
 
 
 def _build_extra_pass_payload(
@@ -3151,7 +3216,25 @@ def _action_cache_set(
     *,
     status: int = 200,
 ) -> None:
+    """Кэшировать ответ на действие по (match_id, user_id, client_action_id).
+
+    Кэшируются ТОЛЬКО успешные ответы (status < 400). Раньше в кэш
+    попадали и 4xx/5xx (not_your_turn, turn_expired, game_already_ended,
+    match_not_ready, internal_error), из-за чего повтор того же
+    client_action_id отдавал устаревший снимок ошибки даже после
+    изменения состояния матча — клиент видел 409 "не ваш ход" уже
+    после того как ход перешёл, и не мог продолжить игру до
+    обнуления TTL (H4: failed action cache poisoning).
+    """
     if not client_action_id:
+        return
+    # Не кэшируем ошибочные ответы — клиент должен иметь возможность
+    # получить корректный ответ, как только состояние матча изменится.
+    try:
+        status_code = int(status)
+    except (TypeError, ValueError):
+        status_code = 200
+    if status_code >= 400:
         return
     try:
         key = (str(match_id), int(user_id), str(client_action_id))
@@ -3159,7 +3242,7 @@ def _action_cache_set(
         return
     ACTION_RESULT_CACHE[key] = {
         "payload": payload,
-        "status": int(status),
+        "status": status_code,
         "created_at": time.time(),
     }
 
@@ -13800,6 +13883,10 @@ def create_web_app(
                 tracks_by_type=tracks_by_type,
                 claimed_by_type=claimed_by_type,
             )
+            # Обогащаем reward_meta.card_name для превью наград типа
+            # particles / specific_card / card, чтобы UI показывал имя карты
+            # вместо #id. Делаем это одним проходом с кэшем по card_id.
+            await _enrich_payload_with_card_names(payload, db)
             return web.json_response(payload, headers=NO_STORE_CACHE_HEADERS)
         except Exception as e:
             logging.getLogger(__name__).error("rewards_extra_pass error: %s", e, exc_info=True)
@@ -15175,6 +15262,8 @@ def create_web_app(
             "invalid_name",
             "invalid_tag",
             "invalid_image_url",
+            "invalid_chat_link",
+            "chat_link_too_long",
             "cannot_transfer_to_self",
         ):
             return 400
@@ -15608,6 +15697,8 @@ def create_web_app(
             else:
                 data = await request.json()
             from infrastructure.clan_config import (
+                CLAN_CHAT_LINK_MAX,
+                CLAN_CHAT_LINK_URL_RE,
                 CLAN_DESC_MAX,
                 CLAN_NAME_MAX,
                 CLAN_NAME_MIN,
@@ -15631,6 +15722,26 @@ def create_web_app(
                 updates["tag"] = tag
             if "description" in data or "desc" in data:
                 updates["description"] = str(data.get("description") or data.get("desc") or "").strip()[:CLAN_DESC_MAX]
+            if "chat_link" in data:
+                raw_chat = data.get("chat_link")
+                chat_link: Optional[str]
+                if raw_chat is None:
+                    chat_link = None
+                else:
+                    chat_link = str(raw_chat).strip()
+                if chat_link == "":
+                    chat_link = None
+                if chat_link is not None:
+                    lowered = chat_link.lower()
+                    if not (lowered.startswith("https://") or lowered.startswith("http://")):
+                        chat_link = "https://" + chat_link.lstrip("/")
+                    if not chat_link.lower().startswith("https://"):
+                        raise ValueError("invalid_chat_link")
+                    if len(chat_link) > CLAN_CHAT_LINK_MAX:
+                        raise ValueError("chat_link_too_long")
+                    if not CLAN_CHAT_LINK_URL_RE.match(chat_link):
+                        raise ValueError("invalid_chat_link")
+                updates["chat_link"] = chat_link
             if "type" in data:
                 squad_type = str(data.get("type") or "open")
                 if squad_type not in ("open", "closed"):
@@ -20357,8 +20468,12 @@ def create_web_app(
             await release(user_id=user_id, product_key=product_key, reservation_id=reservation_id)
 
     async def _wait_for_checkout_payment(checkout_jti: str) -> dict[str, Any] | None:
-        for _ in range(30):
-            await asyncio.sleep(0.01)
+        # Ждём, пока параллельная попытка создания платежа завершится.
+        # Увеличено с 0.3s (30 * 10ms) до 5s (100 * 50ms), так как
+        # HTTP-вызовы к YooKassa/Robokassa могут занимать несколько
+        # секунд и предыдущая попытка оказывалась обрезана 409.
+        for _ in range(100):
+            await asyncio.sleep(0.05)
             existing = await db.get_checkout_session(checkout_jti)
             if existing and existing.get("payment_id") and existing.get("confirmation_url"):
                 return existing
@@ -21078,15 +21193,20 @@ def create_web_app(
             pass
 
     async def _rating_snapshot_refresh_loop(app: web.Application) -> None:
-        """Фоновая задача: пересобирать общие снапшоты рейтинга по due-таймерам."""
+        """Фоновая задача: пересобирать общие снапшоты рейтинга по due-таймерам для всех scope."""
         logger = logging.getLogger(__name__)
         try:
             while True:
                 try:
-                    result = await db.refresh_due_rating_snapshots(scope="players")
-                    refreshed = result.get("refreshed") or []
-                    if refreshed:
-                        logger.info("Rating snapshots refreshed: %s", ", ".join(refreshed))
+                    for scope in ("players", "squads"):
+                        result = await db.refresh_due_rating_snapshots(scope=scope)
+                        refreshed = result.get("refreshed") or []
+                        if refreshed:
+                            logger.info(
+                                "Rating snapshots refreshed: scope=%s periods=%s",
+                                scope,
+                                ", ".join(refreshed),
+                            )
                 except Exception as exc:
                     logger.error("Error refreshing rating snapshots: %s", exc, exc_info=True)
                 await asyncio.sleep(300)

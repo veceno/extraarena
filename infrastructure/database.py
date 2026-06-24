@@ -84,7 +84,7 @@ RATING_CATEGORIES: tuple[dict[str, str], ...] = (
     {
         "key": "score",
         "title": "Властители арены",
-        "subtitle": "score = wins × winrate.",
+        "subtitle": "Счет = победы × процент побед.",
         "metric_label": "score",
     },
     {
@@ -100,7 +100,28 @@ RATING_CATEGORIES: tuple[dict[str, str], ...] = (
         "metric_label": "предметов",
     },
 )
+RATING_SQUAD_CATEGORIES: tuple[dict[str, str], ...] = (
+    {
+        "key": "squad_cbrp",
+        "title": "Истинные короли",
+        "subtitle": "Сумма CBRP всех участников сквада за окно.",
+        "metric_label": "CBRP",
+    },
+    {
+        "key": "squad_score",
+        "title": "Монополисты на победы",
+        "subtitle": "Σ (победы × процент побед) участников / 100.",
+        "metric_label": "score",
+    },
+    {
+        "key": "squad_items",
+        "title": "Золотые сокрома",
+        "subtitle": "Σ уникальных предметов косметики всех участников за окно.",
+        "metric_label": "предметов",
+    },
+)
 RATING_PERIOD_KEYS = ("daily", "preview")
+RATING_SCOPES: tuple[str, ...] = ("players", "squads")
 RATING_DEFAULT_AVATAR = "/DesignAssets/PlayerCosmetics/Avatars/1.png"
 RATING_DEFAULT_BACKGROUND = "/DesignAssets/PlayerCosmetics/Background/7.png"
 RATING_ALGORITHM_VERSION = "2026-05-29-score-wins-winrate-cosmetics-only"
@@ -850,7 +871,7 @@ class Database:
                         streak = 0
                         streak_day = 1
                         reward_type, base_amount, final_amount = self._choose_daily_login_reward(streak_day)
-                        multiplier = 3 if streak_day % 3 == 0 else 1
+                        multiplier = 3 if streak_day > 0 and streak_day % 3 == 0 else 1
                         available_at = now
                         await conn.execute(
                             """
@@ -1010,7 +1031,7 @@ class Database:
                     new_streak_day = 1
                     new_streak = 0
                 reward_type, base_amount, final_amount = self._choose_daily_login_reward(new_streak_day)
-                multiplier = 3 if new_streak_day % 3 == 0 else 1
+                multiplier = 3 if new_streak_day > 0 and new_streak_day % 3 == 0 else 1
                 await conn.execute(
                     """
                     UPDATE users
@@ -1051,7 +1072,7 @@ class Database:
                 if available_at is None:
                     streak_day = 1
                     reward_type, base_amount, final_amount = self._choose_daily_login_reward(streak_day)
-                    multiplier = 3 if streak_day % 3 == 0 else 1
+                    multiplier = 3 if streak_day > 0 and streak_day % 3 == 0 else 1
                     available_at = datetime.now(timezone.utc)
                     await conn.execute(
                         """
@@ -1163,7 +1184,7 @@ class Database:
                 new_streak_day = streak_day + 1 if (streak != 0 or streak_day != 0) else 1
                 new_streak = streak + 1 if (streak != 0 or streak_day != 0) else 1
                 next_reward_type, next_base, next_final = self._choose_daily_login_reward(new_streak_day)
-                next_multiplier = 3 if new_streak_day % 3 == 0 else 1
+                next_multiplier = 3 if new_streak_day > 0 and new_streak_day % 3 == 0 else 1
                 next_available_at = now + timedelta(seconds=self.DAILY_LOGIN_INTERVAL_SECONDS)
 
                 await conn.execute(
@@ -5452,6 +5473,7 @@ class Database:
         changed |= await self._add_column_if_missing("clans", columns, "public_id INTEGER UNIQUE")
         changed |= await self._add_column_if_missing("clans", columns, "boost_public_id INTEGER UNIQUE")
         changed |= await self._add_column_if_missing("clans", columns, "boost_member_slots_applied INTEGER NOT NULL DEFAULT 0")
+        changed |= await self._add_column_if_missing("clans", columns, "chat_link TEXT")
 
         idx_exists = await self.fetchval(
             "SELECT 1 FROM pg_indexes WHERE tablename='clans' AND indexname='clans_tag_unique_idx'"
@@ -6052,7 +6074,12 @@ class Database:
         )
         return changed
 
-    def _rating_empty_period(self, period: str, *, status: str = "pending") -> dict[str, Any]:
+    def _rating_categories_for_scope(self, scope: str) -> tuple[dict[str, str], ...]:
+        if scope == "squads":
+            return RATING_SQUAD_CATEGORIES
+        return RATING_CATEGORIES
+
+    def _rating_empty_period(self, period: str, *, scope: str = "players", status: str = "pending") -> dict[str, Any]:
         now = _rating_utc_now()
         return {
             "status": status,
@@ -6062,7 +6089,7 @@ class Database:
             "next_refresh_at": _rating_dt(_rating_next_refresh_at(period, now)),
             "categories": [
                 {**category, "entries": [], "status": "empty"}
-                for category in RATING_CATEGORIES
+                for category in self._rating_categories_for_scope(scope)
             ],
         }
 
@@ -6078,16 +6105,8 @@ class Database:
         }
 
     async def get_community_rating(self, *, scope: str = "players") -> dict[str, Any]:
-        if scope != "players":
-            return {
-                "success": True,
-                "scope": scope,
-                "server_time": _rating_dt(_rating_utc_now()),
-                "periods": {
-                    "daily": self._rating_empty_period("daily", status="coming_soon"),
-                    "preview": self._rating_empty_period("preview", status="coming_soon"),
-                },
-            }
+        if scope not in RATING_SCOPES:
+            return self._rating_unavailable_response(scope=scope)
 
         try:
             await self._ensure_rating_snapshot_cache_table()
@@ -6174,7 +6193,7 @@ class Database:
         scope: str = "players",
         force: bool = False,
     ) -> dict[str, Any]:
-        if scope != "players":
+        if scope not in RATING_SCOPES:
             return {"success": True, "scope": scope, "refreshed": []}
         if not self._pool:
             raise RuntimeError("База данных не подключена.")
@@ -6217,11 +6236,18 @@ class Database:
                             continue
                         generated_at = _rating_utc_now()
                         next_refresh_at = _rating_next_refresh_at(period, generated_at)
-                        payload = await self._build_player_rating_payload(
-                            period=period,
-                            generated_at=generated_at,
-                            conn=conn,
-                        )
+                        if scope == "squads":
+                            payload = await self._build_squad_rating_payload(
+                                period=period,
+                                generated_at=generated_at,
+                                conn=conn,
+                            )
+                        else:
+                            payload = await self._build_player_rating_payload(
+                                period=period,
+                                generated_at=generated_at,
+                                conn=conn,
+                            )
                         source_count = sum(
                             len(category.get("entries") or [])
                             for category in payload.get("categories", [])
@@ -6619,6 +6645,213 @@ class Database:
             for index, row in enumerate(rows)
         ]
 
+    async def _build_squad_rating_payload(
+        self,
+        *,
+        period: str,
+        generated_at: datetime,
+        conn: Any,
+    ) -> dict[str, Any]:
+        categories: list[dict[str, Any]] = []
+        for category in RATING_SQUAD_CATEGORIES:
+            entries = await self._rating_fetch_squad_entries(
+                category["key"],
+                metric_label=category["metric_label"],
+                conn=conn,
+                limit=10,
+                period=period,
+                generated_at=generated_at,
+            )
+            if period == "preview":
+                entries = [
+                    self._rating_mask_preview_entry(entry)
+                    if period == "preview" and entry.get("rank", 0) <= 3
+                    else entry
+                    for entry in entries
+                ]
+            status = "ready" if entries else "empty"
+            categories.append({
+                **category,
+                "status": status,
+                "entries": entries,
+            })
+        return {
+            "period": period,
+            "algorithm_version": RATING_ALGORITHM_VERSION,
+            "generated_at": _rating_dt(generated_at),
+            "next_refresh_at": _rating_dt(_rating_next_refresh_at(period, generated_at)),
+            "categories": categories,
+        }
+
+    async def _rating_fetch_squad_entries(
+        self,
+        category_key: str,
+        *,
+        metric_label: str,
+        conn: Any,
+        limit: int,
+        period: str,
+        generated_at: datetime,
+    ) -> list[dict[str, Any]]:
+        window_start = _rating_window_start(period, generated_at)
+        if category_key == "squad_cbrp":
+            rows = await conn.fetch(
+                """
+                SELECT c.id AS clan_id,
+                       c.name AS squad_name,
+                       c.tag AS squad_tag,
+                       c.avatar_url AS avatar_url,
+                       c.banner_url AS profile_background_url,
+                       c.has_boost AS has_boost,
+                       COALESCE(agg.metric, 0)::BIGINT AS metric,
+                       agg.member_count::INTEGER AS member_count
+                FROM clans c
+                LEFT JOIN (
+                    SELECT cm.clan_id AS clan_id,
+                           SUM(e.cbrp)::BIGINT AS metric,
+                           COUNT(DISTINCT cm.user_id)::INTEGER AS member_count
+                    FROM squad_cbrp_events e
+                    JOIN clan_members cm ON cm.user_id = e.user_id
+                    WHERE e.created_at >= $2 AND e.created_at < $3
+                    GROUP BY cm.clan_id
+                ) agg ON agg.clan_id = c.id
+                WHERE COALESCE(agg.metric, 0) > 0
+                ORDER BY metric DESC, c.name ASC, c.id ASC
+                LIMIT $1
+                """,
+                limit,
+                window_start,
+                generated_at,
+            )
+        elif category_key == "squad_score":
+            rows = await conn.fetch(
+                """
+                WITH member_battles AS (
+                    SELECT bs.p1_user_id AS user_id,
+                           CASE WHEN bs.winner_user_id = bs.p1_user_id THEN 1 ELSE 0 END AS win
+                    FROM battle_summary bs
+                    WHERE bs.winner_user_id IN (bs.p1_user_id, bs.p2_user_id)
+                      AND bs.created_at >= $2 AND bs.created_at < $3
+                    UNION ALL
+                    SELECT bs.p2_user_id AS user_id,
+                           CASE WHEN bs.winner_user_id = bs.p2_user_id THEN 1 ELSE 0 END AS win
+                    FROM battle_summary bs
+                    WHERE bs.winner_user_id IN (bs.p1_user_id, bs.p2_user_id)
+                      AND bs.created_at >= $2 AND bs.created_at < $3
+                ),
+                battle_score AS (
+                    SELECT user_id,
+                           COUNT(*)::INTEGER AS battles,
+                           SUM(win)::INTEGER AS wins,
+                           CASE WHEN COUNT(*) > 0
+                                THEN SUM(win)::NUMERIC / COUNT(*)
+                                ELSE 0 END AS winrate
+                    FROM member_battles
+                    GROUP BY user_id
+                    HAVING SUM(win) > 0
+                ),
+                member_score AS (
+                    SELECT cm.clan_id AS clan_id,
+                           (SUM(bs.wins * bs.winrate) / 100.0)::NUMERIC AS metric,
+                           COUNT(*)::INTEGER AS member_count
+                    FROM battle_score bs
+                    JOIN clan_members cm ON cm.user_id = bs.user_id
+                    GROUP BY cm.clan_id
+                )
+                SELECT c.id AS clan_id,
+                       c.name AS squad_name,
+                       c.tag AS squad_tag,
+                       c.avatar_url AS avatar_url,
+                       c.banner_url AS profile_background_url,
+                       c.has_boost AS has_boost,
+                       ROUND(ms.metric, 2) AS metric,
+                       ms.member_count
+                FROM member_score ms
+                JOIN clans c ON c.id = ms.clan_id
+                WHERE ms.metric > 0
+                ORDER BY ms.metric DESC, c.name ASC, c.id ASC
+                LIMIT $1
+                """,
+                limit,
+                window_start,
+                generated_at,
+            )
+        elif category_key == "squad_items":
+            rows = await conn.fetch(
+                """
+                WITH member_items AS (
+                    SELECT cm.clan_id AS clan_id,
+                           COUNT(*)::BIGINT AS metric,
+                           COUNT(DISTINCT cm.user_id)::INTEGER AS member_count
+                    FROM user_cosmetics uco
+                    JOIN clan_members cm ON cm.user_id = uco.user_id
+                    WHERE uco.acquired_at >= $2 AND uco.acquired_at < $3
+                    GROUP BY cm.clan_id
+                )
+                SELECT c.id AS clan_id,
+                       c.name AS squad_name,
+                       c.tag AS squad_tag,
+                       c.avatar_url AS avatar_url,
+                       c.banner_url AS profile_background_url,
+                       c.has_boost AS has_boost,
+                       mi.metric,
+                       mi.member_count
+                FROM member_items mi
+                JOIN clans c ON c.id = mi.clan_id
+                WHERE mi.metric > 0
+                ORDER BY mi.metric DESC, c.name ASC, c.id ASC
+                LIMIT $1
+                """,
+                limit,
+                window_start,
+                generated_at,
+            )
+        else:
+            return []
+
+        return [
+            self._rating_squad_entry_from_row(row, rank=index + 1, metric_label=metric_label)
+            for index, row in enumerate(rows)
+        ]
+
+    def _rating_squad_entry_from_row(
+        self,
+        row: Any,
+        *,
+        rank: int,
+        metric_label: str,
+        metric_field: str = "metric",
+    ) -> dict[str, Any]:
+        data = dict(row)
+        metric = data.get(metric_field, 0)
+        if isinstance(metric, Decimal):
+            metric = metric.quantize(Decimal("0.01"))
+            metric = int(metric) if metric == metric.to_integral_value() else float(metric)
+        else:
+            try:
+                numeric_metric = float(metric or 0)
+                metric = int(numeric_metric) if numeric_metric.is_integer() else round(numeric_metric, 2)
+            except Exception:
+                metric = 0
+        squad_name = data.get("squad_name") or "Безымянный сквад"
+        squad_tag = (data.get("squad_tag") or "").strip()
+        return {
+            "rank": rank,
+            "clan_id": int(data.get("clan_id") or 0),
+            "display_name": squad_name,
+            "title": squad_name,
+            "title_class": "squad",
+            "squad_name": squad_name,
+            "squad_tag": squad_tag,
+            "avatar_url": data.get("avatar_url") or RATING_DEFAULT_AVATAR,
+            "profile_background_url": data.get("profile_background_url") or RATING_DEFAULT_BACKGROUND,
+            "has_boost": bool(data.get("has_boost")),
+            "extra_pass": "inactive",
+            "metric": metric,
+            "metric_label": metric_label,
+            "member_count": int(data.get("member_count") or 0),
+        }
+
     # ── Community CRUD ─────────────────────────────────────────────────────
 
     async def is_admin(self, user_id: int) -> bool:
@@ -6655,7 +6888,7 @@ class Database:
                    c.members_count, c.max_members, c.has_boost, c.avatar_url,
                    c.public_id, c.boost_public_id,
                    c.tag, c.description, c.type, c.min_trophies,
-                   c.treasury_tokens, c.cbrp, c.banner_url,
+                   c.treasury_tokens, c.cbrp, c.banner_url, c.chat_link,
                    CASE WHEN cm.role = 'owner' THEN 'creator' ELSE cm.role END AS member_role,
                    cm.personal_tokens
             FROM clan_members cm
@@ -7510,7 +7743,7 @@ class Database:
         return count == 0
 
     async def update_clan_settings(self, clan_id: int, **fields) -> bool:
-        allowed = {"name", "tag", "description", "type", "min_trophies", "avatar_url", "banner_url", "has_boost", "boost_public_id"}
+        allowed = {"name", "tag", "description", "type", "min_trophies", "avatar_url", "banner_url", "has_boost", "boost_public_id", "chat_link"}
         updates = {k: v for k, v in fields.items() if k in allowed}
         if not updates:
             return False
@@ -8353,6 +8586,7 @@ class Database:
             "trophies": "trophies",
             "cbrp": "cbrp",
             "treasury_tokens": "treasury_tokens",
+            "chat_link": "chat_link",
         }
         exists = await self.fetchval("SELECT 1 FROM clans WHERE id = $1", int(clan_id))
         if not exists:

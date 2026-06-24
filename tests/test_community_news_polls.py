@@ -354,7 +354,9 @@ def test_community_replaces_news_tab_with_rating_section():
     assert "const RatingScreen" in source
     assert "['Рейтинг','Объявления','Баги и идеи']" in source
     assert "['Новости','Объявления','Идеи']" not in source
-    assert "fetch(_buildAuthUrl('/api/community/rating?scope=players'), {cache:'no-store'})" in source
+    # squad tab is wired and dispatches by `ratingTab`
+    assert "fetch(_buildAuthUrl(`/api/community/rating?scope=${ratingTab}`)" in source
+    assert "setRatingTab('squads')" in source
     assert "if (!r.ok || d.success === false) throw new Error(d.message || d.error || 'rating_failed');" in source
     assert "/DesignAssets/Images/rating.jpg" in source
     assert "const RatingRotationTimer" in source
@@ -362,8 +364,12 @@ def test_community_replaces_news_tab_with_rating_section():
     assert "Зал боевой славы" in source
     assert "const RatingHelpPage" in source
     assert "Как работает рейтинг" in source
-    assert "score = wins × winrate" in source
+    assert "Счет = победы × процент побед" in source
     assert "только уникальные предметы из user_cosmetics" in source
+    # Squad-номинации в help
+    assert "Истинные короли" in source
+    assert "Монополисты на победы" in source
+    assert "Золотые сокрома" in source
     assert "rating-help-btn" in source
     assert "Смотреть полный топ" in source
     assert "Смотреть предварительный топ за сегодня" in source

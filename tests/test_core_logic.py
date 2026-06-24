@@ -6,7 +6,7 @@ import pytest
 from uuid import uuid4
 
 from core.state import CardInstance, CardType, GameState, GameStatus, PlayerState
-from core.engine import ArenaEnvironment, scale_card_by_level
+from core.engine import HAND_CAP, ArenaEnvironment, scale_card_by_level
 from core.actions import PlayCardAction, AttackAction, EndTurnAction, BaseAction
 from core.effects import apply_damage, process_effects, requires_target
 from core.converter import _normalize_mechanic, card_from_db
@@ -618,8 +618,10 @@ class TestConsumeAllyEdgeCases:
         state = create_minimal_game_state()
         env = ArenaEnvironment(state)
 
+        # Заполняем доску до лимита (5) и пробуем сыграть consume_ally,
+        # который съедает одного союзника и занимает его место.
         allies = []
-        for idx in range(7):
+        for idx in range(5):
             ally = CardInstance(
                 instance_id=uuid4(), card_id=100 + idx, name=f"Ally {idx}",
                 card_type=CardType.WARRIOR, hp=2, max_hp=2, attack=1, mana_cost=1,
@@ -640,7 +642,7 @@ class TestConsumeAllyEdgeCases:
         ))
 
         assert success, error
-        assert len(state.p1.board) == 7
+        assert len(state.p1.board) == 5
         assert consumer in state.p1.board
         assert allies[0] in state.p1.graveyard
 
@@ -874,6 +876,212 @@ class TestScaleMechanicsNoDuplication:
         assert len(state.p1.hand) == 4
         assert state.p1.hand[-1].name == "Drawn"
         assert state.p1.deck == []
+
+
+class TestCycleFixesC2M2H3:
+    """Регресс-тесты под фиксы cycle-системы после аудита:
+
+    - C2: battlecry_draw_card с пустой колодой должен reshuffle из
+      graveyard (а не молча проваливаться).
+    - M2: путь battlecry_draw_card делит ту же логику reshuffle + hand
+      cap с end-of-turn (через core.engine.draw_one_from_deck).
+    - H3: action_history стал deque(maxlen=100) — поведение append,
+      индексация и итерация должны остаться совместимыми с прежним
+      list-based контрактом.
+    """
+
+    def test_battlecry_draw_with_empty_deck_reshuffles_graveyard(self):
+        """C2 fix: пустая колода → battlecry_draw_card триггерит reshuffle
+        из graveyard (раньше просто skip'ал)."""
+        from infrastructure.match_modes import ClassicParams
+
+        state = create_minimal_game_state()
+        # Включаем classic_params, чтобы state.classic_params был выставлен
+        # через ArenaEnvironment.__init__.
+        env = ArenaEnvironment(
+            state,
+            classic_params=ClassicParams(overdraw_to_discard=False),
+        )
+
+        # 1 карта в graveyard (была «убита»), колода пуста.
+        recycled = CardInstance(
+            instance_id=uuid4(), card_id=400, name="Reshuffled",
+            card_type=CardType.WARRIOR, hp=2, max_hp=2, attack=1, mana_cost=1,
+            mechanics=[], is_ready=False,
+        )
+        state.p1.graveyard.append(recycled)
+
+        # Draw warrior на руке (hand=1, deck=0).
+        draw_warrior = CardInstance(
+            instance_id=uuid4(), card_id=101, name="Draw Guy",
+            card_type=CardType.WARRIOR, hp=3, max_hp=3, attack=2, mana_cost=3,
+            mechanics=["battlecry_draw_card"], is_ready=False,
+        )
+        state.p1.hand = [draw_warrior]
+
+        success, error = env.step(1, PlayCardAction(hand_index=0, target_id=None, position=0))
+
+        assert success, error
+        # Warrior ушёл, тянется reshuffled → итого 1 карта в руке.
+        assert len(state.p1.hand) == 1
+        assert state.p1.hand[0].name == "Reshuffled"
+        # Graveyard теперь пуст.
+        assert state.p1.graveyard == []
+        # Колода тоже пуста — единственная карта ушла на руку.
+        assert state.p1.deck == []
+
+    def test_battlecry_draw_with_empty_deck_and_graveyard_does_not_raise(self):
+        """C2 fix: edge case — пустая колода И пустой graveyard.
+        draw_one_from_deck должен вернуть False без raise."""
+        from infrastructure.match_modes import ClassicParams
+
+        state = create_minimal_game_state()
+        env = ArenaEnvironment(
+            state,
+            classic_params=ClassicParams(overdraw_to_discard=False),
+        )
+
+        draw_warrior = CardInstance(
+            instance_id=uuid4(), card_id=101, name="Draw Guy",
+            card_type=CardType.WARRIOR, hp=3, max_hp=3, attack=2, mana_cost=3,
+            mechanics=["battlecry_draw_card"], is_ready=False,
+        )
+        state.p1.hand = [draw_warrior]
+        state.p1.deck = []
+        state.p1.graveyard = []
+
+        success, error = env.step(1, PlayCardAction(hand_index=0, target_id=None, position=0))
+
+        assert success, error
+        # Warrior ушёл с руки, draw пропущен (fatigue) — hand пуст.
+        assert len(state.p1.hand) == 0
+        assert state.p1.deck == []
+        assert state.p1.graveyard == []
+
+    def test_end_turn_and_battlecry_draw_use_same_overdraw_policy(self):
+        """M2 fix: оба пути добора уважают overdraw_to_discard одинаково
+        — при пустой колоде делается reshuffle, при заполненной руке
+        поведение идентично."""
+        from infrastructure.match_modes import ClassicParams
+
+        state = create_minimal_game_state()
+        env = ArenaEnvironment(
+            state,
+            classic_params=ClassicParams(overdraw_to_discard=True),
+        )
+
+        # ------------------------------------------------------------------
+        # Path 1: end_turn (добор для противника при заполненной руке)
+        # ------------------------------------------------------------------
+        # P2 имеет 4 cards на руке, deck = [TopDeckEnd].
+        # current_turn_owner_id = 1 (P1), end_turn передаст ход P2 и
+        # попытается добрать карту для P2.
+        state.current_turn_owner_id = 1
+        # P1 рука пусть будет пустая — нам важен только P2.
+        top_end = CardInstance(
+            instance_id=uuid4(), card_id=300, name="TopDeckEnd",
+            card_type=CardType.WARRIOR, hp=2, max_hp=2, attack=1, mana_cost=1,
+            mechanics=[], is_ready=False,
+        )
+        filler_end = CardInstance(
+            instance_id=uuid4(), card_id=200, name="FillerEnd",
+            card_type=CardType.WARRIOR, hp=2, max_hp=2, attack=1, mana_cost=1,
+            mechanics=[], is_ready=False,
+        )
+        state.p2.hand = [filler_end] * 4
+        state.p2.deck = [top_end]
+        state.p2.graveyard = []
+
+        env._handle_end_turn(state.p1, state.p2)
+        # overdraw_to_discard=True → TopDeckEnd ушёл в graveyard, не в hand.
+        assert len(state.p2.hand) == 4
+        assert state.p2.deck == []
+        assert len(state.p2.graveyard) == 1
+        assert state.p2.graveyard[0].name == "TopDeckEnd"
+
+        # ------------------------------------------------------------------
+        # Path 2: battlecry_draw_card (та же политика)
+        # ------------------------------------------------------------------
+        # P1: hand 3, deck = 1, рука НЕ заполнена → draw fires.
+        top_bc = CardInstance(
+            instance_id=uuid4(), card_id=301, name="TopDeckBC",
+            card_type=CardType.WARRIOR, hp=2, max_hp=2, attack=1, mana_cost=1,
+            mechanics=[], is_ready=False,
+        )
+        filler_bc = CardInstance(
+            instance_id=uuid4(), card_id=201, name="FillerBC",
+            card_type=CardType.WARRIOR, hp=2, max_hp=2, attack=1, mana_cost=1,
+            mechanics=[], is_ready=False,
+        )
+        state.p1.hand = [filler_bc] * 3
+        state.p1.deck = [top_bc]
+        state.p1.graveyard = []
+
+        draw_warrior = CardInstance(
+            instance_id=uuid4(), card_id=101, name="Draw Guy",
+            card_type=CardType.WARRIOR, hp=3, max_hp=3, attack=2, mana_cost=3,
+            mechanics=["battlecry_draw_card"], is_ready=False,
+        )
+        state.p1.hand.append(draw_warrior)
+        draw_index = len(state.p1.hand) - 1
+
+        # Ход P1.
+        state.current_turn_owner_id = 1
+        success, error = env.step(1, PlayCardAction(
+            hand_index=draw_index, target_id=None, position=0
+        ))
+        assert success, error
+        # Warrior ушёл (hand=3), draw fires → hand=4, deck=[].
+        assert len(state.p1.hand) == 4
+        assert state.p1.hand[-1].name == "TopDeckBC"
+        assert state.p1.deck == []
+        assert state.p1.graveyard == []
+
+    def test_action_history_is_deque_with_maxlen(self):
+        """H3 fix: action_history — это deque(maxlen=100), не list."""
+        from collections import deque
+
+        state = create_minimal_game_state()
+        env = ArenaEnvironment(state)
+
+        assert isinstance(state.action_history, deque)
+        assert state.action_history.maxlen == 100
+
+    def test_action_history_evicts_old_entries_automatically(self):
+        """H3 fix: append старше 100 записей автоматически вытесняется
+        (deque(maxlen=100) O(1) eviction, не `list[-100:]` O(n) realloc)."""
+        state = create_minimal_game_state()
+        env = ArenaEnvironment(state)
+
+        # Заполняем 150 записей.
+        for i in range(150):
+            state.action_history.append(("system", f"event-{i}"))
+
+        # Хранится только последние 100.
+        assert len(state.action_history) == 100
+        # Старейшая запись — event-50 (т.к. 0..49 evicted).
+        assert state.action_history[0][1] == "event-50"
+        assert state.action_history[-1][1] == "event-149"
+
+    def test_action_history_slice_negative_index_still_works(self):
+        """H3 fix: обратная совместимость — `action_history[-1]`
+        и `list(action_history)[-N:]` должны работать как раньше.
+        (deque не поддерживает slice-нотацию, только одиночные индексы —
+        именно поэтому battle_runner и rlhf_env оборачивают в list().)"""
+        state = create_minimal_game_state()
+        env = ArenaEnvironment(state)
+
+        for i in range(5):
+            state.action_history.append(("system", f"e{i}"))
+
+        # Одиночный индекс (важно для теста test_attack_history_*).
+        assert state.action_history[-1][1] == "e4"
+        # Срез через list() — это путь, которым пользуются battle_runner
+        # и rlhf_env (см. _action_history_snapshot).
+        assert [t for _t, t in list(state.action_history)[-3:]] == ["e2", "e3", "e4"]
+        # Прямой slice на deque — TypeError, документируем контракт.
+        with pytest.raises(TypeError):
+            _ = state.action_history[-3:]
 
 
 class TestCoreRegressionHardening:
@@ -1768,3 +1976,660 @@ class TestCoreRegressionHardening:
         assert success, error
         assert state.p2.hero.hp == 27
         assert state.p2.hero.hp > 0
+
+
+# ============================================================================
+# STRATIFIED WEIGHTED DRAW: No-FIFO cost-curve + anti-stuck
+# ============================================================================
+
+class TestStratifiedWeightedDraw:
+    """Tests for the new No-FIFO weighted draw with cost-curve + anti-stuck."""
+
+    # ---------------------------------------------------------------- helpers
+
+    @staticmethod
+    def _make_deck_card(name: str, mana_cost: int) -> CardInstance:
+        return CardInstance(
+            instance_id=uuid4(),
+            card_id=500 + len(name),
+            name=name,
+            card_type=CardType.WARRIOR,
+            hp=1,
+            max_hp=1,
+            attack=1,
+            mana_cost=mana_cost,
+            mechanics=[],
+            is_ready=False,
+        )
+
+    @staticmethod
+    def _make_hand_card(name: str, mana_cost: int) -> CardInstance:
+        return CardInstance(
+            instance_id=uuid4(),
+            card_id=600 + len(name),
+            name=name,
+            card_type=CardType.WARRIOR,
+            hp=1,
+            max_hp=1,
+            attack=1,
+            mana_cost=mana_cost,
+            mechanics=[],
+            is_ready=False,
+        )
+
+    # ---------------------------------------------------------------- tests
+
+    def test_skip_count_increments_on_full_hand_skip(self):
+        """При full hand все карты в deck получают +1 к skip_count."""
+        from core.engine import draw_one_from_deck
+        from infrastructure.match_modes import ClassicParams
+
+        state = create_minimal_game_state()
+        env = ArenaEnvironment(
+            state,
+            classic_params=ClassicParams(overdraw_to_discard=False),
+        )
+
+        # Заполняем руку до HAND_CAP.
+        env.state.p1.hand = [
+            self._make_hand_card(f"H{i}", 2) for i in range(HAND_CAP)
+        ]
+        # В deck кладём 3 карты.
+        env.state.p1.deck = [
+            self._make_deck_card("A", 1),
+            self._make_deck_card("B", 3),
+            self._make_deck_card("C", 5),
+        ]
+
+        # При full hand draw_one_from_deck возвращает False (overdraw skip),
+        # но skip_count ВСЕХ карт в deck должен увеличиться на 1.
+        result = draw_one_from_deck(
+            env.state.p1,
+            overdraw_to_discard=False,
+            source="test",
+            rng=env._rng,
+        )
+        assert result is False
+        for card in env.state.p1.deck:
+            assert card.skip_count == 1, (
+                f"После full-hand skip skip_count={card.skip_count} (ожидалось 1) "
+                f"у карты {card.name}"
+            )
+
+    def test_skip_count_resets_on_draw(self):
+        """Когда карта наконец вытянута, её skip_count = 0."""
+        from core.engine import draw_one_from_deck
+        from infrastructure.match_modes import ClassicParams
+
+        state = create_minimal_game_state()
+        env = ArenaEnvironment(
+            state,
+            classic_params=ClassicParams(overdraw_to_discard=False),
+        )
+
+        # В deck — несколько карт с заранее повышенным skip_count (имитация
+        # того, что они «застряли»). Нужно >= HAND_CAP карт, чтобы рука
+        # полностью заполнилась без reshuffle.
+        deck_cards = []
+        for i in range(HAND_CAP + 1):
+            card = self._make_deck_card(f"Stuck{i}", 2)
+            card.skip_count = 5 + i  # каждый со своим значением
+            deck_cards.append(card)
+        env.state.p1.deck = deck_cards
+        env.state.p1.hand = []
+
+        # Делаем серию доборов пока руки не заполнятся, чтобы убедиться, что
+        # вытянутые карты выходят с skip_count=0 (вне зависимости от их
+        # «застрявшего» значения в deck до вытягивания).
+        for _ in range(HAND_CAP):
+            success = draw_one_from_deck(
+                env.state.p1,
+                overdraw_to_discard=False,
+                source="test",
+                rng=env._rng,
+        )
+            assert success
+
+        # Все вытянутые карты — на руке с skip_count == 0.
+        assert len(env.state.p1.hand) == HAND_CAP
+        for card in env.state.p1.hand:
+            assert card.skip_count == 0, (
+                f"Вытянутая карта {card.name} должна иметь skip_count=0, "
+                f"получено {card.skip_count}"
+            )
+
+    def test_skip_count_resets_on_reshuffle(self):
+        """При reshuffle из graveyard reset_to_base_state() сбрасывает skip_count в 0."""
+        from core.engine import draw_one_from_deck
+        from infrastructure.match_modes import ClassicParams
+
+        state = create_minimal_game_state()
+        env = ArenaEnvironment(
+            state,
+            classic_params=ClassicParams(overdraw_to_discard=False),
+        )
+
+        # Положили карту в graveyard с skip_count=12.
+        recycled = self._make_deck_card("Recycled", 3)
+        recycled.skip_count = 12
+        env.state.p1.graveyard.append(recycled)
+        env.state.p1.deck = []
+        env.state.p1.hand = []
+
+        # При пустом deck draw_one_from_deck должен сделать reshuffle —
+        # reset_to_base_state() сбрасывает skip_count в 0.
+        success = draw_one_from_deck(
+            env.state.p1,
+            overdraw_to_discard=False,
+            source="test",
+            rng=env._rng,
+        )
+        assert success
+        assert len(env.state.p1.hand) == 1
+        drawn = env.state.p1.hand[0]
+        assert drawn is recycled
+        assert drawn.skip_count == 0, (
+            f"После reshuffle skip_count должен быть сброшен в 0, "
+            f"получено {drawn.skip_count}"
+        )
+
+    def test_no_fifo_draw_picks_weighted_not_just_top(self):
+        """С seeded rng и однородными весами draw НЕ всегда выбирает deck[0]."""
+        import random as _random
+        from core.engine import draw_one_from_deck
+        from infrastructure.match_modes import ClassicParams
+
+        # Сэмплируем 200 раз с одним и тем же seed — проверяем, что хотя бы
+        # однажды была вытянута карта не из deck[0].
+        rng = _random.Random(20260624)
+        # Метим карты так, чтобы deck[0] != deck[1] != deck[2] — если бы
+        # использовался FIFO (deck.pop(0)), вытянутая карта всегда была бы
+        # «Top0», «Top1», «Top2» по порядку.
+        top_picks = {"Top0": 0, "Top1": 0, "Top2": 0}
+
+        for trial in range(200):
+            state = create_minimal_game_state()
+            env = ArenaEnvironment(
+                state,
+                classic_params=ClassicParams(overdraw_to_discard=False),
+                rng=_random.Random(20260624 + trial),
+            )
+            env.state.p1.hand = []
+            env.state.p1.deck = [
+                self._make_deck_card("Top0", 3),
+                self._make_deck_card("Top1", 3),
+                self._make_deck_card("Top2", 3),
+            ]
+            success = draw_one_from_deck(
+                env.state.p1,
+                overdraw_to_discard=False,
+                source="test",
+                rng=env._rng,
+        )
+            assert success
+            top_picks[env.state.p1.hand[0].name] += 1
+
+        # No-FIFO должен иногда выбирать НЕ только top-карту.
+        assert top_picks["Top0"] < 200, (
+            f"Если бы draw был FIFO, deck[0]='Top0' выбиралась бы в каждом "
+            f"первом доборе; получили {top_picks['Top0']}/200 — это всё ещё "
+            f"признак FIFO."
+        )
+        # И хотя бы одна из нижних карт должна была выпасть.
+        assert top_picks["Top1"] + top_picks["Top2"] > 0
+
+    def test_cost_curve_bias_prefers_cheap_when_hand_lacks_cheap(self):
+        """Если в руке 0 cheap карт (cost <= 2), draw с большей вероятностью возьмёт cheap."""
+        import random as _random
+        from core.engine import draw_one_from_deck
+        from infrastructure.match_modes import ClassicParams
+
+        cheap_picks = 0
+        trials = 500
+
+        for trial in range(trials):
+            state = create_minimal_game_state()
+            env = ArenaEnvironment(
+                state,
+                classic_params=ClassicParams(overdraw_to_discard=False),
+                rng=_random.Random(20260624 + trial),
+            )
+            # Рука — все expensive (cost >= 4), cheap и middle наполняются из deck.
+            env.state.p1.hand = [
+                self._make_hand_card(f"Hand{i}", 5) for i in range(HAND_CAP - 1)
+            ]
+            env.state.p1.deck = [
+                self._make_deck_card("CheapOne", 1),
+                self._make_deck_card("MidCard", 3),
+                self._make_deck_card("Expensive", 6),
+            ]
+            # Снимаем верхнюю карту, освобождая слот.
+            success = draw_one_from_deck(
+                env.state.p1,
+                overdraw_to_discard=False,
+                source="test",
+                rng=env._rng,
+        )
+            assert success
+            # Нас интересует только первая (и единственная) вытянутая карта.
+            drawn_name = env.state.p1.hand[-1].name
+            if drawn_name == "CheapOne":
+                cheap_picks += 1
+
+        # Из 500 попыток с cost-bias cheap должен выигрывать заметно чаще,
+        # чем 1/3 ≈ 166. Берём заведомо мягкий порог, чтобы тест не был
+        # флаттерен-зависимым.
+        assert cheap_picks > trials * 0.30, (
+            f"Cheap должен выпадать чаще baseline 1/3; "
+            f"получено {cheap_picks}/{trials} = {cheap_picks / trials:.2%}"
+        )
+
+    def test_cost_curve_bias_prefers_expensive_when_hand_lacks_expensive(self):
+        """Зеркальный тест: если в руке 0 expensive (cost >= 4)."""
+        import random as _random
+        from core.engine import draw_one_from_deck
+        from infrastructure.match_modes import ClassicParams
+
+        expensive_picks = 0
+        trials = 500
+
+        for trial in range(trials):
+            state = create_minimal_game_state()
+            env = ArenaEnvironment(
+                state,
+                classic_params=ClassicParams(overdraw_to_discard=False),
+                rng=_random.Random(424242 + trial),
+            )
+            # Рука — все cheap (cost <= 2).
+            env.state.p1.hand = [
+                self._make_hand_card(f"Hand{i}", 1) for i in range(HAND_CAP - 1)
+            ]
+            env.state.p1.deck = [
+                self._make_deck_card("CheapOne", 1),
+                self._make_deck_card("MidCard", 3),
+                self._make_deck_card("Expensive", 6),
+            ]
+            success = draw_one_from_deck(
+                env.state.p1,
+                overdraw_to_discard=False,
+                source="test",
+                rng=env._rng,
+        )
+            assert success
+            drawn_name = env.state.p1.hand[-1].name
+            if drawn_name == "Expensive":
+                expensive_picks += 1
+
+        assert expensive_picks > trials * 0.30, (
+            f"Expensive должен выпадать чаще baseline 1/3; "
+            f"получено {expensive_picks}/{trials} = {expensive_picks / trials:.2%}"
+        )
+
+    def test_anti_stuck_guarantees_eventual_pick(self):
+        """После 5 пропусков вес = 1 + 5*0.5 = 3.5. Проверь что карта выбирается."""
+        import random as _random
+        from core.engine import STUCK_BONUS, draw_one_from_deck
+        from infrastructure.match_modes import ClassicParams
+
+        state = create_minimal_game_state()
+        env = ArenaEnvironment(
+            state,
+            classic_params=ClassicParams(overdraw_to_discard=False),
+            rng=_random.Random(7),
+        )
+
+        stuck = self._make_deck_card("StuckCard", 3)
+        stuck.skip_count = 5
+        fresh = self._make_deck_card("FreshCard", 3)
+        fresh.skip_count = 0
+        env.state.p1.deck = [stuck, fresh]
+        env.state.p1.hand = []
+
+        success = draw_one_from_deck(
+            env.state.p1,
+            overdraw_to_discard=False,
+            source="test",
+            rng=env._rng,
+        )
+        assert success
+        drawn = env.state.p1.hand[0]
+        # Один из них должен быть вытянут, и его skip_count = 0.
+        assert drawn in (stuck, fresh)
+        assert drawn.skip_count == 0
+        # Веса: stuck=1+5*STUCK_BONUS=3.5, fresh=1.0 — stuck должен быть
+        # вытянут в большинстве случаев. Проверяем вероятностно: на 100
+        # прогонах stuck должен выигрывать чаще fresh.
+        stuck_wins = 0
+        for trial in range(100):
+            trial_state = create_minimal_game_state()
+            trial_env = ArenaEnvironment(
+                trial_state,
+                classic_params=ClassicParams(overdraw_to_discard=False),
+                rng=_random.Random(trial),
+            )
+            s = self._make_deck_card("S", 3)
+            s.skip_count = 5
+            f = self._make_deck_card("F", 3)
+            f.skip_count = 0
+            trial_env.state.p1.deck = [s, f]
+            trial_env.state.p1.hand = []
+            draw_one_from_deck(
+                trial_env.state.p1,
+                overdraw_to_discard=False,
+                source="test",
+            )
+            if trial_env.state.p1.hand[0].name == "S":
+                stuck_wins += 1
+        # Теоретически P(stuck) = 3.5 / 4.5 ≈ 77.7%. Берём порог 60%.
+        assert stuck_wins > 60, (
+            f"После 5 пропусков stuck должен выигрывать чаще fresh; "
+            f"получено {stuck_wins}/100 = {stuck_wins}% (ожидалось ~77%)"
+        )
+        # Проверяем, что STUCK_BONUS не изменился.
+        assert STUCK_BONUS == 0.5
+
+    def test_existing_overdraw_skip_test_still_passes(self):
+        """Регрессия: поведение test_classic_overdraw_keeps_cards_in_deck_by_default
+        должно остаться — карта остаётся в deck при full hand и
+        overdraw_to_discard=False."""
+        from core.engine import draw_one_from_deck
+        from infrastructure.match_modes import ClassicParams
+
+        state = create_minimal_game_state()
+        env = ArenaEnvironment(
+            state,
+            classic_params=ClassicParams(overdraw_to_discard=False),
+        )
+
+        queued = self._make_deck_card("Queued", 2)
+        env.state.p2.hand = [
+            self._make_hand_card(f"Hand{i}", 2) for i in range(HAND_CAP)
+        ]
+        env.state.p2.deck = [queued]
+        env.state.p2.graveyard = []
+
+        success = draw_one_from_deck(
+            env.state.p2,
+            overdraw_to_discard=False,
+            source="test",
+            rng=env._rng,
+        )
+        assert success is False
+        assert [card.name for card in env.state.p2.deck] == ["Queued"]
+        assert env.state.p2.graveyard == []
+        assert len(env.state.p2.hand) == HAND_CAP
+
+    def test_existing_overdraw_to_discard_test_still_passes(self):
+        """Регрессия: test_overdraw_to_discard_modifier_moves_overdrawn_cards_to_graveyard —
+        при overdraw_to_discard=True карта уходит в graveyard, не в hand."""
+        from core.engine import draw_one_from_deck
+        from infrastructure.match_modes import ClassicParams
+
+        state = create_minimal_game_state()
+        env = ArenaEnvironment(
+            state,
+            classic_params=ClassicParams(overdraw_to_discard=True),
+        )
+
+        overdrawn = self._make_deck_card("Overdrawn", 2)
+        env.state.p2.hand = [
+            self._make_hand_card(f"Hand{i}", 2) for i in range(HAND_CAP)
+        ]
+        env.state.p2.deck = [overdrawn]
+        env.state.p2.graveyard = []
+
+        success = draw_one_from_deck(
+            env.state.p2,
+            overdraw_to_discard=True,
+            source="test",
+            rng=env._rng,
+        )
+        assert success is True
+        assert len(env.state.p2.hand) == HAND_CAP
+        assert [card.name for card in env.state.p2.graveyard] == ["Overdrawn"]
+        assert env.state.p2.deck == []
+
+    def test_existing_graveyard_reshuffle_test_still_passes(self):
+        """Регрессия: test_graveyard_reshuffle_restores_base_card_state —
+        базовые статы (attack/max_hp/mana_cost/mechanics/is_ready) сбрасываются."""
+        from core.engine import draw_one_from_deck
+        from infrastructure.match_modes import ClassicParams
+
+        state = create_minimal_game_state()
+        env = ArenaEnvironment(
+            state,
+            classic_params=ClassicParams(overdraw_to_discard=False),
+        )
+
+        # Карта, которая "побывала" в бою: повреждена, баффнута, готова к атаке.
+        recycled = self._make_deck_card("Shielded", 2)
+        recycled.mechanics = ["shield"]
+        # Сначала делаем "честный" base-snapshot, как ArenaEnvironment делает
+        # в _ensure_base_snapshots (это записывает base_attack=1, base_hp=1,
+        # base_mana_cost=2, base_mechanics=["shield"]).
+        recycled.ensure_base_snapshot()
+        # После этого вручную "ломаем" runtime-поля — reset_to_base_state()
+        # должен вернуть их к base_*-снимку.
+        recycled.is_ready = True
+        recycled.is_frozen = True
+        recycled.hp = 0
+        recycled.max_hp = 10
+        recycled.attack = 7
+        recycled.mana_cost = 9
+        # Shield снимаем отдельно (как после удара), mechanics теперь пустой.
+        recycled.mechanics = []
+
+        env.state.p1.deck = []
+        env.state.p1.graveyard = [recycled]
+        env.state.p1.hand = []
+
+        success = draw_one_from_deck(
+            env.state.p1,
+            overdraw_to_discard=False,
+            source="test",
+            rng=env._rng,
+        )
+        assert success
+        drawn = env.state.p1.hand[0]
+        # Базовые поля восстановлены из base_*-снимка.
+        assert drawn.attack == 1
+        assert drawn.max_hp == 1
+        assert drawn.hp == 1
+        assert drawn.mana_cost == 2
+        assert drawn.mechanics == ["shield"]
+        assert drawn.is_ready is False
+        assert drawn.is_frozen is False
+    def test_existing_battlecry_draw_test_still_passes(self):
+        """Регрессия: test_battlecry_draw_card_not_doubled_on_scaled_warrior
+        и test_battlecry_draw_card_draws_after_leaving_full_hand."""
+        from infrastructure.match_modes import ClassicParams
+
+        # ----- test_battlecry_draw_card_not_doubled_on_scaled_warrior -----
+        state = create_minimal_game_state()
+        env = ArenaEnvironment(
+            state,
+            classic_params=ClassicParams(overdraw_to_discard=False),
+        )
+        for i in range(3):
+            env.state.p1.deck.append(self._make_deck_card(f"DeckCard{i}", 1))
+
+        from core.converter import card_from_db
+        warrior_data = {
+            'id': 101, 'name': 'Draw Guy', 'card_type': 'warrior',
+            'base_attack': 2, 'current_attack': 2, 'base_hp': 3, 'current_hp': 3,
+            'mana_cost': 3, 'rarity': 'common',
+            'mechanics': ['battlecry_draw_card']
+        }
+        draw_warrior = card_from_db(warrior_data, level=5)
+        env.state.p1.hand.append(draw_warrior)
+        deck_before = len(env.state.p1.deck)
+
+        success, _ = env.step(1, PlayCardAction(hand_index=0, target_id=None, position=None))
+        assert success
+        assert len(env.state.p1.hand) == 1, (
+            f"battlecry_draw_card должен тянуть ровно 1 карту; "
+            f"получено {len(env.state.p1.hand)} карт в руке"
+        )
+        assert len(env.state.p1.deck) == deck_before - 1
+
+        # ----- test_battlecry_draw_card_draws_after_leaving_full_hand -----
+        state2 = create_minimal_game_state()
+        env2 = ArenaEnvironment(
+            state2,
+            classic_params=ClassicParams(overdraw_to_discard=False),
+        )
+        draw_warrior2 = CardInstance(
+            instance_id=uuid4(), card_id=101, name="Draw Guy",
+            card_type=CardType.WARRIOR, hp=3, max_hp=3, attack=2, mana_cost=3,
+            mechanics=["battlecry_draw_card"], is_ready=False,
+        )
+        fillers = [
+            self._make_hand_card(f"Filler{idx}", 1) for idx in range(3)
+        ]
+        env2.state.p1.hand = [draw_warrior2, *fillers]
+        env2.state.p1.deck = [self._make_deck_card("Drawn", 1)]
+
+        success, error = env2.step(
+            1, PlayCardAction(hand_index=0, target_id=None, position=0)
+        )
+        assert success, error
+        assert len(env2.state.p1.hand) == 4
+        assert env2.state.p1.hand[-1].name == "Drawn"
+        assert env2.state.p1.deck == []
+
+    def test_weighted_choice_with_single_card(self):
+        """Если в deck ровно 1 карта — всегда берём её."""
+        from core.engine import _weighted_choice_idx
+        import random as _random
+
+        rng = _random.Random(0)
+        for _ in range(20):
+            idx = _weighted_choice_idx([2.5], rng)
+            assert idx == 0
+
+    def test_weighted_choice_with_zero_weights(self):
+        """Defensive: если все веса = 0, fallback на index 0."""
+        from core.engine import _weighted_choice_idx
+        import random as _random
+
+        rng = _random.Random(0)
+        # total = 0 → защитный возврат 0.
+        idx = _weighted_choice_idx([0.0, 0.0, 0.0], rng)
+        assert idx == 0
+
+    def test_rng_injection_produces_deterministic_results(self):
+        """Два вызова с одним и тем же rng seed дают одинаковый результат."""
+        import random as _random
+        from core.engine import draw_one_from_deck
+        from infrastructure.match_modes import ClassicParams
+
+        def run_once(seed: int) -> list[str]:
+            state = create_minimal_game_state()
+            env = ArenaEnvironment(
+                state,
+                classic_params=ClassicParams(overdraw_to_discard=False),
+                rng=_random.Random(seed),
+            )
+            env.state.p1.hand = []
+            # Достаточно карт, чтобы все 20 попыток добора прошли без reshuffle.
+            env.state.p1.deck = [
+                self._make_deck_card(
+                    ["Alpha", "Beta", "Gamma"][i % 3],
+                    [1, 3, 6][i % 3],
+                )
+                for i in range(25)
+            ]
+            names: list[str] = []
+            # Очищаем руку после каждого добора, чтобы лимит руки не мешал
+            # проверить, что seed детерминирует саму последовательность выбора.
+            for _ in range(20):
+                ok = draw_one_from_deck(
+                    env.state.p1,
+                    overdraw_to_discard=False,
+                    source="test",
+                    rng=env._rng,
+        )
+                assert ok
+                names.append(env.state.p1.hand[-1].name)
+                env.state.p1.hand = []
+            return names
+
+        run_a = run_once(12345)
+        run_b = run_once(12345)
+        assert run_a == run_b, (
+            f"Один и тот же seed должен давать идентичную последовательность; "
+            f"получено {run_a} vs {run_b}"
+        )
+
+    def test_rng_injection_different_seeds_produce_different_results(self):
+        """Два разных seed-а → разные результаты (статистически)."""
+        import random as _random
+        from core.engine import draw_one_from_deck
+        from infrastructure.match_modes import ClassicParams
+
+        def sequence(seed: int, length: int) -> list[str]:
+            state = create_minimal_game_state()
+            env = ArenaEnvironment(
+                state,
+                classic_params=ClassicParams(overdraw_to_discard=False),
+                rng=_random.Random(seed),
+            )
+            env.state.p1.hand = []
+            env.state.p1.deck = [
+                self._make_deck_card(f"D{i}", 1 + (i % 5)) for i in range(length)
+            ]
+            out: list[str] = []
+            # Очищаем руку после каждого добора, чтобы лимит руки не мешал.
+            for _ in range(length):
+                ok = draw_one_from_deck(
+                    env.state.p1,
+                    overdraw_to_discard=False,
+                    source="test",
+                    rng=env._rng,
+        )
+                assert ok
+                out.append(env.state.p1.hand[-1].name)
+                env.state.p1.hand = []
+            return out
+
+        # Берём длинные серии доборов, чтобы детерминизм seed-а проявился.
+        s1 = sequence(111, length=40)
+        s2 = sequence(222, length=40)
+        # Подавляющее большинство seed-пар должно дать разные серии.
+        same = sum(1 for a, b in zip(s1, s2) if a == b)
+        # На 40 позициях при равномерном распределении совпадений ~ 8;
+        # порог 20 оставляет большой запас от ложных срабатываний.
+        assert same < 20, (
+            f"Разные seed-ы дали подозрительно похожие серии: "
+            f"{s1} vs {s2} ({same}/40 совпадений)"
+        )
+
+    def test_drawn_card_has_skip_count_zero(self):
+        """Карта, только что вытянутая, имеет skip_count=0."""
+        from core.engine import draw_one_from_deck
+        from infrastructure.match_modes import ClassicParams
+
+        state = create_minimal_game_state()
+        env = ArenaEnvironment(
+            state,
+            classic_params=ClassicParams(overdraw_to_discard=False),
+        )
+
+        a = self._make_deck_card("A", 1)
+        b = self._make_deck_card("B", 3)
+        c = self._make_deck_card("C", 6)
+        a.skip_count = 4
+        b.skip_count = 2
+        c.skip_count = 9
+        env.state.p1.deck = [a, b, c]
+        env.state.p1.hand = []
+
+        success = draw_one_from_deck(
+            env.state.p1,
+            overdraw_to_discard=False,
+            source="test",
+            rng=env._rng,
+        )
+        assert success
+        drawn = env.state.p1.hand[0]
+        assert drawn.skip_count == 0

@@ -81,6 +81,7 @@ public class ExtraArenaMessagingService extends FirebaseMessagingService {
         String section = data == null ? null : data.get("section");
         String inviteId = data == null ? null : data.get("invite_id");
         String inviteAction = data == null ? null : data.get("invite_action");
+        String category = data == null ? null : data.get("category");
         Intent intent = new Intent(this, MainActivity.class);
         intent.setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
         intent.setAction("ru.extraarena.app.PUSH");
@@ -94,7 +95,7 @@ public class ExtraArenaMessagingService extends FirebaseMessagingService {
         if (inviteAction != null && !inviteAction.trim().isEmpty()) {
             intent.putExtra("invite_action", inviteAction);
         }
-        int notificationId = makeGameNotificationId(title, body, section);
+        int notificationId = makeGameNotificationId(title, body, section, category);
         PendingIntent pendingIntent = PendingIntent.getActivity(
                 this,
                 notificationId,
@@ -111,7 +112,7 @@ public class ExtraArenaMessagingService extends FirebaseMessagingService {
                 .setAutoCancel(true);
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            builder.setChannelId(NotificationChannels.GAME);
+            builder.setChannelId(NotificationChannels.channelForCategory(category));
         } else {
             builder.setPriority(Notification.PRIORITY_DEFAULT);
         }
@@ -119,8 +120,8 @@ public class ExtraArenaMessagingService extends FirebaseMessagingService {
         notify(notificationId, builder.build());
     }
 
-    private int makeGameNotificationId(String title, String body, String section) {
-        String seed = String.valueOf(title) + "|" + String.valueOf(body) + "|" + String.valueOf(section) + "|" + System.currentTimeMillis();
+    private int makeGameNotificationId(String title, String body, String section, String category) {
+        String seed = String.valueOf(title) + "|" + String.valueOf(body) + "|" + String.valueOf(section) + "|" + String.valueOf(category) + "|" + System.currentTimeMillis();
         return 7200 + Math.floorMod(seed.hashCode(), 100000);
     }
 

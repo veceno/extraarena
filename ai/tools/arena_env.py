@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 # КОНФИГУРАЦИЯ СРЕДЫ
 # ============================================================================
 MAX_HAND_SIZE = 10
-MAX_BOARD_SIZE = 7
+MAX_BOARD_SIZE = 5
 MAX_MANA = 10
 
 # Размеры векторов для one-hot кодирования

@@ -176,7 +176,7 @@ class ClassicRLEnv:
             starting_player_id=starting_player_id,
             rng=state_rng,
         )
-        self._env = ArenaEnvironment(game_state, mana_per_turn=self._mana_per_turn)
+        self._env = ArenaEnvironment(game_state, mana_per_turn=self._mana_per_turn, rng=state_rng)
         self._steps = 0
         self._turns = 1
         self._p1_reward = 0.0
