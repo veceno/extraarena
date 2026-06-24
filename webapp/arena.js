@@ -6897,48 +6897,51 @@ function parseMechanic(mechanic) {
   // ── Compound suffix (most specific → least specific) ──
 
   var drAoe = m.match(/^deathrattle_aoe_damage_(\d+)$/);
-  if (drAoe) return { label: 'Предсмертный: массовый урон', value: drAoe[1], description: 'При гибели наносит ' + drAoe[1] + ' урона всем врагам', kind: 'deathrattle' };
+  if (drAoe) return { label: 'Предсмертный: взрыв', value: drAoe[1], description: 'Уходит громко: при гибели наносит ' + drAoe[1] + ' урона всем врагам', kind: 'deathrattle' };
 
   var drDmg = m.match(/^deathrattle_damage_(\d+)$/);
-  if (drDmg) return { label: 'Предсмертный: урон', value: drDmg[1], description: 'При гибели наносит ' + drDmg[1] + ' урона всем врагам', kind: 'deathrattle' };
+  if (drDmg) return { label: 'Предсмертный: урон', value: drDmg[1], description: 'Последний подарок: при гибели наносит ' + drDmg[1] + ' урона', kind: 'deathrattle' };
 
   var drSum = m.match(/^deathrattle_summon_(\d+)$/);
   if (drSum) return { label: 'Предсмертный: призыв', value: drSum[1], description: 'При гибели призывает существо', kind: 'deathrattle' };
 
   var bcHealHero = m.match(/^battlecry_heal_hero_(\d+)$/);
-  if (bcHealHero) return { label: 'Эффект розыгрыша: лечение героя', value: bcHealHero[1], description: 'При розыгрыше лечит героя на ' + bcHealHero[1] + ' здоровья', kind: 'battlecry' };
+  if (bcHealHero) return { label: 'Эффект розыгрыша: лечение героя', value: bcHealHero[1], description: 'При розыгрыше поднимает героя на ' + bcHealHero[1] + ' здоровья', kind: 'battlecry' };
 
   var bcHealTarget = m.match(/^battlecry_heal_target_(\d+)$/);
-  if (bcHealTarget) return { label: 'Эффект розыгрыша: лечение цели', value: bcHealTarget[1], description: 'При розыгрыше лечит цель на ' + bcHealTarget[1] + ' здоровья', kind: 'battlecry' };
+  if (bcHealTarget) return { label: 'Эффект розыгрыша: лечение цели', value: bcHealTarget[1], description: 'При розыгрыше возвращает выбранной цели ' + bcHealTarget[1] + ' здоровья', kind: 'battlecry' };
 
   var bcAoeDmg = m.match(/^battlecry_aoe_damage_(\d+)$/);
-  if (bcAoeDmg) return { label: 'Эффект розыгрыша: массовый урон', value: bcAoeDmg[1], description: 'При розыгрыше наносит ' + bcAoeDmg[1] + ' урона всем врагам', kind: 'battlecry' };
+  if (bcAoeDmg) return { label: 'Эффект розыгрыша: залп', value: bcAoeDmg[1], description: 'При розыгрыше накрывает всех врагов на ' + bcAoeDmg[1] + ' урона', kind: 'battlecry' };
+
+  var bcRandomDmg = m.match(/^battlecry_damage_(\d+)_random$/);
+  if (bcRandomDmg) return { label: 'Эффект розыгрыша: случайный удар', value: bcRandomDmg[1], description: 'Врывается в бой и бьёт случайного врага на ' + bcRandomDmg[1] + ' урона', kind: 'battlecry' };
 
   var spellDmg = m.match(/^spell_damage_(\d+)$/);
-  if (spellDmg) return { label: 'Заклинание: урон', value: spellDmg[1], description: 'Наносит ' + spellDmg[1] + ' урона', kind: 'passive' };
+  if (spellDmg) return { label: 'Заклинание: точечный удар', value: spellDmg[1], description: 'Пробивает выбранную цель на ' + spellDmg[1] + ' урона', kind: 'passive' };
 
   var spellHeal = m.match(/^spell_heal_(\d+)$/);
   if (spellHeal) return { label: 'Заклинание: лечение', value: spellHeal[1], description: 'Восстанавливает ' + spellHeal[1] + ' здоровья', kind: 'passive' };
 
   var spellAoe = m.match(/^spell_aoe_damage_(\d+)$/);
-  if (spellAoe) return { label: 'Заклинание: массовый урон', value: spellAoe[1], description: 'Наносит ' + spellAoe[1] + ' урона всем врагам', kind: 'passive' };
+  if (spellAoe) return { label: 'Заклинание: массовый удар', value: spellAoe[1], description: 'Проводит волну по врагам: ' + spellAoe[1] + ' урона каждому', kind: 'passive' };
 
   // ── Multi-number X_Y patterns ──
 
   var cleaveXy = m.match(/^cleave_(\d+)_(\d+)$/);
-  if (cleaveXy) return { label: 'Разрубание', value: cleaveXy[1] + '×' + cleaveXy[2], description: 'Наносит ' + cleaveXy[1] + ' урона до ' + cleaveXy[2] + ' соседним врагам', kind: 'passive' };
+  if (cleaveXy) return { label: 'Разрубание', value: cleaveXy[1] + '×' + cleaveXy[2], description: 'Рассекает строй: ' + cleaveXy[1] + ' урона до ' + cleaveXy[2] + ' соседним врагам', kind: 'passive' };
 
   var auraXy = m.match(/^aura_atk_(\d+)_(\d+)$/);
-  if (auraXy) return { label: 'Аура атаки', value: '+' + auraXy[1], description: '+' + auraXy[1] + ' к атаке союзных существ', kind: 'aura' };
+  if (auraXy) return { label: 'Аура атаки', value: '+' + auraXy[1], description: 'Ведёт союзников вперёд: +' + auraXy[1] + ' к атаке существ', kind: 'aura' };
 
   var armorXy = m.match(/^armor_(\d+)_(\d+)$/);
-  if (armorXy) return { label: 'Броня', value: armorXy[1], description: 'Входящий урон –' + armorXy[1], kind: 'passive' };
+  if (armorXy) return { label: 'Броня', value: armorXy[1] + '–' + armorXy[2], description: 'Каждый удар гасится бронёй на случайное значение от ' + armorXy[1] + ' до ' + armorXy[2], kind: 'passive' };
 
   var startManaXy = m.match(/^start_mana_(\d+)_(\d+)$/);
-  if (startManaXy) return { label: 'Стартовая мана', value: '+' + startManaXy[1], description: '+' + startManaXy[1] + ' маны в начале боя', kind: 'start' };
+  if (startManaXy) return { label: 'Стартовый капитал', value: '+' + startManaXy[1], description: 'Заходит в бой с капиталом: +' + startManaXy[1] + ' маны уже на старте', kind: 'start' };
 
   var damageXy = m.match(/^damage_(\d+)_(\d+)$/);
-  if (damageXy) return { label: 'Урон', value: damageXy[1], description: 'Наносит ' + damageXy[1] + ' урона', kind: 'passive' };
+  if (damageXy) return { label: 'Точный удар', value: damageXy[1], description: 'Пробивает выбранную цель на ' + damageXy[1] + ' урона', kind: 'passive' };
 
   var bcBuffXy = m.match(/^battlecry_buff_(\d+)_(\d+)$/);
   if (bcBuffXy) return { label: 'Эффект розыгрыша: усиление', value: '+' + bcBuffXy[1], description: 'При розыгрыше усиливает союзников на +' + bcBuffXy[1], kind: 'battlecry' };
@@ -6955,22 +6958,22 @@ function parseMechanic(mechanic) {
   if (manaGain) return { label: 'Прирост маны', value: '+' + manaGain[1], description: 'Даёт +' + manaGain[1] + ' маны', kind: 'passive' };
 
   var aura = m.match(/^aura_atk_(\d+)$/);
-  if (aura) return { label: 'Аура атаки', value: '+' + aura[1], description: '+' + aura[1] + ' к атаке союзных существ', kind: 'aura' };
+  if (aura) return { label: 'Аура атаки', value: '+' + aura[1], description: 'Ведёт союзников вперёд: +' + aura[1] + ' к атаке существ', kind: 'aura' };
 
   var regen = m.match(/^regen_(\d+)$/);
-  if (regen) return { label: 'Регенерация', value: '+' + regen[1], description: '+' + regen[1] + ' здоровья в начале своего хода', kind: 'passive' };
+  if (regen) return { label: 'Регенерация', value: '+' + regen[1], description: 'В начале своего хода восстанавливает ' + regen[1] + ' здоровья', kind: 'passive' };
 
   var armor = m.match(/^armor_(\d+)$/);
-  if (armor) return { label: 'Броня', value: armor[1], description: 'Входящий урон –' + armor[1], kind: 'passive' };
+  if (armor) return { label: 'Броня', value: armor[1], description: 'Каждый удар гасится бронёй на ' + armor[1] + ' урона', kind: 'passive' };
 
   var reflect = m.match(/^reflect_(\d+)$/);
-  if (reflect) return { label: 'Отражение', value: reflect[1], description: 'Возвращает ' + reflect[1] + ' урона атакующему', kind: 'passive' };
+  if (reflect) return { label: 'Отражение', value: reflect[1], description: 'Наказывает за удар: возвращает атакующему ' + reflect[1] + ' урона', kind: 'passive' };
 
   var startMana = m.match(/^start_mana_(\d+)$/);
-  if (startMana) return { label: 'Стартовая мана', value: '+' + startMana[1], description: '+' + startMana[1] + ' маны в начале боя', kind: 'start' };
+  if (startMana) return { label: 'Стартовый капитал', value: '+' + startMana[1], description: 'Заходит в бой с капиталом: +' + startMana[1] + ' маны уже на старте', kind: 'start' };
 
   var aoeDmg = m.match(/^aoe_damage_(\d+)$/);
-  if (aoeDmg) return { label: 'Массовый урон', value: aoeDmg[1], description: 'Наносит ' + aoeDmg[1] + ' урона всем врагам', kind: 'passive' };
+  if (aoeDmg) return { label: 'Массовый удар', value: aoeDmg[1], description: 'Проводит волну по врагам: ' + aoeDmg[1] + ' урона каждому', kind: 'passive' };
 
   var heal = m.match(/^heal_(\d+)$/);
   if (heal) return { label: 'Лечение', value: heal[1], description: 'Восстанавливает ' + heal[1] + ' здоровья', kind: 'passive' };
@@ -6979,7 +6982,7 @@ function parseMechanic(mechanic) {
   if (healTarget) return { label: 'Лечение цели', value: healTarget[1], description: 'Лечит цель на ' + healTarget[1] + ' здоровья', kind: 'battlecry' };
 
   var bcDmg = m.match(/^battlecry_damage_(\d+)$/);
-  if (bcDmg) return { label: 'Эффект розыгрыша: урон', value: bcDmg[1], description: 'При розыгрыше наносит ' + bcDmg[1] + ' урона', kind: 'battlecry' };
+  if (bcDmg) return { label: 'Эффект розыгрыша: удар', value: bcDmg[1], description: 'При розыгрыше сразу пробивает цель на ' + bcDmg[1] + ' урона', kind: 'battlecry' };
 
   var bcHeal = m.match(/^battlecry_heal_(\d+)$/);
   if (bcHeal) return { label: 'Эффект розыгрыша: лечение', value: bcHeal[1], description: 'При розыгрыше лечит на ' + bcHeal[1] + ' здоровья', kind: 'battlecry' };
@@ -6988,7 +6991,7 @@ function parseMechanic(mechanic) {
   if (bcBuff) return { label: 'Эффект розыгрыша: усиление', value: '+' + bcBuff[1], description: 'При розыгрыше усиливает союзников на +' + bcBuff[1], kind: 'battlecry' };
 
   var dmg = m.match(/^damage_(\d+)$/);
-  if (dmg) return { label: 'Урон', value: dmg[1], description: 'Наносит ' + dmg[1] + ' урона', kind: 'passive' };
+  if (dmg) return { label: 'Точный удар', value: dmg[1], description: 'Пробивает выбранную цель на ' + dmg[1] + ' урона', kind: 'passive' };
 
   var cleave = m.match(/^cleave_(\d+)$/);
   if (cleave) return { label: 'Разрубание', value: cleave[1], description: 'Наносит ' + cleave[1] + ' урона соседним врагам', kind: 'passive' };

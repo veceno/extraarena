@@ -820,7 +820,8 @@ class Database:
             days_to_special: текущий цикл (заблюренный если claimed=True).
           - claimed_reward_type, claimed_reward_amount: последняя полученная награда
             (для блока 'Награда получена!').
-          - next_reward_type, next_is_special: данные о СЛЕДУЮЩЕМ клейме (streak_day+1).
+          - next_reward_type, next_is_special: данные о СЛЕДУЮЩЕМ клейме. Если текущий
+            цикл уже claimed=True, то в строке уже лежит следующий календарный цикл.
           - streak_broken: флаг обрыва серии.
           - last_claim_at: timestamp последнего клейма.
 
@@ -831,8 +832,9 @@ class Database:
             сбрасываются в 0, notified сбрасывается (чтобы новое уведомление отправилось).
           - Если claimed=True и now >= available_at, _advance_daily_login_cycle
             инициализирует следующий цикл (max 2 итерации чтобы избежать бесконечной петли).
-          - next_is_special = (streak_day > 0 and (streak_day + 1) % 3 == 0) — true когда
-            награда СЛЕДУЮЩЕГО клейма (streak_day+1) будет особой (x3).
+          - next_is_special — true когда награда следующего доступного клейма будет
+            особой (x3). Для claimed=False это streak_day+1, для claimed=True это
+            уже сохранённый streak_day.
         """
         if not self._pool:
             raise RuntimeError("База данных не подключена.")
@@ -968,12 +970,15 @@ class Database:
             if is_special and not claimed:
                 days_to_special = 0
 
-        # next_* = данные о награде, которая будет доступна после СЛЕДУЮЩЕГО клейма (streak_day+1).
-        # next_multiplier учитывает ту же логику, что и для текущего дня, но на шаг вперёд.
-        # streak_day+1 % 3 == 0 — особая (x3).
-        next_streak_day = streak_day + 1 if streak_day > 0 else 1
-        next_multiplier = 3 if next_streak_day > 0 and next_streak_day % 3 == 0 else 1
-        next_final_amount = int(round((base_amount or 0) * next_multiplier))
+        # next_* описывает именно следующий доступный клейм для UI.
+        # После claim строка уже хранит завтрашний цикл, поэтому не шагаем ещё на +1.
+        if claimed:
+            next_multiplier = multiplier
+            next_final_amount = int(base_amount or 0)
+        else:
+            next_streak_day = streak_day + 1 if streak_day > 0 else 1
+            next_multiplier = 3 if next_streak_day > 0 and next_streak_day % 3 == 0 else 1
+            next_final_amount = int(round((base_amount or 0) * next_multiplier))
 
         return {
             "enabled": True,
@@ -994,8 +999,7 @@ class Database:
             "streak_broken": streak_broken,
             "claimed_reward_type": row["daily_login_claimed_reward_type"],
             "claimed_reward_amount": row["daily_login_claimed_reward_amount"],
-            # next_* = данные о награде, которая будет доступна после СЛЕДУЮЩЕГО клейма (streak_day+1).
-            # streak_day+1 % 3 == 0 — особая (x3).
+            # next_* = данные о следующей доступной награде для UI.
             "next_reward_type": reward_type,
             "next_reward_amount": next_final_amount,
             "next_multiplier": next_multiplier,

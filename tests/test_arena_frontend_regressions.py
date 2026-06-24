@@ -183,6 +183,27 @@ def test_card_info_renders_mechanic_descriptions_not_raw_codes():
     assert ".card-info-modal.no-mechanics .section-kicker" in styles
 
 
+def test_dynamic_mechanic_copy_keeps_scaling_values_readable():
+    arena = Path("webapp/arena.js").read_text(encoding="utf-8")
+    index = Path("webapp/index.html").read_text(encoding="utf-8")
+
+    for source in (arena, index):
+        assert "Заходит в бой с капиталом: +'" in source
+        assert "' маны уже на старте'" in source
+        assert "Пробивает выбранную цель на '" in source
+        assert "' урона'" in source
+        assert "Врывается в бой и бьёт случайного врага на '" in source
+        assert "Проводит волну по врагам: '" in source
+        assert "Уходит громко: при гибели наносит '" in source
+
+    assert "startMana[1]" in arena
+    assert "bcRandomDmg[1]" in arena
+    assert "damageXy[1]" in arena
+    assert "aoeDmg[1]" in arena
+    assert "drAoe[1]" in arena
+    assert "mm[1]" in index
+
+
 def test_sudden_death_badges_show_current_turn_damage_not_next_turn_preview():
     source = Path("webapp/arena.js").read_text(encoding="utf-8")
     badge_block = source.split("function renderSuddenDeathBadges(state)", 1)[1].split(
@@ -1644,6 +1665,23 @@ def test_squad_wars_beta_tab_is_hidden_behind_disabled_flag():
     assert "...(SQUAD_WARS_BETA_ENABLED?[['wars','Войны']]:[])" in block
     assert "['shop','Магазин'],['wars','Войны'],['search','Поиск']" not in block
     assert "SQUAD_WARS_BETA_ENABLED && clan && tab === 'wars'" in block
+
+
+def test_daily_login_claimed_next_preview_uses_stored_cycle_not_one_more_day():
+    source = Path("webapp/index.html").read_text(encoding="utf-8")
+    block = source.split("const DailyLoginSheet = ({onClose, profile, status, onClaimed}) => {", 1)[1].split(
+        "const DailyLoginHelpSheet",
+        1,
+    )[0]
+
+    assert "const storedCycleDay = Number(status?.streak_day || 0);" in block
+    assert "const storedCycleMultiplier = Number(status?.multiplier || 1);" in block
+    assert "const storedCycleIsSpecial = storedCycleMultiplier === 3 || (storedCycleDay > 0 && storedCycleDay % 3 === 0);" in block
+    assert "const nextAmount    = alreadyClaimed ? (status?.reward_amount ?? status?.base_amount ?? status?.next_reward_amount ?? 0) : null;" in block
+    assert "if (alreadyClaimed && storedCycleIsSpecial)" in block
+    assert "const nextIsSpecial = alreadyClaimed ? storedCycleIsSpecial : !!status?.next_is_special;" in block
+    assert "alreadyClaimed && status?.next_is_special" not in block
+    assert "status?.next_reward_amount ?? status?.reward_amount" not in block
 
 
 def test_clean_arena_sfx_are_registered_and_triggered():

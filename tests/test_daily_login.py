@@ -397,6 +397,48 @@ def test_get_daily_login_status_next_reward_amount_not_special_after_special():
     )
 
 
+def test_get_daily_login_status_claimed_day_1_shows_tomorrow_regular():
+    """После получения 1-го дня в строке уже лежит завтрашний 2-й день, не день 3."""
+    now = datetime.now(timezone.utc)
+    conn = _DailyLoginFakeConnection(
+        available_at=now + timedelta(hours=24), claimed=True,
+        streak=1, streak_day=2, reward_type="coins", reward_amount=50,
+        multiplier=1, coins=0,
+        claimed_reward_type="stars", claimed_reward_amount=3,
+        last_claim_at=now,
+    )
+    db = _db_with_conn(conn)
+    import asyncio
+    status = asyncio.new_event_loop().run_until_complete(db.get_daily_login_status(113))
+    assert status["streak"] == 1
+    assert status["streak_day"] == 2
+    assert status["claimed"] is True
+    assert status["next_is_special"] is False
+    assert status["next_multiplier"] == 1
+    assert status["next_reward_amount"] == 50
+
+
+def test_get_daily_login_status_claimed_day_2_shows_tomorrow_special():
+    """После получения 2-го дня в строке лежит 3-й день, и только он особый."""
+    now = datetime.now(timezone.utc)
+    conn = _DailyLoginFakeConnection(
+        available_at=now + timedelta(hours=24), claimed=True,
+        streak=2, streak_day=3, reward_type="gems", reward_amount=15,
+        multiplier=3, gems=0,
+        claimed_reward_type="coins", claimed_reward_amount=50,
+        last_claim_at=now,
+    )
+    db = _db_with_conn(conn)
+    import asyncio
+    status = asyncio.new_event_loop().run_until_complete(db.get_daily_login_status(114))
+    assert status["streak"] == 2
+    assert status["streak_day"] == 3
+    assert status["claimed"] is True
+    assert status["next_is_special"] is True
+    assert status["next_multiplier"] == 3
+    assert status["next_reward_amount"] == 15
+
+
 def test_get_daily_login_status_streak_break_resets_notified():
     """Обрыв серии сбрасывает daily_login_notified, чтобы новое уведомление отправилось."""
     now = datetime.now(timezone.utc)

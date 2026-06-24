@@ -3313,7 +3313,7 @@ window.loadMobileSquadsBootstrap = async function(options = {}) {
 };
 </script>
 
-<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=7449c1dea37d">
+<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=6259308df6bf">
 // ═══════════════════════════════════════════
 // DESIGN TOKENS
 // ═══════════════════════════════════════════
@@ -8898,8 +8898,11 @@ const DailyLoginSheet = ({onClose, profile, status, onClaimed}) => {
 
   const displayType   = alreadyClaimed ? (status?.claimed_reward_type || status?.reward_type) : status?.reward_type;
   const displayAmount = alreadyClaimed ? (status?.claimed_reward_amount ?? 0) : (status?.reward_amount ?? status?.base_amount ?? 0);
+  const storedCycleDay = Number(status?.streak_day || 0);
+  const storedCycleMultiplier = Number(status?.multiplier || 1);
+  const storedCycleIsSpecial = storedCycleMultiplier === 3 || (storedCycleDay > 0 && storedCycleDay % 3 === 0);
   const nextType      = alreadyClaimed ? status?.reward_type : null;
-  const nextAmount    = alreadyClaimed ? (status?.next_reward_amount ?? status?.reward_amount ?? 0) : null;
+  const nextAmount    = alreadyClaimed ? (status?.reward_amount ?? status?.base_amount ?? status?.next_reward_amount ?? 0) : null;
 
   const rewardIconFor = (type, size=56) => {
     if (type === 'coins') return <IconCoin size={size}/>;
@@ -8917,16 +8920,16 @@ const DailyLoginSheet = ({onClose, profile, status, onClaimed}) => {
   const subLine = () => {
     if (isSpecial && !alreadyClaimed) return <span style={{color:'#fbbf24',fontSize:11,fontWeight:700}}>Сегодня — особая награда (x3)!</span>;
     if (daysToSpecial === 0 && !alreadyClaimed) return <span style={{color:'#fbbf24',fontSize:11,fontWeight:700}}>Особая награда сегодня!</span>;
-    // Уже забрали — ориентируемся на next_is_special (точно про СЛЕДУЮЩИЙ клейм).
-    if (alreadyClaimed && status?.next_is_special) return <span style={{color:'#fbbf24',fontSize:11,fontWeight:600}}>Следующая — особая (x3)!</span>;
+    // Уже забрали — строка статуса уже хранит следующий календарный цикл.
+    if (alreadyClaimed && storedCycleIsSpecial) return <span style={{color:'#fbbf24',fontSize:11,fontWeight:600}}>Следующая — особая (x3)!</span>;
     if (alreadyClaimed) return <span style={{color:'#7a6fa0',fontSize:11,fontWeight:600}}>Награда получена · следующая скоро</span>;
     // Не получено: точные дни до особой. day_to_special==1 → "завтра" = streak_day+1=3.
     if (daysToSpecial === 1) return <span style={{color:'#fbbf24',fontSize:11,fontWeight:700,animation:'pulse 1s ease-in-out infinite'}}>Завтра — особая награда (x3)!</span>;
     return <span style={{color:'#fbbf24',fontSize:11}}>До особой награды осталось {daysToSpecial} дней</span>;
   };
 
-  // Следующая НАГРАДА (после следующего клейма) — берём из API.
-  const nextIsSpecial = !!status?.next_is_special;
+  // Следующая НАГРАДА: после claim это уже сохранённый в status цикл, до claim — API-превью.
+  const nextIsSpecial = alreadyClaimed ? storedCycleIsSpecial : !!status?.next_is_special;
 
   const claimLabel = () => {
     if (!enabled) return '—';
@@ -9075,40 +9078,42 @@ const parseMechanicPattern = (m) => {
   // multi-number X_Y
   let mm;
   mm = s.match(/^deathrattle_aoe_damage_(\d+)$/);
-  if (mm) return { kind: 'deathrattle', value: mm[1], text: 'При гибели наносит ' + mm[1] + ' урона всем врагам и вражескому герою' };
+  if (mm) return { kind: 'deathrattle', value: mm[1], text: 'Уходит громко: при гибели наносит ' + mm[1] + ' урона всем врагам и вражескому герою' };
   mm = s.match(/^deathrattle_damage_(\d+)$/);
-  if (mm) return { kind: 'deathrattle', value: mm[1], text: 'При гибели наносит ' + mm[1] + ' урона' };
+  if (mm) return { kind: 'deathrattle', value: mm[1], text: 'Последний подарок: при гибели наносит ' + mm[1] + ' урона' };
   mm = s.match(/^deathrattle_summon_(\d+)$/);
   if (mm) return { kind: 'deathrattle', value: mm[1], text: 'При гибели призывает союзника #' + mm[1] };
 
   mm = s.match(/^battlecry_heal_hero_(\d+)$/);
-  if (mm) return { kind: 'battlecry', value: mm[1], text: 'При розыгрыше лечит своего героя на ' + mm[1] + ' здоровья' };
+  if (mm) return { kind: 'battlecry', value: mm[1], text: 'При розыгрыше поднимает героя на ' + mm[1] + ' здоровья' };
   mm = s.match(/^battlecry_heal_target_(\d+)$/);
-  if (mm) return { kind: 'battlecry', value: mm[1], text: 'При розыгрыше лечит выбранного союзника/героя на ' + mm[1] + ' здоровья' };
+  if (mm) return { kind: 'battlecry', value: mm[1], text: 'При розыгрыше возвращает выбранной цели ' + mm[1] + ' здоровья' };
   mm = s.match(/^battlecry_heal_(\d+)$/);
   if (mm) return { kind: 'battlecry', value: mm[1], text: 'При розыгрыше лечит цель на ' + mm[1] + ' здоровья' };
   mm = s.match(/^battlecry_aoe_damage_(\d+)$/);
-  if (mm) return { kind: 'battlecry', value: mm[1], text: 'При розыгрыше наносит ' + mm[1] + ' урона всем врагам' };
+  if (mm) return { kind: 'battlecry', value: mm[1], text: 'При розыгрыше накрывает всех врагов на ' + mm[1] + ' урона' };
+  mm = s.match(/^battlecry_damage_(\d+)_random$/);
+  if (mm) return { kind: 'battlecry', value: mm[1], text: 'Врывается в бой и бьёт случайного врага на ' + mm[1] + ' урона' };
   mm = s.match(/^battlecry_damage_(\d+)$/);
-  if (mm) return { kind: 'battlecry', value: mm[1], text: 'При розыгрыше наносит ' + mm[1] + ' урона выбранной цели' };
+  if (mm) return { kind: 'battlecry', value: mm[1], text: 'При розыгрыше сразу пробивает цель на ' + mm[1] + ' урона' };
   mm = s.match(/^battlecry_buff_(\d+)_(\d+)$/);
   if (mm) return { kind: 'battlecry', value: '+' + mm[1] + '/+' + mm[2], text: 'При розыгрыше усиливает союзника на +' + mm[1] + '/+' + mm[2] };
   mm = s.match(/^battlecry_buff_(\d+)$/);
   if (mm) return { kind: 'battlecry', value: '+' + mm[1], text: 'При розыгрыше усиливает союзников на +' + mm[1] };
 
   mm = s.match(/^spell_damage_(\d+)$/);
-  if (mm) return { kind: 'spell', value: mm[1], text: 'Наносит ' + mm[1] + ' урона выбранной цели' };
+  if (mm) return { kind: 'spell', value: mm[1], text: 'Пробивает выбранную цель на ' + mm[1] + ' урона' };
   mm = s.match(/^spell_heal_(\d+)$/);
   if (mm) return { kind: 'spell', value: mm[1], text: 'Восстанавливает ' + mm[1] + ' здоровья выбранной цели' };
   mm = s.match(/^spell_aoe_damage_(\d+)$/);
-  if (mm) return { kind: 'spell', value: mm[1], text: 'Наносит ' + mm[1] + ' урона всем вражеским существам' };
+  if (mm) return { kind: 'spell', value: mm[1], text: 'Проводит волну по врагам: ' + mm[1] + ' урона каждому' };
 
   mm = s.match(/^damage_(\d+)_(\d+)$/);
-  if (mm) return { kind: 'spell', value: mm[1], text: 'Наносит ' + mm[1] + ' урона' };
+  if (mm) return { kind: 'spell', value: mm[1], text: 'Пробивает выбранную цель на ' + mm[1] + ' урона' };
   mm = s.match(/^damage_(\d+)$/);
-  if (mm) return { kind: 'spell', value: mm[1], text: 'Наносит ' + mm[1] + ' урона' };
+  if (mm) return { kind: 'spell', value: mm[1], text: 'Пробивает выбранную цель на ' + mm[1] + ' урона' };
   mm = s.match(/^aoe_damage_(\d+)$/);
-  if (mm) return { kind: 'spell', value: mm[1], text: 'Наносит ' + mm[1] + ' урона всем вражеским существам' };
+  if (mm) return { kind: 'spell', value: mm[1], text: 'Проводит волну по врагам: ' + mm[1] + ' урона каждому' };
   mm = s.match(/^heal_(\d+)$/);
   if (mm) return { kind: 'spell', value: mm[1], text: 'Восстанавливает ' + mm[1] + ' здоровья' };
   mm = s.match(/^heal_target_(\d+)$/);
@@ -9117,19 +9122,19 @@ const parseMechanicPattern = (m) => {
   if (mm) return { kind: 'spell', value: '', text: 'Замораживает выбранное существо' };
 
   mm = s.match(/^regen_(\d+)$/);
-  if (mm) return { kind: 'passive', value: '+' + mm[1], text: 'Восстанавливает ' + mm[1] + ' здоровья в начале своего хода' };
+  if (mm) return { kind: 'passive', value: '+' + mm[1], text: 'В начале своего хода восстанавливает ' + mm[1] + ' здоровья' };
   mm = s.match(/^armor_(\d+)_(\d+)$/);
   if (mm) return { kind: 'passive', value: mm[1] + '–' + mm[2], text: 'Снижает входящий урон на случайное значение от ' + mm[1] + ' до ' + mm[2] };
   mm = s.match(/^armor_(\d+)$/);
-  if (mm) return { kind: 'passive', value: mm[1], text: 'Снижает входящий урон на ' + mm[1] };
+  if (mm) return { kind: 'passive', value: mm[1], text: 'Каждый удар гасится бронёй на ' + mm[1] + ' урона' };
   mm = s.match(/^reflect_(\d+)$/);
-  if (mm) return { kind: 'passive', value: mm[1], text: 'Возвращает ' + mm[1] + ' урона обратно атакующему' };
+  if (mm) return { kind: 'passive', value: mm[1], text: 'Наказывает за удар: возвращает атакующему ' + mm[1] + ' урона' };
   mm = s.match(/^aura_atk_(\d+)_(\d+)$/);
-  if (mm) return { kind: 'aura', value: '+' + mm[1], text: 'Союзные существа получают +' + mm[1] + ' к атаке' };
+  if (mm) return { kind: 'aura', value: '+' + mm[1], text: 'Ведёт союзников вперёд: +' + mm[1] + ' к атаке существ' };
   mm = s.match(/^aura_atk_(\d+)$/);
-  if (mm) return { kind: 'aura', value: '+' + mm[1], text: 'Союзные существа получают +' + mm[1] + ' к атаке' };
+  if (mm) return { kind: 'aura', value: '+' + mm[1], text: 'Ведёт союзников вперёд: +' + mm[1] + ' к атаке существ' };
   mm = s.match(/^cleave_(\d+)_(\d+)$/);
-  if (mm) return { kind: 'passive', value: mm[1] + '×' + mm[2], text: 'Наносит ' + mm[1] + ' урона до ' + mm[2] + ' соседним врагам при атаке' };
+  if (mm) return { kind: 'passive', value: mm[1] + '×' + mm[2], text: 'Рассекает строй: ' + mm[1] + ' урона до ' + mm[2] + ' соседним врагам при атаке' };
   mm = s.match(/^cleave_(\d+)$/);
   if (mm) return { kind: 'passive', value: mm[1], text: 'Наносит ' + mm[1] + ' урона соседним врагам при атаке' };
   mm = s.match(/^buff_all_(\d+)_(\d+)$/);
@@ -9139,9 +9144,9 @@ const parseMechanicPattern = (m) => {
   mm = s.match(/^mana_gain_(\d+)$/);
   if (mm) return { kind: 'passive', value: '+' + mm[1], text: 'Восстанавливает ' + mm[1] + ' маны' };
   mm = s.match(/^start_mana_(\d+)_(\d+)$/);
-  if (mm) return { kind: 'passive', value: '+' + mm[1], text: '+' + mm[1] + ' маны в начале боя' };
+  if (mm) return { kind: 'passive', value: '+' + mm[1], text: 'Заходит в бой с капиталом: +' + mm[1] + ' маны уже на старте' };
   mm = s.match(/^start_mana_(\d+)$/);
-  if (mm) return { kind: 'passive', value: '+' + mm[1], text: '+' + mm[1] + ' маны в начале боя' };
+  if (mm) return { kind: 'passive', value: '+' + mm[1], text: 'Заходит в бой с капиталом: +' + mm[1] + ' маны уже на старте' };
 
   // статичные механики
   if (MECHANIC_DESCRIPTIONS[s]) return { kind: s, value: '', text: MECHANIC_DESCRIPTIONS[s] };
@@ -18636,6 +18641,6 @@ const LeagueInfoSheet = ({onClose, onOpenGloryPath, profile}) => {
 
 ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
 </script>
-<script src="index.compiled.js?v=7449c1dea37d"></script>
+<script src="index.compiled.js?v=6259308df6bf"></script>
 </body>
 </html>
