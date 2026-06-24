@@ -17,10 +17,10 @@ import asyncio
 import json
 import logging
 import random
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from rlhf_env.components.battle_runner import BattleRunner
 from rlhf_env.components.deck_builder import (
     CardCatalog,
     build_random_arena_deck,
@@ -29,13 +29,14 @@ from rlhf_env.components.deck_builder import (
     validate_deck,
 )
 from rlhf_env.components.manifest import ManifestWriter
-from rlhf_env.components.policy_factory import build_policy
 from rlhf_env.components.policy_registry import PolicyRegistry
 
 logger = logging.getLogger(__name__)
 
 # Лимит одновременных групп, чтобы не съесть всю память
-MAX_CONCURRENT_GROUPS = 8
+# Максимум групп, держимых в памяти (вне зависимости от размера диска).
+# Старые выгружаются, но файлы на диске остаются и доступны через /api/groups.
+MAX_GROUPS_IN_MEMORY = 64
 
 
 def _build_deck(
@@ -123,7 +124,13 @@ def _build_game_state(
 
 
 class GroupState:
-    """Состояние одной активной (или завершённой) группы."""
+    """Состояние группы = цепочка боёв human-vs-model.
+
+    Среда работает только в интерактивном режиме: человек играет против
+    выбранной модели подряд N боёв (N = spec.battles_planned). На каждый
+    бой заранее генерируется battle_id, чтобы клиент мог переходить от
+    одного боя к другому без race-condition.
+    """
 
     def __init__(self, group_id: str, spec: Dict[str, Any], manifest: ManifestWriter):
         self.group_id = group_id
@@ -134,23 +141,38 @@ class GroupState:
         self.last_error: Optional[str] = None
         self.started_at = manifest.manifest["created_at"]
         self.finished_at: Optional[str] = None
+        # human_player: 1000 (P1) или 2000 (P2). По умолчанию — человек за P1.
+        self.human_player: int = int(spec.get("human_player", 1000))
+        # Сколько боёв подряд сыграть
+        self.battles_planned: int = int(spec.get("battles_planned", 1))
+        # Заранее сгенерированные battle_id для всей серии
+        self.battle_ids: List[str] = [
+            f"b_{uuid.uuid4().hex[:10]}" for _ in range(self.battles_planned)
+        ]
+        # battle_id, который сейчас играется (None если ещё не начат)
+        self.active_battle_id: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         results = self.manifest.manifest.get("results", {})
+        if self.finished_at:
+            status = "completed"
+        else:
+            status = "running" if self.active_battle_id else "loaded"
         return {
             "group_id": self.group_id,
-            "status": "completed" if self.finished_at else (
-                "running" if self.task and not self.task.done() else "error"
-            ),
+            "status": status,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
             "current_battle": self.current_battle,
-            "battles_planned": self.spec.get("battles_planned", 0),
+            "battles_planned": self.battles_planned,
             "battles_finished": results.get("battles_finished", 0),
             "winrate_p1": results.get("winrate_p1", 0.0),
             "winrate_p2": results.get("winrate_p2", 0.0),
             "last_error": self.last_error,
             "manifest_path": str(self.manifest.manifest_path),
+            "human_player": self.human_player,
+            "battle_ids": self.battle_ids,
+            "active_battle_id": self.active_battle_id,
         }
 
 
@@ -176,15 +198,15 @@ class SessionManager:
     # Публичное API
     # ------------------------------------------------------------------
     def start(self, spec: Dict[str, Any]) -> str:
-        """Стартует группу боёв в фоне. Возвращает group_id.
+        """Создаёт каркас группы human-vs-model. Возвращает group_id.
 
-        Требует активный event loop (запускать из aiohttp app / asyncio.run()).
+        Группа = N боёв подряд (spec.battles_planned) против одной модели.
+        Каждому бою заранее выдан battle_id (state.battle_ids).
+        Бои не запускаются в фоне — клиент открывает WS на конкретный
+        battle_id и играет. Сервер ведёт серию: после боя N клиент получает
+        battle_id боя N+1 (или сигнал «серия кончилась»).
         """
-        if len([g for g in self._groups.values() if g.task and not g.task.done()]) >= MAX_CONCURRENT_GROUPS:
-            raise RuntimeError(f"too many concurrent groups (max {MAX_CONCURRENT_GROUPS})")
-
         # Генерируем group_id
-        import uuid
         group_id = uuid.uuid4().hex[:12]
         group_dir = self.sessions_dir / group_id
         group_dir.mkdir(parents=True, exist_ok=True)
@@ -199,17 +221,12 @@ class SessionManager:
         state = GroupState(group_id, spec, manifest)
         self._groups[group_id] = state
 
-        # Запускаем фоновый task в активном loop
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError as e:
-            raise RuntimeError(
-                "SessionManager.start() requires a running asyncio event loop. "
-                "Use 'await sm.astart(spec)' from inside an async context, "
-                "or call from an aiohttp handler (event loop is running)."
-            ) from e
-        state.task = loop.create_task(self._run_group(state))
-        logger.info("[SessionManager] started group %s spec=%s", group_id, spec)
+        logger.info(
+            "[SessionManager] created group %s: human=%s vs %s, battles=%d, ids=%s",
+            group_id, state.human_player,
+            spec.get("p2_model" if state.human_player == 1000 else "p1_model"),
+            state.battles_planned, state.battle_ids,
+        )
         return group_id
 
     async def astart(self, spec: Dict[str, Any]) -> str:
@@ -294,89 +311,8 @@ class SessionManager:
     # ------------------------------------------------------------------
     # Внутреннее
     # ------------------------------------------------------------------
-    async def _run_group(self, state: GroupState) -> None:
-        """Главный цикл группы: запускает battles_planned матчей подряд."""
-        spec = state.spec
-        try:
-            p1_pol = build_policy({"name": spec.get("p1_model", "random")}, registry=self.registry)
-            p2_pol = build_policy({"name": spec.get("p2_model", "random")}, registry=self.registry)
-        except Exception as exc:
-            state.last_error = f"policy load failed: {exc}"
-            logger.exception("[SessionManager] policy load failed")
-            return
-
-        deck_strategy = spec.get("deck_strategy", "random_arenaenv")
-        custom_p1 = spec.get("custom_deck_p1")
-        custom_p2 = spec.get("custom_deck_p2")
-        seed_base = int(spec.get("seed", 0))
-        starting_player = spec.get("starting_player", "random")
-        battles_planned = int(spec.get("battles_planned", 1))
-        max_turns = int(spec.get("max_turns", 60))
-
-        try:
-            for i in range(battles_planned):
-                state.current_battle = i + 1
-                rng = random.Random(seed_base + i * 1009)
-                try:
-                    if deck_strategy == "custom" and (custom_p1 or custom_p2):
-                        p1_ids = _build_deck("custom", self.catalog, custom_p1, rng)
-                        p2_ids = _build_deck("custom", self.catalog, custom_p2, rng)
-                    else:
-                        p1_ids = _build_deck(deck_strategy, self.catalog, None, rng)
-                        p2_ids = _build_deck(deck_strategy, self.catalog, None, rng)
-                except Exception as exc:
-                    state.last_error = f"deck build failed: {exc}"
-                    logger.exception("[SessionManager] deck build failed")
-                    continue
-
-                game_state = _build_game_state(
-                    p1_ids, p2_ids, self.catalog,
-                    starting_player=starting_player, rng=rng,
-                )
-                from core.engine import ArenaEnvironment
-                engine = ArenaEnvironment(game_state)
-
-                battle_id = __import__("uuid").uuid4().hex[:12]
-                battle_log_path = state.manifest.group_dir / "battles" / f"{battle_id}.json"
-                runner = BattleRunner(
-                    group_id=state.group_id,
-                    battle_id=battle_id,
-                    policy_a=p1_pol,
-                    policy_b=p2_pol,
-                    engine=engine,
-                    battle_log_path=battle_log_path,
-                    max_turns=max_turns,
-                )
-                battle_log = await runner.arun()
-                winner, loser, status = (
-                    battle_log["result"]["winner_user_id"],
-                    battle_log["result"]["loser_user_id"],
-                    battle_log["result"]["status"],
-                )
-                state.manifest.append_battle_result(
-                    battle_id=battle_id,
-                    battle_log_path=str(battle_log_path),
-                    winner_user_id=winner,
-                    loser_user_id=loser,
-                    status=status,
-                    turns=battle_log["final_state_summary"]["turn_number"],
-                    duration_seconds=battle_log["duration_seconds"],
-                )
-                # сохраняем использованные колоды в манифест
-                if "decks" not in state.manifest.manifest:
-                    state.manifest.manifest["decks"] = {}
-                state.manifest.manifest["decks"][battle_id] = {
-                    "p1": p1_ids, "p2": p2_ids,
-                }
-        except asyncio.CancelledError:
-            state.last_error = "cancelled"
-            logger.info("[SessionManager] group %s cancelled", state.group_id)
-        except Exception as exc:
-            state.last_error = f"group failed: {exc}"
-            logger.exception("[SessionManager] group %s failed", state.group_id)
-        finally:
-            state.manifest.finalize()
-            state.finished_at = state.manifest.manifest["finished_at"]
+    # Бои играются через _ws_loop (server.py) — каждый бой = одна WS-сессия
+    # против бота. Никакого фонового runner'а не нужно.
 
 
-__all__ = ["SessionManager", "GroupState", "MAX_CONCURRENT_GROUPS"]
+__all__ = ["SessionManager", "GroupState", "MAX_GROUPS_IN_MEMORY"]

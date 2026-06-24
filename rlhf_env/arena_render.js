@@ -28,6 +28,8 @@
   let currentState = null;
   let selectedHandIndex = null; // hand_index выбранной карты
   let awaitingTarget = false;
+  let seriesIndex = 1;   // 1-based — номер текущего боя в серии
+  let seriesTotal = 1;   // сколько боёв в серии всего
 
   // ----------------------------------------------------------------------
   // Утилиты
@@ -178,12 +180,13 @@
     els.endTurn.classList.toggle("card-disabled", !hasEndTurn);
 
     // Статус
+    const series = (seriesTotal > 1) ? ` [Бой ${seriesIndex}/${seriesTotal}]` : "";
     if (state.is_over) {
-      els.status.textContent = "Бой окончен: " + (state.status || "?");
+      els.status.textContent = `Бой окончен: ${state.status || "?"}${series}`;
     } else if (yourTurn) {
-      els.status.textContent = "Ваш ход (P1)";
+      els.status.textContent = `Ваш ход (P1)${series}`;
     } else {
-      els.status.textContent = "Ход противника…";
+      els.status.textContent = `Ход противника…${series}`;
     }
   }
 
@@ -205,10 +208,31 @@
       try {
         const data = JSON.parse(ev.data);
         if (data.type === "state") {
+          if (typeof data.series_index === "number") seriesIndex = data.series_index;
+          if (typeof data.series_total === "number") seriesTotal = data.series_total;
           render(data.state, data.legal_actions, data.your_turn);
         } else if (data.type === "result") {
           const winner = data.battle_log?.result?.winner_user_id;
-          els.status.textContent = `Бой завершён. Победил: ${winner === 1000 ? "P1 (вы)" : winner === 2000 ? "P2 (бот)" : "?"}`;
+          const seriesIndex = data.series_index;
+          const seriesTotal = data.series_total;
+          const nextBid = data.next_battle_id;
+          let msg = `Бой ${seriesIndex}/${seriesTotal} завершён. `;
+          msg += winner === 1000 ? "Победил: ВЫ" : winner === 2000 ? "Победил: БОТ" : "Ничья";
+          if (nextBid) {
+            msg += ` — следующий через 3 сек…`;
+            els.status.textContent = msg;
+            // Перезагружаем на следующий бой серии (battle_id меняется)
+            setTimeout(() => {
+              window.location.href = `/battle?group_id=${encodeURIComponent(gid)}&battle_id=${encodeURIComponent(nextBid)}`;
+            }, 3000);
+          } else {
+            msg += ` — СЕРИЯ ЗАВЕРШЕНА!`;
+            els.status.textContent = msg;
+            // Через 5 сек — на страницу группы
+            setTimeout(() => {
+              window.location.href = `/groups/${encodeURIComponent(gid)}`;
+            }, 5000);
+          }
         } else if (data.type === "error") {
           els.status.textContent = "Ошибка: " + data.message;
         } else if (data.type === "pong") {

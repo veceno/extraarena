@@ -383,18 +383,40 @@ class WebApp:
         return web.json_response({"groups": self.session_manager.list()})
 
     async def api_start_group(self, request: web.Request) -> web.Response:
+        """Создаёт группу human-vs-model. Возвращает group_id + первый battle_id.
+
+        Всегда интерактивный режим: человек играет за p1_model'а (user_id=1000)
+        против бота (spec['p2_model'], user_id=2000). battles_planned — сколько
+        матчей подряд сыграть.
+        """
         try:
             spec = await request.json()
         except Exception:
             return web.json_response({"error": "invalid json"}, status=400)
+
+        # Нормализация: всегда interactive, human = P1
+        spec.setdefault("interactive", True)
+        spec.setdefault("human_player", 1000)
+        spec.setdefault("battles_planned", 1)
+        # p1_model не имеет значения (играет человек), но пусть будет передан
+        # для полноты manifest'а. Не валидируем.
+
         try:
             group_id = self.session_manager.start(spec)
         except Exception as exc:
             logger.exception("[server] start_group failed")
             return web.json_response({"error": str(exc)}, status=400)
+        state = self.session_manager._groups.get(group_id)
+        if state is None:
+            return web.json_response({"error": "internal: state not registered"}, status=500)
         return web.json_response({
             "group_id": group_id,
-            "status": "running",
+            "status": "loaded",  # ждёт подключения к WS
+            "human_player": state.human_player,
+            "battle_id": state.battle_ids[0],  # первый бой серии
+            "battles_planned": state.battles_planned,
+            "battle_ids": state.battle_ids,    # все battle_id серии
+            "next_battle_url": f"/battle?group_id={group_id}&battle_id={state.battle_ids[0]}",
             "manifest_path": f"/api/groups/{group_id}/manifest",
         })
 
@@ -470,74 +492,92 @@ class WebApp:
         return ws
 
     async def _ws_loop(self, ws: web.WebSocketResponse, gid: str, bid: str) -> None:
-        """Интерактивный цикл: человек играет за P1, бот — P2.
+        """Интерактивный цикл: человек играет за human_player, бот — за второго.
 
-        Использует уже существующий BattleRunner в режиме arun(action_queue=...).
+        Использует BattleRunner.arun(action_queue=...).
+        После каждого изменения состояния пушит {type:"state", ...} клиенту.
         """
-        manifest = self.session_manager.get_manifest(gid)
-        if manifest is None:
-            await ws.send_json({"type": "error", "message": "group not found"})
+        from core.state import GameStatus
+        from core.engine import ArenaEnvironment
+        from rlhf_env.components.battle_runner import BattleRunner
+        from rlhf_env.components.deck_builder import build_random_arena_deck
+        from rlhf_env.components.policy_factory import build_policy
+        from rlhf_env.components.session_manager import _build_game_state
+        import random as rnd
+
+        state_obj = self.session_manager._groups.get(gid)
+        if state_obj is None:
+            # Группа могла быть перезапущена — пробуем достать spec из manifest на диске
+            manifest = self.session_manager.get_manifest(gid)
+            if manifest is None:
+                await ws.send_json({"type": "error", "message": "group not found"})
+                return
+            spec = manifest.get("spec", {})
+            human_player = int(spec.get("human_player", 1000))
+        else:
+            spec = state_obj.spec
+            human_player = int(state_obj.human_player)
+
+        # Бот играет за второго игрока
+        bot_model_name = spec.get("p2_model" if human_player == 1000 else "p1_model", "end_turn")
+        max_turns = int(spec.get("max_turns", 60))
+        starting_player = spec.get("starting_player", "random")
+        seed_base = int(spec.get("seed", 0))
+        # Номер текущего боя в серии (0-based). Используется для seed и колоды.
+        battle_index = 0
+        if state_obj is not None:
+            try:
+                battle_index = state_obj.battle_ids.index(bid)
+            except ValueError:
+                battle_index = state_obj.current_battle
+            # помечаем активный бой
+            state_obj.active_battle_id = bid
+            state_obj.current_battle = battle_index + 1
+        # seed зависит от номера боя — разные колоды в серии
+        seed = seed_base + battle_index * 1009
+
+        try:
+            bot = build_policy({"name": bot_model_name})
+        except Exception as exc:
+            await ws.send_json({"type": "error", "message": f"bot load failed: {exc}"})
             return
 
-        # Спека для конкретного боя — обычно в spec['interactive_battle']
-        spec = manifest.get("spec", {})
-        p2_model_name = spec.get("p2_model", "end_turn")
-        difficulty = str(spec.get("difficulty", "default"))
-
-        from rlhf_env.components.policy_factory import build_policy
-        bot = build_policy({"name": p2_model_name, "difficulty": difficulty})
-
-        # Создаём GameState (random deck, иначе из spec)
-        import random as rnd
-        from core.engine import ArenaEnvironment
-        from rlhf_env.components.deck_builder import build_random_arena_deck
-        from rlhf_env.components.session_manager import _build_game_state
-
-        rng = rnd.Random(int(spec.get("seed", 0)) + int(bid[-4:], 16))
+        # Дека: random ArenaENV (если custom — пока тоже random, custom-deck в interactive TODO)
+        rng = rnd.Random(seed)
         catalog = self.catalog
         p1_ids = build_random_arena_deck(catalog, rng=rng)
         p2_ids = build_random_arena_deck(catalog, rng=rng)
-        gs = _build_game_state(p1_ids, p2_ids, catalog, starting_player="random", rng=rng)
+        gs = _build_game_state(p1_ids, p2_ids, catalog, starting_player=starting_player, rng=rng)
         engine = ArenaEnvironment(gs)
-
-        from rlhf_env.components.battle_runner import BattleRunner
 
         battle_log_path = self.session_manager.sessions_dir / gid / "battles" / f"{bid}.json"
 
-        # human = p1 (1000)
-        # bot = p2 (2000)
-        # HumanProxyPolicy затыкает select_action для P1
-        from rlhf_env.components.policy_factory import _RLHFEndTurnPolicy
-
-        # HumanProxy: забирает idx из ws_input_queue
-        human_queue: asyncio.Queue = asyncio.Queue()
-        ib = _InteractiveBattleShim(ws, engine, human_queue, gid, bid)
-
         class _HumanProxyPol:
-            name = "human_proxy"
+            name = "human"
             def select_action(self, engine_, pid):
-                # не вызывается в interactive mode
+                # В интерактивном режиме не вызывается — BattleRunner берёт из action_queue
                 return 0
 
         class _BotPol:
-            name = f"bot:{p2_model_name}"
+            name = f"bot:{bot_model_name}"
             def select_action(self, engine_, pid):
-                # bot — p2
                 return int(bot.select_action(engine_, pid))
 
         runner = BattleRunner(
             group_id=gid,
             battle_id=bid,
-            policy_a=_HumanProxyPol(),  # для P1 (заглушка)
-            policy_b=_BotPol(),         # для P2 (бот)
+            policy_a=_HumanProxyPol() if human_player == 1000 else _BotPol(),
+            policy_b=_BotPol() if human_player == 1000 else _HumanProxyPol(),
             engine=engine,
             battle_log_path=battle_log_path,
-            human_player=1000,
-            max_turns=int(spec.get("max_turns", 60)),
+            human_player=human_player,
+            max_turns=max_turns,
         )
 
-        async def _reader():
-            """Читает WS-сообщения от клиента и кладёт action в human_queue."""
+        action_queue: asyncio.Queue = asyncio.Queue()
+
+        async def _reader() -> None:
+            """WS-сообщения → action_queue."""
             async for msg in ws:
                 if msg.type == WSMsgType.TEXT:
                     try:
@@ -546,9 +586,8 @@ class WebApp:
                         continue
                     if data.get("type") == "action":
                         idx = int(data.get("index", -1))
-                        if idx < 0:
-                            continue
-                        await human_queue.put(idx)
+                        if idx >= 0:
+                            await action_queue.put(idx)
                     elif data.get("type") == "ping":
                         await ws.send_json({"type": "pong"})
                 elif msg.type == WSMsgType.ERROR:
@@ -556,36 +595,118 @@ class WebApp:
                 elif msg.type == WSMsgType.CLOSE:
                     break
 
-        # Запускаем параллельно: reader + battle-runner с периодическим push_state
+        async def _send_state() -> None:
+            """Один push текущего состояния клиенту."""
+            try:
+                state_view = _state_to_view(engine.state)
+                legal = _legal_actions_to_view(engine, human_player)
+                grp = self.session_manager._groups.get(gid)
+                series_index = (grp.current_battle if grp else battle_index + 1)
+                series_total = (grp.battles_planned if grp else 1)
+                await ws.send_json({
+                    "type": "state",
+                    "state": state_view,
+                    "legal_actions": legal,
+                    "your_turn": engine.state.current_turn_owner_id == human_player,
+                    "series_index": series_index,
+                    "series_total": series_total,
+                })
+            except Exception as exc:
+                logger.warning("[ws_battle] send_state failed: %s", exc)
+
+        async def _push_loop() -> None:
+            """Polling: если turn_number изменился — отправить state."""
+            last_turn = -1
+            last_action_count = -1
+            while not ws.closed:
+                if engine.state.status != GameStatus.ONGOING:
+                    break
+                cur_turn = engine.state.turn_number
+                # Также реагируем на изменение длины action_history (промежуточные эффекты)
+                cur_act = len(engine.state.action_history) if hasattr(engine.state, "action_history") else 0
+                if cur_turn != last_turn or cur_act != last_action_count:
+                    last_turn = cur_turn
+                    last_action_count = cur_act
+                    await _send_state()
+                await asyncio.sleep(0.08)
+
         reader_task = asyncio.create_task(_reader())
+        push_task = asyncio.create_task(_push_loop())
+
+        # Первичный push — клиент должен увидеть доску сразу
         try:
-            await runner.arun(action_queue=human_queue)
+            await _send_state()
+        except Exception as exc:
+            logger.warning("[ws_battle] initial state push failed: %s", exc)
+
+        try:
+            battle_log = await runner.arun(action_queue=action_queue)
+        except Exception as exc:
+            logger.exception("[ws_battle] battle failed")
+            await ws.send_json({"type": "error", "message": str(exc)})
+            reader_task.cancel()
+            push_task.cancel()
+            return
         finally:
             reader_task.cancel()
+            push_task.cancel()
 
-        await ws.send_json({"type": "result", "battle_log": runner.battle_log})
-        # Обновим manifest: добавим battle_id в completed battles
-        manifest_obj = self.session_manager._groups.get(gid)
-        if manifest_obj is not None:
-            manifest_obj.manifest.append_battle_result(
-                battle_id=bid,
-                battle_log_path=str(battle_log_path),
-                winner_user_id=runner.battle_log["result"]["winner_user_id"],
-                loser_user_id=runner.battle_log["result"]["loser_user_id"],
-                status=runner.battle_log["result"]["status"],
-                turns=runner.battle_log["final_state_summary"]["turn_number"],
-                duration_seconds=runner.battle_log["duration_seconds"],
-            )
+        # Финальный push + result
+        try:
+            await _send_state()
+        except Exception:
+            pass
+
+        # Определяем, есть ли следующий бой в серии
+        next_battle_id = None
+        grp = self.session_manager._groups.get(gid)
+        if grp is not None:
+            try:
+                idx = grp.battle_ids.index(bid)
+                if idx + 1 < len(grp.battle_ids):
+                    next_battle_id = grp.battle_ids[idx + 1]
+            except (ValueError, AttributeError):
+                pass
+
+        await ws.send_json({
+            "type": "result",
+            "battle_log": battle_log,
+            "next_battle_id": next_battle_id,  # None → серия кончилась
+            "series_index": battle_index + 1,
+            "series_total": (grp.battles_planned if grp else 1),
+        })
+
+        # Обновим manifest
+        if grp is not None:
+            try:
+                grp.manifest.append_battle_result(
+                    battle_id=bid,
+                    battle_log_path=str(battle_log_path),
+                    winner_user_id=battle_log["result"]["winner_user_id"],
+                    loser_user_id=battle_log["result"]["loser_user_id"],
+                    status=battle_log["result"]["status"],
+                    turns=battle_log["final_state_summary"]["turn_number"],
+                    duration_seconds=battle_log["duration_seconds"],
+                )
+                # Сохраняем использованные колоды
+                if "decks" not in grp.manifest.manifest:
+                    grp.manifest.manifest["decks"] = {}
+                grp.manifest.manifest["decks"][bid] = {"p1": p1_ids, "p2": p2_ids}
+
+                # Если это последний бой серии — закрываем группу
+                if next_battle_id is None:
+                    grp.manifest.finalize()
+                    grp.finished_at = grp.manifest.manifest["finished_at"]
+                    grp.active_battle_id = None
+            except Exception as exc:
+                logger.warning("[ws_battle] manifest update failed: %s", exc)
 
 
 class _InteractiveBattleShim:
-    """Тонкий shim для future live-push (пока не используется, задел)."""
-    def __init__(self, ws, engine, queue, gid, bid):
-        self.ws = ws
-        self.engine = engine
-        self.queue = queue
-        self.gid = gid
-        self.bid = bid
+    """DEPRECATED — оставлен для обратной совместимости (не используется с v0.1+).
+
+    В новой версии _ws_loop создаёт engine + action_queue напрямую, без shim.
+    """
 
 
 # ============================================================================

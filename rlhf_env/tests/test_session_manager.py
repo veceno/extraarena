@@ -1,9 +1,16 @@
-"""Тесты session_manager: старт/стоп/статус/лист/манифест/путь к battle_log."""
+"""Тесты session_manager: интерактивная модель human-vs-model.
+
+В новой архитектуре SessionManager.start() НЕ запускает бой автоматически —
+только создаёт группу с предвыделенными battle_ids и каркасом manifest.json.
+Бой проигрывается через WS-сессию (server.py). Здесь проверяем:
+  - start возвращает group_id и создаёт каталоги;
+  - battle_ids генерируются в нужном количестве;
+  - статус "loaded" → "running" → "completed" обновляется через
+    прямые вызовы append_battle_result/active_battle_id (это делает server.py).
+"""
 from __future__ import annotations
 
-import asyncio
-import shutil
-import time
+import json
 from pathlib import Path
 
 import pytest
@@ -22,131 +29,127 @@ def sm(tmp_path):
     )
 
 
-async def _wait_for(sm, gid, timeout: float = 20.0):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        s = sm.status(gid)
-        if s and s["status"] in ("completed", "error"):
-            return s
-        await asyncio.sleep(0.05)
-    raise TimeoutError("group did not complete in time")
-
-
-async def _run_full(sm, spec, timeout: float = 30.0) -> dict:
-    """Запустить группу в активном loop и дождаться завершения."""
-    gid = sm.start(spec)
-    return await _wait_for(sm, gid, timeout=timeout)
-
-
-def _run(sm, spec, timeout: float = 30.0) -> dict:
-    """Sync-обёртка: запускает asyncio.run + _run_full."""
-    return asyncio.run(_run_full(sm, spec, timeout=timeout))
-
-
 def test_session_manager_start_creates_group(sm):
+    """start() должен вернуть group_id и создать каталоги."""
     spec = {
-        "p1_model": "random",
+        "p1_model": "human",
         "p2_model": "end_turn",
         "battles_planned": 2,
         "deck_strategy": "random_arenaenv",
         "seed": 1,
+        "interactive": True,
+        "human_player": 1000,
     }
-    s = _run(sm, spec, timeout=60.0)
-    assert s["status"] == "completed"
-    assert s["battles_finished"] == 2
+    gid = sm.start(spec)
+    assert isinstance(gid, str) and len(gid) >= 8
+    s = sm.status(gid)
+    assert s is not None
+    assert s["status"] == "loaded"  # ещё никто не открыл WS
+    assert s["battles_planned"] == 2
+    assert len(s["battle_ids"]) == 2
+    assert s["human_player"] == 1000
+    # Каталоги созданы
+    assert (sm.sessions_dir / gid).is_dir()
+    assert (sm.sessions_dir / gid / "battles").is_dir()
 
 
-def test_session_manager_completes_group(sm):
+def test_session_manager_status_default_human_is_p1(sm):
+    spec = {"p1_model": "human", "p2_model": "end_turn", "battles_planned": 1}
+    gid = sm.start(spec)
+    s = sm.status(gid)
+    assert s["human_player"] == 1000  # default P1
+
+
+def test_session_manager_battles_planned_default(sm):
+    spec = {"p1_model": "human", "p2_model": "end_turn"}
+    gid = sm.start(spec)
+    s = sm.status(gid)
+    assert s["battles_planned"] == 1
+    assert len(s["battle_ids"]) == 1
+
+
+def test_session_manager_manifest_written_on_start(sm):
+    """manifest.json должен быть создан сразу при start() с правильным spec."""
     spec = {
-        "p1_model": "random",
-        "p2_model": "end_turn",
-        "battles_planned": 1,
-        "seed": 42,
+        "p1_model": "human", "p2_model": "end_turn",
+        "battles_planned": 3, "seed": 7,
     }
-    s = _run(sm, spec, timeout=30.0)
-    assert s["status"] == "completed"
-    assert s["battles_finished"] == 1
-    assert s["winrate_p1"] in (0.0, 1.0)
-
-
-def test_session_manager_writes_files(sm):
-    spec = {
-        "p1_model": "random",
-        "p2_model": "end_turn",
-        "battles_planned": 1,
-        "seed": 7,
-    }
-    s = _run(sm, spec, timeout=30.0)
-    gid = s["group_id"]
-    group_dir = sm.sessions_dir / gid
-    assert (group_dir / "manifest.json").exists()
-    assert (group_dir / "summary.json").exists()
-    battles = list((group_dir / "battles").glob("*.json"))
-    assert len(battles) == 1
-
-
-def test_session_manager_get_manifest(sm):
-    spec = {
-        "p1_model": "random", "p2_model": "end_turn",
-        "battles_planned": 1, "seed": 0,
-    }
-    s = _run(sm, spec, timeout=30.0)
-    gid = s["group_id"]
+    gid = sm.start(spec)
     m = sm.get_manifest(gid)
+    assert m is not None
     assert m["group_id"] == gid
-    assert m["results"]["battles_finished"] == 1
-    assert "decks" in m
-
-
-def test_session_manager_list_includes_completed(sm):
-    spec = {"p1_model": "random", "p2_model": "end_turn", "battles_planned": 1, "seed": 0}
-    s = _run(sm, spec, timeout=30.0)
-    gid = s["group_id"]
-    groups = sm.list()
-    assert any(g["group_id"] == gid for g in groups)
+    assert m["spec"]["p2_model"] == "end_turn"
+    assert m["spec"]["battles_planned"] == 3
+    # battle_ids предвыделены в state (и попадают в to_dict())
+    s = sm.status(gid)
+    assert len(s["battle_ids"]) == 3
 
 
 def test_session_manager_get_manifest_unknown(sm):
     assert sm.get_manifest("nonexistent-gid-zzz") is None
 
 
-def test_session_manager_find_battle_path(sm):
-    spec = {"p1_model": "random", "p2_model": "end_turn", "battles_planned": 1, "seed": 0}
-    s = _run(sm, spec, timeout=30.0)
-    gid = s["group_id"]
-    m = sm.get_manifest(gid)
-    battle_id = m["battle_ids"][0]
-    bp = sm.find_battle_path(gid, battle_id)
-    assert bp is not None
-    assert bp.exists()
-    log = sm.battle_log(gid, battle_id)
-    assert log is not None
-    assert log["battle_id"] == battle_id
+def test_session_manager_list_includes_loaded(sm):
+    """list() должен включать только что созданные (loaded) группы."""
+    before = len(sm.list())
+    sm.start({"p1_model": "human", "p2_model": "end_turn", "battles_planned": 1})
+    after = len(sm.list())
+    assert after == before + 1
 
 
-def test_session_manager_stop_running():
-    """Запускаем большую группу и останавливаем — статус должен стать cancelled/error."""
-    sessions_dir = Path("/tmp/rlhf_test_stop")
-    shutil.rmtree(sessions_dir, ignore_errors=True)
-    sm = SessionManager(
-        sessions_dir=sessions_dir,
-        models_dir="ai/models",
-        registry=PolicyRegistry.scan("ai/models"),
-    )
-    if not Path("ai/models/extra-lr-v4-max.onnx").exists():
-        pytest.skip("V4-Max not present")
-    spec = {
-        "p1_model": "extra-lr-v4-max",
-        "p2_model": "random",
-        "battles_planned": 100,
-        "seed": 0,
-    }
-    gid = asyncio.run(sm.astart(spec))
-    # ждём пока запустится
-    for _ in range(20):
-        s = sm.status(gid)
-        if s and s["status"] == "running":
-            break
-        time.sleep(0.05)
-    ok = sm.stop(gid)
-    assert ok is True or ok is False
+def test_session_manager_find_battle_path_unknown(sm):
+    gid = sm.start({"p1_model": "human", "p2_model": "end_turn", "battles_planned": 1})
+    # Нет файлов боёв — путь не должен найтись
+    s = sm.status(gid)
+    assert sm.find_battle_path(gid, s["battle_ids"][0]) is None
+
+
+def test_session_manager_active_battle_lifecycle(sm):
+    """Имитация жизненного цикла боя (как делает server.py):
+    loaded → running (кто-то открыл WS) → completed (бой записан)."""
+    spec = {"p1_model": "human", "p2_model": "end_turn", "battles_planned": 2}
+    gid = sm.start(spec)
+    s0 = sm.status(gid)
+    assert s0["status"] == "loaded"
+    # WS открыт → active_battle_id
+    state_obj = sm._groups[gid]
+    first_bid = s0["battle_ids"][0]
+    state_obj.active_battle_id = first_bid
+    state_obj.current_battle = 1
+    s1 = sm.status(gid)
+    assert s1["status"] == "running"
+    assert s1["active_battle_id"] == first_bid
+    assert s1["current_battle"] == 1
+    # Бой завершён → active_battle_id=None, но current_battle=1
+    state_obj.active_battle_id = None
+    s2 = sm.status(gid)
+    assert s2["status"] == "loaded"  # следующий бой ещё не открыт
+    # Серия завершена
+    from datetime import datetime, timezone
+    state_obj.finished_at = datetime.now(timezone.utc).isoformat()
+    s3 = sm.status(gid)
+    assert s3["status"] == "completed"
+
+
+def test_session_manager_battle_ids_unique(sm):
+    """Все battle_ids в серии должны быть уникальны."""
+    spec = {"p1_model": "human", "p2_model": "end_turn", "battles_planned": 10}
+    gid = sm.start(spec)
+    s = sm.status(gid)
+    ids = s["battle_ids"]
+    assert len(ids) == len(set(ids))
+
+
+def test_session_manager_find_battle_path_after_file_written(sm):
+    """После записи battle_log.json find_battle_path должен его найти."""
+    spec = {"p1_model": "human", "p2_model": "end_turn", "battles_planned": 1}
+    gid = sm.start(spec)
+    s = sm.status(gid)
+    bid = s["battle_ids"][0]
+    bp = sm.sessions_dir / gid / "battles" / f"{bid}.json"
+    bp.write_text(json.dumps({"battle_id": bid, "result": {"winner_user_id": 1000}}), encoding="utf-8")
+    found = sm.find_battle_path(gid, bid)
+    assert found is not None
+    assert found.exists()
+    log = sm.battle_log(gid, bid)
+    assert log["battle_id"] == bid

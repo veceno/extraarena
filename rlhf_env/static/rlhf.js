@@ -1,10 +1,10 @@
 // RLHF Arena — клиентский JS для index.html
-// Загружает реестр моделей, отправляет форму на /api/groups, редиректит на /battle.
+// Грузит модели в p2_select (человек = P1, бот = P2).
+// POST /api/groups → редирект на /battle?group_id=...&battle_id=...
 
 const API = (path) => `/api${path}`;
 
 const els = {
-  p1Select: document.getElementById("p1_model"),
   p2Select: document.getElementById("p2_model"),
   deckStrategy: document.getElementById("deck_strategy"),
   customBlock: document.getElementById("custom-deck-block"),
@@ -21,25 +21,27 @@ async function loadModels() {
     const r = await fetch(API("/registry/models"));
     const data = await r.json();
     const models = data.models || [];
-    const groups = { action_onnx: "ONNX action-conditioned (V4)", legacy_onnx: "ONNX legacy (V2/V3)" };
+    const groups = { action_onnx: "── ONNX action-conditioned (V4) ──",
+                     legacy_onnx: "── ONNX legacy (V2/V3) ──" };
     let lastGroup = null;
     for (const m of models) {
       const opt = document.createElement("option");
       opt.value = m.name;
-      const group = groups[m.kind] || "Baseline";
-      if (group !== lastGroup) {
-        if (lastGroup !== null) {
-          const sep = document.createElement("option");
-          sep.disabled = true;
-          sep.textContent = `── ${group} ──`;
-          els.p1Select.appendChild(sep.cloneNode(true));
-          els.p2Select.appendChild(sep);
-        }
-        lastGroup = group;
+      if (groups[m.kind] && groups[m.kind] !== lastGroup) {
+        const sep = document.createElement("option");
+        sep.disabled = true;
+        sep.textContent = groups[m.kind];
+        els.p2Select.appendChild(sep);
+        lastGroup = groups[m.kind];
+      } else if (!groups[m.kind] && m.kind === "random") {
+        const sep = document.createElement("option");
+        sep.disabled = true;
+        sep.textContent = "── Baselines ──";
+        els.p2Select.appendChild(sep);
+        lastGroup = "baselines";
       }
       opt.textContent = `${m.name} [${m.kind}]`;
-      els.p1Select.appendChild(opt);
-      els.p2Select.appendChild(opt.cloneNode(true));
+      els.p2Select.appendChild(opt);
     }
   } catch (e) {
     console.warn("loadModels failed:", e);
@@ -48,8 +50,6 @@ async function loadModels() {
 
 async function loadVersion() {
   try {
-    const r = await fetch(API("/registry/models"));
-    // нет /api/version — оставим как 0.1.0
     els.versionSpan.textContent = "0.1.0";
   } catch (e) {
     els.versionSpan.textContent = "?";
@@ -85,13 +85,15 @@ els.form.addEventListener("submit", async (e) => {
   clearError();
   const fd = new FormData(els.form);
   const spec = {
-    p1_model: fd.get("p1_model"),
+    p1_model: "human",  // sentinel — человек играет за P1
     p2_model: fd.get("p2_model"),
     deck_strategy: fd.get("deck_strategy"),
-    battles_planned: parseInt(fd.get("battles_planned") || "1", 10),
+    battles_planned: parseInt(fd.get("battles_planned") || "3", 10),
     seed: parseInt(fd.get("seed") || "0", 10),
     starting_player: fd.get("starting_player"),
     max_turns: parseInt(fd.get("max_turns") || "60", 10),
+    interactive: true,
+    human_player: 1000,
   };
   if (spec.deck_strategy === "custom") {
     const txt = (els.customDeckTA.value || "").trim();
@@ -108,9 +110,6 @@ els.form.addEventListener("submit", async (e) => {
       return;
     }
   }
-  // Режим: human-vs-model → p1 должен играть человек → бой интерактивный
-  // Сейчас мы НЕ запускаем интерактивно (нет WS-страницы в этой версии);
-  // p1 = random baseline, бой = model vs model. В будущем — добавим checkbox.
   try {
     const r = await fetch(API("/groups"), {
       method: "POST",
@@ -122,7 +121,11 @@ els.form.addEventListener("submit", async (e) => {
       throw new Error(j.error || `HTTP ${r.status}`);
     }
     const data = await r.json();
-    window.location.href = `/groups/${data.group_id}`;
+    if (data.battle_id) {
+      window.location.href = `/battle?group_id=${encodeURIComponent(data.group_id)}&battle_id=${encodeURIComponent(data.battle_id)}`;
+    } else {
+      throw new Error("API не вернул battle_id");
+    }
   } catch (err) {
     showError("Ошибка: " + err.message);
   }
