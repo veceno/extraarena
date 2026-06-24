@@ -2241,6 +2241,54 @@ function makeClientActionId(prefix) {
   return `${prefix}-${matchId || 'match'}-${randomPart}`;
 }
 
+const ACTION_ERROR_MESSAGES = {
+  not_your_turn: 'не твой ход. Проверь соединение!',
+  turn_expired: 'время хода истекло. Проверь соединение!',
+  game_over: 'бой уже завершён',
+  game_already_ended: 'бой уже завершён',
+  match_not_ready: 'матч ещё не готов',
+  match_not_found: 'матч не найден',
+  not_participant: 'ты не участник этого матча',
+  arena_not_initialized: 'арена не инициализирована',
+  unknown_player: 'игрок не найден',
+  unknown_action: 'неизвестное действие',
+  invalid_action: 'некорректное действие',
+  invalid_hand_index: 'нет такой карты в руке',
+  card_not_found_in_hand: 'нет такой карты в руке',
+  board_full: 'поле уже заполнено',
+  insufficient_mana: 'недостаточно маны',
+  mana_insufficient: 'недостаточно маны',
+  target_required: 'нужна цель',
+  consume_target_not_found: 'цель для поглощения не найдена',
+  attacker_not_found: 'атакующий не найден',
+  unit_not_ready: 'существо ещё не готово',
+  no_attack: 'существо не может атаковать',
+  must_attack_taunt: 'сначала убей существо с провокацией',
+  target_not_found: 'цель не найдена',
+  invalid_talkie: 'некорректный токен',
+  talkie_disabled: 'токены отключены в этом матче',
+  talkie_limit_reached: 'лимит токенов исчерпан',
+  talkie_cooldown: 'токен на перезарядке',
+  action_failed: 'действие не удалось',
+  play_card_failed: 'не удалось разыграть карту',
+  attack_failed: 'не удалось атаковать',
+  turn_end_failed: 'не удалось завершить ход',
+  invalid_json: 'некорректный запрос',
+  user_id_required: 'не указан пользователь',
+  match_id_and_action_required: 'нужны match_id и action',
+  unknown_action_type: 'неизвестный тип действия',
+  invalid_action_format: 'некорректный формат действия',
+  preview_failed: 'не удалось показать предпросмотр',
+  unauthorized: 'требуется авторизация',
+  authentication_required: 'требуется авторизация'
+};
+
+function translateActionError(rawCode) {
+  if (!rawCode) return '';
+  const code = String(rawCode).trim();
+  return ACTION_ERROR_MESSAGES[code] || code.replace(/_/g, ' ');
+}
+
 async function parseActionError(response, fallbackMessage) {
   let payload = {};
   try {
@@ -2251,9 +2299,16 @@ async function parseActionError(response, fallbackMessage) {
   if (payload.state) {
     handleStateChanged({state: payload.state});
   }
-  const error = new Error(payload.feedback || payload.error || payload.message || fallbackMessage);
+  const rawError = payload.error || payload.message;
+  const translated = translateActionError(rawError);
+  const message = payload.feedback
+    || (translated ? translated : null)
+    || (rawError ? null : fallbackMessage)
+    || fallbackMessage;
+  const error = new Error(message);
   error.feedback = payload.feedback || payload.result?.feedback || '';
   error.payload = payload;
+  error.rawError = rawError;
   return error;
 }
 
@@ -3933,7 +3988,14 @@ function createLogGroup(title, side, entries) {
   entries.forEach(entry => {
     const row = document.createElement('div');
     row.className = 'log-entry';
-    if (isHeroDamageLog(entry.text)) row.classList.add('damage-hero');
+    if (isHeroDamageLog(entry.text)) {
+      row.classList.add('damage-hero');
+      // Если урон герою нанёс текущий игрок — помечаем зелёным (успешная атака).
+      // Если урон герою нанёс оппонент — оставляем красным (по умолчанию).
+      if (entry.type === 'player') {
+        row.classList.add('damage-from-player');
+      }
+    }
 
     const text = document.createElement('span');
     text.innerHTML = formatLogEntryText(entry.text);
@@ -6545,14 +6607,20 @@ function openCardInfo(card) {
     mechEl.appendChild(row);
   };
 
-  if (card.mechanics_desc) {
-    addMechanicDetail('МЕХАНИКА', card.mechanics_desc, 'database', getMechanicIconPath(mechanics[0] || ''));
-  } else if (mechanics.length > 0) {
+  // Если у механики есть динамический паттерн (например deathrattle_aoe_damage_3),
+  // предпочитаем живое описание из parseMechanic. Только если ни одна механика
+  // не распарсилась, используем статичный mechanics_desc.
+  let hasParsed = false;
+  if (mechanics.length > 0) {
     mechanics.forEach(function(m) {
       const parsed = parseMechanic(m);
       if (!parsed) return;
+      hasParsed = true;
       addMechanicDetail(parsed.label, parsed.description, parsed.kind, getMechanicIconPath(m, parsed));
     });
+  }
+  if (!hasParsed && card.mechanics_desc) {
+    addMechanicDetail('МЕХАНИКА', card.mechanics_desc, 'database', getMechanicIconPath(mechanics[0] || ''));
   }
   modal.classList.toggle('no-mechanics', !hasMechanicDetails);
   

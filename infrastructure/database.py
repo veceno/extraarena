@@ -995,6 +995,14 @@ class Database:
                     return
                 if now < prev_available_at:
                     return
+                # Идемпотентность: если цикл ещё не забран (prev_claimed=False)
+                # и доступное время уже совпадает с now (±1 сек) — значит, мы
+                # уже продвинули этот цикл в предыдущем вызове. Не сбрасываем
+                # notified и не пишем available_at, чтобы scheduler не
+                # отправлял повторные уведомления на каждом опросе статуса.
+                if not prev_claimed:
+                    if abs((now - prev_available_at).total_seconds()) < 1.5:
+                        return
                 if prev_claimed:
                     new_streak_day = int(locked["daily_login_streak_day"] or 0) + 1
                     new_streak = int(locked["daily_login_streak"] or 0) + 1
@@ -13584,10 +13592,13 @@ class Database:
                     user_id, gem_price,
                 )
 
+                # Не сбрасываем last_tick_at при апгрейде: новый уровень имеет
+                # меньший интервал, и сохранённый прогресс автоматически
+                # пересчитается в _compute_generator_accumulated (с учётом cap).
                 await conn.execute(
                     """
                     UPDATE generator_state
-                    SET level = $2, accumulated_keys = 0, last_tick_at = NOW(),
+                    SET level = $2, accumulated_keys = 0,
                         notified = FALSE, updated_at = NOW()
                     WHERE user_id = $1
                     """,
@@ -14479,6 +14490,8 @@ class Database:
             ("glory", 500,  "coins", 800,  None,                          False),
             ("glory", 700,  "gems",  50,   None,                          False),
             ("glory", 1000, "case",  2,    None,                          False),
+            ("glory", 1200, "coins", 3000, None,                          False),
+            ("glory", 1200, "particles", 30, '{"card_id": 46, "rarity": "superrare"}', False),
             ("glory", 1500, "keys",  2,    None,                          False),
             ("glory", 2000, "coins", 1200, None,                          False),
             ("glory", 2500, "gems",  100,  None,                          False),
@@ -15841,8 +15854,27 @@ class Database:
                             return {"success": False, "error": "invalid_reward_meta", "message": "Награда временно недоступна из-за настройки сезона.", "granted": []}
                     elif reward_meta in ("", None):
                         reward_meta = None
-                    if reward_type not in {"coins", "gems", "keys", "card", "specific_card", "case"}:
-                        return {"success": False, "error": f"unsupported_reward_type:{reward_type}", "message": "Этот тип награды пока не поддерживается.", "granted": []}
+                    if reward_type not in {"coins", "gems", "keys", "card", "specific_card", "case", "particles", "cosmetic"}:
+                        # Неизвестный тип: не валим всю транзакцию (иначе пользователь
+                        # не получит ни одной награды из набора). Заменяем на fallback
+                        # монеты по rarity из meta или 'common'. Возвращаем ошибку в
+                        # granted, чтобы фронт мог её показать.
+                        fallback_rarity = "common"
+                        if isinstance(reward_meta, dict) and reward_meta.get("rarity"):
+                            fallback_rarity = str(reward_meta.get("rarity") or "common")
+                        fallback_amount = fallback_coins_for_rarity(fallback_rarity)
+                        # Записываем, что тип не поддержан, и продолжаем обработку
+                        # остальных entries. Монеты заменитель кладём сюда же.
+                        normalized_entries.append({
+                            "reward_type": "coins",
+                            "reward_amount": fallback_amount,
+                            "reward_meta": {
+                                "fallback_for": "unsupported_reward_type",
+                                "unsupported_type": reward_type,
+                                "fallback_rarity": fallback_rarity,
+                            },
+                        })
+                        continue
                     if reward_type in {"coins", "gems", "keys"} and reward_amount <= 0:
                         return {"success": False, "error": "invalid_reward_amount", "message": "Количество награды должно быть больше нуля.", "granted": []}
                     if reward_type == "case" and not 1 <= reward_amount <= 5:
@@ -16124,12 +16156,51 @@ class Database:
                             user_id, case_tier, case_tier,
                         )
                         user_case_id = int(case_row["id"]) if case_row else None
-                        granted.append({
-                            "reward_type": "case",
-                            "reward_amount": case_tier,
-                            "case_tier": case_tier,
-                            "user_case_id": user_case_id,
-                        })
+                        if user_case_id is not None:
+                            granted.append({
+                                "reward_type": "case",
+                                "reward_amount": case_tier,
+                                "case_tier": case_tier,
+                                "user_case_id": user_case_id,
+                            })
+                        else:
+                            # Fallback: не удалось создать кейс — выдаём монеты
+                            # по редкости из reward_meta (если указана) или просто
+                            # средний tier как fallback.
+                            fallback_rarity = str((reward_meta or {}).get("fallback_rarity") or "rare")
+                            fallback_coins = fallback_coins_for_rarity(fallback_rarity)
+                            await conn.execute(
+                                """
+                                UPDATE users
+                                SET coins = GREATEST(0, COALESCE(coins, 0) + $1),
+                                    updated_at = NOW()
+                                WHERE user_id = $2
+                                """,
+                                fallback_coins,
+                                user_id,
+                            )
+                            granted.append({
+                                "reward_type": "coins",
+                                "reward_amount": fallback_coins,
+                                "fallback_for": "case",
+                                "fallback_rarity": fallback_rarity,
+                                "case_tier": case_tier,
+                            })
+                            await conn.execute(
+                                """
+                                INSERT INTO economy_events (user_id, event_type, resource, amount, source, metadata)
+                                VALUES ($1, 'earn', 'coins', $2, 'reward_track', $3::jsonb)
+                                """,
+                                user_id,
+                                fallback_coins,
+                                json.dumps({
+                                    "track_type": track_type,
+                                    "position": position,
+                                    "fallback_for": "case",
+                                    "fallback_rarity": fallback_rarity,
+                                    "case_tier": case_tier,
+                                }, ensure_ascii=False),
+                            )
                         await conn.execute(
                             """
                             INSERT INTO economy_events (user_id, event_type, resource, amount, source, metadata)
@@ -16147,6 +16218,21 @@ class Database:
                         card_id = int((reward_meta or {}).get("card_id") or 0)
                         card_name = str((reward_meta or {}).get("card_name") or "")
                         card_rarity = str((reward_meta or {}).get("rarity") or "common")
+                        # Если card_name не заполнен в reward_meta (старая запись или
+                        # импорт через админку), резолвим из БД, чтобы UI показал
+                        # корректное название вместо "Частицы для карты #<id>".
+                        if card_id > 0 and not card_name:
+                            try:
+                                card_row = await conn.fetchrow(
+                                    "SELECT name, rarity FROM cards WHERE id = $1",
+                                    card_id,
+                                )
+                                if card_row:
+                                    card_name = str(card_row["name"] or "")
+                                    if card_rarity == "common" and card_row.get("rarity"):
+                                        card_rarity = str(card_row["rarity"])
+                            except Exception:
+                                pass
                         owned = await conn.fetchval(
                             "SELECT 1 FROM user_cards WHERE user_id = $1 AND card_id = $2",
                             user_id, card_id,
@@ -16215,19 +16301,91 @@ class Database:
                     elif reward_type == "cosmetic":
                         cosmetic_slug = str((reward_meta or {}).get("cosmetic_slug") or "")
                         auto_equip = bool((reward_meta or {}).get("auto_equip", False))
-                        grant_result = await self._grant_cosmetic_by_slug_on_conn(
-                            conn, user_id, cosmetic_slug,
-                            source="reward_track", auto_equip=auto_equip,
+                        fallback_rarity = str((reward_meta or {}).get("fallback_rarity") or "rare")
+                        grant_result = None
+                        cosmetic_error = None
+                        try:
+                            grant_result = await self._grant_cosmetic_by_slug_on_conn(
+                                conn, user_id, cosmetic_slug,
+                                source="reward_track", auto_equip=auto_equip,
+                            )
+                        except ValueError as exc:
+                            # cosmetic_not_found (или другая ValueError) →
+                            # graceful fallback на монеты по редкости. Транзакция
+                            # не прерывается, остальные награды в наборе выдаются.
+                            cosmetic_error = str(exc) or "cosmetic_not_found"
+                        except Exception as exc:
+                            cosmetic_error = f"cosmetic_grant_failed:{exc!s}"
+
+                        if grant_result is not None:
+                            granted.append({
+                                "reward_type": "cosmetic",
+                                "reward_amount": 1,
+                                "cosmetic_slug": cosmetic_slug,
+                                "auto_equip": auto_equip,
+                                "acquired": bool(grant_result.get("acquired", False)),
+                            })
+                        else:
+                            # Fallback: монеты по редкости косметики (или rare по умолчанию).
+                            fallback_coins = fallback_coins_for_rarity(fallback_rarity)
+                            await conn.execute(
+                                """
+                                UPDATE users
+                                SET coins = GREATEST(0, COALESCE(coins, 0) + $1),
+                                    updated_at = NOW()
+                                WHERE user_id = $2
+                                """,
+                                fallback_coins,
+                                user_id,
+                            )
+                            granted.append({
+                                "reward_type": "coins",
+                                "reward_amount": fallback_coins,
+                                "fallback_for": "cosmetic",
+                                "cosmetic_slug": cosmetic_slug,
+                                "fallback_rarity": fallback_rarity,
+                                "cosmetic_error": cosmetic_error,
+                            })
+                            await conn.execute(
+                                """
+                                INSERT INTO economy_events (user_id, event_type, resource, amount, source, metadata)
+                                VALUES ($1, 'earn', 'coins', $2, 'reward_track', $3::jsonb)
+                                """,
+                                user_id,
+                                fallback_coins,
+                                json.dumps({
+                                    "track_type": track_type,
+                                    "position": position,
+                                    "fallback_for": "cosmetic",
+                                    "cosmetic_slug": cosmetic_slug,
+                                    "fallback_rarity": fallback_rarity,
+                                    "cosmetic_error": cosmetic_error,
+                                }, ensure_ascii=False),
+                            )
+                    else:
+                        # Защита от race: если reward_type неожиданно не из списка
+                        # (например, динамически добавленный тип после normalize),
+                        # не валим всю транзакцию — начисляем минимальный fallback
+                        # по coins, чтобы остальные награды в наборе выдались.
+                        fallback_rarity = str((reward_meta or {}).get("rarity") or "common")
+                        fallback_coins = fallback_coins_for_rarity(fallback_rarity)
+                        await conn.execute(
+                            """
+                            UPDATE users
+                            SET coins = GREATEST(0, COALESCE(coins, 0) + $1),
+                                updated_at = NOW()
+                            WHERE user_id = $2
+                            """,
+                            fallback_coins,
+                            user_id,
                         )
                         granted.append({
-                            "reward_type": "cosmetic",
-                            "reward_amount": 1,
-                            "cosmetic_slug": cosmetic_slug,
-                            "auto_equip": auto_equip,
-                            "acquired": bool((grant_result or {}).get("acquired", False)),
+                            "reward_type": "coins",
+                            "reward_amount": fallback_coins,
+                            "fallback_for": "unsupported_reward_type",
+                            "unsupported_type": reward_type,
+                            "fallback_rarity": fallback_rarity,
                         })
-                    else:
-                        raise ValueError(f"unsupported_reward_type:{reward_type}")
 
         return {"success": True, "granted": granted}
 

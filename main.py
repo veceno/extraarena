@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramConflictError, TelegramNetworkError, TelegramServerError
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from aiohttp import web
 
 from bot import create_bot
@@ -557,10 +557,16 @@ async def _deliver_notification(
         return
 
     try:
+        # ВАЖНО: используем web_app=WebAppInfo, а не url=. Иначе Telegram
+        # открывает URL во внешнем браузере без Telegram.WebApp.initData,
+        # и аутентификация в игре проваливается. Через web_app= Telegram
+        # поднимает Mini App контекст и WebApp SDK передаёт initData,
+        # который фронт использует для /api/profile.
+        webapp_url_with_section = build_webapp_url(webapp_url, section=section, payload=payload)
         keyboard = InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(
                 text="Открыть ExtraArena",
-                url=build_webapp_url(webapp_url, section=section, payload=payload),
+                web_app=WebAppInfo(url=webapp_url_with_section),
             )
         ]])
         await bot.send_message(

@@ -9003,6 +9003,133 @@ const CardArtLightbox = ({cardId, name, onClose}) => (
   </div>
 );
 
+// Строит описание механики по списку mechanics (включая scaling-уровни).
+// Используется в CardDetailScreen, чтобы при уровне 3+ Крипер показывал
+// "наносит 3 урона" вместо статичного "2 урона" из mechanics_desc.
+// Покрывает все механики, известные в `core/effects.py`. При неизвестной
+// механике возвращает статичный mechanics_desc из БД.
+const MECHANIC_DESCRIPTIONS = {
+  taunt: 'Враг обязан атаковать эту карту',
+  shield: 'Блокирует следующий входящий урон',
+  permanent_shield: 'Блокирует весь входящий урон',
+  charge: 'Может атаковать в первый ход',
+  lifesteal: 'Лечит героя на величину нанесённого урона',
+  freeze: 'Заморозка — пропускает готовность к атаке',
+  aoe_freeze: 'Замораживает до 3 врагов при розыгрыше',
+  desk_freeze: 'Замораживает всю вражескую доску',
+  instant_kill: 'Один раз уничтожает выбранную цель; щит блокирует удар',
+  unit_killer: 'Уничтожает каждого атакованного юнита; щит блокирует удар',
+  bypass_taunt: 'Может игнорировать провокацию',
+  consume_ally: 'Уничтожает союзника и получает его статы',
+  choose_shield_damage: 'При розыгрыше: щит союзнику или 3 урона врагу',
+  cast_random_spell: 'При розыгрыше выбирает эффект: урон, лечение, заморозка или полный щит',
+  delete_target: 'Уничтожает выбранную цель (без срабатывания предсмертных)',
+  battlecry_freeze: 'При розыгрыше замораживает выбранную цель',
+  battlecry_draw: 'При розыгрыше берёт карту из колоды',
+  cleave: 'Наносит урон соседним врагам',
+  deathrattle: 'Срабатывает при гибели',
+};
+
+const parseMechanicPattern = (m) => {
+  if (!m || typeof m !== 'string') return null;
+  const s = m.trim();
+
+  // multi-number X_Y
+  let mm;
+  mm = s.match(/^deathrattle_aoe_damage_(\d+)$/);
+  if (mm) return { kind: 'deathrattle', value: mm[1], text: 'При гибели наносит ' + mm[1] + ' урона всем врагам и вражескому герою' };
+  mm = s.match(/^deathrattle_damage_(\d+)$/);
+  if (mm) return { kind: 'deathrattle', value: mm[1], text: 'При гибели наносит ' + mm[1] + ' урона' };
+  mm = s.match(/^deathrattle_summon_(\d+)$/);
+  if (mm) return { kind: 'deathrattle', value: mm[1], text: 'При гибели призывает союзника #' + mm[1] };
+
+  mm = s.match(/^battlecry_heal_hero_(\d+)$/);
+  if (mm) return { kind: 'battlecry', value: mm[1], text: 'При розыгрыше лечит своего героя на ' + mm[1] + ' здоровья' };
+  mm = s.match(/^battlecry_heal_target_(\d+)$/);
+  if (mm) return { kind: 'battlecry', value: mm[1], text: 'При розыгрыше лечит выбранного союзника/героя на ' + mm[1] + ' здоровья' };
+  mm = s.match(/^battlecry_heal_(\d+)$/);
+  if (mm) return { kind: 'battlecry', value: mm[1], text: 'При розыгрыше лечит цель на ' + mm[1] + ' здоровья' };
+  mm = s.match(/^battlecry_aoe_damage_(\d+)$/);
+  if (mm) return { kind: 'battlecry', value: mm[1], text: 'При розыгрыше наносит ' + mm[1] + ' урона всем врагам' };
+  mm = s.match(/^battlecry_damage_(\d+)$/);
+  if (mm) return { kind: 'battlecry', value: mm[1], text: 'При розыгрыше наносит ' + mm[1] + ' урона выбранной цели' };
+  mm = s.match(/^battlecry_buff_(\d+)_(\d+)$/);
+  if (mm) return { kind: 'battlecry', value: '+' + mm[1] + '/+' + mm[2], text: 'При розыгрыше усиливает союзника на +' + mm[1] + '/+' + mm[2] };
+  mm = s.match(/^battlecry_buff_(\d+)$/);
+  if (mm) return { kind: 'battlecry', value: '+' + mm[1], text: 'При розыгрыше усиливает союзников на +' + mm[1] };
+
+  mm = s.match(/^spell_damage_(\d+)$/);
+  if (mm) return { kind: 'spell', value: mm[1], text: 'Наносит ' + mm[1] + ' урона выбранной цели' };
+  mm = s.match(/^spell_heal_(\d+)$/);
+  if (mm) return { kind: 'spell', value: mm[1], text: 'Восстанавливает ' + mm[1] + ' здоровья выбранной цели' };
+  mm = s.match(/^spell_aoe_damage_(\d+)$/);
+  if (mm) return { kind: 'spell', value: mm[1], text: 'Наносит ' + mm[1] + ' урона всем вражеским существам' };
+
+  mm = s.match(/^damage_(\d+)_(\d+)$/);
+  if (mm) return { kind: 'spell', value: mm[1], text: 'Наносит ' + mm[1] + ' урона' };
+  mm = s.match(/^damage_(\d+)$/);
+  if (mm) return { kind: 'spell', value: mm[1], text: 'Наносит ' + mm[1] + ' урона' };
+  mm = s.match(/^aoe_damage_(\d+)$/);
+  if (mm) return { kind: 'spell', value: mm[1], text: 'Наносит ' + mm[1] + ' урона всем вражеским существам' };
+  mm = s.match(/^heal_(\d+)$/);
+  if (mm) return { kind: 'spell', value: mm[1], text: 'Восстанавливает ' + mm[1] + ' здоровья' };
+  mm = s.match(/^heal_target_(\d+)$/);
+  if (mm) return { kind: 'spell', value: mm[1], text: 'Лечит выбранную цель на ' + mm[1] + ' здоровья' };
+  mm = s.match(/^freeze_(\d+)$/);
+  if (mm) return { kind: 'spell', value: '', text: 'Замораживает выбранное существо' };
+
+  mm = s.match(/^regen_(\d+)$/);
+  if (mm) return { kind: 'passive', value: '+' + mm[1], text: 'Восстанавливает ' + mm[1] + ' здоровья в начале своего хода' };
+  mm = s.match(/^armor_(\d+)_(\d+)$/);
+  if (mm) return { kind: 'passive', value: mm[1] + '–' + mm[2], text: 'Снижает входящий урон на случайное значение от ' + mm[1] + ' до ' + mm[2] };
+  mm = s.match(/^armor_(\d+)$/);
+  if (mm) return { kind: 'passive', value: mm[1], text: 'Снижает входящий урон на ' + mm[1] };
+  mm = s.match(/^reflect_(\d+)$/);
+  if (mm) return { kind: 'passive', value: mm[1], text: 'Возвращает ' + mm[1] + ' урона обратно атакующему' };
+  mm = s.match(/^aura_atk_(\d+)_(\d+)$/);
+  if (mm) return { kind: 'aura', value: '+' + mm[1], text: 'Союзные существа получают +' + mm[1] + ' к атаке' };
+  mm = s.match(/^aura_atk_(\d+)$/);
+  if (mm) return { kind: 'aura', value: '+' + mm[1], text: 'Союзные существа получают +' + mm[1] + ' к атаке' };
+  mm = s.match(/^cleave_(\d+)_(\d+)$/);
+  if (mm) return { kind: 'passive', value: mm[1] + '×' + mm[2], text: 'Наносит ' + mm[1] + ' урона до ' + mm[2] + ' соседним врагам при атаке' };
+  mm = s.match(/^cleave_(\d+)$/);
+  if (mm) return { kind: 'passive', value: mm[1], text: 'Наносит ' + mm[1] + ' урона соседним врагам при атаке' };
+  mm = s.match(/^buff_all_(\d+)_(\d+)$/);
+  if (mm) return { kind: 'passive', value: '+' + mm[1] + '/+' + mm[2], text: 'Усиливает всех союзных существ на +' + mm[1] + '/+' + mm[2] };
+  mm = s.match(/^mana_drain_(\d+)$/);
+  if (mm) return { kind: 'passive', value: mm[1], text: 'Крадёт ' + mm[1] + ' маны у противника' };
+  mm = s.match(/^mana_gain_(\d+)$/);
+  if (mm) return { kind: 'passive', value: '+' + mm[1], text: 'Восстанавливает ' + mm[1] + ' маны' };
+  mm = s.match(/^start_mana_(\d+)_(\d+)$/);
+  if (mm) return { kind: 'passive', value: '+' + mm[1], text: '+' + mm[1] + ' маны в начале боя' };
+  mm = s.match(/^start_mana_(\d+)$/);
+  if (mm) return { kind: 'passive', value: '+' + mm[1], text: '+' + mm[1] + ' маны в начале боя' };
+
+  // статичные механики
+  if (MECHANIC_DESCRIPTIONS[s]) return { kind: s, value: '', text: MECHANIC_DESCRIPTIONS[s] };
+
+  // generic prefix fallback
+  if (s.startsWith('deathrattle_')) return { kind: 'deathrattle', value: '', text: 'Срабатывает при гибели' };
+  if (s.startsWith('battlecry_'))   return { kind: 'battlecry',   value: '', text: 'Срабатывает при розыгрыше' };
+  if (s.startsWith('spell_'))       return { kind: 'spell',       value: '', text: 'Эффект заклинания' };
+  return null;
+};
+
+const resolveMechanicDesc = (localCard) => {
+  const card = localCard || {};
+  const staticDesc = card.mechanics_desc || '';
+  const mechanics = Array.isArray(card.mechanics) ? card.mechanics : [];
+  if (!mechanics.length) return staticDesc;
+
+  // Берём первую механику, которая успешно парсится. Если ни одна не
+  // парсится — отдаём статичное описание из БД (как было раньше).
+  for (let i = 0; i < mechanics.length; i++) {
+    const parsed = parseMechanicPattern(mechanics[i]);
+    if (parsed && parsed.text) return parsed.text;
+  }
+  return staticDesc;
+};
+
 const CardDetailScreen = ({card, profile, onBack, onCardUpgraded}) => {
   const [imgErr,    setImgErr]    = React.useState(false);
   const [showArt,   setShowArt]   = React.useState(false);
@@ -9216,7 +9343,7 @@ const CardDetailScreen = ({card, profile, onBack, onCardUpgraded}) => {
                 </div>
                 <div style={{fontSize:14,fontWeight:700,color:T.purpleLt,fontFamily:"'Exo 2',sans-serif"}}>МЕХАНИКА</div>
               </div>
-              <div style={{fontSize:13,color:T.grey1,lineHeight:1.55,fontFamily:"'Exo 2',sans-serif"}}>{localCard.mechanics_desc}</div>
+              <div style={{fontSize:13,color:T.grey1,lineHeight:1.55,fontFamily:"'Exo 2',sans-serif"}}>{resolveMechanicDesc(localCard)}</div>
             </div>
           )}
         </div>
@@ -9855,7 +9982,7 @@ const DecksTab = ({presets, allCards, onReload, profile, onNewbieTaskComplete}) 
   );
 };
 
-const CollectionScreen = ({profile, onboardingTabIntent, onNewbieTaskComplete}) => {
+const CollectionScreen = ({profile, onboardingTabIntent, onNewbieTaskComplete, onReloadProfile}) => {
   const [tab,          setTab]         = React.useState(onboardingTabIntent || 'cards');
   const [cards,        setCards]       = React.useState([]);
   const [presets,      setPresets]     = React.useState([]);
@@ -9954,7 +10081,15 @@ const CollectionScreen = ({profile, onboardingTabIntent, onNewbieTaskComplete}) 
     return arr;
   }, [cards, rarityFilter, sortBy, sortDir]);
 
-  const handleCardUpgraded = React.useCallback(() => { invalidateInventoryCaches(); loadCards(); }, [loadCards]);
+  const handleCardUpgraded = React.useCallback(() => {
+    invalidateInventoryCaches();
+    loadCards();
+    // Обновляем профиль, чтобы TopBar и другие места сразу видели
+    // обновлённый баланс монет (без ручного обновления страницы).
+    if (typeof onReloadProfile === 'function') {
+      try { onReloadProfile(); } catch (_) {}
+    }
+  }, [loadCards, onReloadProfile]);
 
   const toggleSort = (id) => {
     if (sortBy === id) setSortDir(d => d === 'desc' ? 'asc' : 'desc');
@@ -10146,19 +10281,38 @@ const SquadIconButton = ({icon,title,onClick,tone='purple',hold=false}) => {
   );
 };
 
-const SquadAvatar = ({name, size=48, boost=false, url=null}) => {
+const SquadAvatar = ({name, size=48, boost=false, url=null, hideBoostBadge=false}) => {
   const seed = (name||'S').split('').reduce((a,c)=>(a*31+c.charCodeAt(0))&255, 17);
   const colors = [T.purple2,T.purple3,T.purpleHL,'#365075','#385c4d'];
   const bg = colors[seed % colors.length];
   return (
     <div style={{position:'relative',width:size,height:size,borderRadius:'50%',background:url?`center/cover url(${url})`:`radial-gradient(circle at 35% 25%,${bg},${T.bgDeep})`,border:`2px solid ${T.orange}`,boxShadow:`0 0 14px ${T.orange}44`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:Math.max(13,size*.3),fontWeight:900,color:T.white,fontFamily:"'Exo 2',sans-serif",flexShrink:0,overflow:'hidden'}}>
       {!url && (name||'S').slice(0,2).toUpperCase()}
-      {boost && <span style={{position:'absolute',right:-3,bottom:-2,width:size*.32,height:size*.32,borderRadius:'50%',background:'#fbbf24',border:`2px solid ${T.bg}`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:size*.16,color:'#4b2500'}}>⚡</span>}
+      {boost && !hideBoostBadge && <span style={{position:'absolute',right:-3,bottom:-2,width:size*.32,height:size*.32,borderRadius:'50%',background:'#fbbf24',border:`2px solid ${T.bg}`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:size*.16,color:'#4b2500'}}>⚡</span>}
     </div>
   );
 };
 const getSquadAvatarUrl = (s) => s?.avatar_url || s?.clan_avatar_url || null;
 const getSquadBannerUrl = (s) => s?.banner_url || s?.clan_banner_url || null;
+
+const boostGlowTextStyle = {
+  background:'linear-gradient(95deg,#bffcff 0%,#38f5df 34%,#73d7ff 62%,#efffff 82%,#38f5df 100%)',
+  backgroundSize:'220% 100%',
+  WebkitBackgroundClip:'text',
+  backgroundClip:'text',
+  WebkitTextFillColor:'transparent',
+  textShadow:'0 0 14px rgba(45,212,191,.42)',
+  animation:'titleShimmer 3.2s linear infinite'
+};
+const clanHasBoostFlag = (c) => !!(c?.boost || c?.has_boost || c?.clan_has_boost);
+// Renders a clan name with the cyan Boost glow when the clan has Boost purchased.
+const ClanName = ({clan, name, style={}}) => {
+  const display = name || clan?.name || clan?.clan_name || '';
+  if (!clanHasBoostFlag(clan)) {
+    return <span style={style}>{display}</span>;
+  }
+  return <span style={{...boostGlowTextStyle, ...style}}>{display}</span>;
+};
 
 const SquadButton = ({children,onClick,secondary=false,disabled=false,style={},...props}) => (
   <button {...props} onClick={disabled?undefined:onClick} disabled={disabled} style={{height:42,borderRadius:12,border:secondary?`1px solid ${T.purple2}`:'none',background:disabled?T.purple1:secondary?`linear-gradient(180deg,${T.bgCard},${T.bgDeep})`:`linear-gradient(160deg,${T.orangeLt},${T.orange} 45%,${T.orangeD})`,color:disabled?T.grey3:secondary?T.grey1:'#fff',fontSize:13,fontWeight:800,fontFamily:"'Exo 2',sans-serif",cursor:disabled?'default':'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:7,padding:'0 14px',boxShadow:!secondary&&!disabled?`0 5px 18px ${T.orange}40, inset 0 1px 0 rgba(255,255,255,0.3)`:secondary&&!disabled?'inset 0 1px 0 rgba(255,255,255,0.05)':'none',transition:'box-shadow 0.15s, filter 0.15s',...style}}>
@@ -10820,10 +10974,10 @@ const SquadsScreen = ({profile,onReloadProfile,onNoticeChange,onOpenAnnouncement
         {clan && tab === 'hub' && (
           <div style={{display:'flex',flexDirection:'column',gap:14}}>
             <div style={{height:156,borderRadius:18,overflow:'hidden',position:'relative',background:getSquadBannerUrl(clan)?`linear-gradient(180deg,rgba(7,3,18,.15),rgba(7,3,18,.88)), center/cover url(${getSquadBannerUrl(clan)})`:`linear-gradient(145deg,${T.purple3},${T.bgDeep})`,border:`1px solid ${T.purple3}66`,boxShadow:'0 12px 32px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.06)',padding:16,display:'flex',alignItems:'flex-end',gap:13}}>
-              <SquadAvatar name={clan.name} size={76} boost={clan.boost} url={getSquadAvatarUrl(clan)}/>
+              <SquadAvatar name={clan.name} size={76} boost={clan.boost} url={getSquadAvatarUrl(clan)} hideBoostBadge/>
               <div style={{minWidth:0,flex:1}}>
                 <div style={{display:'flex',alignItems:'center',gap:7,flexWrap:'wrap'}}>
-                  <div style={{fontSize:22,fontWeight:900,color:T.white,fontFamily:"'Exo 2',sans-serif",overflow:'hidden',textOverflow:'ellipsis'}}>{clan.name}</div>
+                  <ClanName clan={clan} style={{fontSize:22,fontWeight:900,fontFamily:"'Exo 2',sans-serif",overflow:'hidden',textOverflow:'ellipsis'}}/>
                   {clan.boost && <span style={{fontSize:10,fontWeight:900,color:'#fbbf24',background:'#fbbf2418',border:'1px solid #fbbf2444',borderRadius:999,padding:'2px 8px'}}>BOOST</span>}
                 </div>
                 <div style={{display:'flex',alignItems:'center',gap:8,marginTop:7,flexWrap:'wrap'}}>
@@ -10869,9 +11023,9 @@ const SquadsScreen = ({profile,onReloadProfile,onNoticeChange,onOpenAnnouncement
             </div>
             <div style={{display:'flex',flexDirection:'column',gap:9}}>
               {clans.map(c => <div key={c.id} style={{background:`linear-gradient(180deg,${T.bgCard},${T.bgDeep})`,border:`1px solid ${T.purple2}`,borderRadius:14,padding:12,display:'flex',alignItems:'center',gap:12,boxShadow:'inset 0 1px 0 rgba(255,255,255,0.04), 0 4px 14px rgba(0,0,0,0.3)'}}>
-                <SquadAvatar name={c.name} size={50} boost={c.boost} url={getSquadAvatarUrl(c)}/>
+                <SquadAvatar name={c.name} size={50} boost={c.boost} url={getSquadAvatarUrl(c)} hideBoostBadge/>
                 <div style={{flex:1,minWidth:0}}>
-                  <div style={{fontSize:15,fontWeight:900,color:T.white,fontFamily:"'Exo 2',sans-serif",overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{c.name}</div>
+                  <ClanName clan={c} style={{fontSize:15,fontWeight:900,fontFamily:"'Exo 2',sans-serif",overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}/>
                   <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginTop:4}}>
                     <span style={{fontSize:11,color:T.grey2}}>[{c.tag||`#${c.displayId || c.publicId || c.id}`}]</span>
                     <span style={{fontSize:11,color:T.grey3}}>ID {c.displayId || c.publicId || c.id}</span>
@@ -11053,7 +11207,7 @@ const SquadsScreen = ({profile,onReloadProfile,onNoticeChange,onOpenAnnouncement
                         <div style={{fontSize:13,fontWeight:900,color:T.white,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{r.name}</div>
                         <div style={{fontSize:11,color:T.grey2}}>{r.rarity || 'common'}</div>
                       </div>
-                      <SquadButton onClick={()=>buyReward(r.id)} disabled={bought} secondary={bought} style={{height:34,width:96,padding:0}}>{bought?'Куплено':<><SquadToken size={12}/>{r.cost}</>}</SquadButton>
+                      <SquadButton onClick={()=>buyReward(r.id)} disabled={bought} secondary={bought} style={{height:34,width:96,padding:0}}>{bought?'Куплено':<><SquadToken personal size={12}/>{r.cost}</>}</SquadButton>
                     </div>;
                   })}
                 </div>
@@ -11141,9 +11295,9 @@ const SquadsScreen = ({profile,onReloadProfile,onNoticeChange,onOpenAnnouncement
         {clan && tab === 'settings' && isOwner && settingsForm && (
           <div style={{display:'flex',flexDirection:'column',gap:12}}>
             <div style={{height:142,borderRadius:16,overflow:'hidden',position:'relative',background:(pendingPreviews.banner||getSquadBannerUrl(clan))?`linear-gradient(180deg,rgba(7,3,18,.12),rgba(7,3,18,.86)), center/cover url(${pendingPreviews.banner||getSquadBannerUrl(clan)})`:`linear-gradient(145deg,${T.purple3},${T.bgDeep})`,border:`1px solid ${T.purple1}`,padding:14,display:'flex',alignItems:'flex-end',gap:12}}>
-              <SquadAvatar name={settingsForm.name||clan.name} size={64} boost={clan.boost} url={pendingPreviews.avatar||getSquadAvatarUrl(clan)}/>
+              <SquadAvatar name={settingsForm.name||clan.name} size={64} boost={clan.boost} url={pendingPreviews.avatar||getSquadAvatarUrl(clan)} hideBoostBadge/>
               <div style={{minWidth:0}}>
-                <div style={{fontSize:18,fontWeight:900,color:T.white,fontFamily:"'Exo 2',sans-serif",overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{settingsForm.name||clan.name}</div>
+                <ClanName clan={clan} name={settingsForm.name||clan.name} style={{fontSize:18,fontWeight:900,fontFamily:"'Exo 2',sans-serif",overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}/>
                 <div style={{fontSize:12,color:T.grey1,fontWeight:900,marginTop:4}}>[{settingsForm.tag || clan.tag || `#${clan.displayId || clan.publicId || clan.id}`}] · ID {clan.displayId || clan.publicId || clan.id}</div>
               </div>
             </div>
@@ -12345,10 +12499,10 @@ const AnnouncementCard = ({ann, onReact, onOpenClan}) => {
       )}
       <div style={{padding:'12px 14px'}}>
         <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:10}}>
-          <SquadAvatar name={ann.clan_name||'Сквад'} size={40} boost={ann.clan_has_boost} url={getSquadAvatarUrl(ann)}/>
+          <SquadAvatar name={ann.clan_name||'Сквад'} size={40} boost={ann.clan_has_boost} url={getSquadAvatarUrl(ann)} hideBoostBadge/>
           <div style={{flex:1,minWidth:0}}>
             <div style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}}>
-              <span style={{fontSize:14,fontWeight:700,color:T.white,fontFamily:"'Exo 2',sans-serif"}}>{ann.clan_name||'Сквад'}</span>
+              <ClanName clan={{...ann, clan_has_boost: ann.clan_has_boost, boost: ann.clan_has_boost}} name={ann.clan_name||'Сквад'} style={{fontSize:14,fontWeight:700,fontFamily:"'Exo 2',sans-serif"}}/>
               {ann.clan_has_boost && <span style={{fontSize:9,fontWeight:700,color:'#fbbf24',background:'#fbbf2418',padding:'1px 6px',borderRadius:C_R.full}}>BOOST</span>}
             </div>
             <span style={{fontSize:11,color:T.grey2}}>{ann.created_at?.split('T')[0]}{ann.expires_at ? ` · до ${new Date(ann.expires_at).toLocaleDateString('ru')}` : ' · Бессрочно'}</span>
@@ -12605,13 +12759,13 @@ const AnnouncementsSubScreen = ({userClan, isClanOwner, onOpenSquads}) => {
       )}
       <AnnouncementEditorModal open={createOpen} onClose={()=>setCreateOpen(false)} onCreate={load} clan={userClan}/>
       {squadLoading && <div style={{position:'absolute',inset:0,display:'flex',alignItems:'center',justifyContent:'center',background:'rgba(5,2,12,.55)',color:T.grey1,fontSize:13,zIndex:20}}>Открываем сквад...</div>}
-      <CommunityModal open={!!squadPreview} onClose={()=>setSquadPreview(null)} title={squadPreview?.clan?.name || 'Сквад'}>
+      <CommunityModal open={!!squadPreview} onClose={()=>setSquadPreview(null)} title={<ClanName clan={squadPreview?.clan} name={squadPreview?.clan?.name || 'Сквад'}/>}>
         {squadPreview?.clan && (
           <div style={{display:'flex',flexDirection:'column',gap:12}}>
             <div style={{height:116,borderRadius:16,overflow:'hidden',position:'relative',background:getSquadBannerUrl(squadPreview.clan)?`linear-gradient(180deg,rgba(7,3,18,.12),rgba(7,3,18,.84)), center/cover url(${getSquadBannerUrl(squadPreview.clan)})`:`linear-gradient(145deg,${T.purple3},${T.bgDeep})`,border:`1px solid ${T.purple1}`,padding:14,display:'flex',alignItems:'flex-end',gap:12}}>
-              <SquadAvatar name={squadPreview.clan.name} size={56} boost={squadPreview.clan.boost} url={getSquadAvatarUrl(squadPreview.clan)}/>
+              <SquadAvatar name={squadPreview.clan.name} size={56} boost={squadPreview.clan.boost} url={getSquadAvatarUrl(squadPreview.clan)} hideBoostBadge/>
               <div style={{minWidth:0}}>
-                <div style={{fontSize:18,fontWeight:900,color:T.white,fontFamily:"'Exo 2',sans-serif",overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{squadPreview.clan.name}</div>
+                <ClanName clan={squadPreview.clan} style={{fontSize:18,fontWeight:900,fontFamily:"'Exo 2',sans-serif",overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}/>
                 <div style={{fontSize:12,color:T.grey1,fontWeight:900,marginTop:4}}>[{squadPreview.clan.tag || squadPreview.clan.publicId}] · ID {squadPreview.clan.displayId || squadPreview.clan.publicId}</div>
               </div>
             </div>
@@ -12645,7 +12799,7 @@ const IdeaCard = ({item, onVote, isAdmin, onStatusChange, onDelete}) => {
   const userVote = item.user_vote;
   const [expanded, setExpanded] = React.useState(false);
   const desc = item.description || '';
-  const isLong = desc.length > 120 || desc.split('\n').length > 2;
+  const isLong = desc.length > 80 || desc.split('\n').length > 2;
   return (
     <div style={{background:T.bgCard,borderRadius:C_R.xl||16,padding:14,border:`1px solid ${T.grey3}33`}}>
       <div style={{display:'flex',alignItems:'flex-start',gap:10}}>
@@ -12687,6 +12841,13 @@ const IdeaCard = ({item, onVote, isAdmin, onStatusChange, onDelete}) => {
 
 const BugCard = ({item, onStatusChange, onDelete}) => {
   const st = STATUS_COLORS[item.status]||STATUS_COLORS.reviewing;
+  const desc = item.description || '';
+  const [expanded, setExpanded] = React.useState(false);
+  // Раскрываем длинные описания. Также учитываем короткий текст с
+  // большим количеством переносов строк (чтобы 1-2 строки с \n\n\n
+  // тоже получали кнопку, а не уходили в обрезок без неё).
+  const lineCount = desc ? desc.split('\n').length : 0;
+  const isLong = desc.length > 80 || lineCount > 2;
   return (
     <div style={{background:T.bgCard,borderRadius:C_R.xl||16,padding:14,border:`1px solid rgba(239,68,68,0.25)`}}>
       <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:4,flexWrap:'wrap'}}>
@@ -12695,7 +12856,8 @@ const BugCard = ({item, onStatusChange, onDelete}) => {
         {item.moderation_status && item.moderation_status!=='approved' && <CBadge color={T.grey2}>{item.moderation_status}</CBadge>}
       </div>
       <div style={{fontSize:14,fontWeight:600,color:T.white,margin:'4px 0',lineHeight:'19px'}}>{item.title}</div>
-      <div style={{fontSize:12,color:T.grey1,lineHeight:'17px',whiteSpace:'pre-wrap'}}>{item.description}</div>
+      <div style={{fontSize:12,color:T.grey1,lineHeight:'17px',overflow:'hidden',display:'-webkit-box',WebkitLineClamp:expanded?'unset':2,WebkitBoxOrient:'vertical',whiteSpace:expanded?'pre-wrap':'normal'}}>{desc}</div>
+      {isLong && <button onClick={()=>setExpanded(v=>!v)} style={{background:'none',border:'none',padding:'4px 0 0',cursor:'pointer',color:T.orange,fontSize:11,fontWeight:600,fontFamily:"'Inter',sans-serif"}}>{expanded?'Свернуть':'Читать далее...'}</button>}
       <div style={{display:'flex',gap:8,marginTop:6}}>
         <PremiumNickname name={item.author_name||'Игрок'} player={item} style={{fontSize:11,color:T.grey2}}/>
         <span style={{fontSize:11,color:T.grey3}}>·</span>
@@ -14533,7 +14695,8 @@ const PreBattleScreen = ({data, onClose}) => {
       backgroundImage:background ? 'linear-gradient(135deg,rgba(26,16,48,0.82),rgba(19,13,38,0.66)),url(' + background + ')' : undefined,
       backgroundSize:background ? 'cover' : undefined,
       backgroundPosition:background ? 'center' : undefined,
-      border:'1px solid ' + accentColor + '22',borderRadius:'16px',minWidth:'200px',animation:'fadeIn 0.4s ease'
+      border:'1px solid ' + accentColor + '22',borderRadius:'16px',minWidth:'200px',animation:'fadeIn 0.4s ease',
+      position:'relative',overflow:'hidden'
     }}>
       <div style={{position:'relative',flexShrink:0}}>
         <div style={{position:'absolute',inset:'-4px',borderRadius:'50%',background:'radial-gradient(circle,' + accentColor + '30,transparent 70%)',animation:'preBattleBgPulse 2.5s ease-in-out infinite'}}/>
@@ -17204,7 +17367,7 @@ const App = () => {
         ) : navTab===0 ? (
           <ShopScreen profile={profile} onProfileUpdate={function(p){ setProfile(p); }}/>
         ) : navTab===1 ? (
-          <CollectionScreen profile={profile} onboardingTabIntent={collectionTabIntent} onNewbieTaskComplete={completeNewbieTask}/>
+          <CollectionScreen profile={profile} onboardingTabIntent={collectionTabIntent} onNewbieTaskComplete={completeNewbieTask} onReloadProfile={()=>window.reloadFreshProfile().then(d=>{if(d)setProfile(d);})}/>
         ) : navTab===3 ? (
           <SquadsScreen
             profile={profile}
@@ -17576,6 +17739,11 @@ const BattlePassSheet = ({onClose, profile, onGoToShop, onOpenExtraPassCase}) =>
       const title = cardName ? String(cardName) : (cardId ? 'Карта #' + cardId : 'Конкретная карта');
       return {type:'specific_card',title:title,amount:1,cardId:cardId,text:'Конкретная карта из сезонной награды.',raw:reward};
     }
+    if (reward?.reward_type === 'cosmetic') {
+      const slug = meta.cosmetic_slug || reward.cosmetic_slug || '';
+      const name = meta.name || reward.name || slug || 'Косметика';
+      return {type:'cosmetic',title:String(name),amount:1,slug:slug,text:'Косметический предмет.',raw:reward};
+    }
     return {type:'gift',title:'Награда',amount:reward?.reward_amount || 0,text:'Сезонная награда ExtraPass.',raw:reward};
   };
 
@@ -17588,6 +17756,9 @@ const BattlePassSheet = ({onClose, profile, onGoToShop, onOpenExtraPassCase}) =>
         if (item?.fallback_for === 'card') return 'Выпала повторка! Получено ' + amount.toLocaleString('ru-RU') + ' монет';
         if (item?.fallback_for === 'specific_card') return 'Карта уже собрана. Получено ' + amount.toLocaleString('ru-RU') + ' монет';
         if (item?.fallback_for === 'particles') return 'Карта не в коллекции. Получено ' + amount.toLocaleString('ru-RU') + ' монет';
+        if (item?.fallback_for === 'cosmetic') return 'Косметика недоступна. Получено ' + amount.toLocaleString('ru-RU') + ' монет';
+        if (item?.fallback_for === 'case') return 'Кейс не выдан. Получено ' + amount.toLocaleString('ru-RU') + ' монет';
+        if (item?.fallback_for === 'unsupported_reward_type') return 'Награда временно недоступна. Получено ' + amount.toLocaleString('ru-RU') + ' монет';
         return '+' + amount.toLocaleString('ru-RU') + ' ' + ruPlural(amount, ['монета','монеты','монет']);
       }
       if (type === 'gems') return '+' + amount.toLocaleString('ru-RU') + ' ' + ruPlural(amount, ['гем','гема','гемов']);
