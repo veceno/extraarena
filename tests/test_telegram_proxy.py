@@ -75,3 +75,31 @@ def test_support_bot_uses_telegram_proxy_factory(monkeypatch):
     assert bot is not None
     assert isinstance(dispatcher, FakeDispatcher)
     assert calls and calls[0][0] == "123:token"
+
+
+def test_web_telegram_api_session_uses_shared_proxy_factory(monkeypatch):
+    from types import SimpleNamespace
+
+    from web import server as web_server
+
+    calls = []
+
+    def fake_create_telegram_aiohttp_session(**kwargs):
+        calls.append(kwargs)
+        return object()
+
+    monkeypatch.setattr(
+        web_server,
+        "get_settings",
+        lambda: SimpleNamespace(telegram_api_insecure_ssl=True),
+    )
+    monkeypatch.setattr(
+        web_server,
+        "create_telegram_aiohttp_session",
+        fake_create_telegram_aiohttp_session,
+    )
+
+    session = web_server._create_telegram_api_session()
+
+    assert session is not None
+    assert calls == [{"insecure_ssl": True}]

@@ -73,6 +73,7 @@ from infrastructure.case_system import (
 )
 from infrastructure.payments_logic import process_successful_payment
 from infrastructure.rustore_payments import resolve_rustore_product_id
+from infrastructure.telegram_proxy import create_telegram_aiohttp_session
 from infrastructure.shop_config import (
     CASE_PACKS,
     SHOP_PRICES,
@@ -4818,19 +4819,9 @@ def _start_guarded_bot_task(match_id: str, engine: BattleEngine, bot_id: int | s
     BOT_TASKS[match_id] = current_task
 
 def _create_telegram_api_session():
-    """Create a Telegram Bot API session with TLS verification enabled by default."""
-    import aiohttp
-
+    """Create a Telegram Bot API session that honors the shared HAPP/proxy settings."""
     settings = get_settings()
-    if not settings.telegram_api_insecure_ssl:
-        return aiohttp.ClientSession()
-
-    import ssl
-
-    ssl_context = ssl.create_default_context()
-    ssl_context.check_hostname = False
-    ssl_context.verify_mode = ssl.CERT_NONE
-    return aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_context))
+    return create_telegram_aiohttp_session(insecure_ssl=settings.telegram_api_insecure_ssl)
 
 
 async def _check_telegram_channel_membership(
@@ -20734,11 +20725,6 @@ def create_web_app(
             return_url = str(data.get("return_url") or webapp_url or "")
 
             inv_id = _new_robokassa_inv_id() if provider_name == "robokassa" else None
-            payment_page_url = (
-                _robokassa_payment_page_url(request, f"robokassa_{inv_id}")
-                if provider_name == "robokassa"
-                else None
-            )
             logger.info(
                 "Creating %s payment for checkout: jti=%s user_id=%s item_type=%s amount=%.2f",
                 provider_name, jti, user_id, item_type, amount_rub,
@@ -20753,7 +20739,6 @@ def create_web_app(
             }
             if provider_name == "robokassa":
                 create_kwargs["inv_id"] = inv_id
-                create_kwargs["payment_page_url"] = payment_page_url
             payment_result = await asyncio.to_thread(provider_service.create_payment, **create_kwargs)
 
             if not payment_result.get("success") and provider_name == "robokassa":
@@ -20789,7 +20774,6 @@ def create_web_app(
                 metadata["robokassa_test_mode"] = bool(payment_result.get("test_mode"))
                 metadata["robokassa_form"] = payment_result.get("form") or {}
                 metadata["robokassa_form_action"] = payment_result.get("form_action")
-                metadata["robokassa_payment_page_url"] = payment_result.get("payment_page_url")
             else:
                 metadata["provider"] = "yookassa"
             logger.info("%s payment created for checkout: jti=%s payment_id=%s", provider_name, jti, payment_id)
