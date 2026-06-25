@@ -137,8 +137,10 @@ The agreed approach is a combination of formats:
 
 Existing asset:
 
-- `DesignAssets/MidoriaFixingRobot.png`
-- Size: 3000x3000 PNG with alpha
+- `DesignAssets/MidoriaOnboardingGuide.png`
+- Size: 1500x1500 PNG with alpha
+
+The legacy `DesignAssets/MidoriaFixingRobot.png` (3000x3000) is still present in the repo but is not referenced by the onboarding code (`onboarding_tutorial.ONBOARDING_MIDORIA_ASSET` points to the onboarding-guide file).
 
 MVP can use this static PNG with CSS animation. Lottie or sprite animation can be added later, but is not required for the first implementation.
 
@@ -406,7 +408,7 @@ Button:
 
 The Newbie Path appears after the main menu is unlocked. It should be a soft route, not a hard lock.
 
-Recommended number of tasks for MVP: 5.
+Recommended number of tasks for MVP: 5. The shipped list also includes an optional `join_telegram_channel` task (server-gated, appears only when the Telegram membership check is enabled for the user), bringing the total to 6.
 
 Title:
 
@@ -427,6 +429,7 @@ Tasks:
 Посмотри новую карту
 Сохрани первую колоду
 Сыграй обычный бой
+Вступи в Telegram-канал ExtraArena
 Забери награду новичка
 ```
 
@@ -437,6 +440,7 @@ Completion texts:
 Карта в коллекции. Уже можно думать, кого взять в отряд.
 Колода сохранена.
 Первый настоящий бой принят.
+Ты в канале. Теперь важные новости точно не пройдут мимо.
 Маршрут новичка закрыт. Дальше уже по-взрослому.
 ```
 
@@ -533,3 +537,21 @@ These do not block the current design, but should be answered before coding:
 3. Should the safer alternate phrase "Пусть враг сделает ход" replace "Пусть враг дернется"?
 4. Should Newbie Path rewards be configured in code, database, or an admin-controlled config?
 5. Should `.superpowers/` brainstorm mockups be ignored permanently in git?
+
+## Audit (2026-06-25)
+
+Checked against current source: `onboarding_tutorial.py`, `web/server.py`, `webapp/index.html`, `webapp/main.js`, `DesignAssets/`.
+
+- `docs/2026-05-25-onboarding-design.md:140-143` — Fixed Midoria asset reference: was `DesignAssets/MidoriaFixingRobot.png` (3000x3000); the shipped onboarding code uses `DesignAssets/MidoriaOnboardingGuide.png` (1500x1500) via `onboarding_tutorial.ONBOARDING_MIDORIA_ASSET`. Noted the legacy asset is still on disk but not referenced.
+- `docs/2026-05-25-onboarding-design.md:411-431` — Fixed Newbie Path task list: added the optional `join_telegram_channel` task (6 tasks total, gated by `_check_telegram_channel_membership`). Doc previously listed only 5.
+- `docs/2026-05-25-onboarding-design.md:435-441` — Added matching completion text for the Telegram channel task: "Ты в канале. Теперь важные новости точно не пройдут мимо."
+
+Verified against source (no edit needed):
+- Onboarding statuses (`not_started`, `welcome`, `tutorial_battle`, `menu_tour`, `completed`) and constants match `onboarding_tutorial.py:12-24`.
+- Alphonse Elric: card_id 39, name "Альфонс Элрик", rarity "start", mana_cost 2, stats 1/3, mechanics ["taunt"], description "Душа в доспехах. Обладает Провокацией и защищает слабых." (`onboarding_tutorial.py:301-309`, 220-221).
+- Attacker is card_id 37 "Слайм" (1/3, cost 2, not in doc but referenced via TUTORIAL_STEPS).
+- TUTORIAL_STEPS has 9 entries (0..8): 5 meaningful player actions (steps 1,2,3,4,7) plus 2 auto-continue steps (5=taunt_demo, 6=taunt_hit) and bookends (0=battle_start, 8=victory). Doc's "5 meaningful actions" matches.
+- `user_settings.welcome_shown` (`infrastructure/database.py:2844`) and `onboarding_events` table (`infrastructure/database.py:12258`) exist as claimed.
+- Onboarding endpoints live at `/api/onboarding/status`, `/api/onboarding/welcome/complete`, `/api/onboarding/tutorial/start`, `/api/onboarding/tutorial/action`, `/api/onboarding/menu-tour/step`, `/api/onboarding/complete`, `/api/onboarding/newbie-path`, `/api/onboarding/newbie-path/progress` and `/api/analytics/onboarding` (`web/server.py:12590, 20296-20304`).
+- Frontend pieces verified: `OnboardingGate` (`main.js:15439`), `MenuTourOverlay` (`main.js:15460`), `NewbiePathPanel` (`main.js:15528`), `onboardingBlocking/onboardingTourActive` gates (`main.js:16599-16601`).
+- `MascotCoach` and `TutorialBattleController` components mentioned in the doc are referenced only as recommended concepts; no matching symbols found in `webapp/main.js` or `webapp/index.html` (could not verify — doc is a design proposal, not an implementation plan).

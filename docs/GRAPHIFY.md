@@ -63,3 +63,26 @@ graphify query "How does admin analytics flow through the backend?"
 graphify explain "Database.get_admin_analytics_overview"
 graphify path "web.server" "Database.get_admin_analytics_overview"
 ```
+
+## Audit (2026-06-25)
+
+Checked against:
+- `/Users/laveqox/Documents/ExtraArenaRaS/scripts/graphify_project.sh`
+- `/Users/laveqox/Documents/ExtraArenaRaS/.codex/skills/graphify/SKILL.md`
+- `/Users/laveqox/Documents/ExtraArenaRaS/.opencode/commands/graphify.md`
+- `/Users/laveqox/Documents/ExtraArenaRaS/AGENTS.md`
+- `/Users/laveqox/Documents/ExtraArenaRaS/.graphifyignore`
+- `/Users/laveqox/Documents/ExtraArenaRaS/graphify-out/` (graph.json, GRAPH_REPORT.md, manifest.json)
+- Live `graphify --help` and `graphify cluster-only . --no-viz --no-label` execution.
+
+Verified (no changes needed):
+- Package name `graphifyy` and `uv tool install` form match SKILL.md step 1.
+- `graphify install --project --platform codex` matches `graphify install --help` and SKILL.md platforms list (codex included).
+- `scripts/graphify_project.sh` exists and uses the env vars / defaults the doc describes (`GRAPHIFY_BACKEND=deepseek`, `GRAPHIFY_MODE=deep`, `--max-concurrency`, `--token-budget`, `GRAPHIFY_MAX_WORKERS`).
+- `--no-cluster` default and clear-only-`graph.json`+`manifest.json` behavior match `scripts/graphify_project.sh` (lines 44-52).
+- `graphify cluster-only . --no-viz --no-label` runs successfully and regenerates GRAPH_REPORT.md (verified live: 282 communities).
+- `graphify query / explain / path` commands match `graphify --help` output.
+- `.graphifyignore` exists at repo root and `graphify-out/` is gitignored; graph artifacts (graph.json 11.2MB, GRAPH_REPORT.md 94KB, manifest.json 55KB) all present.
+- GRAPH_REPORT.md header `Built from commit: 86e18c87` is one commit behind current `HEAD` (367d4344 "chore: extend .gitignore..."); graph is mildly stale but structure descriptions remain accurate.
+
+No changes needed — content matches current code.

@@ -85,7 +85,7 @@ const CARD_SFX_CONFIG_DEFAULT = { ... }
     "death": {
       "src": "/assets/audio/characters/creeper/creeper_death_explosion.mp3",
       "basePolicy": "replace",
-      "volume": 0.86
+      "volume": 0.82
     }
   }
 }
@@ -116,12 +116,12 @@ const CARD_SFX_CONFIG_DEFAULT = { ... }
       "deploy": {
         "src": "/assets/audio/characters/creeper/creeper_spawn_hiss.mp3",
         "basePolicy": "replace",
-        "volume": 0.78
+        "volume": 0.82
       },
       "mechanic:deathrattle_aoe_damage_2": {
         "src": "/assets/audio/characters/creeper/creeper_death_explosion.mp3",
         "basePolicy": "replace",
-        "volume": 0.86
+        "volume": 0.82
       }
     }
   }
@@ -346,3 +346,18 @@ pytest tests/test_core_logic.py -q
 - `targetHint` добавлен как `mechanic:<code>`, хотя подсказка выбора цели должна быть `targeting:<code>`.
 - Путь `src` не начинается с `/assets/audio/characters/`.
 - Цвет вспышки указан не в hex-формате, из-за чего runtime применит fallback-цвет.
+
+## Audit (2026-06-25)
+
+Проверил структуру doc против:
+- `assets/audio/characters/card_sfx_config.json` (реальный конфиг)
+- `webapp/arena.js` (`CARD_SFX_CONFIG_DEFAULT`, `mergeArenaCardSfxConfig`, `loadArenaCardSfxConfig`, `normalizeArenaSoundEventName`)
+- `web/server.py` — community endpoints (`/api/community/posts/*`, `/api/community/chat/*`, `/api/community/upload-image`, `/api/community/news`, `/api/community/rating` и т. д.) на месте; community-конфиг относится к `infrastructure/community_config.py`, а не к feedback-конфигу — `community_config.py` не цитируется в doc, расхождений нет.
+
+Что исправлено:
+- `docs/CARD_FEEDBACK_CONFIG.md:88` — пример "Формат" для sounds.death имел `volume: 0.86`; в актуальном `card_sfx_config.json` для creeper_death_explosion = `0.82`. Исправлено на `0.82`.
+- `docs/CARD_FEEDBACK_CONFIG.md:117-124` — пример Крипера для `sounds.deploy` имел `volume: 0.78`, а для `mechanic:deathrattle_aoe_damage_2` — `volume: 0.86`. В реальном JSON оба = `0.82`. Исправлено.
+
+Что НЕ удалось проверить (не критично для этого doc):
+- Точные значения `durationMs`/`intensity`/`intensity` для отдельных примеров в doc (отдельные значения в doc совпадают с JSON; полный перебор не делал, чтобы не вносить шум).
+- `tests/test_arena_frontend_regressions.py` существует (79 KB) — структура совпадает с описанной в doc; содержимое не сверял побайтово.

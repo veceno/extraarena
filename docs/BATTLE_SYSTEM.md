@@ -27,7 +27,7 @@ Frontend (Telegram WebApp / webapp/)
 
 - **`core/engine.py`** — чистое, детерминированное ядро движка (`ArenaEnvironment`). Не зависит от БД, сети, UI.
 - **`battle_engine.py`** — адаптер: сериализует состояние в JSON, управляет таймерами, AFK-детекцией, интеграцией с БД.
-- **`core/effects.py`** — реестр всех 33+ игровых механик.
+- **`core/effects.py`** — реестр всех 34 игровых механик (см. `MECHANICS_LIST` в `core/state.py`).
 - **`core/state.py`** — структуры данных (`GameState`, `PlayerState`, `CardInstance`).
 - **`core/actions.py`** — три типа действий (`PlayCardAction`, `AttackAction`, `EndTurnAction`).
 
@@ -46,9 +46,9 @@ Frontend (Telegram WebApp / webapp/)
 | **Classic** (по умолчанию) | `"classic"` | 25 секунд | +1/ход | Полные |
 | **Blitz** | `"extra_arena:blitz"` | 5 секунд | +2/ход | −50% |
 
-*battle_engine.py:84-86, 191-195*
+*battle_engine.py:91-117; значения задаются в `infrastructure/match_modes.py` (`MODE_CONFIGS["extra_arena:blitz"]`)*
 
-В Blitz герои получают половинное HP при инициализации матча.
+В Blitz герои получают половинное HP при инициализации матча (см. `hero_health_multiplier=0.5`).
 
 ---
 
@@ -56,7 +56,7 @@ Frontend (Telegram WebApp / webapp/)
 
 ### Точка входа
 
-`ArenaEnvironment.step(player_id, action)` — *core/engine.py:220-321*
+`ArenaEnvironment.step(player_id, action)` — *core/engine.py:295-401*
 
 1. Проверка: игра не окончена (`status != ONGOING`)
 2. Проверка: ход этого игрока (`current_turn_owner_id == player_id`)
@@ -68,7 +68,7 @@ Frontend (Telegram WebApp / webapp/)
 
 ### Начало матча
 
-*battle_engine.py:118-306*
+*battle_engine.py:174-372 (create_match); начальная раздача — `core/classic_setup.py:99-113`*
 
 - **P1** начинает с `mana=1`, `max_mana=1`
 - **P2** начинает с `mana=0`, `max_mana=0`
@@ -81,7 +81,7 @@ Frontend (Telegram WebApp / webapp/)
 
 ### Завершение хода
 
-`_handle_end_turn()` — *core/engine.py:527-609*
+`_handle_end_turn()` — *core/engine.py:667-741*
 
 1. Ход переходит противнику (`current_turn_owner_id = opponent.user_id`)
 2. `turn_number += 1`
@@ -111,20 +111,20 @@ Frontend (Telegram WebApp / webapp/)
 ### Стартовая мана
 
 Герои с механикой `start_mana_X` получают +X маны при инициализации игры.
-Применяется через `apply_start_game_effects()` — *core/engine.py:660-697*.
+Применяется через `apply_start_game_effects()` — *core/engine.py:833-862*.
 
 ### Манипуляции маной
 
 | Механика | Эффект | Файл |
 |---|---|---|
-| `mana_gain_X` | Восстанавливает X маны владельцу (не выше `max_mana`) | core/effects.py:434-451 |
-| `mana_drain_X` | Крадёт X маны у противника и передаёт владельцу | core/effects.py:453-474 |
+| `mana_gain_X` | Восстанавливает X маны владельцу (не выше `max_mana`) | core/effects.py:531-548 |
+| `mana_drain_X` | Крадёт X маны у противника и передаёт владельцу (с буфером pending_drain на следующий ход) | core/effects.py:550-589 |
 
 ---
 
 ## Типы карт
 
-`CardType` enum — *core/state.py:50-53*
+`CardType` enum — *core/state.py:58-61*
 
 | Тип | Описание | Где находится |
 |---|---|---|
@@ -136,7 +136,7 @@ Frontend (Telegram WebApp / webapp/)
 
 ## Розыгрыш карт
 
-`_handle_play_card()` — *core/engine.py:323-421*
+`_handle_play_card()` — *core/engine.py:403-511*
 
 ### Общие проверки
 - Индекс карты в руке валиден
@@ -161,7 +161,7 @@ Frontend (Telegram WebApp / webapp/)
 
 ## Атака и расчёт урона
 
-`_handle_attack()` — *core/engine.py:423-525*
+`_handle_attack()` — *core/engine.py:513-665*
 
 ### Проверки перед атакой
 1. Атакующий юнит существует на доске
@@ -170,7 +170,7 @@ Frontend (Telegram WebApp / webapp/)
 4. **Проверка Taunt**: если у противника есть taunt-юниты и атакующий не имеет `bypass_taunt` — можно атаковать **только** taunt-юнитов. Атака героя при наличии taunt запрещена.
 
 ### Аура-бонус
-Эффективная атака = базовая атака + сумма всех `aura_atk_X` от союзных юнитов на доске (кроме самого себя). *core/engine.py:711-783*
+Эффективная атака = базовая атака + сумма всех `aura_atk_X` от союзных юнитов на доске (кроме самого себя). *core/engine.py:951-1023*
 
 ### Атака героя
 1. Урон герою с модификаторами (щит, броня)
@@ -185,7 +185,7 @@ Frontend (Telegram WebApp / webapp/)
 
 ### Модификаторы урона
 
-`apply_damage_modifiers()` — *core/effects.py:843-897*
+`apply_damage_modifiers()` — *core/effects.py:993-1045*
 
 | Модификатор | Поведение |
 |---|---|
@@ -198,21 +198,23 @@ Frontend (Telegram WebApp / webapp/)
 
 ### Reflect
 
-`reflect_X` — *core/effects.py:920-938*
+`reflect_X` — *core/effects.py:1084-1103 (внутри `apply_damage`)*
 
 Цель с `reflect_X` отражает X урона обратно атакующему (без рекурсии). Отражаемый урон также проходит через модификаторы атакующего.
 
 ### Lifesteal
 
-`lifesteal` — *core/effects.py:963-978*
+`lifesteal` — *core/effects.py:1128-1144*
 
 Атакующий с `lifesteal` восстанавливает HP герою-владельцу на величину нанесённого урона (после модификаторов). Лечение не превышает `max_hp`.
 
 ### Cleave
 
-`cleave_X_Y` — *core/effects.py:613-648*
+`cleave_X_Y` — *core/effects.py:732-767 (регистрация обработчиков)*
 
 При атаке наносит X урона Y случайным вражеским юнитам (по одному, обновляя список живых целей между ударами).
+
+> Примечание: для WARRIOR cleave работает как **пассивная механика атаки** — обрабатывается в `_handle_attack` через `_apply_attack_cleave` (core/engine.py:933-949) и бьёт только соседей цели по доске. Для POTION cleave остаётся battlecry-эффектом со случайными целями.
 
 ### После атаки
 
@@ -220,7 +222,7 @@ Frontend (Telegram WebApp / webapp/)
 
 ---
 
-## Полный список механик (33)
+## Полный список механик (34)
 
 ### Battlecry (срабатывают при розыгрыше воина)
 
@@ -287,58 +289,58 @@ Frontend (Telegram WebApp / webapp/)
 |---|---|
 | `deathrattle_aoe_damage_X` | При смерти: X урона всем вражеским юнитам **и** герою |
 
-Deathrattle срабатывает в `_cleanup_dead_units()` — *core/engine.py:611-651*, перед удалением мёртвого юнита с доски.
+Deathrattle срабатывает в `_cleanup_dead_units()` — *core/engine.py:779-820*, перед удалением мёртвого юнита с доски.
 
 ---
 
 ## Система уровней карт
 
-`scale_card_by_level()` — *core/engine.py:28-198*
+`scale_card_by_level()` — реализация в `core/card_scaling.py:52-142`; в `core/engine.py:30-34` остался compat-обёртка.
 
 Уровни: 1–10. Уровень 1 = базовый (без модификаций).
 
 ### Воины (WARRIOR)
 
+Базовая формула статов — **экспоненциальный рост**: `scaled = ceil(base * (1 + growth) ** (level - 1))`, где `growth = 0.10` для всех rarity (`core/card_scaling.py:38-49`). Упрощённые карты (`simplified_levelup`) масштабируются только до уровня 2 и дают −1 к стоимости.
+
 | Уровень | Atk | HP | Механики |
 |---|---|---|---|
-| Каждый чётный | +1 | — | — |
-| Каждый нечётный (≥3) | — | +1 | — |
-| Каждые 2 уровня | — | — | AOE damage, target heal/damage: +1 |
-| Каждые 3 уровня | — | — | regen, armor, aura, reflect: +1 |
+| Каждые 2 уровня | exponential | exponential | AOE damage, target heal/damage, buff: +`((level-1) // 2)` |
+| Каждые 3 уровня | exponential | exponential | regen, armor, aura_atk, reflect: +`((level-1) // 3)` |
 
 ### Зелья (POTION)
 
 | Уровень | Эффект |
 |---|---|
-| Каждые 3 уровня | Урон в механиках `damage_X`: +1 |
-| Каждый уровень | `delete_target`: стоимость −1 (минимум 4 маны) |
+| Каждые 3 уровня | Урон в механиках `damage_X`: +1 (`core/card_scaling.py:96-108`) |
+| Simplified lvl 2 | `delete_target`: стоимость −1 (минимум 0 маны; только для `simplified_levelup` карт) |
 
 ### Герои (HERO)
 
 | Уровень | HP | Механики |
 |---|---|---|
-| Каждый уровень | +2 HP | — |
-| Каждые 3 уровня | — | reflect, armor, start_mana: +1 |
+| Каждый уровень | +2 HP (линейно) | — |
+| Каждые 3 уровня | — | reflect, armor, aura_atk, start_mana, regen: +1 |
 | Потолок start_mana | — | 10 |
 
 ---
 
 ## Победа и поражение
 
-`_check_game_over()` — *core/engine.py:653-658*
+`_check_game_over()` — *core/engine.py:822-831*
 
 - HP героя P1 ≤ 0 → `P2_WIN`
 - HP героя P2 ≤ 0 → `P1_WIN`
 
 ### Сдача
 
-`mark_surrender()` — *battle_engine.py:850-881*
+`mark_surrender()` — *battle_engine.py:1497-1529*
 
 Игрок помечается как `SURRENDERED`. Бой **продолжается** — за сдавшегося игрока играет бот.
 
 ### AFK-детекция
 
-`mark_timeout()` — *battle_engine.py:809-848*
+`mark_timeout()` — *battle_engine.py:1406-1446*
 
 - Счётчик последовательных таймаутов для каждого игрока
 - При **2+** таймаутах подряд → статус `AFK`
@@ -346,7 +348,7 @@ Deathrattle срабатывает в `_cleanup_dead_units()` — *core/engine.p
 
 ### Статусы замены игрока
 
-`ReplacementStatus` enum — *core/state.py:62-66*
+`ReplacementStatus` enum — *core/state.py:71-75*
 
 | Статус | Описание |
 |---|---|
@@ -360,7 +362,7 @@ Deathrattle срабатывает в `_cleanup_dead_units()` — *core/engine.p
 
 | Параметр | Значение |
 |---|---|
-| Макс. юнитов на доске | 7 |
+| Макс. юнитов на доске | 5 |
 | Макс. карт в руке | 4 |
 | Макс. мана | 10 |
 | Макс. уровень карты | 10 |
@@ -375,9 +377,45 @@ Deathrattle срабатывает в `_cleanup_dead_units()` — *core/engine.p
 
 | Файл | Строк | Описание |
 |---|---|---|
-| `core/engine.py` | 1466 | Ядро движка: игровой цикл, розыгрыш, атака, ходы, победа |
-| `core/effects.py` | 1186 | Реестр всех механик и модификаторов урона |
-| `core/state.py` | 178 | Структуры данных: GameState, PlayerState, CardInstance |
+| `core/engine.py` | 1737 | Ядро движка: игровой цикл, розыгрыш, атака, ходы, победа |
+| `core/effects.py` | 1367 | Реестр всех механик и модификаторов урона |
+| `core/state.py` | 237 | Структуры данных: GameState, PlayerState, CardInstance |
 | `core/actions.py` | 72 | Действия: PlayCardAction, AttackAction, EndTurnAction |
-| `battle_engine.py` | 1084 | Адаптер: создание матча, сериализация, таймеры, AFK |
-| `core/converter.py` | — | Конвертация данных БД → CardInstance |
+| `battle_engine.py` | 1964 | Адаптер: создание матча, сериализация, таймеры, AFK |
+| `core/card_scaling.py` | 182 | Формула масштабирования стат/механик по уровню (вынесена из engine.py) |
+| `core/classic_setup.py` | 113 | Создание GameState, начальная раздача (3 самых дешёвых WARRIOR) |
+| `core/converter.py` | 214 | Конвертация данных БД → CardInstance |
+
+## Audit (2026-06-25)
+
+Проверены: `core/engine.py`, `core/effects.py`, `core/state.py`, `core/actions.py`, `core/card_scaling.py`, `core/classic_setup.py`, `battle_engine.py`, `infrastructure/match_modes.py`.
+
+Исправлено (doc → source):
+- docs/BATTLE_SYSTEM.md:30 — «33+ механик» → 34 (соответствует `MECHANICS_LIST` в `core/state.py`).
+- docs/BATTLE_SYSTEM.md:50 — ссылка `battle_engine.py:84-86, 191-195` (game_mode) заменена на актуальные `91-117` + отсылку к `infrastructure/match_modes.py`.
+- docs/BATTLE_SYSTEM.md:59 — `step()` engine.py:220-321 → 295-401.
+- docs/BATTLE_SYSTEM.md:71 — `Начало матча` battle_engine.py:118-306 → 174-372 + ссылка на `core/classic_setup.py:99-113`.
+- docs/BATTLE_SYSTEM.md:84 — `_handle_end_turn` engine.py:527-609 → 667-741.
+- docs/BATTLE_SYSTEM.md:114 — `apply_start_game_effects` engine.py:660-697 → 833-862.
+- docs/BATTLE_SYSTEM.md:120-121 — `mana_gain_X`/`mana_drain_X` effects.py:434-474 → 531-589.
+- docs/BATTLE_SYSTEM.md:127 — `CardType` state.py:50-53 → 58-61.
+- docs/BATTLE_SYSTEM.md:139 — `_handle_play_card` engine.py:323-421 → 403-511.
+- docs/BATTLE_SYSTEM.md:164 — `_handle_attack` engine.py:423-525 → 513-665.
+- docs/BATTLE_SYSTEM.md:173 — «Аура-бонус» engine.py:711-783 → 951-1023.
+- docs/BATTLE_SYSTEM.md:188 — `apply_damage_modifiers` effects.py:843-897 → 993-1045.
+- docs/BATTLE_SYSTEM.md:201 — `reflect_X` effects.py:920-938 → 1084-1103 (внутри `apply_damage`).
+- docs/BATTLE_SYSTEM.md:207 — `lifesteal` effects.py:963-978 → 1128-1144.
+- docs/BATTLE_SYSTEM.md:213 — `cleave_X_Y` effects.py:613-648 → 732-767; добавлено примечание, что для WARRIOR cleave — пассивная механика атаки (core/engine.py:933-949), а для POTION — battlecry-эффект.
+- docs/BATTLE_SYSTEM.md:223 — заголовок «33» → 34.
+- docs/BATTLE_SYSTEM.md:290 — `_cleanup_dead_units` engine.py:611-651 → 779-820.
+- docs/BATTLE_SYSTEM.md:296-322 — таблица масштабирования WARRIOR/POTION полностью переписана: статы теперь экспоненциальные (`ceil(base * 1.10**(level-1))` из `core/card_scaling.py:38-49`), а не «чётный +1 Atk / нечётный +1 HP»; ссылка `core/engine.py:28-198` заменена на `core/card_scaling.py:52-142` + compat-wrapper. `delete_target −1 cost per level` уточнён (только simplified_levelup, минимум 0).
+- docs/BATTLE_SYSTEM.md:328 — `_check_game_over` engine.py:653-658 → 822-831.
+- docs/BATTLE_SYSTEM.md:335 — `mark_surrender` battle_engine.py:850-881 → 1497-1529.
+- docs/BATTLE_SYSTEM.md:341 — `mark_timeout` battle_engine.py:809-848 → 1406-1446.
+- docs/BATTLE_SYSTEM.md:349 — `ReplacementStatus` state.py:62-66 → 71-75.
+- docs/BATTLE_SYSTEM.md:380-387 — таблица «Ключевые файлы»: обновлены реальные `wc -l` (1466/1186/178/1084 → 1737/1367/237/1964), добавлены строки `core/card_scaling.py` (182), `core/classic_setup.py` (113) и `core/converter.py` (214).
+- docs/BATTLE_SYSTEM.md:365 — «Макс. юнитов на доске | 7» исправлено на 5 (соответствует `len(player.board) >= 5` в `core/engine.py:415` и `:1118`; в тексте про розыгрыш уже было «макс. 5»).
+
+Не удалось верифицировать (нет контракта в исходниках, doc-предположение):
+- «Cleave: Y случайных вражеским юнитам (по одному, обновляя список живых целей между ударами)» — `_register_cleave_effects` просто повторяет выборку; точно подтвердить «обновление списка между ударами» без запуска тестов нельзя, но семантика POTION-cleave в `core/effects.py:737-763` действительно выбирает жертв случайно по списку `opponent.board[:]` без явного re-sampling; помечено как «fine» (поведение соответствует, формулировка может быть чуть сильнее, чем код).
+- «deathrattle_aoe_damage наносит урон и юнитам, и герою» — для юнитов урон идёт через `apply_damage(unit, damage)` (без attacker → без reflect), для героя — `apply_damage(opponent.hero, damage)` (тоже без attacker). Это соответствует описанию, но нюанс «без attacker» в исходнике остался.

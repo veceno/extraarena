@@ -13,7 +13,7 @@ Telegram WebApp button
           /ready, /api, /socket.io, non-RU traffic
             -> Cloudflare Tunnel
               -> cloudflared on server
-                -> http://localhost:18081
+                -> http://127.0.0.1:8081
                   -> extraarena-app Docker container
 ```
 
@@ -83,7 +83,7 @@ Cloudflare Zero Trust tunnel:
 Name: extraarena-space
 Public hostname: app.extraarena.space
 Service type: HTTP
-Service URL: localhost:18081
+Service URL: 127.0.0.1:8081
 ```
 
 The connector runs on the game server via systemd:
@@ -129,7 +129,7 @@ Expected state:
 ```text
 active
 Registered tunnel connection
-Updated to new configuration ... "hostname":"app.extraarena.space","service":"http://localhost:18081"
+Updated to new configuration ... "hostname":"app.extraarena.space","service":"http://127.0.0.1:8081"
 ```
 
 ## Cloudflare Redirect Rule
@@ -215,27 +215,17 @@ Compose project: extraarena
 Working dir: /mnt/veceno1/extraarena/project/current
 Compose file: /mnt/veceno1/extraarena/project/current/compose.yaml
 Container: extraarena-app
-Network mode: host
-Internal web port: 18081
+Internal web port: 8081
+Listen binding: 127.0.0.1:8081 (mapped from container port 8081)
 ```
 
-MCP-uploaded profile cosmetics are runtime data, not image data. Keep the
-admin upload directories on the shared disk and bind-mount them into the
-container on every rebuild:
-
-```yaml
-services:
-  app:
-    volumes:
-      - /mnt/veceno1/extraarena/project/shared/DesignAssets/PlayerCosmetics/Avatars/Admin:/app/DesignAssets/PlayerCosmetics/Avatars/Admin
-      - /mnt/veceno1/extraarena/project/shared/DesignAssets/PlayerCosmetics/Background/Admin:/app/DesignAssets/PlayerCosmetics/Background/Admin
-```
-
-Do not rsync or rebuild these `Admin` directories as part of the application
-image, and do not run deploy cleanup with `--delete` against the shared
-`DesignAssets/PlayerCosmetics/*/Admin` paths. Source-controlled starter
-cosmetics may still be copied into the image; the bind mounts overlay only the
-MCP-managed upload directories at runtime.
+MCP-uploaded profile cosmetics are baked into the production image
+(`app/DesignAssets/PlayerCosmetics/Avatars/Admin` and
+`Background/Admin` per the runtime SHA256SUMS). The current production
+`compose.yaml` does not bind-mount shared-disk copies of these directories;
+rebuilds repackage whatever the image build step writes there. Do not run
+deploy cleanup with `--delete` against these paths on the host until you
+have confirmed no in-flight uploads would be lost.
 
 Restart the app after environment changes:
 
@@ -252,7 +242,7 @@ sudo docker inspect -f '{{.State.Health.Status}}' extraarena-app
 sudo docker logs --tail 120 extraarena-app
 ```
 
-MCP cosmetics preservation check after a rebuild:
+MCP cosmetics verification (image-baked in current production):
 
 ```bash
 sudo docker compose exec app find /app/DesignAssets/PlayerCosmetics/Avatars/Admin -maxdepth 1 -type f | wc -l
@@ -271,7 +261,7 @@ sudo tr '\0' '\n' < "/proc/$pid/environ" \
 Expected log line after restart:
 
 ```text
-Bot started in production. WebApp: https://app.extraarena.space
+Бот запущен в окружении production. WebApp: https://app.extraarena.space
 ```
 
 ## Telegram
@@ -416,3 +406,18 @@ start.sh
 ```
 
 `deploy/cloudflared/extraarena-space.yml` is useful for locally-managed tunnels. The active server setup currently uses a remote-managed token-based tunnel through systemd.
+
+## Audit (2026-06-25)
+
+Checked against `main.py`, `web/server.py`, `infrastructure/*.py`, `deploy/systemd/cloudflared-extraarena.service`, `deploy/cloudflared/extraarena-space.yml`, `deploy/cloudflare/app-extraarena-space-worker.js`, `start.sh`, `.env.example`, and the production `output/deploy-extraarena-runtime-20260619-210515/compose.yaml` + SHA256SUMS.
+
+Fixed:
+- `docs/EXTRAARENA_SPACE_CLOUDFLARE.md:16` — tunnel target port `localhost:18081` → `127.0.0.1:8081` (matches `deploy/cloudflared/extraarena-space.yml`).
+- `docs/EXTRAARENA_SPACE_CLOUDFLARE.md:86` — Cloudflare tunnel `Service URL: localhost:18081` → `127.0.0.1:8081`.
+- `docs/EXTRAARENA_SPACE_CLOUDFLARE.md:132` — expected `journalctl` "Updated to new configuration" line uses port 8081, not 18081.
+- `docs/EXTRAARENA_SPACE_CLOUDFLARE.md:217-221` — `Network mode: host` and `Internal web port: 18081` replaced; production compose binds `127.0.0.1:8081:8081`.
+- `docs/EXTRAARENA_SPACE_CLOUDFLARE.md:222-238` — removed the (non-existent in current compose.yaml) shared-disk bind mounts for `DesignAssets/PlayerCosmetics/*/Admin`; current production image bakes those files in (see runtime SHA256SUMS lines 214-227).
+- `docs/EXTRAARENA_SPACE_CLOUDFLARE.md:255-261` — cosmetic verification section retitled "image-baked in current production" to match reality.
+- `docs/EXTRAARENA_SPACE_CLOUDFLARE.md:273-275` — expected startup log line: English placeholder → actual Russian line `Бот запущен в окружении production. WebApp: https://app.extraarena.space` emitted by `main.py:314-318`.
+
+Could not verify (operational facts outside repo): the Cloudflare nameservers, tunnel UUID `cfb0bcec-7e0a-4283-aec2-30ebfe4b7f09`, Cloudflare Account/Zone IDs, the live `/ready` payload component states, and the active Redirect Rule `RuRedirect` body on the Cloudflare dashboard. Source code contains no `cloudflare`/`tunnel`/`extraarena.space`/`app.laveqox` references — this runbook describes external infrastructure only.

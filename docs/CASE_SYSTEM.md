@@ -12,7 +12,7 @@
 
 ### T5 бонусы (дополнительно)
 - **10%** — 10–50 гемов
-- **5%** — 1–5 осколков лимитированных карт
+- (других бонусных типов в коде нет)
 
 ---
 
@@ -80,9 +80,9 @@
    - Без подписки: 5 побед
    - ExtraPass: 4 победы
    - ExtraPass Ultra: 3 победы
-2. **Покупка за гемы:** T1–T5 напрямую в магазине
+2. **Покупка за гемы:** наборы кейсов в магазине (`case_pack_1/3/5/10`); прямая покупка по тирам (`case_tier_X`) отключена (`legacy_case_tier_disabled`)
 3. **Battle Pass / Glory Path:**
-   - Glory Path: T2 (1000), T3 (3000), T3 (7000), T4 (10000)
+   - Glory Path: кейсы не выдаёт (только keys/coins/gems/particles на позициях 300/1000/1500/3000/4000/7000/8000)
    - BP Free: T2 (10), T3 (20), T3 (30), T4 (40)
    - BP Premium: T3 (10), T4 (20), T4 (30), T5 (40)
    - BP Ultra: T5 (42)
@@ -99,3 +99,20 @@
 | `infrastructure/database.py` | Таблица `user_cases`, `keys`, сидирование reward_tracks |
 | `web/server.py` | API-эндпоинты: открытие, пропуск, open-from-keys, счётчик побед |
 | `cards.json` | Все карты (пул наград) |
+
+## Audit (2026-06-25)
+
+Проверены все конкретные цифры (шансы, цены, множители, диапазоны) против:
+- `infrastructure/case_config.py` (`TIER_RARITY_PROBABILITIES`, `TIER_REWARDS_COUNT`, `BASE_PARTICLES_BY_RARITY`, `TIER_PARTICLES_MULTIPLIER`, `T5_COMMON_JACKPOT_PARTICLES`, `TIER_UPGRADE_CHANCES`, `START_RARITY_REPLACEMENT`, `MAX_RARITY_BY_TIER`, `LIMITED_EVENT_PROBABILITY`).
+- `infrastructure/case_system.py` (`_generate_single_case_rewards`, `select_rarity`, `roll_tier_upgrade`, `process_case_opening`).
+- `infrastructure/database.py` (seed `reward_tracks`: `glory`, `bp_free`, `bp_premium`, `bp_ultra`).
+- `web/server.py` (`wins_for_case` на строке 2908 = 3/4/5, роуты `/api/cases/*`, `legacy_case_tier_disabled` на строке 17616–17621).
+
+Исправлено:
+- `docs/CASE_SYSTEM.md:15` — удалена строка про «5% — 1–5 осколков лимитированных карт»: в `case_config.py` нет ни осколков, ни бонусной выдачи limited-карт, поле `BASE_PARTICLES_BY_RARITY['limited']=0`.
+- `docs/CASE_SYSTEM.md:84` — уточнено, что прямая покупка кейсов по тирам (`case_tier_X`) отключена (`legacy_case_tier_disabled`); в магазине продаются только наборы `case_pack_1/3/5/10` (`shop_config.py:33`).
+- `docs/CASE_SYSTEM.md:85` — убрана строка про Glory Path T2/T3/T3/T4: в seed `reward_tracks` (database.py:14818–14839) у `glory` нет ни одной записи `reward_type='case'`, только keys/coins/gems/particles.
+
+Что НЕ удалось проверить без живого рантайма:
+- Точные значения, которые могли бы быть переопределены в БД через `admin_rewards_tracks_update` после seed (на момент аудита `reward_tracks` соответствует seed-данным; возможные ручные правки в проде не верифицированы).
+

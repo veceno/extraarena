@@ -87,3 +87,27 @@ python -m compileall main.py run_web.py infrastructure web core ai battle_engine
 - [ ] F-12 ACCEPTED_RISK/CONSTRAINT: no god-module refactor before beta, minimal localized patches only.
 - [ ] F-35 VERIFIED: deterministic starting hand behavior is covered by regression tests and included in battle smoke observations.
 - [ ] F-54 VERIFIED: bot replayability/reproducibility markers are covered by regression tests and included in bot battle smoke observations.
+
+## Audit (2026-06-25)
+
+Verified against `infrastructure/config.py`, `infrastructure/database.py`, `main.py`, `start.sh`, `deploy/`, and `tests/test_community_news_polls.py` (current HEAD on `main`).
+
+What I checked:
+- `ENVIRONMENT`, `WEBAPP_HOST`, `WEBAPP_PORT`, `WEBAPP_URL`, `EXTRA_SHOP_URL` env wiring in `infrastructure/config.py` (lines 491-492, 580-582, 749). Matches the checklist.
+- `JWT_SECRET` / `ADMIN_SESSION_SECRET` defaults, minimum length (32) and distinctness check in `infrastructure/config.py` (lines 583-584, 627-647). Matches.
+- DB envs: `DATABASE_URL` + `DB_HOST/PORT/USER/PASSWORD/NAME` (lines 495-499) and the split ExtraID block `EXTRAID_DATABASE_URL` / `EXTRAID_DB_*` (lines 501-505). Matches.
+- Payment env names: `ROBOKASSA_MERCHANT_LOGIN/PASSWORD1/PASSWORD2/HASH_ALGO/TEST_MODE/RESULT_URL/SUCCESS_URL/FAIL_URL` (lines 516-530), `ROBOKASSA_PAYMENT_OBJECT` (line 531, exists, not listed in the doc — informational only), `YOOKASSA_SHOP_ID/SECRET_KEY/TEST_MODE` (lines 513-515), `RUSTORE_PUBLIC_TOKEN/CONSOLE_APP_ID/KEY_ID/PRIVATE_KEY/PRIVATE_KEY_FILE/SANDBOX` (lines 532-537), `STARS_RATE_RUB/MARKUP/TEST_MODE` (lines 573-575), `PAYMENT_PRIMARY_PROVIDER/PAYMENT_FALLBACK_PROVIDER/PAYMENT_PROVIDER_ORDER` (lines 731-754). All listed names match the live config.
+- `PAYMENTS_REQUIRED` (line 608) and `PAYMENT_WEBHOOK_DIAGNOSTICS_ENABLED` (line 621) are real envs; the doc references them indirectly via "test mode" wording — OK.
+- `POLZA_AI_KEY` is read at `infrastructure/community_config.py:8`. Matches the checklist.
+- `CORS_ALLOWED_ORIGINS` / `WEBAPP_ALLOWED_ORIGINS` are both honored (lines 610-617). Matches.
+- `WEB_CONCURRENCY=1` enforcement: `infrastructure/config.py:705-709` plus `start.sh:42-63`. The "single worker only" claim is accurate.
+- `init_schema` + `verify_schema_ready` + `SCHEMA_VERSION` exist at `infrastructure/database.py:1376, 1544, 47`. The migration example uses the same imports and call signature.
+- Targeted pytest: `tests/test_community_news_polls.py::test_beta_release_checklist_documents_config_policy_risks` is defined at line 508 and reads this doc.
+- `python -m compileall main.py run_web.py infrastructure web core ai battle_engine.py` — these modules exist at repo root and `run_web.py` exists (verified by grep of imports in `main.py`).
+- `docs/EXTRAARENA_SPACE_CLOUDFLARE.md` referenced in the checklist exists and is the canonical Cloudflare runbook.
+
+What I couldn't verify from source alone (kept as-is):
+- Exact Robokassa/YooKassa/RuStore production credentials — secrets are not in the repo by design; the checklist correctly warns operators to set them.
+- The exact F-35 / F-54 / F-55 / F-57 / F-12 / F-02 / F-54 issue IDs and their current status — these are tracked in internal task notes, not visible in `main` source. The wording is descriptive of accepted risk and matches the conservative-release posture in the doc.
+
+No changes needed — content matches current code.

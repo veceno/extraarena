@@ -10,7 +10,7 @@
 
 Выбранный юнит удаляется с доски и уходит в сброс, а его Atk и HP добавляются к характеристикам Канеки. Поглощение происходит **до** срабатывания Battlecry. Если на доске нет союзников, карту разыграть невозможно. `requires_target()` включает `consume_ally` как обязательную цель.
 
-> `core/engine.py:355-383`, `core/effects.py:1141-1186`
+> `core/engine.py:403-511` (в `_handle_play_card`; `requires_target` — `core/effects.py:1322-1367`)
 
 ---
 
@@ -28,7 +28,7 @@
 Примеры на уровне 5: Texas Smash = 8 урона, Recovery = 9 лечения, Blackwhip = 2 заморозки, Full Cowl = +4/+4.
 На уровне 10: Texas Smash = 13, Recovery = 14, Blackwhip = 2, Full Cowl = +6/+6.
 
-> `core/effects.py:714-802`
+> `core/effects.py:838-951` (`effect_cast_random_spell`); `requires_target` исключает `cast_random_spell` (`core/effects.py:1331`)
 
 ---
 
@@ -41,7 +41,7 @@
 
 `requires_target()` **специально помечает** `choose_shield_damage` как не требующую обязательной цели. В `get_legal_actions()` для Геральта генерируются оба варианта действий: с target_id (урон) и без (щит).
 
-> `core/effects.py:808-837`, `core/engine.py:897-904`
+> `core/effects.py:958-986` (`effect_choose_shield_damage`); варианты генерируются в `core/engine.py:1121-1147` (`get_legal_actions`)
 
 ---
 
@@ -51,7 +51,7 @@
 
 **Однако на данный момент это заглушка.** Код содержит TODO и только логирует вызов, но **не создаёт и не помещает юнита на доску фактически**. Интеграция с БД для получения данных призываемой карты не завершена. Ни одна карта в `cards.json` не имеет механики `summon_`.
 
-> `core/effects.py:565-607`
+> `core/effects.py:684-725` (`effect_summon_generic`)
 
 ---
 
@@ -65,7 +65,7 @@
 - Урон наносится последовательно: после каждого удара список живых целей обновляется (мёртвые исключаются)
 - Единственная карта с cleave: **Сукуна (id=23)** с `cleave_1_2` — 1 урона до 2 соседним врагам
 
-> `core/effects.py:613-648`
+> `core/effects.py:732-767` (`_register_cleave_effects`); для WARRIOR cleave хит выполняется в `core/engine.py:933-949` (`_apply_attack_cleave`); для POTION — случайные удары через EFFECT_HANDLERS
 
 ---
 
@@ -80,7 +80,7 @@ if aura_unit.instance_id == unit.instance_id:
 
 Если на доске несколько юнитов с аурой, они **усиливают друг друга** (но не себя). Единственная карта с аурой: **Жанна д'Арк (id=3)** с `aura_atk_1_3` (нормализуется конвертером до `aura_atk_1`).
 
-> `core/engine.py:724-726`
+> `core/engine.py:963-966`
 
 ---
 
@@ -93,7 +93,7 @@ if aura_unit.instance_id == unit.instance_id:
 
 Реализовано и в `_cleanup_dead_units()` (движок), и в зарегистрированном обработчике эффекта. Единственная карта с deathrattle: **Крипер (id=34)** с `deathrattle_aoe_damage_2`.
 
-> `core/engine.py:637-640`, `core/effects.py:670-671`
+> `core/engine.py:790-814` (в `_cleanup_dead_units`); `core/effects.py:774-800` (`_register_deathrattle_aoe_damage_effects`)
 
 ---
 
@@ -103,7 +103,7 @@ if aura_unit.instance_id == unit.instance_id:
 
 Regen не может превысить `max_hp`. Обрабатывается только первая механика regen на юните (если их несколько — только первая). Единственная карта с regen: **Росомаха (id=6)** с `regen_1` (герой с регенерацией).
 
-> `core/engine.py:553-569`
+> `core/engine.py:713-728` (regen на юнитах в `_handle_end_turn`); `core/engine.py:911-931` (`_apply_regen` для героя)
 
 ---
 
@@ -134,12 +134,14 @@ Regen не может превысить `max_hp`. Обрабатывается 
 | Карта | Мана | Atk/HP | Механика | Power |
 |-------|------|--------|----------|-------|
 | Скелет (27) | 1 | 2/1 | — | 5 |
-| Слайм (18) | 2 | 1/2 | — | 10 |
-| Гоблин (19) | 1 | 2/1 | — | 10 |
-| Глитч-Удар (47) | 1 | — | spell_damage_1 | 10 |
-| Зелье лечения (14) | 2 | — | spell_heal_3 | 15 |
-| Глитч-Стена (48) | 3 | 0/5 | taunt | 15 |
-| Пылающий череп (26) | 2 | 2/1 | battlecry_damage_1 | 20 |
+| Слайм (37) | 1 | 1/2 | — | 5 |
+| Хиличурл (38) | 2 | 2/2 | — | 10 |
+| Глитч-Удар (8) | 1 | — | damage_1_5 | 10 |
+| Тока Киришима (15) | 2 | 2/1 | battlecry_damage_1_random | 15 |
+| Альфонс Элрик (39) | 2 | 1/3 | taunt | 15 |
+| Мидория (26) | 5 | 5/5 | cast_random_spell | 50 |
+
+> Примечание: ID карт соответствуют текущему `cards.json`. В каталоге нет карт «Гоблин», «Глитч-Стена», «Зелье лечения», «Пылающий череп»; вместо них приведены фактически существующие слабые карты с близким power.
 
 Карты без механик или с минимальными статами почти всегда проигрывают картам с полезными эффектами при той же стоимости маны.
 
@@ -262,3 +264,39 @@ Regen не может превысить `max_hp`. Обрабатывается 
 - Для игроков с <300 трофеев бот начинается мгновенно (без очереди)
 - Для игроков с 300+ трофеев — до 15 сек ожидания в очереди перед ботом
 - Фронтенд опрашивает статус матча каждые 2 секунды (до 25 сек таймаута)
+
+---
+
+## Audit (2026-06-25)
+
+Проверено: `core/engine.py`, `core/effects.py`, `core/converter.py`, `tests/test_mechanics.py`, `tests/test_mechanics_wave_3.py`, `tests/test_mechanics_wave_4.py`, `cards.json`, `infrastructure/config.py`, `infrastructure/match_config.py`, `infrastructure/matchmaking.py`.
+
+Исправлено:
+- `docs/GAMEPLAY_QA.md:13` — обновлены line-refs для `consume_ally` (логика в `core/engine.py:403-511`, `requires_target` — `core/effects.py:1322-1367`).
+- `docs/GAMEPLAY_QA.md:31` — обновлён line-ref `cast_random_spell` (фактически `core/effects.py:838-951`).
+- `docs/GAMEPLAY_QA.md:44` — обновлён line-ref `choose_shield_damage` (фактически `core/effects.py:958-986`, `core/engine.py:1121-1147`).
+- `docs/GAMEPLAY_QA.md:55` — обновлён line-ref `summon_` (фактически `core/effects.py:684-725`).
+- `docs/GAMEPLAY_QA.md:69` — обновлён line-ref `cleave_` (фактически `core/effects.py:732-767`, обработка WARRIOR в `core/engine.py:933-949`).
+- `docs/GAMEPLAY_QA.md:83` — обновлён line-ref `aura_atk_` (фактически `core/engine.py:963-966`).
+- `docs/GAMEPLAY_QA.md:96` — обновлён line-ref `deathrattle_aoe_damage_` (фактически `core/engine.py:790-814`, `core/effects.py:774-800`).
+- `docs/GAMEPLAY_QA.md:106` — обновлён line-ref `regen_` (фактически `core/engine.py:713-728` и `core/engine.py:911-931` для героя).
+- `docs/GAMEPLAY_QA.md:138-145` — таблица «слабых карт» ссылалась на ID 18, 19, 47, 14, 48, 26, которых нет в `cards.json`. Заменено на реальные карты: `Слайм (37)`, `Хиличурл (38)`, `Глитч-Удар (8)`, `Тока Киришима (15)`, `Альфонс Элрик (39)`, `Мидория (26)`.
+
+Поведенческие проверки (без правок, всё совпадает):
+- `consume_ally` обязателен, без союзника карта не разыгрывается (test_consume_ally + engine.py:415, 885-887, 1264-1267).
+- `cast_random_spell` у Мидории: 4 варианта, скейлинг по уровню (test_cast_random_spell_works + effects.py:838-951).
+- `choose_shield_damage` Геральта: с целью — 3 урона, без — щит; `requires_target` исключает её (test_choose_shield_damage_with/without_target + engine.py:1121-1147, effects.py:958-986, 1331).
+- `summon_` остаётся заглушкой, в `cards.json` таких карт нет (effects.py:684-725).
+- `cleave_` для WARRIOR — пассивная механика атаки, бьёт соседей цели (engine.py:933-949, test_cleave_damages_multiple_targets); для POTION — случайные удары (effects.py:732-767).
+- `aura_atk_` не действует на сам юнит (engine.py:963-966).
+- `deathrattle_aoe_damage_X` бьёт и юнитов, и героя (engine.py:790-814, effects.py:774-800).
+- `regen_` в начале хода владельца, cap = max_hp (test_regen_restores_hp + engine.py:713-728, 911-931).
+- Freeze: пропускает активацию при разморозке, не снимается уроном (test_freeze_prevents_attack_on_next_turn + engine.py:695-704).
+- Taunt: блокирует атаку героя и любых не-таунтов (test_taunt_*, engine.py:534-557, 1196-1207).
+- `aura_atk_X_Y` нормализуется конвертером до минимального значения (`aura_atk_1_3` → `aura_atk_1`, converter.py:30-96).
+- Матчмейкинг: 300 трофеев, окна 50/200/500, таймаут 15 сек, опрос 3 сек — соответствует `infrastructure/config.py:42-43`, `infrastructure/match_config.py:6-12`.
+- Пресеты колод: 3 бесплатных + 2 ExtraPass (config.py:45-46, web/server.py:7081).
+
+Не удалось верифицировать:
+- Время хода в Classic/Blitz (25 сек / 5 сек) и частоту поллинга фронта (2 сек) — настройки не нашёл в коде; предположительно вынесены в фронтенд-конфиг.
+- Упоминание `webapp/index.html:2269-2360` для метрик `DeckEditor` (фактически блок в районе строк 9422-9451 + компонент DeckEditor на 9685).

@@ -207,17 +207,26 @@ runtime-состоянием. Поле **не сериализуется чер�
 
 ### 3.1. Численный пример
 
-Стартовая рука: `[H1 cost=5, H2 cost=6]` (нет cheap и нет expensive).
+Стартовая рука: `[H1 cost=5, H2 cost=6]`. По классификации
+`CHEAP_COST_MAX=2` / `EXPENSIVE_COST_MIN=4`: cheap_in_hand = 0,
+expensive_in_hand = 2 (обе карты дорогие).
 Колода: `[D1 cost=1, D2 cost=3, D3 cost=5]`.
 
-Веса: D1 = 1.0 + 0.3 (cheap bias) = 1.3, D2 = 1.0, D3 = 1.0 + 0.3 (expensive bias) = 1.3.
-Сумма = 3.6. Шансы добора: 36% / 28% / 36%.
+Веса (`COST_BIAS=0.3`):
+- D1 (cheap, cost=1) — bias = `max(0, 1 - 0) * 0.3 = 0.3` → weight = 1.3.
+- D2 (mid, cost=3) — weight = 1.0.
+- D3 (expensive, cost=5) — bias = `max(0, 1 - 2) * 0.3 = 0` → weight = 1.0.
 
-Если первая же карта (D2) добрана — оставшиеся D1 и D3 получают `skip_count=1`,
-что не меняет их веса (всё ещё 1.3 против 1.0). На втором доборе bias на
-expensive пропадает, потому что D3 уже в руке: вес D3 = 1.0, шансы:
-`1.3 / (1.3 + 1.0 + 1.0) = 39%` для D1, `30%` для остальных. Bias в
-пользу cheap **сохраняется**, пока cheap не окажется в руке.
+Сумма = 3.3. Шансы добора: 39.4% / 30.3% / 30.3% (D1 / D2 / D3).
+
+Если первая же карта (D2) добрана — её `skip_count` сбрасывается в 0, а
+у оставшихся D1 и D3 инкремент skip_count (шаг 2) компенсируется
+декрементом (шаг 3), так что обе остаются с `skip_count=0`. Состав руки
+не меняется (cheap_in_hand=0, expensive_in_hand=2), поэтому bias не
+пересчитывается: D1 = 1.3, D3 = 1.0 → шансы второго добора
+56.5% / 43.5%. **Cheap bias сохраняется**, пока cheap-карта не окажется
+в руке; **expensive bias не действует**, пока в руке есть хотя бы одна
+дорогая карта.
 
 ## 4. Сравнение со старой FIFO-логикой
 
@@ -375,3 +384,67 @@ JS-replay логики weighted draw:
 * `tests/test_core_logic.py::TestStratifiedWeightedDraw` — unit-тесты.
 * `ai/train_v2/classic_rl_env.py::reset` — RL env, пробрасывает seeded rng
   в `ArenaEnvironment`.
+
+## Audit (2026-06-25)
+
+Проверено против исходников:
+
+- `core/engine.py:47-50` — константы `HAND_CAP=4`, `STUCK_BONUS=0.5`,
+  `COST_BIAS=0.3`, `CHEAP_COST_MAX=2`, `EXPENSIVE_COST_MIN=4` совпадают.
+- `core/engine.py:53-82` — `_compute_draw_weights` реализует именно ту
+  формулу, что описана (плюс «defensive `max(0, 1 - in_hand)` для бакета»).
+- `core/engine.py:109-221` — `draw_one_from_deck`: три шага (reshuffle,
+  skip-count инкремент + overdraw-handling, weighted draw) соответствуют
+  разделу 2.4. `skip_count` сбрасывается у вытянутой карты (line 216) и
+  у карты, ушедшей в graveyard при `overdraw_to_discard` (line 187), а
+  для оставшихся в deck применяется компенсирующий декремент
+  (lines 191-192, 218-219).
+- `core/engine.py:667-741` — `_handle_end_turn` зовёт `draw_one_from_deck`
+  с `source="end_turn"` и `rng=self._rng`.
+- `core/effects.py:260-300` — `effect_battlecry_draw_card` зовёт
+  `draw_one_from_deck` с `source="battlecry_draw_card"`, пробрасывая
+  `state.arena_engine._rng`.
+- `core/state.py:102` — поле `skip_count: int = 0` на `CardInstance`.
+- `core/state.py:130` — `reset_to_base_state` обнуляет `skip_count`.
+- `ai/train_v2/classic_actions_v1.py:369-412` — `_make_preview_env` идёт
+  через `ArenaEnvironment.__new__` и тремя путями устанавливает `_rng`
+  (clone через `getstate/setstate`, cold-path по fingerprint, fresh
+  отброшен) — описание в §6.2 точное.
+- `ai/train_v2/classic_rl_env.py:132-179` — `reset` сеет модульный
+  random и передаёт `state_rng` в `ArenaEnvironment`.
+- `tests/test_core_logic.py:1985-2630` — все 16 тестов из §7.1
+  присутствуют с указанными именами.
+- `/tmp/pw-verify/verify_weighted_draw.py:160-167` — ровно 6 сценариев:
+  anti_stuck_skip, cost_curve, reshuffle_reset, determinism, variance,
+  weights_bias.
+- `infrastructure/match_modes.py:42` — `ClassicParams.overdraw_to_discard: bool = False`.
+- `battle_engine.py::BattleEngine.create_match` создаёт `ArenaEnvironment`
+  через классический `ArenaEnvironment(...)` без `rng=`, оставляя
+  `random.Random()` — это значит, что матчи, созданные через адаптер,
+  используют fresh RNG, а не seeded. В §2.5 это явно не отражено, но
+  противоречия с текстом нет (RNG-инжекция описана только для
+  `ClassicRLEnv` и preview-env).
+
+Что исправлено:
+
+- `docs/CYCLE_DRAW.md:210-220` — §3.1 «Численный пример»: исправлено
+  ошибочное утверждение, что после добора D2 оставшиеся D1 и D3 получают
+  `skip_count=1`. На самом деле инкремент skip_count в начале шага 2
+  компенсируется декрементом в конце шага 3 (engine.py:175-176 +
+  218-219), поэтому обе карты возвращаются к `skip_count=0`. Также
+  убран внутренне противоречивый пассаж «D3 уже в руке» (D3 не
+  добрана в этом сценарии) и неверные проценты (1.3 / 3.3 = 39%
+  вместо корректных 50/50 после draw D2, поскольку обе карты получают
+  одинаковый cheap/expensive bias и skip_count=0).
+
+Не удалось верифицировать:
+
+- §8 «`STUCK_BONUS=0.5` подобран эмпирически по 9-card колодам» —
+  исторический комментарий, в коде/тестах прямой ссылки на «9-card
+  tuning» не нашёл.
+- §7.3 «6 дополнительных тестов FIXED» — относится к историческим
+  изменениям (action_result_cache / extra_pass_claiming) и не
+  воспроизводится из текущего кода; согласно memory
+  `test-suite-baseline.md`, `test_extra_pass_claiming.py` сейчас в
+  списке 32 pre-existing fail, так что формулировка в §7.3 может
+  быть устаревшей.

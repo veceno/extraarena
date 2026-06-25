@@ -116,3 +116,22 @@ None of these artifacts modify production game server configs automatically. Con
 4. Deploy through your normal release process
 
 The operator pipeline is intentionally read-only to keep production safe.
+
+---
+
+## Audit (2026-06-25)
+
+Verified against current source. No changes needed — content matches current code.
+
+Checked:
+- Artifact chain ordering (suite.py, candidate_profile.py, profile_registry.py, shadow_report.py, acceptance_gate.py, release_bundle.py).
+- Version registry (ai/train_v2/__init__.py TRAIN_V2_ARTIFACT_VERSIONS).
+- candidate.json key fields (suite.py promote_candidate meta block).
+- candidate_profile.json key fields (candidate_profile.py build_train_v2_profile).
+- profile_overlay.json key fields (profile_registry.py write_profile_overlay).
+- shadow_evidence/ files and manifest summary keys (shadow_report.py summarize_shadow_result + write_shadow_evidence_pack).
+- acceptance_gate.json fields (acceptance_gate.py evaluate_acceptance_gate return).
+- release_manifest.json fields (release_bundle.py build_release_bundle manifest dict).
+- Panel snapshot version + operator CLI (ai/train_v2/operator.py write_panel_snapshot, subcommands: panel, snapshot, doctor).
+- BOT_DIFFICULTY_PROFILES existence (infrastructure/config.py:243).
+- TrainV3 coexistence: TrainV3/README.md still imports codecs from `ai.train_v2` (e.g. model_mlx.ActionConditionedPolicy); TrainV2 remains the codec/operator pipeline, TrainV3 is the Rust-acceleration boundary, so the historical TrainV2 framing stays valid.

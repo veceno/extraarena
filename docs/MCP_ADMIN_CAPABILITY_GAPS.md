@@ -27,16 +27,16 @@ mode read, push status, analytics overview, player notes, and resource grants.
 
 | Section | Stable HTTP handlers | Stable DB/service methods | Current MCP gap |
 | --- | --- | --- | --- |
-| Squads | `GET /api/admin/squads/analytics`, `GET /api/admin/squads/list`, `GET /api/admin/squads/{clan_id}`, `POST /api/admin/squads/...` in `web/server.py:14549` | `get_admin_squads_analytics`, `search_admin_squads`, `resolve_clan_identifier`, `get_admin_squad_detail`, `admin_update_squad`, `admin_adjust_squad_balance`, `admin_squad_member_action`, `get_squad_runtime_config`, `process_weekly_squad_cbrp` | No squad MCP tools |
-| Match mode toggles | `GET/POST /api/admin/match-modes` in `web/server.py:11471` | `get_match_mode_overrides`, `set_match_mode_enabled`, `is_match_mode_enabled` | Read exists; write missing |
-| Push app-update | `POST /api/admin/push/app-update` in `web/server.py:11906` | `count_push_devices`, `get_push_devices_for_broadcast`, `mark_push_device_error`, `build_android_push_payload`, `send_android_broadcast` | Status read exists; broadcast missing |
-| Rewards track CRUD | `GET/POST /api/admin/rewards/tracks...` in `web/server.py:12045` | `get_all_reward_tracks`, `get_reward_track_by_id`, `create_reward_track`, `update_reward_track`, `delete_reward_track`, `replace_reward_tracks` | Season import exists; generic CRUD missing |
-| Analytics/export | `GET /api/admin/analytics/*` in `web/server.py:10893` | `get_admin_*_analytics`, `export_train_v2_battle_dataset` | Only overview read exists |
-| TPS | `GET /api/admin/tps` in `web/server.py:11986` | `tps_monitor.get_statistics()` | Missing read tool |
-| Config | `GET /api/admin/configs`, `GET/POST /api/admin/runtime-config` in `web/server.py:11420` | `get_runtime_config`, `set_runtime_config`, `get_squad_runtime_config`, `set_game_setting` | Runtime exists; summary and squad config gaps |
-| Cards | `GET/POST /api/admin/cards...` in `web/server.py:5653` | `get_cards_list`, `create_card`, `add_all_cards_to_user`, `delete_all_user_cards` | Missing; create is high-risk |
-| Items | `GET/POST /api/admin/items...` in `web/server.py:5745` | No `Database.create_item` or `Database.get_items_list` found | Do not add yet |
-| Debug | `POST /api/admin/debug/add-key` in `web/server.py:8129` | Direct SQL only | Do not add raw debug tool |
+| Squads | `GET /api/admin/squads/analytics`, `GET /api/admin/squads/list`, `GET /api/admin/squads/{clan_id}`, `POST /api/admin/squads/...` handlers live in `web/server.py` (analytics at line 16275, list at 16293, detail at 16312, plus create/update/balance/member/request/upgrade/config/weekly_process/delete handlers at lines 16327-16515) | `get_admin_squads_analytics`, `search_admin_squads`, `resolve_clan_identifier`, `get_admin_squad_detail`, `admin_update_squad`, `admin_adjust_squad_balance`, `admin_squad_member_action`, `get_squad_runtime_config`, `process_weekly_squad_cbrp` | Already integrated as `admin.squads.read` and `admin.squads.action.execute` (2026-06-25 audit) |
+| Match mode toggles | `GET/POST /api/admin/match-modes` in `web/server.py:13175` | `get_match_mode_overrides`, `set_match_mode_enabled`, `is_match_mode_enabled` | Already integrated as `admin.match_modes.availability.set` (2026-06-25 audit) |
+| Push app-update | `POST /api/admin/push/app-update` in `web/server.py:13619` | `count_push_devices`, `get_push_devices_for_broadcast`, `mark_push_device_error`, `build_android_push_payload`, `send_android_broadcast` | Already integrated as `admin.push.app_update.broadcast` (2026-06-25 audit) |
+| Rewards track CRUD | `GET/POST /api/admin/rewards/tracks...` in `web/server.py` (read at 13758, create at 13771, update at 13826, delete at 13889) | `get_all_reward_tracks`, `get_reward_track_by_id`, `create_reward_track`, `update_reward_track`, `delete_reward_track`, `replace_reward_tracks` | Already integrated as `admin.rewards.tracks.read/create/patch/delete` (2026-06-25 audit) |
+| Analytics/export | `GET /api/admin/analytics/*` in `web/server.py` (overview at 12594, dataset export at 12752, section routes registered at 12674-12794) | `get_admin_*_analytics`, `export_train_v2_battle_dataset` | Already integrated as `admin.analytics.section.read` and `admin.analytics.dataset.export.read` (2026-06-25 audit) |
+| TPS | `GET /api/admin/tps` in `web/server.py:13699` | `tps_monitor.get_statistics()` | Already integrated as `admin.runtime.tps.read` (2026-06-25 audit) |
+| Config | `GET /api/admin/configs`, `GET/POST /api/admin/runtime-config` in `web/server.py` (configs summary at 13124, runtime-config handler at 13202) | `get_runtime_config`, `set_runtime_config`, `get_squad_runtime_config`, `set_game_setting` | Already integrated as `admin.configs.summary.read`, `admin.runtime.config.read`, `admin.runtime.config.patch` (2026-06-25 audit) |
+| Cards | `GET/POST /api/admin/cards/...` in `web/server.py` (create handler at line 6855, list handler at line 6927) | `get_cards_list`, `create_card`, `add_all_cards_to_user`, `delete_all_user_cards` | Already integrated as `admin.catalog.cards.read`, `admin.catalog.cards.create`, `admin.catalog.cards.collection.set` (2026-06-25 audit) |
+| Items | `GET/POST /api/admin/items/...` in `web/server.py` (create handler at line 6947, list handler at line 6997) | `Database.create_item` (database.py:14428) and `Database.get_items_list` (database.py:14458) DO exist; original claim of "not found" is stale | Already integrated as `admin.catalog.items.read` and `admin.catalog.items.create` (2026-06-25 audit) |
+| Debug | `POST /api/admin/debug/add-key` in `web/server.py:9708` | Direct SQL only | Do not add raw debug tool |
 
 ## Common Mutating Fields
 
@@ -646,3 +646,63 @@ tool with strict confirmation, idempotency, and preview output.
 - `tests/test_match_modes.py`: catalog and mode availability invariants.
 - `tests/test_squad_backend_invariants.py`: membership and CBRP safety
   invariants before enabling squad mutators.
+
+## Audit (2026-06-25)
+
+Checked `web/mcp_admin_tools.py`, `web/admin_capabilities.py`, and
+`web/player_admin_action_specs.py` against the doc.
+
+Fixed (table corrections only; P1/P2/P3 narrative and integration-order
+sections left as historical design notes):
+
+- `docs/MCP_ADMIN_CAPABILITY_GAPS.md:30` (Squads row) — line numbers were
+  stale (`web/server.py:14549` no longer matches). Updated to actual handler
+  locations (16275-16515) and noted that the "No squad MCP tools" gap is
+  closed: `admin.squads.read` and `admin.squads.action.execute` are
+  registered.
+- `docs/MCP_ADMIN_CAPABILITY_GAPS.md:31` (Match mode toggles row) — line
+  number stale (`11471` -> `13175`); gap claim updated to
+  `admin.match_modes.availability.set` already integrated.
+- `docs/MCP_ADMIN_CAPABILITY_GAPS.md:32` (Push app-update row) — line number
+  stale (`11906` -> `13619`); gap claim updated to
+  `admin.push.app_update.broadcast` already integrated.
+- `docs/MCP_ADMIN_CAPABILITY_GAPS.md:33` (Rewards track CRUD row) — line
+  number stale (`12045` -> `13758/13771/13826/13889`); gap claim updated
+  to `admin.rewards.tracks.read/create/patch/delete` already integrated.
+- `docs/MCP_ADMIN_CAPABILITY_GAPS.md:34` (Analytics/export row) — line
+  number stale (`10893` -> `12594/12752`); gap claim updated to
+  `admin.analytics.section.read` and `admin.analytics.dataset.export.read`
+  already integrated.
+- `docs/MCP_ADMIN_CAPABILITY_GAPS.md:35` (TPS row) — line number stale
+  (`11986` -> `13699`); gap claim updated to `admin.runtime.tps.read`
+  already integrated.
+- `docs/MCP_ADMIN_CAPABILITY_GAPS.md:36` (Config row) — line numbers stale
+  (`11420` -> `13124/13202`); gap claim updated to
+  `admin.configs.summary.read`, `admin.runtime.config.read`,
+  `admin.runtime.config.patch` already integrated.
+- `docs/MCP_ADMIN_CAPABILITY_GAPS.md:37` (Cards row) — line numbers stale
+  (`5653` -> `6855/6927`); gap claim "Missing" is wrong — `admin.catalog.cards.read`,
+  `admin.catalog.cards.create`, `admin.catalog.cards.collection.set` are
+  registered.
+- `docs/MCP_ADMIN_CAPABILITY_GAPS.md:38` (Items row) — line numbers stale
+  (`5745` -> `6947/6997`); the claim that `Database.create_item` and
+  `Database.get_items_list` "were not found" is wrong — they exist
+  (`infrastructure/database.py:14428`, `14458`). The doc's recommendation
+  to "do not add yet" is also wrong: `admin.catalog.items.read` and
+  `admin.catalog.items.create` are registered.
+
+Not changed: the P1/P2/P3 sections and "Suggested Integration Order"
+section read as a design plan dated 2026-06-08; they describe schemas and
+adapter behaviors for tools that have since landed in
+`web/admin_capabilities.py` / `web/mcp_admin_tools.py`. The detailed
+schemas there were not compared field-by-field against the final
+`AdminCapability` entries in this audit pass — if the current schemas in
+`admin_capabilities.py` differ from the design above, treat the P1/P2
+sections as historical snapshots rather than the current truth.
+
+Could not fully verify within scope: the doc asserts an "audit metadata"
+policy for read-only tools — verified that the dataclass in
+`admin_capabilities.py` enforces this (`audit_policy="metadata"` on all
+read-only entries), no change needed. Did not re-validate the `web/server.py`
+line numbers for every P3 HTTP reference beyond what the table above
+already corrected.

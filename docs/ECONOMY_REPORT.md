@@ -23,45 +23,42 @@
 
 ### 2.1. Хардкод-плейсхолдеры (React ShopScreen)
 
-`webapp/index.html:1058-1066` — 4 товара:
-
-| Товар | Цена |
-|---|---|
-| 💎 100 гемов | 49 ⭐ (Telegram Stars) |
-| 🪙 500 монет | 29 ⭐ |
-| 🗝️ 3 ключа | 99 ⭐ |
-| ⚡ ExtraPass | 199 ⭐ |
+В `webapp/index.html` нет хардкод-плейсхолдеров товаров — каталог собирается сервером через `/api/shop/catalog` и `/api/payments/config` (`ShopScreen` начинается на строке 4610). Базовые цены хранятся в `infrastructure/shop_config.py` (`SHOP_PRICES`, `GEM_PACKAGES`, `CASE_PACKS`). Скип.
 
 ### 2.2. Покупки за гемы через `item_type`
 
-`web/server.py:6416-6488` — количество прямо в названии товара:
+`web/server.py:17602-18074` (`shop_buy_handler`, route `POST /api/shop/buy`) — количество прямо в названии товара:
 
 | `item_type` | Что даёт |
 |---|---|
-| `coins_300`, `coins_1400`, `coins_5000`, `coins_20000` | N монет |
-| `keys_1`, `keys_3`, `keys_10` | N ключей |
-| `case_tier_1` … `case_tier_5` | Кейс тира N |
+| `coins_300`, `coins_500`, `coins_1400`, `coins_2000`, `coins_5000`, `coins_20000` | N монет |
+| `keys_1`, `keys_3`, `keys_10`, `keys_25`, `keys_50`, `keys_100` | N ключей |
+| `case` / `case_pack_1`, `case_pack_3`, `case_pack_5`, `case_pack_10` | Кейс-паки |
+| `case_tier_1` … `case_tier_5` | Кейс конкретного тира |
 
-Цены приходят с клиента в поле `gems_amount`.
+Цены берутся из `infrastructure/shop_config.py` (`SHOP_PRICES`, `CASE_PACKS`) — клиент их не присылает.
 
 ### 2.3. Платёжные пресеты (реальные деньги)
 
-`infrastructure/payments_logic.py:162-352`:
+`infrastructure/payments_logic.py:465-893` (`_grant_rewards_for_item`):
 
 | `item_type` | Состав |
 |---|---|
-| `extrapass` | ExtraPass на 30 дней |
-| `extrapass_ultra` | ExtraPass 30 дней + 500 гемов |
-| `starter_boost` | ExtraPass + 500 гемов + 3000 монет + кейсы T2 + T3 (если ExtraPass уже есть: 1200 гемов + 3000 монет + T2 + T3) |
+| `extrapass` | ExtraPass до конца сезона |
+| `extrapass_ultra` | ExtraPass Ultra до конца сезона + 500 гемов |
+| `extrapass_gift` | Подарочный ExtraPass другому игроку (`recipient_id`) |
+| `starter_boost` | ExtraPass (или 1200 гемов, если ExtraPass уже есть) + 500 гемов-бонус + 3000 монет + T2 + T3 кейсы |
 | `shop_set_N` | Набор из БД (монеты, гемы, карты, частицы, кейсы — любой микс) |
+| `gems_package` (`package_type`) | Гем-пакет из `GEM_PACKAGES` (Starter/100/250/600/1300/2500) |
+| `squad_boost` | Активация Boost сквада через `db.activate_clan_boost_from_purchase` |
 
 ### 2.4. Shop Sets (админский CRUD)
 
-`web/server.py:6665-6916` — полноценный REST API для создания/редактирования/удаления наборов:
+`web/server.py:18712-18868` (routes `/api/admin/shop/sets/*`) — REST API для создания/редактирования/удаления наборов. Полный CRUD с поддержкой гостевого выкупа (`gift_shop_set`), fallback для уже владеемых карт, одноразовых покупок и клейм-резервации (защита от повторной выдачи).
 
-- **Поля**: `name`, `description`, `price`, `currency` (rubles/gems/coins), `rewards[]`
-- **Reward types**: `gems`, `coins`, `card`, `particles`, `case`
-- ⚠️ Методы БД (`get_shop_set`, `create_shop_set`, `grant_shop_set_rewards` и др.) **НЕ РЕАЛИЗОВАНЫ** в текущем `database.py`
+- **Поля**: `name`, `description`, `image_file_id`, `price`, `currency` (`rubles`/`gems`/`coins`), `rewards[]`, `is_active`
+- **Reward types**: `gems`, `coins`, `card`, `particles`, `case`, `cosmetic`
+- Методы БД (`get_shop_set`, `create_shop_set`, `update_shop_set`, `delete_shop_set`, `grant_shop_set_rewards`, `grant_shop_set_rewards_on_conn`, `purchase_shop_set`, `_apply_shop_set_rewards_on_conn`) **реализованы** в `infrastructure/database.py:10780-11075`.
 
 ### 2.5. Обменный курс Telegram Stars
 
@@ -72,8 +69,9 @@ DEFAULT_STARS_RATE_RUB = 1.5   # 1 ⭐ = 1.5 ₽
 DEFAULT_STARS_MARKUP = 1.2     # наценка 20%
 ```
 
-Формула (`web/server.py:6104`): `stars = ceil((rub / 1.5) * 1.2)`.  
+Формула (`web/server.py:17127`): `stars = max(1, ceil((rub / 1.5) * 1.2))`.  
 Пример: 100 ₽ → `ceil((100/1.5)*1.2)` = 80 ⭐.
+Клиентский дубликат: `webapp/index.html:4663` (`calcStars`).
 
 ---
 
@@ -81,7 +79,7 @@ DEFAULT_STARS_MARKUP = 1.2     # наценка 20%
 
 ### 3.1. Монеты за победу
 
-`infrastructure/config.py:77-114`, `web/server.py:315-343`:
+`infrastructure/config.py:299-306` (`TROPHY_TIERS`), `web/server.py:2619-2672` (`calculate_trophy_delta`) и `web/server.py:2675-2703` (`calculate_coins_reward`):
 
 | Тир | Трофеи | Монеты за победу | Трофеи за победу | Трофеи за поражение |
 |---|---|---|---|---|
@@ -112,26 +110,28 @@ DEFAULT_STARS_MARKUP = 1.2     # наценка 20%
 
 ### 4.1. Редкости (10 шт.)
 
-`infrastructure/database.py:23-33, 2397`:
+`infrastructure/database.py:343-354` (`RARITY_STATS`), `infrastructure/database.py:14134` (CHECK constraint):
 
 | Редкость | Рост стат/уровень | SQL? | В кейсах? |
 |---|---|---|---|
 | `common` | 10% | ✅ | ✅ |
 | `rare` | 10% | ✅ | ✅ |
-| `start` | 10% | ❌ (нет в CHECK) | ✅ |
+| `start` | 10% | ✅ (добавлен в CHECK) | ✅ |
 | `superrare` | 10% | ✅ | ✅ |
-| `epic` | 11% | ✅ | ✅ |
-| `legendary` | 12% | ✅ | ✅ |
-| `mythic` | 12% | ✅ | ✅ |
-| `divine` | 15% | ✅ | ✅ |
-| `limited` | 13% | ✅ | ✅ (ивенты) |
-| `unique` | 15% | ✅ | ❌ |
+| `epic` | 10% | ✅ | ✅ |
+| `legendary` | 10% | ✅ | ✅ |
+| `mythic` | 10% | ✅ | ✅ |
+| `divine` | 10% | ✅ | ✅ |
+| `limited` | 10% | ✅ | ✅ (ивенты) |
+| `unique` | 10% | ✅ | ❌ |
 
-Максимальный уровень: **10** для всех редкостей.
+> В коде `RARITY_STATS` сейчас задаёт **10% для всех редкостей** (`database.py:343-354`). Балансировка по редкостям выполняется через разные базовые статы карт, а не через дифференцированный процент роста.
+
+Максимальный уровень: **10** для всех редкостей (`get_card_max_level` в `database.py:427-428`). У карт с флагом `simplified_levelup` максимум — 2.
 
 ### 4.2. Стоимость апгрейда — ЧАСТИЦЫ
 
-`infrastructure/database.py:2761-2808`:
+`infrastructure/database.py:16944-16991` (`calculate_upgrade_particles`):
 
 **База** по текущему уровню (для `common`):
 
@@ -165,7 +165,7 @@ DEFAULT_STARS_MARKUP = 1.2     # наценка 20%
 
 ### 4.3. Стоимость апгрейда — МОНЕТЫ
 
-`infrastructure/database.py:2810-2858`:
+`infrastructure/database.py:16993-17041` (`calculate_upgrade_coins`):
 
 **База** по текущему уровню (для `common`):
 
@@ -226,7 +226,7 @@ DEFAULT_STARS_MARKUP = 1.2     # наценка 20%
 ### 4.6. Источники карт
 
 - **Кейсы** — основной способ (3–8 карт за кейс в зависимости от тира)
-- **Стартовый бонус** — карта ID 9 при первом входе
+- **Стартовый бонус** — набор стартовых карт `STARTER_DECK_CARD_IDS = [1, 36, 37, 38, 39, 40, 41, 42, 46]` (`database.py:48`) + карты редкости `start` (через `grant_start_cards`)
 - **Админские инструменты** — `add_all_cards_to_user`
 - **Прямой магазин карт отсутствует** — карты нельзя купить ни за монеты, ни за гемы
 
@@ -273,7 +273,7 @@ DEFAULT_STARS_MARKUP = 1.2     # наценка 20%
 
 ### 5.3. Механика Tap Upgrade
 
-Каждый кейс вскрывается за 4 тапа. На каждом тапе — шанс повысить тир кейса (`case_config.py:135-141`):
+Каждый кейс вскрывается за 4 тапа. На каждом тапе — шанс повысить тир кейса (`case_config.py:180-185`, `TIER_UPGRADE_CHANCES`):
 
 | Тап | Шанс ↑ |
 |---|---|
@@ -286,7 +286,7 @@ DEFAULT_STARS_MARKUP = 1.2     # наценка 20%
 
 ### 5.4. Частицы за дубликаты из кейсов
 
-`case_config.py:111-133`, `case_system.py:171-193`:
+`case_config.py:154-174` (`BASE_PARTICLES_BY_RARITY` + `TIER_PARTICLES_MULTIPLIER` + `T5_COMMON_JACKPOT_PARTICLES`):
 
 **База по редкости** × **множитель тира**:
 
@@ -342,7 +342,7 @@ DEFAULT_STARS_MARKUP = 1.2     # наценка 20%
 
 ## 7. Glory Path (дорога славы)
 
-`webapp/main.js:1253-1298` — награды при достижении порогов трофеев:
+`webapp/index.html:3402-3425` (`GLORY_PATH_MILESTONES`) — награды при достижении порогов трофеев:
 
 | Трофеи | Лига | Награда |
 |---|---|---|
@@ -350,27 +350,30 @@ DEFAULT_STARS_MARKUP = 1.2     # наценка 20%
 | 300 | Bronze | T2 кейс + 50 гемов |
 | 450 | — | 2,000 монет + 20 rare-частиц |
 | 600 | Silver | T2 кейс + гарант. rare-карта |
-| 900 | — | T3 кейс + 50 шардов |
+| 900 | — | T3 кейс |
+| 1,000 | — | 2 ключа |
 | 1,200 | Gold | 3,000 монет + 30 superrare-частиц |
+| 1,500 | — | 3 ключа |
 | 1,600 | — | T3 кейс + 75 гемов |
 | 2,000 | Crystal | Гарант. epic-карта |
 | 2,500 | — | T4 кейс + 5,000 монет |
-| 3,000 | Master | Гарант. legendary-карта |
-| 3,750 | — | T4 кейс + 100 шардов |
+| 3,000 | Master | 250 монет + 3 ключа |
+| 3,750 | — | T4 кейс |
 | 4,500 | Champion | 8,000 монет + 50 epic-частиц |
 | 5,250 | — | T4 кейс + 125 гемов |
 | 6,000 | Grandmaster | T5 кейс |
 | 6,750 | — | 15,000 монет + 100 legendary-частиц |
+| 7,000 | — | 200 монет + 2 ключа |
 | 7,500 | Legendary | Гарант. mythic-карта |
-| 8,250 | — | T5 кейс + 200 шардов |
+| 8,250 | — | T5 кейс |
 | 9,000 | Extra | 20,000 монет |
-| 10,000 | — | T5 divine-кейс + косметика |
+| 10,000 | — | 500 гемов |
 
 ---
 
 ## 8. ExtraPass
 
-`payments_logic.py:229-279`, `webapp/main.js:695-902`
+`payments_logic.py:621-705` (`extrapass`, `extrapass_ultra`, `extrapass_gift`), `webapp/index.html:1259-1274`
 
 ### Преимущества
 1. Отключение рекламы
@@ -378,16 +381,16 @@ DEFAULT_STARS_MARKUP = 1.2     # наценка 20%
 3. 5-й слот для кейсов
 4. Эксклюзивные награды в Battle Pass
 5. Приоритетная поддержка
-6. **Кулдаун чата: 3с** вместо 15с (`web/server.py:3464`)
+6. **Кулдаун чата: 3с** вместо 15с (`web/server.py:7941`)
 
-### Длительность: 30 дней
+### Длительность: до конца сезона (`extra_pass_expires_at = NULL` после активации, `payments_logic.py:441-462`)
 ### ⚠️ Авто-деактивация просроченного ExtraPass не реализована.
 
 ---
 
 ## 9. Промокоды
 
-`database.py:2223-2383`, `web/server.py:1969-2122`:
+`infrastructure/database.py:4782-4843` (схема `promocodes`), `infrastructure/database.py:13590` (`use_promocode`), `web/server.py:6706-6859`:
 
 ### Типы
 - `permanent` — многоразовый, бесконечное использование
@@ -402,7 +405,9 @@ DEFAULT_STARS_MARKUP = 1.2     # наценка 20%
 
 ### API
 - `POST /api/promocode/use` — использовать промокод
-- `POST /api/promocode/create` — создать (админ)
+- `POST /api/admin/promocodes/create` — создать (админ)
+- `GET /api/admin/promocodes/list` — список (админ)
+- `POST /api/admin/promocodes/delete` — удалить (админ)
 
 ---
 
@@ -410,18 +415,18 @@ DEFAULT_STARS_MARKUP = 1.2     # наценка 20%
 
 ### 10.1. Стартовый бонус
 
-`database.py:397-405` — при первом входе:
+`infrastructure/database.py:1611-1647` (`ensure_user_created`) — при первом входе:
 - **50 гемов**
 - **200 монет**
-- **Карта ID 9**
+- **Набор стартовых карт** (`STARTER_DECK_CARD_IDS = [1, 36, 37, 38, 39, 40, 41, 42, 46]`, плюс все карты редкости `start`)
 
 ### 10.2. Смена ника
 
-`web/server.py:1947`: 500 гемов после первой бесплатной смены.
+`web/server.py:6632-6669` (`change_nickname_handler`, route `POST /api/change-nickname`): 500 гемов после первой бесплатной смены.
 
 ### 10.3. Сброс энергии
 
-`webapp/main.js:2339`: 5 гемов за сброс кулдауна энергии.
+`webapp/index.html:1298` показывает UI-стоимость «500 💎» при смене ника. Серверный обработчик сброса энергии за гемы **не реализован** в `web/server.py` — отдельного эндпоинта нет.
 
 ### 10.4. Энергия
 
@@ -444,14 +449,15 @@ DEFAULT_STARS_MARKUP = 1.2     # наценка 20%
 
 | Система | Статус |
 |---|---|
-| **Daily rewards** | Только настройки уведомлений, механика отсутствует |
+| **Daily rewards** | ✅ Реализовано: `/api/daily-login/status` + `/api/daily-login/claim` (`web/server.py:19708-19760`), таблица `daily_login_rewards` |
 | **Рефералы** | Полностью отсутствуют |
-| **Подарки между игроками** | Полностью отсутствуют |
-| **Dice (кубик)** | API есть, методы БД **не реализованы** |
-| **Shop Sets (БД)** | CRUD API есть, методы БД **не реализованы** |
+| **Подарки между игроками** | Частично: подарочные ExtraPass (`extrapass_gift`) и `gift_shop_set` |
+| **Dice (кубик)** | API и методы БД отсутствуют |
+| **Shop Sets (БД)** | ✅ Реализовано: полный CRUD в `database.py:10780-11075` |
 | **Авто-деактивация ExtraPass** | Поле `extra_pass_expires_at` есть, крона нет |
 | **Проверка энергии на сервере** | Поле есть, перед боем не проверяется |
 | **Реклама** | Кнопки в UI есть, SDK/награды отсутствуют |
+| **Сброс энергии за гемы** | Эндпоинт отсутствует |
 
 ---
 
@@ -491,14 +497,44 @@ DEFAULT_STARS_MARKUP = 1.2     # наценка 20%
 
 ## 12. Несоответствия фронтенд ↔ бэкенд
 
-⚠️ Фронтенд (`main.js`, `index.html`) имеет **другие** множители стоимости апгрейда для некоторых редкостей, чем серверный `database.py`:
+На 2026-06-25 расхождений нет: `webapp/main.js:7097-7107` (множители частиц) и `webapp/main.js:7135-7144` (множители монет) совпадают с серверными таблицами в `database.py:16970-16980` и `database.py:17020-17030` соответственно. И фронт, и бэк используют:
 
 | Параметр | Сервер (`database.py`) | Фронтенд (`main.js`) |
 |---|---|---|
-| legendary (частицы) | 2.5× | 3.0× |
-| legendary (монеты) | 3.5× | 3.0× |
-| divine (частицы) | 3.0× | 5.0× |
+| legendary (частицы) | 2.5× | 2.5× |
+| legendary (монеты) | 3.5× | 3.5× |
+| divine (частицы) | 3.0× | 3.0× |
 | divine (монеты) | 5.0× | 5.0× |
-| limited (частицы) | 3.5× | 6.0× |
+| limited (частицы) | 3.5× | 3.5× |
+| limited (монеты) | 6.0× | 6.0× |
 
-**Авторитетный источник — сервер** (`database.py`). Фронтенд показывает некорректные требования.
+**Авторитетный источник — сервер** (`database.py`). Дополнительно в `webapp/index.html:8412-8413` есть дубликат таблицы множителей (`_RARITY_PM`, `_RARITY_CM`) — он также совпадает с сервером.
+
+---
+
+## Audit (2026-06-25)
+
+Проверены `infrastructure/config.py`, `infrastructure/payments.py`, `infrastructure/payments_logic.py`, `infrastructure/robokassa_payments.py`, `infrastructure/database.py`, `infrastructure/case_config.py`, `infrastructure/shop_config.py`, `web/server.py`, `webapp/index.html`, `webapp/main.js`.
+
+Исправлено:
+- §2.1: убрана ложная секция про 4 хардкод-плейсхолдера товаров в `webapp/index.html:1058-1066` — каталог берётся из `/api/shop/catalog` (`ShopScreen` начинается на строке 4610), цены хранятся в `infrastructure/shop_config.py`.
+- §2.2: исправлена ссылка `web/server.py:6416-6488` → `web/server.py:17602-18074` (`shop_buy_handler`), расширен список `item_type` (добавлены `coins_500`, `coins_2000`, `keys_25/50/100`, `case_pack_*`); уточнено, что цены берутся из `shop_config.py`, а не с клиента.
+- §2.3: исправлен диапазон в `payments_logic.py` (162-352 → 465-893, функция `_grant_rewards_for_item`); ExtraPass теперь "до конца сезона", а не 30 дней; добавлены `extrapass_gift`, `gems_package`, `squad_boost`; уточнена логика `starter_boost` (если есть ExtraPass — 1200 гемов = 700 бонус + 500, иначе — ExtraPass + 500 бонус).
+- §2.4: исправлена ссылка `web/server.py:6665-6916` → `18712-18868`; убрано предупреждение о нерёализованных методах БД — `get_shop_set`, `create_shop_set`, `update_shop_set`, `delete_shop_set`, `grant_shop_set_rewards`, `purchase_shop_set` реализованы в `database.py:10780-11075`.
+- §2.5: исправлена ссылка `web/server.py:6104` → `17127`; добавлена клиентская функция `calcStars` (`webapp/index.html:4663`).
+- §3.1: исправлены ссылки `config.py:77-114, web/server.py:315-343` → `config.py:299-306, web/server.py:2619-2672/2675-2703`.
+- §4.1: `RARITY_STATS` (`database.py:343-354`) сейчас задаёт **10% для всех редкостей**; CHECK constraint для `start` добавлен (`database.py:14134`); обновлена таблица.
+- §4.2/§4.3: исправлены ссылки `database.py:2761-2808/2810-2858` → `16944-16991/16993-17041` (функции `calculate_upgrade_particles`/`calculate_upgrade_coins`).
+- §4.6: уточнено, что стартовый бонус — набор `STARTER_DECK_CARD_IDS = [1, 36, 37, 38, 39, 40, 41, 42, 46]` плюс все карты редкости `start`, а не "карта ID 9".
+- §5.3: исправлена ссылка `case_config.py:135-141` → `180-185` (`TIER_UPGRADE_CHANCES`).
+- §5.4: исправлена ссылка `case_config.py:111-133` → `154-174` (`BASE_PARTICLES_BY_RARITY` + `TIER_PARTICLES_MULTIPLIER` + `T5_COMMON_JACKPOT_PARTICLES`).
+- §7: Glory Path живёт в `webapp/index.html:3402-3425` (`GLORY_PATH_MILESTONES`), а не в `main.js:1253-1298`. Таблица обновлена: добавлены milestones 1000 (2 ключа), 1500 (3 ключа), 3000 (250 монет + 3 ключа), 7000 (200 монет + 2 ключа), 10000 (500 гемов). Удалены несуществующие награды про "50/100/200 шардов" и "T5 divine-кейс + косметика".
+- §8: ExtraPass действует **до конца сезона**, не 30 дней; добавлен `extrapass_gift`; кулдаун чата — `web/server.py:7941`, не 3464.
+- §9: исправлены ссылки `database.py:2223-2383, web/server.py:1969-2122` → `database.py:4782-4843/13590, web/server.py:6706-6859`; добавлены новые админ-эндпоинты (`/list`, `/delete`).
+- §10.1: исправлена ссылка `database.py:397-405` → `1611-1647`; уточнён состав стартовых карт.
+- §10.2: исправлена ссылка `web/server.py:1947` → `6632-6669` (`change_nickname_handler`, route `POST /api/change-nickname`).
+- §10.3: убрана ложная ссылка `webapp/main.js:2339`; уточнено, что серверный обработчик сброса энергии за гемы **отсутствует**.
+- §10.6: обновлена таблица — Daily rewards теперь реализованы (`web/server.py:19708-19760`); Shop Sets БД реализованы; добавлены `extrapass_gift` и `gift_shop_set` для подарков.
+- §12: переписано — фактических расхождений между фронтом и сервером нет, таблица совпадает; добавлена ссылка на дубликат `_RARITY_PM/_RARITY_CM` в `index.html:8412-8413`.
+
+Не удалось верифицировать: фактическое наличие трофеев за серию побед (`_compute_win_streak_bonus` в `web/server.py:2611`) — в код введён бонус до +10 за серию до 10 побед, в доке это не отражено; формат хранения сезонных наград `Battle Pass` (использует `extra_pass_tracks_json_must_be_object_or_array` валидацию на `server.py:1952`) — отдельной секции не проверял.
