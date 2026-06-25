@@ -6328,10 +6328,12 @@ const caseRewardSfxId = (rewards) => {
 
   const prepareServerRoll = async () => {
     if (userCaseId) {
+      // T-case flow: tier is pre-set, no tap animation. Skip the tapping
+      // phase entirely and go straight to the reveal screen via openCase().
       setLoadingText('Готовим кейс...');
-      setPhase('tapping');
-      setTapN(0);
+      setTapN(4);
       setTierSeq([initialTier,initialTier,initialTier,initialTier]);
+      await openCase();
       return null;
     }
     window._playCaseSfx?.('case-open-init-sound', {volume:0.64});
@@ -6361,24 +6363,11 @@ const caseRewardSfxId = (rewards) => {
   const doTap = async () => {
     if (tapN >= 4 || phase !== 'tapping') return;
     if (userCaseId) {
-      window._playCaseSfx?.('case-tap-sound', {volume:0.52});
-      const prevTier = tapN === 0 ? initialTier : tierSeq[tapN-1];
-      let newTier = prevTier;
-      try {
-        const res = await fetch(apiUrl('/api/cases/tap'), {
-          method:'POST', headers:{'Content-Type':'application/json'},
-          body: JSON.stringify({user_case_id: userCaseId, current_tier: prevTier, tap_number: tapN+1})
-        });
-        const d = await res.json();
-        if (d?.success) newTier = d.new_tier || prevTier;
-      } catch(e) { newTier = prevTier; }
-      const newSeq = [...tierSeq]; newSeq[tapN] = newTier;
-      setTierSeq(newSeq);
-      setUpgraded(newTier > prevTier);
-      if (newTier > prevTier) setTimeout(()=>setUpgraded(false), 600);
-      const nextTap = tapN + 1;
-      setTapN(nextTap);
-      if (nextTap >= 4) { setTimeout(()=>openCase(), 600); }
+      // T-case flow has no tap animation; tap is a no-op (the reveal
+      // is reached directly via prepareServerRoll → openCase). This
+      // guard remains so accidental UI taps do not regress to legacy
+      // /api/cases/tap calls (that endpoint was removed in the
+      // user_cases pipeline refactor).
       return;
     }
     window._playCaseSfx?.('case-tap-sound', {volume:0.52});
@@ -6400,7 +6389,7 @@ const caseRewardSfxId = (rewards) => {
     try {
       const endpoint = userCaseId ? '/api/cases/open' : '/api/cases/open-from-keys';
       const payload = userCaseId
-        ? {user_case_id: userCaseId, tap_results: tierSeq}
+        ? {user_case_id: userCaseId}
         : {roll_token: serverRoll?.roll_token || null};
       const res = await fetch(apiUrl(endpoint), {
         method:'POST',
@@ -6413,10 +6402,11 @@ const caseRewardSfxId = (rewards) => {
           setTierSeq(d.tap_results);
           setTapN(4);
         }
-        if (!userCaseId) {
-          setOpeningToken(d.opening_token || null);
-          setCanReroll(Boolean(d.can_reroll));
-        }
+        // Both flows return opening_token + can_reroll; user_cases flow
+        // additionally preserves the pre-set tier (T1..T5) and stores
+        // the pending opening server-side until /api/cases/claim.
+        setOpeningToken(d.opening_token || null);
+        setCanReroll(Boolean(d.can_reroll));
         setRerolling(false);
         setRerollToken(null);
         setSkipping(false);
@@ -6446,7 +6436,10 @@ const caseRewardSfxId = (rewards) => {
     setLoadingText('Готовим переоткрытие кейса...');
     setPhase('opening');
     try {
-      const res = await fetch(apiUrl('/api/cases/reroll-from-keys'), {
+      const reserveEndpoint = userCaseId
+        ? '/api/cases/reroll'
+        : '/api/cases/reroll-from-keys';
+      const res = await fetch(apiUrl(reserveEndpoint), {
         method:'POST',
         headers:{'Content-Type':'application/json'},
         body: JSON.stringify({opening_token: openingToken})
@@ -6456,6 +6449,32 @@ const caseRewardSfxId = (rewards) => {
         setRerolling(false);
         setPhase('reveal');
         window.showToast?.(d.message || d.error || 'Переоткрытие кейса не запустилось', 'error', 3200);
+        return;
+      }
+      // Two-flow handling of the reserve response: keys-flow returns
+      // tap_results and goes back to 'tapping'; user_cases flow has no
+      // tap animation so we immediately call /apply-reroll to fetch the
+      // updated rewards and transition straight to 'reveal'.
+      if (userCaseId) {
+        const applyRes = await fetch(apiUrl('/api/cases/apply-reroll'), {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({opening_token: openingToken, reroll_token: d.reroll_token})
+        });
+        const applyD = await applyRes.json();
+        if (!applyRes.ok || !applyD.success) {
+          setRerolling(false);
+          setPhase('reveal');
+          window.showToast?.(applyD.message || applyD.error || 'Переоткрытие кейса не завершилось. Текущие награды сохранены.', 'error', 3200);
+          return;
+        }
+        setRerollToken(d.reroll_token || null);
+        setCanReroll(false);
+        setSkipping(false);
+        setResult(applyD);
+        setPhase('reveal');
+        window.__analytics?.caseOpened();
+        setTimeout(()=>window._playCaseSfx?.(caseRewardSfxId(applyD.rewards), {volume:0.66}), 180);
         return;
       }
       const seq = Array.isArray(d.tap_results) && d.tap_results.length === 4 ? d.tap_results : [1,1,1,1];
@@ -6512,9 +6531,43 @@ const caseRewardSfxId = (rewards) => {
 
   const claimCurrentOpening = async ({closeAfter = true, notifyDone = true} = {}) => {
     if (userCaseId) {
-      if (notifyDone) onDone?.(result);
-      if (closeAfter) onClose();
-      return result;
+      // T-case flow: atomic claim via /api/cases/claim. Server deletes
+      // the user_cases row, awards rewards (coins/cards/particles/gems)
+      // and squad CBRP, then returns the applied rewards payload.
+      if (!openingToken) {
+        if (notifyDone) onDone?.(result);
+        if (closeAfter) onClose();
+        return result;
+      }
+      if (claiming) return null;
+      setClaiming(true);
+      try {
+        const res = await fetch(apiUrl('/api/cases/claim'), {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({opening_token: openingToken})
+        });
+        const d = await res.json();
+        if (!res.ok || !d.success) {
+          setPhase('error');
+          setResult(d);
+          return null;
+        }
+        invalidateInventoryCaches();
+        setCanReroll(false);
+        setResult(d);
+        openingTokenRef.current = null;
+        setOpeningToken(null);
+        if (notifyDone) onDone?.(d);
+        if (closeAfter) onClose();
+        return d;
+      } catch(e) {
+        setPhase('error');
+        setResult({error:'Ошибка сети'});
+        return null;
+      } finally {
+        setClaiming(false);
+      }
     }
     if (!openingToken || claiming) {
       if (closeAfter) onClose();
@@ -6580,7 +6633,7 @@ const caseRewardSfxId = (rewards) => {
       {/* Close/Skip */}
       <div style={{width:'100%',display:'flex',justifyContent:'space-between',padding:'14px 18px 0',flexShrink:0}}>
         <button onClick={closeCaseScreen} disabled={claiming} style={{background:'none',border:`1px solid ${T.grey3}`,borderRadius:'10px',padding:'6px 12px',color:T.grey2,fontSize:'12px',cursor:claiming?'default':'pointer',fontFamily:"'Inter',sans-serif",opacity:claiming?0.6:1}}>✕ Закрыть</button>
-        {phase==='tapping' && !skipping && (
+        {phase==='tapping' && !skipping && !userCaseId && (
           <button data-no-global-click-sound="true" onClick={skip} style={{background:'none',border:`1px solid ${T.grey3}`,borderRadius:'10px',padding:'6px 12px',color:T.grey2,fontSize:'12px',cursor:'pointer',fontFamily:"'Inter',sans-serif"}}>Пропустить ⏩</button>
         )}
       </div>
@@ -16602,6 +16655,23 @@ const App = () => {
   const onboardingBlocking = !!(onboarding && !onboarding.completed && onboarding.status !== 'menu_tour');
   const onboardingTourActive = !!(onboarding && onboarding.status === 'menu_tour');
   const newbiePathOpen = !!(showNewbiePath && onboarding?.completed);
+
+  // Dev-only helper: ?test_t_case=1&user_case_id=N&tier=T triggers
+  // the user_cases (T-case) flow directly without going through
+  // BattlePass claim. Strips the params from the URL after firing so
+  // the address bar stays clean and refresh doesn't reopen the modal.
+  React.useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (!profile) return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('test_t_case') !== '1') return;
+    const userCaseId = parseInt(params.get('user_case_id') || '', 10);
+    const tier = parseInt(params.get('tier') || '1', 10);
+    if (!userCaseId) return;
+    setPendingCaseOpen({userCaseId, initialTier: tier || 1});
+    const cleanUrl = window.location.pathname + window.location.hash;
+    try { window.history.replaceState(null, '', cleanUrl); } catch (_) {}
+  }, [profile]);
 
   window.showToast = (msg, type, ms) => {
     type = type || 'success'; ms = ms || 3000;
