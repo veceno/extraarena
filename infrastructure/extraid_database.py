@@ -476,16 +476,29 @@ class ExtraIDDatabase:
 
     async def create_auth_session(
         self, user_id: int, auth_method: str, token_hash: str,
-        expires_at, device_label: str | None = None
+        expires_at, device_label: str | None = None, session_id=None
     ) -> dict:
-        row = await self.fetchrow(
-            """
-            INSERT INTO auth_sessions (user_id, auth_method, token_hash, expires_at, device_label)
-            VALUES ($1, $2, $3, $4, $5)
-            RETURNING session_id, created_at
-            """,
-            user_id, auth_method, token_hash, expires_at, device_label
-        )
+        # Если session_id передан (напр. RLHF-верификация ссылает на него
+        # bot_auth_codes.session_id по FK), вставляем с явным session_id —
+        # иначе БД генерирует свой (поведение прежних вызовов не меняется).
+        if session_id is not None:
+            row = await self.fetchrow(
+                """
+                INSERT INTO auth_sessions (session_id, user_id, auth_method, token_hash, expires_at, device_label)
+                VALUES ($1, $2, $3, $4, $5, $6)
+                RETURNING session_id, created_at
+                """,
+                session_id, user_id, auth_method, token_hash, expires_at, device_label
+            )
+        else:
+            row = await self.fetchrow(
+                """
+                INSERT INTO auth_sessions (user_id, auth_method, token_hash, expires_at, device_label)
+                VALUES ($1, $2, $3, $4, $5)
+                RETURNING session_id, created_at
+                """,
+                user_id, auth_method, token_hash, expires_at, device_label
+            )
         return dict(row) if row else {}
 
     async def verify_session(self, session_id, token: str) -> dict | None:

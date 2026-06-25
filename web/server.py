@@ -7041,6 +7041,221 @@ def create_web_app(
                 {"error": "internal_server_error", "message": str(e)}, status=500
             )
 
+    # ═══════════════════════════════════════════════════════════════════
+    # RLHF: вход по коду + импорт реальных колод игрока
+    # Переиспользует bot_auth_codes / auth_sessions / user_mail / deck_presets.
+    # НЕ добавляет новой схемы БД. rlhf_env ходит сюда как тонкий прокси.
+    # ═══════════════════════════════════════════════════════════════════
+
+    async def _rlhf_resolve_identifier(raw: str) -> int | None:
+        """Резолвит TelegramID (чистые цифры == users.user_id) или ExtraID
+        (extra_accounts.display_id, напр. '1234-ABC') в users.user_id."""
+        raw = (raw or "").strip()
+        if not raw:
+            return None
+        if raw.isdigit():
+            candidate = int(raw)
+            row = await db.fetchrow("SELECT user_id FROM users WHERE user_id = $1", candidate)
+            if row:
+                return int(row["user_id"])
+            # редкий случай: numeric display_id
+            if extraid_db is not None:
+                ea = await extraid_db.fetchrow(
+                    "SELECT user_id FROM extra_accounts WHERE display_id = $1 AND deleted_at IS NULL",
+                    raw,
+                )
+                if ea:
+                    return int(ea["user_id"])
+            return None
+        if extraid_db is None:
+            return None
+        ea = await extraid_db.fetchrow(
+            "SELECT user_id FROM extra_accounts WHERE display_id = $1 AND deleted_at IS NULL",
+            raw,
+        )
+        return int(ea["user_id"]) if ea else None
+
+    async def _rlhf_decks_payload(user_id: int) -> dict:
+        presets = await db.get_user_deck_presets(user_id)
+        pass_row = await db.fetchrow(
+            "SELECT extra_pass, extra_pass_expires_at FROM users WHERE user_id = $1", user_id
+        )
+        extra_pass_active = _extra_pass_mode_active(pass_row)
+        primary = await db.fetchval("SELECT primary_deck FROM users WHERE user_id = $1", user_id)
+        max_decks = MAX_TOTAL_DECK_PRESETS if extra_pass_active else MAX_FREE_DECK_PRESETS
+        decks = []
+        for p in presets:
+            if p.get("preset_number") is None:
+                continue
+            decks.append({
+                "preset_number": int(p["preset_number"]),
+                "preset_name": p.get("preset_name") or f"Колода {p['preset_number']}",
+                "card_ids": [int(c) for c in (p.get("card_ids") or [])],
+                "is_playable": bool(p.get("is_playable")),
+                "has_hero": bool(p.get("has_hero")),
+                "is_primary": (p.get("preset_number") == primary),
+                "updated_at": p["updated_at"].isoformat() if p.get("updated_at") else None,
+            })
+        return {
+            "user_id": user_id,
+            "extra_pass_active": extra_pass_active,
+            "max_decks": max_decks,
+            "decks": decks,
+        }
+
+    async def _rlhf_send_telegram(request: web.Request, user_id: int, text: str) -> bool:
+        logger = logging.getLogger(__name__)
+        bot = request.app.get("telegram_bot") or request.app.get("bot")
+        if bot is not None:
+            try:
+                await bot.send_message(user_id, text, parse_mode="HTML")
+                return True
+            except Exception:
+                logger.warning("RLHF TG send via bot failed uid=%s", user_id, exc_info=True)
+        bot_token = request.app.get("bot_token") or ""
+        if not bot_token:
+            return False
+        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        try:
+            async with create_telegram_aiohttp_session(timeout=ClientTimeout(total=8)) as session:
+                async with session.post(
+                    url, json={"chat_id": user_id, "text": text, "parse_mode": "HTML"}
+                ) as resp:
+                    body = await resp.json(content_type=None)
+                    if resp.status >= 400 or not body.get("ok"):
+                        logger.warning("RLHF TG HTTP fallback failed uid=%s status=%s body=%s",
+                                       user_id, resp.status, body)
+                        return False
+                    return True
+        except Exception:
+            logger.warning("RLHF TG HTTP fallback exception uid=%s", user_id, exc_info=True)
+            return False
+
+    async def rlhf_request_code_handler(request: web.Request) -> web.Response:
+        """POST /api/rlhf/request-code {identifier} → 6-значный код (TTL 5 мин).
+
+        Доставка по спеке:
+        - аккаунт с ExtraID → код во внутриигровую Почту; если привязан Telegram,
+          ДОПОЛНИТЕЛЬНО Telegram-уведомление (НЕ код) «код в Меню→Почта»;
+        - чистый Telegram-аккаунт (без ExtraID) → код напрямую в Telegram-бота.
+        """
+        logger = logging.getLogger(__name__)
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid_json"}, status=400)
+        raw = str(data.get("identifier") or "").strip()
+        if not raw:
+            return web.json_response({"error": "identifier_required"}, status=400)
+        if extraid_db is None:
+            return web.json_response({"error": "rlhf_unavailable"}, status=503)
+
+        user_id = await _rlhf_resolve_identifier(raw)
+        if user_id is None:
+            # anti-enumeration: не раскрываем, существует ли идентификатор
+            return web.json_response({"status": "code_sent"}, status=200)
+
+        # abuse-гард: per-user 60s + per-IP 5/300s
+        user_ok = await extraid_db.check_rate_limit(
+            f"rlhf_code:user:{user_id}", max_requests=1, window_seconds=60
+        )
+        if not user_ok:
+            return web.json_response({"error": "cooldown", "retry_after": 60}, status=429)
+        ip = (request.headers.get("X-Forwarded-For") or "").split(",")[0].strip() or request.remote
+        ip_ok = await extraid_db.check_rate_limit(
+            f"rlhf_code:ip:{ip}", max_requests=5, window_seconds=300
+        )
+        if not ip_ok:
+            return web.json_response({"error": "rate_limited"}, status=429)
+
+        has_extraid = (await extraid_db.get_extra_account_by_user_id(user_id)) is not None
+        telegram_linked = user_id < SYNTHETIC_USER_ID_MIN
+
+        await extraid_db.cleanup_old_bot_codes(user_id)
+        code = _make_bot_auth_code()
+        await extraid_db.create_bot_auth_code(code, user_id)
+
+        mail_sent = False
+        tg_sent = False
+        if has_extraid:
+            res = await db.create_mail(
+                user_id=user_id,
+                sender="ExtraArena RLHF",
+                subject="Вход на ExtraArena RLHF",
+                text=f"Ваш код для входа на ExtraArena RLHF: {code}\nКод действует 5 минут.",
+                category="rlhf_login",
+                icon="🔐",
+            )
+            mail_sent = bool(res.get("success"))
+            if telegram_linked:
+                tg_sent = await _rlhf_send_telegram(
+                    request, user_id,
+                    "Ваш код для входа на ExtraArena RLHF доступен в «Меню» → «Почта».",
+                )
+        else:
+            tg_sent = await _rlhf_send_telegram(
+                request, user_id,
+                f"🔐 Ваш код для входа на ExtraArena RLHF: {code}\n\nОн действует 5 минут. "
+                "Никому его не сообщай.",
+            )
+
+        logger.info(
+            "RLHF request-code uid=%s has_extraid=%s tg_linked=%s mail=%s tg=%s",
+            user_id, has_extraid, telegram_linked, mail_sent, tg_sent,
+        )
+        return web.json_response(
+            {"status": "code_sent", "hint": "mail" if has_extraid else "telegram"},
+            status=200,
+        )
+
+    async def rlhf_verify_handler(request: web.Request) -> web.Response:
+        """POST /api/rlhf/verify {identifier, code} → {token, user_id, decks, ...}."""
+        logger = logging.getLogger(__name__)
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid_json"}, status=400)
+        identifier = str(data.get("identifier") or "").strip()
+        code = str(data.get("code") or "").strip()
+        if not identifier or len(code) != 6 or not code.isdigit():
+            return web.json_response({"error": "invalid_input"}, status=400)
+        if extraid_db is None:
+            return web.json_response({"error": "rlhf_unavailable"}, status=503)
+
+        user_id = await _rlhf_resolve_identifier(identifier)
+        if user_id is None:
+            return web.json_response({"error": "invalid_code"}, status=400)
+
+        consumed = await extraid_db.consume_bot_auth_code(code)
+        if not consumed or int(consumed["user_id"]) != user_id:
+            return web.json_response({"error": "invalid_code"}, status=400)
+
+        session_uuid = uuid.uuid4()
+        token, session_exp = _make_jwt_session(user_id, session_uuid, settings)
+        token_hash = _hash_jwt(token)
+        await extraid_db.create_auth_session(
+            user_id=user_id, auth_method="rlhf_login",
+            token_hash=token_hash, expires_at=session_exp, device_label="rlhf_web",
+            session_id=session_uuid,
+        )
+        await extraid_db.mark_bot_code_used(code, session_uuid)
+
+        payload = await _rlhf_decks_payload(user_id)
+        payload["token"] = token
+        logger.info("RLHF verify ok uid=%s session=%s decks=%s", user_id, session_uuid, len(payload["decks"]))
+        return web.json_response(payload, status=200)
+
+    async def rlhf_decks_handler(request: web.Request) -> web.Response:
+        """GET /api/rlhf/decks (Bearer JWT) → колоды авторизованного пользователя."""
+        if extraid_db is None:
+            return web.json_response({"error": "rlhf_unavailable"}, status=503)
+        try:
+            user_id = await require_user_id(request)
+        except web.HTTPUnauthorized:
+            return web.json_response({"error": "authentication_required"}, status=401)
+        payload = await _rlhf_decks_payload(user_id)
+        return web.json_response(payload, status=200)
+
     async def deck_preset_save_handler(request: web.Request) -> web.Response:
         """Обработчик сохранения пресета колоды (9 карт, герой внутри колоды)."""
         user_id = await require_user_id(request)
@@ -12440,6 +12655,9 @@ def create_web_app(
     app.router.add_post("/api/deck/presets/delete", deck_preset_delete_handler)
     app.router.add_post("/api/deck/presets/rename", deck_preset_rename_handler)
     app.router.add_post("/api/deck/presets/set-primary", deck_preset_set_primary_handler)
+    app.router.add_post("/api/rlhf/request-code", rlhf_request_code_handler)
+    app.router.add_post("/api/rlhf/verify", rlhf_verify_handler)
+    app.router.add_get("/api/rlhf/decks", rlhf_decks_handler)
     app.router.add_get("/api/cards", cards_catalog_handler)
     app.router.add_get("/api/cards/user", user_cards_handler)
     app.router.add_get("/api/cards/collection", collection_with_status_handler)
