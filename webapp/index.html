@@ -3313,7 +3313,7 @@ window.loadMobileSquadsBootstrap = async function(options = {}) {
 };
 </script>
 
-<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=6259308df6bf">
+<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=5dc3ab297c04">
 // ═══════════════════════════════════════════
 // DESIGN TOKENS
 // ═══════════════════════════════════════════
@@ -15034,10 +15034,17 @@ const BattleHistorySheet = ({onClose, profile}) => {
 
   const now = Date.now();
   const sevenDaysAgo = now - 7 * 24 * 3600 * 1000;
-  const weeklyDelta = battles
+  // «Победы за 7 дней»: только трофейные режимы (classic / extra_arena:*).
+  // Тренировки, дружеские бои и неизвестные режимы НЕ учитываются.
+  const isTrophyMode = (m) => {
+    const v = String(m || '').toLowerCase();
+    return v === 'classic' || v.startsWith('extra_arena:');
+  };
+  const weeklyWins = battles
     .filter(b => new Date(b.created_at).getTime() >= sevenDaysAgo
-                 && b.mode !== 'friendly' && b.mode !== 'training')
-    .reduce((sum, b) => sum + (b.trophies_change || 0), 0);
+                 && b.result === 'win'
+                 && isTrophyMode(b.mode))
+    .length;
   const maxTrophies = profile?.max_trophies ?? null;
   const parseTs = s => { if (!s) return 0; return new Date(String(s).replace(' ','T')).getTime() || 0; };
   const sortedBattles = [...battles].sort((a, b) => parseTs(b.created_at) - parseTs(a.created_at));
@@ -15089,11 +15096,10 @@ const BattleHistorySheet = ({onClose, profile}) => {
                   {battles.length > 0 && (
                     <div style={{flex:1,background:T.bgCard,border:`1px solid ${T.purple1}`,
                                  borderRadius:'12px',padding:'8px 12px',textAlign:'center'}}>
-                      <div style={{fontSize:'10px',color:T.grey2,marginBottom:'2px'}}>За 7 дней</div>
+                      <div style={{fontSize:'10px',color:T.grey2,marginBottom:'2px'}}>Победы за 7 дней</div>
                       <div style={{fontSize:'15px',fontWeight:'800',
-                                   color:weeklyDelta>=0?'#22c55e':'#ef4444',
-                                   fontFamily:"'Exo 2',sans-serif"}}>
-                        {weeklyDelta>0?'+':''}{weeklyDelta} 🏆
+                                   color:T.white,fontFamily:"'Exo 2',sans-serif"}}>
+                        {weeklyWins} 🏆
                       </div>
                     </div>
                   )}
@@ -18641,6 +18647,6 @@ const LeagueInfoSheet = ({onClose, onOpenGloryPath, profile}) => {
 
 ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
 </script>
-<script src="index.compiled.js?v=6259308df6bf"></script>
+<script src="index.compiled.js?v=5dc3ab297c04"></script>
 </body>
 </html>
