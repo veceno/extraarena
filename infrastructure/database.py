@@ -26,7 +26,14 @@ except ModuleNotFoundError:
     bcrypt = None  # type: ignore
 
 from infrastructure.config import DECK_SIZE, MAX_FREE_DECK_PRESETS, MAX_TOTAL_DECK_PRESETS, DatabaseSettings, get_league_by_trophies_fn, LEAGUE_CONFIG
-from infrastructure.case_config import UNI_CARD_ID, RARITY_ORDER, fallback_coins_for_rarity
+from infrastructure.case_config import (
+    PARTICLES_FALLBACK_COIN_CAP,
+    PARTICLES_FALLBACK_RARITY_MULTIPLIER,
+    RARITY_ORDER,
+    UNI_CARD_ID,
+    fallback_coins_for_particles,
+    fallback_coins_for_rarity,
+)
 from infrastructure.notifications import (
     NOTIFICATION_DEFAULTS,
     NOTIFICATION_SETTING_BY_CATEGORY,
@@ -10014,6 +10021,7 @@ class Database:
             changed = True
 
         changed |= await self._migrate_reward_track_case_rows()
+        changed |= await self._migrate_reward_tracks_glory_rebalance()
 
         return changed
 
@@ -10052,6 +10060,83 @@ class Database:
             return int(str(result).split()[-1]) > 0
         except Exception:
             return False
+
+    async def _migrate_reward_tracks_glory_rebalance(self) -> bool:
+        """Привести награды Трофейной дороги к актуальному балансу.
+
+        Для позиций 1000/1500/3000/7000/10000 в треке ``glory``:
+          - удаляем все текущие строки, чтобы не оставлять хвосты от старых
+            ``reward_type`` (например, ``case`` там, где теперь ``keys``);
+          - вставляем канонический набор с ``ON CONFLICT DO UPDATE``, чтобы
+            при повторных рестартах состояние БД оставалось консистентным с
+            seed-списком в :meth:`_seed_reward_tracks`.
+
+        Миграция идемпотентна: повторный запуск удалит «свои» строки (DELETE
+        по track_type/position не заденет остальные треки) и снова вставит их
+        с теми же значениями.
+        """
+        if not self._pool:
+            return False
+
+        import json as _json
+        import logging
+
+        # Канонический набор наград Трофейной дороги. Должен совпадать с
+        # seed-списком в _seed_reward_tracks (glory-блок).
+        canonical: list[tuple[str, int, str, int, str | None, bool]] = [
+            ("glory", 1000,  "keys",  2,   None, False),
+            ("glory", 1500,  "keys",  3,   None, False),
+            ("glory", 3000,  "coins", 250, None, False),
+            ("glory", 3000,  "keys",  3,   None, False),
+            ("glory", 7000,  "coins", 200, None, False),
+            ("glory", 7000,  "keys",  2,   None, False),
+            ("glory", 10000, "gems",  500, None, False),
+        ]
+        positions = sorted({row[1] for row in canonical})
+
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                delete_result = await conn.execute(
+                    "DELETE FROM reward_tracks WHERE track_type = 'glory' AND position = ANY($1::int[])",
+                    positions,
+                )
+                try:
+                    deleted = int(str(delete_result).split()[-1])
+                except Exception:
+                    deleted = 0
+
+                inserted = 0
+                updated = 0
+                for track_type, position, reward_type, reward_amount, reward_meta, ep_required in canonical:
+                    row = await conn.fetchrow(
+                        """
+                        INSERT INTO reward_tracks (
+                            track_type, position, reward_type, reward_amount,
+                            reward_meta, extra_pass_required, is_active
+                        )
+                        VALUES ($1, $2, $3, $4, $5::jsonb, $6, TRUE)
+                        ON CONFLICT (track_type, position, reward_type) DO UPDATE
+                        SET reward_amount = EXCLUDED.reward_amount,
+                            reward_meta = EXCLUDED.reward_meta,
+                            extra_pass_required = EXCLUDED.extra_pass_required,
+                            is_active = TRUE,
+                            updated_at = NOW()
+                        RETURNING (xmax = 0) AS was_insert
+                        """,
+                        track_type, position, reward_type, reward_amount,
+                        _json.dumps(_json.loads(reward_meta)) if reward_meta else None,
+                        ep_required,
+                    )
+                    if row and row.get("was_insert"):
+                        inserted += 1
+                    else:
+                        updated += 1
+
+        logging.getLogger(__name__).info(
+            "Glory rebalance migration: deleted=%d inserted=%d updated=%d positions=%s",
+            deleted, inserted, updated, positions,
+        )
+        return bool(deleted or inserted or updated)
 
     async def _ensure_claimed_rewards_table(self) -> bool:
         changed = False
@@ -14735,22 +14820,23 @@ class Database:
             ("glory", 300,  "keys",  1,    None,                          False),
             ("glory", 500,  "coins", 800,  None,                          False),
             ("glory", 700,  "gems",  50,   None,                          False),
-            ("glory", 1000, "case",  2,    None,                          False),
+            ("glory", 1000, "keys",  2,    None,                          False),
             ("glory", 1200, "coins", 3000, None,                          False),
             ("glory", 1200, "particles", 30, '{"card_id": 46, "rarity": "superrare"}', False),
-            ("glory", 1500, "keys",  2,    None,                          False),
+            ("glory", 1500, "keys",  3,    None,                          False),
             ("glory", 2000, "coins", 1200, None,                          False),
             ("glory", 2500, "gems",  100,  None,                          False),
-            ("glory", 3000, "case",  3,    None,                          False),
-            ("glory", 3000, "card",  1,    '{"rarity":["common","rare"]}', False),
+            ("glory", 3000, "coins", 250,  None,                          False),
+            ("glory", 3000, "keys",  3,    None,                          False),
             ("glory", 4000, "keys",  2,    None,                          False),
             ("glory", 5000, "coins", 1500, None,                          False),
             ("glory", 6000, "gems",  150,  None,                          False),
-            ("glory", 7000, "case",  3,    None,                          False),
+            ("glory", 7000, "coins", 200,  None,                          False),
+            ("glory", 7000, "keys",  2,    None,                          False),
             ("glory", 8000, "keys",  3,    None,                          False),
             ("glory", 9000, "coins", 2000, None,                          False),
             ("glory", 9500, "gems",  200,  None,                          False),
-            ("glory", 10000,"case",  4,    None,                          False),
+            ("glory", 10000,"gems",  500,  None,                          False),
 
             # BP Free
             ("bp_free", 1,  "coins", 200,  None,                         False),
@@ -16513,7 +16599,7 @@ class Database:
                                 }, ensure_ascii=False),
                             )
                         else:
-                            fallback_coins = fallback_coins_for_rarity(card_rarity)
+                            fallback_coins = fallback_coins_for_particles(reward_amount, card_rarity)
                             await conn.execute(
                                 """
                                 UPDATE users

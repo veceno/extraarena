@@ -36,6 +36,38 @@ def fallback_coins_for_rarity(rarity: str) -> int:
     return 100 * rarity_ordinal(rarity)
 
 
+# Множитель для расчёта компенсации за частицы, когда целевая карта не в коллекции игрока.
+# 1.0 для common/start, +0.1 за каждую следующую редкость по RARITY_ORDER.
+PARTICLES_FALLBACK_RARITY_MULTIPLIER = {
+    "common": 1.0,
+    "start": 1.0,
+    "rare": 1.1,
+    "superrare": 1.2,
+    "epic": 1.3,
+    "legendary": 1.4,
+    "mythic": 1.5,
+    "divine": 1.6,
+    "limited": 1.7,
+}
+
+# Нижняя граница для limited-карт (BASE_PARTICLES_BY_RARITY['limited'] == 0, формула даёт 0).
+PARTICLES_FALLBACK_COIN_CAP = 3200
+
+
+def fallback_coins_for_particles(reward_amount: int, rarity: str) -> int:
+    """Вернуть компенсацию в монетах, когда нельзя зачислить частицы целевой карте.
+
+    Формула: 10 × reward_amount × множитель_редкости. Неизвестная редкость → 1.0.
+    limited: ограничено снизу значением PARTICLES_FALLBACK_COIN_CAP.
+    """
+    amount = max(0, int(reward_amount or 0))
+    multiplier = PARTICLES_FALLBACK_RARITY_MULTIPLIER.get(rarity, 1.0)
+    result = int(round(10 * amount * multiplier))
+    if rarity == "limited" and result < PARTICLES_FALLBACK_COIN_CAP:
+        return PARTICLES_FALLBACK_COIN_CAP
+    return result
+
+
 # Максимальные редкости по тиру кейса
 MAX_RARITY_BY_TIER = {
     1: "superrare",      # T1: до Сверхредкой включительно
