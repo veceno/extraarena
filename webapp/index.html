@@ -3337,7 +3337,7 @@ window.loadMobileSquadsBootstrap = async function(options = {}) {
 };
 </script>
 
-<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=92bc513976e4">
+<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=1b70ba13cb80">
 // ═══════════════════════════════════════════
 // DESIGN TOKENS
 // ═══════════════════════════════════════════
@@ -17817,10 +17817,16 @@ const App = () => {
                     <span style={{fontSize:'12px',fontWeight:'900',color:T.orange,fontFamily:"'Exo 2'",flexShrink:0}}>{m.trophies}</span>
                     <div style={{display:'flex',gap:'5px',flexWrap:'wrap'}}>
                       {m.rewards.map((r,j) => {
-                        const rIcon = r.icon || (r.type==='coins'?'💰':r.type==='gems'?'💎':r.type==='case'?'📦':r.type==='particles'?'✨':r.type==='guaranteed_card'?'🃏':r.type==='cosmetic'?'🎨':'🎁');
+                        const rIcon = r.icon || (r.type==='coins'?'💰':r.type==='gems'?'💎':r.type==='case'?'📦':r.type==='particles'?'🧩':r.type==='guaranteed_card'?'🃏':r.type==='cosmetic'?'🎨':'🎁');
+                        // Частицы показываем с подписью редкости, чтобы не было
+                        // непонятной плашки «🧩 30» — игрок должен видеть,
+                        // что это частицы какой редкости.
+                        const rLabel = r.type === 'particles'
+                          ? `${r.amount || ''} частиц (${r.rarity ? particleRarityShort(r.rarity) : ''})`.trim()
+                          : (r.amount != null ? String(r.amount) : (r.tier ? `T${r.tier}` : ''));
                         return (
-                          <span key={j} style={{display:'inline-flex',alignItems:'center',gap:'2px',fontSize:'10px',color:T.grey1,background:`${T.purple1}88`,borderRadius:'6px',padding:'2px 6px',fontFamily:"'Exo 2'"}}>
-                            <span>{rIcon}</span><span style={{fontWeight:'600'}}>{r.amount||''}</span>
+                          <span key={j} style={{display:'inline-flex',alignItems:'center',gap:'3px',fontSize:'10px',color:T.grey1,background:`${T.purple1}88`,borderRadius:'6px',padding:'2px 6px',fontFamily:"'Exo 2'"}}>
+                            <span>{rIcon}</span><span style={{fontWeight:'600'}}>{rLabel}</span>
                           </span>
                         );
                       })}
@@ -18582,12 +18588,32 @@ const particleRarityLabel = (rarity) => {
   return map[rarity] || 'Сезонные';
 };
 
+// Короткая форма редкости частиц для компактных плашек (League Up Modal,
+// LeagueInfoSheet). В родительном падеже — «сверхредкая» / «эпическая».
+const particleRarityShort = (rarity) => {
+  const map = {
+    common: 'обычная',
+    start: 'стартовая',
+    rare: 'редкая',
+    superrare: 'сверхредкая',
+    epic: 'эпическая',
+    legendary: 'легендарная',
+    mythic: 'мифическая',
+    divine: 'божественная',
+  };
+  return map[rarity] || 'сезонная';
+};
+
 const leagueRewardTitle = (reward) => {
   if (!reward) return 'Награда';
   if (reward.type === 'case') return `T${reward.tier || 1} кейс`;
   if (reward.type === 'coins') return `${formatLeagueNumber(reward.amount)} монет`;
   if (reward.type === 'gems') return `${formatLeagueNumber(reward.amount)} гемов`;
-  if (reward.type === 'particles') return `${particleRarityLabel(reward.rarity)} частицы`;
+  if (reward.type === 'particles') {
+    const amount = formatLeagueNumber(reward.amount || 0);
+    const rarity = reward.rarity ? ` (${particleRarityShort(reward.rarity)})` : '';
+    return `🧩 ${amount} частиц${rarity}`;
+  }
   if (reward.type === 'guaranteed_card') return `${rewardRarityLabel(reward.rarity)} карта`;
   if (reward.type === 'cosmetic') return 'Косметика';
   return 'Награда';
@@ -18846,6 +18872,6 @@ const LeagueInfoSheet = ({onClose, onOpenGloryPath, profile}) => {
 
 ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
 </script>
-<script src="index.compiled.js?v=92bc513976e4"></script>
+<script src="index.compiled.js?v=1b70ba13cb80"></script>
 </body>
 </html>
