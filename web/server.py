@@ -22,14 +22,14 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import bcrypt
 import jwt as pyjwt
-from aiohttp import web
+from aiohttp import web, ClientTimeout
 import socketio
 
 from bot.constants import ADMIN_ID, DEFAULT_CATEGORY
 from infrastructure import card_assets
 from infrastructure.card_assets import card_asset_url, resolve_card_asset_path
-from infrastructure.config import DECK_SIZE, LEAGUE_CONFIG, get_settings
-from infrastructure.database import Card, Database, RUNTIME_FEATURE_DEFAULTS, SQUAD_SETTINGS_DEFAULTS
+from infrastructure.config import DECK_SIZE, LEAGUE_CONFIG, get_settings, MAX_FREE_DECK_PRESETS, MAX_TOTAL_DECK_PRESETS
+from infrastructure.database import Card, Database, RUNTIME_FEATURE_DEFAULTS, SQUAD_SETTINGS_DEFAULTS, _extra_pass_mode_active
 from ai.bot_factory import BotGenerator
 from ai.bot_ai import BotAI
 from ai.bot_brain import BerserkInference
@@ -70,6 +70,7 @@ from infrastructure.case_system import (
     generate_case_rewards,
     get_user_case_pass_status,
     simulate_case_tap_results,
+    _apply_case_opening_rewards,
 )
 from infrastructure.payments_logic import process_successful_payment
 from infrastructure.rustore_payments import resolve_rustore_product_id
@@ -82,10 +83,15 @@ from infrastructure.shop_config import (
     build_shop_catalog,
     order_particles_for_shop,
 )
-from web.extraid_handlers import register_handlers as register_extraid_handlers
+from web.extraid_handlers import (
+    register_handlers as register_extraid_handlers,
+    _make_jwt_session,
+    _hash_jwt,
+    _make_bot_auth_code,
+)
 from web.mcp_routes import register_admin_mcp_routes
 from support.web import register_support_routes
-from infrastructure.extraid_database import ExtraIDDatabase
+from infrastructure.extraid_database import ExtraIDDatabase, SYNTHETIC_USER_ID_MIN
 
 WEBAPP_DIR = Path(__file__).resolve().parents[1] / "webapp"
 DESIGN_ASSETS_DIR = Path(__file__).resolve().parents[1] / "DesignAssets"
@@ -131,6 +137,9 @@ CASE_KEY_ROLLS: dict[str, dict[str, Any]] = {}
 CASE_KEY_OPEN_RESULTS: dict[str, dict[str, Any]] = {}
 CASE_KEY_PENDING_OPENINGS: dict[str, dict[str, Any]] = {}
 CASE_KEY_REROLL_ROLLS: dict[str, dict[str, Any]] = {}
+CASE_USER_PENDING_OPENINGS: dict[str, dict[str, Any]] = {}
+CASE_USER_REROLL_ROLLS: dict[str, dict[str, Any]] = {}
+CASE_USER_OPENING_TTL_SECONDS = 600
 ACTION_RESULT_TTL_SECONDS = 120
 ACTION_RESULT_CACHE: dict[tuple[str, int, str], dict[str, Any]] = {}
 COMPRESSIBLE_CONTENT_TYPES = (
@@ -8911,97 +8920,14 @@ def create_web_app(
             )
             return web.json_response({"error": "internal_server_error"}, status=500)
 
-    async def case_tap_handler(request: web.Request) -> web.Response:
-        """Обработать тап по кейсу (один из 4 тапов с проверкой апгрейда тира)."""
-        user_id = await require_user_id(request)
-
-        if request.method != "POST":
-            return web.json_response({"error": "method_not_allowed"}, status=405)
-
-        try:
-            data = await request.json()
-            user_case_id = int(data.get("user_case_id"))
-            current_tier = int(data.get("current_tier", 1))
-            tap_number = int(data.get("tap_number"))  # 1-4
-
-            if not user_case_id or not (1 <= tap_number <= 4):
-                return web.json_response({"error": "invalid_parameters"}, status=400)
-
-            # Проверяем, что кейс принадлежит пользователю
-            if hasattr(db, "sync_user_key_cases"):
-                await db.sync_user_key_cases(user_id)
-            user_case = await db.get_user_case(user_case_id, user_id)
-            if not user_case:
-                return web.json_response({"error": "case_not_found"}, status=404)
-
-            # Используем актуальный тир из БД, а не переданный параметр
-            actual_tier = user_case["tier"]
-
-            extra_pass = await get_user_case_pass_status(db, user_id)
-
-            # Проверяем апгрейд тира
-            new_tier = roll_tier_upgrade(actual_tier, tap_number, extra_pass)
-            upgraded = new_tier > actual_tier
-
-            # Обновляем тир в БД, если произошел апгрейд
-            if upgraded:
-                await db.update_case_tier(user_case_id, user_id, new_tier)
-                actual_tier = new_tier
-
-            return web.json_response({
-                "success": True,
-                "upgraded": upgraded,
-                "old_tier": user_case["tier"],
-                "new_tier": actual_tier,
-                "tap_number": tap_number,
-                "extra_pass_bonus": {"tier": "ultra"} if extra_pass == "ultra" else None,
-            })
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).error(
-                "Ошибка обработки тапа для user_id %s: %s", user_id, e, exc_info=True
-            )
-            return web.json_response({"error": "internal_server_error"}, status=500)
-
     async def case_open_handler(request: web.Request) -> web.Response:
-        """Открыть кейс и получить награды."""
-        user_id = await require_user_id(request)
+        """Открыть кейс (user_cases flow) — создаёт pending opening без применения наград.
 
-        if request.method != "POST":
-            return web.json_response({"error": "method_not_allowed"}, status=405)
-
-        try:
-            data = await request.json()
-            user_case_id = int(data.get("user_case_id"))
-            tap_results = data.get("tap_results", [])  # Список из 4 тиров после каждого тапа
-
-            if not user_case_id or len(tap_results) != 4:
-                return web.json_response({"error": "invalid_parameters"}, status=400)
-
-            # Обрабатываем открытие кейса
-            if hasattr(db, "sync_user_key_cases"):
-                await db.sync_user_key_cases(user_id)
-            result = await process_case_opening(db, user_id, user_case_id, tap_results)
-
-            if not result.get("success"):
-                return web.json_response(result, status=400)
-
-            # Economy tracking for case open rewards
-            _track_case_rewards(db, user_id, result.get("rewards") or {}, result)
-            try:
-                await db.mark_newbie_path_task(user_id, "open_starter_case", claimed=False)
-            except Exception:
-                logging.getLogger(__name__).debug("newbie path case completion failed", exc_info=True)
-
-            return web.json_response(result)
-        except Exception as e:
-            logging.getLogger(__name__).error(
-                "Ошибка открытия кейса для user_id %s: %s", user_id, e, exc_info=True
-            )
-            return web.json_response({"error": "internal_server_error"}, status=500)
-
-    async def case_skip_handler(request: web.Request) -> web.Response:
-        """Пропустить анимацию и сразу открыть кейс."""
+        Для T-кейсов с предустановленным тиром анимация тапов не используется:
+        клиент сразу вызывает /api/cases/open, получает pending opening и показывает reveal.
+        Финальное зачисление наград происходит через /api/cases/claim.
+        Ultra-реролл доступен через /api/cases/reroll → /api/cases/apply-reroll перед claim.
+        """
         user_id = await require_user_id(request)
 
         if request.method != "POST":
@@ -9017,43 +8943,84 @@ def create_web_app(
             if not user_case_id:
                 return web.json_response({"error": "invalid_parameters"}, status=400)
 
-            # Получаем текущий тир кейса
             if hasattr(db, "sync_user_key_cases"):
                 await db.sync_user_key_cases(user_id)
             user_case = await db.get_user_case(user_case_id, user_id)
             if not user_case:
-                return web.json_response({"error": "case_not_found"}, status=404)
+                return web.json_response({"success": False, "error": "case_not_found", "message": "Кейс не найден"}, status=404)
 
-            # Симулируем все 4 тапа с апгрейдом тира
-            extra_pass = await get_user_case_pass_status(db, user_id)
-            current_tier = user_case["tier"]
-            tap_results = []
-            for tap_num in range(1, 5):  # Тапы 1-4
-                new_tier = roll_tier_upgrade(current_tier, tap_num, extra_pass)
-                if new_tier > current_tier:
-                    current_tier = new_tier
-                    # Обновляем тир в БД после каждого апгрейда
-                    await db.update_case_tier(user_case_id, user_id, new_tier)
-                tap_results.append(current_tier)
-
-            # Открываем кейс
-            result = await process_case_opening(db, user_id, user_case_id, tap_results)
-
+            result = await process_case_opening(db, user_id, user_case_id)
             if not result.get("success"):
                 return web.json_response(result, status=400)
 
-            _track_case_rewards(db, user_id, result.get("rewards") or {}, result)
-            try:
-                await db.mark_newbie_path_task(user_id, "open_starter_case", claimed=False)
-            except Exception:
-                logging.getLogger(__name__).debug("newbie path case-skip completion failed", exc_info=True)
+            extra_pass = await get_user_case_pass_status(db, user_id)
+            final_tier = int(result.get("final_tier") or 1)
 
-            return web.json_response(result)
+            opening_token = uuid.uuid4().hex
+            opening = {
+                "opening_token": opening_token,
+                "opening_id": str(user_case_id),
+                "user_case_id": user_case_id,
+                "user_id": user_id,
+                "final_tier": final_tier,
+                "base_tier": final_tier,
+                "tap_results": [final_tier] * 4,
+                "rewards": result.get("rewards") or {},
+                "remaining_keys": 0,
+                "extra_pass": extra_pass,
+                "reroll_used": False,
+                "claimed": False,
+                "expires_at": datetime.now(timezone.utc) + timedelta(seconds=CASE_USER_OPENING_TTL_SECONDS),
+            }
+            response_payload = _store_user_case_opening(opening)
+            return web.json_response(response_payload)
         except Exception as e:
             logging.getLogger(__name__).error(
-                "Ошибка пропуска анимации для user_id %s: %s", user_id, e, exc_info=True
+                "Ошибка открытия кейса для user_id %s: %s", user_id, e, exc_info=True
             )
             return web.json_response({"error": "internal_server_error"}, status=500)
+
+    def _cleanup_expired_case_user_openings() -> None:
+        now = datetime.now(timezone.utc)
+        expired_openings = [
+            token
+            for token, opening in CASE_USER_PENDING_OPENINGS.items()
+            if opening.get("expires_at") and opening["expires_at"] < now
+        ]
+        for token in expired_openings:
+            CASE_USER_PENDING_OPENINGS.pop(token, None)
+        expired_rerolls = [
+            token
+            for token, roll in CASE_USER_REROLL_ROLLS.items()
+            if roll.get("expires_at") and roll["expires_at"] < now
+        ]
+        for token in expired_rerolls:
+            CASE_USER_REROLL_ROLLS.pop(token, None)
+
+    def _user_case_opening_response(opening: dict[str, Any]) -> dict[str, Any]:
+        rewards = opening.get("rewards") or {}
+        return {
+            "success": True,
+            "opening_token": opening.get("opening_token"),
+            "final_tier": int(opening.get("final_tier") or 1),
+            "tap_results": list(opening.get("tap_results") or []),
+            "rewards": rewards,
+            "extra_pass_bonus": rewards.get("extra_pass_bonus"),
+            "remaining_keys": int(opening.get("remaining_keys") or 0),
+            "can_reroll": bool(
+                opening.get("extra_pass") == "ultra"
+                and not opening.get("reroll_used")
+                and not opening.get("claimed")
+            ),
+            "reroll_used": bool(opening.get("reroll_used")),
+            "claimed": bool(opening.get("claimed")),
+        }
+
+    def _store_user_case_opening(opening: dict[str, Any]) -> dict[str, Any]:
+        response_payload = _user_case_opening_response(opening)
+        opening["response"] = response_payload
+        CASE_USER_PENDING_OPENINGS[str(opening["opening_token"])] = opening
+        return response_payload
 
     def _cleanup_expired_case_key_rolls() -> None:
         now = datetime.now(timezone.utc)
@@ -9220,6 +9187,229 @@ def create_web_app(
         if roll_token and roll_token in CASE_KEY_OPEN_RESULTS:
             CASE_KEY_OPEN_RESULTS[roll_token]["response"] = response_payload
         return response_payload, 200
+
+    async def _claim_user_case_opening(user_id: int, opening_token: str) -> tuple[dict[str, Any], int]:
+        _cleanup_expired_case_user_openings()
+        opening = CASE_USER_PENDING_OPENINGS.get(opening_token)
+        if not opening or opening.get("user_id") != user_id:
+            return {"success": False, "error": "opening_not_found", "message": "Открытие не найдено"}, 404
+        if opening.get("claimed"):
+            return opening.get("claim_response") or _user_case_opening_response(opening), 200
+
+        rewards = opening.get("rewards") or {}
+        final_tier = int(opening.get("final_tier") or 1)
+        user_case_id = int(opening.get("user_case_id") or 0)
+        opening_id = str(opening.get("opening_id") or opening_token)
+
+        default_case_id = await db.get_default_case_id() if hasattr(db, "get_default_case_id") else None
+        user_case = await db.get_user_case(user_case_id, user_id) if user_case_id else None
+        is_legacy_key_case = bool(
+            default_case_id is not None
+            and user_case is not None
+            and user_case.get("case_id") == default_case_id
+        )
+
+        applied = await _apply_case_opening_rewards(
+            db,
+            user_id=user_id,
+            user_case_id=user_case_id,
+            rewards=rewards,
+            decrement_legacy_key=is_legacy_key_case,
+        )
+        if not applied.get("success"):
+            return {"success": False, "error": applied.get("error", "case_rewards_failed"), "message": "Не удалось применить награды"}, 400
+
+        try:
+            event_source = f"case_open_user:{user_id}:{opening_id}"
+            squad_award = await db.award_squad_cbrp(
+                user_id,
+                "case_open",
+                source_id=event_source,
+                metadata={"tier": final_tier, "source": "user_case"},
+            )
+            for card_reward in rewards.get("cards", []):
+                card_id = card_reward.get("card_id")
+                rarity = str(card_reward.get("rarity") or "").lower()
+                await db.award_squad_cbrp(
+                    user_id,
+                    "new_card",
+                    source_id=f"{event_source}:new_card:{card_id}",
+                    metadata={
+                        "tier": final_tier,
+                        "card_id": card_id,
+                        "rarity": rarity,
+                        "source": "user_case",
+                    },
+                )
+                if rarity in ("epic", "legendary"):
+                    await db.award_squad_cbrp(
+                        user_id,
+                        "new_epic_plus_card_bonus",
+                        source_id=f"{event_source}:epic_plus:{card_id}",
+                        metadata={
+                            "tier": final_tier,
+                            "card_id": card_id,
+                            "rarity": rarity,
+                            "source": "user_case",
+                        },
+                    )
+        except Exception:
+            logging.getLogger(__name__).warning(
+                "Failed to award squad CBRP for user_case opening: user_id=%s case_id=%s",
+                user_id,
+                user_case_id,
+                exc_info=True,
+            )
+            squad_award = {"awarded": False, "reason": "award_failed"}
+
+        _track_case_rewards(
+            db,
+            user_id,
+            rewards,
+            {"final_tier": final_tier, "tap_results": [final_tier] * 4, "opening_token": opening_token},
+        )
+
+        try:
+            await db.mark_newbie_path_task(user_id, "open_starter_case", claimed=False)
+        except Exception:
+            logging.getLogger(__name__).debug("newbie path user_case completion failed", exc_info=True)
+
+        for token, reroll in list(CASE_USER_REROLL_ROLLS.items()):
+            if reroll.get("opening_token") == opening_token:
+                CASE_USER_REROLL_ROLLS.pop(token, None)
+
+        opening["claimed"] = True
+        opening["claimed_at"] = datetime.now(timezone.utc)
+        opening["squad_cbrp"] = squad_award
+        response_payload = {
+            **_user_case_opening_response(opening),
+            "squad_cbrp": squad_award,
+        }
+        opening["claim_response"] = response_payload
+        opening["response"] = response_payload
+        return response_payload, 200
+
+    async def case_reroll_handler(request: web.Request) -> web.Response:
+        """Начать Ultra-реролл для pending user_case opening (без анимации тапов)."""
+        user_id = await require_user_id(request)
+        try:
+            data = {}
+            if request.can_read_body:
+                try:
+                    data = await request.json()
+                except Exception:
+                    data = {}
+            _cleanup_expired_case_user_openings()
+            opening_token = str(data.get("opening_token") or "").strip()
+            opening = CASE_USER_PENDING_OPENINGS.get(opening_token)
+            if not opening or opening.get("user_id") != user_id:
+                return web.json_response({"success": False, "error": "opening_not_found", "message": "Открытие не найдено"}, status=404)
+            if opening.get("claimed"):
+                return web.json_response({"success": False, "error": "opening_claimed", "message": "Награды уже забраны"}, status=400)
+            if opening.get("extra_pass") != "ultra":
+                return web.json_response({"success": False, "error": "ultra_required", "message": "Нужен ExtraPass ULTRA"}, status=403)
+
+            for existing_token, existing_roll in CASE_USER_REROLL_ROLLS.items():
+                if existing_roll.get("opening_token") == opening_token and existing_roll.get("user_id") == user_id:
+                    return web.json_response({
+                        "success": True,
+                        "opening_token": opening_token,
+                        "reroll_token": existing_token,
+                        "tap_results": list(existing_roll.get("tap_results") or []),
+                        "final_tier": int(existing_roll.get("final_tier") or 1),
+                        "reroll_used": True,
+                        "reserved": True,
+                    })
+
+            if opening.get("reroll_used"):
+                return web.json_response({"success": False, "error": "reroll_already_used", "message": "Реролл уже использован"}, status=400)
+
+            extra_pass = str(opening.get("extra_pass") or "inactive")
+            final_tier = int(opening.get("final_tier") or 1)
+            reroll_token = uuid.uuid4().hex
+            opening["reroll_used"] = True
+            opening["reroll_started_at"] = datetime.now(timezone.utc)
+            opening["response"] = _user_case_opening_response(opening)
+            CASE_USER_REROLL_ROLLS[reroll_token] = {
+                "user_id": user_id,
+                "opening_token": opening_token,
+                "tap_results": [final_tier] * 4,
+                "final_tier": final_tier,
+                "extra_pass": extra_pass,
+                "expires_at": datetime.now(timezone.utc) + timedelta(seconds=CASE_USER_OPENING_TTL_SECONDS),
+            }
+            return web.json_response({
+                "success": True,
+                "opening_token": opening_token,
+                "reroll_token": reroll_token,
+                "tap_results": [final_tier] * 4,
+                "final_tier": final_tier,
+                "reroll_used": True,
+                "reserved": True,
+            })
+        except Exception as e:
+            logging.getLogger(__name__).error("case_reroll error uid=%s: %s", user_id, e, exc_info=True)
+            return web.json_response({"success": False, "error": "internal_server_error"}, status=500)
+
+    async def case_apply_reroll_handler(request: web.Request) -> web.Response:
+        """Завершить Ultra-реролл и заменить pending rewards новым результатом (без апгрейда тира)."""
+        user_id = await require_user_id(request)
+        try:
+            data = {}
+            if request.can_read_body:
+                try:
+                    data = await request.json()
+                except Exception:
+                    data = {}
+            _cleanup_expired_case_user_openings()
+            opening_token = str(data.get("opening_token") or "").strip()
+            reroll_token = str(data.get("reroll_token") or "").strip()
+            opening = CASE_USER_PENDING_OPENINGS.get(opening_token)
+            reroll_roll = CASE_USER_REROLL_ROLLS.get(reroll_token)
+            if not opening or opening.get("user_id") != user_id:
+                return web.json_response({"success": False, "error": "opening_not_found", "message": "Открытие не найдено"}, status=404)
+            if opening.get("claimed"):
+                return web.json_response({"success": False, "error": "opening_claimed", "message": "Награды уже забраны"}, status=400)
+            if not reroll_roll or reroll_roll.get("user_id") != user_id or reroll_roll.get("opening_token") != opening_token:
+                return web.json_response({"success": False, "error": "reroll_not_found", "message": "Реролл не найден"}, status=404)
+
+            final_tier = int(reroll_roll.get("final_tier") or 1)
+            extra_pass = str(reroll_roll.get("extra_pass") or "inactive")
+            user_cards = await db.get_user_cards(user_id)
+            user_card_ids = {card["id"] for card in (user_cards or [])}
+            rewards = await generate_case_rewards(db, final_tier, user_id, user_card_ids, extra_pass)
+            if opening.get("claimed"):
+                CASE_USER_REROLL_ROLLS.pop(reroll_token, None)
+                return web.json_response({"success": False, "error": "opening_claimed", "message": "Награды уже забраны"}, status=400)
+
+            opening["final_tier"] = final_tier
+            opening["tap_results"] = [final_tier] * 4
+            opening["rewards"] = rewards
+            opening["reroll_completed"] = True
+            opening["reroll_completed_at"] = datetime.now(timezone.utc)
+            opening["response"] = _user_case_opening_response(opening)
+            CASE_USER_REROLL_ROLLS.pop(reroll_token, None)
+            return web.json_response(opening["response"])
+        except Exception as e:
+            logging.getLogger(__name__).error("case_apply_reroll error uid=%s: %s", user_id, e, exc_info=True)
+            return web.json_response({"success": False, "error": "internal_server_error"}, status=500)
+
+    async def case_claim_handler(request: web.Request) -> web.Response:
+        """Начислить последние завершённые pending-награды user_case opening."""
+        user_id = await require_user_id(request)
+        try:
+            data = {}
+            if request.can_read_body:
+                try:
+                    data = await request.json()
+                except Exception:
+                    data = {}
+            opening_token = str(data.get("opening_token") or "").strip()
+            response_payload, status = await _claim_user_case_opening(user_id, opening_token)
+            return web.json_response(response_payload, status=status)
+        except Exception as e:
+            logging.getLogger(__name__).error("case_claim error uid=%s: %s", user_id, e, exc_info=True)
+            return web.json_response({"success": False, "error": "internal_server_error"}, status=500)
 
     async def case_roll_from_keys_handler(request: web.Request) -> web.Response:
         """Сгенерировать серверную последовательность тапов для открытия кейса из ключа."""
@@ -12255,9 +12445,10 @@ def create_web_app(
     app.router.add_get("/api/cards/collection", collection_with_status_handler)
     app.router.add_get("/api/cases/user", user_cases_handler)
     app.router.add_get("/api/cases/{user_case_id}", user_case_detail_handler)
-    app.router.add_post("/api/cases/tap", case_tap_handler)
     app.router.add_post("/api/cases/open", case_open_handler)
-    app.router.add_post("/api/cases/skip", case_skip_handler)
+    app.router.add_post("/api/cases/reroll", case_reroll_handler)
+    app.router.add_post("/api/cases/apply-reroll", case_apply_reroll_handler)
+    app.router.add_post("/api/cases/claim", case_claim_handler)
     app.router.add_post("/api/cases/roll-from-keys", case_roll_from_keys_handler)
     app.router.add_post("/api/cases/open-from-keys", case_open_from_keys_handler)
     app.router.add_post("/api/cases/reroll-from-keys", case_reroll_from_keys_handler)
