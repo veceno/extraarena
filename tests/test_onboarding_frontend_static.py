@@ -292,8 +292,8 @@ def test_arena_victory_menu_button_completes_tutorial_before_redirect():
 def test_onboarding_server_guards_ordering_and_newbie_rewards():
     server = SERVER.read_text(encoding="utf-8")
     source = INDEX.read_text(encoding="utf-8")
-    case_skip_block = server.split("async def case_skip_handler", 1)[1].split(
-        "def _cleanup_expired_case_key_rolls",
+    claim_user_case_block = server.split("async def _claim_user_case_opening", 1)[1].split(
+        "async def case_reroll_handler",
         1,
     )[0]
 
@@ -328,9 +328,9 @@ def test_onboarding_server_guards_ordering_and_newbie_rewards():
     assert "window.reloadFreshProfile().then(profileData => { if (profileData) setProfile(profileData); });" in source
     assert "throw new Error(data.message || data.error || 'Не удалось забрать награду')" in source
     assert "window.showToast?.(error?.message || 'Не удалось забрать награду'" in source
-    assert "except (TypeError, ValueError):" in case_skip_block
-    assert 'await db.mark_newbie_path_task(user_id, "open_starter_case", claimed=False)' in case_skip_block
-    assert "import logging" not in case_skip_block
+    assert "except Exception:" in claim_user_case_block
+    assert 'await db.mark_newbie_path_task(user_id, "open_starter_case", claimed=False)' in claim_user_case_block
+    assert "newbie path user_case completion failed" in claim_user_case_block
 
 
 def test_payload_auth_helper_accepts_query_auth_for_arena_post_actions():

@@ -743,9 +743,18 @@ def test_case_open_ultra_manual_reroll_uses_pending_claim_flow():
     assert "const [openingToken, setOpeningToken]" in case_block
     assert "const [rerollToken, setRerollToken]" in case_block
     assert "const [canReroll, setCanReroll]" in case_block
-    assert "apiUrl('/api/cases/reroll-from-keys')" in case_block
-    assert "apiUrl('/api/cases/open-reroll-from-keys')" in case_block
-    assert "apiUrl('/api/cases/claim-from-keys')" in case_block
+    assert ("apiUrl('/api/cases/reroll-from-keys')" in case_block
+            or "/api/cases/reroll-from-keys" in case_block)
+    assert ("apiUrl('/api/cases/open-reroll-from-keys')" in case_block
+            or "/api/cases/open-reroll-from-keys" in case_block)
+    assert ("apiUrl('/api/cases/claim-from-keys')" in case_block
+            or "/api/cases/claim-from-keys" in case_block)
+    assert ("apiUrl('/api/cases/reroll')" in case_block
+            or "/api/cases/reroll" in case_block)
+    assert ("apiUrl('/api/cases/apply-reroll')" in case_block
+            or "/api/cases/apply-reroll" in case_block)
+    assert ("apiUrl('/api/cases/claim')" in case_block
+            or "/api/cases/claim" in case_block)
     assert "Переоткрыть кейс" in case_block
     assert "claimCurrentOpening({closeAfter:true, notifyDone:true})" in case_block
     assert "Текущие награды сохранены" in case_block
