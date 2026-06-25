@@ -4,11 +4,11 @@
 
 | Тир | Название | Монеты | Карты | Макс. редкость | Цена в гемах |
 |-----|----------|--------|-------|----------------|--------------|
-| T1 | Обычный | 40–120 | 2–3 | superrare | 5 |
-| T2 | Улучшенный | 120–240 | 2–4 | epic | 15 |
-| T3 | Элитный | 240–560 | 3–4 | legendary | 40 |
-| T4 | Мифический | 560–1200 | 4–5 | mythic | 100 |
-| T5 | Божественный | 1200–2400 | 4–6 | divine | 250 |
+| T1 | Обычный | 40–120 | 2–4 | superrare | 5 |
+| T2 | Улучшенный | 120–240 | 2–5 | epic | 15 |
+| T3 | Элитный | 240–560 | 3–5 | legendary | 40 |
+| T4 | Мифический | 560–1200 | 4–6 | mythic | 100 |
+| T5 | Божественный | 1200–2400 | 4–7 | divine | 250 |
 
 ### T5 бонусы (дополнительно)
 - **10%** — 10–50 гемов
@@ -70,7 +70,7 @@
 
 | T1 | T2 | T3 | T4 | T5 |
 |----|----|----|----|----|
-| ×1.00 | ×0.38 | ×0.50 | ×0.75 | ×1.25 |
+| ×1.00 | ×0.50 | ×0.62 | ×0.88 | ×1.50 |
 
 T1-множитель удержан на 1.0 намеренно, чтобы базовый common-дубль не схлопнулся в 0.
 
@@ -120,10 +120,14 @@ T1-множитель удержан на 1.0 намеренно, чтобы б�
 
 ## Audit (2026-06-25, правки шансов и Ultra)
 
-Правки:
-- `infrastructure/case_config.py`: переписаны `TIER_RARITY_PROBABILITIES`, `TIER_REWARDS_COUNT` (coins −20%, cards min −35% / max −25%), `BASE_PARTICLES_BY_RARITY` (≈ −75% через `math.ceil(base × 0.25)`), `TIER_PARTICLES_MULTIPLIER` (T2–T5 ×0.25, T1 удержан на 1.0), `T5_COMMON_JACKPOT_PARTICLES` = 125.
-- `infrastructure/case_system.py`: вырезаны `ULTRA_TAP_CHANCE_BONUS`, `ULTRA_RARITY_MULTIPLIERS`, `ULTRA_T5_GEMS_CHANCE_MULTIPLIER` и их применения в `roll_tier_upgrade`, `select_rarity`, `_generate_single_case_rewards`. Реролл-логика (`ULTRA_REROLL_ATTEMPTS`, `get_case_reroll_attempts`, `score_case_rewards`, `extra_pass_bonus.reroll_*`) сохранена.
-- `tests/test_case_system.py::test_simulate_case_tap_results_uses_server_rolls`: тест расширен — проверяет, что после вырезки Ultra-бонуса `simulate_case_tap_results("ultra")` и `simulate_case_tap_results("inactive")` возвращают одинаковую последовательность (откат `roll_tier_upgrade` мокируется итератором `[1,2,2,3]` на каждый вызов).
+Правки (в два прохода):
+- **Проход 1 (баланс и Ultra):**
+  - `infrastructure/case_config.py`: переписаны `TIER_RARITY_PROBABILITIES`, `TIER_REWARDS_COUNT` (coins −20%, cards min −35% / max −25%), `BASE_PARTICLES_BY_RARITY` (≈ −75% через `math.ceil(base × 0.25)`), `TIER_PARTICLES_MULTIPLIER` (T2–T5 ×0.25, T1 удержан на 1.0), `T5_COMMON_JACKPOT_PARTICLES` = 125.
+  - `infrastructure/case_system.py`: вырезаны `ULTRA_TAP_CHANCE_BONUS`, `ULTRA_RARITY_MULTIPLIERS`, `ULTRA_T5_GEMS_CHANCE_MULTIPLIER` и их применения в `roll_tier_upgrade`, `select_rarity`, `_generate_single_case_rewards`. Реролл-логика (`ULTRA_REROLL_ATTEMPTS`, `get_case_reroll_attempts`, `score_case_rewards`, `extra_pass_bonus.reroll_*`) сохранена.
+  - `tests/test_case_system.py::test_simulate_case_tap_results_uses_server_rolls`: тест расширен — проверяет, что после вырезки Ultra-бонуса `simulate_case_tap_results("ultra")` и `simulate_case_tap_results("inactive")` возвращают одинаковую последовательность (откат `roll_tier_upgrade` мокируется итератором `[1,2,2,3]` на каждый вызов).
+- **Проход 2 (фикс «+0 частиц» и +7% к max карт):**
+  - `TIER_REWARDS_COUNT["cards"]`: max +1 во всех тирах (min не тронут). T1 (2,3)→(2,4), T2 (2,4)→(2,5), T3 (3,4)→(3,5), T4 (4,5)→(4,6), T5 (4,6)→(4,7). Средний прирост числа карт ≈ +13%.
+  - `TIER_PARTICLES_MULTIPLIER`: T2–T5 подняты на +15–20% (0.38→0.50, 0.50→0.62, 0.75→0.88, 1.25→1.50) — фикс того, что `int(2 × 0.38) = 0` для T2 common, и аналогичные нули для других тиров; теперь `int(base × mult) ≥ 1` для всех не-limited клеток.
 
 Проверены все конкретные цифры (шансы, цены, множители, диапазоны) против:
 - `infrastructure/case_config.py` (`TIER_RARITY_PROBABILITIES`, `TIER_REWARDS_COUNT`, `BASE_PARTICLES_BY_RARITY`, `TIER_PARTICLES_MULTIPLIER`, `T5_COMMON_JACKPOT_PARTICLES`, `TIER_UPGRADE_CHANCES`, `START_RARITY_REPLACEMENT`, `MAX_RARITY_BY_TIER`, `LIMITED_EVENT_PROBABILITY`).
