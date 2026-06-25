@@ -1795,6 +1795,30 @@ html, body {
   .loading-percentage { font-size: clamp(28px, 10vw, 44px); }
 }
 </style>
+<script>
+  // Dev QA: capture ?test_t_case=1&user_case_id=N&tier=T into a global
+  // flag AND sessionStorage BEFORE React mounts. This guarantees the
+  // newbie-task guard and the modal-conversion guard in App can
+  // detect the dev intent even if they run during the first paint
+  // (the newbie task fires from an async loadAll, our mount-time
+  // useEffect runs after that — without this head script the flag
+  // would be set too late and the starter-case modal would race
+  // ahead).
+  (function() {
+    try {
+      var p = new URLSearchParams(window.location.search);
+      if (p.get('test_t_case') === '1') {
+        var ucid = parseInt(p.get('user_case_id') || '', 10);
+        var tier = parseInt(p.get('tier') || '1', 10);
+        if (ucid) {
+          var payload = JSON.stringify({userCaseId: ucid, tier: tier || 1});
+          window.__eaDevTestTCase = {userCaseId: ucid, tier: tier || 1};
+          try { sessionStorage.setItem('eaDevTestTCase', payload); } catch (_) {}
+        }
+      }
+    } catch (_) {}
+  })();
+</script>
 </head>
 <body>
 
@@ -3313,7 +3337,7 @@ window.loadMobileSquadsBootstrap = async function(options = {}) {
 };
 </script>
 
-<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=5dc3ab297c04">
+<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=71211f8cbc9a">
 // ═══════════════════════════════════════════
 // DESIGN TOKENS
 // ═══════════════════════════════════════════
@@ -6277,6 +6301,38 @@ const caseRewardSfxId = (rewards) => {
 };
 
  const CaseOpenScreen = ({onClose, onDone, profile, userCaseId, initialTier = 1}) => {
+  // Dev QA gate: when ?test_t_case=1 is active, the user_cases modal
+  // is the one we want to test. If this CaseOpenScreen mounts WITHOUT
+  // a userCaseId (i.e. it's the starter-case modal auto-opened by
+  // the newbie task), render nothing and signal the parent to swap
+  // to the T-case modal. This is the last line of defence — even if
+  // every other guard fails, this component refuses to show the
+  // starter-case UI while the dev flag is alive.
+  const devTestCaseActive = React.useMemo(() => {
+    if (typeof window === 'undefined') return null;
+    if (window.__eaDevTestTCase && window.__eaDevTestTCase.userCaseId) {
+      return window.__eaDevTestTCase;
+    }
+    try {
+      const raw = sessionStorage.getItem('eaDevTestTCase');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && parsed.userCaseId) return parsed;
+      }
+    } catch (_) {}
+    return null;
+  }, []);
+  if (!userCaseId && devTestCaseActive) {
+    // Schedule parent close for the next tick so we don't fight
+    // React's commit phase, then render nothing for this frame.
+    if (typeof queueMicrotask === 'function') {
+      queueMicrotask(() => { try { onClose?.(); } catch (_) {} });
+    } else {
+      setTimeout(() => { try { onClose?.(); } catch (_) {} }, 0);
+    }
+    return null;
+  }
+
   const [phase,    setPhase]    = React.useState('intro');   // intro|tapping|opening|reveal
   const [tapN,     setTapN]     = React.useState(0);         // 0-4
   const [tierSeq,  setTierSeq]  = React.useState([initialTier,initialTier,initialTier,initialTier]); // cosmetic tiers per tap
@@ -6642,9 +6698,9 @@ const caseRewardSfxId = (rewards) => {
       {phase==='intro' && (
         <div style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',padding:'24px',textAlign:'center'}}>
           <div style={{fontSize:'80px',marginBottom:'20px',animation:'pulse2 2s ease-in-out infinite',filter:`drop-shadow(0 0 30px ${T.orange}66)`}}>📦</div>
-          <div style={{fontSize:'22px',fontWeight:'900',color:T.white,fontFamily:"'Exo 2',sans-serif",marginBottom:'8px'}}>Открытие кейса</div>
-          <div style={{fontSize:'13px',color:T.grey1,marginBottom:'32px',lineHeight:1.5}}>4 тапа — и узнаешь,<br/>что внутри</div>
-          <button data-no-global-click-sound="true" onClick={prepareServerRoll} style={{width:'220px',height:'56px',background:`linear-gradient(135deg,${T.orange},${T.orangeD})`,border:'none',borderRadius:'18px',color:'white',fontSize:'18px',fontWeight:'900',fontFamily:"'Exo 2',sans-serif",cursor:'pointer',boxShadow:`0 8px 28px ${T.orange}55`,letterSpacing:'1px'}}>Начать</button>
+          <div style={{fontSize:'22px',fontWeight:'900',color:T.white,fontFamily:"'Exo 2',sans-serif",marginBottom:'8px'}}>{userCaseId ? `Открытие T${initialTier}` : 'Открытие кейса'}</div>
+          <div style={{fontSize:'13px',color:T.grey1,marginBottom:'32px',lineHeight:1.5}}>{userCaseId ? 'Открой кейс и узнай, что внутри' : <>4 тапа — и узнаешь,<br/>что внутри</>}</div>
+          <button data-no-global-click-sound="true" onClick={prepareServerRoll} style={{width:'220px',height:'56px',background:`linear-gradient(135deg,${T.orange},${T.orangeD})`,border:'none',borderRadius:'18px',color:'white',fontSize:'18px',fontWeight:'900',fontFamily:"'Exo 2',sans-serif",cursor:'pointer',boxShadow:`0 8px 28px ${T.orange}55`,letterSpacing:'1px'}}>{userCaseId ? 'Открыть' : 'Начать'}</button>
         </div>
       )}
 
@@ -16660,18 +16716,68 @@ const App = () => {
   // the user_cases (T-case) flow directly without going through
   // BattlePass claim. Strips the params from the URL after firing so
   // the address bar stays clean and refresh doesn't reopen the modal.
+  // The flag is stashed in sessionStorage so handleNewbieTask can
+  // suppress the racing starter-case modal even if our effect runs
+  // after the newbie task fires (it does — the newbie task fires from
+  // an async loadAll, our effect from profile-state change).
+  //
+  // IMPORTANT: only strip the URL after the modal is actually opened,
+  // otherwise a late-arriving `profile` re-runs this effect with no
+  // query params and never fires setPendingCaseOpen.
   React.useEffect(() => {
     if (typeof window === 'undefined') return;
-    if (!profile) return;
     const params = new URLSearchParams(window.location.search);
     if (params.get('test_t_case') !== '1') return;
     const userCaseId = parseInt(params.get('user_case_id') || '', 10);
     const tier = parseInt(params.get('tier') || '1', 10);
     if (!userCaseId) return;
-    setPendingCaseOpen({userCaseId, initialTier: tier || 1});
-    const cleanUrl = window.location.pathname + window.location.hash;
-    try { window.history.replaceState(null, '', cleanUrl); } catch (_) {}
+    // Mark FIRST (synchronous), then open — handleNewbieTask reads
+    // sessionStorage/this flag when it fires from the async load.
+    try { sessionStorage.setItem('eaDevTestTCase', JSON.stringify({userCaseId, tier: tier || 1})); } catch (_) {}
+    window.__eaDevTestTCase = {userCaseId, tier: tier || 1};
+    setShowCaseOpen(false);
+    setShowNewbiePath(false);
+    if (profile) {
+      setPendingCaseOpen({userCaseId, initialTier: tier || 1});
+      // Only strip URL once we actually opened the modal, otherwise
+      // a profile re-render would lose the params.
+      const cleanUrl = window.location.pathname + window.location.hash;
+      try { window.history.replaceState(null, '', cleanUrl); } catch (_) {}
+    }
   }, [profile]);
+
+  // Dev QA second-line guard: if the open_starter_case newbie task
+  // races ahead of our mount-time effect and sets showCaseOpen=true
+  // before pendingCaseOpen is set, swap the modal in-flight to the
+  // T-case modal. This is the safety net — the handleNewbieTask
+  // guard above is the primary defence, this is for any code path
+  // (or future regression) that calls setShowCaseOpen(true) directly.
+  //
+  // We also use a polling interval while the dev flag is alive so
+  // even if React effect ordering loses the race, we will eventually
+  // win: as long as pendingCaseOpen is null and showCaseOpen is true
+  // (the racing starter-case modal), we close it and re-open the
+  // T-case modal.
+  React.useEffect(() => {
+    if (typeof window === 'undefined') return;
+    let cancelled = false;
+    const check = () => {
+      if (cancelled) return;
+      let devFlag = window.__eaDevTestTCase;
+      if (!devFlag) {
+        try { devFlag = JSON.parse(sessionStorage.getItem('eaDevTestTCase') || 'null'); } catch (_) {}
+      }
+      if (!devFlag || !devFlag.userCaseId) return;
+      // Flag is alive: convert any starter-case modal in-flight.
+      if (showCaseOpen) setShowCaseOpen(false);
+      if (!pendingCaseOpen) {
+        setPendingCaseOpen({userCaseId: devFlag.userCaseId, initialTier: devFlag.tier || 1});
+      }
+    };
+    check();
+    const id = setInterval(check, 80);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [showCaseOpen, pendingCaseOpen]);
 
   window.showToast = (msg, type, ms) => {
     type = type || 'success'; ms = ms || 3000;
@@ -17005,6 +17111,26 @@ const App = () => {
 		    if (!taskId) return;
 		    if (Object.keys(newbiePathClaimingRef.current || {}).length > 0) return;
 		    if (newbiePathClaimingRef.current[taskId]) return;
+	    // Dev QA guard: when ?test_t_case=1 is active, the user_cases
+	    // modal is the one we want to test. The starter-case modal
+	    // (auto-opened by the open_starter_case newbie task) would
+	    // race against it on a 120ms timeout. We check both the
+	    // window flag (in-process) and sessionStorage (cross-render
+	    // persistence in case the newbie task loads first).
+	    if (taskId === 'open_starter_case') {
+	      let devFlag = window.__eaDevTestTCase;
+	      if (!devFlag) {
+	        try { devFlag = JSON.parse(sessionStorage.getItem('eaDevTestTCase') || 'null'); } catch (_) {}
+	      }
+	      if (devFlag) {
+	        // Mark the test-t-case opening if profile is now ready
+	        setShowNewbiePath(false);
+	        if (devFlag && devFlag.userCaseId) {
+	          setPendingCaseOpen({userCaseId: devFlag.userCaseId, initialTier: devFlag.tier || 1});
+	        }
+	        return;
+	      }
+	    }
 	    if (!task?.claimable && !task?.completed && !(taskId === 'join_telegram_channel' && telegramChannelTaskOpened)) {
 	      if (taskId === 'open_starter_case') {
 	        setShowNewbiePath(false);
@@ -18717,6 +18843,6 @@ const LeagueInfoSheet = ({onClose, onOpenGloryPath, profile}) => {
 
 ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
 </script>
-<script src="index.compiled.js?v=5dc3ab297c04"></script>
+<script src="index.compiled.js?v=71211f8cbc9a"></script>
 </body>
 </html>
