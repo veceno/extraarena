@@ -96,3 +96,10 @@ Cargo.lock
 
 # Skills not meant for shared tracking
 .codex/skills/extraarena-prod-update/
+
+# RLHF env runtime artifacts + local scratch (generated, not source)
+rlhf_env/sessions/
+rlhf_env/smoke_arena.png
+.bundle-stash/
+.rlhf-stash/
+.playwright/
