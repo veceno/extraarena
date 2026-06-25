@@ -58,7 +58,8 @@ imitation learning или RLHF.
 | `components/manifest.py` | Manifest + summary JSON |
 | `components/log_schema.py` | Схема battle_log v1.0 |
 | `components/inference_params.py` | Defaults от sidecar |
-| `index.html` / `battle.html` | UI |
+| `index.html` + `static/rlhf.js` | Форма старта серии (POST /api/groups → redirect_url → 1:1 `/arena`) |
+| `webapp_borrow/` (arena.html/arena.js/arena-styles.css/safe-area.js) | Verbatim 1:1 арена из `webapp/` |
 
 ---
 
@@ -226,9 +227,9 @@ Env-vars (читаются `server.py`):
 
 ### 4.3. Страница боя (`/groups/<gid>/battles/<bid>`)
 
-- 1:1 рендер арены (использует `arena_styles.css`).
+- 1:1 рендер арены (verbatim `arena.html` + `arena.js` из `webapp_borrow/`).
 - Кнопки «Закончить ход», «Сыграть карту», «Атаковать».
-- WebSocket для human-vs-model.
+- WebSocket (Socket.IO) для human-vs-model; HTTP `/api/battle/*` для действий.
 
 ---
 
@@ -381,14 +382,24 @@ stdio JSON-RPC 2.0.
 
 ### 7.2. Инструменты
 
+14 инструментов. P1 — всегда человек (агент/браузер), spec использует `p2_model`.
+
 | Tool | Аргументы | Возврат |
 |------|-----------|---------|
-| `start_battle_group` | `spec: dict` | `{group_id, manifest_path}` |
-| `stop_battle_group` | `group_id: str` | `{stopped: bool, finished_battles: int}` |
-| `list_battle_groups` | — | `[{group_id, status, winrate}, ...]` |
-| `get_battle_group_status` | `group_id: str` | `{status, current_battle, winrate}` |
-| `get_battle_group_manifest` | `group_id: str` | `{manifest: dict, path: str}` |
+| `start_series` | `spec: dict` | `{group_id, match_id, battle_id, battles_planned, opponent}` |
+| `next_battle` | `group_id: str` | `{match_id, battle_id}` или `{status:"series_complete"}` |
+| `get_state` | `match_id: str` | actor-perspective full_state (как `/api/battle/state`) |
+| `get_legal_actions` | `match_id: str` | `{legal_actions, is_my_turn}` |
+| `submit_action` | `match_id, action` | `{result, state, sound_events}` \| `{result, state, error}` |
+| `advance_bot` | `match_id: str` | `{status, is_ended}` |
+| `surrender` | `match_id: str` | `{result:{game_over, winner_id}, state}` |
+| `list_battle_groups` | — | `{groups: [...]}` |
+| `get_battle_group_status` | `group_id: str` | статус группы |
+| `get_battle_group_manifest` | `group_id: str` | полное `manifest.json` |
+| `get_dataset` | `group_id: str` | `{dataset_jsonl, dataset_rows, per_battle_jsonl}` |
+| `list_battle_manifests` | `group_id: str` | `{battles: [...]}` |
 | `download_battle_logs` | `group_id, format="json"|"zip"` | `{path, size}` |
+| `list_models` | — | `{models: [...]}` |
 
 ### 7.3. Пример (curl-style через stdin)
 
@@ -396,15 +407,15 @@ stdio JSON-RPC 2.0.
 echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | python3 -m rlhf_env.mcp_server
 ```
 
-Ожидаем 6 инструментов в ответе.
+Ожидаем 14 инструментов в ответе.
 
 ```bash
 echo '{
   "jsonrpc":"2.0","id":2,
   "method":"tools/call",
   "params":{
-    "name":"start_battle_group",
-    "arguments":{"spec":{"p1_model":"extra-lr-v4-max","p2_model":"random","battles_planned":3}}
+    "name":"start_series",
+    "arguments":{"spec":{"p2_model":"extra-lr-v4-max","battles_planned":3,"seed":42,"starting_player":"p1"}}
   }
 }' | python3 -m rlhf_env.mcp_server
 ```

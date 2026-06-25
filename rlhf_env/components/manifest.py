@@ -85,7 +85,10 @@ class ManifestWriter:
             "group_id": group_id,
             "created_at": _utc_now_iso(),
             "finished_at": None,
-            "spec": spec,
+            # spec хранится в манифесте как метаданные серии. Убираем transient
+            # UI-настройки (audio — выключатели музыки/SFX из меню среды), которые
+            # не относятся к боевым параметрам и не должны попадать в записи.
+            "spec": {k: v for k, v in spec.items() if k != "audio"},
             "env": self._build_env_info(repo_root or Path.cwd(), rlhf_version),
             "results": {
                 "battles_finished": 0,
@@ -125,6 +128,9 @@ class ManifestWriter:
         status: str,
         turns: int,
         duration_seconds: float,
+        v5_dir: Optional[str] = None,
+        v5_meta_path: Optional[str] = None,
+        decks_cache: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Добавляет результат одного боя и обновляет агрегаты."""
         result = {
@@ -136,6 +142,15 @@ class ManifestWriter:
             "turns": int(turns),
             "duration_seconds": float(duration_seconds),
         }
+        if v5_dir is not None:
+            result["v5_dir"] = v5_dir
+        if v5_meta_path is not None:
+            result["v5_meta_path"] = v5_meta_path
+        if decks_cache is not None:
+            # ДЕНОРАЛИЗОВАННЫЙ кэш колод для быстрого lookup при батч-обучении;
+            # АВТОРИТАТИВНЫЕ resolved-колоды лежат в v5/meta.json, а в manifest.spec
+            # только стратегия колоды (для random стратегий resolved card_ids здесь).
+            result["decks_cache"] = decks_cache
         self.manifest["battles_results"].append(result)
         if battle_id not in self.manifest["battle_ids"]:
             self.manifest["battle_ids"].append(battle_id)
@@ -166,8 +181,27 @@ class ManifestWriter:
 
         self._flush()
 
+        # Авто-финализация: когда все запланированные бои серии записаны,
+        # манифест закрывается сам (finished_at + summary.json) — не ждём
+        # отдельного next_match/finish. Иначе серия, сыгранная до конца,
+        # оставалась в статусе «running»: finalize() вызывался только из
+        # next_match (arena_match_manager.next_match), а человек после
+        # последнего боя жмёт «Завершить» (выход в меню), а не «Следующий бой».
+        planned = int(self.manifest["results"].get("battles_planned", 0) or 0)
+        finished = int(self.manifest["results"].get("battles_finished", 0) or 0)
+        if planned > 0 and finished >= planned and not self.manifest.get("finished_at"):
+            self.finalize()
+
     def finalize(self) -> Dict[str, Any]:
-        """Закрывает манифест: ставит finished_at и пишет summary.json."""
+        """Закрывает манифест: ставит finished_at и пишет summary.json.
+
+        Идемпотентно: повторный вызов (напр. из finish_series после авто-
+        финализации) ничего не перезаписывает — серия остаётся с первым
+        finished_at. Иначе «Завершить» после сыгранного до конца боя двигал
+        бы finished_at на более позднее время.
+        """
+        if self.manifest.get("finished_at"):
+            return self.manifest
         self.manifest["finished_at"] = _utc_now_iso()
         self._flush()
 

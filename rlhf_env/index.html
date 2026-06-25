@@ -2,8 +2,9 @@
 <html lang="ru">
 <head>
 <meta charset="utf-8">
-<title>RLHF Arena — Новая группа</title>
+<title>RLHF Arena — Новая серия</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark">
 <link rel="stylesheet" href="/static/rlhf.css">
 </head>
 <body>
@@ -11,61 +12,125 @@
   <header class="rlhf-header">
     <h1>RLHF Arena</h1>
     <p class="rlhf-subtitle">Среда для сбора human-vs-model траекторий · v<span id="version">…</span></p>
+    <p class="rlhf-env-badge" id="rlhf-env-badge">__RLHF_ENV_BADGE__</p>
   </header>
 
   <form id="new-group-form" class="rlhf-form">
-    <h2>Новая серия боёв (human vs model)</h2>
+    <h2>Новая серия боёв</h2>
+    <p class="rlhf-form-sub">Вы играете за P1, бот — за P2. Модель всегда играет на максимум своих возможностей.</p>
 
     <fieldset>
       <legend>Противник</legend>
-      <label>Модель-бот (ваш противник):
+      <div class="rlhf-field">
+        <label class="rlhf-label" for="p2_model">Модель-бот</label>
         <select name="p2_model" id="p2_model">
-          <option value="end_turn" selected>end_turn (самый лёгкий)</option>
+          <option value="end_turn">end_turn (fallback, если список не загрузился)</option>
         </select>
-      </label>
+      </div>
       <p class="rlhf-hint">
-        Вы играете за P1, бот — за P2. Каждый ваш ход пишется в
-        <code>battle_log.json</code> — это и есть данные для обучения V5.
+        Каждый ваш ход пишется в каноничный <code>dataset.jsonl</code>
+        (<code>train_v2_admin_battle_action_jsonl_v2</code>) — это и есть данные
+        для обучения V5.
       </p>
     </fieldset>
 
     <fieldset>
-      <legend>Колода</legend>
-      <label>Стратегия:
-        <select name="deck_strategy" id="deck_strategy">
-          <option value="random_arenaenv" selected>Случайные ArenaENV колоды</option>
-          <option value="custom">Загрузить JSON-колоду</option>
-        </select>
-      </label>
-      <div id="custom-deck-block" style="display:none">
-        <label>JSON (массив card_id или {hero, cards}):
+      <legend>Колода игрока (P1)</legend>
+
+      <div id="rlhf-login" class="rlhf-login">
+        <h3>Войти под игровым аккаунтом</h3>
+        <p class="rlhf-hint" style="margin:0 0 10px">Чтобы играть своими сохранёнными колодами.</p>
+        <div class="rlhf-login-row">
+          <input type="text" id="rlhf-identifier" placeholder="Telegram ID или ExtraID (напр. 1234-ABC)" autocomplete="off">
+          <button type="button" id="rlhf-send-code">Отправить код</button>
+        </div>
+        <div class="rlhf-login-row">
+          <input type="text" id="rlhf-code" inputmode="numeric" maxlength="6" placeholder="Код из 6 цифр" autocomplete="off">
+          <button type="button" id="rlhf-login-btn">Войти</button>
+          <button type="button" id="rlhf-logout-btn" style="display:none">Выйти</button>
+        </div>
+        <div id="rlhf-login-msg" class="rlhf-hint"></div>
+        <div id="rlhf-user-info" style="display:none"></div>
+      </div>
+
+      <div class="rlhf-label" style="margin-bottom:8px">Источник колоды</div>
+      <div class="p1-deck-options" id="p1-deck-options">
+        <label class="p1-deck-opt"><input type="radio" name="p1_deck_source" value="random" checked> Случайная колода</label>
+        <label class="p1-deck-opt"><input type="radio" name="p1_deck_source" value="custom"> Своя JSON-колода</label>
+        <div id="p1-imported-decks"></div>
+      </div>
+
+      <div class="custom-deck-block" data-side="p1" id="p1-custom-block" style="display:none">
+        <div class="rlhf-field">
+          <label class="rlhf-label" for="custom_deck_p1">JSON (массив card_id или {hero, cards})</label>
           <textarea name="custom_deck_p1" id="custom_deck_p1" rows="3"
                     placeholder='[1, 14, 14, 15, 8] или {"hero":1,"cards":[14,14,15,8]}'></textarea>
-        </label>
-        <button type="button" id="btn-sample-deck">Сгенерировать пример</button>
-        <pre id="sample-deck-out"></pre>
+        </div>
+        <button type="button" class="btn-sample-deck" data-side="p1">Сгенерировать пример</button>
+        <pre class="sample-deck-out" data-side="p1"></pre>
       </div>
     </fieldset>
 
     <fieldset>
-      <legend>Параметры серии</legend>
-      <label>Количество боёв подряд: <input type="number" name="battles_planned" value="3" min="1" max="50"></label>
-      <label>Seed: <input type="number" name="seed" value="0"></label>
-      <label>Первый ход:
-        <select name="starting_player">
-          <option value="random" selected>Случайно</option>
-          <option value="p1">Я (P1)</option>
-          <option value="p2">Бот (P2)</option>
+      <legend>Колода бота (P2)</legend>
+      <div class="rlhf-field">
+        <label class="rlhf-label" for="deck_strategy_p2">Стратегия</label>
+        <select name="deck_strategy_p2" id="deck_strategy_p2" class="deck-strategy">
+          <option value="random_arenaenv" selected>Случайная ArenaENV колода</option>
+          <option value="custom">Загрузить JSON-колоду</option>
         </select>
-      </label>
-      <label>Макс. ходов в бое: <input type="number" name="max_turns" value="60" min="6" max="200"></label>
+      </div>
+      <div class="custom-deck-block" data-side="p2" style="display:none">
+        <div class="rlhf-field">
+          <label class="rlhf-label" for="custom_deck_p2">JSON</label>
+          <textarea name="custom_deck_p2" id="custom_deck_p2" rows="3"
+                    placeholder='[1, 14, 14, 15, 8] или {"hero":1,"cards":[14,14,15,8]}'></textarea>
+        </div>
+        <button type="button" class="btn-sample-deck" data-side="p2">Сгенерировать пример</button>
+        <pre class="sample-deck-out" data-side="p2"></pre>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Звук</legend>
+      <div class="rlhf-audio-opts">
+        <label class="rlhf-checkbox"><input type="checkbox" id="rlhf-music" checked> Музыка</label>
+        <label class="rlhf-checkbox"><input type="checkbox" id="rlhf-sfx" checked> Звуковые эффекты</label>
+      </div>
+      <p class="rlhf-hint">Применяется ко всем боям серии. Настройка сохраняется между заходами.</p>
+    </fieldset>
+
+    <fieldset>
+      <legend>Параметры серии</legend>
+      <div class="rlhf-params-grid">
+        <div class="rlhf-field">
+          <label class="rlhf-label" for="battles_planned">Количество боёв подряд</label>
+          <input type="number" name="battles_planned" id="battles_planned" value="3" min="1" max="50">
+        </div>
+        <div class="rlhf-field">
+          <label class="rlhf-label" for="max_turns">Макс. ходов в бое</label>
+          <input type="number" name="max_turns" id="max_turns" value="60" min="6" max="200">
+        </div>
+        <div class="rlhf-field">
+          <label class="rlhf-label" for="starting_player">Первый ход</label>
+          <select name="starting_player" id="starting_player">
+            <option value="random" selected>Случайно</option>
+            <option value="p1">Я (P1)</option>
+            <option value="p2">Бот (P2)</option>
+          </select>
+        </div>
+        <div class="rlhf-field">
+          <label class="rlhf-label" for="seed">Seed</label>
+          <input type="number" name="seed" id="seed" value="0">
+        </div>
+      </div>
     </fieldset>
 
     <button type="submit" class="rlhf-btn-primary">Начать серию</button>
     <div id="form-error" class="rlhf-error" style="display:none"></div>
   </form>
 
-  <p><a href="/groups">Все серии →</a></p>
+  <p class="rlhf-footer-link"><a href="/groups">Все серии →</a></p>
 </div>
 
 <script src="/static/rlhf.js"></script>

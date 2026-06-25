@@ -1,0 +1,11 @@
+{
+  "_comment": "Конфиг сред подключения RLHF-арены. Поменяй поле `environment` на одно из имён в `environments`, чтобы переключить, куда rlhf-прокси стучится за /api/rlhf/* (login/decks). Прецедентность переопределений (старшее — выше): (1) --prod-base-url / RLHF_PROD_BASE_URL (явный URL), (2) --env / RLHF_ENV (имя среды), (3) поле `environment` тут, (4) DEFAULT_PROD_BASE_URL (http://127.0.0.1:8081).",
+
+  "environment": "dev",
+
+  "environments": {
+    "prod":  { "base_url": "http://127.0.0.1:8081", "label": "Прод (8081)" },
+    "dev":   { "base_url": "http://127.0.0.1:8082", "label": "Дев (8082)" },
+    "local": { "base_url": "http://127.0.0.1:8081", "label": "Локально (8081)" }
+  }
+}

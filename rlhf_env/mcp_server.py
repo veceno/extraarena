@@ -1,21 +1,31 @@
-"""MCP-сервер для RLHF-среды ExtraArena.
+"""MCP-сервер RLHF-среды ExtraArena (stdio) — игра агентом headless + метаданные.
 
-stdio MCP-сервер с 6 базовыми инструментами:
-  1. start_battle_group(spec)         → старт группы боёв
-  2. stop_battle_group(group_id)      → остановить группу
-  3. list_battle_groups()             → список групп
-  4. get_battle_group_status(group_id) → статус группы
-  5. get_battle_group_manifest(group_id) → содержимое manifest.json
-  6. download_battle_logs(group_id, format) → путь к архиву/JSON-папке
+Инструменты разделены на две группы:
+
+  Управление серией:
+    start_series(spec)                — создать серию, вернуть первый match_id
+    next_battle(group_id)             — следующий бой серии (или series_complete)
+    list_battle_groups()              — список групп
+    get_battle_group_status(gid)      — статус группы
+    get_battle_group_manifest(gid)    — manifest.json
+    get_dataset(group_id)             — путь к каноничному NDJSON (dataset.jsonl)
+    list_battle_manifests(gid)        — список battle_log + .jsonl путей
+    download_battle_logs(gid, fmt)    — zip/json папка группы
+
+  Игра (агент играет за человека, headless, без браузера/WS):
+    get_state(match_id)               — полный actor-perspective state (как /api/battle/state)
+    get_legal_actions(match_id)      — список легальных действий
+    submit_action(match_id, action)  — выполнить действие человека; авто-advance бота
+    advance_bot(match_id)            — прокрутить один ход бота (если сейчас ход бота)
+    surrender(match_id)              — сдаться → финализация + NDJSON flush
+
+Контракт совпадает с браузерной ареной (тот же RlhfBattleEngine + MatchRunner),
+поэтому данные из MCP-игры и из браузера идентичны по форме.
 
 Запуск:
-    ./start_rlhf_env.sh mcp
+    ./rlhf_env/start_rlhf_env.sh mcp
     python -m rlhf_env.mcp_server
     python -m rlhf_env.mcp_server --models-dir /path/to/v5
-
-ВАЖНО: MCP-сервер использует ту же SessionManager, что и web. Если web
-уже запущен — онлайн-статусы берутся из его памяти; для cold-start
-MCP подгружает манифесты с диска.
 """
 from __future__ import annotations
 
@@ -26,47 +36,75 @@ import logging
 import os
 import sys
 import zipfile
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-# Добавляем корень репо в sys.path
 _HERE = Path(__file__).resolve().parent
 _REPO_ROOT = _HERE.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from rlhf_env import __version__  # noqa: E402
+from rlhf_env.components.arena_match_manager import ArenaMatchManager  # noqa: E402
+from rlhf_env.components.match_runner import MatchRunner  # noqa: E402
+from rlhf_env.components.policy_factory import BOT_MAX_DIFFICULTY  # noqa: E402
 from rlhf_env.components.policy_registry import PolicyRegistry  # noqa: E402
-from rlhf_env.components.session_manager import SessionManager  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
 
 # ============================================================================
-# MCP-совместимый fallback (если пакет `mcp` не установлен)
+# HeadlessHub — реестр матчей + ленивые MatchRunner'ы (без WS/broadcaster)
 # ============================================================================
 
-class _MCPServer:
-    """Минимальный MCP stdio сервер.
+class HeadlessHub:
+    """Связывает ArenaMatchManager с MatchRunner'ами для headless-игры."""
 
-    Если доступен пакет `mcp` — используется его stdio-server;
-    иначе — собственный fallback с тем же JSON-RPC 2.0 контрактом
-    (initialize / tools/list / tools/call).
-    """
+    def __init__(self, *, sessions_dir: str, models_dir: str, cards_path: str):
+        self.manager = ArenaMatchManager(
+            sessions_dir=sessions_dir, models_dir=models_dir, cards_path=cards_path,
+        )
+        self._runners: Dict[str, MatchRunner] = {}
 
-    def __init__(self, manager: SessionManager, registry: PolicyRegistry):
-        self.manager = manager
+    def _match(self, match_id: str):
+        return self.manager.get_match(match_id)
+
+    async def get_runner(self, match_id: str) -> Optional[MatchRunner]:
+        r = self._runners.get(match_id)
+        if r is not None:
+            return r
+        match = self.manager.get_match(match_id)
+        if match is None:
+            return None
+        r = MatchRunner(match)
+        # broadcaster=None → WS-бродкасты не нужны (headless).
+        self._runners[match_id] = r
+        return r
+
+
+# ============================================================================
+# MCP-сервер (JSON-RPC 2.0 over stdio)
+# ============================================================================
+
+class MCPServer:
+    def __init__(self, hub: HeadlessHub, registry: PolicyRegistry):
+        self.hub = hub
         self.registry = registry
         self.tools = self._build_tools()
 
+    # ------------------------------------------------------------------
+    # tool schemas
+    # ------------------------------------------------------------------
     def _build_tools(self) -> List[Dict[str, Any]]:
         return [
             {
-                "name": "start_battle_group",
+                "name": "start_series",
                 "description": (
-                    "Запустить группу боёв. spec: {p1_model, p2_model, deck_strategy, "
-                    "battles_planned, seed, starting_player, max_turns, custom_deck_p1?, custom_deck_p2?}"
+                    "Создать серию боёв (человек vs модель) и вернуть первый match_id. "
+                    "spec: {p2_model, battles_planned, seed?, starting_player?, "
+                    "deck_strategy_p1?, deck_strategy_p2?, custom_deck_p1?, custom_deck_p2?, "
+                    "p1_name?, p2_name?, ...}. Модель всегда играет на максимум (argmax); "
+                    "сложность не выбирается. Агент играет за человека (p1) через submit_action."
                 ),
                 "inputSchema": {
                     "type": "object",
@@ -74,58 +112,104 @@ class _MCPServer:
                         "spec": {
                             "type": "object",
                             "properties": {
-                                "p1_model": {"type": "string"},
-                                "p2_model": {"type": "string"},
-                                "deck_strategy": {"type": "string", "default": "random_arenaenv"},
+                                "p2_model": {"type": "string", "description": "имя модели-оппонента или 'random'"},
                                 "battles_planned": {"type": "integer", "default": 1, "minimum": 1, "maximum": 1000},
                                 "seed": {"type": "integer", "default": 0},
-                                "starting_player": {"type": "string", "default": "random"},
-                                "max_turns": {"type": "integer", "default": 60},
-                                "custom_deck_p1": {"type": "any"},
-                                "custom_deck_p2": {"type": "any"},
-                                "difficulty": {"type": "string", "default": "default"},
+                                "starting_player": {"type": "string", "default": "random", "enum": ["random", "p1", "p2"]},
+                                "deck_strategy_p1": {"type": "string", "default": "random_arenaenv", "enum": ["random_arenaenv", "custom"]},
+                                "deck_strategy_p2": {"type": "string", "default": "random_arenaenv", "enum": ["random_arenaenv", "custom"]},
+                                "custom_deck_p1": {"type": "array", "items": {"type": "integer"}},
+                                "custom_deck_p2": {"type": "array", "items": {"type": "integer"}},
+                                "p1_name": {"type": "string"}, "p2_name": {"type": "string"},
                             },
-                            "required": ["p1_model", "p2_model"],
+                            "required": ["p2_model"],
                         },
                     },
                     "required": ["spec"],
                 },
             },
             {
-                "name": "stop_battle_group",
-                "description": "Остановить активную группу боёв.",
+                "name": "next_battle",
+                "description": "Перейти к следующему бою серии. Возвращает match_id или series_complete.",
+                "inputSchema": {"type": "object", "properties": {"group_id": {"type": "string"}}, "required": ["group_id"]},
+            },
+            {
+                "name": "get_state",
+                "description": "Полный actor-perspective state боя (тот же формат, что /api/battle/state в браузере).",
+                "inputSchema": {"type": "object", "properties": {"match_id": {"type": "string"}}, "required": ["match_id"]},
+            },
+            {
+                "name": "get_legal_actions",
+                "description": "Список легальных действий для текущего (человека) игрока.",
+                "inputSchema": {"type": "object", "properties": {"match_id": {"type": "string"}}, "required": ["match_id"]},
+            },
+            {
+                "name": "submit_action",
+                "description": (
+                    "Выполнить действие человека. action: {type:'play_card'|'attack'|'end_turn', ...}. "
+                    "play_card: {type:'play_card', card_id_from_hand|hand_index, target_position?, target_id?, target_is_hero?}. "
+                    "attack: {type:'attack', attacker_id, target_id, target_is_hero?}. "
+                    "end_turn: {type:'end_turn'}. После успешного действия ход бота прокручивается автоматически."
+                ),
                 "inputSchema": {
                     "type": "object",
-                    "properties": {"group_id": {"type": "string"}},
-                    "required": ["group_id"],
+                    "properties": {
+                        "match_id": {"type": "string"},
+                        "action": {
+                            "type": "object",
+                            "properties": {
+                                "type": {"type": "string", "enum": ["play_card", "attack", "end_turn"]},
+                                "card_id_from_hand": {"type": "integer"},
+                                "hand_index": {"type": "integer"},
+                                "target_position": {"type": "integer"},
+                                "target_id": {"type": ["integer", "string"]},
+                                "target_is_hero": {"type": "boolean"},
+                                "attacker_id": {"type": ["integer", "string"]},
+                            },
+                            "required": ["type"],
+                        },
+                    },
+                    "required": ["match_id", "action"],
                 },
             },
             {
+                "name": "advance_bot",
+                "description": "Прокрутить один ход бота (если сейчас ход бота). Иначе no-op.",
+                "inputSchema": {"type": "object", "properties": {"match_id": {"type": "string"}}, "required": ["match_id"]},
+            },
+            {
+                "name": "surrender",
+                "description": "Сдаться (человек) → финализация боя + flush NDJSON.",
+                "inputSchema": {"type": "object", "properties": {"match_id": {"type": "string"}}, "required": ["match_id"]},
+            },
+            {
                 "name": "list_battle_groups",
-                "description": "Список всех групп (активные + завершённые на диске).",
+                "description": "Список всех групп боёв.",
                 "inputSchema": {"type": "object", "properties": {}},
             },
             {
                 "name": "get_battle_group_status",
-                "description": "Статус одной группы + winrate + manifest_path.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {"group_id": {"type": "string"}},
-                    "required": ["group_id"],
-                },
+                "description": "Статус группы.",
+                "inputSchema": {"type": "object", "properties": {"group_id": {"type": "string"}}, "required": ["group_id"]},
             },
             {
                 "name": "get_battle_group_manifest",
                 "description": "Полное содержимое manifest.json группы.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {"group_id": {"type": "string"}},
-                    "required": ["group_id"],
-                },
+                "inputSchema": {"type": "object", "properties": {"group_id": {"type": "string"}}, "required": ["group_id"]},
+            },
+            {
+                "name": "get_dataset",
+                "description": "Путь к каноничному NDJSON (dataset.jsonl) и per-battle .jsonl файлам группы.",
+                "inputSchema": {"type": "object", "properties": {"group_id": {"type": "string"}}, "required": ["group_id"]},
+            },
+            {
+                "name": "list_battle_manifests",
+                "description": "Список battle_log.json + analytics .jsonl путей по группе.",
+                "inputSchema": {"type": "object", "properties": {"group_id": {"type": "string"}}, "required": ["group_id"]},
             },
             {
                 "name": "download_battle_logs",
-                "description": "Скачать логи всех боёв группы (json или zip).",
+                "description": "Собрать логи группы в zip или вернуть список json-файлов.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -135,71 +219,172 @@ class _MCPServer:
                     "required": ["group_id"],
                 },
             },
+            {
+                "name": "list_models",
+                "description": "Список доступных моделей-оппонентов.",
+                "inputSchema": {"type": "object", "properties": {}},
+            },
         ]
 
     # ------------------------------------------------------------------
-    # Tool handlers
+    # tool handlers (async)
     # ------------------------------------------------------------------
-    def _tool_start_battle_group(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        spec = args.get("spec", {})
-        if not isinstance(spec, dict):
-            raise ValueError("spec must be an object")
-        if "battles_planned" not in spec:
-            spec["battles_planned"] = 1
-        gid = self.manager.start(spec)
-        return {
-            "group_id": gid,
-            "status": "running",
-            "manifest_path": str(self.manager.sessions_dir / gid / "manifest.json"),
-        }
+    async def _tool(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+        hub = self.hub
 
-    def _tool_stop_battle_group(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        gid = args["group_id"]
-        ok = self.manager.stop(gid)
-        return {"stopped": ok, "group_id": gid}
+        if name == "start_series":
+            spec = args.get("spec", {})
+            if not isinstance(spec, dict):
+                raise ValueError("spec must be an object")
+            spec.setdefault("battles_planned", 1)
+            match = hub.manager.create_series(spec)
+            # если бот ходит первым — прокручиваем (headless: агент не видит ход бота автоматически иначе)
+            runner = await hub.get_runner(match.engine.match_id)
+            if match.engine.is_current_player_bot() and runner is not None:
+                await runner.run_bot_turn()
+            return {
+                "group_id": match.group_id,
+                "match_id": match.engine.match_id,
+                "battle_id": match.battle_id,
+                "battles_planned": match.battles_planned,
+                "player_ids": [match.engine.human_user_id, match.engine.bot_user_id],
+                "opponent": {"model": spec.get("p2_model"), "difficulty": BOT_MAX_DIFFICULTY},
+            }
 
-    def _tool_list_battle_groups(self, _args: Dict[str, Any]) -> Dict[str, Any]:
-        return {"groups": self.manager.list()}
+        if name == "next_battle":
+            gid = args["group_id"]
+            match = hub.manager.next_match(gid)
+            if match is None:
+                return {"status": "series_complete", "group_id": gid}
+            runner = await hub.get_runner(match.engine.match_id)
+            if match.engine.is_current_player_bot() and runner is not None:
+                await runner.run_bot_turn()
+            return {"match_id": match.engine.match_id, "battle_id": match.battle_id, "group_id": gid}
 
-    def _tool_get_status(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        gid = args["group_id"]
-        s = self.manager.status(gid)
-        if s is None:
-            m = self.manager.get_manifest(gid)
-            if m is None:
+        if name == "get_state":
+            match = hub._match(args["match_id"])
+            if match is None:
+                return {"error": "match_not_found"}
+            return match.engine.get_full_state(viewer_id=match.engine.human_user_id)
+
+        if name == "get_legal_actions":
+            match = hub._match(args["match_id"])
+            if match is None:
+                return {"error": "match_not_found"}
+            uid = match.engine.human_user_id
+            legal = match.engine.get_legal_actions(uid) if not match.engine.is_current_player_bot() else []
+            return {"legal_actions": legal, "is_my_turn": match.engine.get_current_player_id() == uid}
+
+        if name == "submit_action":
+            match_id = args["match_id"]
+            action = args.get("action", {})
+            runner = await hub.get_runner(match_id)
+            if runner is None:
+                return {"error": "match_not_found"}
+            action = dict(action)
+            action.setdefault("client_action_id", f"mcp_{match_id}_{int(asyncio.get_event_loop().time()*1000)&0xffff}")
+            resp = await runner.execute_human_action(action)
+            # авто-advance бота уже выполнен в execute_human_action (create_task run_bot_turn),
+            # но в headless-режоте create_task мог быть запланирован — дождёмся его.
+            await self._drain_bot(runner)
+            return resp
+
+        if name == "advance_bot":
+            match_id = args["match_id"]
+            runner = await hub.get_runner(match_id)
+            if runner is None:
+                return {"error": "match_not_found"}
+            if not runner.match.engine.is_current_player_bot():
+                return {"status": "not_bot_turn"}
+            await runner.run_bot_turn()
+            await self._drain_bot(runner)
+            return {"status": "ok", "is_ended": runner.match.engine.is_ended}
+
+        if name == "surrender":
+            match_id = args["match_id"]
+            runner = await hub.get_runner(match_id)
+            if runner is None:
+                return {"error": "match_not_found"}
+            resp = await runner.surrender()
+            return resp
+
+        if name == "list_battle_groups":
+            return {"groups": hub.manager.list_groups()}
+
+        if name == "get_battle_group_status":
+            gid = args["group_id"]
+            m = hub.manager.list_groups()
+            for g in m:
+                if g["group_id"] == gid:
+                    return g
+            return {"error": "group not found"}
+
+        if name == "get_battle_group_manifest":
+            gid = args["group_id"]
+            path = hub.manager.sessions_dir / gid / "manifest.json"
+            if not path.exists():
                 return {"error": "group not found"}
-            return {"group_id": gid, "status": "loaded", "manifest": m}
-        return s
+            return json.loads(path.read_text(encoding="utf-8"))
 
-    def _tool_get_manifest(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        gid = args["group_id"]
-        m = self.manager.get_manifest(gid)
-        if m is None:
-            return {"error": "group not found"}
-        return {"group_id": gid, "manifest": m}
+        if name == "get_dataset":
+            gid = args["group_id"]
+            gdir = hub.manager.sessions_dir / gid
+            if not gdir.exists():
+                return {"error": "group not found"}
+            dataset = gdir / "dataset.jsonl"
+            battles_dir = gdir / "battles"
+            per_battle = sorted(str(p) for p in battles_dir.glob("*.jsonl")) if battles_dir.exists() else []
+            return {
+                "group_id": gid,
+                "dataset_jsonl": str(dataset),
+                "dataset_exists": dataset.exists(),
+                "dataset_rows": sum(1 for _ in dataset.open()) if dataset.exists() else 0,
+                "per_battle_jsonl": per_battle,
+            }
 
-    def _tool_download_logs(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        gid = args["group_id"]
-        fmt = args.get("format", "json")
-        group_dir = self.manager.sessions_dir / gid
-        if not group_dir.exists():
-            return {"error": "group not found"}
-        if fmt == "zip":
-            zip_path = self.manager.sessions_dir / f"{gid}.zip"
-            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-                for f in group_dir.rglob("*"):
-                    if f.is_file():
-                        zf.write(f, arcname=f.relative_to(group_dir))
-            return {"path": str(zip_path), "size": zip_path.stat().st_size, "format": "zip"}
-        else:
-            return {"path": str(group_dir), "format": "json", "files": [
-                str(p.relative_to(self.manager.sessions_dir)) for p in group_dir.rglob("*.json")
-            ]}
+        if name == "list_battle_manifests":
+            gid = args["group_id"]
+            gdir = hub.manager.sessions_dir / gid / "battles"
+            if not gdir.exists():
+                return {"error": "group not found"}
+            return {"battles": sorted(str(p) for p in gdir.glob("*.json"))}
+
+        if name == "download_battle_logs":
+            gid = args["group_id"]
+            fmt = args.get("format", "json")
+            gdir = hub.manager.sessions_dir / gid
+            if not gdir.exists():
+                return {"error": "group not found"}
+            if fmt == "zip":
+                zip_path = hub.manager.sessions_dir / f"{gid}.zip"
+                with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                    for f in gdir.rglob("*"):
+                        if f.is_file():
+                            zf.write(f, arcname=f.relative_to(gdir))
+                return {"path": str(zip_path), "size": zip_path.stat().st_size, "format": "zip"}
+            return {"path": str(gdir), "format": "json",
+                    "files": sorted(str(p.relative_to(hub.manager.sessions_dir)) for p in gdir.rglob("*") if p.is_file())}
+
+        if name == "list_models":
+            return {"models": self.registry.list_specs()}
+
+        raise ValueError(f"unknown tool: {name}")
+
+    async def _drain_bot(self, runner: MatchRunner) -> None:
+        """Дождаться завершения запланированной бот-рутины (если была)."""
+        task = runner._bot_task
+        if task is not None and not task.done():
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout=30.0)
+            except asyncio.TimeoutError:
+                logger.warning("bot task timed out while draining")
+            except Exception:  # noqa: BLE001
+                pass
 
     # ------------------------------------------------------------------
     # JSON-RPC dispatch
     # ------------------------------------------------------------------
-    def dispatch(self, method: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    async def dispatch(self, method: str, params: Dict[str, Any]) -> Dict[str, Any]:
         if method == "initialize":
             return {
                 "protocolVersion": "2024-11-05",
@@ -210,52 +395,42 @@ class _MCPServer:
             return {"tools": self.tools}
         if method == "tools/call":
             name = params.get("name")
-            args = params.get("arguments", {})
+            args = params.get("arguments", {}) or {}
             try:
-                if name == "start_battle_group":
-                    result = self._tool_start_battle_group(args)
-                elif name == "stop_battle_group":
-                    result = self._tool_stop_battle_group(args)
-                elif name == "list_battle_groups":
-                    result = self._tool_list_battle_groups(args)
-                elif name == "get_battle_group_status":
-                    result = self._tool_get_status(args)
-                elif name == "get_battle_group_manifest":
-                    result = self._tool_get_manifest(args)
-                elif name == "download_battle_logs":
-                    result = self._tool_download_logs(args)
-                else:
-                    return {"error": {"code": -32601, "message": f"unknown tool: {name}"}}
+                result = await self._tool(name, args)
                 return {"content": [{"type": "json", "data": result}], "isError": False}
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 logger.exception("[mcp] tool %s failed", name)
                 return {"content": [{"type": "json", "data": {"error": str(exc)}}], "isError": True}
         return {"error": {"code": -32601, "message": f"unknown method: {method}"}}
 
-    # ------------------------------------------------------------------
-    # Stdio loop
-    # ------------------------------------------------------------------
-    def run_stdio(self) -> None:
-        """Минимальный JSON-RPC stdio loop. Читает по одному сообщению из stdin."""
-        sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": 0, "result": {"ready": True, "version": __version__}}) + "\n")
+
+# ============================================================================
+# Async stdio loop (единый event-loop — MatchRunner lock/tasks живы между вызовами)
+# ============================================================================
+
+async def _amain(server: MCPServer) -> None:
+    """Stdio JSON-RPC loop. Один запрос — один ответ (строго 1:1, без unsolicited-
+    banner'ов, чтобы не ломать MCP-клиенты и синхронные stdio-харнессы)."""
+    loop = asyncio.get_event_loop()
+    while True:
+        line = await loop.run_in_executor(None, sys.stdin.readline)
+        if not line:
+            break
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            msg = json.loads(line)
+            req_id = msg.get("id", 0)
+            method = msg.get("method", "")
+            params = msg.get("params", {}) or {}
+            result = await server.dispatch(method, params)
+            sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": req_id, "result": result}) + "\n")
+        except Exception as exc:  # noqa: BLE001
+            sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": 0,
+                                         "error": {"code": -32700, "message": str(exc)}}) + "\n")
         sys.stdout.flush()
-        for line in sys.stdin:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                msg = json.loads(line)
-                req_id = msg.get("id", 0)
-                method = msg.get("method", "")
-                params = msg.get("params", {})
-                result = self.dispatch(method, params)
-                sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": req_id, "result": result}) + "\n")
-                sys.stdout.flush()
-            except Exception as exc:
-                sys.stdout.write(json.dumps({
-                    "jsonrpc": "2.0", "id": 0, "error": {"code": -32700, "message": str(exc)}
-                }) + "\n")
-                sys.stdout.flush()
 
 
 # ============================================================================
@@ -263,31 +438,28 @@ class _MCPServer:
 # ============================================================================
 
 def _parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="MCP-сервер RLHF-среды")
+    p = argparse.ArgumentParser(description="MCP-сервер RLHF-среды (stdio)")
     p.add_argument("--models-dir", default=os.environ.get("RLHF_MODELS_DIR", "ai/models"))
     p.add_argument("--sessions-dir", default=os.environ.get("RLHF_SESSIONS_DIR", "rlhf_env/sessions"))
     p.add_argument("--cards-path", default=os.environ.get("RLHF_CARDS_PATH", "ai/cards.json"))
-    p.add_argument("--log-level", default=os.environ.get("RLHF_LOG_LEVEL", "INFO"))
+    p.add_argument("--log-level", default=os.environ.get("RLHF_LOG_LEVEL", "WARNING"))
     return p.parse_args()
 
 
 def main() -> None:
     args = _parse_args()
     logging.basicConfig(
-        level=getattr(logging, args.log_level.upper(), logging.INFO),
+        level=getattr(logging, args.log_level.upper(), logging.WARNING),
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
-
     registry = PolicyRegistry.scan(args.models_dir)
-    manager = SessionManager(
-        sessions_dir=args.sessions_dir,
-        models_dir=args.models_dir,
-        registry=registry,
-    )
-
-    server = _MCPServer(manager, registry)
+    hub = HeadlessHub(sessions_dir=args.sessions_dir, models_dir=args.models_dir, cards_path=args.cards_path)
+    server = MCPServer(hub, registry)
     logger.info("MCP server starting (stdio). tools=%d, models=%d", len(server.tools), len(registry.specs))
-    server.run_stdio()
+    try:
+        asyncio.run(_amain(server))
+    except KeyboardInterrupt:
+        pass
 
 
 if __name__ == "__main__":

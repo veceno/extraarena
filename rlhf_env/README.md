@@ -52,9 +52,9 @@ rlhf_env/
 ├── requirements.txt       ← aiohttp, numpy, onnxruntime, mcp
 ├── server.py              ← aiohttp app
 ├── mcp_server.py          ← MCP stdio-server
-├── index.html / battle.html
-├── arena_styles.css       ← 1:1 копия webapp/arena-styles.css
-├── arena_render.js        ← рендер арены
+├── index.html             ← форма старта серии (POST /api/groups → redirect_url → /arena)
+├── static/                ← rlhf.js / rlhf.css (клиент формы)
+├── webapp_borrow/         ← verbatim копия webapp/: arena.html, arena.js, safe-area.js, arena-styles.css (1:1 арена)
 ├── components/
 │   ├── policy_registry.py
 │   ├── policy_factory.py

@@ -19,14 +19,24 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 DEFAULT_CARDS_PATH = Path("ai/cards.json")
 
-# Дефолтные размеры колоды (подобраны так, чтобы деки помещались в лимит руки 4-10)
+# Размер колоды дословно повторяет прод: infrastructure/config.py::DECK_SIZE = 9
+# (1 герой + 8 non-hero). В проде дубли card_id ЗАПРЕЩЕНЫ — см.
+# infrastructure/database.py::get_user_deck_presets (is_playable требует
+# `not duplicate_cards`) и ai/bot_factory.py::_sanitize_deck (dedup через
+# `used: set`). Поэтому RLHF-арена тоже строит колоду из УНИКАЛЬНЫХ card_id:
+# warrior_copies=1, potion_copies=1. Раньше было copies=2 — это создавало
+# 2 одинаковые карты в колоде, и они могли обе попасть в руку (не баг
+# циклирования, а drift построения колоды). Несоответствие исправлено.
+PROD_DECK_SIZE = 9
+TARGET_NON_HERO = PROD_DECK_SIZE - 1  # 8 non-hero карт
+
 DEFAULT_DECK_SIZE = {
     "warrior_unique_min": 5,
-    "warrior_unique_max": 8,
-    "warrior_copies": 2,
+    "warrior_unique_max": 7,
+    "warrior_copies": 1,
     "potion_unique_min": 1,
     "potion_unique_max": 3,
-    "potion_copies": 2,
+    "potion_copies": 1,
 }
 
 
@@ -71,6 +81,12 @@ def build_random_arena_deck(
 
     Возвращает список card_id в формате [hero, warrior, warrior, ..., potion, ...].
     Дека не сериализуется в готовые CardInstance — это работа deck_from_card_ids.
+
+    Повторяет прод-формат (infrastructure/config.py::DECK_SIZE = 9): ровно 1
+    герой + 8 non-hero, ВСЕ card_id УНИКАЛЬНЫ. Дубли card_id в проде запрещены
+    (deck_presets.is_playable требует `not duplicate_cards`; bot_factory
+    _sanitize_deck дедуплит) — поэтому copies всегда 1, а число воинов/зелий
+    подбирается так, чтобы суммарно non-hero == TARGET_NON_HERO (8).
     """
     rng = rng or random.Random()
     cfg = {**DEFAULT_DECK_SIZE, **(config or {})}
@@ -82,25 +98,52 @@ def build_random_arena_deck(
 
     hero = hero_id if hero_id is not None else rng.choice(catalog.heroes)
 
-    warrior_count = rng.randint(
-        int(cfg["warrior_unique_min"]),
-        min(int(cfg["warrior_unique_max"]), len(catalog.warriors)),
-    )
+    # copies всегда 1 — дубли card_id запрещены (см. комментарий в DEFAULT_DECK_SIZE).
+    # Конфиг с copies>1 игнорируется осознанно: это drift от прод-поведения.
+    warrior_copies = 1
+    potion_copies = 1
+
+    # Подбираем число зелий в допустимом диапазоне, остальное добираем воинами
+    # так, чтобы warrior_count + potion_count == TARGET_NON_HERO (8).
+    potion_min = int(cfg["potion_unique_min"])
+    potion_max_cfg = int(cfg["potion_unique_max"])
+    warrior_min = int(cfg["warrior_unique_min"])
+    warrior_max_cfg = int(cfg["warrior_unique_max"])
+
+    available_potions = len(catalog.potions)
+    available_warriors = len(catalog.warriors)
+
+    # Диапазон числа зелий с учётом доступности и лимитов по воинам/размеру колоды.
+    max_potions = min(potion_max_cfg, available_potions, TARGET_NON_HERO - warrior_min)
+    if available_potions == 0 or max_potions <= 0:
+        potion_count = 0
+    else:
+        min_potions = min(potion_min, max_potions)
+        potion_count = rng.randint(min_potions, max_potions)
+
+    warrior_count = TARGET_NON_HERO - potion_count
+
+    # Корректируем, если воинов не хватает или выходим за уникальный максимум.
+    if warrior_count > available_warriors:
+        warrior_count = available_warriors
+        potion_count = TARGET_NON_HERO - warrior_count
+    warrior_count = min(warrior_count, warrior_max_cfg)
+    warrior_count = max(warrior_count, warrior_min)
+    # Финальная подстройка зелий под фактическое число воинов.
+    potion_count = max(0, TARGET_NON_HERO - warrior_count)
+
     chosen_warriors = rng.sample(catalog.warriors, warrior_count)
     warriors: List[int] = []
     for w in chosen_warriors:
-        warriors.extend([w] * int(cfg["warrior_copies"]))
+        warriors.extend([w] * warrior_copies)
     rng.shuffle(warriors)
 
     potions: List[int] = []
-    if catalog.potions:
-        max_potions = min(int(cfg["potion_unique_max"]), len(catalog.potions))
-        if max_potions > 0:
-            potion_count = rng.randint(int(cfg["potion_unique_min"]), max_potions)
-            chosen_potions = rng.sample(catalog.potions, potion_count)
-            for p in chosen_potions:
-                potions.extend([p] * int(cfg["potion_copies"]))
-            rng.shuffle(potions)
+    if catalog.potions and potion_count > 0:
+        chosen_potions = rng.sample(catalog.potions, potion_count)
+        for p in chosen_potions:
+            potions.extend([p] * potion_copies)
+        rng.shuffle(potions)
 
     return [hero, *warriors, *potions]
 
