@@ -3337,7 +3337,7 @@ window.loadMobileSquadsBootstrap = async function(options = {}) {
 };
 </script>
 
-<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=41f32be8ee25">
+<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=0389b258a488">
 // ═══════════════════════════════════════════
 // DESIGN TOKENS
 // ═══════════════════════════════════════════
@@ -3972,6 +3972,25 @@ const ICONS = {
 const iconWhite  = 'brightness(0) invert(1)';
 const iconOrange = 'brightness(0) saturate(100%) invert(63%) sepia(83%) saturate(4559%) hue-rotate(1deg) brightness(103%)';
 const iconGrey   = 'brightness(0) saturate(100%) invert(50%) sepia(13%) saturate(525%) hue-rotate(214deg)';
+
+// Локализационные хелперы, общие для нескольких экранов (TrophyRoad, BattlePass).
+// Раньше жили внутри BattlePassSheet как локальные const — из-за этого TrophyRoadSheet
+// падал с «ReferenceError: ruPlural is not defined» при первом открытии трофейной дороги.
+const ruPlural = (n, forms) => {
+  const abs = Math.abs(Number(n) || 0) % 100;
+  const d = abs % 10;
+  if (abs > 10 && abs < 20) return forms[2];
+  if (d > 1 && d < 5) return forms[1];
+  if (d === 1) return forms[0];
+  return forms[2];
+};
+
+const RARITY_RU = {
+  common: 'Обычная', rare: 'Редкая', start: 'Стартовая', superrare: 'Сверхредкая',
+  epic: 'Эпическая', legendary: 'Легендарная', mythic: 'Мифическая',
+  divine: 'Божественная', limited: 'Лимитированная', unique: 'Уникальная'
+};
+const rarityNameRu = (r) => RARITY_RU[r] || r || '';
 
 const NAV_ITEMS = [
   {label:'Магазин',    icon:ICONS.nav.shop,       badge:true },
@@ -17995,13 +18014,19 @@ const TrophyRoadSheet = ({onClose, profile}) => {
                           // Подпись и иконка для каждого типа. Частицы получают
                           // отдельную иконку 🧩 и явный «X частиц (редкость)» —
                           // иначе игрок видит непонятное «🎁 30» без контекста.
-                          let icon, label;
+                          // Для case/specific_card/cosmetic числовой префикс опускаем —
+                          // метка уже содержит всю информацию (T{N} кейс, косметика и т.п.),
+                          // а reward_amount для них часто null.
+                          let icon, label, amountPrefix = '';
                           if (r.reward_type === 'coins') {
                             icon = '💰'; label = ruPlural(r.reward_amount, ['монета', 'монеты', 'монет']);
+                            amountPrefix = (r.reward_amount != null ? r.reward_amount.toLocaleString() : '');
                           } else if (r.reward_type === 'gems') {
                             icon = '💎'; label = ruPlural(r.reward_amount, ['гем', 'гема', 'гемов']);
+                            amountPrefix = (r.reward_amount != null ? r.reward_amount.toLocaleString() : '');
                           } else if (r.reward_type === 'keys') {
                             icon = '🔑'; label = ruPlural(r.reward_amount, ['ключ', 'ключа', 'ключей']);
+                            amountPrefix = (r.reward_amount != null ? r.reward_amount.toLocaleString() : '');
                           } else if (r.reward_type === 'case') {
                             const tierNum = r.reward_meta?.case_tier || r.reward_amount || 1;
                             icon = '📦'; label = 'T' + tierNum + ' кейс';
@@ -18013,15 +18038,17 @@ const TrophyRoadSheet = ({onClose, profile}) => {
                             const rarity = r.reward_meta?.rarity || 'common';
                             icon = '🧩';
                             label = ruPlural(r.reward_amount, ['частица', 'частицы', 'частиц']) + ' (' + (rarityNameRu(rarity).toLowerCase()) + ')';
+                            amountPrefix = (r.reward_amount != null ? r.reward_amount.toLocaleString() : '');
                           } else if (r.reward_type === 'cosmetic') {
                             icon = '🎨'; label = 'косметика';
                           } else {
                             icon = '🎁'; label = '';
+                            amountPrefix = (r.reward_amount != null ? r.reward_amount.toLocaleString() : '');
                           }
                           return (
                             <div key={j} style={{display:'flex',alignItems:'center',gap:'3px',background:`${T.purple1}88`,borderRadius:'8px',padding:'4px 8px'}}>
                               <span style={{fontSize:'12px'}}>{icon}</span>
-                              <span style={{fontSize:'11px',color:T.grey1,fontWeight:'600',fontFamily:"'Exo 2',sans-serif"}}>{r.reward_amount.toLocaleString()} {label}</span>
+                              <span style={{fontSize:'11px',color:T.grey1,fontWeight:'600',fontFamily:"'Exo 2',sans-serif"}}>{amountPrefix ? (amountPrefix + ' ' + label) : label}</span>
                             </div>
                           );
                         })}
@@ -18092,22 +18119,6 @@ const BattlePassSheet = ({onClose, profile, onGoToShop, onOpenExtraPassCase}) =>
     hero: {borderRadius:20,padding:'14px 13px',background:'radial-gradient(circle at 84% 18%,rgba(245,146,30,0.22),transparent 38%),linear-gradient(135deg,rgba(115,24,154,0.55),rgba(45,31,82,0.92) 58%,rgba(26,16,48,0.96))',border:'1px solid rgba(255,148,0,0.34)',boxShadow:'0 14px 34px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.08)',overflow:'hidden',position:'relative'},
     tile: {minHeight:76,borderRadius:16,padding:10,display:'grid',gridTemplateColumns:'38px minmax(0,1fr)',gap:9,alignItems:'center',border:'1px solid rgba(245,146,30,0.2)',background:'linear-gradient(180deg,rgba(255,255,255,0.055),rgba(255,255,255,0.018)),rgba(26,16,48,0.78)',cursor:'pointer',position:'relative',overflow:'hidden',width:'100%',textAlign:'left',boxShadow:'inset 0 1px 0 rgba(255,255,255,0.08)'},
   };
-
-  const ruPlural = (n, forms) => {
-    const abs = Math.abs(Number(n) || 0) % 100;
-    const d = abs % 10;
-    if (abs > 10 && abs < 20) return forms[2];
-    if (d > 1 && d < 5) return forms[1];
-    if (d === 1) return forms[0];
-    return forms[2];
-  };
-
-  const RARITY_RU = {
-    common: 'Обычная', rare: 'Редкая', start: 'Стартовая', superrare: 'Сверхредкая',
-    epic: 'Эпическая', legendary: 'Легендарная', mythic: 'Мифическая',
-    divine: 'Божественная', limited: 'Лимитированная', unique: 'Уникальная'
-  };
-  const rarityNameRu = (r) => RARITY_RU[r] || r || '';
 
   const normalizeReward = (reward) => {
     const meta = reward?.reward_meta || {};
@@ -18896,6 +18907,6 @@ const LeagueInfoSheet = ({onClose, onOpenGloryPath, profile}) => {
 
 ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
 </script>
-<script src="index.compiled.js?v=41f32be8ee25"></script>
+<script src="index.compiled.js?v=0389b258a488"></script>
 </body>
 </html>
