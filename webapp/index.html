@@ -3337,7 +3337,7 @@ window.loadMobileSquadsBootstrap = async function(options = {}) {
 };
 </script>
 
-<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=1b70ba13cb80">
+<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=41f32be8ee25">
 // ═══════════════════════════════════════════
 // DESIGN TOKENS
 // ═══════════════════════════════════════════
@@ -17992,8 +17992,32 @@ const TrophyRoadSheet = ({onClose, profile}) => {
 
                       <div style={{display:'flex',gap:'6px',flexWrap:'wrap',alignItems:'center'}}>
                         {(tier.rewards||[]).map((r,j) => {
-                          const icon = r.reward_type === 'coins' ? '💰' : r.reward_type === 'gems' ? '💎' : r.reward_type === 'keys' ? '🔑' : (r.reward_type === 'card' || r.reward_type === 'specific_card') ? '🃏' : '🎁';
-                          const label = r.reward_type === 'coins' ? 'монет' : r.reward_type === 'gems' ? 'гемов' : r.reward_type === 'keys' ? 'ключ' : r.reward_type === 'specific_card' ? 'конкр. карта' : r.reward_type === 'card' ? 'случ. карта' : '';
+                          // Подпись и иконка для каждого типа. Частицы получают
+                          // отдельную иконку 🧩 и явный «X частиц (редкость)» —
+                          // иначе игрок видит непонятное «🎁 30» без контекста.
+                          let icon, label;
+                          if (r.reward_type === 'coins') {
+                            icon = '💰'; label = ruPlural(r.reward_amount, ['монета', 'монеты', 'монет']);
+                          } else if (r.reward_type === 'gems') {
+                            icon = '💎'; label = ruPlural(r.reward_amount, ['гем', 'гема', 'гемов']);
+                          } else if (r.reward_type === 'keys') {
+                            icon = '🔑'; label = ruPlural(r.reward_amount, ['ключ', 'ключа', 'ключей']);
+                          } else if (r.reward_type === 'case') {
+                            const tierNum = r.reward_meta?.case_tier || r.reward_amount || 1;
+                            icon = '📦'; label = 'T' + tierNum + ' кейс';
+                          } else if (r.reward_type === 'card') {
+                            icon = '🃏'; label = 'случ. карта';
+                          } else if (r.reward_type === 'specific_card') {
+                            icon = '🃏'; label = 'конкр. карта';
+                          } else if (r.reward_type === 'particles') {
+                            const rarity = r.reward_meta?.rarity || 'common';
+                            icon = '🧩';
+                            label = ruPlural(r.reward_amount, ['частица', 'частицы', 'частиц']) + ' (' + (rarityNameRu(rarity).toLowerCase()) + ')';
+                          } else if (r.reward_type === 'cosmetic') {
+                            icon = '🎨'; label = 'косметика';
+                          } else {
+                            icon = '🎁'; label = '';
+                          }
                           return (
                             <div key={j} style={{display:'flex',alignItems:'center',gap:'3px',background:`${T.purple1}88`,borderRadius:'8px',padding:'4px 8px'}}>
                               <span style={{fontSize:'12px'}}>{icon}</span>
@@ -18872,6 +18896,6 @@ const LeagueInfoSheet = ({onClose, onOpenGloryPath, profile}) => {
 
 ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
 </script>
-<script src="index.compiled.js?v=1b70ba13cb80"></script>
+<script src="index.compiled.js?v=41f32be8ee25"></script>
 </body>
 </html>
