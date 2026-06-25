@@ -18,6 +18,10 @@ class _CaseRouteDB:
         self.economy_events = []
         self.cbrp_events = []
         self.newbie_tasks = []
+        self.user_cases: dict[int, dict] = {}
+        self.removed_user_cases: list[tuple[int, int]] = []
+        self.legacy_case_id = None
+        self.reward_counter = {"coins": 0}
 
     async def get_runtime_config(self):
         return {
@@ -94,6 +98,26 @@ class _CaseRouteDB:
             return {"keys": self.keys[user_id]}
         return None
 
+    async def get_user_case(self, user_case_id, user_id):
+        row = self.user_cases.get(int(user_case_id))
+        if row and row.get("user_id") == user_id:
+            return row
+        return None
+
+    async def get_default_case_id(self):
+        return self.legacy_case_id
+
+    async def sync_user_key_cases(self, user_id):
+        return None
+
+    async def remove_user_case(self, user_case_id, user_id):
+        self.removed_user_cases.append((int(user_case_id), int(user_id)))
+        self.user_cases.pop(int(user_case_id), None)
+        return True
+
+    async def sync_user_key_cases_after_claim(self, user_id):
+        return None
+
 
 class _OpenRewardCaseDB:
     def __init__(self):
@@ -148,15 +172,35 @@ class _UniLookupDB:
 
 
 def test_simulate_case_tap_results_uses_server_rolls(monkeypatch):
-    rolls = iter([1, 2, 2, 3])
+    """Серверные тапы возвращают последовательность как есть; extra_pass пробрасывается.
+
+    Правки 2026-06-25: Ultra-бонус к шансу тапа вырезан, поэтому ultra и inactive
+    должны получать идентичную последовательность от roll_tier_upgrade (мокируем
+    ниже и пробрасываем реальный extra_pass; сам мок не использует его).
+    """
+    rolls_ultra = iter([1, 2, 2, 3])
+    seen_extra_passes: list[str] = []
 
     def fake_roll(current_tier, tap_number, extra_pass="inactive"):
-        assert extra_pass == "ultra"
-        return next(rolls)
+        seen_extra_passes.append(extra_pass)
+        return next(rolls_ultra)
 
     monkeypatch.setattr(case_system, "roll_tier_upgrade", fake_roll)
 
-    assert case_system.simulate_case_tap_results(1, "ultra") == [1, 2, 2, 3]
+    ultra_result = case_system.simulate_case_tap_results(1, "ultra")
+    assert ultra_result == [1, 2, 2, 3]
+    assert seen_extra_passes == ["ultra"] * 4
+
+    # После вырезки Ultra-бонуса шансы тапа для ultra и inactive совпадают.
+    monkeypatch.setattr(
+        case_system,
+        "roll_tier_upgrade",
+        lambda current_tier, tap_number, extra_pass="inactive": next(iter([1, 2, 2, 3])),
+    )
+    assert (
+        case_system.simulate_case_tap_results(1, "ultra")
+        == case_system.simulate_case_tap_results(1, "inactive")
+    )
 
 
 @pytest.mark.asyncio
@@ -278,11 +322,15 @@ async def test_process_case_opening_reward_track_case_does_not_decrement_keys(mo
     monkeypatch.setattr(case_system, "generate_case_rewards", fake_generate_rewards)
     db = _OpenRewardCaseDB()
 
-    result = await case_system.process_case_opening(db, 1001, 77, [3, 3, 3, 3])
+    # process_case_opening теперь НЕ применяет награды — только генерирует pending opening.
+    result = await case_system.process_case_opening(db, 1001, 77)
 
     assert result["success"] is True
-    assert db.coins == 50
-    assert db.removed == [(77, 1001)]
+    assert result["final_tier"] == 3
+    assert result["rewards"]["coins"] == 50
+    assert result["tap_results"] == [3, 3, 3, 3]
+    assert db.coins == 0
+    assert db.removed == []
     assert db.decrements == 0
     assert db.keys == 3
 
@@ -426,5 +474,290 @@ async def test_key_case_completed_reroll_replaces_claimed_rewards(monkeypatch):
         assert reroll_opened.status == 200
         assert claimed_body["rewards"]["coins"] == 900
         assert db.coins == 900
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_user_case_open_returns_pending_opening_for_ultra(monkeypatch):
+    monkeypatch.setenv("BOT_TOKEN", "bot-token")
+    monkeypatch.setenv("WEBAPP_HOST", "127.0.0.1")
+    get_settings.cache_clear()
+    monkeypatch.setattr(web_server, "CASE_USER_PENDING_OPENINGS", {})
+    monkeypatch.setattr(web_server, "CASE_USER_REROLL_ROLLS", {})
+
+    async def fake_rewards(*args, **kwargs):
+        return {"coins": 100, "cards": [{"card_id": 42, "card_name": "Card", "rarity": "rare", "is_new": True}], "particles": [], "gems": 0, "jackpot": False, "extra_pass_bonus": {"tier": "ultra", "reroll_available": True}}
+
+    monkeypatch.setattr(web_server, "generate_case_rewards", fake_rewards)
+    monkeypatch.setattr(case_system, "generate_case_rewards", fake_rewards)
+
+    db = _CaseRouteDB(extra_pass="ultra")
+    db.user_cases[77] = {"id": 77, "user_id": 1001, "case_id": 99, "tier": 3, "status": "pending"}
+    app = web_server.create_web_app(db, bot_token="bot-token", webapp_url="https://game.example")
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        opened = await client.post(
+            "/api/cases/open?user_id=1001",
+            json={"user_case_id": 77},
+        )
+        body = await opened.json()
+        assert opened.status == 200
+        assert body["success"] is True
+        assert body["opening_token"]
+        assert body["final_tier"] == 3
+        assert body["can_reroll"] is True
+        assert body["rewards"]["coins"] == 100
+        # DB is NOT mutated yet — pending opening lives in memory only.
+        assert db.coins == 0
+        assert db.removed_user_cases == []
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_user_case_claim_applies_rewards(monkeypatch):
+    monkeypatch.setenv("BOT_TOKEN", "bot-token")
+    monkeypatch.setenv("WEBAPP_HOST", "127.0.0.1")
+    get_settings.cache_clear()
+    monkeypatch.setattr(web_server, "CASE_USER_PENDING_OPENINGS", {})
+    monkeypatch.setattr(web_server, "CASE_USER_REROLL_ROLLS", {})
+
+    async def fake_rewards(*args, **kwargs):
+        return {"coins": 250, "cards": [], "particles": [{"card_id": 7, "card_name": "X", "rarity": "common", "particles": 5}], "gems": 0, "jackpot": False}
+
+    monkeypatch.setattr(web_server, "generate_case_rewards", fake_rewards)
+    monkeypatch.setattr(case_system, "generate_case_rewards", fake_rewards)
+    db = _CaseRouteDB(extra_pass="inactive")
+    db.user_cases[88] = {"id": 88, "user_id": 1001, "case_id": 99, "tier": 4, "status": "pending"}
+    app = web_server.create_web_app(db, bot_token="bot-token", webapp_url="https://game.example")
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        opened = await (await client.post(
+            "/api/cases/open?user_id=1001", json={"user_case_id": 88}
+        )).json()
+        assert opened["opening_token"]
+        assert db.coins == 0
+        assert db.removed_user_cases == []
+
+        claimed = await client.post(
+            "/api/cases/claim?user_id=1001",
+            json={"opening_token": opened["opening_token"]},
+        )
+        body = await claimed.json()
+        assert claimed.status == 200
+        assert body["claimed"] is True
+        assert body["final_tier"] == 4
+        # DB applied.
+        assert db.coins == 250
+        assert db.particles == [(7, 5)]
+        assert (88, 1001) in db.removed_user_cases
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_user_case_reroll_regenerates_rewards_at_same_tier(monkeypatch):
+    monkeypatch.setenv("BOT_TOKEN", "bot-token")
+    monkeypatch.setenv("WEBAPP_HOST", "127.0.0.1")
+    get_settings.cache_clear()
+    monkeypatch.setattr(web_server, "CASE_USER_PENDING_OPENINGS", {})
+    monkeypatch.setattr(web_server, "CASE_USER_REROLL_ROLLS", {})
+
+    rewards_a = {"coins": 100, "cards": [], "particles": [], "gems": 0, "jackpot": False}
+    rewards_b = {"coins": 250, "cards": [{"card_id": 11, "card_name": "Y", "rarity": "rare", "is_new": True}], "particles": [], "gems": 5, "jackpot": False}
+    counter = {"calls": 0}
+
+    async def fake_rewards(*args, **kwargs):
+        counter["calls"] += 1
+        return rewards_a if counter["calls"] == 1 else rewards_b
+
+    monkeypatch.setattr(web_server, "generate_case_rewards", fake_rewards)
+    monkeypatch.setattr(case_system, "generate_case_rewards", fake_rewards)
+    db = _CaseRouteDB(extra_pass="ultra")
+    db.user_cases[91] = {"id": 91, "user_id": 1001, "case_id": 99, "tier": 4, "status": "pending"}
+    app = web_server.create_web_app(db, bot_token="bot-token", webapp_url="https://game.example")
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        opened = await (await client.post(
+            "/api/cases/open?user_id=1001", json={"user_case_id": 91}
+        )).json()
+        assert opened["final_tier"] == 4
+        assert opened["rewards"]["coins"] == 100
+
+        reroll_body = await (await client.post(
+            "/api/cases/reroll?user_id=1001", json={"opening_token": opened["opening_token"]}
+        )).json()
+        assert reroll_body["reroll_token"]
+        assert reroll_body["final_tier"] == 4  # tier unchanged
+
+        applied = await (await client.post(
+            "/api/cases/apply-reroll?user_id=1001",
+            json={"opening_token": opened["opening_token"], "reroll_token": reroll_body["reroll_token"]},
+        )).json()
+        assert applied["final_tier"] == 4  # tier preserved
+        assert applied["rewards"]["coins"] == 250  # new rewards
+        assert applied["rewards"]["gems"] == 5
+
+        claimed = await (await client.post(
+            "/api/cases/claim?user_id=1001", json={"opening_token": opened["opening_token"]}
+        )).json()
+        # Claim applies the rerolled rewards, not the original.
+        assert db.coins == 250
+        assert db.cards == [11]
+        assert db.gems == 5
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_user_case_double_reroll_idempotent_returns_cached_token(monkeypatch):
+    monkeypatch.setenv("BOT_TOKEN", "bot-token")
+    monkeypatch.setenv("WEBAPP_HOST", "127.0.0.1")
+    get_settings.cache_clear()
+    monkeypatch.setattr(web_server, "CASE_USER_PENDING_OPENINGS", {})
+    monkeypatch.setattr(web_server, "CASE_USER_REROLL_ROLLS", {})
+
+    async def fake_rewards(*args, **kwargs):
+        return {"coins": 50, "cards": [], "particles": [], "gems": 0, "jackpot": False}
+
+    monkeypatch.setattr(web_server, "generate_case_rewards", fake_rewards)
+    monkeypatch.setattr(case_system, "generate_case_rewards", fake_rewards)
+    db = _CaseRouteDB(extra_pass="ultra")
+    db.user_cases[101] = {"id": 101, "user_id": 1001, "case_id": 99, "tier": 3, "status": "pending"}
+    app = web_server.create_web_app(db, bot_token="bot-token", webapp_url="https://game.example")
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        opened = await (await client.post(
+            "/api/cases/open?user_id=1001", json={"user_case_id": 101}
+        )).json()
+
+        first = await client.post(
+            "/api/cases/reroll?user_id=1001", json={"opening_token": opened["opening_token"]}
+        )
+        assert first.status == 200
+
+        second = await client.post(
+            "/api/cases/reroll?user_id=1001", json={"opening_token": opened["opening_token"]}
+        )
+        second_body = await second.json()
+        # Same as keys-flow: double reroll before apply returns cached reroll_token (200).
+        assert second.status == 200
+        assert second_body.get("reroll_token")
+        assert second_body.get("reroll_used") is True
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_user_case_reroll_blocked_after_claim_with_opening_claimed(monkeypatch):
+    monkeypatch.setenv("BOT_TOKEN", "bot-token")
+    monkeypatch.setenv("WEBAPP_HOST", "127.0.0.1")
+    get_settings.cache_clear()
+    monkeypatch.setattr(web_server, "CASE_USER_PENDING_OPENINGS", {})
+    monkeypatch.setattr(web_server, "CASE_USER_REROLL_ROLLS", {})
+
+    async def fake_rewards(*args, **kwargs):
+        return {"coins": 50, "cards": [], "particles": [], "gems": 0, "jackpot": False}
+
+    monkeypatch.setattr(web_server, "generate_case_rewards", fake_rewards)
+    monkeypatch.setattr(case_system, "generate_case_rewards", fake_rewards)
+    db = _CaseRouteDB(extra_pass="ultra")
+    db.user_cases[111] = {"id": 111, "user_id": 1001, "case_id": 99, "tier": 3, "status": "pending"}
+    app = web_server.create_web_app(db, bot_token="bot-token", webapp_url="https://game.example")
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        opened = await (await client.post(
+            "/api/cases/open?user_id=1001", json={"user_case_id": 111}
+        )).json()
+        await client.post(
+            "/api/cases/claim?user_id=1001", json={"opening_token": opened["opening_token"]}
+        )
+
+        after = await client.post(
+            "/api/cases/reroll?user_id=1001", json={"opening_token": opened["opening_token"]}
+        )
+        body = await after.json()
+        assert after.status == 400
+        assert body.get("error") == "opening_claimed"
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_user_case_reroll_blocked_for_non_ultra(monkeypatch):
+    monkeypatch.setenv("BOT_TOKEN", "bot-token")
+    monkeypatch.setenv("WEBAPP_HOST", "127.0.0.1")
+    get_settings.cache_clear()
+    monkeypatch.setattr(web_server, "CASE_USER_PENDING_OPENINGS", {})
+    monkeypatch.setattr(web_server, "CASE_USER_REROLL_ROLLS", {})
+
+    async def fake_rewards(*args, **kwargs):
+        return {"coins": 50, "cards": [], "particles": [], "gems": 0, "jackpot": False}
+
+    monkeypatch.setattr(web_server, "generate_case_rewards", fake_rewards)
+    monkeypatch.setattr(case_system, "generate_case_rewards", fake_rewards)
+    db = _CaseRouteDB(extra_pass="inactive")
+    db.user_cases[121] = {"id": 121, "user_id": 1001, "case_id": 99, "tier": 3, "status": "pending"}
+    app = web_server.create_web_app(db, bot_token="bot-token", webapp_url="https://game.example")
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        opened = await (await client.post(
+            "/api/cases/open?user_id=1001", json={"user_case_id": 121}
+        )).json()
+        assert opened["can_reroll"] is False
+
+        reroll = await client.post(
+            "/api/cases/reroll?user_id=1001", json={"opening_token": opened["opening_token"]}
+        )
+        body = await reroll.json()
+        assert reroll.status == 403
+        assert body.get("error") == "ultra_required"
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_user_case_claim_idempotent_returns_400_already_claimed(monkeypatch):
+    monkeypatch.setenv("BOT_TOKEN", "bot-token")
+    monkeypatch.setenv("WEBAPP_HOST", "127.0.0.1")
+    get_settings.cache_clear()
+    monkeypatch.setattr(web_server, "CASE_USER_PENDING_OPENINGS", {})
+    monkeypatch.setattr(web_server, "CASE_USER_REROLL_ROLLS", {})
+
+    async def fake_rewards(*args, **kwargs):
+        return {"coins": 50, "cards": [], "particles": [], "gems": 0, "jackpot": False}
+
+    monkeypatch.setattr(web_server, "generate_case_rewards", fake_rewards)
+    monkeypatch.setattr(case_system, "generate_case_rewards", fake_rewards)
+    db = _CaseRouteDB(extra_pass="inactive")
+    db.user_cases[131] = {"id": 131, "user_id": 1001, "case_id": 99, "tier": 3, "status": "pending"}
+    app = web_server.create_web_app(db, bot_token="bot-token", webapp_url="https://game.example")
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        opened = await (await client.post(
+            "/api/cases/open?user_id=1001", json={"user_case_id": 131}
+        )).json()
+        first_claim = await client.post(
+            "/api/cases/claim?user_id=1001", json={"opening_token": opened["opening_token"]}
+        )
+        assert first_claim.status == 200
+        assert db.coins == 50
+
+        # Second claim — opening is still in CASE_USER_PENDING_OPENINGS, but marked claimed.
+        second_claim = await client.post(
+            "/api/cases/claim?user_id=1001", json={"opening_token": opened["opening_token"]}
+        )
+        body = await second_claim.json()
+        # Second claim is treated idempotent: returns 200 with the cached claim_response.
+        # Coins NOT applied twice.
+        assert db.coins == 50
     finally:
         await client.close()

@@ -4,11 +4,11 @@
 
 | Тир | Название | Монеты | Карты | Макс. редкость | Цена в гемах |
 |-----|----------|--------|-------|----------------|--------------|
-| T1 | Обычный | 50–150 | 3–4 | superrare | 5 |
-| T2 | Улучшенный | 150–300 | 4–5 | epic | 15 |
-| T3 | Элитный | 300–700 | 5–6 | legendary | 40 |
-| T4 | Мифический | 700–1500 | 6–7 | mythic | 100 |
-| T5 | Божественный | 1500–3000 | 7–8 | divine | 250 |
+| T1 | Обычный | 40–120 | 2–3 | superrare | 5 |
+| T2 | Улучшенный | 120–240 | 2–4 | epic | 15 |
+| T3 | Элитный | 240–560 | 3–4 | legendary | 40 |
+| T4 | Мифический | 560–1200 | 4–5 | mythic | 100 |
+| T5 | Божественный | 1200–2400 | 4–6 | divine | 250 |
 
 ### T5 бонусы (дополнительно)
 - **10%** — 10–50 гемов
@@ -20,14 +20,16 @@
 
 | Редкость | T1 | T2 | T3 | T4 | T5 |
 |-----------|----|----|----|----|----|
-| common | **80%** | **60%** | **45%** | **30%** | **20%** |
-| rare | **18%** | **30%** | **30%** | **30%** | **25%** |
-| superrare | **2%** | **8%** | **15%** | **20%** | **25%** |
-| epic | — | **2%** | **8%** | **12%** | **15%** |
-| legendary | — | — | **2%** | **6%** | **8%** |
-| mythic | — | — | — | **2%** | **5%** |
-| divine | — | — | — | — | **2%** |
+| common | **82%** | **64%** | **50.5%** | **37%** | **28%** |
+| rare | **16.2%** | **27%** | **27%** | **27%** | **22.5%** |
+| superrare | **1.8%** | **7.2%** | **13.5%** | **18%** | **22.5%** |
+| epic | — | **1.8%** | **7.2%** | **10.8%** | **13.5%** |
+| legendary | — | — | **1.8%** | **5.4%** | **7.2%** |
+| mythic | — | — | — | **1.8%** | **4.5%** |
+| divine | — | — | — | — | **1.8%** |
 | limited | — | — | — | — | 0% (0.15% при ивенте) |
+
+> Все строки в сумме дают ровно 1.0; `select_rarity` нормализует на случай дрейфа конфигурации.
 
 ### Замена на стартовую редкость (Юни)
 При выпадении rare или superrare есть шанс заменить на `start`:
@@ -52,6 +54,7 @@
 
 - Тир может только увеличиваться
 - Максимальный тир — T5
+- Ultra-бонус к шансу тапа **отключён** (см. ниже «ExtraPass и Ultra»)
 
 ---
 
@@ -61,16 +64,31 @@
 
 | common | rare | start | superrare | epic | legendary | mythic | divine | limited |
 |--------|------|-------|-----------|------|-----------|--------|--------|---------|
-| 5 | 10 | 15 | 20 | 40 | 80 | 160 | 400 | 0 |
+| 2 | 3 | 4 | 5 | 10 | 20 | 40 | 100 | 0 |
 
 ### Множитель тира кейса
 
 | T1 | T2 | T3 | T4 | T5 |
 |----|----|----|----|----|
-| ×1.0 | ×1.5 | ×2.0 | ×3.0 | ×5.0 |
+| ×1.00 | ×0.38 | ×0.50 | ×0.75 | ×1.25 |
+
+T1-множитель удержан на 1.0 намеренно, чтобы базовый common-дубль не схлопнулся в 0.
 
 ### Джекпот T5
-Если из T5 выпадает common-карта-дубликат — фиксированные **500 частиц** (вместо 5 × 5 = 25).
+Если из T5 выпадает common-карта-дубликат — фиксированные **125 частиц** (вместо 2 × 1.25 = 2.5).
+
+---
+
+## ExtraPass и Ultra
+
+`extra_pass` (`inactive` / `active` / `ultra`) определяет только наличие **ручного Ultra-реролла** после открытия (`ULTRA_REROLL_ATTEMPTS = 1`, `get_case_reroll_attempts`, `score_case_rewards`).
+
+С 2026-06-25 **все бонусы шансов за Ultra вырезаны**:
+- Ultra больше **не** повышает шансы редкостей (нет `ULTRA_RARITY_MULTIPLIERS`);
+- Ultra больше **не** добавляет +10% к шансу тап-апгрейда (нет `ULTRA_TAP_CHANCE_BONUS`);
+- Ultra больше **не** умножает шанс T5-гемов на 1.8 (нет `ULTRA_T5_GEMS_CHANCE_MULTIPLIER`).
+
+Параметр `extra_pass` сохранён в сигнатурах `select_rarity`, `_generate_single_case_rewards`, `roll_tier_upgrade` для совместимости и для проброса уровня в `process_case_opening`/`generate_case_rewards` (где проверяется флаг реролла). На шансы награды он больше не влияет.
 
 ---
 
@@ -94,11 +112,31 @@
 | Файл | Назначение |
 |------|-----------|
 | `infrastructure/case_config.py` | Все конфиги (шансы, награды, частицы, апгрейд) |
-| `infrastructure/case_system.py` | Логика: апгрейд, выбор редкости, генерация наград |
+| `infrastructure/case_system.py` | Логика: апгрейд, выбор редкости, генерация наград, Ultra-реролл |
 | `infrastructure/shop_config.py` | Цены кейсов в магазине |
 | `infrastructure/database.py` | Таблица `user_cases`, `keys`, сидирование reward_tracks |
 | `web/server.py` | API-эндпоинты: открытие, пропуск, open-from-keys, счётчик побед |
 | `cards.json` | Все карты (пул наград) |
+
+## Audit (2026-06-25, правки шансов и Ultra)
+
+Правки:
+- `infrastructure/case_config.py`: переписаны `TIER_RARITY_PROBABILITIES`, `TIER_REWARDS_COUNT` (coins −20%, cards min −35% / max −25%), `BASE_PARTICLES_BY_RARITY` (≈ −75% через `math.ceil(base × 0.25)`), `TIER_PARTICLES_MULTIPLIER` (T2–T5 ×0.25, T1 удержан на 1.0), `T5_COMMON_JACKPOT_PARTICLES` = 125.
+- `infrastructure/case_system.py`: вырезаны `ULTRA_TAP_CHANCE_BONUS`, `ULTRA_RARITY_MULTIPLIERS`, `ULTRA_T5_GEMS_CHANCE_MULTIPLIER` и их применения в `roll_tier_upgrade`, `select_rarity`, `_generate_single_case_rewards`. Реролл-логика (`ULTRA_REROLL_ATTEMPTS`, `get_case_reroll_attempts`, `score_case_rewards`, `extra_pass_bonus.reroll_*`) сохранена.
+- `tests/test_case_system.py::test_simulate_case_tap_results_uses_server_rolls`: тест расширен — проверяет, что после вырезки Ultra-бонуса `simulate_case_tap_results("ultra")` и `simulate_case_tap_results("inactive")` возвращают одинаковую последовательность (откат `roll_tier_upgrade` мокируется итератором `[1,2,2,3]` на каждый вызов).
+
+Проверены все конкретные цифры (шансы, цены, множители, диапазоны) против:
+- `infrastructure/case_config.py` (`TIER_RARITY_PROBABILITIES`, `TIER_REWARDS_COUNT`, `BASE_PARTICLES_BY_RARITY`, `TIER_PARTICLES_MULTIPLIER`, `T5_COMMON_JACKPOT_PARTICLES`, `TIER_UPGRADE_CHANCES`, `START_RARITY_REPLACEMENT`, `MAX_RARITY_BY_TIER`, `LIMITED_EVENT_PROBABILITY`).
+- `infrastructure/case_system.py` (`_generate_single_case_rewards`, `select_rarity`, `roll_tier_upgrade`, `process_case_opening`).
+- `infrastructure/database.py` (seed `reward_tracks`: `glory`, `bp_free`, `bp_premium`, `bp_ultra`).
+- `web/server.py` (`wins_for_case` на строке 2908 = 3/4/5, роуты `/api/cases/*`, `legacy_case_tier_disabled` на строке 17616–17621).
+
+Исправлено в этом аудите:
+- Все таблицы в этом документе синхронизированы с новыми значениями в `case_config.py`.
+- Добавлен раздел «ExtraPass и Ultra» с описанием того, что именно осталось от Ultra и что вырезано.
+
+Что НЕ удалось проверить без живого рантайма:
+- Точные значения, которые могли бы быть переопределены в БД через `admin_rewards_tracks_update` после seed (на момент аудита `reward_tracks` соответствует seed-данным; возможные ручные правки в проде не верифицированы).
 
 ## Audit (2026-06-25)
 

@@ -29,19 +29,12 @@ from infrastructure.case_config import (
 MAX_TAP_NUMBER = max(TIER_UPGRADE_CHANCES.keys(), default=4)
 ULTRA_REROLL_ATTEMPTS = 1
 
-ULTRA_TAP_CHANCE_BONUS = 0.10
-ULTRA_RARITY_MULTIPLIERS = {
-    "common": 0.72,
-    "rare": 0.88,
-    "start": 1.20,
-    "superrare": 1.20,
-    "epic": 1.45,
-    "legendary": 1.60,
-    "mythic": 1.75,
-    "divine": 1.90,
-    "limited": 2.00,
-}
-ULTRA_T5_GEMS_CHANCE_MULTIPLIER = 1.8
+# Правки 2026-06-25: бонусы шансов за Ultra вырезаны (см. CASE_SYSTEM.md).
+# Ultra-игроки больше не получают +шансы к редкостям, +шанс тап-апгрейда или
+# +шанс T5-гемов. Остаётся только ручной Ultra-реролл (ULTRA_REROLL_ATTEMPTS,
+# get_case_reroll_attempts, score_case_rewards).
+# Параметр extra_pass сохранён в сигнатурах для совместимости с кодом,
+# проверяющим уровень ExtraPass для реролла.
 
 RARITY_SCORE = {
     "common": 1,
@@ -105,8 +98,6 @@ def roll_tier_upgrade(current_tier: int, tap_number: int, extra_pass: str = "ina
         return current_tier
 
     upgrade_chance = TIER_UPGRADE_CHANCES[tap_number]
-    if extra_pass == "ultra":
-        upgrade_chance = min(upgrade_chance + ULTRA_TAP_CHANCE_BONUS, 0.95)
     if random.random() < upgrade_chance:
         return min(current_tier + 1, 5)
 
@@ -140,11 +131,6 @@ def select_rarity(tier: int, extra_pass: str = "inactive") -> str:
         Название редкости
     """
     probabilities = TIER_RARITY_PROBABILITIES.get(tier, {})
-    if extra_pass == "ultra":
-        probabilities = {
-            rarity: prob * ULTRA_RARITY_MULTIPLIERS.get(rarity, 1.0)
-            for rarity, prob in probabilities.items()
-        }
 
     # Если тир 5 и активено событие, добавляем шанс на лимитированную
     if tier == 5 and LIMITED_EVENT_ACTIVE:
@@ -274,46 +260,6 @@ def calculate_particles_for_duplicate(rarity: str, tier: int, is_t5_common: bool
     return int(base_particles * multiplier)
 
 
-def normalize_tap_results(tap_results: Optional[List[int]], final_tier: int) -> List[int]:
-    """
-    Привести последовательность тиров после тапов к безопасному виду.
-
-    - Игнорируем некорректные значения
-    - Не даем значениям выходить за диапазон 1-5 и за пределы финального тира
-    - Обеспечиваем неубывающую последовательность
-    - Докладываем последовательность до количества тапов (по умолчанию 4)
-    """
-    normalized: List[int] = []
-    if final_tier < 1:
-        final_tier = 1
-    final_tier = min(final_tier, 5)
-
-    previous_value = 1
-    for raw_value in (tap_results or []):
-        try:
-            tap_tier = int(raw_value)
-        except (TypeError, ValueError):
-            continue
-
-        tap_tier = max(1, min(tap_tier, 5))
-        tap_tier = min(tap_tier, final_tier)
-        if normalized:
-            previous_value = normalized[-1]
-        if tap_tier < previous_value:
-            tap_tier = previous_value
-
-        normalized.append(tap_tier)
-        if len(normalized) >= MAX_TAP_NUMBER:
-            break
-
-    if not normalized:
-        normalized = [final_tier] * MAX_TAP_NUMBER
-    elif len(normalized) < MAX_TAP_NUMBER:
-        normalized.extend([final_tier] * (MAX_TAP_NUMBER - len(normalized)))
-
-    return normalized
-
-
 def get_case_reroll_attempts(extra_pass: str) -> int:
     return ULTRA_REROLL_ATTEMPTS if extra_pass == "ultra" else 0
 
@@ -426,8 +372,6 @@ async def _generate_single_case_rewards(
     if tier == 5:
         if "gems_chance" in tier_config:
             gems_chance = tier_config["gems_chance"]
-            if extra_pass == "ultra":
-                gems_chance = min(gems_chance * ULTRA_T5_GEMS_CHANCE_MULTIPLIER, 0.95)
             if random.random() < gems_chance:
                 gems_range = tier_config.get("gems_amount", (10, 50))
                 rewards["gems"] = random.randint(gems_range[0], gems_range[1])
@@ -472,101 +416,52 @@ async def process_case_opening(
     db,
     user_id: int,
     user_case_id: int,
-    tap_results: List[int]  # Результаты 4 тапов (тиры после каждого тапа)
 ) -> Dict[str, Any]:
     """
-    Обработать открытие кейса.
+    Подготовить pending opening для user_cases flow (без применения наград).
+
+    Для Т-кейсов с предустановленным тиром анимация тапов не используется.
+    Финальный тир берётся из `user_cases.tier` (зафиксирован при создании).
+    Награды генерируются и возвращаются в payload, но НЕ применяются здесь —
+    атомарное применение делает _apply_case_opening_rewards в
+    `_claim_user_case_opening` на сервере (после возможного Ultra-реролла).
 
     Args:
         db: Экземпляр Database
         user_id: ID пользователя
         user_case_id: ID кейса пользователя
-        tap_results: Список из 4 элементов - тиры после каждого тапа
 
     Returns:
-        Словарь с результатами открытия
+        Словарь с результатами открытия (rewards не применены):
+        {
+            "success": True,
+            "final_tier": int,
+            "rewards": {...},
+            "tap_results": [final_tier] * 4,
+            "extra_pass_bonus": {...},
+        }
+        либо {"success": False, "error": "case_not_found"} если кейса нет.
     """
-    # Получаем кейс пользователя
     user_case = await db.get_user_case(user_case_id, user_id)
     if not user_case:
         return {"success": False, "error": "case_not_found"}
 
-    default_case_id = await db.get_default_case_id() if hasattr(db, "get_default_case_id") else None
-    is_legacy_key_case = default_case_id is not None and user_case.get("case_id") == default_case_id
-
     final_tier = int(user_case.get("tier") or 1)
     final_tier = max(1, min(final_tier, 5))
-    tap_results = normalize_tap_results(tap_results, final_tier)
 
-    # Получаем карты пользователя для проверки дубликатов
     user_cards = await db.get_user_cards(user_id)
     user_card_ids = {card["id"] for card in user_cards}
 
     extra_pass = await get_user_case_pass_status(db, user_id)
-
-    # Генерируем награды
     rewards = await generate_case_rewards(db, final_tier, user_id, user_card_ids, extra_pass)
 
-    # Выдаем награды пользователю
-    result = {
+    return {
         "success": True,
         "final_tier": final_tier,
         "rewards": rewards,
-        "tap_results": tap_results,
+        "tap_results": [final_tier] * 4,
         "extra_pass_bonus": rewards.get("extra_pass_bonus"),
     }
-
-    applied = await _apply_case_opening_rewards(
-        db,
-        user_id=user_id,
-        user_case_id=user_case_id,
-        rewards=rewards,
-        decrement_legacy_key=is_legacy_key_case,
-    )
-    if not applied.get("success"):
-        return {"success": False, "error": applied.get("error", "case_rewards_failed")}
-
-    try:
-        await db.award_squad_cbrp(
-            user_id,
-            "case_open",
-            source_id=f"case_open:{user_case_id}",
-            metadata={"tier": final_tier},
-        )
-        for card_reward in rewards.get("cards", []):
-            card_id = card_reward.get("card_id")
-            rarity = str(card_reward.get("rarity") or "").lower()
-            await db.award_squad_cbrp(
-                user_id,
-                "new_card",
-                source_id=f"case_new_card:{user_case_id}:{card_id}",
-                metadata={
-                    "tier": final_tier,
-                    "card_id": card_id,
-                    "rarity": rarity,
-                },
-            )
-            if rarity in ("epic", "legendary"):
-                await db.award_squad_cbrp(
-                    user_id,
-                    "new_epic_plus_card_bonus",
-                    source_id=f"case_new_epic_plus:{user_case_id}:{card_id}",
-                    metadata={
-                        "tier": final_tier,
-                        "card_id": card_id,
-                        "rarity": rarity,
-                    },
-                )
-    except Exception:
-        import logging
-        logging.getLogger(__name__).warning(
-            "Failed to award squad CBRP for case opening: user_id=%s case_id=%s",
-            user_id,
-            user_case_id,
-            exc_info=True,
-        )
-
-    return result
 
 
 async def _apply_case_opening_rewards(
