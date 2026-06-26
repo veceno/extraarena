@@ -12515,6 +12515,132 @@ def create_web_app(
         _action_cache_set(match_id, user_id_int, client_action_id, payload_out)
         return web.json_response(payload_out)
 
+    async def battle_mana_draw_handler(request: web.Request) -> web.Response:
+        """Добор одной карты за ману (player-initiated «Добор карт»).
+
+        Стоимость растёт на +2 за каждый добор в рамках хода (2, 4, 6, ...)
+        и сбрасывается в начале каждого хода игрока. Payload: {match_id,
+        client_action_id}. См. core/engine.py ArenaEnvironment._handle_mana_draw
+        и docs/CYCLE_DRAW.md.
+        """
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid_json"}, status=400)
+
+        match_id = payload.get("match_id") or payload.get("id")
+        user_id_int = await require_user_id_from_payload(request, payload)
+        client_action_id = _client_action_id(payload)
+
+        logger = logging.getLogger(__name__)
+        logger.info("mana_draw_handler: match_id=%s user=%s", match_id, user_id_int)
+
+        if not match_id or user_id_int is None:
+            return web.json_response({"error": "invalid_parameters"}, status=400)
+        if not client_action_id:
+            return _client_action_id_required_response()
+        cached_action = _action_cache_get(match_id, user_id_int, client_action_id)
+        if cached_action:
+            return web.json_response(cached_action["payload"], status=cached_action["status"])
+
+        engine = _get_match_engine(match_id)
+        if not engine and str(match_id) == tutorial_match_id_for_user(int(user_id_int)):
+            await _ensure_onboarding_user(int(user_id_int))
+            onboarding_state = await db.get_onboarding_state(int(user_id_int))
+            if onboarding_state.get("status") not in (
+                ONBOARDING_STATUS_TUTORIAL_BATTLE,
+                ONBOARDING_STATUS_MENU_TOUR,
+                ONBOARDING_STATUS_COMPLETED,
+            ):
+                onboarding_state = await db.set_onboarding_state(
+                    int(user_id_int),
+                    status=ONBOARDING_STATUS_TUTORIAL_BATTLE,
+                    current_step=ONBOARDING_STATUS_TUTORIAL_BATTLE,
+                    tutorial_step=int(onboarding_state.get("tutorial_step") or 0),
+                    tutorial_match_id=str(match_id),
+                )
+            if onboarding_state.get("status") == ONBOARDING_STATUS_TUTORIAL_BATTLE:
+                engine = await _ensure_tutorial_engine_for_user(request, int(user_id_int), onboarding_state)
+        if not engine:
+            if _is_finished_match(match_id):
+                return web.json_response(_build_finished_match_action_payload(match_id))
+            return web.json_response({"error": "match_not_found"}, status=404)
+
+        _verify_participant(engine, user_id_int)
+        # Добор за ману недоступен в учебном бою — клиент не показывает «+»
+        # в isOnboardingTutorialState(), поэтому сюда ordinarily не доходит.
+        if _is_onboarding_tutorial_engine(engine):
+            return web.json_response({"error": "not_available_in_tutorial"}, status=403)
+        if hasattr(db, "get_onboarding_state"):
+            onboarding_state = await db.get_onboarding_state(int(user_id_int))
+            if not onboarding_state.get("completed"):
+                return web.json_response(_onboarding_gate_payload(onboarding_state), status=403)
+        if _is_finished_match(match_id, engine):
+            payload_out = _build_finished_match_action_payload(match_id, engine, user_id_int)
+            _action_cache_set(match_id, user_id_int, client_action_id, payload_out)
+            return web.json_response(payload_out)
+
+        lock = _get_match_lock(match_id)
+        async with lock:
+            try:
+                cached_action = _action_cache_get(match_id, user_id_int, client_action_id)
+                if cached_action:
+                    return web.json_response(cached_action["payload"], status=cached_action["status"])
+
+                finished_payload, finished_status = await _terminal_action_payload_if_needed(
+                    request.app,
+                    match_id,
+                    engine,
+                    user_id_int,
+                    reason="http_mana_draw_retry",
+                )
+                if finished_payload is not None:
+                    _action_cache_set(match_id, user_id_int, client_action_id, finished_payload, status=finished_status)
+                    return web.json_response(finished_payload, status=finished_status)
+
+                not_ready_response = _match_not_ready_response(match_id, engine, int(user_id_int))
+                if not_ready_response is not None:
+                    return not_ready_response
+
+                surrendered_response = _surrendered_action_response(engine, int(user_id_int))
+                if surrendered_response is not None:
+                    return surrendered_response
+
+                expired_response = await _auto_end_expired_turn_response(
+                    request.app,
+                    str(match_id),
+                    engine,
+                    int(user_id_int),
+                    client_action_id,
+                    lock_already_held=True,
+                )
+                if expired_response is not None:
+                    return expired_response
+
+                _mark_user_activity_for_match(str(match_id), int(user_id_int), engine)
+                try:
+                    engine.record_analytics_action(user_id_int, {"type": "mana_draw"})
+                except Exception:
+                    pass
+
+                result = engine.mana_draw(user_id_int)
+                if result.get("success") is False:
+                    state = engine.get_full_state(viewer_id=user_id_int)
+                    payload_out = {"result": result, "state": state, "error": result.get("error")}
+                    status = _action_failure_status(result)
+                    _action_cache_set(match_id, user_id_int, client_action_id, payload_out, status=status)
+                    return web.json_response(payload_out, status=status)
+
+                # Добор за ману никогда не заканчивает игру и не передаёт ход
+                # (turn не переключается, бот не ходит).
+                state = engine.get_full_state(viewer_id=user_id_int)
+                payload_out = {"result": result, "state": state, "sound_events": result.get("sound_events", [])}
+                _action_cache_set(match_id, user_id_int, client_action_id, payload_out)
+                return web.json_response(payload_out)
+            except Exception as exc:
+                logger.warning("Ошибка добора карт в матче %s: %s", match_id, exc, exc_info=True)
+                return web.json_response({"error": "mana_draw_failed"}, status=400)
+
     async def battle_preview_handler(request: web.Request) -> web.Response:
         """Предпросмотр урона для действия без его выполнения."""
         try:
@@ -12621,6 +12747,7 @@ def create_web_app(
     app.router.add_post("/api/battle/attack", battle_attack_handler)
     app.router.add_post("/api/battle/end-turn", battle_turn_end_handler)
     app.router.add_post("/api/battle/preview", battle_preview_handler)
+    app.router.add_post("/api/battle/mana-draw", battle_mana_draw_handler)
     # Старые роуты для обратной совместимости
     app.router.add_post("/api/battle/action/play_card", battle_play_card_handler)
     app.router.add_post("/api/battle/action/attack_target", battle_attack_handler)

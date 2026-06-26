@@ -70,3 +70,23 @@ class EndTurnAction(BaseAction):
     def validate(self, state: GameState) -> None:
         # Нет доп. проверок для завершения хода
         return
+
+
+@dataclass
+class ManaDrawAction(BaseAction):
+    """Добор карт за ману — player-initiated draw (см. docs/CYCLE_DRAW.md).
+
+    Стоимость растёт на +2 за каждый добор в рамках одного хода
+    (2, 4, 6, ...) и сбрасывается в начале каждого хода игрока. Сам добор
+    переиспользует draw_one_from_deck (No-FIFO weighted), поэтому карта,
+    уже лежащая в руке, физически не в колоде и не может быть добрана
+    повторно (пулы hand/deck дизъюнктны, дубликаты card_id в колоде
+    запрещены).
+    """
+
+    def to_dict(self) -> Dict:
+        return {"type": "mana_draw"}
+
+    def validate(self, state: GameState) -> None:
+        # Дополнительных инвариантов нет — все проверки в _handle_mana_draw.
+        return

@@ -10,7 +10,7 @@ import re
 from typing import Dict, List, Optional, Tuple
 from uuid import UUID
 
-from core.actions import AttackAction, BaseAction, EndTurnAction, PlayCardAction
+from core.actions import AttackAction, BaseAction, EndTurnAction, ManaDrawAction, PlayCardAction
 from core.effects import (
     apply_damage,
     apply_lifesteal,
@@ -48,6 +48,12 @@ STUCK_BONUS = 0.5          # бонус к весу за каждый пропу
 COST_BIAS = 0.3            # бонус к весу при нехватке cost-бакетa в руке
 CHEAP_COST_MAX = 2         # mana_cost <= CHEAP_COST_MAX -> cheap bucket
 EXPENSIVE_COST_MIN = 4     # mana_cost >= EXPENSIVE_COST_MIN -> expensive bucket
+
+# Базовая стоимость player-initiated «Добор карт» (см. ManaDrawAction /
+# _handle_mana_draw). Стоимость N-го добора в рамках одного хода:
+# MANA_DRAW_BASE * N (2, 4, 6, ...). Сбрасывается в начале каждого хода
+# игрока (mana_draw_count_this_turn -> 0 в _handle_end_turn).
+MANA_DRAW_BASE = 2
 
 
 def _compute_draw_weights(player: PlayerState) -> List[float]:
@@ -372,6 +378,13 @@ class ArenaEnvironment:
             # Добавляем разделитель хода после завершения
             turn_separator = ("system", f"——— Ход №{self.state.turn_number} ———")
 
+        elif isinstance(action, ManaDrawAction):
+            success, error = self._handle_mana_draw(player, opponent)
+            if not success:
+                return False, error
+            # Формируем описание для action_history
+            action_description = self._describe_mana_draw(player)
+
         else:
             return False, "unknown_action"
 
@@ -678,6 +691,9 @@ class ArenaEnvironment:
         # Восстанавливаем ману противнику
         opponent.max_mana = min(10, opponent.max_mana + self.mana_per_turn)
         opponent.mana = opponent.max_mana
+        # Стоимость «Добор карт» обнуляется в начале каждого хода игрока:
+        # opponent в этом фрейме — тот, чей ход сейчас начинается.
+        opponent.mana_draw_count_this_turn = 0
         pending_mana_drain = self.state.pending_mana_drain_by_player.pop(opponent.user_id, 0)
         if pending_mana_drain > 0:
             old_mana = opponent.mana
@@ -739,6 +755,58 @@ class ArenaEnvironment:
             source="end_turn",
             rng=self._rng,
         )
+
+    def _handle_mana_draw(
+        self, player: PlayerState, opponent: PlayerState
+    ) -> Tuple[bool, str]:
+        """Добор одной карты за ману — player-initiated draw.
+
+        Стоимость N-го добора в рамках одного хода: ``MANA_DRAW_BASE * N``
+        (2, 4, 6, ...). Сбрасывается в 0 в начале каждого хода игрока
+        (см. :py:meth:`_handle_end_turn`). Сам добор переиспользует
+        :py:func:`draw_one_from_deck` (No-FIFO weighted) с тем же
+        ``self._rng``, что и end-of-turn — это критично для детерминизма
+        симуляций и RL.
+
+        Ограничение «нельзя добрать карту, уже лежащую в руке» выполняется
+        автоматически: пулы hand/deck дизъюнктны, а дубликаты card_id в
+        колоде запрещены на этапе сборки колоды, поэтому карта из руки
+        физически отсутствует в deck и не может быть выбрана.
+        """
+        # Defense-in-depth: клиент не показывает «+» при полной руке, но
+        # стэйл legal_actions теоретически может дойти до сюда.
+        if len(player.hand) >= HAND_CAP:
+            return False, "hand_full"
+
+        cost = MANA_DRAW_BASE * (player.mana_draw_count_this_turn + 1)
+        if player.mana < cost:
+            return False, "insufficient_mana"
+
+        # Списываем ману ДО добора, чтобы при fatigue (невозможности добрать)
+        # вернуть её обратно.
+        player.mana -= cost
+        drawn_ok = draw_one_from_deck(
+            player,
+            overdraw_to_discard=self.classic_params.overdraw_to_discard,
+            source="mana_draw",
+            rng=self._rng,
+        )
+        if not drawn_ok:
+            # Колода и сброс пусты (fatigue) — добор невозможен, ману
+            # возвращаем, счётчик не растёт.
+            player.mana += cost
+            return False, "no_cards_to_draw"
+
+        player.mana_draw_count_this_turn += 1
+        logger.info(
+            "[MANA_DRAW] user_id=%s cost=%d mana=%d/%d count_this_turn=%d",
+            player.user_id,
+            cost,
+            player.mana,
+            player.max_mana,
+            player.mana_draw_count_this_turn,
+        )
+        return True, ""
 
     def _apply_start_turn_mode_effects(self) -> None:
         """Apply mode effects that trigger at the start of the active player's turn."""
@@ -1228,6 +1296,13 @@ class ArenaEnvironment:
 
         # 3. Всегда можно завершить ход
         actions.append(EndTurnAction())
+
+        # 4. Добор карт за ману — доступен, пока рука не заполнена и маны
+        # хватает на следующую ступень стоимости (MANA_DRAW_BASE * (count+1)).
+        if len(player.hand) < HAND_CAP:
+            mana_draw_cost = MANA_DRAW_BASE * (player.mana_draw_count_this_turn + 1)
+            if player.mana >= mana_draw_cost:
+                actions.append(ManaDrawAction())
 
         return actions
 
@@ -1735,3 +1810,8 @@ class ArenaEnvironment:
         """
         log_type = "player" if player.user_id == self.state.p1.user_id else "opponent"
         return (log_type, "завершил(а) ход")
+
+    def _describe_mana_draw(self, player: PlayerState) -> Tuple[str, str]:
+        """Формирует типизированное описание «Добор карт» для action_history."""
+        log_type = "player" if player.user_id == self.state.p1.user_id else "opponent"
+        return (log_type, "добрал(а) карту за ману")

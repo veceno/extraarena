@@ -6,8 +6,8 @@ import pytest
 from uuid import uuid4
 
 from core.state import CardInstance, CardType, GameState, GameStatus, PlayerState
-from core.engine import HAND_CAP, ArenaEnvironment, scale_card_by_level
-from core.actions import PlayCardAction, AttackAction, EndTurnAction, BaseAction
+from core.engine import HAND_CAP, MANA_DRAW_BASE, ArenaEnvironment, scale_card_by_level
+from core.actions import PlayCardAction, AttackAction, EndTurnAction, ManaDrawAction, BaseAction
 from core.effects import apply_damage, process_effects, requires_target
 from core.converter import _normalize_mechanic, card_from_db
 from battle_engine import BattleEngine
@@ -1082,6 +1082,158 @@ class TestCycleFixesC2M2H3:
         # Прямой slice на deque — TypeError, документируем контракт.
         with pytest.raises(TypeError):
             _ = state.action_history[-3:]
+
+
+class TestManaDraw:
+    """«Добор карт» — player-initiated draw за ману (см. docs/CYCLE_DRAW.md и
+    core/engine.py ArenaEnvironment._handle_mana_draw).
+
+    Стоимость N-го добора в рамках хода: MANA_DRAW_BASE * N (2, 4, 6, ...),
+    сбрасывается в начале каждого хода игрока. Сам добор переиспользует
+    draw_one_from_deck (No-FIFO weighted) с тем же self._rng.
+    """
+
+    @staticmethod
+    def _warrior(card_id: int, name: str = "W", cost: int = 1) -> CardInstance:
+        return CardInstance(
+            instance_id=uuid4(), card_id=card_id, name=name,
+            card_type=CardType.WARRIOR, hp=2, max_hp=2, attack=1,
+            mana_cost=cost, mechanics=[], is_ready=False,
+        )
+
+    def _env(self, *, mana=10, hand=None, deck=None, graveyard=None, seed=None):
+        from infrastructure.match_modes import ClassicParams
+
+        state = create_minimal_game_state()
+        env = ArenaEnvironment(
+            state,
+            classic_params=ClassicParams(overdraw_to_discard=False),
+            rng=(__import__("random").Random(seed) if seed is not None else None),
+        )
+        state.p1.mana = mana
+        state.p1.max_mana = max(mana, 10)
+        state.p1.hand = list(hand or [])
+        state.p1.deck = list(deck or [])
+        state.p1.graveyard = list(graveyard or [])
+        state.p1.mana_draw_count_this_turn = 0
+        return env, state
+
+    def test_cost_sequence_2_4_6_8_same_turn(self):
+        env, state = self._env(
+            mana=20, hand=[], deck=[self._warrior(i, f"W{i}") for i in range(10, 18)],
+        )
+        # 4 добора подряд в один ход: 2, 4, 6, 8 — итого 20 маны.
+        expected_costs = [2, 4, 6, 8]
+        prev_mana = 20
+        for n, cost in enumerate(expected_costs, start=1):
+            ok, err = env.step(1, ManaDrawAction())
+            assert ok, err
+            assert state.p1.mana == prev_mana - cost
+            assert state.p1.mana_draw_count_this_turn == n
+            assert len(state.p1.hand) == n
+            prev_mana -= cost
+        assert state.p1.mana == 0
+
+    def test_counter_resets_after_full_turn_cycle(self):
+        # 2 добора → end_turn (p1) → end_turn (p2) → снова ход p1, стоимость 2.
+        env, state = self._env(
+            mana=10, hand=[], deck=[self._warrior(i, f"W{i}") for i in range(10, 20)],
+        )
+        ok, _ = env.step(1, ManaDrawAction()); assert ok
+        ok, _ = env.step(1, ManaDrawAction()); assert ok
+        assert state.p1.mana_draw_count_this_turn == 2
+        assert state.p1.mana == 4  # 10 - 2 - 4
+
+        ok, _ = env.step(1, EndTurnAction()); assert ok          # ход -> p2
+        assert state.current_turn_owner_id == state.p2.user_id
+        ok, _ = env.step(state.p2.user_id, EndTurnAction()); assert ok  # ход -> p1
+        assert state.current_turn_owner_id == state.p1.user_id
+        # Счётчик p1 сброшен в начале его хода.
+        assert state.p1.mana_draw_count_this_turn == 0
+
+        # Первый добор нового хода снова стоит 2.
+        mana_before = state.p1.mana
+        ok, err = env.step(1, ManaDrawAction())
+        assert ok, err
+        assert state.p1.mana == mana_before - 2
+        assert state.p1.mana_draw_count_this_turn == 1
+
+    def test_insufficient_mana_does_not_change_state(self):
+        env, state = self._env(mana=1, hand=[], deck=[self._warrior(11)])
+        ok, err = env.step(1, ManaDrawAction())
+        assert not ok
+        assert err == "insufficient_mana"
+        assert state.p1.mana == 1            # мана не списана
+        assert state.p1.mana_draw_count_this_turn == 0
+        assert len(state.p1.hand) == 0      # карта не добрана
+        assert len(state.p1.deck) == 1
+
+    def test_hand_full_blocks_draw(self):
+        env, state = self._env(
+            mana=10, hand=[self._warrior(i) for i in range(4)], deck=[self._warrior(99)],
+        )
+        assert len(state.p1.hand) == HAND_CAP
+        ok, err = env.step(1, ManaDrawAction())
+        assert not ok
+        assert err == "hand_full"
+        assert state.p1.mana == 10          # мана не списана
+        assert len(state.p1.hand) == HAND_CAP
+
+    def test_no_cards_to_draw_refunds_mana(self):
+        # Колода и сброс пусты — fatigue, ману возвращаем.
+        env, state = self._env(mana=10, hand=[], deck=[], graveyard=[])
+        ok, err = env.step(1, ManaDrawAction())
+        assert not ok
+        assert err == "no_cards_to_draw"
+        assert state.p1.mana == 10          # refund
+        assert state.p1.mana_draw_count_this_turn == 0
+
+    def test_drawn_card_never_duplicates_hand(self):
+        # Пулы hand/deck дизъюнктны, дубликаты card_id в колоде запрещены —
+        # поэтому добранная карта никогда не совпадает по card_id с рукой.
+        in_hand = self._warrior(500, "InHand")
+        in_deck = self._warrior(501, "InDeck")
+        env, state = self._env(mana=10, hand=[in_hand], deck=[in_deck])
+        ok, err = env.step(1, ManaDrawAction())
+        assert ok, err
+        assert len(state.p1.hand) == 2
+        drawn = [c for c in state.p1.hand if c.card_id != 500][0]
+        assert drawn.card_id == 501
+        assert all(c.card_id != drawn.card_id or c is drawn for c in state.p1.hand)
+
+    def test_legal_actions_include_mana_draw_when_affordable_and_hand_not_full(self):
+        env, state = self._env(mana=5, hand=[self._warrior(1)], deck=[self._warrior(2)])
+        types = [a.to_dict()["type"] for a in env.get_legal_actions(1)]
+        assert "mana_draw" in types  # 5 >= 2 и hand(1) < 4
+
+    def test_legal_actions_exclude_mana_draw_when_hand_full(self):
+        env, state = self._env(
+            mana=10, hand=[self._warrior(i) for i in range(4)], deck=[self._warrior(99)],
+        )
+        types = [a.to_dict()["type"] for a in env.get_legal_actions(1)]
+        assert "mana_draw" not in types
+
+    def test_legal_actions_exclude_mana_draw_when_cannot_afford(self):
+        env, state = self._env(mana=1, hand=[], deck=[self._warrior(2)])
+        types = [a.to_dict()["type"] for a in env.get_legal_actions(1)]
+        assert "mana_draw" not in types  # 1 < 2
+
+    def test_determinism_same_seed_same_drawn_card(self):
+        import random as rand_mod
+
+        deck = [self._warrior(i, f"W{i}") for i in range(10, 20)]
+        env1, st1 = self._env(mana=10, hand=[], deck=list(deck), seed=42)
+        env2, st2 = self._env(mana=10, hand=[], deck=list(deck), seed=42)
+        ok1, _ = env1.step(1, ManaDrawAction()); assert ok1
+        ok2, _ = env2.step(1, ManaDrawAction()); assert ok2
+        assert st1.p1.hand[0].card_id == st2.p1.hand[0].card_id
+
+    def test_not_your_turn_rejected(self):
+        env, state = self._env(mana=10, hand=[], deck=[self._warrior(2)])
+        # current_turn_owner_id == 1, поэтому запрос от p2 должен провалиться.
+        ok, err = env.step(state.p2.user_id, ManaDrawAction())
+        assert not ok
+        assert err == "not_your_turn"
 
 
 class TestCoreRegressionHardening:

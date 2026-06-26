@@ -95,6 +95,7 @@ const ARENA_SFX = {
   cardFrozen: 'arena-sfx-card-frozen',
   cardHeal: 'arena-sfx-card-heal',
   cardSelected: 'arena-sfx-card-selected',
+  manaDraw: 'arena-sfx-mana-draw',
   heroDamage: 'arena-sfx-hero-damage',
   heroDeath: 'arena-sfx-hero-death',
   nextMove: 'arena-sfx-next-move',
@@ -2258,6 +2259,9 @@ const ACTION_ERROR_MESSAGES = {
   board_full: 'поле уже заполнено',
   insufficient_mana: 'недостаточно маны',
   mana_insufficient: 'недостаточно маны',
+  hand_full: 'рука уже заполнена — добор невозможен',
+  no_cards_to_draw: 'нечего добрать — колода и сброс пусты',
+  mana_draw_failed: 'не удалось добрать карту',
   target_required: 'нужна цель',
   consume_target_not_found: 'цель для поглощения не найдена',
   attacker_not_found: 'атакующий не найден',
@@ -4342,23 +4346,77 @@ function renderHand(handCards) {
     return;
   }
   
+  // Нормализуем: даже при пустой руке добор-плитка должна рендериться,
+  // поэтому раннего возврата здесь быть не должно.
+  handCards = Array.isArray(handCards) ? handCards : [];
+
   // Очищаем руку
   handZone.innerHTML = '';
-  
-  console.log('[ARENA] Рендеринг руки:', handCards);
-  
-  if (!handCards || handCards.length === 0) {
+
+  if (handCards.length === 0) {
     console.log('[ARENA] Рука пуста');
-    return;
+  } else {
+    console.log('[ARENA] Рендеринг руки:', handCards);
   }
-  
+
   // Лимит вывода: только первые 5 карт
   const cardsToRender = handCards.slice(0, 5);
-  
+
   cardsToRender.forEach((card, index) => {
     const cardEl = createHandCardElement(card, index);
     handZone.appendChild(cardEl);
   });
+
+  // Feature B: «Добор карт» — золотая плитка-кнопка в конце руки.
+  // Появляется только в свой ход и пока рука не заполнена (HAND_CAP=4) —
+  // ВКЛЮЧАЯ пустую руку (0 карт). Стоимость: 2 * (mana_draw_count_this_turn + 1)
+  // — 2, 4, 6, ...; каждый следующий добор в рамках хода дороже на +2, в начале
+  // хода счётчик сбрасывается. При нехватке маны плитка затемнена
+  // (информативно), тап не срабатывает.
+  if (!isOnboardingTutorialState() && currentState?.is_my_turn && handCards.length < 4) {
+    const playerState = currentState.player || {};
+    const drawCount = playerState.mana_draw_count_this_turn || 0;
+    const cost = 2 * (drawCount + 1);
+    const canAfford = (playerState.mana || 0) >= cost;
+
+    const tile = document.createElement('div');
+    tile.className = 'hand-card mana-draw-tile' + (canAfford ? '' : ' mana-draw-disabled');
+    tile.dataset.manaDraw = '1';
+    tile.title = canAfford ? `Добрать карту за ${cost} маны` : `Нужно ${cost} маны для добора`;
+
+    // Толстый белый «+» по центру (SVG). Под белыми линиями — более широкие
+    // тёмно-зелёные (#1c5a32), та же обводка, что у текста «мана:» снизу.
+    // Тень blur 25px / opacity 50% — в CSS (.mana-draw-plus svg).
+    const plus = document.createElement('div');
+    plus.className = 'mana-draw-plus';
+    plus.innerHTML =
+      '<svg viewBox="0 0 100 100" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">' +
+      '<line x1="50" y1="20" x2="50" y2="80" stroke="#1c5a32" stroke-width="20" stroke-linecap="round"/>' +
+      '<line x1="20" y1="50" x2="80" y2="50" stroke="#1c5a32" stroke-width="20" stroke-linecap="round"/>' +
+      '<line x1="50" y1="20" x2="50" y2="80" stroke="#fff" stroke-width="16" stroke-linecap="round"/>' +
+      '<line x1="20" y1="50" x2="80" y2="50" stroke="#fff" stroke-width="16" stroke-linecap="round"/>' +
+      '</svg>';
+
+    // Стоимость маны — текст снизу (по аналогии с прошлым вариантом UI),
+    // чтобы растущая цена добора (2 → 4 → 6 ...) всегда была видна.
+    const manaLabel = document.createElement('div');
+    manaLabel.className = 'mana-draw-mana';
+    manaLabel.textContent = `мана: ${cost}`;
+
+    tile.appendChild(plus);
+    tile.appendChild(manaLabel);
+
+    tile.addEventListener('click', (e) => {
+      e.stopPropagation(); // не давать всплывать к обработчику отмены выбора
+      if (!canAfford) {
+        arenaHaptic('warning', { key: 'mana-draw-no-mana', minInterval: 180 });
+        return;
+      }
+      manaDraw();
+    });
+
+    handZone.appendChild(tile);
+  }
 }
 
 function createHandCardElement(card, index) {
@@ -5952,6 +6010,64 @@ async function endTurn() {
     arenaHaptic('error', { key: 'end-turn-error', minInterval: 220 });
     if (!handleOnboardingActionError(error)) {
       alert('Не удалось завершить ход: ' + error.message);
+    }
+  }
+}
+
+// Feature B: «Добор карт» — player-initiated draw за ману. Стоимость
+// растёт на +2 за каждый добор в рамках хода (2, 4, 6, ...) и
+// сбрасывается в начале каждого хода. См. /api/battle/mana-draw и
+// core/engine.py ArenaEnvironment._handle_mana_draw.
+async function manaDraw() {
+  if (isArenaWaitingForPlayers(currentState)) {
+    console.warn('[ARENA] Бой еще синхронизируется');
+    return;
+  }
+  if (!currentState || !currentState.is_my_turn) {
+    console.warn('[ARENA] Не ваш ход — добор невозможен');
+    return;
+  }
+
+  // Отменяем любой активный выбор (TARGETING/ATTACK), чтобы добор не
+  // конфликтовал с прицеливанием.
+  if (interactionMode.type !== 'NONE' || selectedAttacker) {
+    resetInteractionMode();
+  }
+
+  try {
+    console.log('[ARENA] Добор карт за ману');
+    arenaHaptic('selection', { key: 'mana-draw', minInterval: 120 });
+
+    const response = await fetch(buildArenaAuthUrl('/api/battle/mana-draw'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        match_id: matchId,
+        client_action_id: makeClientActionId('mana_draw')
+      })
+    });
+
+    if (!response.ok) {
+      throw await parseActionError(response, 'Не удалось добрать карту');
+    }
+
+    const result = await response.json();
+    console.log('[ARENA] Добор выполнен:', result);
+
+    if (result.state) {
+      arenaHaptic('medium', { key: 'mana-draw-ok', minInterval: 140 });
+      playArenaSfx('manaDraw', { volume: 0.72 });
+      currentState = result.state;
+      renderBattleState(result.state);
+      renderBoard('player', (currentState.player || currentState).board || []);
+      renderBoard('opponent', (currentState.opponent || currentState).board || []);
+      handleOnboardingActionPayload(result);
+    }
+  } catch (error) {
+    console.error('[ARENA] Ошибка добора карт:', error);
+    arenaHaptic('error', { key: 'mana-draw-error', minInterval: 220 });
+    if (!handleOnboardingActionError(error)) {
+      alert('Не удалось добрать карту: ' + error.message);
     }
   }
 }
@@ -7733,6 +7849,43 @@ function bindUIHandlers() {
         e.stopPropagation();
         handleGlobalTargetClick(null, true, e);
       }
+    });
+  }
+
+  // Feature A: отмена выбора карты / атаки тапом по пустой области зоны руки.
+  // Работает для любого активного режима (TARGETING / ATTACK) И для выбранной
+  // обычной карты (selectedCard, interactionMode === NONE — у таких карт нет
+  // режима цели, только подсветка слотов) независимо от того, где находится
+  // выбранная карта (рука/поле/ещё где-то). Тапы по самим картам (.hand-card)
+  // пропускаем — их обрабатывает handleCardClick; плитка добора помечена
+  // .hand-card, но имеет свой stopPropagation в клик-хендлере, так что сюда не
+  // всплывает.
+  const handZone = document.getElementById('player-hand-zone');
+  if (handZone) {
+    handZone.addEventListener('click', (e) => {
+      if (interactionMode.type === 'NONE' && !selectedAttacker && !selectedCard) return; // нечего отменять
+      if (e.target.closest('.hand-card')) return;                        // тап по карте — не отмена
+      resetInteractionMode();
+    });
+  }
+
+  // Feature A (расширение): отмена выбора тапом по пустой области поля игрока.
+  // «Пустая область» = зазоры/внешние поля контейнера И пустые слоты без существа,
+  // НЕ отмеченные как .droppable (.droppable-слоты — это места розыгрыша обычной
+  // карты, их тап проигрывает карту через slot.onclick). Тап по существу уходит в
+  // его собственный хендлер. Так отмена работает и для TARGETING/ATTACK (где
+  // пустые слоты не droppable — тап по ним отменяет), и для обычной карты (тап по
+  // droppable-слоту = розыгрыш, тап по зазору/пустому не-droppable слоту = отмена).
+  // clearAllCardSelections (из resetInteractionMode) снимает .droppable и
+  // slot.onclick — поэтому класс всегда свежий при каждом выборе.
+  const boardZone = document.getElementById('player-board-zone');
+  if (boardZone) {
+    boardZone.addEventListener('click', (e) => {
+      if (interactionMode.type === 'NONE' && !selectedAttacker && !selectedCard) return; // нечего отменять
+      if (e.target.closest('.board-unit-card')) return;              // существо — своя логика
+      const slot = e.target.closest('.board-slot');
+      if (slot && slot.classList.contains('droppable')) return;      // место розыгрыша — играет карта
+      resetInteractionMode();
     });
   }
   

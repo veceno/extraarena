@@ -138,6 +138,10 @@ class PlayerState:
     hero: CardInstance = field(default_factory=CardInstance)
     mana: int = 0
     max_mana: int = 0
+    # Сколько карт игрок добрал за ману в текущем своём ходу. Стоимость
+    # добора: MANA_DRAW_BASE * (count + 1) — 2, 4, 6, ... Сбрасывается в 0
+    # в начале каждого хода игрока (см. ArenaEnvironment._handle_end_turn).
+    mana_draw_count_this_turn: int = 0
     hand: List[CardInstance] = field(default_factory=list)
     board: List[CardInstance] = field(default_factory=list)
     deck: List[CardInstance] = field(default_factory=list)

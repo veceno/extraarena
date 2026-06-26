@@ -9,7 +9,7 @@ from uuid import UUID
 import logging
 import time
 
-from core.actions import AttackAction, BaseAction, EndTurnAction, PlayCardAction
+from core.actions import AttackAction, BaseAction, EndTurnAction, ManaDrawAction, PlayCardAction
 from core.classic_setup import create_classic_game_state
 from core.engine import ArenaEnvironment
 from core.effects import get_taunt_targets, has_taunt
@@ -864,10 +864,21 @@ class BattleEngine:
         """Завершение хода."""
         if not self._arena:
             return {"action": "end_turn", "error": "arena_not_initialized"}
-        
+
         action = EndTurnAction()
         result = self.execute_action(user_id, action)
         result["action"] = "end_turn"
+        return result
+
+    def mana_draw(self, user_id: int) -> Dict[str, Any]:
+        """Добор одной карты за ману (player-initiated). См. core/engine.py
+        ArenaEnvironment._handle_mana_draw и docs/CYCLE_DRAW.md."""
+        if not self._arena:
+            return {"action": "mana_draw", "error": "arena_not_initialized"}
+
+        action = ManaDrawAction()
+        result = self.execute_action(user_id, action)
+        result["action"] = "mana_draw"
         return result
 
     def _talkie_extra_pass_for_user(self, user_id: int) -> str:
@@ -1176,6 +1187,11 @@ class BattleEngine:
             "replacement_status": getattr(ps.replacement_status, "value", str(ps.replacement_status)),
             "mana": ps.mana,
             "max_mana": ps.max_mana,
+            # Счётчик доборов за ману в текущем ходу — нужен клиенту, чтобы
+            # считать следующую стоимость (MANA_DRAW_BASE*(count+1)). Только
+            # для своего состояния (show_hand=True), чтобы не утекало инфо об
+            # оппоненте.
+            "mana_draw_count_this_turn": ps.mana_draw_count_this_turn if show_hand else 0,
             "trophies": ps.trophies,
             "hero": self._serialize_card(ps.hero),
             "hand": hand_data,
