@@ -11,6 +11,8 @@
 
 Design spec **written + committed + self-reviewed**, **awaiting user review + open-question closure**, then → `superpowers:writing-plans` to produce the implementation plan. The user is currently finishing **new mechanics** and **the RLHF env**; nothing trains until those land and a few prerequisites are verified.
 
+> **Project memory (cross-session recall):** this work is also recorded as a memory entry — `~/.claude/projects/-Users-laveqox-Documents-ExtraArenaRaS/memory/extra-lr-v5-pipeline.md` — indexed under the “RLHF training environment” section of that project’s `MEMORY.md`. Future sessions auto-load `MEMORY.md`, so the V5-Max pointer surfaces on resume even before this handoff is opened.
+
 ---
 
 ## 2. Decision ledger (frozen — do not re-derive)
