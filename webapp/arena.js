@@ -5417,25 +5417,33 @@ function highlightAttackTargets(attackerId) {
     }
   });
   
-  // Подсвечиваем существ
+  // Подсвечиваем существ + затемняем недоступные (taunt / bypass_taunt)
   opponentUnits.forEach(unit => {
     const instanceId = unit.dataset.instanceId;
     if (validTargets.has(instanceId)) {
       unit.classList.add('attack-target', 'targetable-enemy', 'status-attack-target');
-      
+      unit.classList.remove('attack-target-disabled');
+
       // Предпросмотр
       unit.onmouseenter = () => showDamagePreview(unit, false, targets.find(a => a.target_id === instanceId));
       unit.onmouseleave = () => hideDamagePreview(unit, false);
+    } else {
+      unit.classList.add('attack-target-disabled');
     }
   });
-  
-  // Подсвечиваем героя
-  if (heroTargetable && opponentPanel) {
-    opponentPanel.classList.add('attack-target-hero', 'targetable-enemy');
 
-    // Предпросмотр
-    opponentPanel.onmouseenter = () => showDamagePreview(opponentPanel, true, targets.find(a => a.target_is_hero));
-    opponentPanel.onmouseleave = () => hideDamagePreview(opponentPanel, true);
+  // Подсвечиваем героя (или затемняем, если герой не таргетабелен)
+  if (opponentPanel) {
+    if (heroTargetable) {
+      opponentPanel.classList.add('attack-target-hero', 'targetable-enemy');
+      opponentPanel.classList.remove('attack-target-disabled-hero');
+
+      // Предпросмотр
+      opponentPanel.onmouseenter = () => showDamagePreview(opponentPanel, true, targets.find(a => a.target_is_hero));
+      opponentPanel.onmouseleave = () => hideDamagePreview(opponentPanel, true);
+    } else {
+      opponentPanel.classList.add('attack-target-disabled-hero');
+    }
   }
 }
 
@@ -5447,14 +5455,14 @@ function clearAttackTargets() {
   const opponentPanel = document.querySelector('.opponent-panel-root');
   
   opponentUnits.forEach(unit => {
-    unit.classList.remove('attack-target', 'targetable-enemy', 'status-attack-target');
+    unit.classList.remove('attack-target', 'targetable-enemy', 'status-attack-target', 'attack-target-disabled');
     unit.onmouseenter = null;
     unit.onmouseleave = null;
     hideDamagePreview(unit, false);
   });
-  
+
   if (opponentPanel) {
-    opponentPanel.classList.remove('attack-target-hero', 'targetable-enemy');
+    opponentPanel.classList.remove('attack-target-hero', 'targetable-enemy', 'attack-target-disabled-hero');
     opponentPanel.onmouseenter = null;
     opponentPanel.onmouseleave = null;
     hideDamagePreview(opponentPanel, true);
