@@ -115,7 +115,7 @@ const ARENA_SFX = {
   onboardingVictory: 'arena-sfx-onboarding-victory',
   onboardingBlocked: 'arena-sfx-onboarding-blocked'
 };
-const CARD_SFX_CONFIG_URL = '/assets/audio/characters/card_sfx_config.json';
+const CARD_SFX_CONFIG_URL = '/DesignAssets/Sounds/arena/card_sfx_config.json';
 const CARD_SFX_CONFIG_DEFAULT = {
   version: 1,
   cards: {
@@ -151,17 +151,17 @@ const CARD_SFX_CONFIG_DEFAULT = {
       name: 'П.Е.К.К.А.',
       sounds: {
         deploy: {
-          src: '/assets/audio/characters/018_pekka/pekka_deploy.mp3',
+          src: '/DesignAssets/Sounds/arena/characters/018_pekka/pekka_deploy.mp3',
           basePolicy: 'replace',
           volume: 0.82
         },
         attack: {
-          src: '/assets/audio/characters/018_pekka/pekka_hit.mp3',
+          src: '/DesignAssets/Sounds/arena/characters/018_pekka/pekka_hit.mp3',
           basePolicy: 'replace',
           volume: 0.82
         },
         damage: {
-          src: '/assets/audio/characters/018_pekka/pekka_hit.mp3',
+          src: '/DesignAssets/Sounds/arena/characters/018_pekka/pekka_hit.mp3',
           basePolicy: 'replace',
           volume: 0.82
         }
@@ -282,17 +282,17 @@ const CARD_SFX_CONFIG_DEFAULT = {
       name: 'Скелет',
       sounds: {
         deploy: {
-          src: '/assets/audio/characters/027_skeleton/skeleton_ambient.mp3',
+          src: '/DesignAssets/Sounds/arena/characters/027_skeleton/skeleton_ambient.mp3',
           basePolicy: 'replace',
           volume: 0.82
         },
         damage: {
-          src: '/assets/audio/characters/027_skeleton/skeleton_hurt.mp3',
+          src: '/DesignAssets/Sounds/arena/characters/027_skeleton/skeleton_hurt.mp3',
           basePolicy: 'replace',
           volume: 0.82
         },
         death: {
-          src: '/assets/audio/characters/027_skeleton/skeleton_death.mp3',
+          src: '/DesignAssets/Sounds/arena/characters/027_skeleton/skeleton_death.mp3',
           basePolicy: 'replace',
           volume: 0.82
         }
@@ -310,12 +310,12 @@ const CARD_SFX_CONFIG_DEFAULT = {
       name: 'Штурмовик',
       sounds: {
         attack: {
-          src: '/assets/audio/characters/029_stormtrooper/stormtrooper_e11_blaster.mp3',
+          src: '/DesignAssets/Sounds/arena/characters/029_stormtrooper/stormtrooper_e11_blaster.mp3',
           basePolicy: 'replace',
           volume: 0.82
         },
         death: {
-          src: '/assets/audio/characters/029_stormtrooper/stormtrooper_death.mp3',
+          src: '/DesignAssets/Sounds/arena/characters/029_stormtrooper/stormtrooper_death.mp3',
           basePolicy: 'replace',
           volume: 0.82
         }
@@ -357,17 +357,17 @@ const CARD_SFX_CONFIG_DEFAULT = {
       name: 'Крипер',
       sounds: {
         deploy: {
-          src: '/assets/audio/characters/creeper/creeper_spawn_hiss.mp3',
+          src: '/DesignAssets/Sounds/arena/characters/creeper/creeper_spawn_hiss.mp3',
           basePolicy: 'replace',
           volume: 0.82
         },
         death: {
-          src: '/assets/audio/characters/creeper/creeper_death_explosion.mp3',
+          src: '/DesignAssets/Sounds/arena/characters/creeper/creeper_death_explosion.mp3',
           basePolicy: 'replace',
           volume: 0.82
         },
         'mechanic:deathrattle_aoe_damage_2': {
-          src: '/assets/audio/characters/creeper/creeper_death_explosion.mp3',
+          src: '/DesignAssets/Sounds/arena/characters/creeper/creeper_death_explosion.mp3',
           basePolicy: 'replace',
           volume: 0.82
         }
@@ -859,7 +859,11 @@ function isValidArenaCardSfxConfig(config) {
 
 function isValidArenaCardSoundConfig(sound) {
   if (!isPlainArenaFeedbackObject(sound)) return false;
-  if (typeof sound.src !== 'string' || !sound.src.startsWith('/assets/audio/characters/')) return false;
+  if (typeof sound.src !== 'string') return false;
+  if (
+    !sound.src.startsWith('/assets/audio/characters/') &&
+    !sound.src.startsWith('/DesignAssets/Sounds/arena/characters/')
+  ) return false;
   if (sound.basePolicy != null && sound.basePolicy !== 'replace') return false;
   if (sound.volume != null) {
     const volume = Number(sound.volume);
