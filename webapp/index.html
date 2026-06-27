@@ -3337,7 +3337,7 @@ window.loadMobileSquadsBootstrap = async function(options = {}) {
 };
 </script>
 
-<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=0389b258a488">
+<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=b500f6f3f4de">
 // ═══════════════════════════════════════════
 // DESIGN TOKENS
 // ═══════════════════════════════════════════
@@ -8552,10 +8552,20 @@ const cardUpgradeCoins = (card, level = card?.level || 1) =>
   cardIsMaxLevel(card, level) ? 0 : calcUpgradeCoins(card?.rarity, cardUpgradeCostLevel(card, level));
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Версия URL карточных картинок. Раньше сервер отдавал preview-ответам
+// `Cache-Control: public, max-age=31536000, immutable` — браузер годами держал
+// закэшированные заглушки даже после регенерации превью на диске, и детальный
+// вид (другой URL без variant) при этом грузил свежий арт. Этот версионный
+// суффикс меняет URL → заставляет браузер запросить свежий файл (одноразовый
+// cache-buster для сброса уже закэшированных immutable-ответов). Бампать только
+// для экстренного сброса; обычная регенерация арта теперь подхватывается
+// серверной revalidation (ETag/Last-Modified от FileResponse, max-age=3600).
+const CARD_IMG_VERSION = 2;
+
 const cardImageUrl = (cardOrId, {variant = 'preview'} = {}) => {
   const id = typeof cardOrId === 'object' ? cardOrId?.id : cardOrId;
   const suffix = variant && variant !== 'full' ? `&variant=${encodeURIComponent(variant)}` : '';
-  return `/api/cards/image?card_id=${encodeURIComponent(id)}${suffix}`;
+  return `/api/cards/image?card_id=${encodeURIComponent(id)}${suffix}&v=${CARD_IMG_VERSION}`;
 };
 const cardPreviewUrl = (cardOrId) => cardImageUrl(cardOrId, {variant:'preview'});
 const cardFullUrl = (cardOrId) => cardImageUrl(cardOrId, {variant:'full'});
@@ -18907,6 +18917,6 @@ const LeagueInfoSheet = ({onClose, onOpenGloryPath, profile}) => {
 
 ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
 </script>
-<script src="index.compiled.js?v=0389b258a488"></script>
+<script src="index.compiled.js?v=b500f6f3f4de"></script>
 </body>
 </html>

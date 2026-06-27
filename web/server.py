@@ -18429,8 +18429,13 @@ def create_web_app(
             return web.json_response({"error": "card_image_not_found"}, status=404)
 
         try:
+            # Превью НЕ immutable: файлы регенерируются при обновлении арта,
+            # а `immutable` годами держал в браузере закэшированные заглушки.
+            # `must-revalidate` + ETag/Last-Modified (автоматически от FileResponse)
+            # → через max-age браузер делает условный запрос и получает 304,
+            # либо свежий файл при изменении mtime. Full-арт ревалидируется раз в сутки.
             cache_control = (
-                "public, max-age=31536000, immutable"
+                "public, max-age=3600, must-revalidate"
                 if asset_variant == "preview" and card_image_path.parent == card_assets.CARD_PREVIEW_ASSETS_DIR
                 else "public, max-age=86400"
             )
