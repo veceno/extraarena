@@ -136,6 +136,11 @@ def scale_card_by_level(card: CardInstance, level: int) -> CardInstance:
                 if match:
                     scaled_mechanics.append(f"regen_{int(match.group(1)) + bonus_tiers}")
                     continue
+                # crime_and_punishment_N — урон кары герою врага растёт (+1 каждые 3 уровня)
+                match = re.match(r"crime_and_punishment_(\d+)", mechanic)
+                if match:
+                    scaled_mechanics.append(f"crime_and_punishment_{int(match.group(1)) + bonus_tiers}")
+                    continue
                 scaled_mechanics.append(mechanic)
             card.mechanics = scaled_mechanics
 
@@ -162,6 +167,19 @@ def _scale_warrior_mechanics(mechanics: List[str], level: int) -> List[str]:
             prefix, base_atk, base_hp = buff_match.groups()
             bonus = (level - 1) // 2
             scaled.append(f"{prefix}{int(base_atk) + bonus}_{int(base_hp) + bonus}")
+            continue
+
+        # rebirth_N — HP при возрождении растёт (+1 каждые 2 уровня)
+        rebirth_match = re.match(r"rebirth_(\d+)$", mechanic)
+        if rebirth_match:
+            scaled.append(f"rebirth_{int(rebirth_match.group(1)) + ((level - 1) // 2)}")
+            continue
+
+        # target_ally_max_hp_plus[_universal]_N — бафф max_hp растёт (+1 каждые 2 уровня)
+        maxhp_match = re.match(r"(target_ally_max_hp_plus(?:_universal)?)_(\d+)$", mechanic)
+        if maxhp_match:
+            prefix, base_val = maxhp_match.group(1), int(maxhp_match.group(2))
+            scaled.append(f"{prefix}_{base_val + ((level - 1) // 2)}")
             continue
 
         for passive_prefix in ["regen_", "armor_", "aura_atk_", "reflect_"]:

@@ -205,7 +205,7 @@ def test_arena_shell_cache_busts_battle_assets_for_telegram_webapp():
     markup = ARENA_HTML.read_text(encoding="utf-8")
     server = SERVER.read_text(encoding="utf-8")
 
-    version = "arena-onboarding-20260622-card-info-1"
+    version = "arena-newcards2606-20260627-sfx-1"
     assert f'content="{version}"' in markup
     assert f"safe-area.js?v={version}" in markup
     assert f"arena-styles.css?v={version}" in markup

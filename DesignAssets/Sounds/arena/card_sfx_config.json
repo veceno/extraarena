@@ -332,6 +332,85 @@
           "text": "Выбери цель для исцеления"
         }
       }
+    },
+    "47": {
+      "name": "Солдатик",
+      "sounds": {
+        "deploy": {
+          "src": "/DesignAssets/Sounds/arena/characters/047_soldier/soldier_deploy.mp3",
+          "basePolicy": "replace",
+          "volume": 0.82
+        }
+      },
+      "visuals": {
+        "deploy": {
+          "type": "backgroundFlash",
+          "color": "#f59e0b",
+          "centerColor": "#fde047",
+          "durationMs": 3200,
+          "intensity": 0.6
+        }
+      }
+    },
+    "48": {
+      "name": "Соул Гудман",
+      "sounds": {
+        "deploy": {
+          "src": "/DesignAssets/Sounds/arena/characters/048_saul_goodman/saul_goodman_deploy.mp3",
+          "basePolicy": "replace",
+          "volume": 0.82
+        }
+      },
+      "visuals": {
+        "deploy": {
+          "type": "backgroundFlash",
+          "color": "#e2e8f0",
+          "centerColor": "#ffffff",
+          "durationMs": 3200,
+          "intensity": 0.6
+        }
+      }
+    },
+    "49": {
+      "name": "Достоевский",
+      "visuals": {
+        "mechanic:crime_and_punishment_2": {
+          "type": "backgroundFlash",
+          "color": "#38bdf8",
+          "durationMs": 3400,
+          "intensity": 0.62
+        },
+        "mechanic": {
+          "type": "backgroundFlash",
+          "color": "#38bdf8",
+          "durationMs": 3400,
+          "intensity": 0.62
+        }
+      }
+    },
+    "50": {
+      "name": "Бан",
+      "visuals": {
+        "deploy": {
+          "type": "backgroundFlash",
+          "color": "#9d174d",
+          "centerColor": "#a21caf",
+          "durationMs": 3200,
+          "intensity": 0.62
+        }
+      }
+    },
+    "52": {
+      "name": "Криста Ленц",
+      "visuals": {
+        "deploy": {
+          "type": "backgroundFlash",
+          "color": "#f9a8d4",
+          "centerColor": "#fbcfe8",
+          "durationMs": 3200,
+          "intensity": 0.5
+        }
+      }
     }
   }
 }

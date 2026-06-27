@@ -14,9 +14,12 @@ from core.actions import AttackAction, BaseAction, EndTurnAction, ManaDrawAction
 from core.effects import (
     apply_damage,
     apply_lifesteal,
+    consume_rebirth,
     get_taunt_targets,
     has_taunt,
     is_random_battlecry_damage_card,
+    parse_crime_and_punishment,
+    parse_rebirth,
     process_effects,
     requires_target,
 )
@@ -845,17 +848,42 @@ class ArenaEnvironment:
         self._check_game_over()
 
     def _cleanup_dead_units(self, player: PlayerState) -> None:
-        """Удалить мертвых существ с доски игрока, активируя Deathrattle."""
-        # Определяем противника для Deathrattle эффектов
+        """Удалить мертвых существ с доски игрока, активируя Deathrattle / Rebirth / Преступление-и-наказание."""
+        # Определяем противника для Deathrattle / crime_and_punishment эффектов
         if player.user_id == self.state.p1.user_id:
             opponent = self.state.p2
             log_type = "player"
         else:
             opponent = self.state.p1
             log_type = "opponent"
-        
+
+        # --- Rebirth: юнит с rebirth_N при летальном уроне выживает с N HP
+        # (одноразово — механика снимается). Срабатывает ДО deathrattle:
+        # спасённый юнит не считается умершим, его deathrattle не активируется.
+        for unit in player.board:
+            if unit.hp > 0:
+                continue
+            rebirth_hp = parse_rebirth(unit.mechanics)
+            if rebirth_hp is not None and rebirth_hp > 0:
+                unit.hp = rebirth_hp
+                consume_rebirth(unit)
+                logger.debug(
+                    "[CORE] Rebirth: %s выживает с %d HP (способность потрачена)",
+                    unit.name,
+                    rebirth_hp,
+                )
+                self.state.action_history.append(
+                    (log_type, f"{unit.name} возрождается с {rebirth_hp} HP!")
+                )
+
         # Обрабатываем Deathrattle ПЕРЕД удалением
         dead_units = [unit for unit in player.board if unit.hp <= 0]
+
+        # Преступление и наказание: N урона герою убийцы за КАЖДУЮ погибшую
+        # карту владельца. Урон игнорирует броню/ауру (прямое снятие HP) —
+        # пассивная кара героя, не «атака» (без reflect/lifesteal).
+        cap_damage = parse_crime_and_punishment(player.hero.mechanics)
+
         for unit in dead_units:
             # Проверяем наличие deathrattle_aoe_damage_X механик
             for mechanic in unit.mechanics:
@@ -880,10 +908,24 @@ class ArenaEnvironment:
                         # Добавляем в лог
                         self.state.action_history.append((log_type, f"{unit.name} взрывается после смерти и наносит {damage} урона всем врагам!"))
                     break  # Обрабатываем только первый deathrattle
-            
+
+            # Преступление и наказание — за каждую погибшую карту владельца.
+            if cap_damage is not None and cap_damage > 0 and opponent.hero.hp > 0:
+                opponent.hero.hp = max(0, opponent.hero.hp - cap_damage)
+                logger.debug(
+                    "[CORE] Преступление и наказание: %s карает героя %s на %d урона за смерть %s",
+                    player.hero.name,
+                    opponent.hero.name,
+                    cap_damage,
+                    unit.name,
+                )
+                self.state.action_history.append(
+                    (log_type, f"Преступление и наказание: {player.hero.name} наносит {cap_damage} урона герою противника за смерть {unit.name}!")
+                )
+
             # Отправляем мертвое существо в сброс
             player.graveyard.append(unit)
-        
+
         # Удаляем мертвых
         player.board = [unit for unit in player.board if unit.hp > 0]
 
@@ -1334,6 +1376,16 @@ class ArenaEnvironment:
         is_delete = any("delete_target" in m for m in mechanics)
         is_freeze = any("freeze" in m or "battlecry_freeze" in m for m in mechanics)
         is_choose_shield_damage = any("choose_shield_damage" in m for m in mechanics)
+        # target_ally_max_hp_plus: universal-вариант нацеливается и на героя,
+        # обычный — только на союзных юнитов (НЕ героя).
+        is_max_hp_plus_universal = any(
+            m.startswith("target_ally_max_hp_plus_universal") for m in mechanics
+        )
+        is_max_hp_plus = any(
+            m.startswith("target_ally_max_hp_plus_")
+            and not m.startswith("target_ally_max_hp_plus_universal")
+            for m in mechanics
+        )
 
         # КРИТИЧНО: consume_ally (Канеки) - только союзные юниты на доске
         if is_consume_ally:
@@ -1375,6 +1427,19 @@ class ArenaEnvironment:
                 targets.append(str(unit.instance_id))
             # Всегда включаем героя
             targets.append(str(player.hero.instance_id))
+            return targets
+
+        # target_ally_max_hp_plus_universal_N — союзные юниты + герой
+        if is_max_hp_plus_universal:
+            for unit in player.board:
+                targets.append(str(unit.instance_id))
+            targets.append(str(player.hero.instance_id))
+            return targets
+
+        # target_ally_max_hp_plus_N — только союзные юниты (БЕЗ героя)
+        if is_max_hp_plus:
+            for unit in player.board:
+                targets.append(str(unit.instance_id))
             return targets
 
         # Лечение - союзные цели (только поврежденные)
@@ -1577,6 +1642,26 @@ class ArenaEnvironment:
             if match:
                 atk, hp = match.group(1), match.group(2)
                 return f"усилил всех союзных существ (+{atk}/+{hp})"
+
+        # AOE Silence (Солдатик)
+        if "aoe_silence_all" in mechanics:
+            return "лишает механик всех вражеских существ"
+        if "aoe_silence" in mechanics:
+            return "лишает механик до 3 вражеских существ"
+
+        # Team-wide shield (Соул Гудман)
+        if "team_wide_shield_all" in mechanics:
+            return "даёт одноразовый щит всем союзным существам"
+        if "team_wide_shield" in mechanics:
+            return "даёт одноразовый щит до 3 союзных существ"
+
+        # Max HP buff (Криста Ленц)
+        for mechanic in mechanics:
+            match = re.match(r"target_ally_max_hp_plus(?:_universal)?_(\d+)", mechanic)
+            if match:
+                amount = match.group(1)
+                target_name = self._get_target_name(target_id, owner, opponent)
+                return f"увеличил макс. здоровье {target_name} на {amount}"
         
         # Delete Target
         if "delete_target" in mechanics:
@@ -1703,7 +1788,23 @@ class ArenaEnvironment:
                     break
                 except:
                     pass
-        
+
+        # Rebirth (Бан) — пассивная механика возрождения
+        for mechanic in mechanics:
+            match = re.match(r"rebirth_(\d+)", mechanic)
+            if match:
+                passives.append(f"Возрождение {match.group(1)}")
+                break
+
+        # Crime and Punishment (Достоевский) — пассивная кара героя
+        for mechanic in mechanics:
+            match = re.match(r"crime_and_punishment_(\d+)", mechanic)
+            if match:
+                passives.append(
+                    f"Преступление и наказание: {match.group(1)} урона герою врага за смерть союзника"
+                )
+                break
+
         if passives:
             return f"({', '.join(passives)})"
         

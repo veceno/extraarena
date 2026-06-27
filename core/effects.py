@@ -987,6 +987,201 @@ def effect_choose_shield_damage(
 
 
 # ============================================================================
+# SILENCE MECHANICS (aoe_silence / aoe_silence_all)
+# ============================================================================
+# При постановке карты вражеские существа на поле лишаются своих механик —
+# карта становится «обычной» (taunt/shield/regen/aura/reflect/armor/... более
+# не работают). КРИТИЧНО: снимается ТОЛЬКО список mechanics. Статус-флаги,
+# применённые К КАРТЕ извне (is_frozen, is_ready, instant_kill_used, ...),
+# НЕ сбрасываются. Одноразовый щит (shield) также снимается — щит не спасает.
+# Урон не наносится; механика не масштабируется по уровню. Эффект одноразовый
+# в рамках одного применения (срабатывает при розыгрыше). Карта, уничтоженная
+# после silence и выставленная заново, имеет свои механики снова — silence
+# мутирует только конкретный экземпляр на доске, а не определение карты.
+
+def _silence_units(units: List["CardInstance"], limit: Optional[int]) -> int:
+    """Снять все механики с указанных юнитов. Возвращает число затронутых.
+
+    Юниты без механик пропускаются (нечего снимать), чтобы не расходовать
+    лимит ``limit`` впустую. ``limit=None`` — без ограничения (aoe_silence_all).
+    """
+    silenced = 0
+    for unit in units:
+        if not unit.mechanics:
+            continue
+        unit.mechanics = []
+        silenced += 1
+        logger.debug("[EFFECTS] Silence: %s лишён всех механик", unit.name)
+        if limit is not None and silenced >= limit:
+            break
+    return silenced
+
+
+@register_effect("aoe_silence")
+def effect_aoe_silence(
+    state: GameState,
+    card: CardInstance,
+    owner: PlayerState,
+    opponent: PlayerState,
+    target_id: Optional[str] = None,
+) -> None:
+    """Солдатик: лишить механик до 3 вражеских существ на поле."""
+    # Сначала берём юнитов с механиками — иначе лимит тратится впустую.
+    candidates = [u for u in opponent.board if u.mechanics]
+    count = _silence_units(candidates, limit=3)
+    logger.debug("[EFFECTS] aoe_silence: сняты механики с %d вражеских юнитов", count)
+
+
+@register_effect("aoe_silence_all")
+def effect_aoe_silence_all(
+    state: GameState,
+    card: CardInstance,
+    owner: PlayerState,
+    opponent: PlayerState,
+    target_id: Optional[str] = None,
+) -> None:
+    """Лишить механик всех вражеских существ на поле."""
+    count = _silence_units(list(opponent.board), limit=None)
+    logger.debug("[EFFECTS] aoe_silence_all: сняты механики с %d вражеских юнитов", count)
+
+
+# ============================================================================
+# TEAM-WIDE SHIELD MECHANICS (team_wide_shield / team_wide_shield_all)
+# ============================================================================
+# При постановке союзные существа на поле получают одноразовый щит (shield),
+# блокирующий первый входящий урон. ``team_wide_shield`` — до 3 карт за
+# постановку, ``team_wide_shield_all`` — все союзные карты на поле. Герой
+# щитом не покрывается (механика про «карты на поле», не героя). Щит не
+# масштабируется по уровню (он бинарный — есть/нет).
+
+def _grant_shields(units: List["CardInstance"], limit: Optional[int]) -> int:
+    """Выдать одноразовый щит союзным юнитам. Пропускает уже защищённых."""
+    granted = 0
+    for unit in units:
+        if "shield" in unit.mechanics:
+            continue
+        unit.mechanics.append("shield")
+        granted += 1
+        logger.debug("[EFFECTS] Team shield: %s получает одноразовый щит", unit.name)
+        if limit is not None and granted >= limit:
+            break
+    return granted
+
+
+@register_effect("team_wide_shield")
+def effect_team_wide_shield(
+    state: GameState,
+    card: CardInstance,
+    owner: PlayerState,
+    opponent: PlayerState,
+    target_id: Optional[str] = None,
+) -> None:
+    """Соул Гудман: дать одноразовый щит до 3 союзным существам на поле."""
+    # Карта-носитель — защитник, а не защищаемый: исключаем саму себя.
+    # На момент process_effects карта уже вставлена в owner.board (engine.py),
+    # поэтому без фильтра она заняла бы один из 3 лимитных слотов щитом,
+    # не доставшимся союзнику (зеркалирует self-exclusion в buff_all).
+    targets = [u for u in owner.board if u.instance_id != card.instance_id]
+    granted = _grant_shields(targets, limit=3)
+    logger.debug("[EFFECTS] team_wide_shield: щиты выданы %d союзным юнитам", granted)
+
+
+@register_effect("team_wide_shield_all")
+def effect_team_wide_shield_all(
+    state: GameState,
+    card: CardInstance,
+    owner: PlayerState,
+    opponent: PlayerState,
+    target_id: Optional[str] = None,
+) -> None:
+    """Дать одноразовый щит всем союзным существам на поле."""
+    targets = [u for u in owner.board if u.instance_id != card.instance_id]
+    granted = _grant_shields(targets, limit=None)
+    logger.debug("[EFFECTS] team_wide_shield_all: щиты выданы %d союзным юнитам", granted)
+
+
+# ============================================================================
+# MAX HP BUFF (target_ally_max_hp_plus[_universal]_N)
+# ============================================================================
+# При постановке выбирается союзная цель; её max_hp увеличивается на N.
+# Исцеления НЕ происходит — текущее hp не меняется, растёт только максимум.
+# ``target_ally_max_hp_plus_N`` — любая союзная цель КРОМЕ героя игрока.
+# ``target_ally_max_hp_plus_universal_N`` — любая союзная цель, включая героя.
+# N масштабируется по уровню (см. core.card_scaling._scale_warrior_mechanics).
+
+def _register_max_hp_plus_effects():
+    """Регистрирует target_ally_max_hp_plus_N и ..._universal_N для N=1..10."""
+    for amount in range(1, 11):
+        def make_handler(hp_bonus: int, allow_hero: bool):
+            def handler(
+                state: GameState,
+                card: CardInstance,
+                owner: PlayerState,
+                opponent: PlayerState,
+                target_id: Optional[str] = None,
+            ) -> None:
+                if not target_id:
+                    return
+                # Ищем цель среди союзных юнитов на доске
+                for unit in owner.board:
+                    if str(unit.instance_id) == target_id:
+                        unit.max_hp += hp_bonus
+                        logger.debug(
+                            "[EFFECTS] target_ally_max_hp_plus: %s +N=%d к max_hp (теперь %d, hp=%d)",
+                            unit.name, hp_bonus, unit.max_hp, unit.hp,
+                        )
+                        return
+                # Универсальная версия может нацеливаться и на героя
+                if allow_hero and str(owner.hero.instance_id) == target_id:
+                    owner.hero.max_hp += hp_bonus
+                    logger.debug(
+                        "[EFFECTS] target_ally_max_hp_plus_universal: герой +N=%d к max_hp (теперь %d, hp=%d)",
+                        hp_bonus, owner.hero.max_hp, owner.hero.hp,
+                    )
+            return handler
+
+        EFFECT_HANDLERS[f"target_ally_max_hp_plus_{amount}"] = make_handler(amount, allow_hero=False)
+        EFFECT_HANDLERS[f"target_ally_max_hp_plus_universal_{amount}"] = make_handler(amount, allow_hero=True)
+
+
+# Регистрируем max_hp_plus эффекты
+_register_max_hp_plus_effects()
+
+
+# ============================================================================
+# REBIRTH & CRIME_AND_PUNISHMENT helpers (пассивные/триггерные механики)
+# ============================================================================
+# rebirth_N — пассивная механика warrior: при первом летальном уроне юнит
+# выживает с N HP, механика снимается (одноразово, как shield). Триггерится
+# в core.engine._cleanup_dead_units. crime_and_punishment_N — пассивная
+# механика hero: каждый раз, когда противник убивает карту владельца, герой
+# противника получает N урона (игнорирует броню/ауру). Триггерится там же.
+# При розыгрыше карты (process_effects) эти механики НЕ срабатывают.
+
+def parse_rebirth(mechanics: List[str]) -> Optional[int]:
+    """Вернуть N из механики rebirth_N (или None)."""
+    for m in mechanics:
+        match = re.match(r"rebirth_(\d+)$", m)
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def consume_rebirth(unit: "CardInstance") -> None:
+    """Снять механику rebirth_N с юнита (способность одноразовая)."""
+    unit.mechanics = [m for m in unit.mechanics if not m.startswith("rebirth_")]
+
+
+def parse_crime_and_punishment(mechanics: List[str]) -> Optional[int]:
+    """Вернуть N из механики crime_and_punishment_N (или None)."""
+    for m in mechanics:
+        match = re.match(r"crime_and_punishment_(\d+)$", m)
+        if match:
+            return int(match.group(1))
+    return None
+
+
+# ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================
 
@@ -1169,6 +1364,13 @@ def process_effects(
         # КРИТИЧНО: cleave_* для WARRIOR - пассивная механика атаки (обрабатывается в _handle_attack)
         # Для POTION cleave_* остаётся battlecry-эффектом (random hits)
         if mechanic.startswith("cleave_") and card.card_type.value == "warrior":
+            continue
+
+        # КРИТИЧНО: rebirth_N и crime_and_punishment_N — пассивные/триггерные
+        # механики. rebirth срабатывает при летальном уроне в
+        # _cleanup_dead_units, crime_and_punishment — при смерти союзника
+        # (читается из механик героя). При розыгрыше карты они НЕ активируются.
+        if mechanic.startswith("rebirth_") or mechanic.startswith("crime_and_punishment_"):
             continue
 
         random_battlecry_damage = re.match(r"battlecry_damage_(\d+)_random$", mechanic)
@@ -1359,6 +1561,9 @@ def requires_target(mechanics: List[str]) -> bool:
             return True
         # battlecry_buff_X_Y
         if re.match(r"battlecry_buff_\d+_\d+", mechanic):
+            return True
+        # target_ally_max_hp_plus_N / target_ally_max_hp_plus_universal_N (выбор союзника)
+        if re.match(r"target_ally_max_hp_plus(?:_universal)?_\d+", mechanic):
             return True
         # freeze_X (динамическая заморозка с параметром)
         if re.match(r"freeze_\d+", mechanic):

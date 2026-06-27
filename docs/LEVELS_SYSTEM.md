@@ -69,6 +69,8 @@ final_stat = ceil(base_stat * (1 + rarity_growth) ^ (level - 1))
 | Любая строка с `aoe_damage_X`, включая `deathrattle_aoe_damage_X` | `X + floor((level - 1) / 2)` |
 | Любая строка с `heal_target_X` или `damage_X` | `X + floor((level - 1) / 2)` |
 | `battlecry_buff_X_Y`, `buff_all_X_Y` | оба числа получают `+floor((level - 1) / 2)` |
+| `rebirth_X` | `X + floor((level - 1) / 2)` (HP при возрождении) |
+| `target_ally_max_hp_plus_X`, `target_ally_max_hp_plus_universal_X` | `X + floor((level - 1) / 2)` (бафф max_hp) |
 | `regen_X`, `armor_X`, `aura_atk_X`, `reflect_X` | `X + floor((level - 1) / 3)` |
 
 Текущие карты, у которых механика реально усиливается:
@@ -80,6 +82,8 @@ final_stat = ceil(base_stat * (1 + rarity_growth) ^ (level - 1))
 | Крипер | `deathrattle_aoe_damage_2` | `deathrattle_aoe_damage_3` | `deathrattle_aoe_damage_5` | `deathrattle_aoe_damage_6` |
 | Фрирен | `battlecry_heal_target_5` | `battlecry_heal_target_6` | `battlecry_heal_target_8` | `battlecry_heal_target_9` |
 | Юни | `battlecry_heal_target_3` | `battlecry_heal_target_4` | `battlecry_heal_target_6` | `battlecry_heal_target_7` |
+| Бан | `rebirth_1`, 7 HP | `rebirth_2`, 10 HP | `rebirth_4`, 13 HP | `rebirth_5`, 17 HP |
+| Криста Ленц | `target_ally_max_hp_plus_universal_1`, 2 HP | `target_ally_max_hp_plus_universal_2`, 3 HP | `target_ally_max_hp_plus_universal_4`, 4 HP | `target_ally_max_hp_plus_universal_5`, 5 HP |
 
 Механики, которые у текущих воинов не меняются как строка механики и усиливаются только косвенно через статы:
 
@@ -96,6 +100,8 @@ final_stat = ceil(base_stat * (1 + rarity_growth) ^ (level - 1))
 - `unit_killer`
 - `charge`
 - `lifesteal`
+- `aoe_silence`, `aoe_silence_all`
+- `team_wide_shield`, `team_wide_shield_all`
 
 Особый случай: Мидория с `cast_random_spell`. Строка механики не меняется, но эффект внутри `core/effects.py` читает `card.level`:
 
@@ -158,6 +164,7 @@ max_hp = base_hp + (level - 1) * 2
 - `aura_atk_X`
 - `start_mana_X`
 - `regen_X`
+- `crime_and_punishment_X`
 
 Формула:
 
@@ -177,6 +184,7 @@ X + floor((level - 1) / 3)
 | Даркнесс | 45 HP, `armor_1` | 51 HP, `armor_2` | 57 HP, `armor_3` | 63 HP, `armor_4` |
 | Росомаха | 37 HP, `regen_1` | 43 HP, `regen_2` | 49 HP, `regen_3` | 55 HP, `regen_4` |
 | Олег Тиньков | 23 HP, `start_mana_1` | 29 HP, `start_mana_2` | 35 HP, `start_mana_3` | 41 HP, `start_mana_4` |
+| Достоевский | 32 HP, `crime_and_punishment_2` | 38 HP, `crime_and_punishment_3` | 44 HP, `crime_and_punishment_4` | 50 HP, `crime_and_punishment_5` |
 
 ## Проблемные области
 

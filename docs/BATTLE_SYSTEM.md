@@ -222,7 +222,9 @@ Frontend (Telegram WebApp / webapp/)
 
 ---
 
-## Полный список механик (34)
+## Полный список механик (42)
+
+> **RL-наблюдение (известное ограничение):** в `core/state.py:MECHANICS_LIST` перечислены 34 механики, по которым `_card_features` строит бинарные флаги для observation-вектора (фиксированной длины `obs_dim=1456`). Механики 5-й волны (`aoe_silence[_all]`, `team_wide_shield[_all]`, `target_ally_max_hp_plus[_universal]_N`, `rebirth_N`, `crime_and_punishment_N`) **намеренно НЕ добавлены** в `MECHANICS_LIST` — добавление изменило бы `obs_dim` и сломало обученные модели и `test_train_v2_catalog_audit`. Игровые эффекты работают полностью; для RL эти механики пока неразличимы на карточке-носителе (но их *результат* виден: `shield`/`taunt`/флаги на доске наблюдаются). Добавление в schema требует ретрейна — отдельная задача.
 
 ### Battlecry (срабатывают при розыгрыше воина)
 
@@ -236,6 +238,12 @@ Frontend (Telegram WebApp / webapp/)
 | `battlecry_buff_X_Y` | Даёт выбранному союзнику +X/+Y |
 | `battlecry_draw_card` | Тянет карту из колоды (с учётом лимита руки 4) — см. [CYCLE_DRAW.md](CYCLE_DRAW.md) |
 | `battlecry_freeze` | Замораживает выбранное вражеское существо на 1 ход |
+| `aoe_silence` | Солдатик: при розыгрыше лишает механик **до 3** вражеских существ на поле (карта становится «обычной» — taunt/shield/regen/aura/... перестают работать). Урона не наносит, не масштабируется. Снимается только список `mechanics`; статус-флаги (`is_frozen`, `is_ready`, …) сохраняются. Одноразовый щит **снимается** (щит не спасает). |
+| `aoe_silence_all` | То же, но без лимита — все вражеские существа на поле. Юниты без механик пропускаются (не расходуют лимит у `aoe_silence`). |
+| `team_wide_shield` | Соул Гудман: при розыгрыше даёт одноразовый `shield` **до 3** союзным существам на поле. Уже защищённые пропускаются. Герой щитом не покрывается. Не масштабируется (щит бинарный). |
+| `team_wide_shield_all` | То же, но всем союзным существам без лимита. |
+| `target_ally_max_hp_plus_N` | Криста Ленц (обычная): при розыгрыше выбирается союзная цель (кроме героя), её `max_hp` += N. **Исцеления нет** — текущее `hp` не меняется. N масштабируется (+1 каждые 2 уровня). |
+| `target_ally_max_hp_plus_universal_N` | Универсальная версия — цель может быть и **героем** владельца. Криста использует этот вариант. |
 
 ### Spell-эффекты (зелья)
 
@@ -282,6 +290,8 @@ Frontend (Telegram WebApp / webapp/)
 | `unit_killer` | Мгновенно убивает каждого атакованного цель-юнита, если цель не защитилась щитом. **Не работает против героев** |
 | `cleave_X_Y` | При атаке: X урона до Y соседним врагам |
 | `start_mana_X` | +X стартовой маны (только у героев) |
+| `rebirth_N` | Бан: при **первом** летальном уроне выживает с N HP, механика снимается (одноразово, как `shield`). N масштабируется (+1 каждые 2 уровня). Срабатывает в `_cleanup_dead_units()` **до** deathrattle — спасённый юнит не считается умершим, его deathrattle не активируется. |
+| `crime_and_punishment_N` | Достоевский (герой): каждый раз, когда противник убивает вашу карту, его герой получает N урона (прямое снятие HP — **игнорирует броню/ауру**, без reflect/lifesteal). N масштабируется (+1 каждые 3 уровня). Триггерится в `_cleanup_dead_units()` за каждую погибшую карту. |
 
 ### Deathrattle (срабатывают при смерти)
 
@@ -289,7 +299,7 @@ Frontend (Telegram WebApp / webapp/)
 |---|---|
 | `deathrattle_aoe_damage_X` | При смерти: X урона всем вражеским юнитам **и** герою |
 
-Deathrattle срабатывает в `_cleanup_dead_units()` — *core/engine.py:779-820*, перед удалением мёртвого юнита с доски.
+Deathrattle срабатывает в `_cleanup_dead_units()` — *core/engine.py:850-930*, перед удалением мёртвого юнита с доски. Там же обрабатываются `rebirth_N` (спасение до deathrattle) и `crime_and_punishment_N` (кара героя-убийцы за каждую погибшую карту владельца). Порядок: rebirth-проход → определение мёртвых → deathrattle + crime_and_punishment (за каждого) → сброс → фильтрация доски.
 
 ---
 
@@ -305,8 +315,9 @@ Deathrattle срабатывает в `_cleanup_dead_units()` — *core/engine.p
 
 | Уровень | Atk | HP | Механики |
 |---|---|---|---|
-| Каждые 2 уровня | exponential | exponential | AOE damage, target heal/damage, buff: +`((level-1) // 2)` |
+| Каждые 2 уровня | exponential | exponential | AOE damage, target heal/damage, buff, `rebirth_N`, `target_ally_max_hp_plus[_universal]_N`: +`((level-1) // 2)` |
 | Каждые 3 уровня | exponential | exponential | regen, armor, aura_atk, reflect: +`((level-1) // 3)` |
+| Без масштабирования | exponential | exponential | `aoe_silence[_all]`, `team_wide_shield[_all]` (бинарные — есть/нет) |
 
 ### Зелья (POTION)
 
@@ -320,7 +331,7 @@ Deathrattle срабатывает в `_cleanup_dead_units()` — *core/engine.p
 | Уровень | HP | Механики |
 |---|---|---|
 | Каждый уровень | +2 HP (линейно) | — |
-| Каждые 3 уровня | — | reflect, armor, aura_atk, start_mana, regen: +1 |
+| Каждые 3 уровня | — | reflect, armor, aura_atk, start_mana, regen, `crime_and_punishment_N`: +1 |
 | Потолок start_mana | — | 10 |
 
 ---

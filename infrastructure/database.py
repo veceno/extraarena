@@ -5,6 +5,7 @@ import json
 import logging
 import math
 import random
+import re
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone, timedelta
@@ -401,6 +402,12 @@ _CARD_MECHANICS_DESC: dict[int, str] = {
     43: "Игнорирует Провокацию: может атаковать любую цель даже при наличии вражеских юнитов с taunt",
     44: "Рывок: может атаковать в тот же ход, когда был выставлен на доску",
     45: "Провокация: противник обязан атаковать это существо в первую очередь",
+    47: "При выходе лишает механик до 3 вражеских существ на доске (карты становятся обычными)",
+    48: "При выходе даёт одноразовый щит до 3 союзным существам на доске",
+    49: "Преступление и наказание: каждый раз, когда противник убивает вашу карту, его герой получает 2 урона (игнорирует броню)",
+    50: "Возрождение: при первом смертельном ударе выживает с 1 HP. Способность одноразовая",
+    51: "Провокация: противник обязан атаковать это существо в первую очередь",
+    52: "При выходе увеличивает максимальное здоровье выбранного союзника (или героя) на 1",
 }
 
 
@@ -1676,6 +1683,91 @@ class Database:
         if not sql:
             raise RuntimeError(f"required balance seed is empty: {sql_path}")
         await self.execute(sql)
+        await self._insert_missing_cards_from_json()
+
+    async def _insert_missing_cards_from_json(self) -> None:
+        """Синхронизировать с cards.json карты, не покрытые баланс-сидом.
+
+        Wave 4 баланс-сид (sql/2026_05_30_balance_cards.sql) владеет перебалансированными
+        32 картами; остальные карты каталога живут только в cards.json. Здесь они
+        идемпотентно upsert-ятся тем же набором колонок и политикой ON CONFLICT (id),
+        что и баланс-сид (created_at на конфликте сохраняется), поэтому БД на каждом
+        старте остаётся согласована с каталогом. Mechanics нормализуются из каталога,
+        mechanics_desc берётся из _CARD_MECHANICS_DESC (NULL, когда записи нет —
+        например, карта 28 с пустыми механиками).
+        """
+        catalog_path = Path(__file__).resolve().parent.parent / "cards.json"
+        if not catalog_path.is_file():
+            raise FileNotFoundError(f"card catalog is missing: {catalog_path}")
+        try:
+            catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"card catalog is not valid JSON: {catalog_path}: {exc}") from exc
+        if not isinstance(catalog, list):
+            raise RuntimeError(f"card catalog must be a JSON array: {catalog_path}")
+
+        sql_path = Path(__file__).resolve().parent / "sql" / "2026_05_30_balance_cards.sql"
+        balance_sql = sql_path.read_text(encoding="utf-8") if sql_path.is_file() else ""
+        balance_ids = {int(match) for match in re.findall(r"\(\s*(\d+)\s*,", balance_sql)}
+
+        for card in catalog:
+            if not isinstance(card, dict):
+                continue
+            try:
+                card_id = int(card.get("id") or 0)
+            except (TypeError, ValueError):
+                continue
+            if card_id <= 0 or card_id in balance_ids:
+                continue
+            mechanics_json = json.dumps(_normalize_mechanics(card.get("mechanics")), ensure_ascii=False)
+            await self.execute(
+                """
+                INSERT INTO cards (
+                    id, name, description, rarity, power, mana_cost,
+                    base_attack, base_hp, mechanics, card_type,
+                    image_file_id, created_by, mechanics_desc, simplified_levelup
+                )
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,$12,$13,$14)
+                ON CONFLICT (id) DO UPDATE SET
+                    name = EXCLUDED.name,
+                    description = EXCLUDED.description,
+                    rarity = EXCLUDED.rarity,
+                    power = EXCLUDED.power,
+                    mana_cost = EXCLUDED.mana_cost,
+                    base_attack = EXCLUDED.base_attack,
+                    base_hp = EXCLUDED.base_hp,
+                    mechanics = EXCLUDED.mechanics,
+                    card_type = EXCLUDED.card_type,
+                    image_file_id = EXCLUDED.image_file_id,
+                    created_by = EXCLUDED.created_by,
+                    mechanics_desc = EXCLUDED.mechanics_desc,
+                    simplified_levelup = EXCLUDED.simplified_levelup
+                """,
+                card_id,
+                card.get("name"),
+                card.get("description"),
+                card.get("rarity"),
+                int(card.get("power") or 0),
+                int(card.get("mana_cost") or 0),
+                int(card.get("base_attack") or 0),
+                int(card.get("base_hp") or 0),
+                mechanics_json,
+                card.get("card_type") or "warrior",
+                card.get("image_file_id"),
+                card.get("created_by"),
+                _CARD_MECHANICS_DESC.get(card_id),
+                bool(card.get("simplified_levelup", False)),
+            )
+
+        await self.execute(
+            """
+            SELECT setval(
+                pg_get_serial_sequence('cards', 'id'),
+                GREATEST(COALESCE((SELECT MAX(id) FROM cards), 1), 1),
+                TRUE
+            )
+            """
+        )
 
     async def _complete_deck_exists(self, user_id: int) -> bool:
         rows = await self.fetch(

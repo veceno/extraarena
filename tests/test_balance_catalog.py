@@ -40,6 +40,12 @@ def test_balance_patch_catalog_entries_are_present_and_consistent():
         44: {"name": "Леви Аккерман", "rarity": "epic", "mana_cost": 2, "base_attack": 3, "base_hp": 1, "mechanics": '["charge"]'},
         45: {"name": "Солид Снейк", "rarity": "epic", "mana_cost": 5, "base_attack": 5, "base_hp": 4, "mechanics": '["taunt"]'},
         46: {"name": "Уссоп", "rarity": "common", "mana_cost": 2, "base_attack": 3, "base_hp": 1, "mechanics": "[]"},
+        47: {"name": "Солдатик", "rarity": "legendary", "mana_cost": 7, "base_attack": 4, "base_hp": 5, "mechanics": '["aoe_silence"]'},
+        48: {"name": "Соул Гудман", "rarity": "legendary", "mana_cost": 7, "base_attack": 2, "base_hp": 4, "mechanics": '["team_wide_shield"]'},
+        49: {"name": "Достоевский", "rarity": "mythic", "mana_cost": 0, "base_attack": 0, "base_hp": 32, "mechanics": '["crime_and_punishment_2"]', "card_type": "hero"},
+        50: {"name": "Бан", "rarity": "mythic", "mana_cost": 8, "base_attack": 3, "base_hp": 7, "mechanics": '["rebirth_1"]'},
+        51: {"name": "Кинг", "rarity": "common", "mana_cost": 0, "base_attack": 0, "base_hp": 4, "mechanics": '["taunt"]'},
+        52: {"name": "Криста Ленц", "rarity": "common", "mana_cost": 2, "base_attack": 1, "base_hp": 2, "mechanics": '["target_ally_max_hp_plus_universal_1"]'},
     }
 
     for catalog_path in ("cards.json", "ai/cards.json"):
@@ -94,6 +100,17 @@ def test_balance_patch_sql_contains_all_v01_card_updates():
         "(42, 'Атакующий Титан'",
         "(43, 'Лара Крофт'",
         "(46, 'Уссоп'",
+        "(47, 'Солдатик'",
+        "'[\"aoe_silence\"]'::jsonb",
+        "(48, 'Соул Гудман'",
+        "'[\"team_wide_shield\"]'::jsonb",
+        "(49, 'Достоевский'",
+        "'[\"crime_and_punishment_2\"]'::jsonb",
+        "(50, 'Бан'",
+        "'[\"rebirth_1\"]'::jsonb",
+        "(51, 'Кинг'",
+        "(52, 'Криста Ленц'",
+        "'[\"target_ally_max_hp_plus_universal_1\"]'::jsonb",
         "При первом ходе Сайтамы уничтожает выбранного противника. Срабатывает один раз; щит блокирует удар",
     ]
 
@@ -121,8 +138,8 @@ def test_json_catalog_cards_missing_from_balance_seed_are_startup_synced():
 
     missing_from_seed = sorted(set(cards) - sql_ids)
 
-    assert len(cards) == 44
-    assert len(sql_ids) == 26
+    assert len(cards) == 50
+    assert len(sql_ids) == 32
     assert missing_from_seed == [3, 5, 8, 10, 11, 12, 13, 14, 15, 16, 17, 19, 21, 26, 28, 32, 33, 35]
 
 

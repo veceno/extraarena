@@ -450,6 +450,85 @@ const CARD_SFX_CONFIG_DEFAULT = {
           text: 'Выбери цель для исцеления'
         }
       }
+    },
+    '47': {
+      name: 'Солдатик',
+      sounds: {
+        deploy: {
+          src: '/DesignAssets/Sounds/arena/characters/047_soldier/soldier_deploy.mp3',
+          basePolicy: 'replace',
+          volume: 0.82
+        }
+      },
+      visuals: {
+        deploy: {
+          type: 'backgroundFlash',
+          color: '#f59e0b',
+          centerColor: '#fde047',
+          durationMs: 3200,
+          intensity: 0.6
+        }
+      }
+    },
+    '48': {
+      name: 'Соул Гудман',
+      sounds: {
+        deploy: {
+          src: '/DesignAssets/Sounds/arena/characters/048_saul_goodman/saul_goodman_deploy.mp3',
+          basePolicy: 'replace',
+          volume: 0.82
+        }
+      },
+      visuals: {
+        deploy: {
+          type: 'backgroundFlash',
+          color: '#e2e8f0',
+          centerColor: '#ffffff',
+          durationMs: 3200,
+          intensity: 0.6
+        }
+      }
+    },
+    '49': {
+      name: 'Достоевский',
+      visuals: {
+        'mechanic:crime_and_punishment_2': {
+          type: 'backgroundFlash',
+          color: '#38bdf8',
+          durationMs: 3400,
+          intensity: 0.62
+        },
+        mechanic: {
+          type: 'backgroundFlash',
+          color: '#38bdf8',
+          durationMs: 3400,
+          intensity: 0.62
+        }
+      }
+    },
+    '50': {
+      name: 'Бан',
+      visuals: {
+        deploy: {
+          type: 'backgroundFlash',
+          color: '#9d174d',
+          centerColor: '#a21caf',
+          durationMs: 3200,
+          intensity: 0.62
+        }
+      }
+    },
+    '52': {
+      name: 'Криста Ленц',
+      visuals: {
+        deploy: {
+          type: 'backgroundFlash',
+          color: '#f9a8d4',
+          centerColor: '#fbcfe8',
+          durationMs: 3200,
+          intensity: 0.5
+        }
+      }
     }
   }
 };
@@ -2032,9 +2111,16 @@ function createArenaSoundSnapshot(playerState, opponentState) {
     });
   });
 
+  const playerHero = playerState?.hero || null;
+  const opponentHero = opponentState?.hero || null;
+
   return {
     playerHeroHp: getArenaHeroHp(playerState),
     opponentHeroHp: getArenaHeroHp(opponentState),
+    playerHeroCardId: getArenaCatalogCardId(playerHero),
+    opponentHeroCardId: getArenaCatalogCardId(opponentHero),
+    playerHeroMechanics: Array.isArray(playerHero?.mechanics) ? playerHero.mechanics.slice() : [],
+    opponentHeroMechanics: Array.isArray(opponentHero?.mechanics) ? opponentHero.mechanics.slice() : [],
     units
   };
 }
@@ -2096,6 +2182,46 @@ function processArenaStateSfx(playerState, opponentState) {
       }
     }
   });
+
+  // Достоевский (hero, card 49): crime_and_punishment_N — when an opponent kills
+  // one of this side's units, the opponent hero takes damage. Detect via diff:
+  // a unit of <side> died (present in prev, absent in next) AND the opposing hero
+  // hp decreased. No server event exists for this passive, so fire client-side.
+  detectCrimeAndPunishmentFeedback(prev, next, 'player');
+  detectCrimeAndPunishmentFeedback(prev, next, 'opponent');
+}
+
+function findCrimeMechanic(mechanics) {
+  if (!Array.isArray(mechanics)) return null;
+  for (const m of mechanics) {
+    if (typeof m === 'string' && m.startsWith('crime_and_punishment_')) return m;
+  }
+  return null;
+}
+
+function detectCrimeAndPunishmentFeedback(prev, next, side) {
+  const heroCardId = side === 'player' ? next.playerHeroCardId : next.opponentHeroCardId;
+  if (!heroCardId) return;
+  const heroMechanics = side === 'player' ? next.playerHeroMechanics : next.opponentHeroMechanics;
+  const crimeMechanic = findCrimeMechanic(heroMechanics);
+  if (!crimeMechanic) return;
+
+  // Did at least one unit of this side die this tick?
+  const sideUnitDied = Object.entries(prev.units).some(([id, oldUnit]) => {
+    return oldUnit.side === side && oldUnit.hp > 0 && !next.units[id];
+  });
+  if (!sideUnitDied) return;
+
+  // Did the opposing hero take damage?
+  const prevOppHp = side === 'player' ? prev.opponentHeroHp : prev.playerHeroHp;
+  const nextOppHp = side === 'player' ? next.opponentHeroHp : next.playerHeroHp;
+  if (!(nextOppHp < prevOppHp)) return;
+
+  const heroSnapshot = { card_id: heroCardId, cardId: heroCardId };
+  if (!shouldSkipRecentArenaExplicitSfx('mechanic', heroSnapshot, crimeMechanic)) {
+    playResolvedCardFeedback('mechanic', heroSnapshot, null, { mechanic: crimeMechanic });
+    rememberRelatedArenaExplicitSfx('mechanic', heroSnapshot, crimeMechanic);
+  }
 }
 
 /**

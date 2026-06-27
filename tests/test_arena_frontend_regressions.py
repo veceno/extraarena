@@ -250,7 +250,7 @@ def test_arena_card_sfx_resolver_contract():
         1,
     )[0]
 
-    assert "const CARD_SFX_CONFIG_URL = '/assets/audio/characters/card_sfx_config.json';" in source
+    assert "const CARD_SFX_CONFIG_URL = '/DesignAssets/Sounds/arena/card_sfx_config.json';" in source
     assert "'18':" in config_block
     assert "'27':" in config_block
     assert "'29':" in config_block
@@ -310,7 +310,7 @@ def test_arena_card_sfx_config_file_and_assets_exist():
         assert events <= set(sounds)
         for sound in sounds.values():
             src = sound["src"]
-            assert src.startswith("/assets/audio/characters/")
+            assert src.startswith("/DesignAssets/Sounds/arena/characters/")
             assert sound["basePolicy"] == "replace"
             assert Path(src.lstrip("/")).exists()
 
