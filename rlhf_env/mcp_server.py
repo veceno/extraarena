@@ -49,6 +49,7 @@ from rlhf_env.components.arena_match_manager import ArenaMatchManager  # noqa: E
 from rlhf_env.components.match_runner import MatchRunner  # noqa: E402
 from rlhf_env.components.policy_factory import BOT_MAX_DIFFICULTY  # noqa: E402
 from rlhf_env.components.policy_registry import PolicyRegistry  # noqa: E402
+from rlhf_env.components.v5_trace_validate import validate_v5_trace  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -366,7 +367,16 @@ class MCPServer:
             },
             {
                 "name": "validate_v5_traces",
-                "description": "V5 orchestrator: проверить целостность v5/trace всех боёв группы.",
+                "description": (
+                    "V5 orchestrator: глубокая проверка целостности v5/trace всех боёв "
+                    "группы. Помимо наличия/непустоты meta/turns/actions проверяет "
+                    "инварианты обучающих данных: (1) legal_action_index валиден и "
+                    "action_native==legal_actions[idx]; (2) actor/decision_source "
+                    "согласован с meta.actor_type и current_turn_owner_id==actor; "
+                    "(3) continuity post_state[N]==pre_state[N+1] + терминал↔meta.status; "
+                    "(4) battle_log actions 1:1 с trace-строками. Возвращает "
+                    "{checked,ok,broken:[{battle_id,issues:[tagged ...]}]}."
+                ),
                 "inputSchema": {"type": "object", "properties": {"group_id": {"type": "string"}}, "required": ["group_id"]},
             },
         ]
@@ -772,18 +782,16 @@ class MCPServer:
             broken: List[Dict[str, Any]] = []
             for r in results:
                 checked += 1
-                v5dir = gdir / "battles" / r["battle_id"] / "v5"
-                issues: List[str] = []
-                for need in ("meta.json", "turns.jsonl", "actions.jsonl"):
-                    fp = v5dir / need
-                    if not fp.exists():
-                        issues.append(f"missing {need}")
-                    elif need.endswith(".jsonl") and fp.stat().st_size == 0:
-                        issues.append(f"empty {need}")
-                if issues:
-                    broken.append({"battle_id": r["battle_id"], "issues": issues})
-                else:
+                bid = r["battle_id"]
+                v5dir = gdir / "battles" / bid / "v5"
+                # battle_log b_<bid>.json лежит рядом с v5/-директорией боя; путь
+                # строится от того же battle_id (уже содержит префикс b_).
+                battle_log = gdir / "battles" / f"{bid}.json"
+                rep = validate_v5_trace(v5dir, battle_log_path=battle_log)
+                if rep["ok"]:
                     ok += 1
+                else:
+                    broken.append({"battle_id": bid, "issues": rep["issues"]})
             return {"checked": checked, "ok": ok, "broken": broken}
 
         raise ValueError(f"unknown tool: {name}")

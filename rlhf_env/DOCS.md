@@ -469,7 +469,7 @@ JSON-RPC, stdio не ломается).
 | `get_v5_dataset_summary` | `group_id: str` | `{rows, v5_trace_ok_count, battle_tag_distribution:{...}, turns_total, actions_total}` |
 | `list_v5_groups` | `battle_tag?, limit?` | `{groups:[{group_id, battles_finished, battle_tag, v5_trace_ok_count}]}` |
 | `get_v5_trace` | `group_id, battle_id, what:"meta"\|"turns"\|"actions"` | `{data, rows_count}` — содержимое v5-trace |
-| `validate_v5_traces` | `group_id: str` | `{checked, ok, broken:[{battle_id, issues:[]}]}` |
+| `validate_v5_traces` | `group_id: str` | `{checked, ok, broken:[{battle_id, issues:[tagged...]}]}` — глубокие инварианты (см. §7.6) |
 
 **Оркестрация флотом (агенты/серии)**
 
@@ -550,6 +550,35 @@ V5-trace (`V5TraceRecorder`) — **omniscient** offline-only след боя: з
 `actions.jsonl` — поверхность тренировочных данных (model-version-agnostic).
 `weights_hash=sha256(onnx)[:16]` + флаг `degraded` доказывают, какой чекпоинт
 реально играл (silent-fallback guard).
+
+**Глубокая integrity-проверка** (`validate_v5_traces` →
+`rlhf_env/components/v5_trace_validate.py:validate_v5_trace`) — не только
+наличие/непустота `meta`/`turns`/`actions`, а строгие инварианты обучающих
+данных (универсальны, без привязки к `classic_*` кодекам / tcode):
+
+1. **legal_action_index** — индекс валиден в `legal_actions` (`0..N-1`);
+   `action_native == legal_actions[idx]` (метка указывает ровно на сыгранное
+   действие); `legal_action_count == len(legal_actions)`; `None` на
+   `accepted`-действии = потеря обучающей метки (`[legal_index]`).
+2. **actor / decision_source** — `actor_player ⇔ actor_user_id ⇔ meta
+   user_id`; `decision_source` согласован с `meta.{p1,p2}_actor_type` (p2 всегда
+   `bot`); `pre_state.current_turn_owner_id == actor_user_id` (`[actor]`).
+3. **continuity** — `post_state[N] == pre_state[N+1]` (цепочка состояния без
+   потерь); `seq` континуален `1..N`; `pre_state`/`post_state` не None;
+   терминальный статус согласован с `meta.status`/`winner_user_id` (для
+   терминальной `surrender`-строки `state.status` не сравнивается —
+   `mark_surrender` не мутирует его, авторитет `meta.status`; draw/stalemate
+   не имеют победителя); `turns.jsonl` ↦ `actions.jsonl` на границе хода
+   (`[continuity]`).
+4. **correspondence** — `battle_log` `b_<bid>.json` `actions` 1:1 (по порядку)
+   совпадают с не-терминальными trace-строками по
+   `actor`/`action_type`/`action_json`/`accepted`/`turn(post)`; терминальные
+   `surrender`-строки (нет battle_log-записи) исключаются из подсчёта
+   (`[correspondence]`).
+
+`issues` — тегированные строки `[legal_index|actor|continuity|correspondence]
+...`. Покрыто тестами `rlhf_env/tests/test_v5_trace_validate.py` (реальный бой
+проходит; мутации каждого класса флагаются).
 
 ### 7.7. Три уровня оркестрации (LLM MCP-юзеры)
 
@@ -903,7 +932,7 @@ log = asyncio.run(runner.arun())
 
 ```bash
 python3 -m pytest rlhf_env/tests/ rlhf_env/tests_*.py -q
-# 111 passed, 1 skipped, 0 failed (2026-06-28)
+# 134 passed, 1 skipped, 0 failed (2026-06-28)
 ```
 
 Покрытие:
@@ -921,6 +950,9 @@ python3 -m pytest rlhf_env/tests/ rlhf_env/tests_*.py -q
   start_series+agent, list_active_series, get_agent_status, finish_series,
   get_match_status, register_custom_model, submit_action rejected for rl-p1
 - `test_manifest.py`, `test_session_manager.py`, `test_v5_*`, `test_actor_tagging`
+- `test_v5_trace_validate.py` — глубокие инварианты `validate_v5_trace`: реальный
+  rl-vs-bot бой проходит; мутации каждого класса (legal_index / actor-source /
+  continuity / battle_log correspondence) флагаются с правильным тегом
 
 ### 12.2. In-process vs HTTP smoke
 
