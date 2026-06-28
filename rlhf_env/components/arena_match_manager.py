@@ -710,25 +710,38 @@ class ArenaMatchManager:
     # ------------------------------------------------------------------
     def _safe_model_path(self, path: str) -> str:
         """Path-traversal защита: кастомный путь модели должен лежать под
-        models_dir или repo root. Относительный путь разрешается сначала от
-        repo root (cwd) — чтобы `ai/models/foo.onnx` не удваивался в
-        `models_dir/ai/models/foo.onnx` — затем от models_dir (для bare-имён).
-        Возвращает абсолютный путь; ValueError при выходе за допустимые корни."""
+        models_dir или repo root. Относительный путь разрешается от repo root
+        (cwd), если он естественно попадает в models_dir (напр.
+        `ai/models/foo.onnx` — чтобы не удваивался в `models_dir/ai/models/...`);
+        иначе — от models_dir (для bare-имён `foo.onnx`).
+        Возвращает абсолютный путь; ValueError при выходе за допустимые корни.
+
+        Разрешение НЕ зависит от существования файла на диске: кастомный путь
+        может ещё не существовать (раньше проверка ``cand_cwd.exists()``
+        пропускала удвоение `ai/models/X` → `models_dir/ai/models/X`, когда файл
+        отсутствовал — regression ``test_safe_model_path_repo_relative_not_doubled``).
+        """
         p = Path(path).expanduser()
-        allowed_roots = [self.models_dir.resolve(), Path.cwd().resolve()]
+        models_root = self.models_dir.resolve()
+        cwd_root = Path.cwd().resolve()
+        allowed_roots = [models_root, cwd_root]
         if p.is_absolute():
             chosen = p.resolve()
         else:
-            cand_cwd = (Path.cwd() / p).resolve()
-            cand_models = (self.models_dir / p).resolve()
-            # предпочтение — существующему файлу под разрешённым корнем; иначе
-            # cand_models (если под models_dir), иначе cand_cwd.
-            if cand_cwd.exists() and any(cand_cwd == r or r in cand_cwd.parents for r in allowed_roots):
+            cand_cwd = (cwd_root / p).resolve()
+            cand_models = (models_root / p).resolve()
+            # repo-relative путь, естественно попадающий в models_dir (напр.
+            # "ai/models/X") → разрешаем от cwd, НЕ удваивая под models_dir.
+            if cand_cwd == models_root or models_root in cand_cwd.parents:
                 chosen = cand_cwd
-            elif any(cand_models == r or r in cand_models.parents for r in allowed_roots):
+            # bare-имя (или путь вне models_dir) → под models_dir.
+            elif cand_models == models_root or models_root in cand_models.parents:
                 chosen = cand_models
-            else:
+            # прочий repo-relative путь под cwd → от cwd.
+            elif cand_cwd == cwd_root or cwd_root in cand_cwd.parents:
                 chosen = cand_cwd
+            else:
+                chosen = cand_cwd  # провалит allowed-root проверку → ValueError
         if not any(chosen == root or root in chosen.parents for root in allowed_roots):
             raise ValueError(
                 f"custom model path {path!r} resolves outside allowed roots "
