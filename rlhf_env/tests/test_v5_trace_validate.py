@@ -393,7 +393,8 @@ def test_mutation_terminal_status_none_flagged(tmp_path):
 
 
 def test_mutation_draw_with_winner_flagged(tmp_path):
-    """FIX: draw/stalemate с non-None winner противоречив (draw не имеет победителя)."""
+    """FIX: draw/stalemate с non-None winner противоречив (draw не имеет победителя).
+    Вариант A — естественный конец: post_state.status='draw' (non-terminal last row)."""
     src_v5, src_blog = _drive_completed(tmp_path)
     dst_v5 = tmp_path / "mut" / "v5"
     dst_blog = tmp_path / "mut" / "b.json"
@@ -406,6 +407,29 @@ def test_mutation_draw_with_winner_flagged(tmp_path):
     m = json.loads((dst_v5 / "meta.json").read_text(encoding="utf-8"))
     m["status"] = "draw"
     m["winner_user_id"] = 99999
+    (dst_v5 / "meta.json").write_text(json.dumps(m, ensure_ascii=False), encoding="utf-8")
+    rep = validate_v5_trace(dst_v5, battle_log_path=dst_blog)
+    assert not rep["ok"] and _has_issue(rep, "draw/stalemate has no winner"), rep["issues"]
+
+
+def test_mutation_terminal_draw_with_winner_flagged(tmp_path):
+    """FIX: terminal row action_type='draw' с meta.winner_user_id!=None. state.status
+    остаётся 'ongoing' (mark_draw не мутирует его) — winner-check должен смотреть на
+    meta.status для terminal rows, иначе non-None winner прошёл бы незамеченным.
+    Базируем на surrender-trace (terminal last row уже исключён из correspondence)."""
+    src_v5, src_blog = _drive_surrender(tmp_path)
+    dst_v5 = tmp_path / "mut" / "v5"
+    dst_blog = tmp_path / "mut" / "b.json"
+    _copy_trace(src_v5, src_blog, dst_v5, dst_blog)
+    rows = _load_actions(dst_v5)
+    last = rows[-1]
+    assert last.get("action_type") == "surrender", "surrender-trace должен кончаться терминалом"
+    last["action_type"] = "draw"  # терминал, но не surrender
+    # post_state.status оставляем 'ongoing' (как mark_draw — не мутирует state.status)
+    _save_actions(dst_v5, rows)
+    m = json.loads((dst_v5 / "meta.json").read_text(encoding="utf-8"))
+    m["status"] = "draw"
+    m["winner_user_id"] = 1000  # у draw нет победителя — противоречие
     (dst_v5 / "meta.json").write_text(json.dumps(m, ensure_ascii=False), encoding="utf-8")
     rep = validate_v5_trace(dst_v5, battle_log_path=dst_blog)
     assert not rep["ok"] and _has_issue(rep, "draw/stalemate has no winner"), rep["issues"]

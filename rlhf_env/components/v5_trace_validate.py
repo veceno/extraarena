@@ -312,22 +312,27 @@ def _check_continuity(
                 f"[continuity] terminal row but meta.status={meta_status!r} "
                 f"not a terminal status"
             )
-    # winner ↔ status согласованность.
+    # winner ↔ status согласованность. Для терминальной строки (surrender/draw/
+    # stalemate) state.status не отражает исход (mark_surrender/mark_draw не мути-
+    # руют его — остаётся 'ongoing'), авторитет — meta.status; для естественного
+    # конца — post_state.status. Иначе terminal draw с meta.winner_user_id!=None
+    # прошёл бы незамеченным (last_status='ongoing' не попадает ни в какую ветку).
     p1_uid_local = meta.get("p1_user_id")
     p2_uid_local = meta.get("p2_user_id")
     meta_winner = meta.get("winner_user_id")
-    if last_status in ("p1_win", "p2_win"):
-        expected_winner = p1_uid_local if last_status == "p1_win" else p2_uid_local
+    status_for_winner = meta_status if last_is_term else last_status
+    if status_for_winner in ("p1_win", "p2_win"):
+        expected_winner = p1_uid_local if status_for_winner == "p1_win" else p2_uid_local
         if meta_winner is not None and expected_winner is not None and meta_winner != expected_winner:
             issues.append(
-                f"[continuity] final status={last_status!r} implies winner="
+                f"[continuity] final status={status_for_winner!r} implies winner="
                 f"{expected_winner} but meta.winner_user_id={meta_winner}"
             )
-    elif last_status in ("draw", "stalemate"):
+    elif status_for_winner in ("draw", "stalemate"):
         # draw/stalemate не имеют победителя — non-None winner противоречив.
         if meta_winner is not None:
             issues.append(
-                f"[continuity] final status={last_status!r} but meta.winner_user_id="
+                f"[continuity] final status={status_for_winner!r} but meta.winner_user_id="
                 f"{meta_winner} (draw/stalemate has no winner)"
             )
     # turns.jsonl: turn_number строго возрастают, континуальны от 1, валидные снапшоты.

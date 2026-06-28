@@ -932,7 +932,7 @@ log = asyncio.run(runner.arun())
 
 ```bash
 python3 -m pytest rlhf_env/tests/ rlhf_env/tests_*.py -q
-# 134 passed, 1 skipped, 0 failed (2026-06-28)
+# 135 passed, 1 skipped, 0 failed (2026-06-28)
 ```
 
 Покрытие:
