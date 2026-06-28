@@ -1,0 +1,123 @@
+{
+  "schema": "extra_orchestra.scenario.v2",
+  "name": "Солдатик field test",
+  "seed": 42,
+  "viewer_side": "p1",
+  "match_id": "new-scenario",
+  "classic_params": {
+    "sudden_death_enabled": false,
+    "mana_per_turn": 1,
+    "turn_duration_seconds": 25
+  },
+  "graph": {
+    "start": "s0",
+    "nodes": [
+      {
+        "id": "s0",
+        "kind": "scene",
+        "scene": {
+          "type": "init",
+          "turn_number": 15,
+          "starting_side": "p1",
+          "display_ms": 2000,
+          "p1": {
+            "user_id": 1001,
+            "nickname": "Демо",
+            "title": "",
+            "rarity": "common",
+            "mana": 10,
+            "max_mana": 10,
+            "hero": {
+              "card_id": 1,
+              "level": 1
+            },
+            "avatar_url": "/DesignAssets/PlayerCosmetics/Avatars/1.png",
+            "background_url": "/DesignAssets/PlayerCosmetics/Background/7.png",
+            "hand": [
+              {
+                "card_id": 47,
+                "level": 1
+              }
+            ],
+            "board": [],
+            "deck": []
+          },
+          "p2": {
+            "user_id": 2002,
+            "is_bot": true,
+            "nickname": "Оппонент",
+            "title": "",
+            "rarity": "epic",
+            "mana": 7,
+            "max_mana": 7,
+            "hero": {
+              "card_id": 3,
+              "level": 1
+            },
+            "avatar_url": "/DesignAssets/PlayerCosmetics/Avatars/2.png",
+            "background_url": "/DesignAssets/PlayerCosmetics/Background/3.png",
+            "hand": [],
+            "board": [
+              {
+                "card_id": 24,
+                "level": 1,
+                "mechanics_override": [
+                  "shield",
+                  "shield_refresh"
+                ],
+                "is_ready": true
+              },
+              {
+                "card_id": 34,
+                "level": 1,
+                "mechanics_override": [
+                  "deathrattle_aoe_damage_2"
+                ],
+                "is_ready": true
+              },
+              {
+                "card_id": 23,
+                "level": 1,
+                "mechanics_override": [
+                  "cleave_1_2"
+                ],
+                "is_ready": true
+              }
+            ],
+            "deck": []
+          }
+        }
+      },
+      {
+        "id": "n1",
+        "kind": "action",
+        "side": "p1",
+        "action": {
+          "type": "play_card",
+          "delay_ms": 800,
+          "hand_index": 0
+        }
+      }
+    ],
+    "edges": [
+      {
+        "id": "e1",
+        "from": "s0",
+        "to": "n1"
+      }
+    ]
+  },
+  "layout": {
+    "s0": {
+      "x": 60,
+      "y": 200
+    },
+    "n1": {
+      "x": 290,
+      "y": 200
+    }
+  },
+  "editor": {
+    "zoom": 1
+  }
+}
