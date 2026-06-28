@@ -83,6 +83,7 @@ class ManifestWriter:
         self.manifest = {
             "manifest_version": MANIFEST_VERSION,
             "group_id": group_id,
+            "agent_name": spec.get("agent_name"),
             "created_at": _utc_now_iso(),
             "finished_at": None,
             # spec хранится в манифесте как метаданные серии. Убираем transient
@@ -131,6 +132,10 @@ class ManifestWriter:
         v5_dir: Optional[str] = None,
         v5_meta_path: Optional[str] = None,
         decks_cache: Optional[Dict[str, Any]] = None,
+        battle_tag: Optional[str] = None,
+        p1_actor_type: Optional[str] = None,
+        v5_trace_ok: Optional[bool] = None,
+        agent_name: Optional[str] = None,
     ) -> None:
         """Добавляет результат одного боя и обновляет агрегаты."""
         result = {
@@ -146,6 +151,16 @@ class ManifestWriter:
             result["v5_dir"] = v5_dir
         if v5_meta_path is not None:
             result["v5_meta_path"] = v5_meta_path
+        # Теггинг актора + G4-сигнал наличия v5/trace (для фильтрации Phase A
+        # vs semi-synth и детекции тихо-проваленных рекордеров).
+        if battle_tag is not None:
+            result["battle_tag"] = battle_tag
+        if p1_actor_type is not None:
+            result["p1_actor_type"] = p1_actor_type
+        if v5_trace_ok is not None:
+            result["v5_trace_ok"] = bool(v5_trace_ok)
+        if agent_name is not None:
+            result["agent_name"] = agent_name
         if decks_cache is not None:
             # ДЕНОРАЛИЗОВАННЫЙ кэш колод для быстрого lookup при батч-обучении;
             # АВТОРИТАТИВНЫЕ resolved-колоды лежат в v5/meta.json, а в manifest.spec
@@ -207,6 +222,7 @@ class ManifestWriter:
 
         summary = {
             "group_id": self.group_id,
+            "agent_name": self.manifest.get("agent_name"),
             "battles_finished": self.manifest["results"]["battles_finished"],
             "winrate_p1": self.manifest["results"]["winrate_p1"],
             "winrate_p2": self.manifest["results"]["winrate_p2"],

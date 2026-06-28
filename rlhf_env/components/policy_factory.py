@@ -379,98 +379,21 @@ def _load_berserk(
 def build_policy(spec: Dict[str, Any], *, registry=None) -> Any:
     """Создаёт политику по спеке.
 
+    Делегирует модульному реестру адаптеров (``policy_adapters.AdapterRegistry``).
+    Прежний жёсткий if/elif kind-dispatch убран — добавление нового вида модели
+    (V5 и далее) делается через ``default_registry().register(kind, factory)`` +
+    ``register_detector(...)``, без правок этой функции.
+
     spec: {"name": str, "kind": str (optional), "path": str (optional),
            "difficulty": str (IGNORED — всегда BOT_MAX_DIFFICULTY="max"; система
                              сложностей удалена, модель играет на максимум),
            "temperature": float (optional), "mode": str (optional), "seed": int (optional), ...}
 
     registry: PolicyRegistry (опционально). Если не передан и нужно резолвить ONNX —
-              создаётся через PolicyRegistry.scan("ai/models") (лениво).
+              создаётся через PolicyRegistry.scan("ai/models") (лениво, внутри реестра).
     """
-    name = spec.get("name")
-    if not name:
-        raise ValueError("policy spec requires 'name'")
-
-    kind = spec.get("kind")
-    path = spec.get("path")
-    # Система сложностей удалена — модель всегда играет на максимум (argmax).
-    # Любой spec.difficulty игнорируется; принудительно фиксируем "max".
-    difficulty = BOT_MAX_DIFFICULTY
-    seed = int(spec.get("seed", 0))
-
-    # Baselines
-    name_lower = name.lower()
-    if name_lower in {"random", "random_legal"}:
-        return _RLHFRandomPolicy(seed=seed)
-    if name_lower in {"greedy_face", "greedy"}:
-        return _RLHFGreedyFacePolicy()
-    if name_lower in {"end_turn", "end"}:
-        return _RLHFEndTurnPolicy()
-
-    # Lazy registry
-    global _DEFAULT_REGISTRY
-    if registry is None:
-        from rlhf_env.components.policy_registry import PolicyRegistry
-        if _DEFAULT_REGISTRY is None:
-            _DEFAULT_REGISTRY = PolicyRegistry.scan("ai/models")
-        registry = _DEFAULT_REGISTRY
-
-    # Из registry (если path не указан)
-    if path is None and registry is not None:
-        resolved = registry.resolve_spec(name, override_kind=kind)
-        path = resolved.get("path")
-        if not kind:
-            kind = resolved.get("kind")
-
-    if path is None:
-        raise ValueError(f"policy spec requires 'path' or registry resolution for {name!r}")
-
-    # Auto-detect kind
-    if not kind or kind == "auto":
-        try:
-            from ai.model_benchmark.policies import inspect_model
-            kind = inspect_model(path).kind
-        except Exception as exc:
-            raise ValueError(f"could not auto-detect kind for {path}: {exc}") from exc
-
-    if kind == "unknown":
-        raise ValueError(f"model kind unknown for {path}")
-
-    # Legacy V2/V3 one-input ONNX — отдельный путь, БЕЗ BerserkInference
-    # (obs_dim=1456 контракт валиден только для V4 action-conditioned).
-    # Переиспользуем ai.model_benchmark.policies.LegacyOnnxPolicy + классический
-    # декодер decode_action; shim над живой ареной даёт ClassicRLEnv-интерфейс.
-    if kind == "legacy_onnx":
-        adapter = _LegacyOnnxBotPolicy(path, name=name)
-        logger.info(
-            "[policy_factory] built LegacyOnnxBot name=%s path=%s",
-            name, path,
-        )
-        return adapter
-
-    sidecar = _load_sidecar(path)
-    params = default_inference_params(sidecar, kind)
-    for k in ("temperature", "mode", "seed"):
-        if k in spec:
-            params[k] = spec[k]
-
-    brain = _load_berserk(path, difficulty=difficulty, sidecar=sidecar)
-    # Защита целостности логов (аудит SYN-1): если onnx-модель молча свалилась в
-    # rule-based fallback (нет sidecar / obs_dim=0 / контракт не прошёл) — поднимаем
-    # явную ошибку, чтобы battle_log/manifest НЕ соврали, что играла onnx-модель.
-    if not brain.has_profile(difficulty):
-        raise RuntimeError(
-            f"onnx-модель {name!r} ({path}) не загрузилась через BerserkInference "
-            f"(difficulty={difficulty}) и молча ушла в rule-based fallback. "
-            f"Скорее всего отсутствует sidecar-файл '{path}.json' с obs_dim/inputs/outputs. "
-            f"Сгенерируйте sidecar либо используйте baseline (random/greedy_face/end_turn). "
-            f"Молчаливый fallback запрещён — это нарушило бы целостность обучающих логов."
-        )
-    logger.info(
-        "[policy_factory] built BerserkPolicy name=%s kind=%s path=%s difficulty=%s",
-        name, kind, path, difficulty,
-    )
-    return _BerserkPolicyAdapter(brain, difficulty=difficulty, name=name, kind=kind, path=path)
+    from rlhf_env.components.policy_adapters import default_registry
+    return default_registry().build(spec, registry=registry)
 
 
 def select_action(policy: Any, engine: Any, player_id: int) -> int:

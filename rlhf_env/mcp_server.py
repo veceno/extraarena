@@ -53,6 +53,34 @@ from rlhf_env.components.policy_registry import PolicyRegistry  # noqa: E402
 logger = logging.getLogger(__name__)
 
 
+def _policy_info(policy: Any) -> Optional[Dict[str, Any]]:
+    """Лёгкое provenance-описание политики: {name,kind,model_path,weights_hash,weights_version}.
+
+    Используется в ответах start_series/register_custom_model, чтобы оркестратор
+    видел resolved adapter (V2/V3/V4/V5/baseline) без полного state.
+    """
+    if policy is None:
+        return None
+    info: Dict[str, Any] = {
+        "name": getattr(policy, "name", None),
+        "kind": getattr(policy, "kind", None),
+    }
+    for attr in ("model_path", "weights_hash", "weights_version"):
+        v = getattr(policy, attr, None)
+        if v is not None:
+            info[attr] = v
+    return info
+
+
+def _runner_warnings(runner: Optional[MatchRunner]) -> List[str]:
+    """BUG4: проброс policy-fallback предупреждений (напр. v5-stub → end_turn)
+    в ответ start_series/next_battle, чтобы MCP-клиент видел деградацию модели,
+    а не молчаливый «нормальный» бой."""
+    if runner is None:
+        return []
+    return list(getattr(runner, "policy_fallbacks", []) or [])
+
+
 # ============================================================================
 # HeadlessHub — реестр матчей + ленивые MatchRunner'ы (без WS/broadcaster)
 # ============================================================================
@@ -60,9 +88,15 @@ logger = logging.getLogger(__name__)
 class HeadlessHub:
     """Связывает ArenaMatchManager с MatchRunner'ами для headless-игры."""
 
-    def __init__(self, *, sessions_dir: str, models_dir: str, cards_path: str):
+    def __init__(self, *, sessions_dir: str, models_dir: str, cards_path: str,
+                 registry: Optional["PolicyRegistry"] = None):
+        # ЕДИНЫЙ реестр моделей на hub: MCPServer.list_models/register_custom_model
+        # и ArenaMatchManager.start_series (_build_match → build_policy) должны делить
+        # один объект, иначе register_custom_model добавляет модель в реестр A, а
+        # start_series резолвит из реестра B → KeyError (BUG1: кастомные модели unusable).
         self.manager = ArenaMatchManager(
             sessions_dir=sessions_dir, models_dir=models_dir, cards_path=cards_path,
+            registry=registry,
         )
         self._runners: Dict[str, MatchRunner] = {}
 
@@ -87,9 +121,17 @@ class HeadlessHub:
 # ============================================================================
 
 class MCPServer:
-    def __init__(self, hub: HeadlessHub, registry: PolicyRegistry):
+    def __init__(self, hub: HeadlessHub, registry: Optional[PolicyRegistry] = None):
         self.hub = hub
-        self.registry = registry
+        # BUG1 фикс: list_models/register_custom_model и start_series должны делить
+        # один реестр. Авторитативный — hub.manager.registry (его использует
+        # _build_match). Дополнительно вливаем спеки из переданного registry, если
+        # они были созданы отдельным scan (main()/тесты), чтобы ничего не потерять.
+        self.registry = hub.manager.registry
+        if registry is not None and registry is not self.registry:
+            for spec in registry.specs:
+                if spec.name not in self.registry._name_index:
+                    self.registry.add_spec(spec)
         self.tools = self._build_tools()
 
     # ------------------------------------------------------------------
@@ -112,17 +154,33 @@ class MCPServer:
                         "spec": {
                             "type": "object",
                             "properties": {
-                                "p2_model": {"type": "string", "description": "имя модели-оппонента или 'random'"},
+                                "p2_model": {
+                                    "type": ["string", "object"],
+                                    "description": "имя модели-оппонента ('random'/имя из registry) ИЛИ объект {name,path,kind} для custom model by path+adapter.",
+                                },
+                                "p2_model_path": {"type": "string", "description": "путь к .onnx оппонента (custom by path; под models_dir/repo root)"},
+                                "p2_model_kind": {"type": "string", "enum": ["auto", "action_onnx", "legacy_onnx", "v5", "random", "greedy_face", "end_turn"], "description": "адаптер оппонента (V2/V3=legacy_onnx, V4=action_onnx, V5=v5, baseline)"},
+                                "p1_model": {"type": ["string", "object"], "description": "имя/объект RL-модели для p1 (при p1_actor_type='rl', model-vs-model)"},
+                                "p1_model_path": {"type": "string"},
+                                "p1_model_kind": {"type": "string", "enum": ["auto", "action_onnx", "legacy_onnx", "v5", "random", "greedy_face", "end_turn"]},
                                 "battles_planned": {"type": "integer", "default": 1, "minimum": 1, "maximum": 1000},
                                 "seed": {"type": "integer", "default": 0},
                                 "starting_player": {"type": "string", "default": "random", "enum": ["random", "p1", "p2"]},
-                                "deck_strategy_p1": {"type": "string", "default": "random_arenaenv", "enum": ["random_arenaenv", "custom"]},
-                                "deck_strategy_p2": {"type": "string", "default": "random_arenaenv", "enum": ["random_arenaenv", "custom"]},
+                                "deck_strategy_p1": {"type": "string", "default": "random_arenaenv", "enum": ["random_arenaenv", "custom", "preset"]},
+                                "deck_strategy_p2": {"type": "string", "default": "random_arenaenv", "enum": ["random_arenaenv", "custom", "preset"]},
                                 "custom_deck_p1": {"type": "array", "items": {"type": "integer"}},
                                 "custom_deck_p2": {"type": "array", "items": {"type": "integer"}},
+                                "preset_number_p1": {"type": "integer", "description": "номер preset-колоды (deck_strategy_p1='preset')"},
+                                "preset_number_p2": {"type": "integer"},
+                                "p1_deck_source": {"type": "object", "description": "явная форма {type:'imported',preset_number:N} (движок поддерживает)"},
+                                "agent_name": {"type": "string", "description": "кодовое имя суб-агента (опц.); auto-assign из пула если не задано"},
                                 "p1_name": {"type": "string"}, "p2_name": {"type": "string"},
+                                "p1_actor_type": {
+                                    "type": "string", "enum": ["human", "llm", "rl"], "default": "llm",
+                                    "description": "тип актора p1: 'llm' (MCP-модель, default), 'human' (браузер) или 'rl' (наша RL-модель auto-play, model-vs-model). Определяет battle_tag и decision_source в V5-трейсах.",
+                                },
                             },
-                            "required": ["p2_model"],
+                            "required": [],
                         },
                     },
                     "required": ["spec"],
@@ -146,10 +204,12 @@ class MCPServer:
             {
                 "name": "submit_action",
                 "description": (
-                    "Выполнить действие человека. action: {type:'play_card'|'attack'|'end_turn', ...}. "
+                    "Выполнить действие игрока (p1). action: {type:'play_card'|'attack'|'end_turn'|'mana_draw', ...}. "
                     "play_card: {type:'play_card', card_id_from_hand|hand_index, target_position?, target_id?, target_is_hero?}. "
                     "attack: {type:'attack', attacker_id, target_id, target_is_hero?}. "
-                    "end_turn: {type:'end_turn'}. После успешного действия ход бота прокручивается автоматически."
+                    "end_turn: {type:'end_turn'}. "
+                    "mana_draw: {type:'mana_draw'} — добор карты за ману (стоимость 2*(count+1)/ход, не передаёт ход). "
+                    "После play_card/attack/end_turn ход бота прокручивается автоматически; после mana_draw — нет."
                 ),
                 "inputSchema": {
                     "type": "object",
@@ -158,7 +218,7 @@ class MCPServer:
                         "action": {
                             "type": "object",
                             "properties": {
-                                "type": {"type": "string", "enum": ["play_card", "attack", "end_turn"]},
+                                "type": {"type": "string", "enum": ["play_card", "attack", "end_turn", "mana_draw"]},
                                 "card_id_from_hand": {"type": "integer"},
                                 "hand_index": {"type": "integer"},
                                 "target_position": {"type": "integer"},
@@ -221,8 +281,93 @@ class MCPServer:
             },
             {
                 "name": "list_models",
-                "description": "Список доступных моделей-оппонентов.",
+                "description": "Список доступных моделей-оппонентов (из registry + зарегистрированные через register_custom_model).",
                 "inputSchema": {"type": "object", "properties": {}},
+            },
+            {
+                "name": "list_active_series",
+                "description": (
+                    "«Общая картинка» активных серий: (a) число активных игр по агенту и (b) по модели-оппоненту. "
+                    "Возвращает агентов с прогрессом боёв N/M + wins/losses/draws/decks и группировку by_model."
+                ),
+                "inputSchema": {"type": "object", "properties": {}},
+            },
+            {
+                "name": "get_agent_status",
+                "description": "Статус «играющего» суб-агента по кодовому имени: бои N/M, победы, поражения, ничьи, колоды, оппонент, p1_actor_type.",
+                "inputSchema": {"type": "object", "properties": {"agent_name": {"type": "string"}}, "required": ["agent_name"]},
+            },
+            {
+                "name": "get_match_status",
+                "description": "Лёгкий статус боя (polling без полного state): turn, is_ended, winner, is_my_turn, current_player_id, action_count.",
+                "inputSchema": {"type": "object", "properties": {"match_id": {"type": "string"}}, "required": ["match_id"]},
+            },
+            {
+                "name": "get_action_history",
+                "description": "История ходов боя (replay длинных боёв без re-fetch fullstate).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"match_id": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "default": 200}},
+                    "required": ["match_id"],
+                },
+            },
+            {
+                "name": "finish_series",
+                "description": "Завершить серию досрочно: закрыть manifest (finished_at + summary) и освободить кодовое имя агента.",
+                "inputSchema": {"type": "object", "properties": {"group_id": {"type": "string"}}, "required": ["group_id"]},
+            },
+            {
+                "name": "list_preset_decks",
+                "description": "Список preset-колод (ArenaENV Random / JSON-imported) для deck_strategy='preset'.",
+                "inputSchema": {"type": "object", "properties": {}},
+            },
+            {
+                "name": "register_custom_model",
+                "description": (
+                    "Зарегистрировать кастомную модель by path+adapter (V2/V3/V4/V5/baseline) in-memory: "
+                    "позволяет оркестратору выбирать early-snapshot V5 и т.п. через {name,path,kind} в start_series. "
+                    "path должен лежать под models_dir или корнем репо (защита от path-traversal)."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "path": {"type": "string", "description": "путь к .onnx под models_dir/repo root"},
+                        "kind": {"type": "string", "enum": ["auto", "action_onnx", "legacy_onnx", "v5", "random", "greedy_face", "end_turn"]},
+                    },
+                    "required": ["name", "path"],
+                },
+            },
+            {
+                "name": "get_v5_dataset_summary",
+                "description": "V5 training orchestrator: сводка по группе — строки, v5_trace_ok, распределение battle_tag, turns/actions total.",
+                "inputSchema": {"type": "object", "properties": {"group_id": {"type": "string"}}, "required": ["group_id"]},
+            },
+            {
+                "name": "list_v5_groups",
+                "description": "V5 orchestrator: список групп с v5-трейсами (фильтр по battle_tag).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"battle_tag": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "default": 100}},
+                },
+            },
+            {
+                "name": "get_v5_trace",
+                "description": "V5 orchestrator: содержимое v5/trace боя (meta|turns|actions).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "group_id": {"type": "string"},
+                        "battle_id": {"type": "string"},
+                        "what": {"type": "string", "enum": ["meta", "turns", "actions"]},
+                    },
+                    "required": ["group_id", "battle_id", "what"],
+                },
+            },
+            {
+                "name": "validate_v5_traces",
+                "description": "V5 orchestrator: проверить целостность v5/trace всех боёв группы.",
+                "inputSchema": {"type": "object", "properties": {"group_id": {"type": "string"}}, "required": ["group_id"]},
             },
         ]
 
@@ -237,11 +382,19 @@ class MCPServer:
             if not isinstance(spec, dict):
                 raise ValueError("spec must be an object")
             spec.setdefault("battles_planned", 1)
+            # MCP = LLM-актор по умолчанию (полу-синтетические бои тегируются
+            # llm-vs-bot, decision_source='llm' в V5-трейсах).
+            spec.setdefault("p1_actor_type", "llm")
             match = hub.manager.create_series(spec)
-            # если бот ходит первым — прокручиваем (headless: агент не видит ход бота автоматически иначе)
+            # headless: прокручиваем все бот-ходы до хода human/llm ИЛИ до game_over.
+            # run_auto единообразно покрывает три режима: human/llm-vs-bot (ходит
+            # p2 если он стартует, стоп на p1), rl-vs-bot и rl-vs-rl (model-vs-model,
+            # бой до game_over без submit_action). Прежний «if is_current_player_bot:
+            # run_bot_turn()» ломал p1-as-RL (по умолчанию ходил только p2).
             runner = await hub.get_runner(match.engine.match_id)
-            if match.engine.is_current_player_bot() and runner is not None:
-                await runner.run_bot_turn()
+            if runner is not None:
+                await self._run_auto_bounded(runner)
+            p1_actor = match.engine.p1_actor_type
             return {
                 "group_id": match.group_id,
                 "match_id": match.engine.match_id,
@@ -249,6 +402,15 @@ class MCPServer:
                 "battles_planned": match.battles_planned,
                 "player_ids": [match.engine.human_user_id, match.engine.bot_user_id],
                 "opponent": {"model": spec.get("p2_model"), "difficulty": BOT_MAX_DIFFICULTY},
+                "p1_actor_type": p1_actor,
+                "battle_tag": match.engine.battle_tag,
+                "agent_name": getattr(match, "agent_name", None),
+                "p1_model": _policy_info(match.p1_policy),
+                "p2_model": _policy_info(match.bot_policy),
+                "is_ended": match.engine.is_ended,
+                "winner_id": (match.engine._get_winner_id() if match.engine.is_ended else None),
+                "policy_warnings": _runner_warnings(runner),
+                "degraded": bool(_runner_warnings(runner)),
             }
 
         if name == "next_battle":
@@ -257,9 +419,15 @@ class MCPServer:
             if match is None:
                 return {"status": "series_complete", "group_id": gid}
             runner = await hub.get_runner(match.engine.match_id)
-            if match.engine.is_current_player_bot() and runner is not None:
-                await runner.run_bot_turn()
-            return {"match_id": match.engine.match_id, "battle_id": match.battle_id, "group_id": gid}
+            if runner is not None:
+                await self._run_auto_bounded(runner)
+            return {"match_id": match.engine.match_id, "battle_id": match.battle_id, "group_id": gid,
+                    "agent_name": getattr(match, "agent_name", None),
+                    "p1_actor_type": match.engine.p1_actor_type,
+                    "battle_tag": match.engine.battle_tag,
+                    "is_ended": match.engine.is_ended,
+                    "winner_id": (match.engine._get_winner_id() if match.engine.is_ended else None),
+                    "policy_warnings": _runner_warnings(runner)}
 
         if name == "get_state":
             match = hub._match(args["match_id"])
@@ -281,6 +449,13 @@ class MCPServer:
             runner = await hub.get_runner(match_id)
             if runner is None:
                 return {"error": "match_not_found"}
+            # F4(audit): p1-RL (model-vs-model) не управляется через submit_action —
+            # иначе внешний клиент вливает p1-action мимо match.p1_policy auto-play,
+            # и он мис-тегируется decision_source='rl' в v5/actions.jsonl → портит
+            # V5 training-данные. p1-RL водится только advance_bot/run_auto
+            # (run_bot_turn с match.p1_policy). Симметрично surrender/get_legal_actions.
+            if getattr(runner.match.engine, "p1_actor_type", "human") == "rl":
+                return {"error": "submit_action_unavailable_for_rl_p1"}
             action = dict(action)
             action.setdefault("client_action_id", f"mcp_{match_id}_{int(asyncio.get_event_loop().time()*1000)&0xffff}")
             resp = await runner.execute_human_action(action)
@@ -294,11 +469,20 @@ class MCPServer:
             runner = await hub.get_runner(match_id)
             if runner is None:
                 return {"error": "match_not_found"}
-            if not runner.match.engine.is_current_player_bot():
+            engine = runner.match.engine
+            if not engine.is_current_player_bot() and getattr(runner.match, "p1_policy", None) is None:
                 return {"status": "not_bot_turn"}
-            await runner.run_bot_turn()
+            cur = engine.get_current_player_id()
+            if cur == engine.bot_user_id:
+                await runner.run_bot_turn()
+            elif cur == engine.human_user_id and getattr(runner.match, "p1_policy", None) is not None:
+                # p1-as-RL (model-vs-model): один ход RL-модели.
+                await runner.run_bot_turn(player_id=cur, policy=runner.match.p1_policy)
+            else:
+                return {"status": "not_bot_turn"}
             await self._drain_bot(runner)
-            return {"status": "ok", "is_ended": runner.match.engine.is_ended}
+            return {"status": "ok", "is_ended": engine.is_ended,
+                    "winner_id": (engine._get_winner_id() if engine.is_ended else None)}
 
         if name == "surrender":
             match_id = args["match_id"]
@@ -313,6 +497,7 @@ class MCPServer:
 
         if name == "get_battle_group_status":
             gid = args["group_id"]
+            hub.manager.reap_completed(gid)
             m = hub.manager.list_groups()
             for g in m:
                 if g["group_id"] == gid:
@@ -368,7 +553,258 @@ class MCPServer:
         if name == "list_models":
             return {"models": self.registry.list_specs()}
 
+        if name == "list_active_series":
+            # Self-heal: освободить агентов завершённых серий, до которых клиент
+            # не дошёл next_battle/finish_series (иначе утекают в agents_index).
+            hub.manager.reap_all_completed()
+            groups = hub.manager.list_groups()
+            # (a) по агенту + (d) «общая картинка» серии; (b) по модели-оппоненту.
+            agents: List[Dict[str, Any]] = []
+            by_model: Dict[str, Dict[str, Any]] = {}
+            for g in groups:
+                ag = g.get("agent_name")
+                agents.append({
+                    "agent_name": ag,
+                    "group_id": g["group_id"],
+                    "status": g.get("status"),
+                    "battles": f"{g.get('battles_finished',0)}/{g.get('battles_planned',0)}",
+                    "wins": g.get("wins", 0),
+                    "losses": g.get("losses", 0),
+                    "draws": g.get("draws", 0),
+                    "p1_actor_type": g.get("p1_actor_type"),
+                    "opponent_model": g.get("p2_model"),
+                    "current_match_id": g.get("current_match_id"),
+                })
+                mkey = str(g.get("p2_model") or "random")
+                bm = by_model.setdefault(mkey, {"model": mkey, "groups": 0, "wins": 0, "losses": 0, "draws": 0})
+                bm["groups"] += 1
+                bm["wins"] += g.get("wins", 0)
+                bm["losses"] += g.get("losses", 0)
+                bm["draws"] += g.get("draws", 0)
+            running = [g for g in groups if g.get("status") == "running"]
+            return {
+                "count": len(running),
+                "agents": agents,
+                "by_model": list(by_model.values()),
+            }
+
+        if name == "get_agent_status":
+            st = hub.manager.agent_registry.status(args["agent_name"])
+            # Self-heal: если серия агента доиграна, а клиент не звал next_battle/
+            # finish_series — освободим имя через manager.reap_completed (in-process).
+            gid = st.get("group_id")
+            if gid:
+                hub.manager.reap_completed(gid)
+                st = hub.manager.agent_registry.status(args["agent_name"])
+            return st
+
+        if name == "get_match_status":
+            match = hub._match(args["match_id"])
+            if match is None:
+                return {"error": "match_not_found"}
+            # Self-heal: бой завершён и серия доиграна → освободить агента сейчас,
+            # не ждать next_battle/finish_series (фикс утечки codename в agents_index).
+            hub.manager.reap_completed(match.group_id)
+            engine = match.engine
+            uid = engine.human_user_id
+            return {
+                "match_id": engine.match_id,
+                "group_id": match.group_id,
+                "battle_id": match.battle_id,
+                "agent_name": getattr(match, "agent_name", None),
+                "turn": getattr(engine, "turn", None),
+                "is_ended": engine.is_ended,
+                "winner_id": (engine._get_winner_id() if engine.is_ended else None),
+                "current_player_id": engine.get_current_player_id(),
+                # Workflow-B Issue #2: на завершённой игре ничей ход — не тянем
+                # current_player_id (после surrender он мог остаться human).
+                "is_my_turn": (not engine.is_ended and engine.get_current_player_id() == uid),
+                "p1_actor_type": engine.p1_actor_type,
+                "battle_tag": engine.battle_tag,
+            }
+
+        if name == "get_action_history":
+            runner = await hub.get_runner(args["match_id"])
+            if runner is None:
+                return {"error": "match_not_found"}
+            actions = runner.battle_log.get("actions", [])
+            limit = int(args.get("limit", 200) or 200)
+            return {"actions": actions[-limit:], "count": len(actions)}
+
+        if name == "finish_series":
+            gid = args["group_id"]
+            live = hub.manager._groups.get(gid)
+            if live is None:
+                return {"error": "group not found"}
+            return hub.manager.finish_series(gid)
+
+        if name == "list_preset_decks":
+            # Preset-колоды (ArenaENV Random / JSON-imported) хранятся в прод-БД;
+            # headless-среда без БД их не имеет. deck_strategy='random_arenaenv'
+            # использует рандом-генератор движка, 'custom' — custom_deck_* из spec.
+            return {"presets": [], "note": "preset decks require the prod DB; use deck_strategy='random_arenaenv' or 'custom' with custom_deck_* in headless env"}
+
+        if name == "register_custom_model":
+            from rlhf_env.components.policy_adapters import default_registry
+            from rlhf_env.components.policy_registry import ModelSpec
+            mname = str(args["name"]).strip()
+            path = str(args["path"])
+            kind = args.get("kind", "auto")
+            # path-traversal защита: путь должен лежать под models_dir или корнем репо.
+            safe = hub.manager._safe_model_path(path)
+            reg = default_registry()
+            # F7: грузим sidecar (.onnx.json) перед detect_kind — как scan_directory.
+            # Иначе пользовательские V5-детекторы, читающие sidecar (obs_dim/inputs),
+            # получают None и не могут определить kind для auto-registered модели.
+            detected = None
+            if kind == "auto":
+                try:
+                    from rlhf_env.components.policy_factory import _load_sidecar
+                    sidecar = _load_sidecar(safe)
+                    detected = reg.detect_kind(str(safe), sidecar, name=mname)
+                except Exception:  # noqa: BLE001
+                    detected = None
+            # 'auto' (а не 'unknown') если детект не сработал — пусть build's own
+            # auto-detect branch (он тоже грузит sidecar) дожмёт на start_series.
+            final_kind = kind if kind != "auto" else (detected or "auto")
+            self.registry.add_spec(ModelSpec(
+                name=mname, path=str(safe), sidecar_path=None, kind=final_kind,
+                description="custom (registered via MCP)",
+            ))
+            return {"registered": True, "name": mname, "path": str(safe),
+                    "kind": final_kind, "detected_kind": detected}
+
+        # --- V5 training orchestrator --------------------------------------
+
+        if name == "get_v5_dataset_summary":
+            gid = args["group_id"]
+            gdir = hub.manager.sessions_dir / gid
+            if not gdir.exists():
+                return {"error": "group not found"}
+            man = hub.manager.sessions_dir / gid / "manifest.json"
+            if not man.exists():
+                return {"error": "manifest not found"}
+            m = json.loads(man.read_text(encoding="utf-8"))
+            results = m.get("battles_results", []) or []
+            tag_dist: Dict[str, int] = {}
+            v5_ok = 0
+            turns_total = 0
+            actions_total = 0
+            for r in results:
+                t = r.get("battle_tag")
+                if t:
+                    tag_dist[t] = tag_dist.get(t, 0) + 1
+                if r.get("v5_trace_ok"):
+                    v5_ok += 1
+                v5dir = gdir / "battles" / r["battle_id"] / "v5"
+                tpath = v5dir / "turns.jsonl"
+                apath = v5dir / "actions.jsonl"
+                if tpath.exists():
+                    turns_total += sum(1 for _ in tpath.open())
+                if apath.exists():
+                    actions_total += sum(1 for _ in apath.open())
+            return {
+                "group_id": gid,
+                "battles_finished": len(results),
+                "v5_trace_ok_count": v5_ok,
+                "battle_tag_distribution": tag_dist,
+                "turns_total": turns_total,
+                "actions_total": actions_total,
+                "rows": actions_total,
+            }
+
+        if name == "list_v5_groups":
+            tag_filter = args.get("battle_tag")
+            limit = int(args.get("limit", 100) or 100)
+            out: List[Dict[str, Any]] = []
+            sdir = hub.manager.sessions_dir
+            if sdir.exists():
+                for gdir in sorted(sdir.iterdir()):
+                    man = gdir / "manifest.json"
+                    if not man.exists():
+                        continue
+                    try:
+                        m = json.loads(man.read_text(encoding="utf-8"))
+                    except Exception:  # noqa: BLE001
+                        continue
+                    results = m.get("battles_results", []) or []
+                    tags = {r.get("battle_tag") for r in results if r.get("battle_tag")}
+                    if tag_filter and tag_filter not in tags:
+                        continue
+                    out.append({
+                        "group_id": gdir.name,
+                        "agent_name": m.get("agent_name"),
+                        "battles_finished": len(results),
+                        "battle_tags": sorted(t for t in tags if t),
+                        "v5_trace_ok_count": sum(1 for r in results if r.get("v5_trace_ok")),
+                        "finished_at": m.get("finished_at"),
+                    })
+                    if len(out) >= limit:
+                        break
+            return {"groups": out}
+
+        if name == "get_v5_trace":
+            gid = args["group_id"]
+            bid = args["battle_id"]
+            what = args["what"]
+            v5dir = hub.manager.sessions_dir / gid / "battles" / bid / "v5"
+            if not v5dir.exists():
+                return {"error": "v5 trace not found", "path": str(v5dir)}
+            fname = {"meta": "meta.json", "turns": "turns.jsonl", "actions": "actions.jsonl"}[what]
+            fpath = v5dir / fname
+            if not fpath.exists():
+                return {"error": f"{fname} not found", "path": str(fpath)}
+            if fname.endswith(".json"):
+                return {"data": json.loads(fpath.read_text(encoding="utf-8")), "rows_count": 1}
+            rows = [json.loads(l) for l in fpath.read_text(encoding="utf-8").splitlines() if l.strip()]
+            return {"data": rows, "rows_count": len(rows)}
+
+        if name == "validate_v5_traces":
+            gid = args["group_id"]
+            gdir = hub.manager.sessions_dir / gid
+            if not gdir.exists():
+                return {"error": "group not found"}
+            man = hub.manager.sessions_dir / gid / "manifest.json"
+            m = json.loads(man.read_text(encoding="utf-8")) if man.exists() else {"battles_results": []}
+            results = m.get("battles_results", []) or []
+            checked = 0
+            ok = 0
+            broken: List[Dict[str, Any]] = []
+            for r in results:
+                checked += 1
+                v5dir = gdir / "battles" / r["battle_id"] / "v5"
+                issues: List[str] = []
+                for need in ("meta.json", "turns.jsonl", "actions.jsonl"):
+                    fp = v5dir / need
+                    if not fp.exists():
+                        issues.append(f"missing {need}")
+                    elif need.endswith(".jsonl") and fp.stat().st_size == 0:
+                        issues.append(f"empty {need}")
+                if issues:
+                    broken.append({"battle_id": r["battle_id"], "issues": issues})
+                else:
+                    ok += 1
+            return {"checked": checked, "ok": ok, "broken": broken}
+
         raise ValueError(f"unknown tool: {name}")
+
+    async def _run_auto_bounded(self, runner: MatchRunner) -> bool:
+        """run_auto с защитой от зависания (F4): кроме turn-cap внутри run_auto,
+        оборачиваем в asyncio.wait_for — если auto-play не укладывается в таймаут
+        (напр. обе политики сломаны, длинный rl-vs-rl с реальными delay'ами),
+        stdio-вызов не виснет. Возвращает True если auto-play завершился штатно,
+        False по таймауту (бой остался незавершённым — оркестратор может
+        finish_series)."""
+        try:
+            await asyncio.wait_for(asyncio.shield(runner.run_auto()), timeout=120.0)
+            return True
+        except asyncio.TimeoutError:
+            logger.warning("run_auto timed out match=%s — leaving battle unfinished", runner.match.engine.match_id)
+            runner.policy_fallbacks.append("run_auto timed out (120s) — battle left unfinished; use finish_series to close")
+            return False
+        except Exception:  # noqa: BLE001
+            logger.warning("run_auto crashed: %s", exc_info=True)
+            return False
 
     async def _drain_bot(self, runner: MatchRunner) -> None:
         """Дождаться завершения запланированной бот-рутины (если была)."""

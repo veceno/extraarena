@@ -99,6 +99,7 @@ const ARENA_SFX = {
   cardFrozen: 'arena-sfx-card-frozen',
   cardHeal: 'arena-sfx-card-heal',
   cardSelected: 'arena-sfx-card-selected',
+  manaDraw: 'arena-sfx-mana-draw',
   heroDamage: 'arena-sfx-hero-damage',
   heroDeath: 'arena-sfx-hero-death',
   nextMove: 'arena-sfx-next-move',
@@ -451,6 +452,85 @@ const CARD_SFX_CONFIG_DEFAULT = {
         'targeting:battlecry_heal_target_3': {
           type: 'targetHint',
           text: 'Выбери цель для исцеления'
+        }
+      }
+    },
+    '47': {
+      name: 'Солдатик',
+      sounds: {
+        deploy: {
+          src: '/assets/audio/characters/047_soldier/soldier_deploy.mp3',
+          basePolicy: 'replace',
+          volume: 0.82
+        }
+      },
+      visuals: {
+        deploy: {
+          type: 'backgroundFlash',
+          color: '#f59e0b',
+          centerColor: '#fde047',
+          durationMs: 3200,
+          intensity: 0.6
+        }
+      }
+    },
+    '48': {
+      name: 'Соул Гудман',
+      sounds: {
+        deploy: {
+          src: '/assets/audio/characters/048_saul_goodman/saul_goodman_deploy.mp3',
+          basePolicy: 'replace',
+          volume: 0.82
+        }
+      },
+      visuals: {
+        deploy: {
+          type: 'backgroundFlash',
+          color: '#e2e8f0',
+          centerColor: '#ffffff',
+          durationMs: 3200,
+          intensity: 0.6
+        }
+      }
+    },
+    '49': {
+      name: 'Достоевский',
+      visuals: {
+        'mechanic:crime_and_punishment_2': {
+          type: 'backgroundFlash',
+          color: '#38bdf8',
+          durationMs: 3400,
+          intensity: 0.62
+        },
+        mechanic: {
+          type: 'backgroundFlash',
+          color: '#38bdf8',
+          durationMs: 3400,
+          intensity: 0.62
+        }
+      }
+    },
+    '50': {
+      name: 'Бан',
+      visuals: {
+        deploy: {
+          type: 'backgroundFlash',
+          color: '#9d174d',
+          centerColor: '#a21caf',
+          durationMs: 3200,
+          intensity: 0.62
+        }
+      }
+    },
+    '52': {
+      name: 'Криста Ленц',
+      visuals: {
+        deploy: {
+          type: 'backgroundFlash',
+          color: '#f9a8d4',
+          centerColor: '#fbcfe8',
+          durationMs: 3200,
+          intensity: 0.5
         }
       }
     }
@@ -2354,6 +2434,9 @@ const ACTION_ERROR_MESSAGES = {
   board_full: 'поле уже заполнено',
   insufficient_mana: 'недостаточно маны',
   mana_insufficient: 'недостаточно маны',
+  hand_full: 'рука уже заполнена — добор невозможен',
+  no_cards_to_draw: 'нечего добрать — колода и сброс пусты',
+  mana_draw_failed: 'не удалось добрать карту',
   target_required: 'нужна цель',
   consume_target_not_found: 'цель для поглощения не найдена',
   attacker_not_found: 'атакующий не найден',
@@ -4441,11 +4524,14 @@ function renderHand(handCards) {
   // Очищаем руку
   handZone.innerHTML = '';
   
-  console.log('[ARENA] Рендеринг руки:', handCards);
-  
-  if (!handCards || handCards.length === 0) {
+  // Нормализуем: даже при пустой руке добор-плитка должна рендериться,
+  // поэтому раннего возврата здесь быть не должно.
+  handCards = Array.isArray(handCards) ? handCards : [];
+
+  if (handCards.length === 0) {
     console.log('[ARENA] Рука пуста');
-    return;
+  } else {
+    console.log('[ARENA] Рендеринг руки:', handCards);
   }
   
   // Лимит вывода: только первые 5 карт
@@ -4455,6 +4541,57 @@ function renderHand(handCards) {
     const cardEl = createHandCardElement(card, index);
     handZone.appendChild(cardEl);
   });
+
+  // Feature B: «Добор карт» — золотая плитка-кнопка в конце руки.
+  // Появляется только в свой ход и пока рука не заполнена (HAND_CAP=4) —
+  // ВКЛЮЧАЯ пустую руку (0 карт). Стоимость: 2 * (mana_draw_count_this_turn + 1)
+  // — 2, 4, 6, ...; каждый следующий добор в рамках хода дороже на +2, в начале
+  // хода счётчик сбрасывается. При нехватке маны плитка затемнена
+  // (информативно), тап не срабатывает.
+  if (!isOnboardingTutorialState() && currentState?.is_my_turn && handCards.length < 4) {
+    const playerState = currentState.player || {};
+    const drawCount = playerState.mana_draw_count_this_turn || 0;
+    const cost = 2 * (drawCount + 1);
+    const canAfford = (playerState.mana || 0) >= cost;
+
+    const tile = document.createElement('div');
+    tile.className = 'hand-card mana-draw-tile' + (canAfford ? '' : ' mana-draw-disabled');
+    tile.dataset.manaDraw = '1';
+    tile.title = canAfford ? `Добрать карту за ${cost} маны` : `Нужно ${cost} маны для добора`;
+
+    // Толстый белый «+» по центру (SVG). Под белыми линиями — более широкие
+    // тёмно-зелёные (#1c5a32), та же обводка, что у текста «мана:» снизу.
+    // Тень blur 25px / opacity 50% — в CSS (.mana-draw-plus svg).
+    const plus = document.createElement('div');
+    plus.className = 'mana-draw-plus';
+    plus.innerHTML =
+      '<svg viewBox="0 0 100 100" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">' +
+      '<line x1="50" y1="20" x2="50" y2="80" stroke="#1c5a32" stroke-width="20" stroke-linecap="round"/>' +
+      '<line x1="20" y1="50" x2="80" y2="50" stroke="#1c5a32" stroke-width="20" stroke-linecap="round"/>' +
+      '<line x1="50" y1="20" x2="50" y2="80" stroke="#fff" stroke-width="16" stroke-linecap="round"/>' +
+      '<line x1="20" y1="50" x2="80" y2="50" stroke="#fff" stroke-width="16" stroke-linecap="round"/>' +
+      '</svg>';
+
+    // Стоимость маны — текст снизу (по аналогии с прошлым вариантом UI),
+    // чтобы растущая цена добора (2 → 4 → 6 ...) всегда была видна.
+    const manaLabel = document.createElement('div');
+    manaLabel.className = 'mana-draw-mana';
+    manaLabel.textContent = `мана: ${cost}`;
+
+    tile.appendChild(plus);
+    tile.appendChild(manaLabel);
+
+    tile.addEventListener('click', (e) => {
+      e.stopPropagation(); // не давать всплывать к обработчику отмены выбора
+      if (!canAfford) {
+        arenaHaptic('warning', { key: 'mana-draw-no-mana', minInterval: 180 });
+        return;
+      }
+      manaDraw();
+    });
+
+    handZone.appendChild(tile);
+  }
 }
 
 function createHandCardElement(card, index) {
@@ -6048,6 +6185,64 @@ async function endTurn() {
     arenaHaptic('error', { key: 'end-turn-error', minInterval: 220 });
     if (!handleOnboardingActionError(error)) {
       alert('Не удалось завершить ход: ' + error.message);
+    }
+  }
+}
+
+// Feature B: «Добор карт» — player-initiated draw за ману. Стоимость
+// растёт на +2 за каждый добор в рамках хода (2, 4, 6, ...) и
+// сбрасывается в начале каждого хода. См. /api/battle/mana-draw и
+// core/engine.py ArenaEnvironment._handle_mana_draw.
+async function manaDraw() {
+  if (isArenaWaitingForPlayers(currentState)) {
+    console.warn('[ARENA] Бой еще синхронизируется');
+    return;
+  }
+  if (!currentState || !currentState.is_my_turn) {
+    console.warn('[ARENA] Не ваш ход — добор невозможен');
+    return;
+  }
+
+  // Отменяем любой активный выбор (TARGETING/ATTACK), чтобы добор не
+  // конфликтовал с прицеливанием.
+  if (interactionMode.type !== 'NONE' || selectedAttacker) {
+    resetInteractionMode();
+  }
+
+  try {
+    console.log('[ARENA] Добор карт за ману');
+    arenaHaptic('selection', { key: 'mana-draw', minInterval: 120 });
+
+    const response = await fetch(buildArenaAuthUrl('/api/battle/mana-draw'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        match_id: matchId,
+        client_action_id: makeClientActionId('mana_draw')
+      })
+    });
+
+    if (!response.ok) {
+      throw await parseActionError(response, 'Не удалось добрать карту');
+    }
+
+    const result = await response.json();
+    console.log('[ARENA] Добор выполнен:', result);
+
+    if (result.state) {
+      arenaHaptic('medium', { key: 'mana-draw-ok', minInterval: 140 });
+      playArenaSfx('manaDraw', { volume: 0.72 });
+      currentState = result.state;
+      renderBattleState(result.state);
+      renderBoard('player', (currentState.player || currentState).board || []);
+      renderBoard('opponent', (currentState.opponent || currentState).board || []);
+      handleOnboardingActionPayload(result);
+    }
+  } catch (error) {
+    console.error('[ARENA] Ошибка добора карт:', error);
+    arenaHaptic('error', { key: 'mana-draw-error', minInterval: 220 });
+    if (!handleOnboardingActionError(error)) {
+      alert('Не удалось добрать карту: ' + error.message);
     }
   }
 }

@@ -48,18 +48,6 @@ def _is_builtin_baseline(name: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _derive_kind_from_name(name: str) -> str:
-    """Определяет kind по имени файла до auto-detect."""
-    name_lower = name.lower()
-    if "v4" in name_lower or "lr-v4" in name_lower:
-        return "auto"
-    if "v3" in name_lower or "v2" in name_lower or "legacy" in name_lower:
-        return "auto"
-    if "random" in name_lower and "biggest" in name_lower:
-        return "auto"
-    return "auto"
-
-
 def scan_directory(models_dir: Path | str) -> List[ModelSpec]:
     """Сканирует директорию на .onnx + sidecar и возвращает список спеков."""
     models_dir = Path(models_dir)
@@ -80,14 +68,17 @@ def scan_directory(models_dir: Path | str) -> List[ModelSpec]:
             except Exception as exc:
                 logger.warning("[PolicyRegistry] bad sidecar %s: %s", sidecar_path, exc)
 
-        # Lazy-import inspect_model чтобы не тянуть onnxruntime при импорте registry.
-        try:
-            from ai.model_benchmark.policies import inspect_model
+        # Kind определяется через модульный реестр детекторов (policy_adapters):
+        # pluggable V5/пользовательские детекторы + layer-A fallback (defer к
+        # gitignored ai.model_benchmark.inspect_model). В worktree без layer A
+        # fallback вернёт None → kind="unknown" (как раньше, без падения).
+        from rlhf_env.components.policy_adapters import default_registry
 
-            meta = inspect_model(onnx_path)
-            kind = meta.kind
-        except Exception as exc:
-            logger.warning("[PolicyRegistry] inspect failed for %s: %s", onnx_path, exc)
+        kind = default_registry().detect_kind(str(onnx_path), sidecar, name=name)
+        if not kind:
+            logger.warning(
+                "[PolicyRegistry] kind not detected for %s (layer A absent?)", onnx_path
+            )
             kind = "unknown"
 
         description = sidecar.get("model_version") or sidecar.get("source_checkpoint") or ""
@@ -150,15 +141,24 @@ class PolicyRegistry:
         """Поиск модели по имени. Возвращает None для baselines (kind != path-based)."""
         return self._name_index.get(name)
 
-    def resolve_spec(self, name: str, *, override_kind: Optional[str] = None) -> Dict[str, Any]:
+    def resolve_spec(
+        self,
+        name: str,
+        *,
+        override_kind: Optional[str] = None,
+        override_path: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """Резолвит имя → спеку для policy_factory.
 
         Args:
             name: имя модели (e.g. "extra-lr-v4-max" / "random" / "greedy_face")
             override_kind: форсировать kind (для unit-тестов / специальных прогонов)
+            override_path: путь к onnx для custom-модели by-path. Если имя не
+                найдено в реестре и override_path задан — возвращается спека с
+                этим путём без KeyError (custom model by path+adapter).
 
         Raises:
-            KeyError: если имя не найдено и это не baseline
+            KeyError: если имя не найдено, это не baseline и override_path не задан
         """
         # 1) Baseline
         baseline = _is_builtin_baseline(name)
@@ -171,10 +171,23 @@ class PolicyRegistry:
         # 2) ONNX из реестра
         spec_obj = self.get(name)
         if spec_obj is None:
+            if override_path:
+                # Custom model by path+adapter — не падаем, отдаём спеку с путём.
+                return {
+                    "name": name,
+                    "kind": override_kind or "auto",
+                    "path": override_path,
+                }
             raise KeyError(f"model not found in registry: {name!r}")
 
         spec = {"name": name, "kind": override_kind or spec_obj.kind, "path": spec_obj.path}
         return spec
+
+    def add_spec(self, spec: ModelSpec) -> None:
+        """In-memory добавление спеки (для MCP ``register_custom_model``).
+        Не персистит в index.json — кастомные модели живут до рестарта процесса."""
+        self.specs.append(spec)
+        self._name_index[spec.name] = spec
 
     def save_index(self, dest_path: Path | str) -> None:
         dest = Path(dest_path)
@@ -182,7 +195,9 @@ class PolicyRegistry:
         dest.write_text(json.dumps(self.list_specs(), indent=2, ensure_ascii=False), encoding="utf-8")
 
     def __len__(self) -> int:
-        return len(self.specs) + 3  # +3 baselines
+        # F3(audit): считаем по факту из list_specs (specs + built-in baselines),
+        # а не magic +3 — чтобы计数 не разъехался с реальным набором baselines.
+        return len(self.list_specs())
 
 
 __all__ = ["ModelSpec", "PolicyRegistry", "scan_directory"]

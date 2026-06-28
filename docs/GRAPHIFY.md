@@ -64,6 +64,16 @@ graphify explain "Database.get_admin_analytics_overview"
 graphify path "web.server" "Database.get_admin_analytics_overview"
 ```
 
+## `rlhf_env/` in the graph
+
+The autonomous RLHF environment is now whitelisted in `.graphifyignore`
+(source `*.py` under `rlhf_env/`, `rlhf_env/components/`, `rlhf_env/audit/`,
+`rlhf_env/tests/`, plus `*.md`/`*.json`/`*.sh`/`*.txt`); runtime artifacts
+(`sessions/`, `.venv/`, `__pycache__/`, `webapp_borrow/`, `static/`) stay
+excluded. Concise architecture overview (component graph + 3 orchestration
+levels + data flow): [`RLHF_ENV.md`](./RLHF_ENV.md). Full docs:
+`rlhf_env/DOCS.md`. LLM orchestration playbooks: `.codex/skills/extra-rlhf/`.
+
 ## Audit (2026-06-25)
 
 Checked against:

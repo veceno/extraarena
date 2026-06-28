@@ -128,6 +128,7 @@ class ArenaTransport:
         r.add_post("/api/battle/play-card", self.http_play_card)
         r.add_post("/api/battle/attack", self.http_attack)
         r.add_post("/api/battle/end-turn", self.http_end_turn)
+        r.add_post("/api/battle/mana-draw", self.http_mana_draw)
         r.add_post("/api/battle/preview", self.http_preview)
         r.add_post("/api/matches/{match_id}/surrender", self.http_surrender)
         r.add_post("/api/match/find", self.http_match_find)
@@ -518,6 +519,9 @@ class ArenaTransport:
     async def http_end_turn(self, request: web.Request) -> web.Response:
         return await self._http_action(request, kind="end_turn")
 
+    async def http_mana_draw(self, request: web.Request) -> web.Response:
+        return await self._http_action(request, kind="mana_draw")
+
     async def http_preview(self, request: web.Request) -> web.Response:
         try:
             payload = await request.json()
@@ -616,6 +620,8 @@ class ArenaTransport:
             "player_ids": [self.human_user_id, match.engine.bot_user_id],
             "bot_info": bot_info,
             "group_id": match.group_id,
+            "battle_tag": match.engine.battle_tag,
+            "p1_actor_type": match.engine.p1_actor_type,
         })
 
 

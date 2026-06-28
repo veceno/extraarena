@@ -47,7 +47,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from core.actions import AttackAction, EndTurnAction, PlayCardAction
+from core.actions import AttackAction, EndTurnAction, ManaDrawAction, PlayCardAction
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +116,13 @@ class V5TraceRecorder:
         bot_policy_info: Dict[str, Any],
         p1_user_id: int = 1000,
         p2_user_id: int = 2000,
+        # Теггинг акторов для V5 (decision_source / battle_tag).
+        p1_actor_type: str = "human",
+        p2_actor_type: str = "bot",
+        battle_tag: str = "human-vs-bot",
+        # p1 как RL-модель (model-vs-model): provenance p1-политики + кодовое имя агента.
+        p1_policy_info: Optional[Dict[str, Any]] = None,
+        agent_name: Optional[str] = None,
     ) -> None:
         self.engine = engine
         self.group_id = group_id
@@ -138,6 +145,11 @@ class V5TraceRecorder:
         self.bot_policy_info = bot_policy_info
         self.p1_user_id = p1_user_id
         self.p2_user_id = p2_user_id
+        self.p1_actor_type = str(p1_actor_type)
+        self.p2_actor_type = str(p2_actor_type)
+        self.battle_tag = str(battle_tag)
+        self.p1_policy_info = p1_policy_info
+        self.agent_name = agent_name
 
         self.v5_dir = self.group_dir / "battles" / battle_id / "v5"
         self.v5_dir.mkdir(parents=True, exist_ok=True)
@@ -152,6 +164,8 @@ class V5TraceRecorder:
         self._finalized = False
         self._created_at = _utc_now_iso()
         self._start_monotonic = time.monotonic()
+        # catalog.json — флаг успешной записи (G5: retry на неудаче, skip на успехе).
+        self._catalog_written = False
 
         # catalog.json — once per group (idempotent by existence).
         self.catalog_path = self.group_dir / "catalog.json"
@@ -163,7 +177,10 @@ class V5TraceRecorder:
     # catalog
     # ------------------------------------------------------------------
     def _write_catalog(self) -> None:
-        if self.catalog_path.exists():
+        # G5: idempotent — skip если уже успешно записан (этим или прошлым боем
+        # группы). При неудаче НЕ помечаем written → следующий бой retry'нет.
+        if self._catalog_written or self.catalog_path.exists():
+            self._catalog_written = True
             return
         try:
             cards = {str(cid): self.catalog.card(int(cid)) for cid in self.catalog.card_ids}
@@ -176,9 +193,13 @@ class V5TraceRecorder:
             "generated_at": _utc_now_iso(),
             "cards": cards,
         }
-        tmp = self.catalog_path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-        tmp.replace(self.catalog_path)
+        try:
+            tmp = self.catalog_path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            tmp.replace(self.catalog_path)
+            self._catalog_written = True
+        except Exception:  # noqa: BLE001
+            logger.warning("v5 catalog write failed: %s", exc_info=True)
 
     # ------------------------------------------------------------------
     # meta
@@ -204,6 +225,8 @@ class V5TraceRecorder:
             "game_mode": self.game_mode,
             "mode_config": _serialize_mode_config_safe(self.mode_config),
             "bot_policy": self.bot_policy_info,
+            "p1_policy": self.p1_policy_info,
+            "agent_name": self.agent_name,
             "p2_model": self.p2_model,
             "difficulty": self.difficulty,
             "catalog_hash": self.catalog_hash,
@@ -222,8 +245,16 @@ class V5TraceRecorder:
             "p2_deck": [{"card_id": int(cid), "level": int(self.p2_levels.get(cid, 1)), "instance_id": None} for cid in self.p2_deck_ids],
             "p1_user_id": int(self.p1_user_id),
             "p2_user_id": int(self.p2_user_id),
-            "p1_is_bot": False,
+            "p1_is_bot": self.p1_actor_type == "rl",
             "p2_is_bot": True,
+            # Теггинг актора (G15): human | llm | bot | rl. p1_is_bot/p2_is_bot
+            # оставлены для back-compat (booleans), но actor_type — каноничное
+            # поле для фильтрации Phase A (human) vs semi-synth (llm) vs model-vs-model (rl).
+            "p1_actor_type": self.p1_actor_type,
+            "p2_actor_type": self.p2_actor_type,
+            "battle_tag": self.battle_tag,
+            # G4: маркер что v5-trace реально создан (для collection-скриптов).
+            "v5_trace_present": True,
         }
         tmp = self.meta_path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -260,16 +291,38 @@ class V5TraceRecorder:
             "deck": [self._snapshot_card(c) for c in p.deck],
             "board": [self._snapshot_card(c) for c in p.board],
             "graveyard": [self._snapshot_card(c) for c in p.graveyard],
+            # V5 global-канал: сколько доборов за ману сделано в текущем своём ходу.
+            "mana_draw_count_this_turn": int(getattr(p, "mana_draw_count_this_turn", 0)),
         }
 
     def _snapshot_state(self) -> Dict[str, Any]:
         st = self.engine._arena.state
+        # G2: захватываем action_history / history / pending_card_feedback
+        # чтобы offline-bridge мог реконструировать ПОЛНЫЙ GameState (вкл.
+        # 20×144 history-channel для encode_observation_v5) из pre_state.
+        # action_history — Deque[tuple[str,str]] (UI-лог: rebirth/crime/
+        # mana_draw entries из core/engine.py); history — List[Dict].
+        try:
+            action_history = [list(t) for t in st.action_history]
+        except Exception:  # noqa: BLE001
+            action_history = []
+        try:
+            history = list(getattr(st, "history", []) or [])
+        except Exception:  # noqa: BLE001
+            history = []
+        try:
+            pending_feedback = list(getattr(st, "pending_card_feedback_events", []) or [])
+        except Exception:  # noqa: BLE001
+            pending_feedback = []
         return {
             "turn_number": int(st.turn_number),
             "current_turn_owner_id": int(st.current_turn_owner_id),
             "status": st.status.name.lower(),
             "p1": self._snapshot_player(st.p1),
             "p2": self._snapshot_player(st.p2),
+            "action_history": action_history,
+            "history": history,
+            "pending_card_feedback_events": pending_feedback,
             "visibility": VISIBILITY,
         }
 
@@ -312,6 +365,12 @@ class V5TraceRecorder:
         if atype == "end_turn":
             for i, a in enumerate(legal):
                 if isinstance(a, EndTurnAction):
+                    return i
+            return None
+        if atype == "mana_draw":
+            # Добор за ману — единственный ManaDrawAction в legal-наборе.
+            for i, a in enumerate(legal):
+                if isinstance(a, ManaDrawAction):
                     return i
             return None
         st = self.engine._arena.state
@@ -490,7 +549,8 @@ class V5TraceRecorder:
         with self.actions_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
-    def record_terminal(self, user_id: int, action_type: str, reason: str) -> int:
+    def record_terminal(self, user_id: int, action_type: str, reason: str,
+                         decision_source: str = "human") -> int:
         """Синтетический action-row для терминала БЕЗ обычного действия (surrender /
         non-action draw). pre_state снапается тут; post_state + deltas — в
         after_action(handle) ПОСЛЕ мутации (mark_surrender меняет status на P2_WIN).
@@ -513,7 +573,7 @@ class V5TraceRecorder:
                 "turn_number": int(st.turn_number),
                 "actor_user_id": int(user_id),
                 "actor_player": actor_player,
-                "decision_source": "human",
+                "decision_source": decision_source,
                 "legal_action_index": None,
                 "action_type": action_type,
                 "action_json": {"type": action_type, "reason": reason},

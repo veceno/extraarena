@@ -23,7 +23,7 @@ import logging
 import time
 from typing import Any, Callable, Dict, List, Optional
 
-from core.actions import AttackAction, BaseAction, EndTurnAction, PlayCardAction
+from core.actions import AttackAction, BaseAction, EndTurnAction, ManaDrawAction, PlayCardAction
 from core.engine import ArenaEnvironment
 from core.effects import get_taunt_targets, has_taunt
 from core.state import (
@@ -83,7 +83,18 @@ class RlhfBattleEngine:
         bot_brain_profile: Optional[str] = None,
         game_mode: str = "classic",
         event_emitter: Optional[BattleEventEmitter] = None,
+        # Тип актора на стороне p1/p2: human | llm | rl | bot. Теггинг боя для V5
+        # (decision_source / battle_tag); по умолчанию p1=human, p2=bot.
+        # 'rl' = наша RL-модель auto-play на стороне p1 (model-vs-model); p2 всегда
+        # 'bot' (наша RL/кастом-модель). battle_tag переопределяется в _build_match
+        # (rl-vs-rl когда p2 тоже RL-модель), см. arena_match_manager.
+        p1_actor_type: str = "human",
+        p2_actor_type: str = "bot",
     ) -> None:
+        if p1_actor_type not in {"human", "llm", "rl"}:
+            raise ValueError(f"invalid p1_actor_type: {p1_actor_type!r} (expected human|llm|rl)")
+        if p2_actor_type not in {"bot", "rl"}:
+            raise ValueError(f"invalid p2_actor_type: {p2_actor_type!r} (expected bot|rl)")
         self.match_id = match_id
         self._arena: ArenaEnvironment = arena
         self.mode_config: ModeConfig = mode_config or resolve_mode_config(game_mode)
@@ -99,6 +110,10 @@ class RlhfBattleEngine:
         self.bot_difficulty = bot_difficulty
         self.bot_difficulty_label = bot_difficulty
         self.bot_brain_profile = bot_brain_profile
+        # Теггинг акторов для V5-логирования (decision_source / battle_tag).
+        self.p1_actor_type = str(p1_actor_type)
+        self.p2_actor_type = str(p2_actor_type)
+        self.battle_tag = f"{self.p1_actor_type}-vs-{self.p2_actor_type}"
 
         self.current_player_id: Optional[int] = None
         self.turn = 0
@@ -355,6 +370,22 @@ class RlhfBattleEngine:
         action = EndTurnAction()
         result = self.execute_action(user_id, action)
         result["action"] = "end_turn"
+        return result
+
+    def mana_draw(self, user_id: int) -> Dict[str, Any]:
+        """Добор одной карты за ману (player-initiated «Добор карт»).
+
+        Стоимость N-го добора в рамках хода: ``MANA_DRAW_BASE * (count+1)``
+        (2, 4, 6, ...), сбрасывается в 0 в начале хода игрока. Добор НЕ
+        заканчивает игру и НЕ передаёт ход (current_turn_owner_id не меняется)
+        — поэтому MatchRunner не запускает бота после этого действия. Вся
+        логика в ``core.engine.ArenaEnvironment._handle_mana_draw``.
+        """
+        if not self._arena:
+            return {"action": "mana_draw", "error": "arena_not_initialized"}
+        action = ManaDrawAction()
+        result = self.execute_action(user_id, action)
+        result["action"] = "mana_draw"
         return result
 
     def execute_bot_action(self, action_dict: Dict[str, Any]) -> Dict[str, Any]:
@@ -753,6 +784,11 @@ class RlhfBattleEngine:
             "hand_count": len(ps.hand),
             "deck_count": len(ps.deck),
             "board": [self._serialize_card(c, owner_id=ps.user_id) for c in ps.board],
+            # Счётчик доборов за ману в текущем ходу — нужен клиенту, чтобы
+            # считать следующую стоимость (MANA_DRAW_BASE*(count+1)). Только
+            # для своего состояния (show_hand=True), чтобы не утекало инфо об
+            # оппоненте. (V5 global-канал читается отдельно из v5_trace._snapshot_player.)
+            "mana_draw_count_this_turn": ps.mana_draw_count_this_turn if show_hand else 0,
         }
 
     def _serialize_card(self, card: CardInstance, owner_id: Optional[int] = None) -> Dict[str, Any]:

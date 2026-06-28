@@ -1,10 +1,14 @@
 # RLHF-среда ExtraArena — Полная документация
 
-> **Версия:** 0.1.0
-> **Дата:** 2026-06-24
+> **Версия:** 0.2.0
+> **Дата:** 2026-06-28
 > **Зачем:** автономная среда для сбора обучающих траекторий (human-vs-model,
 > model-vs-model) на детерминированном движке ExtraArena. Не зависит от
 > прод-стека, запускается отдельно, хранит данные в файлах.
+> **0.2:** модульный adapter-registry, p1-as-RL (model-vs-model), AgentRegistry
+> кодовых имён, omniscient V5-trace, 25 MCP-инструментов + 3 уровня оркестрации
+> (см. §7). LLM-навыки оркестрации: `.codex/skills/extra-rlhf/`. Краткий обзор
+> графа: `docs/RLHF_ENV.md`.
 
 ---
 
@@ -16,7 +20,7 @@
 4. [Web-интерфейс](#4-web-интерфейс)
 5. [REST API](#5-rest-api)
 6. [WebSocket-протокол](#6-websocket-протокол)
-7. [MCP-сервер](#7-mcp-сервер)
+7. [MCP-сервер и оркестрация](#7-mcp-сервер-и-оркестрация)
 8. [Формат данных на диске](#8-формат-данных-на-диске)
 9. [Добавление собственных моделей](#9-добавление-собственных-моделей)
 10. [CLI-лаунчер start_rlhf_env.sh](#10-cli-лаунчер-start_rlhf_envsh)
@@ -48,14 +52,18 @@ imitation learning или RLHF.
 
 | Компонент | Назначение |
 |-----------|-----------|
-| `server.py` | aiohttp app: HTTP + WebSocket |
-| `mcp_server.py` | MCP stdio (JSON-RPC 2.0) |
-| `components/battle_runner.py` | Один матч с engine.step + лог |
-| `components/session_manager.py` | asyncio-словарь активных групп |
-| `components/policy_registry.py` | Сканирует `ai/models/*.onnx` + sidecar |
-| `components/policy_factory.py` | `build_policy(spec)` → адаптер |
-| `components/deck_builder.py` | Случайная арена-дека |
-| `components/manifest.py` | Manifest + summary JSON |
+| `server.py` | aiohttp app: HTTP + WebSocket (web-арена @ 8090) |
+| `mcp_server.py` | MCP stdio (JSON-RPC 2.0), 25 инструментов, `HeadlessHub` |
+| `components/arena_match_manager.py` | Реестр серий: `create_series`/`next_match`/`finish_series`/`reap_completed` (self-heal) |
+| `components/match_runner.py` | Один матч: `run_bot_turn`/`run_auto`/`execute_human_action`; p1-as-RL auto-play; `_capture_models` |
+| `components/arena_engine.py` | `RlhfBattleEngine` — обёртка над `core.engine`, `p1_actor_type`, `battle_tag` |
+| `components/agent_registry.py` | Кодовые имена суб-агентов; `fcntl.flock` cross-process + `_self_heal_locked` |
+| `components/policy_adapters.py` | `AdapterRegistry` — модульная точка расширения (`register`/`register_detector`/`build`/`detect_kind`), V5StubAdapter |
+| `components/policy_registry.py` | Сканирует `ai/models/*.onnx` + sidecar; `resolve_spec` (вкл. custom by path) |
+| `components/policy_factory.py` | `build_policy(spec)` → делегирует `AdapterRegistry` |
+| `components/v5_trace.py` | `V5TraceRecorder` — omniscient offline-трейс (`v5/{meta,turns,actions}.jsonl`) |
+| `components/manifest.py` | Manifest + summary + catalog JSON; auto-finalize на `finished>=planned` |
+| `components/deck_builder.py` | Случайная арена-дека + custom + preset |
 | `components/log_schema.py` | Схема battle_log v1.0 |
 | `components/inference_params.py` | Defaults от sidecar |
 | `index.html` + `static/rlhf.js` | Форма старта серии (POST /api/groups → redirect_url → 1:1 `/arena`) |
@@ -105,6 +113,39 @@ imitation learning или RLHF.
 │   V3 (legacy ONNX)  /  V4 (action-conditioned) / random …    │
 └──────────────────────────────────────────────────────────────┘
 ```
+
+### 2.1b. Headless / MCP-поток (оркестрация, model-vs-model, semi-synthetic)
+
+Web-путь выше — для браузера. Оркестрация (MCP + model-vs-model) идёт через
+`ArenaMatchManager` + `MatchRunner` headless, без WS/браузера:
+
+```mermaid
+flowchart TD
+  MCP["MCP stdio (mcp_server.py)<br/>25 tools · HeadlessHub"]
+  MGR["ArenaMatchManager<br/>create_series / next_match / finish_series / reap_completed"]
+  AR["AgentRegistry<br/>кодовые имена · fcntl · self-heal"]
+  ADAP["AdapterRegistry (policy_adapters)<br/>detect_kind · register · build"]
+  RUN["MatchRunner<br/>run_bot_turn(p1/p2) · run_auto · execute_human_action"]
+  ENG["RlhfBattleEngine<br/>p1_actor_type · battle_tag"]
+  V5["V5TraceRecorder<br/>meta/turns/actions.jsonl"]
+  MAN["ManifestWriter<br/>manifest/summary/catalog"]
+  POL["Policies: legacy_onnx · action_onnx/v4 · v5-stub · random · greedy_face · end_turn"]
+  DISK[("sessions/<group>/...")]
+
+  MCP --> MGR
+  MGR --> AR
+  MGR --> ADAP --> POL
+  MGR --> RUN
+  RUN --> ENG
+  RUN --> V5 --> DISK
+  RUN --> MAN --> DISK
+  AR -->|agents_index.json| DISK
+```
+
+`p1_actor_type ∈ {human, llm, rl}`: human/llm — p1 управляется через
+`submit_action` (MCP player-path или WS); `rl` — p1 auto-играет через
+`run_bot_turn(player_id=p1, policy=match.p1_policy)` (model-vs-model, без
+`submit_action`). `battle_tag = {p1}-vs-{bot|rl}` зависит только от kind-а p2.
 
 ### 2.2. Поток данных (один бой)
 
@@ -368,56 +409,188 @@ ws.onmessage = (e) => {
 
 ---
 
-## 7. MCP-сервер
+## 7. MCP-сервер и оркестрация
+
+MCP-сервер — stdio JSON-RPC 2.0 (`rlhf_env/mcp_server.py`, transport `HeadlessHub`).
+Открывает 25 инструментов: жизненный цикл серии, player-инструменты, датасет/v5-trace,
+оркестрацию флотом агентов и V5-пайплайн. Подключается к Claude Code / Codex /
+OpenCode (см. §7.7 и `.codex/skills/extra-rlhf/INSTALL.md`).
 
 ### 7.1. Запуск
 
 ```bash
 ./rlhf_env/start_rlhf_env.sh mcp
-# или
-python3 -m rlhf_env.mcp_server
+# или напрямую (ОБЯЗАТЕЛЬНО из корня репо — иначе не резолвится пакет rlhf_env
+# и относительные пути ai/models, ai/cards.json):
+python3 -m rlhf_env.mcp_server \
+  --models-dir ai/models \
+  --sessions-dir rlhf_env/sessions \
+  --cards-path ai/cards.json
 ```
 
-stdio JSON-RPC 2.0.
+CLI-флаги дублируются env-переменными: `RLHF_MODELS_DIR`, `RLHF_SESSIONS_DIR`,
+`RLHF_CARDS_PATH`, `RLHF_LOG_LEVEL`. Логи идут в stderr (stdout — только
+JSON-RPC, stdio не ломается).
 
-### 7.2. Инструменты
+### 7.2. Инструменты (25)
 
-14 инструментов. P1 — всегда человек (агент/браузер), spec использует `p2_model`.
+**Жизненный цикл серии (data-gen)**
 
 | Tool | Аргументы | Возврат |
 |------|-----------|---------|
-| `start_series` | `spec: dict` | `{group_id, match_id, battle_id, battles_planned, opponent}` |
-| `next_battle` | `group_id: str` | `{match_id, battle_id}` или `{status:"series_complete"}` |
-| `get_state` | `match_id: str` | actor-perspective full_state (как `/api/battle/state`) |
-| `get_legal_actions` | `match_id: str` | `{legal_actions, is_my_turn}` |
-| `submit_action` | `match_id, action` | `{result, state, sound_events}` \| `{result, state, error}` |
-| `advance_bot` | `match_id: str` | `{status, is_ended}` |
-| `surrender` | `match_id: str` | `{result:{game_over, winner_id}, state}` |
-| `list_battle_groups` | — | `{groups: [...]}` |
-| `get_battle_group_status` | `group_id: str` | статус группы |
+| `start_series` | `spec: dict` (см. §7.3) | `{group_id, match_id, battle_id, battles_planned, opponent, agent_name, p1_model, p2_model, battle_tag}` |
+| `next_battle` | `group_id: str` | `{match_id, battle_id}` \| `{status:"series_complete"}` |
+| `finish_series` | `group_id: str` | полное `manifest.json` (закрывает серию, освобождает кодовое имя) |
+| `list_battle_groups` | — | `{groups:[{group_id, agent_name, battles_finished, battles_planned, p1_wins, p2_wins, draws, p1_actor_type, p2_model, battle_tag}]}` |
+| `get_battle_group_status` | `group_id: str` | статус группы (progress, wins/losses, decks, opponent) |
 | `get_battle_group_manifest` | `group_id: str` | полное `manifest.json` |
+| `list_battle_manifests` | `group_id: str` | `{battles:[...]}` |
+| `download_battle_logs` | `group_id, format="json"\|"zip"` | `{path, size}` |
+| `list_models` | — | `{models:[{name, kind, path, weights_hash, degraded}]}` |
+| `register_custom_model` | `{name, path, kind?}` | `{registered, kind, detected_kind}` — in-memory spec в `PolicyRegistry` (модель по path+adapter без копирования) |
+
+**Player (субагент-игрок, p1 = human/llm)**
+
+| Tool | Аргументы | Возврат |
+|------|-----------|---------|
+| `get_state` | `match_id: str` | actor-perspective full_state (hand/board/deck/action_history — как `/api/battle/state`) |
+| `get_legal_actions` | `match_id: str` | `{legal_actions, is_my_turn}` |
+| `submit_action` | `match_id, action` | `{result, state, sound_events}` \| `{result, state, error}` (**отвергается при `p1_actor_type=="rl"`** → `submit_action_unavailable_for_rl_p1`) |
+| `advance_bot` | `match_id: str` | `{status, is_ended}` — шаг авто-игрока (p2 всегда; p1 тоже, если rl) |
+| `surrender` | `match_id: str` | `{result:{game_over, winner_id}, state}` (**отвергается при `p1_actor_type=="rl"`**) |
+| `get_match_status` | `match_id: str` | lightweight `{turn, is_ended, winner, is_my_turn, current_player_id, action_count}` (без полного state — для polling) |
+| `get_action_history` | `match_id, limit?` | `{actions:[{turn, actor, kind, action_dict, ok}], count}` (replay длинных боёв без re-fetch fullstate) |
+
+**Датасет + V5-trace (V5 training orchestrator)**
+
+| Tool | Аргументы | Возврат |
+|------|-----------|---------|
 | `get_dataset` | `group_id: str` | `{dataset_jsonl, dataset_rows, per_battle_jsonl}` |
-| `list_battle_manifests` | `group_id: str` | `{battles: [...]}` |
-| `download_battle_logs` | `group_id, format="json"|"zip"` | `{path, size}` |
-| `list_models` | — | `{models: [...]}` |
+| `get_v5_dataset_summary` | `group_id: str` | `{rows, v5_trace_ok_count, battle_tag_distribution:{...}, turns_total, actions_total}` |
+| `list_v5_groups` | `battle_tag?, limit?` | `{groups:[{group_id, battles_finished, battle_tag, v5_trace_ok_count}]}` |
+| `get_v5_trace` | `group_id, battle_id, what:"meta"\|"turns"\|"actions"` | `{data, rows_count}` — содержимое v5-trace |
+| `validate_v5_traces` | `group_id: str` | `{checked, ok, broken:[{battle_id, issues:[]}]}` |
 
-### 7.3. Пример (curl-style через stdin)
+**Оркестрация флотом (агенты/серии)**
 
-```bash
-echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | python3 -m rlhf_env.mcp_server
+| Tool | Аргументы | Возврат |
+|------|-----------|---------|
+| `list_active_series` | — | `{count, agents:[{agent_name, group_id, battles N/M, wins, losses, draws, opponent_model, p1_actor_type}], by_model:[{model, groups, wins, losses}]}` |
+| `get_agent_status` | `agent_name: str` | `{agent_name, busy, group_id, current_match_id, battles_finished, battles_planned, wins, losses, draws, decks:{p1,p2}, opponent_model, p1_actor_type}` |
+| `list_preset_decks` | — | `{presets:[{preset_number, preset_name, card_ids, is_playable}]}` (без БД → `[]` + note) |
+
+### 7.3. `start_series` — анатомия spec
+
+```jsonc
+{
+  "p2_model": "extra-lr-v4-max",          // имя из registry ИЛИ baseline
+  // альтернатива — модель по path+adapter (без registry):
+  "p2_model_path": "ai/models/my.onnx",
+  "p2_model_kind": "auto",                 // auto|action_onnx|legacy_onnx|v5|random|greedy_face|end_turn
+  // или nested-объект:
+  // "p2_model": {"name":"my","path":"...","kind":"action_onnx"},
+
+  "p1_actor_type": "human",               // human|llm|rl  (default human)
+  "p1_model": "random",                   // только для rl (p1 auto-play, model-vs-model)
+  "p1_model_path": "...", "p1_model_kind": "auto",
+
+  "agent_name": "veceno",                 // опц; иначе auto-assign из пула кодовых имён
+  "battles_planned": 10,
+  "seed": 42,
+  "starting_player": "p1",                // p1|p2|random
+  "max_turns": 60,
+
+  "deck_strategy_p1": "random_arenaenv",  // random_arenaenv|custom|preset
+  "deck_strategy_p2": "random_arenaenv",
+  "preset_name_p1": "...", "preset_number_p1": 3,
+  "custom_decks": {"p1":[...], "p2":[...]}
+}
 ```
 
-Ожидаем 14 инструментов в ответе.
+`required: []` — валидируется по сочетанию полей (минимум какой-то opponent).
+
+### 7.4. Actor types и battle_tag
+
+`p1_actor_type ∈ {human, llm, rl}`:
+
+- **human / llm** — p1 управляется через `submit_action` (MCP-субагент-игрок или
+  браузер). `advance_bot` двигает только p2.
+- **rl** — p1 auto-играет своей RL-моделью (`p1_model`); `submit_action`/`surrender`
+  отвергаются; `advance_bot` двигает обе стороны по очереди (model-vs-model, без
+  MCP-клиента).
+
+`decision_source ∈ {human, llm, bot, rl}` — кто принял решение в данном ходу,
+попадает в `actions.jsonl` (V5-trace).
+
+`battle_tag = "{p1}-vs-{bot|rl}"` — **зависит только от стороны p2**: baseline
+(random/greedy_face/end_turn) → `bot`, настоящая модель → `rl`. Примеры:
+`human-vs-bot`, `llm-vs-rl`, `rl-vs-bot`, `rl-vs-rl`. Тег режет датасет;
+`*-vs-rl` — высокоценные следы против сильного оппонента.
+
+### 7.5. Кодовые имена агентов + reap/self-heal
+
+Серия пинится за «играющим» субагентом с кодовым именем (`agent_name`). Если имя
+не задано — `AgentRegistry.claim_auto()` выбирает из пула:
+(1) fixed `["Veceno","Mentalist","Pvwell","Sinaf","Movi","Ilya","Oguzok","Milita",
+"dranik","sukunyata","absolute"]`;
+(2) имена карт из `ai/cards.json`;
+(3) random-fallback `Agent-<hex>` при исчерпании.
+
+Состояниеpersist в `sessions/agents_index.json` (atomic tmp+rename, `threading.Lock`).
+`release_group` срабатывает на `finish_series` (явное закрытие) — **не** на
+read-paths (`get_match_status`/`reap_completed`), иначе ранний pop ломал поздние
+читалки статуса → ложная «ничья». Self-healing reap восстанавливает зависшие серии
+после краша процесса.
+
+### 7.6. V5-trace и integrity
+
+V5-trace (`V5TraceRecorder`) — **omniscient** offline-only след боя: знает обе
+руки/борды/колоды (не только perspective p1). На диск:
+`sessions/<group>/battles/<bid>/v5/{meta.json, turns.jsonl, actions.jsonl}`.
+`actions.jsonl` — поверхность тренировочных данных (model-version-agnostic).
+`weights_hash=sha256(onnx)[:16]` + флаг `degraded` доказывают, какой чекпоинт
+реально играл (silent-fallback guard).
+
+### 7.7. Три уровня оркестрации (LLM MCP-юзеры)
+
+| Lvl | Роль | Скоуп | Драйвит |
+|---|---|---|---|
+| 0 | Pipeline-оркестратор | полный train-цикл: collect → train → eval → promote | L1 + L2 |
+| 1 | Data-gen оркестратор | план/диспетч флота серий, валидация, шип датасета | L2 (для human/llm p1) |
+| 2 | Player-субагент | играет ОДИН бой как p1 (human/llm) | player-tools |
+
+Композиция: **L0 → L1 → много L2 параллельно**. Model-vs-model (`p1_actor_type=rl`)
+auto-играет без L2. Playbook'и: `.codex/skills/extra-rlhf/` (umbrella) +
+`extrarlhf-pipeline-orchestration` (L0) + `extrarlhf-gen-orchestration` (L1) +
+`extrarlhf-player` (L2). Универсальны, не привязаны к V5 (см. §14.1, §14.4).
+
+### 7.8. Пример (curl-style через stdin)
 
 ```bash
+# 1. server жив + tools enumerate (ожидаем 25)
+echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
+  | python3 -m rlhf_env.mcp_server
+
+# 2. llm-vs-bot серия: 3 боя против V4-max, авто-кодовое имя
 echo '{
-  "jsonrpc":"2.0","id":2,
-  "method":"tools/call",
-  "params":{
-    "name":"start_series",
-    "arguments":{"spec":{"p2_model":"extra-lr-v4-max","battles_planned":3,"seed":42,"starting_player":"p1"}}
-  }
+  "jsonrpc":"2.0","id":2,"method":"tools/call",
+  "params":{"name":"start_series",
+            "arguments":{"spec":{"p2_model":"extra-lr-v4-max","battles_planned":3,
+                                 "seed":42,"starting_player":"p1"}}}
 }' | python3 -m rlhf_env.mcp_server
+
+# 3. model-vs-model: наша RL p1 auto-играет, тег rl-vs-rl
+echo '{
+  "jsonrpc":"2.0","id":3,"method":"tools/call",
+  "params":{"name":"start_series",
+            "arguments":{"spec":{"p1_actor_type":"rl","p1_model":"extra-lr-v3-max",
+                                 "p2_model":"extra-lr-v4-max","battles_planned":3,"seed":7}}}
+}' | python3 -m rlhf_env.mcp_server
+
+# 4. статус агента
+echo '{"jsonrpc":"2.0","id":4,"method":"tools/call",
+       "params":{"name":"get_agent_status","arguments":{"agent_name":"veceno"}}}' \
+  | python3 -m rlhf_env.mcp_server
 ```
 
 ---
@@ -430,11 +603,14 @@ echo '{
 {
   "manifest_version": "1.0",
   "group_id": "a3b8c1d2e4f5",
+  "agent_name": "veceno",
   "created_at": "2026-06-24T12:00:00Z",
   "finished_at": "2026-06-24T12:05:00Z",
   "spec": {
-    "p1_model": "extra-lr-v4-max",
-    "p2_model": "random",
+    "p1_actor_type": "llm",
+    "p1_model": null,
+    "p2_model": "extra-lr-v4-max",
+    "battle_tag": "llm-vs-rl",
     "deck_strategy": "random_arenaenv",
     "custom_decks": null,
     "battles_planned": 5,
@@ -462,6 +638,7 @@ echo '{
   "battles_results": [
     {
       "battle_id": "b1",
+      "agent_name": "veceno",
       "battle_log_path": "rlhf_env/sessions/.../battles/b1.json",
       "winner_user_id": 1000, "loser_user_id": 2000,
       "status": "P1_WIN", "turns": 12, "duration_seconds": 0.4
@@ -469,6 +646,10 @@ echo '{
   ]
 }
 ```
+
+> Новые поля `agent_name`, `spec.p1_actor_type`, `spec.battle_tag` — optional;
+> старые манифесты читаются как `None` (валидно, `log_schema.validate_manifest`
+> их не требует).
 
 ### 8.2. summary.json
 
@@ -510,6 +691,26 @@ echo '{
 }
 ```
 
+### 8.4. V5-trace и agents_index
+
+Кроме manifest/summary/battles, группа содержит **omniscient offline-trace**:
+
+```
+sessions/<group_id>/
+  manifest.json  summary.json  catalog.json
+  battles/b_<bid>.json + .jsonl
+  battles/<bid>/v5/
+    meta.json        # models (p1/p2, weights_hash, degraded), agent_name, battle_tag, p1_is_bot
+    turns.jsonl      # снапшоты на каждый ход (обе стороны)
+    actions.jsonl    # {turn, actor, action, decision_source∈{human,llm,bot,rl}, pre/post_state}  ← training-data surface
+sessions/agents_index.json   # codename → {group_id, claimed_at, status}; AgentRegistry persist
+```
+
+`actions.jsonl` — поверхность тренировочных данных (model-version-agnostic,
+omniscient: обе руки/борды/колоды). Читается через MCP `get_v5_trace` /
+`get_v5_dataset_summary` / `validate_v5_traces`. См. также
+`.codex/skills/extra-rlhf/references/data-format.md`.
+
 ---
 
 ## 9. Добавление собственных моделей
@@ -536,8 +737,9 @@ Sidecar (`my-v5.onnx.json`):
 
 ### 9.2. V3 (legacy ONNX)
 
-Один файл `my-v3.onnx` без sidecar. `policy_registry.inspect_model()`
-автоматически определит формат через probe input shape.
+Один файл `my-v3.onnx` без sidecar. `AdapterRegistry.detect_kind(path, sidecar)`
+автоматически определит формат (через fallback-детектор к
+`ai.model_benchmark.inspect_model`, если layer A доступен).
 
 Используется `LegacyOnnxPolicy` из `ai.model_benchmark.policies` +
 `ai.model_benchmark.legacy_codec` для кодирования/декодирования.
@@ -559,6 +761,43 @@ Sidecar (`my-v5.onnx.json`):
 ```
 
 Поддерживаются оба формата (V4 sidecar + V3 legacy auto-detect).
+
+### 9.5. Модель по path+adapter (без копирования в registry)
+
+Через MCP `register_custom_model` или прямо в spec `start_series` — модель
+указывается путём + kind, без размещения в `ai/models/`:
+
+```jsonc
+// register_custom_model → in-memory spec в PolicyRegistry
+{"name":"my-exp","path":"/abs/path/my.onnx","kind":"action_onnx"}
+
+// или прямо в серии:
+{"p2_model_path":"ai/models/my.onnx","p2_model_kind":"auto"}
+// nested:
+{"p2_model":{"name":"my","path":"...","kind":"legacy_onnx"}}
+```
+
+Kind `auto` → `AdapterRegistry.detect_kind(path, sidecar)` (детекторы LIFO;
+fallback через gitignored `ai.model_benchmark.inspect_model`, если layer A
+доступен; иначе baselines работают, onnx даёт явную `ValueError` с понятным
+сообщением).
+
+### 9.6. Новый adapter-kind (расширение реестра)
+
+`AdapterRegistry` (`rlhf_env/components/policy_adapters.py`) — единственная точка
+расширения: `register(kind, factory)` + `register_detector(detector)`. V5 —
+зарезервированный слот (`V5StubAdapter` поднимает `NotImplementedError` как
+шаблон; impl = Block 0, зона пользователя). Добавить новый kind можно без правок
+if/elif:
+
+```python
+from rlhf_env.components.policy_adapters import default_registry
+default_registry().register("my_kind", lambda spec, reg: MyAdapter(spec))
+default_registry().register_detector(lambda path, sidecar: "my_kind" if ... else None)
+```
+
+Существующие `legacy_onnx`/`action_onnx`/`v4`/baselines продолжают работать через
+тот же реестр (V3/V4 defer к gitignored layer A через try/except).
 
 ---
 
@@ -663,19 +902,34 @@ log = asyncio.run(runner.arun())
 ### 12.1. Unit-тесты
 
 ```bash
-python3 -m pytest rlhf_env/tests/ -v
-# 44 теста, ~3 сек
+python3 -m pytest rlhf_env/tests/ rlhf_env/tests_*.py -q
+# 111 passed, 1 skipped, 0 failed (2026-06-28)
 ```
 
 Покрытие:
 - `test_log_schema.py` — battle_log v1.0, manifest v1.0
 - `test_deck_builder.py` — каталог, случайные деки, парсинг, валидация
-- `test_policy_factory.py` — baselines, V4 sidecar, V3 legacy, ошибки
+- `test_policy_factory.py` / `test_policy_adapters.py` — baselines, V4 sidecar,
+  V3 legacy, `AdapterRegistry` (register/detect_kind/build), `V5StubAdapter`
+  raises, layer-A-missing → явная `ValueError`
 - `test_battle_runner.py` — 1 бой end-to-end (random / V4-Max)
-- `test_manifest.py` — writer, append, finalize, resume
-- `test_session_manager.py` — start/complete/stop/manifest/list
+- `test_p1_rl_autoplay.py` — p1_actor_type=rl auto-играет, `battle_tag`,
+  `decision_source="rl"`, regression human/llm путей
+- `test_custom_model_by_path.py` — `p2_model_path`/`kind` + nested-объект
+- `test_agent_registry.py` — claim/release, pool-exhaustion, pin_group+persist
+- `test_mcp_tools_inprocess.py` — MCP через `MCPServer._tool` in-process:
+  start_series+agent, list_active_series, get_agent_status, finish_series,
+  get_match_status, register_custom_model, submit_action rejected for rl-p1
+- `test_manifest.py`, `test_session_manager.py`, `test_v5_*`, `test_actor_tagging`
 
-### 12.2. Smoke E2E
+### 12.2. In-process vs HTTP smoke
+
+MCP-инструменты проверяются **in-process** через `MCPServer._tool` /
+`_v5_helpers` (без stdio) — это валидирует код в worktree. HTTP smoke-скрипты
+(`tests_verify_*`, `tests_validate_legacy_adapter`) ходят на сервер 8090
+оригинального репо, но читают `rlhf_env/sessions` из CWD → в worktree `FAIL: not
+found` = path-artefact, не регрессия (см. memory
+`rlhf-smoke-scripts-worktree-path-mismatch`).
 
 ```bash
 python3 rlhf_env/tests/smoke_e2e.py --port 8096 --battles 2 --models random
@@ -689,9 +943,12 @@ python3 rlhf_env/tests/smoke_e2e.py --port 8096 --battles 1 --models v4-max
 
 Перед коммитом:
 ```bash
-python3 -m pytest rlhf_env/tests/ -q        # наши новые
-python3 -m pytest tests/ -q --ignore=...    # прод-тесты (если меняли engine)
+python3 -m pytest rlhf_env/tests/ rlhf_env/tests_*.py -q   # rlhf_env
+python3 -m pytest tests/ -q --ignore=...                   # прод-тесты (если меняли engine)
 ```
+
+База main (2026-06-24): 32/1967 прод-тестов падают — сверяй с baseline до/после,
+чтобы отделить pre-existing от регрессий.
 
 ---
 
@@ -745,22 +1002,29 @@ Python 3.10+: `asyncio.get_event_loop()` deprecated. Запускайте чер
 
 ## 14. Расширение среды
 
-### 14.1. Добавить новую политику
+### 14.1. Добавить новую политику / adapter-kind
 
-`policy_factory.py`:
+Единая точка расширения — `AdapterRegistry`
+(`rlhf_env/components/policy_adapters.py`), без правок if/elif в `build_policy`:
+
 ```python
-class _MyNewPolicy:
-    kind = "my_new"
-    def __init__(self, **kwargs): ...
-    def get_action(self, state, pid, legal_actions, params=None): ...
+from rlhf_env.components.policy_adapters import default_registry
 
-def build_policy(spec):
-    if spec.get("name") == "my_new":
-        return _MyNewPolicy(**spec)
-    ...
+class MyAdapter:
+    kind = "my_new"; name = "my_new"
+    model_path = None; weights_hash = None; weights_version = None
+    def __init__(self, spec): ...
+    def select_action(self, engine, player_id): ...
+
+default_registry().register("my_new", lambda spec, reg: MyAdapter(spec))
+default_registry().register_detector(
+    lambda path, sidecar: "my_new" if sidecar.get("adapter") == "my_new" else None)
 ```
 
-Зарегистрировать в `policy_registry.py::resolve_spec`.
+Adapter контракт: attrs `name/kind/model_path/weights_hash/weights_version` +
+`select_action(engine, player_id) -> int` (идентично потребителям в
+`arena_match_manager`/`match_runner._capture_models`). V5 — зарезервированный
+слот (`V5StubAdapter`); impl = Block 0 (зона пользователя), см. §9.6.
 
 ### 14.2. Добавить новый формат deck_strategy
 

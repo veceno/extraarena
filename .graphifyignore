@@ -100,6 +100,25 @@ webapp/**
 !webapp/*.css
 !webapp/*.js
 
+# RLHF data-collection + orchestration env (autonomous, port 8090, MCP stdio).
+# Source + docs only; exclude runtime artifacts, venv, borrowed webapp, static.
+!rlhf_env/
+rlhf_env/**
+!rlhf_env/*.py
+!rlhf_env/*.md
+!rlhf_env/*.json
+!rlhf_env/*.txt
+!rlhf_env/*.sh
+!rlhf_env/components/
+rlhf_env/components/**
+!rlhf_env/components/*.py
+!rlhf_env/audit/
+rlhf_env/audit/**
+!rlhf_env/audit/*.py
+!rlhf_env/tests/
+rlhf_env/tests/**
+!rlhf_env/tests/*.py
+
 !TrainV3/
 TrainV3/**
 !TrainV3/README.md

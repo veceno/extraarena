@@ -34,8 +34,22 @@ from rlhf_env.components.deck_builder import CardCatalog, build_random_arena_dec
 from rlhf_env.components.manifest import ManifestWriter
 from rlhf_env.components.policy_factory import BOT_MAX_DIFFICULTY, build_policy
 from rlhf_env.components.policy_registry import PolicyRegistry
+from rlhf_env.components.agent_registry import AgentRegistry
 
 logger = logging.getLogger(__name__)
+
+
+def _model_name(p2_model: Any) -> Any:
+    """Нормализует spec.p2_model к имени модели для UI/группировки.
+
+    p2_model может быть строкой ('random' / 'extra-lr-v4-max') либо nested
+    {name,path,kind}. Возвращает имя (str) или исходное значение, если это не
+    dict/не содержит name.
+    """
+    if isinstance(p2_model, dict):
+        nm = p2_model.get("name")
+        return nm if nm else p2_model.get("path") or "custom"
+    return p2_model
 
 
 def _build_deck_ids(
@@ -160,6 +174,13 @@ class ArenaMatch:
     # V5TraceRecorder — максимально полная omniscient-запись боя для V5-обучения
     # (отдельная директория battles/<bid>/v5/). None — no-op.
     v5_recorder: Any = None
+    # G4: True если V5TraceRecorder init упал → бой без v5/trace (для manifest/фильтров).
+    v5_trace_init_failed: bool = False
+    # p1 как RL-модель (model-vs-model): политика auto-play на стороне p1.
+    # None для human/llm (ход через execute_human_action).
+    p1_policy: Any = None
+    # Кодовое имя «играющего» суб-агента оркестратора (semi-synthetic series).
+    agent_name: Optional[str] = None
 
     def next_action_seq(self) -> int:
         self.action_seq += 1
@@ -174,6 +195,7 @@ class _GroupLive:
     battles_planned: int
     current_index: int = -1
     current_match_id: Optional[str] = None
+    agent_name: Optional[str] = None
 
 
 class ArenaMatchManager:
@@ -197,6 +219,12 @@ class ArenaMatchManager:
         self.catalog_hash = self._compute_catalog_hash()
         self._groups: Dict[str, _GroupLive] = {}
         self._matches: Dict[str, ArenaMatch] = {}
+        # Реестр кодовых имён суб-агентов оркестратора (semi-synthetic series).
+        self.agent_registry = AgentRegistry(
+            self.sessions_dir / "agents_index.json",
+            sessions_dir=self.sessions_dir,
+            cards_path=self.cards_path,
+        )
 
     # ------------------------------------------------------------------
     # Публичное API
@@ -206,31 +234,73 @@ class ArenaMatchManager:
         """Создаёт новую группу и первый бой серии. Возвращает ArenaMatch."""
         group_id = uuid.uuid4().hex[:12]
         group_dir = self.sessions_dir / group_id
-        # Seed: если не задан явно (0/None) — рандомизируем. Иначе первый бой
-        # каждой серии детерминирован (seed=0 → одна и та же колода два раза
-        # подряд). Реальный seed пишем в spec → попадает в манифест (provenance
-        # /воспроизводимость) и используется для всех боёв серии (base+idx*1009).
-        if not int(spec.get("seed", 0) or 0):
-            spec["seed"] = random.randrange(1, 2**31)
-        manifest = ManifestWriter(
-            group_id=group_id,
-            spec=spec,
-            group_dir=group_dir,
-            repo_root=Path.cwd(),
-        )
-        live = _GroupLive(
-            group_id=group_id,
-            spec=spec,
-            manifest=manifest,
-            battles_planned=int(spec.get("battles_planned", 1)),
-        )
-        self._groups[group_id] = live
-        match = self._build_match(group_id, live, battle_index=0)
+        # Кодовое имя суб-агента: явное (spec.agent_name) или auto-assign из пула
+        # (фиксированный список + названия карт + random-fallback). Пиним к группе.
+        agent_name = str(spec.get("agent_name") or "").strip()
+        if agent_name:
+            if not self.agent_registry.claim(agent_name):
+                # имя занято — auto-assign вместо отказа (оркестратор не должен падать).
+                logger.warning(
+                    "[ArenaMatchManager] agent_name=%s busy, auto-assigning instead", agent_name
+                )
+                agent_name = self.agent_registry.claim_auto()
+        else:
+            agent_name = self.agent_registry.claim_auto()
+        spec["agent_name"] = agent_name
+        # F5: pin_group переносим внутрь try — если он упадёт (fs/flock ошибка),
+        # уже claim-ed имя (group_id=None) надо освободить по agent_name, а не
+        # по group_id (release_group(group_id) его не найдёт).
+        try:
+            self.agent_registry.pin_group(agent_name, group_id)
+            # Seed: если не задан явно (0/None) — рандомизируем. Иначе первый бой
+            # каждой серии детерминирован (seed=0 → одна и та же колода два раза
+            # подряд). Реальный seed пишем в spec → попадает в манифест (provenance
+            # /воспроизводимость) и используется для всех боёв серии (base+idx*1009).
+            if not int(spec.get("seed", 0) or 0):
+                spec["seed"] = random.randrange(1, 2**31)
+            manifest = ManifestWriter(
+                group_id=group_id,
+                spec=spec,
+                group_dir=group_dir,
+                repo_root=Path.cwd(),
+            )
+            live = _GroupLive(
+                group_id=group_id,
+                spec=spec,
+                manifest=manifest,
+                battles_planned=int(spec.get("battles_planned", 1)),
+                agent_name=agent_name,
+            )
+            self._groups[group_id] = live
+            match = self._build_match(group_id, live, battle_index=0)
+        except Exception:
+            # BUG3 rollback: _build_match / pin_group упал (плохая модель/path/kind
+            # или fs-ошибка) — не оставляем занятое кодовое имя и группу-полутруп.
+            # Иначе start_series возвращал ошибку без group_id, имя утекало навсегда.
+            self._groups.pop(group_id, None)
+            # purge=True: боя не было → истории нет, имя возвращаем в пул целиком
+            # (а не помечаем finished — иначе claim_auto пропустит «занятое» имя).
+            # Сначала по group_id (нормальный путь), затем — на случай, что pin_group
+            # упал ДО записи group_id — освобождаем явно по имени (F5).
+            try:
+                self.agent_registry.release_group(group_id, purge=True)
+            except Exception:  # noqa: BLE001
+                logger.warning("[ArenaMatchManager] release_group failed group=%s: %s", group_id, exc_info=True)
+            try:
+                self.agent_registry.release(agent_name, purge=True)
+            except Exception:  # noqa: BLE001
+                logger.warning("[ArenaMatchManager] release(%s) failed: %s", agent_name, exc_info=True)
+            try:
+                import shutil as _sh
+                _sh.rmtree(group_dir, ignore_errors=True)
+            except Exception:  # noqa: BLE001
+                pass
+            raise
         live.current_index = 0
         live.current_match_id = match.engine.match_id
         logger.info(
-            "[ArenaMatchManager] create_series group=%s match=%s p2_model=%s battles=%d",
-            group_id, match.engine.match_id, spec.get("p2_model"), live.battles_planned,
+            "[ArenaMatchManager] create_series group=%s agent=%s match=%s p2_model=%s battles=%d",
+            group_id, agent_name, match.engine.match_id, spec.get("p2_model"), live.battles_planned,
         )
         return match
 
@@ -243,6 +313,19 @@ class ArenaMatchManager:
         if next_index >= live.battles_planned:
             live.manifest.finalize()
             live.current_match_id = None
+            # F7(audit): НЕ удаляем ended-match из _matches здесь — клиент ещё может
+            # звать get_match_status на только что завершённом матче (финальный
+            # winner/is_ended). Eager pop ломал late status-чтения → ложный "draw".
+            # Bounded growth закрывается в finish_series (явное закрытие серии).
+            # F1: естественное завершение серии (через next_battle) — освобождаем
+            # кодовое имя агента (помечаем finished, история доступна через status).
+            # finish_series — досрочное закрытие, но доигранную до конца серию
+            # оркестратор не обязан звать finish_series; без этого имя утекало.
+            if live.agent_name:
+                try:
+                    self.agent_registry.release_group(group_id)
+                except Exception:  # noqa: BLE001 — release не должен маскировать успех серии
+                    logger.warning("[ArenaMatchManager] release_group on natural completion failed group=%s: %s", group_id, exc_info=True)
             logger.info("[ArenaMatchManager] series complete group=%s", group_id)
             return None
         match = self._build_match(group_id, live, battle_index=next_index)
@@ -258,7 +341,21 @@ class ArenaMatchManager:
         if live is None:
             raise KeyError("group_not_found")
         live.manifest.finalize()
+        ended_id = live.current_match_id
         live.current_match_id = None
+        # F7(audit): убираем ended-match из _matches (bounded growth).
+        if ended_id is not None:
+            self._matches.pop(ended_id, None)
+        # Освобождаем кодовое имя суб-агента (серия закрыта).
+        # F8(audit): try/except как в next_match/reap_completed — persist/lock
+        # failure не должен утекать codename, когда манифест уже финализирован.
+        if live.agent_name:
+            try:
+                self.agent_registry.release_group(group_id)
+            except Exception:  # noqa: BLE001 — release не должен маскировать успех серии
+                logger.warning(
+                    "[ArenaMatchManager] finish_series release_group failed group=%s: %s",
+                    group_id, exc_info=True)
         logger.info(
             "[ArenaMatchManager] finish_series group=%s battles=%d/%d",
             group_id,
@@ -266,6 +363,54 @@ class ArenaMatchManager:
             live.battles_planned,
         )
         return live.manifest.manifest
+
+    def reap_completed(self, group_id: str) -> bool:
+        """Self-healing release: если текущий бой серии завершён И серия доиграна
+        (battles_finished >= battles_planned), освобождаем кодовое имя агента и
+        финализируем манифест.
+
+        Покрывает клиента, который после последнего боя не зовёт next_battle/
+        finish_series (вкл. 1-боевые серии — оркестратор играет бой и уходит) —
+        иначе имя утекало навсегда в agents_index.json (busy=True для уже
+        завершённой серии, codename-pool истощался, на краше клиента — тем более).
+        Вызывается из MCP read-paths (get_match_status/get_agent_status/
+        get_battle_group_status/list_active_series). Идемпотентно.
+
+        Cross-process recovery (упавший процесс оставил busy-запись, а новый
+        процесс не имеет _groups-записи) — см. AgentRegistry._self_heal_locked.
+        Возвращает True если(reaped."""
+        live = self._groups.get(group_id)
+        if live is None or live.current_match_id is None:
+            return False
+        match = self._matches.get(live.current_match_id)
+        if match is None or not getattr(match.engine, "is_ended", False):
+            return False
+        res = (live.manifest.manifest.get("results") or {})
+        if int(res.get("battles_finished", 0) or 0) < live.battles_planned:
+            # серия не доиграна — клиент должен звать next_battle для след. боя.
+            return False
+        live.manifest.finalize()
+        live.current_match_id = None
+        # F7(audit): НЕ удаляем ended-match из _matches в reap — reap вызывается
+        # из MCP read-paths (get_match_status и т.д.), и eager pop ломал поздний
+        # get_match_status на только что завершённом матче (возвращал
+        # match_not_found → is_ended=None/winner=None → ложный "draw"). Match
+        # остаётся читаемым; bounded growth закрывается в finish_series.
+        if live.agent_name:
+            try:
+                self.agent_registry.release_group(group_id)
+            except Exception:  # noqa: BLE001 — release не должен маскировать успех
+                logger.warning(
+                    "[ArenaMatchManager] reap release_group failed group=%s: %s",
+                    group_id, exc_info=True)
+        logger.info(
+            "[ArenaMatchManager] reaped completed series group=%s agent=%s",
+            group_id, live.agent_name)
+        return True
+
+    def reap_all_completed(self) -> int:
+        """reap_completed по всем группам. Возвращает число освобождённых."""
+        return sum(1 for gid in list(self._groups) if self.reap_completed(gid))
 
     def get_match(self, match_id: str) -> Optional[ArenaMatch]:
         return self._matches.get(match_id)
@@ -283,13 +428,32 @@ class ArenaMatchManager:
         out = []
         for live in self._groups.values():
             m = live.manifest.manifest
+            res = m.get("results", {}) or {}
+            spec = m.get("spec", {}) or {}
+            # battle_tag — из первого записанного боя (real tag: rl-vs-bot /
+            # rl-vs-rl / llm-vs-bot / human-vs-bot). До первого боя — эвристика
+            # по p1_actor_type (p2 пока неизвестен точно).
+            results = m.get("battles_results", []) or []
+            real_tag = next((r.get("battle_tag") for r in results if r.get("battle_tag")), None)
+            p1_act = spec.get("p1_actor_type")
+            battle_tag = real_tag or (f"{p1_act}-vs-bot" if p1_act else None)
             out.append({
                 "group_id": live.group_id,
+                "agent_name": live.agent_name,
                 "status": "completed" if m.get("finished_at") else "running",
                 "created_at": m.get("created_at"),
                 "finished_at": m.get("finished_at"),
                 "battles_planned": live.battles_planned,
-                "battles_finished": m.get("results", {}).get("battles_finished", 0),
+                "battles_finished": res.get("battles_finished", 0),
+                "wins": res.get("p1_wins", 0),
+                "losses": res.get("p2_wins", 0),
+                "draws": res.get("draws", 0),
+                "p1_actor_type": p1_act,
+                # F9(audit): нормализуем p2_model к имени — spec.p2_model может быть
+                # nested {name,path,kind}; иначе by-model группировка в list_active_series
+                # получала str(dict) как ключ.
+                "p2_model": _model_name(spec.get("p2_model")),
+                "battle_tag": battle_tag,
                 "current_battle": live.current_index,
                 "current_match_id": live.current_match_id,
                 "manifest_path": str(live.manifest.manifest_path),
@@ -345,21 +509,46 @@ class ArenaMatchManager:
         game_mode = spec.get("game_mode", "classic")
         mode_config = resolve_mode_config(game_mode)
 
+        # --- Акторы + политики ------------------------------------------------
+        # p1: human (браузер) | llm (MCP) | rl (наша RL-модель auto-play, model-vs-
+        # model). p2 всегда bot (наша RL/кастом-модель). Система сложностей удалена:
+        # модель всегда играет на максимум (argmax); difficulty фиксируется "max".
+        p1_actor = str(spec.get("p1_actor_type", "human")).lower()
+        if p1_actor not in ("human", "llm", "rl"):
+            p1_actor = "human"
+        p2_actor = "bot"
+        difficulty = BOT_MAX_DIFFICULTY
+
+        # p2 (оппонент): имя | nested {name,path,kind} | плоские p2_model_path/kind.
+        # path+kind пробрасываются в build_policy (custom model by path+adapter).
+        p2_spec = self._resolve_policy_spec(spec, "p2", seed, default="random")
+        p2_model = p2_spec["name"]
+        bot_policy = build_policy(p2_spec, registry=self.registry)
+
+        # p1 как RL-модель: строим политику для auto-play (MatchRunner.run_auto).
+        p1_policy = None
+        if p1_actor == "rl":
+            p1_spec = self._resolve_policy_spec(spec, "p1", seed, default="random")
+            p1_policy = build_policy(p1_spec, registry=self.registry)
+
+        # battle_tag: <p1>-vs-rl если p2 — RL/onnx-модель (v4/legacy_onnx/v5/...),
+        # иначе <p1>-vs-bot (baseline: random/greedy_face/end_turn). Эвристика по
+        # p2_policy.kind, НЕ зависит от p1 — иначе llm/human vs onnx-RL ошибочно
+        # тегировался «-vs-bot» (бой против V3/V4-max помечался llm-vs-bot, хотя
+        # p2 — обученная onnx-модель, не baseline). bugfix: условие на p2_kind
+        # без gate p1_actor=="rl".
+        p2_kind = str(getattr(bot_policy, "kind", "") or "")
+        if p2_kind in ("random", "greedy_face", "end_turn", ""):
+            battle_tag = f"{p1_actor}-vs-bot"
+        else:
+            battle_tag = f"{p1_actor}-vs-rl"
+
         gs = create_classic_game_state(
             1000, 2000, p1_deck, p2_deck,
-            p1_is_bot=False, p2_is_bot=True,
+            p1_is_bot=(p1_actor == "rl"), p2_is_bot=True,
             starting_player_id=sp, rng=rng,
         )
         arena = ArenaEnvironment(gs, classic_params=mode_config.classic, rng=rng)
-
-        p2_model = spec.get("p2_model", "random")
-        # Система сложностей удалена: модель всегда играет на максимум (argmax).
-        # spec.difficulty больше не читается — фиксируем BOT_MAX_DIFFICULTY.
-        difficulty = BOT_MAX_DIFFICULTY
-        bot_policy = build_policy(
-            {"name": p2_model, "difficulty": difficulty, "seed": seed},
-            registry=self.registry,
-        )
 
         # Профили для prebattle-рендера (arena.js читает opponent.name/title/...).
         p1_profile = {
@@ -396,7 +585,12 @@ class ArenaMatchManager:
             bot_difficulty=difficulty,
             bot_brain_profile=p2_model,
             game_mode=game_mode,
+            p1_actor_type=p1_actor,
+            p2_actor_type=p2_actor,
         )
+        # battle_tag переопределяем явно: engine по умолчанию считает f"{p1}-vs-{p2}",
+        # но rl-vs-rl (обе модели RL) определяется здесь по p2_policy.kind.
+        engine.battle_tag = battle_tag
         engine.set_initial_decks(p1_ids, p2_ids)
         engine.p1_deck_source = dict(spec.get("p1_deck_source") or {"type": "random"})
 
@@ -416,6 +610,8 @@ class ArenaMatchManager:
             p1_deck_source=dict(spec.get("p1_deck_source") or {"type": "random"}),
             manifest=live.manifest,
             battle_start_monotonic=0.0,
+            p1_policy=p1_policy,
+            agent_name=live.agent_name,
         )
         # AnalyticsRecorder: каноничный NDJSON + фиксы аудита (F01/F02/F08/F12).
         from rlhf_env.components.analytics import AnalyticsRecorder
@@ -456,6 +652,17 @@ class ArenaMatchManager:
                 "weights_hash": getattr(bot_policy, "weights_hash", None),
                 "weights_version": getattr(bot_policy, "weights_version", None),
             }
+            # provenance p1-политики (только для model-vs-model, p1_actor_type='rl').
+            p1_policy_info = None
+            if p1_policy is not None:
+                p1_policy_info = {
+                    "name": str(getattr(p1_policy, "name", "p1-rl")),
+                    "kind": str(getattr(p1_policy, "kind", "rl")),
+                    "is_bot": True,
+                    "weights_path": getattr(p1_policy, "model_path", None),
+                    "weights_hash": getattr(p1_policy, "weights_hash", None),
+                    "weights_version": getattr(p1_policy, "weights_version", None),
+                }
             v5_rec = V5TraceRecorder(
                 engine=engine,
                 group_id=group_id,
@@ -476,16 +683,87 @@ class ArenaMatchManager:
                 game_mode=game_mode,
                 mode_config=mode_config,
                 bot_policy_info=bot_policy_info,
+                p1_actor_type=p1_actor,
+                p2_actor_type=p2_actor,
+                battle_tag=battle_tag,
+                p1_policy_info=p1_policy_info,
+                agent_name=live.agent_name,
             )
             match.v5_recorder = v5_rec
+            match.v5_trace_init_failed = False
             if "v5_storage" not in live.manifest.manifest:
                 live.manifest.manifest["v5_storage"] = v5_rec.manifest_storage_block()
                 live.manifest._flush()
         except Exception:  # noqa: BLE001
-            logger.warning("V5TraceRecorder init failed: %s", exc_info=True)
+            # G4: не глушить тихо — бой останется без v5/trace; сигнализируем
+            # через manifest.v5_trace_ok + отдельный атрибут для collection-скриптов.
+            logger.error("V5TraceRecorder init FAILED — battle will lack v5/ trace: %s",
+                         exc_info=True)
+            match.v5_recorder = None
+            match.v5_trace_init_failed = True
 
         self._matches[match_id] = match
         return match
+
+    # ------------------------------------------------------------------
+    # Custom model by path+adapter (semi-synthetic orchestrator)
+    # ------------------------------------------------------------------
+    def _safe_model_path(self, path: str) -> str:
+        """Path-traversal защита: кастомный путь модели должен лежать под
+        models_dir или repo root. Относительный путь разрешается сначала от
+        repo root (cwd) — чтобы `ai/models/foo.onnx` не удваивался в
+        `models_dir/ai/models/foo.onnx` — затем от models_dir (для bare-имён).
+        Возвращает абсолютный путь; ValueError при выходе за допустимые корни."""
+        p = Path(path).expanduser()
+        allowed_roots = [self.models_dir.resolve(), Path.cwd().resolve()]
+        if p.is_absolute():
+            chosen = p.resolve()
+        else:
+            cand_cwd = (Path.cwd() / p).resolve()
+            cand_models = (self.models_dir / p).resolve()
+            # предпочтение — существующему файлу под разрешённым корнем; иначе
+            # cand_models (если под models_dir), иначе cand_cwd.
+            if cand_cwd.exists() and any(cand_cwd == r or r in cand_cwd.parents for r in allowed_roots):
+                chosen = cand_cwd
+            elif any(cand_models == r or r in cand_models.parents for r in allowed_roots):
+                chosen = cand_models
+            else:
+                chosen = cand_cwd
+        if not any(chosen == root or root in chosen.parents for root in allowed_roots):
+            raise ValueError(
+                f"custom model path {path!r} resolves outside allowed roots "
+                f"(models_dir / repo root)"
+            )
+        return str(chosen)
+
+    def _resolve_policy_spec(
+        self, spec: Dict[str, Any], side: str, seed: int, *, default: str = "random"
+    ) -> Dict[str, Any]:
+        """Собирает spec для build_policy из полей серии.
+
+        side ∈ {"p1","p2"}. Поддерживаются:
+          - {side}_model как строка-имя (baseline / имя из registry);
+          - {side}_model как объект {name, path, kind} (nested форма);
+          - плоские {side}_model_path / {side}_model_kind (custom by path+adapter).
+        path+kind пробрасываются в build_policy (custom model by path+adapter).
+        """
+        model = spec.get(f"{side}_model")
+        path = spec.get(f"{side}_model_path")
+        kind = spec.get(f"{side}_model_kind")
+        if isinstance(model, dict):
+            name = model.get("name") or f"{side}_custom"
+            path = model.get("path") or path
+            kind = model.get("kind") or kind
+        else:
+            name = model
+        if not name:
+            name = default
+        out: Dict[str, Any] = {"name": str(name), "difficulty": BOT_MAX_DIFFICULTY, "seed": seed}
+        if path:
+            out["path"] = self._safe_model_path(str(path))
+        if kind:
+            out["kind"] = str(kind)
+        return out
 
     def _compute_catalog_hash(self) -> str:
         try:

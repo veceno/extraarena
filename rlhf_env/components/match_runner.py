@@ -18,8 +18,9 @@ import logging
 import random
 import time
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
+from core.actions import EndTurnAction, ManaDrawAction
 from core.state import GameStatus
 
 from rlhf_env.components.log_schema import BATTLE_LOG_VERSION, new_battle_log, summarize_state
@@ -81,6 +82,8 @@ def _build_action_json(payload: Dict[str, Any]) -> Dict[str, Any]:
             "target_id": payload.get("target_id"),
             "target_is_hero": bool(payload.get("target_is_hero", False)),
         }
+    if kind == "mana_draw":
+        return {"type": "mana_draw"}
     return {"type": "end_turn"}
 
 
@@ -98,6 +101,11 @@ class MatchRunner:
         )
         self._start_monotonic = time.monotonic()
         self._bot_task: Optional[asyncio.Task] = None
+        # BUG4:.policy_fallbacks — собираем случаи, когда bot_policy.select_action
+        # бросил (напр. V5StubAdapter NotImplementedError) и мы fallback'нули на
+        # end_turn. Оркестратор должен это видеть, иначе v5-stub молча «играет»
+        # всегда-end_turn без сигнала клиенту.
+        self.policy_fallbacks: List[str] = []
         # sync-callback(match_id, event_type, data) — выставляется ArenaTransport'ом.
         # None → no-op (headless/MCP без WS).
         self.broadcaster: Optional[Callable[[str, str, Dict[str, Any]], None]] = None
@@ -139,7 +147,24 @@ class MatchRunner:
 
     def _capture_models(self) -> Dict[str, Any]:
         m = self.match
-        human = {"name": "human", "kind": "human", "is_human": True}
+        p1_policy = getattr(m, "p1_policy", None)
+        # p1 как RL-модель (model-vs-model): фиксируем её provenance в battle_log.
+        if p1_policy is not None and getattr(m.engine, "p1_actor_type", "human") == "rl":
+            human = {
+                "name": getattr(p1_policy, "name", "rl"),
+                # F5(audit): реальный kind адаптера (как у p2), а не хардкод 'rl'.
+                "kind": getattr(p1_policy, "kind", "rl"),
+                "is_human": False,
+            }
+        else:
+            p1_kind = getattr(m.engine, "p1_actor_type", "human")
+            # F6(audit): distinguish human vs llm по p1_actor_type — иначе LLM-MCP
+            # p1 мис-тегируется is_human=True / name='human' в battle_log.
+            human = {
+                "name": "human" if p1_kind == "human" else p1_kind,
+                "kind": p1_kind,
+                "is_human": p1_kind == "human",
+            }
         bot = {
             "name": getattr(m.bot_policy, "name", str(m.bot_policy)),
             "kind": getattr(m.bot_policy, "kind", "unknown"),
@@ -216,8 +241,9 @@ class MatchRunner:
                 state = self._state_with_series(engine.get_full_state(viewer_id=user_id))
                 return {"result": {"success": False, "error": "game_over"}, "state": state, "error": "game_over"}
 
-            # pre-snapshot аналитики (как в проде — ДО выполнения)
-            handle = self._rec_before(user_id, action_json, "human")
+            # pre-snapshot аналитики (как в проде — ДО выполнения). decision_source
+            # = тип актора p1 (human | llm), чтобы MCP-LLM тегировался отдельно.
+            handle = self._rec_before(user_id, action_json, getattr(engine, "p1_actor_type", "human"))
 
             try:
                 if kind == "play_card":
@@ -235,6 +261,10 @@ class MatchRunner:
                         action_json.get("target_id"),
                         target_is_hero=bool(action_json.get("target_is_hero", False)),
                     )
+                elif kind == "mana_draw":
+                    # Добор за ману: не кончает игру, не передаёт ход → бот не
+                    # запускается (engine.is_current_player_bot() остаётся False).
+                    result = engine.mana_draw(user_id)
                 else:
                     result = engine.end_turn(user_id)
             except Exception as exc:  # noqa: BLE001
@@ -282,12 +312,52 @@ class MatchRunner:
             return
         self._bot_task = asyncio.create_task(self.run_bot_turn())
 
-    async def run_bot_turn(self) -> None:
+    async def run_auto(self) -> None:
+        """Auto-play всех бот-ходов до хода human/llm или game_over.
+
+        Для rl-vs-bot / rl-vs-rl (model-vs-model): оба игрока — боты, бой доходит
+        до game_over без submit_action. Для human/llm-vs-bot: выполняет ход p2
+        (если сейчас его ход) и останавливается на ходе p1 (ждёт execute_human_action).
+
+        F4: жёсткий cap по числу ходов — защита от infinite-loop, когда обе
+        политики сломаны (напр. v5-vs-v5 stub'ы → всегда end_turn, никто не
+        наносит урон, is_ended никогда не станет True, stdio-вызов виснет).
+        По достижении cap — финализируем ничьей (stalemate).
+        """
+        max_turns = 200
+        while not self.match.engine.is_ended:
+            if int(getattr(self.match.engine, "turn", 0) or 0) >= max_turns:
+                # stalemate — не даём run_auto висеть вечно.
+                logger.warning(
+                    "[MatchRunner] run_auto hit turn cap (%d) match=%s — finalizing as stalemate",
+                    max_turns, self.match.engine.match_id,
+                )
+                await self._finalize(None, reason="stalemate_turn_cap")
+                break
+            cur = self.match.engine.get_current_player_id()
+            if cur is None:
+                break
+            if cur == self.match.engine.bot_user_id:
+                await self.run_bot_turn()
+            elif cur == self.match.engine.human_user_id and getattr(self.match, "p1_policy", None) is not None:
+                # p1 — RL-модель auto-play.
+                await self.run_bot_turn(player_id=cur, policy=self.match.p1_policy)
+            else:
+                # human/llm ход (p1 без p1_policy) — ждём execute_human_action.
+                break
+
+    async def run_bot_turn(self, *, player_id: Optional[int] = None, policy: Any = None) -> None:
+        """Ход бота. По умолчанию — p2 (match.bot_policy); для p1-as-RL передаются
+        player_id=human_user_id и policy=match.p1_policy (model-vs-model)."""
         match = self.match
         engine = match.engine
-        bot_id = engine.bot_user_id
+        bot_id = player_id if player_id is not None else engine.bot_user_id
+        bot_policy = policy if policy is not None else match.bot_policy
         classic = engine.mode_config.classic
         difficulty = engine.bot_difficulty
+        # decision_source: 'rl' для p1-as-RL, 'bot' для p2.
+        is_p1_rl = (bot_id == engine.human_user_id and policy is not None)
+        decision_source = "rl" if is_p1_rl else "bot"
 
         # 1) turn delay — «обдумывание» (как run_bot_routine в web/server.py).
         async with match.lock:
@@ -311,14 +381,23 @@ class MatchRunner:
                 if not legal:
                     return
                 try:
-                    idx = int(match.bot_policy.select_action(engine._arena, bot_id))
+                    idx = int(bot_policy.select_action(engine._arena, bot_id))
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("bot policy failed, fallback end_turn: %s", exc)
+                    msg = f"bot policy {getattr(bot_policy, 'name', '?')} (kind={getattr(bot_policy, 'kind', '?')}) failed, fallback end_turn: {exc}"
+                    if msg not in self.policy_fallbacks:
+                        self.policy_fallbacks.append(msg)
                     idx = len(legal) - 1
                 idx = max(0, min(idx, len(legal) - 1))
                 chosen = legal[idx]
+                # Guard: V4/v4-orig боты слепы к mana_draw (нет 602-го кандидата),
+                # но defense-in-depth — если политика всё же выбрала ManaDrawAction,
+                # заменяем на end_turn (см. V5 spec D11: bots filter mana_draw).
+                if isinstance(chosen, ManaDrawAction):
+                    chosen = next((a for a in legal if isinstance(a, EndTurnAction)), legal[-1])
+                    idx = legal.index(chosen)
                 action_json = chosen.to_dict()
-                handle = self._rec_before(bot_id, action_json, "bot", action_id=idx)
+                handle = self._rec_before(bot_id, action_json, decision_source, action_id=idx)
                 try:
                     result = engine.execute_action(bot_id, chosen)
                 except Exception as exc:  # noqa: BLE001
@@ -338,7 +417,8 @@ class MatchRunner:
                 if result.get("game_over"):
                     await self._finalize(result.get("winner_id"), reason="bot_action")
                     return
-                # после end_turn ход переходит к человеку — выходим из рутины.
+                # после end_turn ход переходит к другому игроку — выходим из рутины.
+                # Цепочку rl-vs-bot/rl-vs-rl продолжает run_auto (внешний цикл).
                 if action_json.get("type") == "end_turn" and accepted:
                     # turn_start — сброс таймера на стороне клиента.
                     self._emit("turn_start", {"actor_user_id": bot_id})
@@ -353,6 +433,10 @@ class MatchRunner:
         match = self.match
         engine = match.engine
         user_id = engine.human_user_id
+        # p1-as-RL (model-vs-model): сдаваться нечему — нет human. Возвращаем error,
+        # серия доигрывается через run_auto / next_battle.
+        if getattr(engine, "p1_actor_type", "human") == "rl":
+            return {"error": "surrender_unavailable_for_rl_p1"}
         async with match.lock:
             # V5 terminal row: pre-snapshot ДО mark_surrender, post — после (status=P2_WIN).
             # Без этого терминальное состояние сдачи не попадает в actions.jsonl.
@@ -360,7 +444,10 @@ class MatchRunner:
             v5_handle: int = -1
             if v5 is not None:
                 try:
-                    v5_handle = v5.record_terminal(user_id, "surrender", "surrender")
+                    v5_handle = v5.record_terminal(
+                        user_id, "surrender", "surrender",
+                        decision_source=getattr(engine, "p1_actor_type", "human"),
+                    )
                 except Exception:  # noqa: BLE001
                     logger.warning("v5.record_terminal failed: %s", exc_info=True)
                     v5_handle = -1
@@ -392,6 +479,21 @@ class MatchRunner:
             winner = winner_id
             loser = engine.bot_user_id if winner_id == engine.human_user_id else engine.human_user_id
             status = "P1_WIN" if winner_id == engine.human_user_id else "P2_WIN"
+        elif winner is None and status == "ONGOING":
+            # F4 stalemate (turn-cap, winner_id=None) — это ничья.
+            status = "DRAW"
+
+        # Workflow-B find (Issue #2): surrender/stalemate не устанавливали
+        # state.status → engine._get_winner_id() (читает state.status) возвращал
+        # None, и get_match_status сообщал winner_id=null на завершённой сдачей
+        # игре (хотя surrender.result.winner_id был корректным). _finalize —
+        # терминальная точка; ставим status, если движок ещё не сделал этого.
+        try:
+            s = engine._arena.state
+            if s.status == GameStatus.ONGOING and status in ("P1_WIN", "P2_WIN", "DRAW"):
+                s.status = GameStatus[status]
+        except Exception:  # noqa: BLE001
+            pass
 
         duration = time.monotonic() - self._start_monotonic
         self.battle_log["finished_at"] = _utc_now_iso()
@@ -428,6 +530,10 @@ class MatchRunner:
             v5_dir=v5_info.get("v5_dir"),
             v5_meta_path=v5_info.get("v5_meta_path"),
             decks_cache=v5_info.get("decks_cache"),
+            battle_tag=getattr(engine, "battle_tag", None) or getattr(v5, "battle_tag", None),
+            p1_actor_type=getattr(engine, "p1_actor_type", None),
+            v5_trace_ok=not getattr(match, "v5_trace_init_failed", False) and v5 is not None,
+            agent_name=getattr(match, "agent_name", None),
         )
 
         # аналитика (NDJSON)
