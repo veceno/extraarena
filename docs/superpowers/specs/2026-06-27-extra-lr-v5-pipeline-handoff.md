@@ -44,7 +44,7 @@ Pipeline: `Block -1 (freeze + Rust parity) → 0 (foundation) → A (pilot→BC�
 - Spec written, self-reviewed, committed (`0f9c906b`).
 
 **User is doing now (blocks training):**
-1. **Finish all new mechanics** — card rebalance + 7 new cards + mechanic changes + `mana_draw` (commit `9f20d7a4` already added `ManaDrawAction`; NewCards2606 worktree has cards 47–52 + 5 new mechanic families).
+1. **Finish all new mechanics** — card rebalance + 6 new cards (47–52) + mechanic changes + `mana_draw` (commit `9f20d7a4` already added `ManaDrawAction`; NewCards2606 worktree has cards 47–52 + 5 new mechanic families).
 2. **Update the RLHF env** to the new ruleset so collected traces encode consistently with the training codec.
 
 **Blocked on user (cannot start Block -1/0 until resolved):**
@@ -74,7 +74,7 @@ Resume prompt the user can paste:
 
 ## 5. Open questions — how to close each
 
-- **Q1 — Rust ArenaEnv parity.** Verify `TrainV3` Rust kernel implements `mana_draw` + the 7 new cards + the 5 new mechanic families identically to Python `core/engine.py`. *How:* compare Rust rollout outputs vs Python `core/` on a fixed seeded scenario suite covering mana_draw cost-scaling (2/4/6…), each new card, each new mechanic (`aoe_silence`, `team_wide_shield`, `rebirth`, `crime_and_punishment`, `target_ally_max_hp_plus[_universal]`). If Rust lags → scope a port task into Block 0. **Cannot start V5 training without this.**
+- **Q1 — Rust ArenaEnv parity.** Verify `TrainV3` Rust kernel implements `mana_draw` + the 6 new cards (47–52) + the 5 new mechanic families identically to Python `core/engine.py`. *How:* compare Rust rollout outputs vs Python `core/` on a fixed seeded scenario suite covering mana_draw cost-scaling (2/4/6…), each new card, each new mechanic (`aoe_silence`, `team_wide_shield`, `rebirth`, `crime_and_punishment`, `target_ally_max_hp_plus[_universal]`). If Rust lags → scope a port task into Block 0. **Cannot start V5 training without this.**
 - **Q2 — `HAND_CAP` value.** Confirm the ruleset max hand size to parameterize the lifted `_NUM_HAND` (currently hard-capped at 4). Quick: read `core/`/engine constant or ask the user.
 - **Q3 — V4 warm-start fidelity.** Does V5’s fused architecture allow a clean 601-scorer + base-1456 weight transfer from V4-Max, or only partial? *How:* instantiate V5 policy, load `update_1190.npz` into the matching layers, forward-pass a frozen-obs subset, compare logits to V4-Max ONNX on the base-1456 portion (within export tolerance). If partial, document which layers transfer.
 - **Q4 — mana_draw usage baseline.** Define the human-baseline measurement precisely (over the pilot battles): `mana_draw_count / eligible_turns` distribution. Needed for the A-gate `[0.5×, 1.5×]` band and the E1 acceptance band.

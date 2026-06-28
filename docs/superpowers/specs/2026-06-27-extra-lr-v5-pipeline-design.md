@@ -75,8 +75,8 @@ Block E1  Tournament (post-D / post-C3 / post-B) → pick best (Rust gauntlet + 
 ## 3. Blocks in detail
 
 ### Block -1 — Prerequisites
-- **Freeze ruleset**: the card rebalance + 7 new cards + mechanic changes + mana_draw must be locked before any V5 training starts.
-- **Rust ArenaEnv parity**: verify (and port if needed) that `TrainV3` Rust ArenaEnv implements the frozen ruleset identically to Python `core/engine.py` — mana_draw action, 7 new cards, 5 new mechanic families (`aoe_silence`, `team_wide_shield`, `rebirth`, `crime_and_punishment`, `target_ally_max_hp_plus[_universal]`). Without this, V5 cannot train or be accepted under new rules on Rust.
+- **Freeze ruleset**: the card rebalance + 6 new cards (47–52) + mechanic changes + mana_draw must be locked before any V5 training starts.
+- **Rust ArenaEnv parity**: verify (and port if needed) that `TrainV3` Rust ArenaEnv implements the frozen ruleset identically to Python `core/engine.py` — mana_draw action, 6 new cards (47–52), 5 new mechanic families (`aoe_silence`, `team_wide_shield`, `rebirth`, `crime_and_punishment`, `target_ally_max_hp_plus[_universal]`). Without this, V5 cannot train or be accepted under new rules on Rust.
 - **rlhf_env codec sync**: rlhf_env stays in sync with the frozen ruleset/codec so collected traces encode consistently with training.
 
 ### Block 0 — Foundation
@@ -184,14 +184,14 @@ Two distinct notions are measured separately:
 - `encode_observation_v5`: history window 20 reads `state.action_history`; hand up to `HAND_CAP`; per-card own deck (9); global `mana_draw_count` channel; omniscient both hands/decks.
 - **Bridge round-trip**: record a battle via `v5_trace`, reconstruct `GameState` from `pre_state`, re-encode, assert the reconstructed post-state matches the next row’s `pre_state`; orphans skipped; surrender synthetic row handled.
 - **mana_draw parallel head**: legal-mask correct (hand_full / insufficient mana unset); selection combines 601-candidate-best vs mana_draw logit correctly.
-- **Rust ArenaEnv parity**: mana_draw + 7 new cards + 5 mechanic families behave identically to Python `core/engine` (parity tests).
+- **Rust ArenaEnv parity**: mana_draw + 6 new cards (47–52) + 5 mechanic families behave identically to Python `core/engine` (parity tests).
 - **V4 warm-start**: load `update_1190.npz` into V5 601-scorer + base path; forward-pass parity on base-1456 subset.
 - **V5 ONNX↔MLX export** within tightened tolerance.
 
 ---
 
 ## 7. Open questions (to resolve during implementation planning)
-- Rust ArenaEnv parity gap: does the Rust kernel already implement mana_draw + 7 new cards + 5 mechanic families, or must it be ported? (Block -1 verification.)
+- Rust ArenaEnv parity gap: does the Rust kernel already implement mana_draw + 6 new cards (47–52) + 5 mechanic families, or must it be ported? (Block -1 verification.)
 - `HAND_CAP` exact value (ruleset) — confirm before lifting `_NUM_HAND`.
 - V4-warm-start transfer fidelity: does V5’s fused architecture allow a clean 601-scorer + base-1456 weight transfer, or only partial? (Affects how much V5 inherits.)
 - mana_draw usage baseline: define the human-baseline measurement precisely (over pilot battles).

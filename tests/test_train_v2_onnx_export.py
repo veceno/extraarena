@@ -221,15 +221,71 @@ class TestOnnxPolicy:
             env = ClassicRLEnv(seed=42)
             env.reset(seed=777)
 
-            for _ in range(5):
-                cp = env.current_player_id()
-                a_mlx = mlx_pol.select_action(env, cp)
-                a_onnx = onnx_pol.select_action(env, cp)
-                assert a_mlx == a_onnx, f"MLX={a_mlx}, ONNX={a_onnx}"
+            # MLX (Metal float32) и ONNX-runtime (CPU float32) численно расходятся
+            # на ~1e-8. Если в каком-то шаге две легальные атаки имеют логиты,
+            # различающиеся меньше этого шума, argmax у MLX и ONNX может
+            # разминуться — и траектории за 5 шагов полностью разойдутся. Это
+            # НЕ баг экспорта: расхождение в пределах float-шума на неразрешимом
+            # ничьем логите. Поэтому проверяем экспорт-фиделити численно-корректно:
+            #   (1) логиты MLX и ONNX близки (LOGIT_TOL много больше float-шума
+            #       ~1e-8 и много меньше расхождения при реальном баге экспорта
+            #       O(0.1–1)) — ловит любой реальный расхождение, включая
+            #       вырожденный (все-нули) ONNX, у которого внутренний margin
+            #       ничтожен, но |mlx - onnx| огромен;
+            #   (2) когда top-2 margin у MLX больше LOGIT_TOL (ясный победитель),
+            #       argmax MLX и ONNX обязаны совпадать — поведенческая проверка.
+            LOGIT_TOL = 1e-3
 
+            def _masked_argmax_with_margin(logits, mask):
+                arr = np.asarray(logits, dtype=np.float32)
+                m = np.asarray(mask, dtype=bool)
+                legal = np.where(m)[0]
+                if len(legal) == 0:
+                    return 0, np.inf
+                legal_logits = arr[legal]
+                order = np.argsort(legal_logits)[::-1]
+                top_idx = int(legal[order[0]])
+                second = legal_logits[order[1]] if len(legal) > 1 else -np.inf
+                margin = float(legal_logits[order[0]] - second)
+                return top_idx, margin
+
+            for step in range(5):
+                cp = env.current_player_id()
+                obs = env.observe(cp)
                 mask = env.action_mask(cp)
-                aid = a_mlx
-                _, _, _, _, _ = env.step(aid)
+                af = env.action_features(cp)
+
+                logits_mlx, _ = mlx_pol._model(
+                    mx.array(obs[None, :]), mx.array(af[None, :, :])
+                )
+                mx.eval(logits_mlx)
+                logits_mlx_np = np.asarray(logits_mlx[0], dtype=np.float32)
+                a_mlx, margin_mlx = _masked_argmax_with_margin(logits_mlx_np, mask)
+
+                outs = onnx_pol._session.run(
+                    ["logits", "value"],
+                    {
+                        "observation": np.asarray(obs, dtype=np.float32)[None, :],
+                        "action_features": np.asarray(af, dtype=np.float32)[None, :, :],
+                    },
+                )
+                logits_onnx_np = np.asarray(outs[0][0], dtype=np.float32)
+                a_onnx, _ = _masked_argmax_with_margin(logits_onnx_np, mask)
+
+                # (1) Численная фиделити экспорта.
+                max_logit_diff = float(np.max(np.abs(logits_mlx_np - logits_onnx_np)))
+                assert max_logit_diff < LOGIT_TOL, (
+                    f"step {step}: |MLX-ONNX| max logit diff = {max_logit_diff:.3e} "
+                    f"превышает LOGIT_TOL={LOGIT_TOL:.0e} — реальное расхождение экспорта"
+                )
+                # (2) Поведенческая проверка при ясном победителе (margin > tol).
+                if margin_mlx > LOGIT_TOL and a_mlx != a_onnx:
+                    raise AssertionError(
+                        f"step {step}: ясный победитель (margin={margin_mlx:.3e}) "
+                        f"но argmax расходится: MLX={a_mlx}, ONNX={a_onnx}"
+                    )
+
+                _, _, _, _, _ = env.step(a_mlx)
         finally:
             Path(onnx_path).unlink(missing_ok=True)
             Path(onnx_path + ".json").unlink(missing_ok=True)
