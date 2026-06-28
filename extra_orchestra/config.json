@@ -1,0 +1,20 @@
+{
+  "host": "127.0.0.1",
+  "port": 8095,
+  "cards_path": "cards.json",
+  "scenarios_dir": "extra_orchestra/scenarios",
+  "recordings_dir": "extra_orchestra/recordings",
+  "recording": {
+    "fps": 30,
+    "width": 414,
+    "height": 896,
+    "device_scale_factor": 2,
+    "with_audio": true,
+    "headless": true,
+    "crf": 10,
+    "preset": "slow",
+    "gif_fps": 15,
+    "gif_width": 540
+  },
+  "borrowed_snapshot_commit": "1282fcb8"
+}

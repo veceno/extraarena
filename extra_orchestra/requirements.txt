@@ -1,0 +1,3 @@
+aiohttp>=3.9
+python-socketio>=5.10
+playwright>=1.40

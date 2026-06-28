@@ -1,0 +1,83 @@
+<!doctype html>
+<!-- ExtraOrchestra — предпросмотр арены в мобильной рамке.
+
+     /player (arena.html + bridge) грузится ВНУТРИ <iframe> фиксированного
+     мобильного портретного размера (414×896). У iframe СВОЙ viewport, поэтому
+     @media (max-width:420px) из arena-styles.css срабатывает даже в широком
+     десктоп-окне → настоящий мобильный лейаут арены (а не десктоп-версия).
+     Область предпросмотра искусственно сужена до мобильного соотношения.
+     Query-параметры (id/autoplay/_auth/music/sfx/speed) пробрасываются в /player.
+-->
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ExtraOrchestra — предпросмотр (мобильный)</title>
+<style>
+  html, body {
+    margin: 0; height: 100%; background: #0b0b0f;
+    display: flex; align-items: center; justify-content: center;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    overflow: hidden;
+  }
+  /* 414/896 ≈ 0.4621; 96vh * 0.4621 ≈ 44.36vh — чтобы вся рамка (с aspect-ratio)
+     помещалась по высоте. width = min(макс-мобильная, по ширине окна, по высоте окна). */
+  .phone {
+    width: min(414px, 96vw, 44.36vh);
+    aspect-ratio: 414 / 896;
+    max-width: 414px;
+    background: #000;
+    border-radius: 24px;
+    overflow: hidden;
+    box-shadow: 0 12px 48px rgba(0, 0, 0, 0.6);
+  }
+  .phone iframe {
+    width: 100%; height: 100%; border: 0; display: block;
+    background: #000;
+  }
+  /* если iframe ещё не загрузился — показываем спиннер в центре рамки */
+  .phone::before {
+    content: ""; position: relative; display: block;
+    width: 28px; height: 28px; margin: 45% auto;
+    border: 3px solid rgba(255,255,255,0.15); border-top-color: #ff8a3d;
+    border-radius: 50%; animation: orch-spin 0.8s linear infinite;
+  }
+  .phone iframe { display: none; }
+  .phone.loaded::before { display: none; }
+  .phone.loaded iframe { display: block; }
+  @keyframes orch-spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+  <div class="phone" id="phone">
+    <iframe id="f" title="arena preview"
+            allow="autoplay; encrypted-media; fullscreen; picture-in-picture"
+            allowfullscreen></iframe>
+  </div>
+  <script>
+    (function () {
+      var q = location.search || "";
+      // По умолчанию предпросмотр со звуком (музыка + SFX), если явно не выключено.
+      var params = new URLSearchParams(q);
+      if (!params.has("music")) q = (q ? q + "&" : "?") + "music=1";
+      if (!params.has("sfx"))   q = (q ? q + "&" : "?") + "sfx=1";
+      if (!params.has("ea_platform")) q = (q ? q + "&" : "?") + "ea_platform=android_app";
+      var f = document.getElementById("f");
+      // Без src iframe сначала грузит about:blank → событие load срабатывает
+      // ДО реальной загрузки /player. Поэтому НЕ используем {once:true} и
+      // проверяем, что iframe действительно загрузил /player (same-origin →
+      // contentWindow.location доступен). До тех пор держим спиннер.
+      f.addEventListener("load", function () {
+        try {
+          var p = f.contentWindow && f.contentWindow.location && f.contentWindow.location.pathname;
+          if (p === "/player") document.getElementById("phone").classList.add("loaded");
+        } catch (e) {
+          // cross-origin (не наш случай) — считаем загруженным
+          document.getElementById("phone").classList.add("loaded");
+        }
+      });
+      f.src = "/player" + q;
+    })();
+  </script>
+</body>
+</html>

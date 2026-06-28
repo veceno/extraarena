@@ -1,0 +1,76 @@
+{
+  "schema": "extra_orchestra.scenario.v1",
+  "id": "soldatik-demo",
+  "name": "Солдатик demo",
+  "description": "Ход 15: у оппонента на поле Годжо Сатору (shield+shield_refresh), Наофуми (taunt) и Крипер (deathrattle_aoe_damage_2). Игрок выставляет Солдатика → aoe_silence снимает все 3 механики.",
+  "seed": 42,
+  "viewer_side": "p1",
+  "match_id": "soldatik-demo",
+  "classic_params": {
+    "spells_free": false,
+    "summon_ready_on_play": false,
+    "sudden_death_enabled": false,
+    "overdraw_to_discard": false,
+    "mana_per_turn": 1,
+    "hero_health_multiplier": 1.0,
+    "turn_duration_seconds": 25
+  },
+  "init_scene": {
+    "turn_number": 15,
+    "starting_side": "p1",
+    "display_ms": 2200,
+    "p1": {
+      "user_id": 1001,
+      "nickname": "Демо",
+      "title": "Новичок",
+      "avatar_url": "/DesignAssets/PlayerCosmetics/Avatars/1.png",
+      "background_url": "/DesignAssets/PlayerCosmetics/Background/7.png",
+      "rarity": "common",
+      "trophies": 0,
+      "mana": 10,
+      "max_mana": 10,
+      "hero": { "card_id": 1, "level": 1 },
+      "hand": [
+        { "card_id": 47, "level": 1 }
+      ],
+      "board": [],
+      "deck": [
+        { "card_id": 5, "level": 1 },
+        { "card_id": 6, "level": 1 }
+      ]
+    },
+    "p2": {
+      "user_id": 2002,
+      "is_bot": true,
+      "nickname": "Режиссёр",
+      "title": "Босс",
+      "avatar_url": "/DesignAssets/PlayerCosmetics/Avatars/2.png",
+      "background_url": "/DesignAssets/PlayerCosmetics/Background/3.png",
+      "rarity": "epic",
+      "trophies": 0,
+      "mana": 7,
+      "max_mana": 7,
+      "hero": { "card_id": 1, "level": 1 },
+      "hand": [],
+      "board": [
+        { "card_id": 24, "level": 1, "mechanics_override": ["shield", "shield_refresh"], "is_ready": true },
+        { "card_id": 30, "level": 1, "mechanics_override": ["taunt"], "is_ready": true },
+        { "card_id": 34, "level": 1, "mechanics_override": ["deathrattle_aoe_damage_2"], "is_ready": true }
+      ],
+      "deck": []
+    }
+  },
+  "turns": [
+    {
+      "id": "turn-1",
+      "side": "p1",
+      "duration_ms": 6000,
+      "end_with_end_turn": false,
+      "nodes": [
+        { "id": "n1", "type": "wait", "delay_ms": 1500 },
+        { "id": "n2", "type": "play_card", "hand_index": 0, "target_id": null, "delay_ms": 1200 },
+        { "id": "n3", "type": "wait", "delay_ms": 2600 }
+      ]
+    }
+  ]
+}

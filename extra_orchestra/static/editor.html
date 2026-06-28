@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ExtraOrchestra — граф-редактор сцен</title>
+<link rel="stylesheet" href="/static/editor.css?v=v2graph8">
+</head>
+<body>
+<header class="orch-topbar">
+  <div class="orch-brand">Extra<span>Orchestra</span></div>
+  <div class="orch-actions">
+    <button id="btn-new" type="button">Новый</button>
+    <button id="btn-load-demo" type="button">Демо</button>
+    <button id="btn-validate" type="button" class="primary">Проверить</button>
+    <button id="btn-save" type="button">Сохранить</button>
+    <button id="btn-preview" type="button" class="primary">Предпросмотр</button>
+    <button id="btn-export" type="button" class="accent">Экспорт mp4</button>
+    <button id="btn-export-gif" type="button" class="accent">Экспорт GIF</button>
+    <a id="download-link" class="orch-dl" hidden download>Скачать mp4</a>
+  </div>
+</header>
+
+<main class="orch-main">
+  <aside class="orch-side orch-side-left">
+    <h3>Сценарии</h3>
+    <ul id="scenario-list" class="orch-scenarios"></ul>
+    <div class="orch-status" id="status">—</div>
+    <div class="orch-record" id="record-box" hidden>
+      <div>Запись <span id="record-name"></span></div>
+      <div class="orch-record-state" id="record-state">pending…</div>
+      <button id="btn-record-poll" type="button">Обновить</button>
+    </div>
+  </aside>
+
+  <section class="orch-editor">
+    <div class="orch-editor-meta">
+      <label>name <input id="f-name" type="text" placeholder="Солдатик demo"></label>
+      <label>viewer_side
+        <select id="f-viewer"><option value="p1">p1</option><option value="p2">p2</option></select>
+      </label>
+      <label>seed <input id="f-seed" type="number" value="42"></label>
+      <label>match_id <input id="f-match" type="text" placeholder="soldatik-demo"></label>
+    </div>
+
+    <div class="orch-palette" id="palette">
+      <span class="pal-label">Добавить узел:</span>
+      <button data-add="hold" type="button">сцена (hold)</button>
+      <button data-add="turn" type="button">ход (маркер)</button>
+      <span class="pal-sep"></span>
+      <button data-add="play_card" type="button">play_card</button>
+      <button data-add="attack" type="button">attack</button>
+      <button data-add="mana_draw" type="button">mana_draw</button>
+      <button data-add="end_turn" type="button">end_turn</button>
+      <span class="pal-spacer"></span>
+      <button id="btn-relayout" type="button" class="ghost">авто-раскладка</button>
+      <button id="btn-del-sel" type="button" class="danger" disabled>Удалить выбранное</button>
+      <span class="pal-hint">drag-пустое=pan · wheel=zoom · тянуть от ●порта=ребро</span>
+    </div>
+
+    <div class="orch-canvas-wrap" id="canvas-wrap">
+      <svg id="graph-svg" class="orch-graph"></svg>
+      <div id="empty-hint" class="orch-empty" hidden>Граф пуст — добавьте узел из палитры.</div>
+    </div>
+
+    <details class="orch-raw">
+      <summary>Сырой JSON сценария (двусторонний sync)</summary>
+      <textarea id="json-editor" spellcheck="false" placeholder="сюда загрузится сценарий JSON"></textarea>
+    </details>
+  </section>
+
+  <aside class="orch-side orch-side-right">
+    <h3>Свойства <span id="props-title">—</span></h3>
+    <div id="props-panel" class="orch-props"></div>
+
+    <h3>Каталог карт <span id="card-count"></span></h3>
+    <div class="orch-zone-pick" id="zone-pick" hidden>
+      клик добавит карту в зону init:
+      <select id="zone-target">
+        <option value="p1.hand">p1 · hand</option>
+        <option value="p1.board">p1 · board</option>
+        <option value="p1.deck">p1 · deck</option>
+        <option value="p2.hand">p2 · hand</option>
+        <option value="p2.board">p2 · board</option>
+        <option value="p2.deck">p2 · deck</option>
+      </select>
+    </div>
+    <input id="card-filter" type="search" placeholder="фильтр по имени…">
+    <ul id="card-list" class="orch-cards"></ul>
+    <h3>Косметика</h3>
+    <details><summary>Аватары <span id="av-count"></span></summary><div id="avatars" class="orch-grid"></div></details>
+    <details><summary>Фоны <span id="bg-count"></span></summary><div id="backgrounds" class="orch-grid"></div></details>
+  </aside>
+</main>
+
+<!-- wide overlay для расширенных настроек init-узла -->
+<div id="init-overlay" class="orch-overlay" hidden>
+  <div class="orch-overlay-card">
+    <div class="orch-overlay-head"><b>Настройки init-сцены</b><button id="init-overlay-close" type="button">✕</button></div>
+    <div id="init-form" class="orch-initform"></div>
+  </div>
+</div>
+
+<script src="/static/editor.js?v=v2graph8"></script>
+</body>
+</html>
