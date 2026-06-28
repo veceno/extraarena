@@ -798,14 +798,14 @@ def test_game_mode_sheet_declares_selected_deck_playability_before_render():
         1,
     )[0]
     pre_render_block = sheet_block.split(
-        "  return (\n    <div style={{position:'absolute'",
+        '  return (\n    <div className="mm-redesign">',
         1,
     )[0]
 
     assert "const selectedDeckValidity = getDeckPresetValidity(selectedDeck);" in pre_render_block
     assert "const deckCount = selectedDeckValidity.ownedValidCount;" in pre_render_block
     assert "const selectedDeckPlayable = selectedDeckValidity.isCompletePlayable;" in pre_render_block
-    assert "{!selectedDeckPlayable ? (" in sheet_block
+    assert "!selectedDeckPlayable" in sheet_block
     assert "!selectedDeckValidity.hasHero" in sheet_block
 
 

@@ -127,6 +127,9 @@ html, body {
 @keyframes timerPulse { 0%,100%{box-shadow:0 0 0 0 rgba(251,191,36,0)} 50%{box-shadow:0 0 14px 2px rgba(251,191,36,0.45)} }
 @keyframes onbCoachFloat { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-6px)} }
 @keyframes onbAuraPulse { 0%,100%{opacity:0.5;transform:translate(-50%,-50%) scale(1)} 50%{opacity:0.85;transform:translate(-50%,-50%) scale(1.12)} }
+@keyframes mmClaimGlow { 0%,100%{box-shadow:inset 0 1px 0 rgba(255,255,255,0.07),0 0 6px rgba(245,146,30,0.22),0 0 12px rgba(245,146,30,0.10)} 50%{box-shadow:inset 0 1px 0 rgba(255,255,255,0.07),0 0 14px rgba(245,146,30,0.55),0 0 26px rgba(245,146,30,0.28)} }
+@keyframes mmCaseGlow { 0%,100%{box-shadow:0 0 8px rgba(192,132,252,0.25),inset 0 0 6px rgba(192,132,252,0.10)} 50%{box-shadow:0 0 18px rgba(192,132,252,0.55),inset 0 0 12px rgba(192,132,252,0.20)} }
+@keyframes mmCaseShimmer { 0%{transform:translateX(-130%) rotate(8deg)} 60%,100%{transform:translateX(230%) rotate(8deg)} }
 @keyframes onbClaimablePulse { 0%,100%{box-shadow:0 0 0 rgba(245,146,30,0)} 50%{box-shadow:0 0 16px rgba(245,146,30,0.35)} }
 @keyframes onbSpotlightGlow {
   0%,100%{box-shadow:0 0 0 9999px rgba(5,3,14,0.42),0 0 22px rgba(245,146,30,0.4),inset 0 0 0 1px rgba(255,255,255,0.2)}
@@ -1504,17 +1507,6 @@ html, body {
   font-variant-numeric: tabular-nums;
 }
 
-.league-redesign-home-indicator {
-  position: absolute;
-  left: 50%;
-  bottom: max(7px, calc(var(--ea-safe-bottom-soft) + 3px));
-  width: 118px;
-  height: 5px;
-  transform: translateX(-50%);
-  border-radius: 999px;
-  background: rgba(240,236,255,0.58);
-  pointer-events: none;
-}
 
 .league-redesign-screen svg {
   display: block;
@@ -1794,6 +1786,1822 @@ html, body {
   .loading-game-logo img { width: min(52vw, 180px); max-height: 12vh; }
   .loading-percentage { font-size: clamp(28px, 10vw, 44px); }
 }
+
+    /* ═══════════════════════════════════════════════════════════════
+       MAIN MENU REDESIGN (OpenDesign handoff, 1:1 port)
+       Scoped under .mm-redesign to avoid styles.css collisions.
+       Tokens alias the T object (byte-identical to mockup :root).
+       ═══════════════════════════════════════════════════════════════ */
+    @font-face {
+      font-family: "Futura PT";
+      src: url("/DesignAssets/Font/FuturaPT-Bold.ttf") format("truetype");
+      font-weight: 700;
+      font-style: normal;
+      font-display: swap;
+    }
+    @font-face {
+      font-family: "Futura PT";
+      src: url("/DesignAssets/Font/FuturaPT-ExtraBold.ttf") format("truetype");
+      font-weight: 900;
+      font-style: normal;
+      font-display: swap;
+    }
+    .mm-redesign {
+
+      font-family: var(--font);
+      --bg: #0f0a1a;
+      --bg-deep: #130d26;
+      --surface: #1a1030;
+      --surface-2: #2d1f52;
+      --purple-2: #3d2a70;
+      --purple-3: #5b3fa0;
+      --purple-hl: #7c5cbf;
+      --purple-lt: #9c7de0;
+      --orange: #f5921e;
+      --orange-d: #d97510;
+      --orange-lt: #ffb347;
+      --green: #4ade80;
+      --blue: #60a5fa;
+      --white: #ffffff;
+      --text: #f0ecff;
+      --muted: #c4b8e8;
+      --muted-2: #7a6fa0;
+      --border: rgba(124, 92, 191, 0.34);
+      --font: "Futura PT", "Arial Black", system-ui, sans-serif;
+      --safe-top: env(safe-area-inset-top, 0px);
+      --safe-bottom: env(safe-area-inset-bottom, 0px);
+      --icon-white: brightness(0) invert(1);
+      --icon-orange: brightness(0) saturate(100%) invert(63%) sepia(83%) saturate(4559%) hue-rotate(1deg) brightness(103%);
+      --icon-grey: brightness(0) saturate(100%) invert(50%) sepia(13%) saturate(525%) hue-rotate(214deg);
+    
+    }
+    .mm-redesign * {
+
+      box-sizing: border-box;
+    
+    }
+    .mm-redesign button {
+
+      font: inherit;
+      color: inherit;
+    
+    }
+    .mm-redesign .content {
+
+      flex: 1;
+      min-height: 0;
+      overflow: auto;
+      padding: 12px 16px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      scrollbar-width: none;
+    
+    }
+    .mm-redesign .content::-webkit-scrollbar {
+
+      display: none;
+    
+    }
+    .mm-redesign .league-hub {
+
+      min-height: 102px;
+      border: 0;
+      border-radius: 18px;
+      padding: 12px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 11px;
+      color: inherit;
+      text-align: left;
+      cursor: pointer;
+      border: 1px solid rgba(96, 165, 250, 0.34);
+      background:
+        linear-gradient(180deg, rgba(96, 165, 250, 0.10), rgba(45, 31, 82, 0.42)),
+        rgba(26, 16, 48, 0.88);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.07);
+    
+    }
+    .mm-redesign .badge-wrap {
+
+      height: 78px;
+      border-radius: 16px;
+      display: grid;
+      place-items: center;
+      background: linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.02));
+      border: 1px solid rgba(255,255,255,0.08);
+    
+    }
+    .mm-redesign .league-badge {
+
+      width: 62px;
+      height: 62px;
+      object-fit: contain;
+      filter: drop-shadow(0 8px 16px rgba(0,0,0,0.45));
+    
+    }
+    .mm-redesign .league-copy {
+
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+    
+    }
+    .mm-redesign .league-title-row {
+
+      margin-top: 5px;
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 10px;
+    
+    }
+    .mm-redesign .league-title {
+
+      margin: 0;
+      color: var(--white);
+      font-size: 22px;
+      line-height: 1;
+      font-weight: 900;
+      letter-spacing: 0;
+    
+    }
+    .mm-redesign .trophy-count {
+
+      color: var(--orange-lt);
+      font-size: 14px;
+      line-height: 1;
+      font-weight: 900;
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+    
+    }
+    .mm-redesign .progress-row {
+
+      margin-top: 8px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 8px;
+    
+    }
+    .mm-redesign .progress-label {
+
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1;
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+    
+    }
+    .mm-redesign .league-note {
+
+      margin-top: 7px;
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.2;
+    
+    }
+    .mm-redesign .league-note strong {
+
+      color: var(--orange-lt);
+      font-weight: 900;
+      white-space: nowrap;
+    
+    }
+    .mm-redesign .league-sheet {
+
+      position: absolute;
+      inset: 0;
+      z-index: 6;
+      display: none;
+      background: rgba(8, 5, 18, 0.72);
+      backdrop-filter: blur(10px);
+    
+    }
+    .mm-redesign .league-sheet.open {
+
+      display: block;
+    
+    }
+    .mm-redesign .league-sheet-panel {
+
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      max-height: calc(100dvh - 28px);
+      padding: 12px 14px calc(16px + var(--safe-bottom));
+      overflow: auto;
+      border-radius: 24px 24px 0 0;
+      border: 1px solid rgba(241, 196, 15, 0.35);
+      border-bottom: 0;
+      background:
+        radial-gradient(circle at 50% 0%, rgba(241, 196, 15, 0.26), transparent 38%),
+        linear-gradient(180deg, #20143a 0%, #120b25 100%);
+      box-shadow: 0 -22px 50px rgba(0,0,0,0.56), inset 0 1px 0 rgba(255,255,255,0.10);
+      animation: sheet-up 0.22s ease both;
+      scrollbar-width: none;
+    
+    }
+    .mm-redesign .league-sheet-panel::-webkit-scrollbar {
+
+      display: none;
+    
+    }
+    @keyframes sheet-up {
+
+      from { transform: translateY(22px); opacity: 0; }
+      to { transform: translateY(0); opacity: 1; }
+    
+    }
+    .mm-redesign .sheet-topbar {
+
+      height: 42px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    
+    }
+    .mm-redesign .sheet-close {
+
+      width: 34px;
+      height: 34px;
+      border-radius: 11px;
+      border: 1px solid rgba(255,255,255,0.10);
+      display: grid;
+      place-items: center;
+      background: rgba(15,10,26,0.72);
+      color: var(--muted);
+      cursor: pointer;
+    
+    }
+    .mm-redesign .sheet-title {
+
+      min-width: 0;
+      flex: 1;
+      text-align: center;
+    
+    }
+    .mm-redesign .sheet-title strong {
+
+      display: block;
+      color: var(--white);
+      font-size: 16px;
+      line-height: 1;
+      font-weight: 900;
+    
+    }
+    .mm-redesign .sheet-title span {
+
+      margin-top: 3px;
+      display: block;
+      color: var(--muted-2);
+      font-size: 10px;
+      line-height: 1;
+      font-weight: 900;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    
+    }
+    .mm-redesign .sheet-hero {
+
+      margin-top: 8px;
+      padding: 16px;
+      border-radius: 20px;
+      border: 1px solid rgba(241, 196, 15, 0.38);
+      background:
+        radial-gradient(circle at 50% 36%, rgba(241, 196, 15, 0.24), transparent 45%),
+        rgba(26, 16, 48, 0.82);
+      overflow: hidden;
+    
+    }
+    .mm-redesign .sheet-hero-head {
+
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    
+    }
+    .mm-redesign .sheet-rank {
+
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      min-width: 0;
+    
+    }
+    .mm-redesign .sheet-rank-number {
+
+      width: 38px;
+      height: 38px;
+      border-radius: 12px;
+      display: grid;
+      place-items: center;
+      border: 1px solid rgba(241, 196, 15, 0.62);
+      background: rgba(241, 196, 15, 0.18);
+      color: var(--white);
+      font-size: 18px;
+      font-weight: 900;
+      box-shadow: 0 0 18px rgba(241, 196, 15, 0.34);
+    
+    }
+    .mm-redesign .sheet-rank-copy strong {
+
+      display: block;
+      color: var(--white);
+      font-size: 24px;
+      line-height: 1;
+      font-weight: 900;
+    
+    }
+    .mm-redesign .sheet-rank-copy span {
+
+      margin-top: 3px;
+      display: block;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.2;
+      font-weight: 700;
+      white-space: nowrap;
+    
+    }
+    .mm-redesign .sheet-trophy-pill {
+
+      min-height: 32px;
+      padding: 0 10px;
+      border-radius: 999px;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      border: 1px solid rgba(245,146,30,0.45);
+      background: rgba(245,146,30,0.16);
+      color: var(--orange-lt);
+      font-size: 14px;
+      line-height: 1;
+      font-weight: 900;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    
+    }
+    .mm-redesign .sheet-badge-stage {
+
+      height: 176px;
+      position: relative;
+      display: grid;
+      place-items: center;
+
+    }
+    .mm-redesign .sheet-badge-stage::before {
+
+      content: "";
+      position: absolute;
+      width: 162px;
+      height: 30px;
+      bottom: 22px;
+      border-radius: 50%;
+      background: rgba(241, 196, 15, 0.28);
+      filter: blur(14px);
+
+    }
+    .mm-redesign .sheet-badge-stage img {
+
+      width: 146px;
+      height: 146px;
+      object-fit: contain;
+      position: relative;
+      filter: drop-shadow(0 18px 22px rgba(0,0,0,0.48));
+
+    }
+    .mm-redesign .sheet-progress-panel {
+
+      padding: 12px;
+      border-radius: 15px;
+      background: rgba(15, 10, 26, 0.48);
+      border: 1px solid rgba(255,255,255,0.08);
+    
+    }
+    .mm-redesign .sheet-progress-top,
+      .mm-redesign .sheet-progress-meta {
+
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    
+    }
+    .mm-redesign .sheet-progress-top {
+
+      margin-bottom: 7px;
+    
+    }
+    .mm-redesign .sheet-progress-top span,
+      .mm-redesign .sheet-progress-meta span {
+
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.2;
+      font-weight: 700;
+    
+    }
+    .mm-redesign .sheet-progress-top strong {
+
+      color: var(--white);
+      font-size: 17px;
+      line-height: 1;
+      font-weight: 900;
+      font-variant-numeric: tabular-nums;
+    
+    }
+    .mm-redesign .sheet-progress-panel .bar {
+
+      height: 11px;
+      padding: 2px;
+      background: rgba(26, 16, 48, 0.82);
+      border-color: rgba(241, 196, 15, 0.24);
+    
+    }
+    .mm-redesign .sheet-progress-panel .bar span {
+
+      background: linear-gradient(90deg, #f1c40f, var(--orange-lt));
+      box-shadow: 0 0 14px rgba(241, 196, 15, 0.54);
+    
+    }
+    .mm-redesign .sheet-progress-meta {
+
+      margin-top: 6px;
+    
+    }
+    .mm-redesign .sheet-section-head {
+
+      margin-top: 13px;
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 12px;
+    
+    }
+    .mm-redesign .sheet-section-head h3 {
+
+      margin: 0;
+      color: var(--white);
+      font-size: 17px;
+      line-height: 1;
+      font-weight: 900;
+    
+    }
+    .mm-redesign .sheet-section-head span {
+
+      color: var(--muted-2);
+      font-size: 10px;
+      line-height: 1;
+      font-weight: 900;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    
+    }
+    .mm-redesign .sheet-trophy-road {
+
+      margin-top: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+
+    }
+    .mm-redesign .road-reward {
+
+      min-height: 54px;
+      padding: 8px 10px;
+      border-radius: 16px;
+      display: grid;
+      grid-template-columns: 42px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 10px;
+      border: 1px solid rgba(124, 92, 191, 0.30);
+      background: rgba(26, 16, 48, 0.72);
+      position: relative;
+      overflow: hidden;
+    
+    }
+    .mm-redesign .road-reward.next {
+
+      border-color: rgba(245, 146, 30, 0.58);
+      background:
+        radial-gradient(circle at 94% 0%, rgba(245,146,30,0.22), transparent 48%),
+        rgba(26, 16, 48, 0.84);
+    
+    }
+    .mm-redesign .road-reward.league {
+
+      border-color: rgba(52, 152, 219, 0.46);
+      background:
+        radial-gradient(circle at 94% 0%, rgba(52,152,219,0.20), transparent 48%),
+        rgba(26, 16, 48, 0.80);
+    
+    }
+    .mm-redesign .road-icon {
+
+      width: 42px;
+      height: 42px;
+      border-radius: 14px;
+      display: grid;
+      place-items: center;
+      background: rgba(245, 146, 30, 0.14);
+      border: 1px solid rgba(245, 146, 30, 0.32);
+      color: var(--orange-lt);
+      font-size: 21px;
+      line-height: 1;
+    
+    }
+    .mm-redesign .road-reward.league .road-icon {
+
+      background: rgba(52, 152, 219, 0.14);
+      border-color: rgba(52, 152, 219, 0.32);
+    
+    }
+    .mm-redesign .road-copy {
+
+      min-width: 0;
+    
+    }
+    .mm-redesign .road-copy strong {
+
+      display: block;
+      overflow: hidden;
+      color: var(--white);
+      font-size: 14px;
+      line-height: 1.05;
+      font-weight: 900;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    
+    }
+    .mm-redesign .road-copy span {
+
+      margin-top: 4px;
+      display: block;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.2;
+      font-weight: 700;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    
+    }
+    .mm-redesign .road-chip {
+
+      padding: 6px 8px;
+      border-radius: 999px;
+      background: rgba(15, 10, 26, 0.70);
+      border: 1px solid rgba(255,255,255,0.08);
+      color: var(--muted);
+      font-size: 10px;
+      line-height: 1;
+      font-weight: 900;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    
+    }
+    .mm-redesign .mode-sheet {
+
+      position: absolute;
+      inset: 0;
+      z-index: 7;
+      display: none;
+      background: rgba(8, 5, 18, 0.74);
+      backdrop-filter: blur(10px);
+    
+    }
+    .mm-redesign .mode-sheet.open {
+
+      display: block;
+    
+    }
+    .mm-redesign .mode-sheet-panel {
+
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      max-height: calc(100dvh - 28px);
+      padding: 12px 14px calc(16px + var(--safe-bottom));
+      overflow: auto;
+      border-radius: 24px 24px 0 0;
+      border: 1px solid rgba(124, 92, 191, 0.52);
+      border-bottom: 0;
+      background:
+        radial-gradient(circle at 50% 0%, rgba(124, 92, 191, 0.28), transparent 38%),
+        linear-gradient(180deg, #20143a 0%, #120b25 100%);
+      box-shadow: 0 -22px 50px rgba(0,0,0,0.56), inset 0 1px 0 rgba(255,255,255,0.10);
+      animation: sheet-up 0.22s ease both;
+      scrollbar-width: none;
+    
+    }
+    .mm-redesign .mode-sheet-panel::-webkit-scrollbar {
+
+      display: none;
+    
+    }
+    .mm-redesign .mode-sheet.accent-orange .mode-sheet-panel {
+
+      border-color: rgba(245, 146, 30, 0.42);
+      background:
+        radial-gradient(circle at 50% 0%, rgba(245, 146, 30, 0.22), transparent 38%),
+        linear-gradient(180deg, #20143a 0%, #120b25 100%);
+    
+    }
+    .mm-redesign .mode-list {
+
+      margin-top: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    
+    }
+    .mm-redesign .mode-card {
+
+      width: 100%;
+      min-height: 92px;
+      padding: 12px;
+      border-radius: 17px;
+      border: 1.5px solid rgba(124, 92, 191, 0.36);
+      display: grid;
+      grid-template-columns: 46px minmax(0, 1fr) auto;
+      gap: 11px;
+      align-items: center;
+      background: rgba(26, 16, 48, 0.72);
+      color: var(--white);
+      text-align: left;
+      cursor: pointer;
+      position: relative;
+      overflow: hidden;
+    
+    }
+    .mm-redesign .mode-card.active {
+
+      border-color: rgba(245, 146, 30, 0.68);
+      background:
+        radial-gradient(circle at 92% 0%, rgba(245, 146, 30, 0.22), transparent 42%),
+        rgba(26, 16, 48, 0.88);
+    
+    }
+    .mm-redesign .mode-card.extra.active {
+
+      border-color: rgba(192, 132, 252, 0.42);
+      background:
+        radial-gradient(circle at 96% 0%, rgba(192, 132, 252, 0.24), transparent 44%),
+        rgba(26, 16, 48, 0.82);
+
+    }
+    .mm-redesign .mode-card.disabled {
+
+      opacity: 0.54;
+      cursor: not-allowed;
+    
+    }
+    .mm-redesign .mode-icon {
+
+      width: 46px;
+      height: 46px;
+      border-radius: 15px;
+      display: grid;
+      place-items: center;
+      border: 1px solid rgba(255,255,255,0.10);
+      background: rgba(15, 10, 26, 0.54);
+      color: var(--orange-lt);
+      font-size: 22px;
+      line-height: 1;
+      font-weight: 900;
+    
+    }
+    .mm-redesign .mode-icon img {
+
+      width: 25px;
+      height: 25px;
+      object-fit: contain;
+      filter: var(--icon-white);
+    
+    }
+    .mm-redesign .mode-copy {
+
+      min-width: 0;
+    
+    }
+    .mm-redesign .mode-copy strong {
+
+      display: block;
+      color: var(--white);
+      font-size: 16px;
+      line-height: 1;
+      font-weight: 900;
+      letter-spacing: 0;
+    
+    }
+    .mm-redesign .mode-copy p {
+
+      margin: 6px 0 0;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.28;
+      font-weight: 700;
+    
+    }
+    .mm-redesign .mode-meta {
+
+      margin-top: 6px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+    
+    }
+    .mm-redesign .mode-pill {
+
+      padding: 4px 6px;
+      border-radius: 999px;
+      border: 1px solid rgba(255,255,255,0.08);
+      background: rgba(15, 10, 26, 0.58);
+      color: var(--muted);
+      font-size: 9px;
+      line-height: 1;
+      font-weight: 900;
+      white-space: nowrap;
+    
+    }
+    .mm-redesign .mode-radio {
+
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      border: 2px solid rgba(196, 184, 232, 0.42);
+      display: grid;
+      place-items: center;
+      pointer-events: none;
+
+    }
+    .mm-redesign .mode-card.active .mode-radio::after {
+
+      content: "";
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--orange);
+      box-shadow: 0 0 10px rgba(245, 146, 30, 0.62);
+    
+    }
+    .mm-redesign .mode-card-side {
+
+      display: flex;
+      align-items: center;
+      gap: 9px;
+    
+    }
+    .mm-redesign .mode-info-btn {
+
+      width: 30px;
+      height: 30px;
+      padding: 0;
+      border-radius: 50%;
+      border: 1px solid rgba(196, 184, 232, 0.34);
+      display: grid;
+      place-items: center;
+      background: rgba(15, 10, 26, 0.72);
+      color: var(--muted);
+      font-size: 15px;
+      line-height: 1;
+      font-weight: 900;
+      cursor: pointer;
+      position: relative;
+      z-index: 2;
+
+    }
+    /* Enlarge the "?" tap target beyond its 30px circle so a fingertip (~44px)
+       aimed at the button never lands on the adjacent .mode-radio. Visible
+       circle stays 30px; the ::before is a transparent 46px click area. */
+    .mm-redesign .mode-info-btn::before {
+
+      content: "";
+      position: absolute;
+      inset: -8px;
+      border-radius: 50%;
+
+    }
+    .mm-redesign .mode-info-btn:active {
+
+      transform: translateY(1px);
+    
+    }
+    .mm-redesign .variant-modal {
+
+      position: absolute;
+      inset: 0;
+      z-index: 9;
+      display: none;
+      padding: 18px;
+      align-items: center;
+      justify-content: center;
+      background: rgba(8, 5, 18, 0.78);
+      backdrop-filter: blur(12px);
+    
+    }
+    .mm-redesign .variant-modal.open {
+
+      display: flex;
+    
+    }
+    .mm-redesign .variant-panel {
+
+      width: 100%;
+      max-height: min(620px, calc(100dvh - 56px));
+      overflow: auto;
+      padding: 12px;
+      border-radius: 22px;
+      border: 1px solid rgba(192, 132, 252, 0.42);
+      background:
+        radial-gradient(circle at 50% 0%, rgba(192, 132, 252, 0.22), transparent 38%),
+        linear-gradient(180deg, #20143a 0%, #120b25 100%);
+      box-shadow: 0 24px 70px rgba(0,0,0,0.62), inset 0 1px 0 rgba(255,255,255,0.10);
+      animation: sheet-up 0.18s ease both;
+      scrollbar-width: none;
+    
+    }
+    .mm-redesign .variant-panel::-webkit-scrollbar {
+
+      display: none;
+    
+    }
+    .mm-redesign .mode-details {
+
+      margin-top: 10px;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    
+    }
+    .mm-redesign .mode-detail {
+
+      min-height: 70px;
+      padding: 10px;
+      border-radius: 14px;
+      border: 1px solid rgba(124, 92, 191, 0.26);
+      background: rgba(26, 16, 48, 0.62);
+    
+    }
+    .mm-redesign .mode-detail span {
+
+      color: var(--muted-2);
+      font-size: 9px;
+      line-height: 1;
+      font-weight: 900;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    
+    }
+    .mm-redesign .mode-detail strong {
+
+      margin-top: 8px;
+      display: block;
+      color: var(--white);
+      font-size: 15px;
+      line-height: 1;
+      font-weight: 900;
+    
+    }
+    .mm-redesign .mode-confirm {
+
+      margin-top: 12px;
+      width: 100%;
+      height: 56px;
+      border: 0;
+      border-radius: 17px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 9px;
+      background: linear-gradient(135deg, var(--orange), var(--orange-d));
+      color: var(--white);
+      font-size: 18px;
+      line-height: 1;
+      font-weight: 900;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      cursor: pointer;
+      box-shadow: 0 8px 24px rgba(245, 146, 30, 0.34), inset 0 1px 0 rgba(255,255,255,0.18);
+    
+    }
+    .mm-redesign .mode-confirm img {
+
+      width: 22px;
+      height: 22px;
+      object-fit: contain;
+      filter: var(--icon-white);
+    
+    }
+    .mm-redesign .practice-tabs {
+
+      margin-top: 12px;
+      padding: 4px;
+      border-radius: 14px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 4px;
+      background: rgba(15, 10, 26, 0.68);
+      border: 1px solid rgba(124, 92, 191, 0.22);
+    
+    }
+    .mm-redesign .practice-tab {
+
+      min-height: 36px;
+      border: 0;
+      border-radius: 11px;
+      background: transparent;
+      color: var(--muted-2);
+      font-size: 12px;
+      line-height: 1;
+      font-weight: 900;
+      cursor: pointer;
+    
+    }
+    .mm-redesign .practice-tab.active {
+
+      background: var(--surface-2);
+      color: var(--white);
+    
+    }
+    .mm-redesign .practice-panel {
+
+      display: none;
+      margin-top: 12px;
+    
+    }
+    .mm-redesign .practice-panel.active {
+
+      display: block;
+    
+    }
+    .mm-redesign .deck-select {
+
+      margin-top: 12px;
+      padding: 11px 12px;
+      border-radius: 14px;
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      border: 1px solid rgba(124, 92, 191, 0.30);
+      background: rgba(26, 16, 48, 0.70);
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1;
+      font-weight: 900;
+    
+    }
+    .mm-redesign .friend-list,
+      .mm-redesign .difficulty-list {
+
+      margin-top: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    
+    }
+    .mm-redesign .friend-row,
+      .mm-redesign .difficulty-row {
+
+      min-height: 58px;
+      padding: 9px 10px;
+      border-radius: 14px;
+      border: 1px solid rgba(124, 92, 191, 0.26);
+      display: grid;
+      grid-template-columns: 36px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 9px;
+      background: rgba(26, 16, 48, 0.64);
+    
+    }
+    .mm-redesign .difficulty-row {
+
+      width: 100%;
+      grid-template-columns: 46px minmax(0, 1fr) auto;
+      color: var(--white);
+      text-align: left;
+      cursor: pointer;
+    
+    }
+    .mm-redesign .difficulty-row.active {
+
+      border-color: rgba(245, 146, 30, 0.58);
+      background: rgba(245, 146, 30, 0.10);
+    
+    }
+    .mm-redesign .difficulty-row.active .mode-radio::after {
+
+      content: "";
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--orange);
+      box-shadow: 0 0 10px rgba(245, 146, 30, 0.62);
+    
+    }
+    .mm-redesign .friend-avatar {
+
+      width: 36px;
+      height: 36px;
+      border-radius: 12px;
+      display: grid;
+      place-items: center;
+      background: linear-gradient(135deg, var(--purple-3), var(--orange));
+      color: var(--white);
+      font-size: 14px;
+      line-height: 1;
+      font-weight: 900;
+    
+    }
+    .mm-redesign .row-copy {
+
+      min-width: 0;
+    
+    }
+    .mm-redesign .row-copy strong {
+
+      display: block;
+      overflow: hidden;
+      color: var(--white);
+      font-size: 13px;
+      line-height: 1;
+      font-weight: 900;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    
+    }
+    .mm-redesign .row-copy span {
+
+      margin-top: 4px;
+      display: block;
+      color: var(--muted-2);
+      font-size: 10px;
+      line-height: 1;
+      font-weight: 900;
+      white-space: nowrap;
+    
+    }
+    .mm-redesign .mini-cta {
+
+      height: 32px;
+      padding: 0 10px;
+      border: 0;
+      border-radius: 10px;
+      background: linear-gradient(135deg, var(--orange), var(--orange-d));
+      color: var(--white);
+      font-size: 11px;
+      line-height: 1;
+      font-weight: 900;
+      cursor: pointer;
+      white-space: nowrap;
+    
+    }
+    .mm-redesign .id-invite {
+
+      margin-top: 10px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+    
+    }
+    .mm-redesign .id-invite input {
+
+      min-width: 0;
+      height: 42px;
+      padding: 0 12px;
+      border-radius: 13px;
+      border: 1px solid rgba(124, 92, 191, 0.34);
+      background: rgba(15, 10, 26, 0.70);
+      color: var(--white);
+      font: 900 13px/1 var(--font);
+      outline: none;
+    
+    }
+    .mm-redesign .kicker {
+
+      margin: 0;
+      color: var(--muted-2);
+      font-size: 10px;
+      line-height: 1;
+      font-weight: 900;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    
+    }
+    .mm-redesign .bar {
+
+      height: 7px;
+      overflow: hidden;
+      border-radius: 999px;
+      background: rgba(61, 42, 112, 0.88);
+      border: 1px solid rgba(124, 92, 191, 0.25);
+    
+    }
+    .mm-redesign .bar span {
+
+      display: block;
+      height: 100%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, var(--blue), var(--purple-lt));
+      box-shadow: 0 0 12px rgba(96, 165, 250, 0.36);
+    
+    }
+    .mm-redesign .battle-stage {
+
+      min-height: 334px;
+      padding: 12px 12px 13px;
+      border-radius: 22px;
+      position: relative;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      border: 1px solid rgba(245, 146, 30, 0.32);
+      background:
+        linear-gradient(180deg, rgba(245, 146, 30, 0.10), rgba(45, 31, 82, 0.16) 48%, rgba(19, 13, 38, 0.92)),
+        var(--surface);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.08), 0 14px 38px rgba(0,0,0,0.24);
+    
+    }
+    .mm-redesign .stage-top {
+
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      display: flex;
+      justify-content: flex-end;
+      align-items: flex-start;
+      gap: 12px;
+      z-index: 2;
+    
+    }
+    .mm-redesign .stage-eyebrow {
+
+      color: var(--orange-lt);
+      font-size: 10px;
+      line-height: 1;
+      font-weight: 900;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    
+    }
+    .mm-redesign .stage-title {
+
+      margin: 5px 0 0;
+      color: var(--white);
+      font-size: 28px;
+      line-height: 1;
+      font-weight: 900;
+      letter-spacing: 0;
+    
+    }
+    .mm-redesign .streak {
+
+      min-width: 70px;
+      padding: 6px 8px;
+      border-radius: 12px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      background: rgba(0,0,0,0.26);
+      border: 1px solid rgba(255,255,255,0.10);
+      color: var(--white);
+      font-size: 16px;
+      font-weight: 900;
+      line-height: 1;
+      font-variant-numeric: tabular-nums;
+      cursor: pointer;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.08);
+    
+    }
+    .mm-redesign button.streak {
+
+      border: 1px solid rgba(255,255,255,0.10);
+      font: inherit;
+    
+    }
+    .mm-redesign .streak:active {
+
+      transform: translateY(1px);
+    
+    }
+    .mm-redesign .streak img {
+
+      width: 20px;
+      height: 20px;
+      object-fit: contain;
+      filter: var(--icon-white);
+    
+    }
+    .mm-redesign .streak-question {
+
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      background: rgba(0,0,0,0.36);
+      border: 1px solid rgba(255,255,255,0.38);
+      color: rgba(255,255,255,0.88);
+      font-size: 11px;
+      line-height: 1;
+      font-weight: 900;
+    
+    }
+    .mm-redesign .streak-hero {
+
+      margin-top: 10px;
+      padding: 14px;
+      border-radius: 20px;
+      border: 1px solid rgba(245, 146, 30, 0.42);
+      background:
+        radial-gradient(circle at 16% 0%, rgba(245, 146, 30, 0.28), transparent 42%),
+        linear-gradient(180deg, rgba(45, 31, 82, 0.82), rgba(15, 10, 26, 0.70));
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.08);
+    
+    }
+    .mm-redesign .streak-hero-main {
+
+      display: grid;
+      grid-template-columns: 76px minmax(0, 1fr);
+      align-items: center;
+      gap: 13px;
+    
+    }
+    .mm-redesign .streak-big {
+
+      width: 76px;
+      height: 76px;
+      border-radius: 22px;
+      display: grid;
+      place-items: center;
+      background: linear-gradient(135deg, var(--orange), var(--orange-d));
+      box-shadow: 0 14px 30px rgba(245, 146, 30, 0.34), inset 0 1px 0 rgba(255,255,255,0.24);
+      position: relative;
+    
+    }
+    .mm-redesign .streak-big strong {
+
+      color: var(--white);
+      font-size: 36px;
+      line-height: 1;
+      font-weight: 900;
+      font-variant-numeric: tabular-nums;
+    
+    }
+    .mm-redesign .streak-big img {
+
+      position: absolute;
+      right: 10px;
+      bottom: 9px;
+      width: 22px;
+      height: 22px;
+      filter: var(--icon-white);
+    
+    }
+    .mm-redesign .streak-summary {
+
+      min-width: 0;
+    
+    }
+    .mm-redesign .streak-summary h3 {
+
+      margin: 0;
+      color: var(--white);
+      font-size: 24px;
+      line-height: 1;
+      font-weight: 900;
+      letter-spacing: 0;
+    
+    }
+    .mm-redesign .streak-summary p {
+
+      margin: 7px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+      font-weight: 700;
+    
+    }
+    .mm-redesign .streak-stats {
+
+      margin-top: 12px;
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+    
+    }
+    .mm-redesign .streak-stat {
+
+      min-height: 58px;
+      padding: 9px 8px;
+      border-radius: 14px;
+      background: rgba(15, 10, 26, 0.56);
+      border: 1px solid rgba(255,255,255,0.08);
+    
+    }
+    .mm-redesign .streak-stat span {
+
+      display: block;
+      color: var(--muted-2);
+      font-size: 9px;
+      line-height: 1;
+      font-weight: 900;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    
+    }
+    .mm-redesign .streak-stat strong {
+
+      margin-top: 7px;
+      display: block;
+      color: var(--white);
+      font-size: 18px;
+      line-height: 1;
+      font-weight: 900;
+      font-variant-numeric: tabular-nums;
+    
+    }
+    .mm-redesign .streak-meter {
+
+      margin-top: 12px;
+      padding: 10px;
+      border-radius: 15px;
+      background: rgba(15, 10, 26, 0.48);
+      border: 1px solid rgba(255,255,255,0.08);
+    
+    }
+    .mm-redesign .streak-meter-top {
+
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.2;
+      font-weight: 700;
+    
+    }
+    .mm-redesign .streak-meter-top strong {
+
+      color: var(--orange-lt);
+      font-weight: 900;
+      white-space: nowrap;
+    
+    }
+    .mm-redesign .streak-meter .bar {
+
+      height: 10px;
+      padding: 2px;
+      border-color: rgba(245, 146, 30, 0.28);
+      background: rgba(26, 16, 48, 0.88);
+    
+    }
+    .mm-redesign .streak-meter .bar span {
+
+      background: linear-gradient(90deg, var(--orange-d), var(--orange), var(--orange-lt));
+      box-shadow: 0 0 14px rgba(245, 146, 30, 0.48);
+    
+    }
+    .mm-redesign .streak-rule-list {
+
+      margin-top: 11px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    
+    }
+    .mm-redesign .streak-rule {
+
+      min-height: 62px;
+      padding: 10px;
+      border-radius: 16px;
+      display: grid;
+      grid-template-columns: 38px minmax(0, 1fr);
+      align-items: center;
+      gap: 10px;
+      border: 1px solid rgba(124, 92, 191, 0.30);
+      background: rgba(26, 16, 48, 0.70);
+    
+    }
+    .mm-redesign .streak-rule-icon {
+
+      width: 38px;
+      height: 38px;
+      border-radius: 13px;
+      display: grid;
+      place-items: center;
+      background: rgba(245, 146, 30, 0.14);
+      border: 1px solid rgba(245, 146, 30, 0.30);
+      color: var(--orange-lt);
+      font-size: 18px;
+      line-height: 1;
+      font-weight: 900;
+    
+    }
+    .mm-redesign .streak-rule-copy {
+
+      min-width: 0;
+    
+    }
+    .mm-redesign .streak-rule-copy strong {
+
+      display: block;
+      color: var(--white);
+      font-size: 13px;
+      line-height: 1.05;
+      font-weight: 900;
+    
+    }
+    .mm-redesign .streak-rule-copy span {
+
+      margin-top: 4px;
+      display: block;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.28;
+      font-weight: 700;
+    
+    }
+    .mm-redesign .arena-core {
+
+      position: relative;
+      height: 250px;
+      display: grid;
+      place-items: center;
+      z-index: 0;
+    
+    }
+    .mm-redesign .arena-core::before {
+
+      content: "";
+      position: absolute;
+      width: 246px;
+      height: 40px;
+      bottom: 12px;
+      border-radius: 50%;
+      background: rgba(245, 146, 30, 0.26);
+      filter: blur(15px);
+    
+    }
+    .mm-redesign .arena-core img {
+
+      width: 226px;
+      height: 226px;
+      object-fit: contain;
+      position: relative;
+      filter: drop-shadow(0 14px 22px rgba(0,0,0,0.55));
+
+    }
+    /* arena-core is now a <button> (opens Моя лига) — reset user-agent defaults so
+       the grid layout / 226x226 badge stays identical to the former <div>. */
+    .mm-redesign button.arena-core {
+
+      border: none;
+      background: transparent;
+      padding: 0;
+      cursor: pointer;
+      width: 100%;
+
+    }
+    .mm-redesign .battle-actions {
+
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 58px;
+      gap: 10px;
+      z-index: 1;
+    
+    }
+    .mm-redesign .battle-btn {
+
+      height: 62px;
+      border: 0;
+      border-radius: 18px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      background: linear-gradient(135deg, var(--orange), var(--orange-d));
+      color: var(--white);
+      font-size: 24px;
+      line-height: 1;
+      font-weight: 900;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      cursor: pointer;
+      box-shadow: 0 10px 28px rgba(245, 146, 30, 0.42), inset 0 1px 0 rgba(255,255,255,0.24);
+    
+    }
+    .mm-redesign .battle-btn img {
+
+      width: 25px;
+      height: 25px;
+      object-fit: contain;
+      filter: var(--icon-white);
+    
+    }
+    .mm-redesign .mode-btn {
+
+      height: 62px;
+      border-radius: 18px;
+      border: 1px solid rgba(124, 92, 191, 0.72);
+      display: grid;
+      place-items: center;
+      background: rgba(26, 16, 48, 0.94);
+      cursor: pointer;
+    
+    }
+    .mm-redesign .mode-btn img {
+
+      width: 31px;
+      height: 31px;
+      object-fit: contain;
+      filter: var(--icon-white);
+      opacity: 0.94;
+    
+    }
+    .mm-redesign .pass-strip {
+
+      min-height: 72px;
+      border-radius: 16px;
+      padding: 10px 11px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 42px;
+      gap: 10px;
+      align-items: center;
+      border: 1px solid rgba(245, 146, 30, 0.25);
+      background: linear-gradient(180deg, rgba(45,31,82,0.68), rgba(19,13,38,0.86));
+    
+    }
+    .mm-redesign .pass-head {
+
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 8px;
+    
+    }
+    .mm-redesign .pass-title {
+
+      color: var(--white);
+      font-size: 15px;
+      line-height: 1;
+      font-weight: 900;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    
+    }
+    .mm-redesign .pass-stage {
+
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    
+    }
+    .mm-redesign .pass-strip .bar {
+
+      margin-top: 8px;
+      height: 6px;
+    
+    }
+    .mm-redesign .pass-strip .bar span {
+
+      background: linear-gradient(90deg, var(--orange-d), var(--orange), var(--orange-lt));
+      box-shadow: 0 0 12px rgba(245, 146, 30, 0.36);
+    
+    }
+    .mm-redesign .pass-icon {
+
+      width: 42px;
+      height: 42px;
+      border-radius: 13px;
+      display: grid;
+      place-items: center;
+      background: linear-gradient(135deg, rgba(245,146,30,0.92), rgba(217,117,16,0.96));
+      box-shadow: 0 6px 17px rgba(245, 146, 30, 0.28);
+    
+    }
+    .mm-redesign .pass-icon img {
+
+      width: 24px;
+      height: 24px;
+      object-fit: contain;
+      filter: var(--icon-white);
+    
+    }
+    .mm-redesign .quiet-grid {
+
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+    
+    }
+    .mm-redesign .quiet-btn {
+
+      min-height: 82px;
+      padding: 8px 5px;
+      border-radius: 15px;
+      border: 1px solid rgba(124, 92, 191, 0.28);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      background: rgba(26, 16, 48, 0.62);
+      color: var(--muted);
+      cursor: pointer;
+      position: relative;
+      overflow: hidden;
+    
+    }
+    .mm-redesign .quiet-btn.ready {
+
+      border-color: rgba(74, 222, 128, 0.6);
+      background: linear-gradient(135deg, #16a34a, #15803d);
+      color: #ffffff;
+      box-shadow: 0 4px 14px rgba(34,180,120,0.4);
+
+    }
+    .mm-redesign .quiet-btn.ready-orange {
+
+      border-color: rgba(245, 146, 30, 0.65);
+      background: linear-gradient(135deg, #ea580c, #c2410c);
+      color: #ffffff;
+      box-shadow: 0 4px 14px rgba(234,88,12,0.4);
+
+    }
+    /* Keep the label + sub-label readable on the saturated claimable buttons. */
+    .mm-redesign .quiet-btn.ready span,
+    .mm-redesign .quiet-btn.ready-orange span {
+      color: #ffffff;
+      text-shadow: 0 1px 2px rgba(0,0,0,0.3);
+    }
+    .mm-redesign .quiet-btn.ready small,
+    .mm-redesign .quiet-btn.ready-orange small {
+      color: rgba(255,255,255,0.95);
+      font-weight: 900;
+      text-shadow: 0 1px 2px rgba(0,0,0,0.3);
+    }
+    /* Cases tile — permanent violet glow + moving light sheen so it stands out
+       in its row (Мои бои / За вход / Генератор / Кейсы). Distinct from the
+       green ready / orange ready-orange claimable accents. */
+    .mm-redesign .quiet-btn.case {
+
+      border-color: rgba(192, 132, 252, 0.55);
+      background: linear-gradient(135deg, rgba(76, 42, 133, 0.55), rgba(26, 16, 48, 0.72));
+      color: #ffffff;
+      animation: mmCaseGlow 2.6s ease-in-out infinite;
+
+    }
+    .mm-redesign .quiet-btn.case span,
+    .mm-redesign .quiet-btn.case small {
+
+      color: #ffffff;
+      text-shadow: 0 1px 2px rgba(0,0,0,0.35);
+
+    }
+    .mm-redesign .quiet-btn.case::after {
+
+      content: "";
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 55%;
+      height: 100%;
+      background: linear-gradient(115deg, transparent 0%, rgba(255,255,255,0) 35%, rgba(255,255,255,0.35) 50%, rgba(255,255,255,0) 65%, transparent 100%);
+      filter: blur(1px);
+      animation: mmCaseShimmer 3.2s ease-in-out infinite;
+      pointer-events: none;
+
+    }
+    /* Claimable-reward highlight for the big menu blocks: the Trophy Road hub
+       (league-hub) glows when glory tiers are claimable, the ExtraPass strip
+       (pass-strip) glows when season rewards are claimable now. Orange = the
+       app-wide "ready to collect" accent (matches .ready-orange / yellowPulse). */
+    .mm-redesign .league-hub.ready {
+
+      border-color: rgba(245, 146, 30, 0.7);
+      animation: mmClaimGlow 2.2s ease-in-out infinite;
+
+    }
+    .mm-redesign .pass-strip.ready {
+
+      border-color: rgba(245, 146, 30, 0.7);
+      animation: mmClaimGlow 2.2s ease-in-out infinite;
+
+    }
+    .mm-redesign .quiet-btn img {
+
+      width: 25px;
+      height: 25px;
+      object-fit: contain;
+      filter: var(--icon-white);
+      opacity: 0.84;
+    
+    }
+    .mm-redesign .quiet-btn span {
+
+      width: 100%;
+      overflow: hidden;
+      color: inherit;
+      font-size: 10px;
+      line-height: 1.05;
+      font-weight: 900;
+      text-align: center;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    
+    }
+    .mm-redesign .quiet-btn small {
+
+      color: var(--muted-2);
+      font-size: 9px;
+      line-height: 1;
+      font-weight: 700;
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+    
+    }
+    @media (max-height: 760px) {
+    .mm-redesign .content {
+
+        gap: 8px;
+        padding-top: 9px;
+      
+    }
+    .mm-redesign .league-hub {
+
+        min-height: 92px;
+        padding: 10px;
+      
+    }
+    .mm-redesign .badge-wrap {
+
+        height: 70px;
+      
+    }
+    .mm-redesign .league-badge {
+
+        width: 56px;
+        height: 56px;
+      
+    }
+    .mm-redesign .sheet-badge-stage {
+
+        height: 140px;
+
+    }
+    .mm-redesign .sheet-badge-stage img {
+
+        width: 120px;
+        height: 120px;
+
+    }
+    .mm-redesign .road-reward {
+
+        min-height: 50px;
+
+    }
+    .mm-redesign .battle-stage {
+
+        min-height: 292px;
+      
+    }
+    .mm-redesign .arena-core {
+
+        height: 182px;
+      
+    }
+    .mm-redesign .arena-core img {
+
+        width: 166px;
+        height: 166px;
+      
+    }
+    .mm-redesign .quiet-btn {
+
+        min-height: 74px;
+      
+    }
+    }
 </style>
 <script>
   // Dev QA: capture ?test_t_case=1&user_case_id=N&tier=T into a global
@@ -3337,7 +5145,7 @@ window.loadMobileSquadsBootstrap = async function(options = {}) {
 };
 </script>
 
-<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=b500f6f3f4de">
+<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=22732fee4e0d">
 // ═══════════════════════════════════════════
 // DESIGN TOKENS
 // ═══════════════════════════════════════════
@@ -7116,141 +8924,143 @@ const BattlePickSheet = ({onClose, profile, runtimeStatus}) => {
   };
 
   return (
-    <div style={{position:'absolute',inset:0,background:'rgba(5,3,14,0.75)',backdropFilter:'blur(9px)',zIndex:20,display:'flex',flexDirection:'column',justifyContent:'flex-end'}} onClick={onClose}>
-      <div onClick={e=>e.stopPropagation()} className="safe-pad-bottom" style={{'--ea-safe-pad-bottom-base':'24px',background:`linear-gradient(180deg,#1a1238 0%,#130d26 100%)`,borderRadius:'24px 24px 0 0',padding:'16px 18px 24px',border:`1px solid ${T.purple1}`,borderBottom:'none',boxShadow:'0 -16px 50px rgba(0,0,0,0.5)',animation:'slideUp 0.28s cubic-bezier(0.32,0.72,0,1)'}}>
-        <div style={{width:'36px',height:'4px',borderRadius:'2px',background:T.purple2,margin:'0 auto 14px'}}/>
-
-        {/* Tabs */}
-        <div style={{display:'flex',background:T.bgDeep,borderRadius:'12px',padding:'3px',marginBottom:'16px',gap:'3px'}}>
-          {[{id:'friend',label:'🤝 Дружеская игра'},{id:'bot',label:'🤖 Тренировка'}].map(t=>(
-            <button key={t.id} onClick={()=>((t.id==='friend'?friendlyDisabled:trainingDisabled)?showTempUnavailable():setTab(t.id))} style={{flex:1,padding:'8px 4px',borderRadius:'10px',background:tab===t.id?T.purple2:'none',border:'none',color:tab===t.id?T.white:T.grey2,fontSize:'12px',fontWeight:tab===t.id?'700':'400',fontFamily:"'Exo 2',sans-serif",cursor:'pointer',transition:'all 0.15s',opacity:(t.id==='friend'?friendlyDisabled:trainingDisabled)?0.55:1}}>{t.label}{(t.id==='friend'?friendlyDisabled:trainingDisabled)?' · Временно недоступно':''}</button>
-          ))}
-        </div>
-
-        {/* Deck selector — shared */}
-        <div style={{marginBottom:'14px'}}>
-          <div style={{fontSize:'11px',color:T.grey3,textTransform:'uppercase',letterSpacing:'0.5px',marginBottom:'8px'}}>Колода</div>
-          {decksLoading ? (
-            <div style={{background:T.bgCard,border:`1px solid ${T.purple1}`,borderRadius:'12px',padding:'10px 14px'}}>
-              <div style={{display:'flex',alignItems:'center',gap:'8px'}}>
-                <div style={{width:'20px',height:'20px',borderRadius:'50%',border:`2px solid ${T.purple2}`,borderTopColor:T.purpleLt,animation:'spin 0.8s linear infinite',flexShrink:0}}/>
-                <span style={{fontSize:'12px',color:T.grey2}}>Загрузка колод...</span>
-              </div>
+    <div className="mm-redesign">
+      <section className="mode-sheet open" onClick={onClose} aria-label="Дружеские игры и тренировки">
+        <div className="mode-sheet-panel" role="dialog" aria-modal="true" aria-labelledby="practiceTitle" onClick={e=>e.stopPropagation()}>
+          <header className="sheet-topbar">
+            <button className="sheet-close" type="button" onClick={onClose} aria-label="Назад">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M15 5l-7 7 7 7" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+            </button>
+            <div className="sheet-title" id="practiceTitle">
+              <strong>Играть без рейтинга</strong>
+              <span>friendly · training</span>
             </div>
-          ) : deckLoadError ? (
-            <div style={{background:'rgba(248,113,113,0.1)',border:'1px solid rgba(248,113,113,0.35)',borderRadius:'12px',padding:'10px 14px',display:'flex',alignItems:'center',gap:'10px'}}>
-              <div style={{flex:1,minWidth:0,fontSize:'12px',color:'#fca5a5',lineHeight:1.4}}>{deckLoadError}</div>
-              <button onClick={()=>loadBattleDeckPresets(true)}
-                style={{height:'34px',padding:'0 12px',borderRadius:'10px',border:`1px solid ${T.orange}66`,background:'rgba(245,146,30,0.14)',color:T.orangeLt,fontSize:'12px',fontWeight:'800',fontFamily:"'Exo 2',sans-serif",cursor:'pointer',flexShrink:0}}>
-                Повторить
-              </button>
-            </div>
-          ) : (
-            <div style={{position:'relative'}}>
+            <button className="sheet-close" type="button" onClick={onClose} aria-label="Закрыть">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"/></svg>
+            </button>
+          </header>
+
+          <div className="practice-tabs" role="tablist" aria-label="Тип игры">
+            <button className={'practice-tab' + (tab==='friend'?' active':'')} type="button"
+              onClick={()=>(friendlyDisabled?showTempUnavailable():setTab('friend'))}
+              style={friendlyDisabled?{opacity:0.55}:undefined}>Дружеская игра</button>
+            <button className={'practice-tab' + (tab==='bot'?' active':'')} type="button"
+              onClick={()=>(trainingDisabled?showTempUnavailable():setTab('bot'))}
+              style={trainingDisabled?{opacity:0.55}:undefined}>Тренировка</button>
+          </div>
+
+          <div className="deck-select" aria-label="Выбор колоды">
+            <span>Колода</span>
+            {decksLoading ? (
+              <span style={{color:'var(--muted)'}}>Загрузка…</span>
+            ) : deckLoadError ? (
+              <button onClick={()=>loadBattleDeckPresets(true)} style={{border:'0',background:'transparent',color:'var(--orange-lt)',fontFamily:"'Exo 2',sans-serif",fontSize:'12px',fontWeight:900,cursor:'pointer'}}>Повторить</button>
+            ) : (
               <select value={deckId} onChange={e=>setDeckId(e.target.value)}
-                style={{width:'100%',appearance:'none',background:T.bgCard,border:`1px solid ${T.purple2}`,borderRadius:'12px',padding:'11px 36px 11px 14px',color:T.white,fontSize:'13px',fontWeight:'600',fontFamily:"'Exo 2',sans-serif",outline:'none',cursor:'pointer'}}>
+                style={{appearance:'none',WebkitAppearance:'none',MozAppearance:'none',background:'transparent',border:'0',color:'var(--white)',fontFamily:"'Exo 2',sans-serif",fontSize:'12px',fontWeight:900,textAlign:'right',cursor:'pointer',maxWidth:'62%',paddingRight:'20px',outline:'none',
+                  backgroundImage:"url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'><path d='M3 5l3 3 3-3' stroke='%23a89bc4' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>\")",backgroundRepeat:'no-repeat',backgroundPosition:'right center',backgroundSize:'12px'}}>
                 {presets.map(p => {
                   const filled = getDeckPresetValidity(p).ownedValidCount;
-                  return <option key={p.preset_number} value={String(p.preset_number)} style={{background:T.bgDeep,color:T.white}}>{p.preset_name || `Колода ${p.preset_number}`} ({filled}/9)</option>;
+                  return <option key={p.preset_number} value={String(p.preset_number)} style={{background:'#1a1030',color:'#fff'}}>{p.preset_name || `Колода ${p.preset_number}`} · {filled}/9</option>;
                 })}
               </select>
-              <svg style={{position:'absolute',right:'14px',top:'50%',transform:'translateY(-50%)',pointerEvents:'none'}} width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M3 5l3 3 3-3" stroke={T.grey2} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
-            </div>
-          )}
-        </div>
-
-        {tab === 'friend' && <>
-          {/* Friends online */}
-          <div style={{background:T.bgCard,border:`1px solid ${T.purple1}`,borderRadius:'14px',padding:'12px 14px',marginBottom:'12px'}}>
-            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'10px'}}>
-              <div style={{display:'flex',alignItems:'center',gap:'7px'}}>
-                <div style={{width:'8px',height:'8px',borderRadius:'50%',background:'#4ade80',boxShadow:'0 0 6px #4ade8088'}}/>
-                <span style={{fontSize:'12px',fontWeight:'700',color:T.white,fontFamily:"'Exo 2',sans-serif"}}>Друзья в сети</span>
-              </div>
-              <div style={{display:'flex',alignItems:'center',gap:'8px'}}>
-                <span style={{fontSize:'11px',color:T.grey3}}>{onlineFriends.length} онлайн</span>
-                <button onClick={loadOnlineFriends} disabled={onlineFriendsLoading} aria-label="Обновить друзей онлайн" title="Обновить друзей онлайн"
-                  style={{width:'28px',height:'28px',borderRadius:'8px',background:'rgba(9,5,16,0.72)',border:`1px solid ${T.purple1}66`,display:'grid',placeItems:'center',cursor:onlineFriendsLoading?'default':'pointer',opacity:onlineFriendsLoading?0.55:1}}>
-                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" style={{animation:onlineFriendsLoading?'spin 0.8s linear infinite':'none'}}>
-                    <path d="M11.2 4.4A4.8 4.8 0 0 0 2.5 3.3M2.8 9.6a4.8 4.8 0 0 0 8.7 1.1" stroke={T.grey1} strokeWidth="1.5" strokeLinecap="round"/>
-                    <path d="M11.4 1.8v2.8H8.6M2.6 12.2V9.4h2.8" stroke={T.grey1} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                  </svg>
-                </button>
-              </div>
-            </div>
-            {onlineFriendsLoading ? (
-              <div style={{display:'flex',alignItems:'center',justifyContent:'center',padding:'18px 0',gap:'8px',border:`1px dashed ${T.grey3}25`,borderRadius:'10px'}}>
-                <div style={{width:'20px',height:'20px',borderRadius:'50%',border:`2px solid ${T.purple2}`,borderTopColor:T.green,animation:'spin 0.8s linear infinite'}}/>
-                <span style={{fontSize:'12px',color:T.grey2,fontWeight:'600'}}>Обновляем список...</span>
-              </div>
-            ) : onlineFriends.length === 0 ? (
-              <div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',padding:'18px 0',gap:'6px',border:`1px dashed ${T.grey3}25`,borderRadius:'10px'}}>
-                <svg width="28" height="28" viewBox="0 0 28 28" fill="none"><circle cx="14" cy="12" r="4" stroke={T.grey3} strokeWidth="1.5"/><path d="M6 22c0-4 3.6-6 8-6s8 2 8 6" stroke={T.grey3} strokeWidth="1.5" fill="none"/><circle cx="14" cy="14" r="12" stroke={T.grey3} strokeWidth="1" strokeDasharray="2 2"/></svg>
-                <span style={{fontSize:'12px',color:T.grey3,fontWeight:'500'}}>Никого в сети</span>
-              </div>
-            ) : (
-              <div style={{display:'flex',flexDirection:'column',gap:'8px'}}>
-                {onlineFriends.map(friend => {
-                  const name = friend.display_name || friend.username || 'Игрок';
-                  return (
-                    <div key={friend.user_id} style={{display:'grid',gridTemplateColumns:'32px minmax(0,1fr) auto',alignItems:'center',gap:'8px',padding:'8px',background:'rgba(9,5,16,0.52)',border:`1px solid ${T.purple1}44`,borderRadius:'10px'}}>
-                      <div style={{width:'32px',height:'32px',borderRadius:'8px',overflow:'hidden',background:`linear-gradient(135deg,${T.purple2},${T.orange})`,display:'grid',placeItems:'center',fontSize:'14px',fontWeight:900,color:T.white}}>
-                        {friend.avatar_url ? <img src={friend.avatar_url} alt="" style={{width:'100%',height:'100%',objectFit:'cover'}}/> : String(name).trim().charAt(0).toUpperCase()}
-                      </div>
-                      <div style={{minWidth:0}}>
-	                        <PremiumNickname name={name} player={friend} style={{fontSize:'13px',fontWeight:900,fontFamily:"'Exo 2',sans-serif"}}/>
-	                        <div style={{fontSize:'10px',fontWeight:800,color:T.green,textTransform:'uppercase',marginTop:'2px'}}>онлайн · <PublicPlayerId player={friend} userId={friend.user_id}/></div>
-                      </div>
-                      <button onClick={()=>sendFriendInvite(friend.user_id)} disabled={starting || !!friendInviteId}
-                        style={{height:'32px',padding:'0 10px',borderRadius:'8px',border:'none',background:`linear-gradient(180deg,${T.orange},#f08b13)`,color:'#190e06',fontSize:'11px',fontWeight:900,fontFamily:"'Exo 2',sans-serif",cursor:(starting || friendInviteId)?'default':'pointer',opacity:(starting || friendInviteId)?0.55:1}}>
-                        В бой
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
             )}
           </div>
 
-          <div style={{fontSize:'12px',color:T.grey1,marginBottom:'10px',lineHeight:1.5}}>Введи ID друга, чтобы вызвать его на дуэль.</div>
-          {friendInviteId ? (
-            <div style={{background:'rgba(62,229,139,0.12)',border:`1px solid ${T.green}55`,borderRadius:'12px',padding:'10px 12px',marginBottom:'12px'}}>
-              <div style={{fontSize:'12px',color:T.green,fontWeight:900,marginBottom:'8px'}}>Вызов отправлен: {friendInviteId}</div>
-              <button onClick={cancelFriendInvite} style={{width:'100%',height:'38px',background:'rgba(16,10,28,0.88)',border:`1px solid ${T.red}66`,borderRadius:'8px',color:T.red,fontSize:'12px',fontWeight:900,fontFamily:"'Exo 2',sans-serif",cursor:'pointer'}}>Отозвать вызов</button>
-            </div>
-          ) : (
-            <InviteInput onSend={sendFriendInvite} sending={starting}/>
-          )}
-          {friendError && (
-            <div style={{marginTop:'10px',padding:'8px 10px',borderRadius:'8px',background:'rgba(255,72,91,0.12)',border:`1px solid ${T.red}55`,fontSize:'12px',fontWeight:700,color:T.red}}>{friendError}</div>
-          )}
-        </>}
+          {tab === 'friend' && (
+            <section className="practice-panel active" aria-label="Друзья в сети">
+              <div className="sheet-section-head">
+                <h3>Друзья в сети</h3>
+                <span style={{display:'inline-flex',alignItems:'center',gap:'8px'}}>
+                  {onlineFriends.length} онлайн
+                  <button onClick={loadOnlineFriends} disabled={onlineFriendsLoading} aria-label="Обновить друзей онлайн" title="Обновить друзей онлайн"
+                    style={{width:'26px',height:'26px',borderRadius:'8px',background:'rgba(15,10,26,0.7)',border:'1px solid rgba(124,92,191,0.34)',display:'grid',placeItems:'center',cursor:onlineFriendsLoading?'default':'pointer',opacity:onlineFriendsLoading?0.6:1,padding:'0'}}>
+                    <svg width="13" height="13" viewBox="0 0 14 14" fill="none" style={{animation:onlineFriendsLoading?'spin 0.8s linear infinite':'none'}}>
+                      <path d="M11.2 4.4A4.8 4.8 0 0 0 2.5 3.3M2.8 9.6a4.8 4.8 0 0 0 8.7 1.1" stroke={T.grey1} strokeWidth="1.5" strokeLinecap="round"/>
+                      <path d="M11.4 1.8v2.8H8.6M2.6 12.2V9.4h2.8" stroke={T.grey1} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                    </svg>
+                  </button>
+                </span>
+              </div>
+              <div className="friend-list">
+                {onlineFriendsLoading ? (
+                  <div style={{display:'flex',alignItems:'center',justifyContent:'center',padding:'16px',gap:'8px',border:`1px dashed ${T.grey3}25`,borderRadius:'12px',color:'var(--muted)',fontSize:'12px',fontWeight:700}}>
+                    <div style={{width:'18px',height:'18px',borderRadius:'50%',border:`2px solid ${T.purple2}`,borderTopColor:T.green,animation:'spin 0.8s linear infinite'}}/>
+                    Обновляем список…
+                  </div>
+                ) : onlineFriends.length === 0 ? (
+                  <div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',padding:'16px',gap:'6px',border:`1px dashed ${T.grey3}25`,borderRadius:'12px',color:'var(--muted-2)',fontSize:'12px',fontWeight:700}}>
+                    <svg width="26" height="26" viewBox="0 0 28 28" fill="none"><circle cx="14" cy="12" r="4" stroke="currentColor" strokeWidth="1.5"/><path d="M6 22c0-4 3.6-6 8-6s8 2 8 6" stroke="currentColor" strokeWidth="1.5" fill="none"/><circle cx="14" cy="14" r="12" stroke="currentColor" strokeWidth="1" strokeDasharray="2 2"/></svg>
+                    Никого в сети
+                  </div>
+                ) : onlineFriends.map(friend => {
+                  const name = friend.display_name || friend.username || 'Игрок';
+                  return (
+                    <article key={friend.user_id} className="friend-row">
+                      <div className="friend-avatar">
+                        {friend.avatar_url ? <img src={friend.avatar_url} alt="" style={{width:'100%',height:'100%',objectFit:'cover',borderRadius:'12px'}}/> : String(name).trim().charAt(0).toUpperCase()}
+                      </div>
+                      <div className="row-copy">
+                        <PremiumNickname name={name} player={friend} style={{display:'block',overflow:'hidden',whiteSpace:'nowrap',textOverflow:'ellipsis',fontSize:'13px',fontWeight:900,fontFamily:"'Exo 2',sans-serif"}}/>
+                        <span>онлайн · <PublicPlayerId player={friend} userId={friend.user_id}/></span>
+                      </div>
+                      <button className="mini-cta" onClick={()=>sendFriendInvite(friend.user_id)} disabled={starting || !!friendInviteId} style={(starting || friendInviteId)?{opacity:0.55,cursor:'default'}:undefined}>В бой</button>
+                    </article>
+                  );
+                })}
+              </div>
 
-        {tab === 'bot' && <>
-          <div style={{fontSize:'11px',color:T.grey3,textTransform:'uppercase',letterSpacing:'0.5px',marginBottom:'8px'}}>Сложность</div>
-          <div style={{display:'flex',flexDirection:'column',gap:'6px',marginBottom:'16px'}}>
-            {DIFFICULTIES.map(d=>(
-              <button key={d.id} onClick={()=>setDiff(d.id)} style={{display:'flex',alignItems:'center',gap:'12px',padding:'10px 14px',background:diff===d.id?`${d.color}18`:T.bgCard,border:`1px solid ${diff===d.id?d.color:T.purple1}`,borderRadius:'12px',cursor:'pointer',transition:'all 0.15s',textAlign:'left'}}>
-                <div style={{width:'10px',height:'10px',borderRadius:'50%',background:d.color,flexShrink:0,boxShadow:diff===d.id?`0 0 8px ${d.color}88`:'none'}}/>
-                <div style={{flex:1}}>
-                  <div style={{fontSize:'13px',fontWeight:'700',color:diff===d.id?T.white:T.grey1,fontFamily:"'Exo 2',sans-serif"}}>{d.label}</div>
-                  <div style={{fontSize:'11px',color:T.grey3,marginTop:'1px'}}>{d.desc}</div>
+              {friendInviteId ? (
+                <div style={{marginTop:'10px',background:'rgba(62,229,139,0.12)',border:`1px solid ${T.green}55`,borderRadius:'12px',padding:'10px 12px'}}>
+                  <div style={{fontSize:'12px',color:T.green,fontWeight:900,marginBottom:'8px'}}>Вызов отправлен: {friendInviteId}</div>
+                  <button onClick={cancelFriendInvite} style={{width:'100%',height:'38px',background:'rgba(16,10,28,0.88)',border:`1px solid ${T.red}66`,borderRadius:'10px',color:T.red,fontSize:'12px',fontWeight:900,fontFamily:"'Exo 2',sans-serif",cursor:'pointer'}}>Отозвать вызов</button>
                 </div>
-                {diff===d.id && <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 7l4 4 6-7" stroke={d.color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
-              </button>
-            ))}
-          </div>
-          {deckCount < 9 || !selectedDeck?.card_ids?.[0] ? (
-            <div style={{background:'rgba(248,113,113,0.1)',border:'1px solid rgba(248,113,113,0.3)',borderRadius:'12px',padding:'9px 12px',fontSize:'11px',color:'#f87171',lineHeight:1.5,marginBottom:'8px'}}>
-              {!selectedDeck?.card_ids?.[0] ? '⚠️ Выберите героя в колоде' : `⚠️ Колода неполная (${deckCount}/9)`}
-            </div>
-          ) : (
-          <button onClick={startBot} style={{width:'100%',height:'50px',background:`linear-gradient(135deg,${T.orange},${T.orangeD})`,border:'none',borderRadius:'14px',color:'white',fontSize:'17px',fontWeight:'900',fontFamily:"'Exo 2',sans-serif",cursor:trainingDisabled?'not-allowed':'pointer',boxShadow:`0 5px 20px ${T.orange}44`,display:'flex',alignItems:'center',justifyContent:'center',gap:'8px',opacity:trainingDisabled?0.5:1}}>
-            <img src={ICONS.battle} alt="" style={{width:'22px',height:'22px',filter:'brightness(0) invert(1)'}}/> В БОЙ
-          </button>
+              ) : (
+                <>
+                  <div className="sheet-section-head"><h3>Вызов по ID</h3><span>только друзья</span></div>
+                  <div className="id-invite">
+                    <InviteInput onSend={sendFriendInvite} sending={starting}/>
+                  </div>
+                </>
+              )}
+              {friendError && (
+                <div style={{marginTop:'10px',padding:'8px 10px',borderRadius:'10px',background:'rgba(255,72,91,0.12)',border:`1px solid ${T.red}55`,fontSize:'12px',fontWeight:700,color:T.red}}>{friendError}</div>
+              )}
+            </section>
           )}
-        </>}
-      </div>
+
+          {tab === 'bot' && (
+            <section className="practice-panel active" aria-label="Тренировка">
+              <div className="sheet-section-head"><h3>Сложность бота</h3><span>training</span></div>
+              <div className="difficulty-list">
+                {DIFFICULTIES.map((d, idx) => (
+                  <button key={d.id} className={'difficulty-row' + (diff===d.id?' active':'')} type="button" onClick={()=>setDiff(d.id)}>
+                    <div className="mode-icon" aria-hidden="true">{['I','II','III','IV','V'][idx] || String(idx+1)}</div>
+                    <div className="row-copy">
+                      <strong>{d.label}</strong>
+                      <span>{d.desc}</span>
+                    </div>
+                    <div className="mode-radio" aria-hidden="true"></div>
+                  </button>
+                ))}
+              </div>
+              {deckCount < 9 || !selectedDeck?.card_ids?.[0] ? (
+                <div style={{marginTop:'10px',background:'rgba(248,113,113,0.1)',border:'1px solid rgba(248,113,113,0.3)',borderRadius:'12px',padding:'9px 12px',fontSize:'11px',color:'#f87171',lineHeight:1.5}}>
+                  {!selectedDeck?.card_ids?.[0] ? '⚠️ Выберите героя в колоде' : `⚠️ Колода неполная (${deckCount}/9)`}
+                </div>
+              ) : (
+                <button className="mode-confirm" type="button" onClick={startBot} disabled={trainingDisabled} style={trainingDisabled?{opacity:0.5,cursor:'not-allowed'}:undefined}>
+                  <img src={ICONS.vsBot} alt=""/>
+                  <span>Начать тренировку</span>
+                </button>
+              )}
+            </section>
+          )}
+          <div className="sheet-footer" style={{marginTop:'14px',paddingTop:'10px',borderTop:'1px solid rgba(124,92,191,0.22)',fontSize:'10px',color:T.grey2,textAlign:'center',lineHeight:1.5}}>
+            <span style={{color:T.grey1,fontWeight:800,letterSpacing:'0.08em'}}>EXTRAARENA</span>
+          </div>
+        </div>
+      </section>
     </div>
   );
 };
@@ -7837,38 +9647,87 @@ const InfoSheet = ({onClose}) => {
 // ═══════════════════════════════════════════
 // WIN STREAK INFO SHEET
 // ═══════════════════════════════════════════
-const WinStreakInfoSheet = ({onClose}) => {
-  const rows = [
-    {t:'Серия побед', d:'Побеждай подряд на арене, чтобы накапливать серию побед. Каждая победа увеличивает счётчик на кнопке «В бой».'},
-    {t:'Бонусные трофеи', d:'Победа при активной серии приносит дополнительно +N трофеев к награде, где N — длина серии до этого боя (но не более +10).'},
-    {t:'Поражение обнуляет серию', d:'Любое поражение полностью сбрасывает серию побед и связанные бонусы. Начинай новую серию с нуля.'},
-    {t:'Ничья не сбрасывает', d:'Бой, завершившийся ничьей, не обнуляет серию побед, но и не добавляет к ней новую победу. Бонусные трофеи за ничью не начисляются.'},
-    {t:'Максимум +10', d:'Дополнительные трофеи за серию побед capped на +10 — даже при длинной серии больше не получишь.'},
-    {t:'Лучшая серия', d:'Твоя максимальная длина серии побед сохраняется и отображается в разделе «История боёв → Моя статистика».'},
+const WinStreakInfoSheet = ({winStreak=0, maxWinStreak=0, onClose}) => {
+  // Russian pluralization for "победа/победы/побед".
+  const winsWord = (n) => {
+    const m10 = n % 10, m100 = n % 100;
+    if (m10 === 1 && m100 !== 11) return 'победа';
+    if (m10 >= 2 && m10 <= 4 && !(m100 >= 12 && m100 <= 14)) return 'победы';
+    return 'побед';
+  };
+  const streak = Math.max(0, parseInt(winStreak || 0, 10) || 0);
+  const bonusNow = Math.min(streak, 10);
+  const record = Math.max(parseInt(maxWinStreak || 0, 10) || 0, streak);
+  const remaining = Math.max(0, 10 - streak);
+  const meterPct = Math.max(0, Math.min(100, Math.round(streak / 10 * 100)));
+  const rules = [
+    {icon:'+N', t:'Бонусные трофеи', d:'Победа при активной серии даёт +N трофеев, где N — длина серии до боя. Максимум: +10.'},
+    {icon:'×',  t:'Поражение сбрасывает серию', d:'Любое поражение обнуляет счётчик и связанные бонусы. Новая серия начинается со следующей победы.'},
+    {icon:'=',  t:'Ничья не обнуляет', d:'Ничья не добавляет победу и не даёт бонус, но серия побед сохраняется.'},
+    {icon:'MM', t:'Подбор соперника учитывает streak', d:'В рейтинговых режимах длинная серия усиливает подбор: от 300 трофеев пороги применяются каждые 3 победы (3, 6, 9…), до 300 — каждые 5 побед.'},
+    {icon:'★',  t:'Лучшая серия хранится в статистике', d:'Рекорд серии отображается в «История боёв → Моя статистика» вместе с текущей серией и винрейтом.'},
   ];
   return (
-    <div style={{position:'absolute',inset:0,background:'rgba(5,3,14,0.72)',backdropFilter:'blur(8px)',zIndex:20,display:'flex',flexDirection:'column',justifyContent:'flex-end'}} onClick={onClose}>
-      <div onClick={e=>e.stopPropagation()} className="safe-pad-bottom" style={{'--ea-safe-pad-bottom-base':'24px',background:`linear-gradient(180deg,#1a1238 0%,#130d26 100%)`,borderRadius:'24px 24px 0 0',padding:'16px 18px 24px',animation:'slideUp 0.28s cubic-bezier(0.32,0.72,0,1)',border:`1px solid ${T.purple1}`,borderBottom:'none',boxShadow:'0 -16px 50px rgba(0,0,0,0.5)',maxHeight:'calc(var(--ea-viewport-height, 100dvh) - var(--ea-safe-top))',overflowY:'auto',WebkitOverflowScrolling:'touch'}}>
-        <div style={{width:'36px',height:'4px',borderRadius:'2px',background:T.purple2,margin:'0 auto 16px'}}/>
-        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'18px'}}>
-          <span style={{display:'flex',alignItems:'center',gap:'12px',fontSize:'22px',fontWeight:'900',color:T.white,fontFamily:"'Exo 2',sans-serif"}}>
-            <img src="/DesignAssets/MainMenu/Icons/Wins.png" alt="" style={{width:'26px',height:'26px',filter:'brightness(0) invert(1)'}}/>
-            Серия побед
-          </span>
-          <button onClick={onClose} style={{width:'34px',height:'34px',borderRadius:'50%',background:T.bgCard,border:`1px solid ${T.purple1}`,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer'}}>
-            <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 2L10 10M10 2L2 10" stroke={T.grey1} strokeWidth="1.8" strokeLinecap="round"/></svg>
+    <section className="mode-sheet accent-orange open" aria-label="Серия побед" onClick={onClose}>
+      <div className="mode-sheet-panel" role="dialog" aria-modal="true" aria-labelledby="winStreakTitle" onClick={e=>e.stopPropagation()}>
+        <header className="sheet-topbar">
+          <button className="sheet-close" type="button" onClick={onClose} aria-label="Назад">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M15 5l-7 7 7 7" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/></svg>
           </button>
-        </div>
-        <div style={{display:'flex',flexDirection:'column',gap:'10px'}}>
-          {rows.map((r,i)=>(
-            <div key={i} style={{background:T.bgCard,border:`1px solid ${T.purple1}`,borderRadius:'14px',padding:'14px 16px'}}>
-              <div style={{fontSize:'14px',fontWeight:'700',color:T.white,fontFamily:"'Exo 2',sans-serif",marginBottom:'6px'}}>{r.t}</div>
-              <div style={{fontSize:'12px',color:T.grey1,lineHeight:'1.5'}}>{r.d}</div>
+          <div className="sheet-title" id="winStreakTitle">
+            <strong>Серия побед</strong>
+            <span>бонусы и матчмейкинг</span>
+          </div>
+          <button className="sheet-close" type="button" onClick={onClose} aria-label="Закрыть">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"/></svg>
+          </button>
+        </header>
+
+        <section className="streak-hero" aria-label="Текущая серия побед">
+          <div className="streak-hero-main">
+            <div className="streak-big" aria-hidden="true">
+              <strong>{streak}</strong>
+              <img src="/DesignAssets/MainMenu/Icons/Wins.png" alt=""/>
             </div>
+            <div className="streak-summary">
+              <h3>{streak} {winsWord(streak)} подряд</h3>
+              <p>Каждая новая победа на арене увеличивает счётчик. Следующая победа даст дополнительный streak-бонус к трофеям.</p>
+            </div>
+          </div>
+
+          <div className="streak-stats" aria-label="Статистика серии">
+            <div className="streak-stat"><span>Бонус сейчас</span><strong>+{bonusNow} 🏆</strong></div>
+            <div className="streak-stat"><span>Лимит</span><strong>+10 🏆</strong></div>
+            <div className="streak-stat"><span>Рекорд</span><strong>{record}</strong></div>
+          </div>
+
+          <div className="streak-meter" aria-label="Прогресс до максимального бонуса">
+            <div className="streak-meter-top">
+              <span>До максимального streak-бонуса</span>
+              <strong>{remaining} {winsWord(remaining)}</strong>
+            </div>
+            <div className="bar" aria-hidden="true"><span style={{width: meterPct + '%'}}/></div>
+          </div>
+        </section>
+
+        <div className="sheet-section-head">
+          <h3>Как работает</h3>
+          <span>из текущей механики</span>
+        </div>
+
+        <div className="streak-rule-list" aria-label="Правила серии побед">
+          {rules.map((r,i)=>(
+            <article className="streak-rule" key={i}>
+              <div className="streak-rule-icon" aria-hidden="true">{r.icon}</div>
+              <div className="streak-rule-copy">
+                <strong>{r.t}</strong>
+                <span>{r.d}</span>
+              </div>
+            </article>
           ))}
         </div>
       </div>
-    </div>
+    </section>
   );
 };
 
@@ -7920,18 +9779,13 @@ const SupportSheet = ({onClose}) => {
 // ARENA SCREEN
 // ═══════════════════════════════════════════
 const ArenaScreen = ({onMenu, onAI, onGenerator, onOpenBattles, onBattlePick, onStartBattle, onOpenCase, onOpenGloryPath, onOpenLeagueInfo, onGoToShop, onOpenBattlePass, onDailyLogin, dailyStatus, profile}) => {
-  const [hasCases,    setHasCases]    = React.useState((profile?.keys || profile?.cases_count || 0) > 0);
-  const [battleHover, setBattleHover] = React.useState(false);
-  const [shineAnim,   setShineAnim]   = React.useState(false);
   const [genStatus,   setGenStatus]   = React.useState(null);
   const [genTick,     setGenTick]     = React.useState(0);
   const [seasonInfo,  setSeasonInfo]  = React.useState(null);
   const [winStreak,   setWinStreak]   = React.useState(0);
+  const [maxWinStreak,setMaxWinStreak] = React.useState(0);
+  const [battleCount, setBattleCount] = React.useState(0);
   const [showWinStreakInfo, setShowWinStreakInfo] = React.useState(false);
-
-  React.useEffect(()=>{
-    setHasCases((profile?.keys || profile?.cases_count || 0) > 0);
-  },[profile]);
 
   React.useEffect(()=>{
     let alive = true;
@@ -7940,7 +9794,11 @@ const ArenaScreen = ({onMenu, onAI, onGenerator, onOpenBattles, onBattlePick, on
       try {
         let data;
         if (window.eaCachedJson) {
-          data = await window.eaCachedJson(url);
+          // Battle is a full-page navigation (/arena?id=…), so the webapp reloads
+          // on return and ArenaScreen remounts — but eaCachedJson would otherwise
+          // serve the STALE pre-battle history. forceRefresh bypasses the cache
+          // so the win streak updates in real time on every menu return.
+          data = await window.eaCachedJson(url, {forceRefresh: true});
         } else {
           const r = await fetch(url);
           if (!r.ok) return;
@@ -7948,6 +9806,10 @@ const ArenaScreen = ({onMenu, onAI, onGenerator, onOpenBattles, onBattlePick, on
         }
         if (alive && data && data.stats) {
           setWinStreak(parseInt(data.stats.current_win_streak || 0, 10) || 0);
+          setMaxWinStreak(parseInt(data.stats.max_win_streak || 0, 10) || 0);
+        }
+        if (alive && data && data.total != null) {
+          setBattleCount(parseInt(data.total || 0, 10) || 0);
         }
       } catch(_e) {}
     };
@@ -7990,10 +9852,6 @@ const ArenaScreen = ({onMenu, onAI, onGenerator, onOpenBattles, onBattlePick, on
     return () => { cancelled = true; };
   }, [profile?.stars]);
 
-  React.useEffect(()=>{
-    if(battleHover){setShineAnim(false);const t=setTimeout(()=>setShineAnim(true),20);return()=>clearTimeout(t);}
-  },[battleHover]);
-
   const trophyCount = profile?.trophies || 0;
   const leagueId = profile?.league ?? 1;
   const leagueMap = {1:'Novice',2:'Bronze',3:'Silver',4:'Gold',5:'Crystal',6:'Master',7:'Champion',8:'Grandmaster',9:'Legendary',10:'Extra'};
@@ -8003,19 +9861,42 @@ const ArenaScreen = ({onMenu, onAI, onGenerator, onOpenBattles, onBattlePick, on
   const leagueMin = leagueThresholds[leagueId - 1] || 0;
   const nextLeagueTrophies = leagueId < 10 ? leagueThresholds[leagueId] : 10000;
   const nextLeagueName = leagueId < 10 ? (leagueMap[leagueId+1] || 'Max') : 'Max';
+  // League progress within the current tier (for the league-hub progress bar).
+  const leagueBarPercent = Math.max(0, Math.min(100, nextLeagueTrophies > leagueMin
+    ? Math.round((trophyCount - leagueMin) / (nextLeagueTrophies - leagueMin) * 100)
+    : 100));
 
-  const winsSinceLastCase = profile?.settings?.wins_since_last_case || 0;
-  const ep = profile?.extra_pass || 'inactive';
-  const winsForCase = ep === 'ultra' ? 3 : ep === 'active' ? 4 : 5;
+  // Russian pluralization for the battle-history record count ("N запись/записи/записей").
+  const historySmall = (() => {
+    const n = battleCount, m10 = n % 10, m100 = n % 100;
+    const word = (m10 === 1 && m100 !== 11) ? 'запись'
+      : (m10 >= 2 && m10 <= 4 && !(m100 >= 12 && m100 <= 14)) ? 'записи' : 'записей';
+    return n > 0 ? (n + ' ' + word) : '—';
+  })();
 
-  const artSize = Math.min(Math.round(window.innerWidth * 0.48), 190);
-
+  // Real-time daily-login countdown. dailyStatus is refreshed by the parent
+  // (~30s poll + on sheet open/claim); each refresh re-pins a baseline
+  // (sec + Date.now()) and a 1s clock counts the baseline down without drift.
+  const [dailyBase, setDailyBase] = React.useState({ sec: 0, at: Date.now() });
+  const [dailyNow,  setDailyNow]  = React.useState(Date.now());
+  React.useEffect(() => {
+    if (dailyStatus && dailyStatus.enabled && !dailyStatus.is_claimable) {
+      setDailyBase({ sec: dailyStatus.time_left_seconds || 0, at: Date.now() });
+    }
+  }, [dailyStatus]);
+  React.useEffect(() => {
+    const iv = setInterval(() => setDailyNow(Date.now()), 1000);
+    return () => clearInterval(iv);
+  }, []);
+  const dailyNextSec = (dailyStatus && dailyStatus.enabled && !dailyStatus.is_claimable)
+    ? Math.max(0, dailyBase.sec - Math.floor((dailyNow - dailyBase.at) / 1000))
+    : null;
   const dailyTimerLabel = (() => {
     if (!dailyStatus || !dailyStatus.enabled) return '';
     if (dailyStatus.is_claimable) return '';
-    const sec = dailyStatus.time_left_seconds || 0;
-    const h = Math.floor(sec / 3600);
-    const m = Math.floor((sec % 3600) / 60);
+    if (dailyNextSec == null) return '';
+    const h = Math.floor(dailyNextSec / 3600);
+    const m = Math.floor((dailyNextSec % 3600) / 60);
     return `${h}ч ${String(m).padStart(2,'0')}м`;
   })();
 
@@ -8027,21 +9908,33 @@ const ArenaScreen = ({onMenu, onAI, onGenerator, onOpenBattles, onBattlePick, on
 	      if (!cancelled) setGloryTiers(d.tiers || []);
 	    }).catch(() => {});
 	    return () => { cancelled = true; };
-	  }, [profile?.user_id, profile?.trophies]);
+	  }, [profile]);
 
   const nextGloryTier = gloryTiers.find(t => t.available);
   const nextUnreachedTier = gloryTiers.find(t => t.locked);
   const availableGloryCount = gloryTiers.filter(t => t.available).length;
-  const nextRewardDistance = nextUnreachedTier ? nextUnreachedTier.position - trophyCount : null;
-
-  // Alternating label/timer display for buttons that carry a countdown.
-  // Generator and Daily Login labels swap with their timers every 4s with a brief flicker.
-  // Both share a single state so they always show the same kind (timer or label) at the same time.
-  const [showTimer, setShowTimer] = React.useState(true);
+  // ExtraPass (season) rewards claimable RIGHT NOW for the user's current access
+  // level (free track + any premium tiers their pass already unlocks, not yet
+  // claimed). The server precomputes this as summary.available_now on the
+  // /api/rewards/extra-pass endpoint (NOT /api/season/current, which has no
+  // summary); the claimable_with_extra_pass / claimable_with_ultra counts are
+  // paywall-gated (NOT collectible yet), so they don't light up the strip.
+  const [passPayload, setPassPayload] = React.useState(null);
   React.useEffect(() => {
-    const iv = setInterval(() => setShowTimer(v => !v), 4000);
-    return () => clearInterval(iv);
-  }, []);
+    // Re-fetch on profile refresh so the pass-strip glow clears after a season
+    // claim (BattlePassSheet.handleClaim → reloadFreshProfile → __updateProfile
+    // → new profile object → this effect re-runs). Raw fetch + no-store so the
+    // fresh server response is used (BattlePassSheet also eaInvalidateJson's
+    // this URL on claim, but the raw fetch doesn't consult that cache).
+    let cancelled = false;
+    fetch(_buildAuthUrl('/api/rewards/extra-pass'), {cache:'no-store'})
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (!cancelled && d) setPassPayload(d); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [profile]);
+  const passClaimableCount = passPayload?.summary?.available_now || 0;
+  const nextRewardDistance = nextUnreachedTier ? nextUnreachedTier.position - trophyCount : null;
 
   const genLevel = genStatus?.level || 1;
   const canClaimGen = genStatus?.can_claim;
@@ -8058,228 +9951,173 @@ const ArenaScreen = ({onMenu, onAI, onGenerator, onOpenBattles, onBattlePick, on
       : `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
   };
   const genTimerStr = fmtGenTimer(genNextSec);
-  const passProgress = seasonInfo?.progress || {};
+  const passProgress = passPayload?.progress || seasonInfo?.progress || {};
   const passStageCount = Math.max(1, Number(passProgress.stage_count || seasonInfo?.stage_count || seasonInfo?.max_stars || 45));
   const passTotalStars = Math.max(1, Number(passProgress.total_required_stars || passProgress.max || seasonInfo?.progression?.total_required_stars || passStageCount));
-  const passStars = Math.min(Number(passProgress.capped_value != null ? passProgress.capped_value : (profile?.stars || 0)), passTotalStars);
-  const passNextStage = passProgress.next_stage == null ? null : Number(passProgress.next_stage);
-  const passStageText = passNextStage ? `Этап ${passNextStage} / ${passStageCount}` : `Этап ${passStageCount} / ${passStageCount}`;
-  const passStarTarget = passNextStage ? Math.max(1, Number(passProgress.stage_required_stars || passTotalStars)) : passTotalStars;
-  const passBarPercent = Math.min(100, Number(passProgress.stage_percent != null ? passProgress.stage_percent : (passProgress.percent || 0)));
+  const passStarsBalance = Number(passProgress.capped_value != null ? passProgress.capped_value : (profile?.stars || 0));
+  // ExtraPass star bar — fills toward the NEXT UNCLAIMED reward the player can
+  // access, NOT the next unreached stage. If the player has reached a reward but
+  // not claimed it, the bar stops there (full) until it is claimed, then resumes
+  // from that point. Source: /api/rewards/extra-pass `tiers` (per-position
+  // claimed/access status); falls back to the season stage progress pre-payload.
+  const passTiers = Array.isArray(passPayload?.tiers) ? passPayload.tiers : [];
+  const passAccessibleTiers = passTiers.filter(t => Object.values(t.tracks || {}).some(tr => tr && !tr.access_locked));
+  const passNextUnclaimed = passAccessibleTiers.find(t => Object.values(t.tracks || {}).some(tr => tr && !tr.access_locked && !tr.claimed));
+  let passStarTarget, passPrevStars, passStars, passBarPercent;
+  if (passNextUnclaimed) {
+    passStarTarget = Math.max(1, Number(passNextUnclaimed.required_stars || passTotalStars));
+    const uIdx = passAccessibleTiers.indexOf(passNextUnclaimed);
+    passPrevStars = uIdx > 0 ? Math.max(0, Number(passAccessibleTiers[uIdx - 1].required_stars || 0)) : 0;
+    passStars = Math.min(Math.max(passStarsBalance, passPrevStars), passStarTarget);
+    const span = Math.max(1, passStarTarget - passPrevStars);
+    passBarPercent = Math.max(0, Math.min(100, Math.round(((passStarsBalance - passPrevStars) / span) * 100)));
+  } else if (passAccessibleTiers.length > 0) {
+    // All accessible rewards claimed → pass complete for this player.
+    passStarTarget = Math.max(1, Number(passAccessibleTiers[passAccessibleTiers.length - 1].required_stars || passTotalStars));
+    passPrevStars = 0;
+    passStars = passStarTarget;
+    passBarPercent = 100;
+  } else {
+    // Fallback: no tier data yet — use the season stage progress.
+    passStarTarget = passProgress.next_stage == null ? passTotalStars : Math.max(1, Number(passProgress.stage_required_stars || passTotalStars));
+    passPrevStars = 0;
+    passStars = Math.min(passStarsBalance, passTotalStars);
+    passBarPercent = Math.min(100, Number(passProgress.stage_percent != null ? passProgress.stage_percent : (passProgress.percent || 0)));
+  }
   const passTitle = seasonInfo?.name || 'ExtraPass';
 
+  // ExtraPass "go to section" button — per-tier coloring (restored from old UI):
+  // F2P = orange (CSS default), ExtraPass = red→orange, Ultra = pink→teal.
+  const ep = profile?.extra_pass || 'inactive';
+  const passIconStyle = ep === 'ultra'
+    ? {background:'linear-gradient(135deg,#ff5fa2,#2dd4bf)', boxShadow:'0 3px 10px rgba(255,95,162,0.55), 0 0 18px rgba(45,212,191,0.35)'}
+    : ep === 'active'
+      ? {background:'linear-gradient(135deg,#ff4d2e,#f5921e)', boxShadow:`0 3px 10px rgba(255,77,46,0.55), 0 0 18px ${T.orange}55`}
+      : undefined;
+
   return (
-    <div style={{flex:1,overflowY:'auto',overflowX:'hidden',display:'flex',flexDirection:'column',minHeight:0}}>
-      {/* Season Pass — dynamic, click to open BattlePass */}
-      <div onClick={()=>onOpenBattlePass()} style={{margin:'10px 16px 0',background:'linear-gradient(135deg,#2d1460,#4a2090)',borderRadius:'16px',padding:'10px 12px',display:'flex',justifyContent:'space-between',alignItems:'center',cursor:'pointer',transition:'all 0.15s',}}>
-        <div>
-          <div style={{fontSize:'10px',color:T.grey1,letterSpacing:'0.6px',textTransform:'uppercase',marginBottom:'2px'}}>{seasonInfo?.subtitle || 'Сезонный пропуск'}</div>
-          <div style={{fontSize:'16px',fontWeight:'800',color:T.white,fontFamily:"'Exo 2',sans-serif"}}>{passTitle}</div>
-        </div>
-        <div style={{display:'flex',alignItems:'center',gap:'10px'}}>
-          <div style={{textAlign:'right'}}>
-            <div style={{fontSize:'11px',color:T.grey1,marginBottom:'3px'}}>{passStageText}</div>
-            <div style={{fontSize:'11px',color:T.grey1,fontWeight:700,marginBottom:'5px',fontVariantNumeric:'tabular-nums'}}>{passStars} / {passStarTarget} ⭐</div>
-            <div style={{width:'100px',height:'5px',background:T.purple1,borderRadius:'3px',overflow:'hidden'}}>
-              <div style={{width:`${passBarPercent}%`,height:'100%',background:`linear-gradient(90deg,${T.orange},${T.orangeLt})`,borderRadius:'3px'}}/>
+    <div className="mm-redesign" style={{flex:'1 1 auto',minHeight:0,display:'flex',flexDirection:'column'}}>
+      <main className="content" aria-label="Главное меню">
+
+        {/* Моя лига + Trophy Road — merged hub (opens the merged League sheet) */}
+        <button className={"league-hub" + (availableGloryCount > 0 ? " ready" : "")} type="button" onClick={()=>onOpenLeagueInfo&&onOpenLeagueInfo()} aria-label="Открыть Мою лигу и трофейную дорогу" style={{position:'relative'}}>
+          <div className="league-copy">
+            <p className="kicker">Лига {leagueId} · Trophy Road</p>
+            <div className="league-title-row">
+              <div className="league-title">{leagueName}</div>
+              <div className="trophy-count">{trophyCount.toLocaleString('ru-RU')} 🏆</div>
+            </div>
+            <div className="progress-row">
+              <div className="bar" aria-hidden="true"><span style={{width: leagueBarPercent + '%'}}/></div>
+              <div className="progress-label">{trophyCount.toLocaleString('ru-RU')} / {nextLeagueTrophies.toLocaleString('ru-RU')}</div>
+            </div>
+            <div className="league-note">
+              <span>До {nextLeagueName}: {(nextLeagueTrophies - trophyCount).toLocaleString('ru-RU')} 🏆</span>
+              <strong>Награда через {nextRewardDistance != null ? nextRewardDistance.toLocaleString('ru-RU') : '—'}</strong>
             </div>
           </div>
-          <div style={{
-            background: ep === 'ultra'
-              ? 'linear-gradient(135deg,#ff5fa2,#2dd4bf)'
-              : ep === 'active'
-                ? 'linear-gradient(135deg,#ff4d2e,#f5921e)'
-                : `linear-gradient(135deg,${T.orange},${T.orangeLt})`,
-            borderRadius:'10px',
-            padding:'7px',
-            display:'flex',
-            alignItems:'center',
-            justifyContent:'center',
-            boxShadow: ep === 'ultra'
-              ? '0 3px 10px rgba(255,95,162,0.55), 0 0 18px rgba(45,212,191,0.35)'
-              : ep === 'active'
-                ? `0 3px 10px rgba(255,77,46,0.55), 0 0 18px ${T.orange}55`
-                : `0 3px 10px ${T.orange}55`,
-            flexShrink:0,
-          }}>
-            <img src={ICONS.goToExtraPass} alt="" style={{width:'22px',height:'22px',objectFit:'contain',filter:'brightness(0) invert(1) drop-shadow(0 0 6px rgba(255,255,255,0.35))'}}/>
-          </div>
-        </div>
-      </div>
-
-      {/* Arena hero */}
-      <div style={{position:'relative',margin:'12px 0 0',display:'flex',flexDirection:'column',alignItems:'center'}}>
-        <div style={{display:'flex',gap:'8px',marginBottom:'12px',width:'100%',padding:'0 16px'}}>
-          <button onClick={onOpenBattles} aria-label="Мои бои" style={{flex:1,minWidth:0,display:'flex',alignItems:'center',justifyContent:'center',gap:'6px',background:T.bgCard,border:`1px solid ${T.purple1}`,borderRadius:'14px',padding:'8px 10px',color:T.grey1,fontSize:'12px',fontWeight:700,fontFamily:"'Exo 2',sans-serif",cursor:'pointer',transition:'all 0.15s'}}>
-            <img src={ICONS.battleHistory} alt="" style={{width:'16px',height:'16px',objectFit:'contain',filter:iconWhite,flexShrink:0}}/>
-            <span style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>Мои бои</span>
-          </button>
-          {onDailyLogin && (
-            <button type="button" onClick={onDailyLogin} aria-label="За вход" style={{flex:1,minWidth:0,display:'flex',alignItems:'center',justifyContent:'center',gap:'6px',background:dailyStatus?.is_claimable?'rgba(74,222,128,0.12)':T.bgCard,border:`1px solid ${dailyStatus?.is_claimable?'rgba(74,222,128,0.4)':T.purple1}`,borderRadius:'14px',padding:'8px 10px',cursor:'pointer',color:dailyStatus?.is_claimable?'#4ade80':T.grey1,fontSize:'12px',fontWeight:700,fontFamily:"'Exo 2',sans-serif",transition:'all 0.15s',boxShadow:dailyStatus?.is_claimable?'0 0 10px rgba(74,222,128,0.18)':'none'}}>
-              <img src={ICONS.dailyLogin} alt="" style={{width:'16px',height:'16px',objectFit:'contain',filter:iconWhite,flexShrink:0}}/>
-              {dailyStatus?.is_claimable ? (
-                <span style={{fontSize:'11px',fontWeight:800,color:'#4ade80',flexShrink:0,animation:'eaLabelSwap 0.45s ease'}}>Готово!</span>
-              ) : showTimer && dailyTimerLabel ? (
-                <span key="dtimer" style={{fontSize:'11px',fontWeight:600,color:T.grey2,fontVariantNumeric:'tabular-nums',flexShrink:0,whiteSpace:'nowrap',animation:'eaLabelSwap 0.45s ease'}}>{dailyTimerLabel}</span>
-              ) : (
-                <span key="dlbl" style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',animation:dailyTimerLabel?'eaLabelSwap 0.45s ease':'none'}}>За вход</span>
-              )}
-            </button>
-          )}
-          <button onClick={onGenerator} aria-label="Генератор" style={{flex:1,minWidth:0,display:'flex',alignItems:'center',justifyContent:'center',gap:'6px',background:canClaimGen?'rgba(245,146,30,0.15)':T.bgCard,border:`1px solid ${canClaimGen?T.orange:T.purple1}`,borderRadius:'14px',padding:'8px 10px',color:canClaimGen?T.orange:T.grey1,fontSize:'12px',fontWeight:700,fontFamily:"'Exo 2',sans-serif",cursor:'pointer',transition:'all 0.15s',boxShadow:canClaimGen?`0 0 10px ${T.orange}44`:'none'}}>
-            <img src={ICONS.keyGenerator} alt="" style={{width:'16px',height:'16px',objectFit:'contain',filter:iconWhite,flexShrink:0}}/>
-            {showTimer && genTimerStr ? (
-              <span key="timer" style={{fontSize:'11px',fontWeight:600,color:T.ai,fontVariantNumeric:'tabular-nums',flexShrink:0,whiteSpace:'nowrap',animation:'eaLabelSwap 0.45s ease'}}>{genTimerStr}</span>
-            ) : (
-              <span key="lbl" style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',animation:genTimerStr?'eaLabelSwap 0.45s ease':'none'}}>Генератор</span>
-            )}
-          </button>
-        </div>
-
-        <div onClick={()=>onOpenLeagueInfo()} role="button" aria-label="Открыть меню лиг" style={{position:'relative',cursor:'pointer',WebkitTapHighlightColor:'transparent'}}>
-          <ArenaArt level={leagueId} size={artSize}/>
-          <div style={{position:'absolute',bottom:'-8px',left:'50%',width:'120px',height:'16px',background:T.purple3,borderRadius:'50%',filter:'blur(14px)',opacity:0.5,animation:'glowPulse 3s ease-in-out infinite'}}/>
-        </div>
-
-        <div style={{marginTop:'16px',display:'flex',gap:'10px',padding:'0 16px',width:'100%'}}>
-          {/* Case wins counter — stick segments */}
-          <div style={{flex:1,background:T.bgCard,borderRadius:'13px',padding:'10px 14px',border:`1px solid ${T.purple1}`}}>
-            <div style={{display:'flex',justifyContent:'space-between',marginBottom:'8px',alignItems:'center'}}>
-              <span style={{fontSize:'11px',color:T.grey2}}>{winsForCase} побед до T1 кейса</span>
-              <span style={{fontSize:'11px',color:T.orange,fontWeight:'600'}}>{winsSinceLastCase}/{winsForCase}</span>
-            </div>
-            <div style={{display:'flex',gap:'5px',alignItems:'center'}}>
-              {Array.from({length:winsForCase},(_,i)=>(
-                <div key={i} style={{
-                  flex:1,height:'8px',borderRadius:'4px',
-                  background: i < winsSinceLastCase
-                    ? `linear-gradient(90deg,${T.orange},${T.orangeLt})`
-                    : `${T.purple1}`,
-                  border: i >= winsSinceLastCase ? `1px solid ${T.purple2}` : 'none',
-                  boxShadow: i < winsSinceLastCase ? `0 0 6px ${T.orange}55` : 'none',
-                  transition:'background 0.3s',
-                }}/>
-              ))}
-              <img src={ICONS.followingCase} alt="" style={{width:'24px',height:'24px',filter:'invert(1) drop-shadow(0 0 4px orange)',flexShrink:0,opacity:winsSinceLastCase>=winsForCase?1:0.4}}/>
-            </div>
-            {ep === 'inactive' && (
-              <button onClick={()=>{onGoToShop();setTimeout(()=>{ if(window.__openExtraPassModal) window.__openExtraPassModal(); },200);}} style={{width:'100%',marginTop:'8px',background:'none',border:`1px solid ${T.orange}44`,borderRadius:'8px',padding:'6px 10px',color:T.orange,fontSize:'10px',fontWeight:'600',fontFamily:"'Exo 2',sans-serif",cursor:'pointer'}}>
-                ⚡ ExtraPass ускоряет прогресс
-              </button>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Stats — redesigned League + Trophy blocks */}
-      <div style={{display:'flex',gap:'10px',padding:'12px 16px 0'}}>
-        <div onClick={()=>onOpenLeagueInfo()} style={{flex:1,background:T.bgCard,borderRadius:'14px',padding:'10px 14px',border:`1px solid ${T.purple1}`,cursor:'pointer',transition:'all 0.15s'}}>
-          <div style={{fontSize:'10px',color:T.grey2,textTransform:'uppercase',letterSpacing:'0.5px',marginBottom:'2px'}}>Лига {leagueId}</div>
-          <div style={{fontSize:'20px',fontWeight:'900',color:T.white,fontFamily:"'Exo 2',sans-serif",lineHeight:1}}>{leagueName}</div>
-          {nextLeagueTrophies > trophyCount && (
-            <div style={{fontSize:'11px',color:T.orange,fontWeight:'600',marginTop:'4px'}}>{nextLeagueTrophies - trophyCount} 🏆 до {nextLeagueName}</div>
-          )}
-        </div>
-        <div onClick={()=>onOpenGloryPath()} style={{flex:1,background:`linear-gradient(135deg,${T.orangeD}22,${T.orange}33)`,borderRadius:'14px',padding:'10px 14px',border:`1px solid ${T.orange}55`,cursor:'pointer',transition:'all 0.15s',position:'relative'}}>
-          <div style={{fontSize:'10px',color:T.grey2,textTransform:'uppercase',letterSpacing:'0.5px',marginBottom:'4px'}}>Трофеи</div>
-          <div style={{display:'flex',alignItems:'center',gap:'7px'}}>
-            <span style={{fontSize:'26px',fontWeight:'900',color:T.orange,fontFamily:"'Exo 2',sans-serif",lineHeight:1}}>{trophyCount}</span>
-            <IconTrophy size={20}/>
-          </div>
-          {nextRewardDistance != null && (
-            <div style={{fontSize:'10px',color:'#60a5fa',fontWeight:'600',marginTop:'5px'}}>{nextRewardDistance.toLocaleString()} 🏆 до награды</div>
-          )}
           {availableGloryCount > 0 && (
-            <span style={{position:'absolute',top:'-6px',right:'-6px',display:'inline-flex',alignItems:'center',justifyContent:'center',minWidth:'20px',height:'20px',borderRadius:'50%',background:'#ef4444',color:'white',fontSize:'11px',fontWeight:'800',fontFamily:"'Exo 2',sans-serif",lineHeight:1,border:`2px solid ${T.bg}`,padding:'0 4px',boxSizing:'border-box'}}>
+            <span style={{position:'absolute',top:'-6px',right:'-6px',display:'inline-flex',alignItems:'center',justifyContent:'center',minWidth:'20px',height:'20px',borderRadius:'50%',background:'#ef4444',color:'white',fontSize:'11px',fontWeight:'800',fontFamily:"'Exo 2',sans-serif",lineHeight:1,border:`2px solid ${T.bg}`,padding:'0 4px',boxSizing:'border-box',boxShadow:'0 3px 8px rgba(239,68,68,0.45)'}}>
               {availableGloryCount}
             </span>
           )}
-        </div>
-      </div>
-
-      {/* Battle button */}
-      <div style={{padding:'12px 16px 0',display:'flex',gap:'10px'}}>
-        <button
-          id="play-battle-btn"
-          onMouseEnter={()=>setBattleHover(true)}
-          onMouseLeave={()=>setBattleHover(false)}
-          onTouchStart={()=>setBattleHover(true)}
-          onTouchEnd={()=>setBattleHover(false)}
-          onClick={()=>(onStartBattle||window.startBattle)(profile)}
-          style={{flex:1,height:'60px',background:battleHover?`linear-gradient(135deg,${T.orangeLt},${T.orange})`:`linear-gradient(135deg,${T.orange},${T.orangeD})`,border:'none',borderRadius:'16px',color:'white',fontSize:'22px',fontWeight:'900',fontFamily:"'Exo 2',sans-serif",letterSpacing:'2px',cursor:'pointer',position:'relative',overflow:'hidden',boxShadow:battleHover?`0 10px 36px ${T.orange}88`:`0 5px 22px ${T.orange}44`,transform:battleHover?'translateY(-1px)':'none',transition:'all 0.15s'}}>
-          <span style={{display:'inline-flex',alignItems:'center',justifyContent:'center',gap:'14px',width:'100%'}}>
-            <span>В БОЙ</span>
-            {winStreak > 0 && (
-              <span style={{display:'inline-flex',alignItems:'center',gap:'8px',background:'rgba(0,0,0,0.28)',padding:'4px 10px 4px 12px',borderRadius:'10px',position:'relative'}}>
-                <span style={{fontSize:'20px',fontWeight:'900',fontFamily:"'Exo 2',sans-serif",letterSpacing:'0',animation:winStreak>5?'winStreakGlow 1.4s ease-in-out infinite':'none'}}>{winStreak}</span>
-                <img src="/DesignAssets/MainMenu/Icons/Wins.png" alt="" style={{width:'20px',height:'20px',filter:'brightness(0) invert(1)',animation:winStreak>5?'winStreakGlow 1.4s ease-in-out infinite':'none'}}/>
-                <span onClick={(e)=>{e.stopPropagation(); e.preventDefault(); setShowWinStreakInfo(true);}} title="Описание механики серии побед" style={{marginLeft:'2px',width:'18px',height:'18px',borderRadius:'50%',background:'rgba(0,0,0,0.4)',border:'1px solid rgba(255,255,255,0.55)',color:'white',fontSize:'11px',fontWeight:'900',display:'inline-flex',alignItems:'center',justifyContent:'center',cursor:'pointer',letterSpacing:'0'}}>?</span>
-              </span>
-            )}
-          </span>
-          {shineAnim && <div style={{position:'absolute',top:0,width:'35%',height:'100%',background:'linear-gradient(90deg,transparent,rgba(255,255,255,0.18),transparent)',transform:'skewX(-18deg)',pointerEvents:'none',animation:'shine 0.5s ease forwards'}}/>}
         </button>
-        <button onClick={onBattlePick} style={{width:'60px',height:'60px',background:T.bgCard,border:`1px solid ${T.purple2}`,borderRadius:'16px',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,transition:'all 0.15s'}}>
-          <img src={ICONS.vsBot} alt="" style={{width:'30px',height:'30px',objectFit:'contain',filter:iconWhite}}/>
-        </button>
-      </div>
 
-      {/* Banner: кейсы */}
-      <div style={{margin:'12px 16px 16px',borderRadius:'16px',background:hasCases?`linear-gradient(135deg,${T.purple1},#1f1040)`:`linear-gradient(135deg,#1a0a3a,#2d1060)`,border:`1px solid ${hasCases?T.purple2:T.purple1}`,padding:'13px 15px',display:'flex',alignItems:'center',gap:'13px'}}>
-        {hasCases ? (
-          <>
-            <div style={{width:'60px',height:'52px',borderRadius:'10px',background:'rgba(255,255,255,0.05)',border:`1px dashed ${T.grey3}`,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',flexShrink:0,gap:'3px'}}>
-              <span style={{fontSize:'22px'}}>📦</span>
-              <span style={{fontSize:'8px',color:T.grey2}}>кейс</span>
+        {/* Battle stage */}
+        <section className="battle-stage" aria-label="Бой">
+          {winStreak > 0 && (
+            <div className="stage-top">
+              <button className="streak" type="button" onClick={()=>setShowWinStreakInfo(true)} aria-label="Открыть информацию о серии побед">
+                <span>{winStreak}</span>
+                <img src="/DesignAssets/MainMenu/Icons/Wins.png" alt=""/>
+                <span className="streak-question">?</span>
+              </button>
             </div>
-            <div style={{flex:1,minWidth:0}}>
-              <div style={{fontSize:'14px',fontWeight:'700',color:T.white,fontFamily:"'Exo 2',sans-serif",marginBottom:'3px'}}>У тебя {profile?.keys || 0} кейса!</div>
-              <div style={{fontSize:'11px',color:T.grey1,marginBottom:'8px'}}>Открой — вдруг выпадет редкость</div>
-              <button onClick={()=>onOpenCase&&onOpenCase()} style={{background:T.orange,border:'none',borderRadius:'8px',padding:'6px 14px',color:'white',fontSize:'12px',fontWeight:'700',fontFamily:"'Exo 2',sans-serif",cursor:'pointer'}}>Открыть</button>
+          )}
+
+          <button className="arena-core" type="button" onClick={()=>onOpenLeagueInfo&&onOpenLeagueInfo()} aria-label="Открыть Мою лигу">
+            <img src={LEAGUE_ART_BY_ID[leagueId] || LEAGUE_ART_BY_ID[1]} alt=""/>
+          </button>
+
+          <div>
+            <div className="battle-actions">
+              <button id="play-battle-btn" className="battle-btn" type="button" onClick={()=>(onStartBattle||window.startBattle)(profile)}>
+                <img src={ICONS.battle} alt=""/>
+                <span>В бой</span>
+              </button>
+              <button className="mode-btn" type="button" aria-label="Выбор режима" onClick={onBattlePick}>
+                <img src={ICONS.vsBot} alt=""/>
+              </button>
             </div>
-          </>
-        ) : (
-          <>
-            <div style={{width:'60px',height:'52px',borderRadius:'10px',background:'rgba(255,255,255,0.05)',border:`1px dashed ${T.grey3}`,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',flexShrink:0,gap:'3px'}}>
-              <span style={{fontSize:'22px'}}>📦</span>
-              <span style={{fontSize:'8px',color:T.grey2}}>0 кейсов</span>
-            </div>
-            <div style={{flex:1,minWidth:0}}>
-              <div style={{fontSize:'14px',fontWeight:'700',color:T.white,fontFamily:"'Exo 2',sans-serif",marginBottom:'3px'}}>Кейсы закончились</div>
-              <div style={{fontSize:'11px',color:T.grey1,marginBottom:'8px'}}>Купи кейс и открывай награды</div>
-              <div style={{display:'flex',gap:'8px'}}>
-                <button onClick={function(){
-                  if (window._buyingCase) return;
-                  window._buyingCase = true;
-                  fetch(_buildAuthUrl('/api/shop/buy'), {
-                    method:'POST', headers:{'Content-Type':'application/json'},
-                    body: JSON.stringify({item_type:'case_pack_1'}),
-                  }).then(r=>r.json()).then(d=>{
-                    window._buyingCase = false;
-                    if(d.success){
-                      window.showToast('Кейс добавлен', 'success', 2000);
-                      window.eaInvalidateJson?.('/api/mobile/shop-bootstrap');
-                      window.eaInvalidateJson?.('/api/shop/');
-                      window.reloadFreshProfile().then(p=>{if(p)window.__updateProfile(p);});
-                    }else{
-                      window.showToast(d.message||d.error||'Ошибка', 'error');
-                    }
-                  }).catch(function(){
-                    window._buyingCase = false;
-                    window.showToast('Ошибка сети', 'error');
-                  });
-                }} style={{background:`linear-gradient(135deg,${T.orange},${T.orangeD})`,border:'none',borderRadius:'8px',padding:'6px 14px',color:'white',fontSize:'12px',fontWeight:'700',fontFamily:"'Exo 2',sans-serif",cursor:'pointer',boxShadow:`0 4px 14px ${T.orange}44`}}>
-                  Купить кейс за 25 💎
-                </button>
-                <button onClick={onGoToShop} style={{background:`rgba(255,255,255,0.08)`,border:`1px solid ${T.purple2}`,borderRadius:'8px',padding:'6px 14px',color:T.grey1,fontSize:'12px',fontWeight:'700',fontFamily:"'Exo 2',sans-serif",cursor:'pointer'}}>
-                  Магазин
-                </button>
+          </div>
+        </section>
+
+        {/* ExtraPass strip — click to open BattlePass */}
+        <section className={"pass-strip" + (passClaimableCount > 0 ? " ready" : "")} onClick={()=>onOpenBattlePass&&onOpenBattlePass()} aria-label="ExtraPass">
+          <div>
+            <div className="pass-head">
+              <div>
+                <p className="kicker">{seasonInfo?.subtitle || 'Сезонный пропуск'}</p>
+                <div className="pass-title">{passTitle}</div>
               </div>
+              <div className="pass-stage">{passStars} / {passStarTarget} ⭐</div>
             </div>
-          </>
-        )}
-      </div>
-      {showWinStreakInfo && <WinStreakInfoSheet onClose={()=>setShowWinStreakInfo(false)} />}
+            <div className="bar" aria-hidden="true"><span style={{width: passBarPercent + '%'}}/></div>
+          </div>
+          <div className="pass-icon" style={passIconStyle}>
+            <img src={ICONS.goToExtraPass} alt=""/>
+          </div>
+        </section>
+
+        {/* Secondary actions grid */}
+        <section className="quiet-grid" aria-label="Вторичные действия">
+          <button className="quiet-btn" type="button" onClick={onOpenBattles} aria-label="Мои бои">
+            <img src={ICONS.battleHistory} alt=""/>
+            <span>Мои бои</span>
+            <small>{historySmall}</small>
+          </button>
+          <button className={"quiet-btn" + (dailyStatus?.is_claimable ? " ready" : "")} type="button" onClick={onDailyLogin} aria-label="За вход">
+            <img src={ICONS.dailyLogin} alt=""/>
+            <span>За вход</span>
+            <small>{dailyStatus?.is_claimable ? "Получить" : (dailyTimerLabel || " ")}</small>
+          </button>
+          <button className={"quiet-btn" + (canClaimGen ? " ready-orange" : "")} type="button" onClick={onGenerator} aria-label="Генератор">
+            <img src={ICONS.keyGenerator} alt=""/>
+            <span>Генератор</span>
+            <small>{canClaimGen ? "Получить" : (genTimerStr || " ")}</small>
+          </button>
+          <button className="quiet-btn case" type="button" onClick={function(){
+            if ((profile?.keys || 0) > 0) { onOpenCase && onOpenCase(); return; }
+            // No keys — buy a case for 25 gems (restores the old main-menu CTA:
+            // POST /api/shop/buy {item_type:'case_pack_1'} → +1 key, −25 gems).
+            if (window._buyingCase) return;
+            window._buyingCase = true;
+            fetch(_buildAuthUrl('/api/shop/buy'), {
+              method:'POST', headers:{'Content-Type':'application/json'},
+              body: JSON.stringify({item_type:'case_pack_1'}),
+            }).then(r => r.json()).then(function(d){
+              window._buyingCase = false;
+              if (d.success) {
+                window.showToast('Кейс добавлен', 'success', 2000);
+                window.eaInvalidateJson?.('/api/mobile/shop-bootstrap');
+                window.eaInvalidateJson?.('/api/shop/');
+                window.reloadFreshProfile().then(function(p){ if (p) window.__updateProfile(p); });
+              } else {
+                window.showToast(d.message || d.error || 'Ошибка', 'error');
+              }
+            }).catch(function(){
+              window._buyingCase = false;
+              window.showToast('Ошибка сети', 'error');
+            });
+          }} aria-label="Кейсы">
+            <img src={ICONS.followingCase} alt=""/>
+            <span>Кейсы</span>
+            <small>{(profile?.keys || 0) > 0 ? ((profile?.keys || 0) + ' ключа') : <span style={{color:'#8fd0ff', textShadow:'0 0 7px rgba(90,180,255,0.7), 0 0 2px rgba(90,180,255,0.9)'}}>25 💎</span>}</small>
+          </button>
+        </section>
+
+      </main>
+      {showWinStreakInfo && <WinStreakInfoSheet winStreak={winStreak} maxWinStreak={maxWinStreak} onClose={()=>setShowWinStreakInfo(false)} />}
     </div>
   );
 };
@@ -14186,72 +16024,41 @@ const ExtraArenaInfoModal = ({onClose, extraArenaMeta, eaTimer = 0}) => {
   const modeEffects = collectMenuModeEffects(selected.mode_config, selected);
   const timerText = eaTimer > 0 ? `${Math.floor(eaTimer / 60)}:${String(eaTimer % 60).padStart(2,'0')}` : 'скоро';
   return (
-    <div style={{position:'absolute',inset:0,background:'rgba(5,3,14,0.72)',backdropFilter:'blur(12px)',zIndex:50,display:'flex',alignItems:'center',justifyContent:'center',padding:'18px'}} onClick={onClose}>
-      <div onClick={e=>e.stopPropagation()}
-        style={{width:'100%',maxWidth:'392px',maxHeight:'84vh',background:'linear-gradient(180deg,#1e1445 0%,#130d26 100%)',borderRadius:'22px',border:`1.5px solid ${MODE_COLOR}44`,boxShadow:`0 20px 60px rgba(0,0,0,0.7),0 0 40px ${MODE_COLOR}18`,overflow:'hidden',animation:'fadeIn 0.18s',display:'flex',flexDirection:'column'}}>
-        {/* header */}
-        <div style={{padding:'16px 18px 12px',borderBottom:`1px solid ${MODE_COLOR}22`,background:`${MODE_COLOR}08`,flexShrink:0}}>
-          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
-            <div style={{display:'flex',alignItems:'center',gap:'10px'}}>
-              <div style={{width:'40px',height:'40px',borderRadius:'12px',background:`${MODE_COLOR}20`,border:`1px solid ${MODE_COLOR}55`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'22px'}}>🌀</div>
-              <div>
-                <div style={{fontSize:'17px',fontWeight:'900',color:'white',fontFamily:"'Exo 2',sans-serif"}}>ExtraArena</div>
-                <div style={{fontSize:'11px',color:MODE_COLOR,fontWeight:'700',marginTop:'1px'}}>Ротация · смена через {timerText}</div>
-              </div>
-            </div>
-            <button onClick={onClose} style={{width:'30px',height:'30px',borderRadius:'10px',background:'rgba(255,255,255,0.06)',border:`1px solid ${MODE_COLOR}33`,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',color:MODE_COLOR,fontSize:'16px',fontWeight:'700',fontFamily:'monospace'}}>✕</button>
+    <section className="variant-modal open" onClick={onClose} aria-label="Вариации ExtraArena">
+      <div className="variant-panel" role="dialog" aria-modal="true" aria-labelledby="extraVariantsTitle" onClick={e=>e.stopPropagation()}>
+        <header className="sheet-topbar">
+          <button className="sheet-close" type="button" onClick={onClose} aria-label="Назад">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M15 5l-7 7 7 7" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+          </button>
+          <div className="sheet-title" id="extraVariantsTitle">
+            <strong>Вариации ExtraArena</strong>
+            <span>особые правила боя</span>
           </div>
-        </div>
-        <div style={{padding:'12px 14px 16px',overflowY:'auto'}}>
-          <section style={{padding:'12px 10px 10px',border:`1px solid ${MODE_COLOR}33`,borderRadius:'16px',background:'linear-gradient(180deg,rgba(255,255,255,0.055),rgba(255,255,255,0.015)),rgba(26,16,48,0.78)',marginBottom:'12px'}}>
-            <div style={{display:'grid',gridTemplateColumns:`repeat(${Math.max(1, modifiers.length)}, minmax(0, 1fr))`,alignItems:'center',position:'relative',minHeight:'42px'}}>
-              <div style={{position:'absolute',left:'17px',right:'17px',top:'20px',height:'3px',borderRadius:'999px',background:`linear-gradient(90deg,${T.orange},${MODE_COLOR},#2dd4bf)`,opacity:0.48}}/>
-              {modifiers.map(mod => {
-                const ui = humanExtraArenaMode(mod.mode_id, mod.label);
-                const active = mod.mode_id === selected.mode_id;
-                const current = mod.is_current;
-                return (
-                  <button key={mod.mode_id} onClick={()=>setSelectedId(mod.mode_id)}
-                    style={{position:'relative',zIndex:1,justifySelf:'center',width:active?'42px':'28px',height:active?'42px':'28px',borderRadius:'50%',display:'grid',placeItems:'center',background:active?`${MODE_COLOR}26`:'rgba(36,21,68,0.95)',border:`${active?2:1}px solid ${active?MODE_COLOR:'rgba(122,111,160,0.72)'}`,boxShadow:active?`0 0 22px ${MODE_COLOR}88`:current?`0 0 14px ${T.orange}55`:'none',color:active?'white':'#d8cbff',fontSize:ui.icon.length > 2 ? '9px' : '15px',fontWeight:'900',fontFamily:"'Exo 2',sans-serif",cursor:'pointer',opacity:mod.enabled===false?0.45:1,transition:'all 0.15s'}}>
-                    {ui.icon}
-                  </button>
-                );
-              })}
-            </div>
-            <div style={{display:'flex',justifyContent:'space-between',gap:'8px',marginTop:'8px',color:'#c4b5fd',fontSize:'10px',fontWeight:700,lineHeight:1.25}}>
-              <span>{modifiers[0]?.label || 'Старт'}</span>
-              <span style={{textAlign:'right'}}>{modifiers[modifiers.length - 1]?.label || 'Финиш'}</span>
-            </div>
-          </section>
+          <button className="sheet-close" type="button" onClick={onClose} aria-label="Закрыть">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"/></svg>
+          </button>
+        </header>
 
-          <article style={{padding:'12px 13px',border:`1px solid ${MODE_COLOR}55`,borderRadius:'16px',background:'linear-gradient(135deg,rgba(192,132,252,0.18),rgba(26,16,48,0.88))',marginBottom:'10px',boxShadow:'inset 0 1px 0 rgba(255,255,255,0.08)'}}>
-            <div style={{display:'grid',gridTemplateColumns:'minmax(0,1fr) auto',gap:'10px',alignItems:'start'}}>
-              <div>
-                <div style={{fontSize:'16px',fontWeight:'900',color:'white',fontFamily:"'Exo 2',sans-serif",lineHeight:1.05}}>{modeEffects.summary.title}</div>
-                <p style={{margin:'7px 0 0',fontSize:'12px',lineHeight:1.45,color:'#e7ddff'}}>{modeEffects.summary.description}</p>
-              </div>
-              <strong style={{color:selected.is_current?T.orangeLt:MODE_COLOR,fontSize:'10px',fontFamily:"'Exo 2',sans-serif",textTransform:'uppercase',lineHeight:1.1}}>{modeEffects.summary.status}</strong>
-            </div>
-          </article>
-
-          <div style={{display:'grid',gridTemplateColumns:'repeat(2,minmax(0,1fr))',gap:'8px'}}>
-            {modeEffects.details.map(item => (
-              <article key={item.title} style={{minHeight:'102px',padding:'10px 11px',border:`1px solid ${MODE_COLOR}2e`,borderRadius:'12px',background:'rgba(26,16,48,0.78)',boxShadow:'inset 0 1px 0 rgba(255,255,255,0.055)'}}>
-                <h2 style={{margin:0,color:'white',fontSize:'12px',lineHeight:1.08,fontFamily:"'Exo 2',sans-serif",fontWeight:900}}>{item.title}</h2>
-                <strong style={{display:'block',marginTop:'10px',color:T.orangeLt,fontSize:'16px',lineHeight:1,fontFamily:"'Exo 2',sans-serif",fontWeight:900}}>{item.value}</strong>
-                <p style={{margin:'7px 0 0',color:'#d8cbff',fontSize:'10.5px',lineHeight:1.28}}>{item.description}</p>
+        <div className="sheet-trophy-road" aria-label="Вариации режима ExtraArena">
+          {modifiers.length === 0 ? (
+            <div style={{textAlign:'center',padding:'32px',color:'var(--muted)'}}>Вариации скоро появятся</div>
+          ) : modifiers.map(mod => {
+            const ui = humanExtraArenaMode(mod.mode_id, mod.label);
+            const isCurrent = !!mod.is_current;
+            return (
+              <article key={mod.mode_id} className={'road-reward' + (isCurrent ? ' next' : '')} style={mod.enabled===false?{opacity:0.55}:undefined}>
+                <div className="road-icon" aria-hidden="true">{ui.icon}</div>
+                <div className="road-copy">
+                  <strong>{ui.label}</strong>
+                  <span>{ui.short}</span>
+                </div>
+                <div className="road-chip">{isCurrent ? 'сейчас' : 'вариант'}</div>
               </article>
-            ))}
-          </div>
-
-          {selected.enabled === false && (
-            <div style={{marginTop:'10px',background:'rgba(251,191,36,0.10)',border:'1px solid rgba(251,191,36,0.28)',borderRadius:'12px',padding:'9px 11px',fontSize:'11px',color:'#fde68a',lineHeight:1.45}}>
-              Этот режим есть в ротации, но сейчас закрыт для матчмейкинга.
-            </div>
-          )}
+            );
+          })}
         </div>
       </div>
-    </div>
+    </section>
   );
 };
 
@@ -14432,135 +16239,159 @@ const GameModeSheet = ({onClose, onConfirm, runtimeStatus}) => {
     event?.stopPropagation?.();
   };
 
+  // Mockup `.mode-details` (4 cells): длина хода / мана / уровни карт / награды.
+  // Classic uses canonical defaults (25с/+1/обычные/активны) — byte-identical to the mockup.
+  // ExtraArena reads the current rotation's mode_config (falls back to EXTRA_ARENA_MODE_FALLBACKS).
+  const modeDetailsFor = (modeId) => {
+    if (modeId === 'extra_arena') {
+      const mods = normalizeExtraArenaModifiers(extraArenaMeta);
+      const cur = mods.find(m => m.is_current) || mods[0] || {};
+      const cfg = cur.mode_config || EXTRA_ARENA_MODE_FALLBACKS[cur.mode_id] || {};
+      const c = cfg.classic || {};
+      const r = cfg.rewards || {};
+      const levelMap = (v) => v === 'max' ? 'макс.' : v === 'disabled' ? '1-й' : 'обычные';
+      return [
+        {label: 'длина хода', value: `${c.turn_duration_seconds ?? 25}с`},
+        {label: 'мана', value: `+${c.mana_per_turn ?? 1}`},
+        {label: 'уровни карт', value: levelMap(c.card_level_mode)},
+        {label: 'награды', value: (r.enabled !== false) ? 'активны' : 'выкл.'},
+      ];
+    }
+    return [
+      {label: 'длина хода', value: '25с'},
+      {label: 'мана', value: '+1'},
+      {label: 'уровни карт', value: 'обычные'},
+      {label: 'награды', value: 'активны'},
+    ];
+  };
+  const details = modeDetailsFor(mode);
+  const mockupCopy = (m) => m.id === 'extra_arena'
+    ? {desc: 'Особый режим с изменёнными правилами. Вариации — в ?', time: '1-5 минут', pill: 'активный модификатор'}
+    : {desc: 'Полноценная битва без спешки. Тактика решает всё.', time: '3 минуты', pill: ''};
+
   return (
-    <div style={{position:'absolute',inset:0,background:'rgba(5,3,14,0.78)',backdropFilter:'blur(10px)',zIndex:20,display:'flex',flexDirection:'column',justifyContent:'flex-end'}} onClick={onClose}>
-      {/* Info modal overlay */}
+    <div className="mm-redesign">
+      {/* Info modal overlay (renders above the sheet; inherits .mm-redesign scope) */}
       {infoFor && <ModeInfoModal modeId={infoFor} onClose={()=>setInfoFor(null)} extraArenaMeta={extraArenaMeta} eaTimer={eaTimer}/>}
 
-      <div onClick={e=>e.stopPropagation()} className="safe-pad-bottom"
-        style={{'--ea-safe-pad-bottom-base':'24px',background:'linear-gradient(180deg,#1a1238 0%,#130d26 100%)',borderRadius:'24px 24px 0 0',padding:'16px 18px 24px',border:`1px solid ${T.purple1}`,borderBottom:'none',boxShadow:'0 -20px 60px rgba(0,0,0,0.6)',animation:'slideUp 0.28s cubic-bezier(0.32,0.72,0,1)'}}>
-        <div style={{width:'36px',height:'4px',borderRadius:'2px',background:T.purple2,margin:'0 auto 16px'}}/>
-        <div style={{fontSize:'18px',fontWeight:'900',color:T.white,fontFamily:"'Exo 2',sans-serif",marginBottom:'14px'}}>Выбери режим</div>
+      <section className="mode-sheet accent-orange open" onClick={onClose} aria-label="Выбор режима боя">
+        <div className="mode-sheet-panel" role="dialog" aria-modal="true" aria-labelledby="battleModeTitle" onClick={e=>e.stopPropagation()}>
+          <header className="sheet-topbar">
+            <button className="sheet-close" type="button" onClick={onClose} aria-label="Назад">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M15 5l-7 7 7 7" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+            </button>
+            <div className="sheet-title" id="battleModeTitle">
+              <strong>Выбери режим</strong>
+              <span>рейтинговый бой</span>
+            </div>
+            <button className="sheet-close" type="button" onClick={onClose} aria-label="Закрыть">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"/></svg>
+            </button>
+          </header>
 
-        {/* Mode list */}
-        <div style={{display:'flex',flexDirection:'column',gap:'10px',marginBottom:'12px'}}>
-          {GAME_MODES.map(m => {
-            const disabled = !isModeEnabled(m.id) || (m.id === 'extra_arena' && extraArenaMeta && extraArenaMeta.enabled === false);
-            return (
-            <div key={m.id} style={{position:'relative'}}>
-              <div role="button" tabIndex={0}
-                onClick={()=>disabled?showTempUnavailable():setMode(m.id)}
-                onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();disabled?showTempUnavailable():setMode(m.id);}}}
-                style={{
-                  width:'100%',display:'flex',gap:'14px',padding:m.id==='extra_arena'?'14px 54px 14px 16px':'14px 16px',
-                  background: mode===m.id ? m.bg : T.bgCard,
-                  border:`1.5px solid ${mode===m.id?m.color:T.purple1}`,
-                  borderRadius:'16px',cursor:'pointer',textAlign:'left',opacity:disabled?0.55:1,
-                  transition:'all 0.15s',position:'relative',overflow:'hidden',
-                  ...(m.id==='extra_arena' ? {
-                    backgroundImage:'url(/DesignAssets/Images/arena.jpg)',
-                    backgroundSize:'cover',backgroundPosition:'center',
-                  } : {})
-                }}>
-                {m.id==='extra_arena' && (
-                  <div style={{position:'absolute',inset:0,background:'linear-gradient(135deg,rgba(19,13,38,0.82),rgba(26,16,48,0.75))',zIndex:0}}/>
-                )}
-                {mode===m.id && <div style={{position:'absolute',top:0,left:0,right:0,height:'2px',background:`linear-gradient(90deg,transparent,${m.color},transparent)`,zIndex:1}}/>}
-                <div style={{width:'44px',height:'44px',borderRadius:'12px',background:mode===m.id?`${m.color}20`:T.purple1,border:`1px solid ${mode===m.id?m.color:T.purple2}`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'22px',flexShrink:0,position:'relative',zIndex:1}}>
-                  {m.img ? <img src={m.img} alt="" style={{width:'24px',height:'24px',filter:iconWhite}}/> : m.icon}
-                </div>
-                <div style={{flex:1,minWidth:0,position:'relative',zIndex:1}}>
-                  <div style={{display:'flex',alignItems:'center',gap:'8px',marginBottom:'3px'}}>
-                    <span style={{fontSize:'15px',fontWeight:'800',color:mode===m.id?m.color:T.white,fontFamily:"'Exo 2',sans-serif"}}>{m.label}</span>
-                    <span style={{fontSize:'10px',color:mode===m.id?m.color:T.grey3,background:mode===m.id?`${m.color}18`:T.purple1,borderRadius:'6px',padding:'1px 7px',fontWeight:'600',fontFamily:"'Exo 2',sans-serif"}}>{m.time}</span>
+          <div className="mode-list" aria-label="Доступные режимы боя">
+            {GAME_MODES.map(m => {
+              const disabled = !isModeEnabled(m.id) || (m.id === 'extra_arena' && extraArenaMeta && extraArenaMeta.enabled === false);
+              const active = mode === m.id;
+              const cls = 'mode-card' + (m.id === 'extra_arena' ? ' extra' : '') + (active ? ' active' : '') + (disabled ? ' disabled' : '');
+              const cp = mockupCopy(m);
+              const onPick = () => disabled ? showTempUnavailable() : setMode(m.id);
+              if (m.id === 'extra_arena') {
+                return (
+                  <div key={m.id} className={cls} role="button" tabIndex={disabled?-1:0}
+                    onClick={onPick}
+                    onKeyDown={e=>{if(!disabled&&(e.key==='Enter'||e.key===' ')){e.preventDefault();onPick();}}}
+                    style={disabled?{cursor:'not-allowed'}:undefined}>
+                    <div className="mode-icon" aria-hidden="true">🌀</div>
+                    <div className="mode-copy">
+                      <strong>{m.label}</strong>
+                      <p>{cp.desc}</p>
+                      <div className="mode-meta">
+                        <span className="mode-pill">{cp.time}</span>
+                        {cp.pill && <span className="mode-pill">{cp.pill}</span>}
+                      </div>
+                    </div>
+                    <div className="mode-card-side">
+                      <button className="mode-info-btn" type="button" aria-label="Вариации ExtraArena"
+                        onPointerDown={keepModeInfoTapOnButton} onTouchStart={keepModeInfoTapOnButton}
+                        onClick={e=>openModeInfo(e, m.id)}>?</button>
+                      <div className="mode-radio" aria-hidden="true"></div>
+                    </div>
                   </div>
-                  <div style={{fontSize:'12px',color:T.grey1,lineHeight:1.45}}>{m.desc}</div>
-                  {disabled && <div style={{fontSize:'11px',color:'#fbbf24',marginTop:'4px',fontWeight:'800'}}>Сейчас закрыт</div>}
-                  {mode==='extra_arena' && m.id==='extra_arena' && extraArenaMeta && (
-                    <div style={{fontSize:'11px',color:'#c084fc',marginTop:'4px',fontWeight:'700'}}>
-                      Сейчас: {humanExtraArenaMode(extraArenaMeta.current_mode_id, extraArenaMeta.current_label).label} · Смена через {fmtTimer(eaTimer)}
+                );
+              }
+              return (
+                <button key={m.id} className={cls} type="button" onClick={onPick} disabled={disabled}>
+                  <div className="mode-icon">{m.img ? <img src={m.img} alt=""/> : m.icon}</div>
+                  <div className="mode-copy">
+                    <strong>{m.label}</strong>
+                    <p>{cp.desc}</p>
+                    <div className="mode-meta">
+                      <span className="mode-pill">{cp.time}</span>
+                      {cp.pill && <span className="mode-pill">{cp.pill}</span>}
                     </div>
-                  )}
-                </div>
-                <div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:'6px',flexShrink:0,alignSelf:'center'}}>
-                  {/* radio dot */}
-                  {mode===m.id && (
-                    <div style={{width:'20px',height:'20px',borderRadius:'50%',border:`2px solid ${m.color}`,display:'flex',alignItems:'center',justifyContent:'center'}}>
-                      <div style={{width:'10px',height:'10px',borderRadius:'50%',background:m.color}}/>
-                    </div>
-                  )}
-                </div>
-              </div>
-              {m.id === 'extra_arena' && (
-                <button
-                  type="button"
-                  aria-label="Описание ExtraArena"
-                  onPointerDown={keepModeInfoTapOnButton}
-                  onTouchStart={keepModeInfoTapOnButton}
-                  onClick={e=>openModeInfo(e, m.id)}
-                  style={{position:'absolute',right:'15px',top:'14px',zIndex:8,width:'32px',height:'32px',borderRadius:'50%',background:'linear-gradient(180deg,rgba(192,132,252,0.28),rgba(192,132,252,0.12))',border:`1.5px solid ${m.color}`,boxShadow:`0 0 18px ${m.color}55,inset 0 1px 0 rgba(255,255,255,0.18)`,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',fontSize:'15px',fontWeight:'1000',color:'#f4ecff',fontFamily:"'Exo 2',sans-serif",lineHeight:1,WebkitTapHighlightColor:'transparent',touchAction:'manipulation'}}>
-                  ?
+                  </div>
+                  <div className="mode-radio" aria-hidden="true"></div>
                 </button>
-              )}
-            </div>
-          )})}
-        </div>
+              );
+            })}
+          </div>
 
-        {/* Deck selector */}
-        <div style={{marginBottom:'18px'}}>
-          <div style={{fontSize:'11px',color:T.grey3,textTransform:'uppercase',letterSpacing:'0.5px',marginBottom:'8px'}}>Колода</div>
-          {decksLoading ? (
-            <div style={{background:T.bgCard,border:`1px solid ${T.purple1}`,borderRadius:'12px',padding:'10px 14px'}}>
-              <div style={{display:'flex',alignItems:'center',gap:'8px'}}>
-                <div style={{width:'20px',height:'20px',borderRadius:'50%',border:`2px solid ${T.purple2}`,borderTopColor:T.purpleLt,animation:'spin 0.8s linear infinite',flexShrink:0}}/>
-                <span style={{fontSize:'12px',color:T.grey2}}>Загрузка колод...</span>
-              </div>
-            </div>
-          ) : deckLoadError ? (
-            <div style={{background:'rgba(248,113,113,0.1)',border:'1px solid rgba(248,113,113,0.35)',borderRadius:'12px',padding:'10px 14px',display:'flex',alignItems:'center',gap:'10px'}}>
-              <div style={{flex:1,minWidth:0,fontSize:'12px',color:'#fca5a5',lineHeight:1.4}}>{deckLoadError}</div>
-              <button onClick={()=>loadBattleDeckPresets(true)}
-                style={{height:'34px',padding:'0 12px',borderRadius:'10px',border:`1px solid ${T.orange}66`,background:'rgba(245,146,30,0.14)',color:T.orangeLt,fontSize:'12px',fontWeight:'800',fontFamily:"'Exo 2',sans-serif",cursor:'pointer',flexShrink:0}}>
-                Повторить
-              </button>
-            </div>
-          ) : (
-            <div style={{position:'relative'}}>
+          <div className="mode-details" aria-label="Параметры выбранного режима">
+            {details.map((d, i) => (
+              <article key={i} className="mode-detail">
+                <span>{d.label}</span>
+                <strong>{d.value}</strong>
+              </article>
+            ))}
+          </div>
+
+          <div className="deck-select" aria-label="Выбор колоды">
+            <span>Колода</span>
+            {decksLoading ? (
+              <span style={{color:'var(--muted)'}}>Загрузка…</span>
+            ) : deckLoadError ? (
+              <button onClick={()=>loadBattleDeckPresets(true)} style={{border:'0',background:'transparent',color:'var(--orange-lt)',fontFamily:"'Exo 2',sans-serif",fontSize:'12px',fontWeight:900,cursor:'pointer'}}>Повторить</button>
+            ) : (
               <select value={deckId} onChange={e=>setDeckId(e.target.value)}
-                style={{width:'100%',appearance:'none',background:T.bgCard,border:`1px solid ${T.purple2}`,borderRadius:'12px',padding:'11px 36px 11px 14px',color:T.white,fontSize:'13px',fontWeight:'600',fontFamily:"'Exo 2',sans-serif",outline:'none',cursor:'pointer'}}>
+                style={{appearance:'none',WebkitAppearance:'none',MozAppearance:'none',background:'transparent',border:'0',color:'var(--white)',fontFamily:"'Exo 2',sans-serif",fontSize:'12px',fontWeight:900,textAlign:'right',cursor:'pointer',maxWidth:'62%',paddingRight:'20px',outline:'none',
+                  backgroundImage:"url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'><path d='M3 5l3 3 3-3' stroke='%23a89bc4' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>\")",backgroundRepeat:'no-repeat',backgroundPosition:'right center',backgroundSize:'12px'}}>
                 {presets.map(p => {
                   const filled = (p.card_ids?.filter(Boolean)?.length || 0);
-                  return <option key={p.preset_number} value={String(p.preset_number)} style={{background:T.bgDeep,color:T.white}}>{p.preset_name || `Колода ${p.preset_number}`} ({filled}/9)</option>;
+                  return <option key={p.preset_number} value={String(p.preset_number)} style={{background:'#1a1030',color:'#fff'}}>{p.preset_name || `Колода ${p.preset_number}`} · {filled}/9</option>;
                 })}
               </select>
-              <svg style={{position:'absolute',right:'14px',top:'50%',transform:'translateY(-50%)',pointerEvents:'none'}} width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M3 5l3 3 3-3" stroke={T.grey2} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
-            </div>
-          )}
-          {presets.length > 0 && deckCount < 9 && (
+            )}
+          </div>
+          {presets.length > 0 && deckCount < 9 && !decksLoading && !deckLoadError && (
             <div style={{fontSize:'10px',color:'#fbbf24',marginTop:'5px',display:'flex',alignItems:'center',gap:'4px'}}>
               <span>⚠️</span>
               <span>Колода неполная ({deckCount}/9). Соберите 9 карт в коллекции.</span>
             </div>
           )}
-        </div>
 
-        {!selectedDeckPlayable ? (
-          <div style={{marginBottom:'12px'}}>
-            <div style={{background:'rgba(248,113,113,0.1)',border:'1px solid rgba(248,113,113,0.3)',borderRadius:'12px',padding:'10px 14px',fontSize:'11px',color:'#f87171',lineHeight:1.5}}>
+          {!selectedDeckPlayable && !decksLoading && !deckLoadError ? (
+            <div style={{marginTop:'10px',background:'rgba(248,113,113,0.1)',border:'1px solid rgba(248,113,113,0.3)',borderRadius:'12px',padding:'10px 14px',fontSize:'11px',color:'#f87171',lineHeight:1.5}}>
               {!selectedDeckValidity.hasHero ? '⚠️ Выберите героя в колоде' : `⚠️ Колода неполная (${deckCount}/9). Соберите колоду в разделе «Мои колоды»`}
             </div>
-            <button disabled style={{width:'100%',height:'54px',background:T.bgCard,border:`1px solid ${T.purple2}`,borderRadius:'16px',color:T.grey3,fontSize:'18px',fontWeight:'900',fontFamily:"'Exo 2',sans-serif",cursor:'not-allowed',marginTop:'8px',display:'flex',alignItems:'center',justifyContent:'center',gap:'8px'}}>
-              {chosen.img ? <img src={chosen.img} alt="" style={{width:'24px',height:'24px',filter:'brightness(0) saturate(100%) invert(50%) sepia(13%) saturate(525%) hue-rotate(214deg)'}}/> : chosen.icon} В БОЙ — {chosen.label}
-            </button>
+          ) : null}
+
+          {(() => {
+            const modeDisabled = !isModeEnabled(mode) || (mode === 'extra_arena' && extraArenaMeta && extraArenaMeta.enabled === false);
+            const canStart = deckId && selectedDeckPlayable && !modeDisabled;
+            return <button className="mode-confirm" type="button"
+              onClick={()=>modeDisabled?showTempUnavailable():onConfirm(fullMode, deckId)}
+              disabled={!canStart}
+              style={!canStart?{opacity:0.4,cursor:'not-allowed'}:undefined}>
+              {chosen.img ? <img src={chosen.img} alt=""/> : <span aria-hidden="true" style={{fontSize:'20px'}}>{chosen.icon}</span>}
+              <span>В бой — {chosen.label}</span>
+            </button>;
+          })()}
+          <div className="sheet-footer" style={{marginTop:'14px',paddingTop:'10px',borderTop:'1px solid rgba(245,146,30,0.22)',fontSize:'10px',color:T.grey2,textAlign:'center',lineHeight:1.5}}>
+            <span style={{color:T.grey1,fontWeight:800,letterSpacing:'0.08em'}}>EXTRAARENA</span>
           </div>
-        ) : (
-          (()=>{const modeDisabled = !isModeEnabled(mode) || (mode === 'extra_arena' && extraArenaMeta && extraArenaMeta.enabled === false); const canStart = deckId && selectedDeckPlayable && !modeDisabled; return <button onClick={()=>modeDisabled?showTempUnavailable():onConfirm(fullMode, deckId)}
-            disabled={!canStart}
-            style={{width:'100%',height:'54px',background:`linear-gradient(135deg,${chosen.color},${chosen.color}cc)`,border:'none',borderRadius:'16px',color:'white',fontSize:'18px',fontWeight:'900',fontFamily:"'Exo 2',sans-serif",cursor:canStart?'pointer':'not-allowed',boxShadow:`0 6px 24px ${chosen.color}44`,letterSpacing:'1px',transition:'all 0.15s',display:'flex',alignItems:'center',justifyContent:'center',gap:'8px',opacity:canStart?1:0.4}}>
-            {chosen.img ? <img src={chosen.img} alt="" style={{width:'24px',height:'24px',filter:'brightness(0) invert(1)'}}/> : chosen.icon} В БОЙ — {chosen.label}
-          </button>})()
-        )}
-      </div>
+        </div>
+      </section>
     </div>
   );
 };
@@ -17762,7 +19593,7 @@ const App = () => {
         ) : showGenerator ? (
           <GeneratorScreen onBack={()=>setShowGenerator(false)} profile={profile}/>
         ) : navTab===2 ? (
-          <ArenaScreen onMenu={()=>setShowMenu(true)} onAI={()=>setShowAI(true)} onGenerator={()=>setShowGenerator(true)} onOpenBattles={()=>setShowBattles(true)} onBattlePick={()=>setShowBattlePick(true)} onStartBattle={()=>setShowGameMode(true)} onOpenCase={()=>setShowCaseOpen(true)} onOpenGloryPath={()=>setShowGloryPath(true)} onOpenLeagueInfo={()=>setShowLeagueInfo(true)} onOpenBattlePass={()=>setShowBattlePass(true)} onGoToShop={()=>featureEnabled(runtimeStatus,'shop')?setNavTab(0):showTempUnavailable()} onDailyLogin={()=>setShowDailyLogin(true)} dailyStatus={dailyStatus} profile={profile}/>
+          <ArenaScreen onMenu={()=>setShowMenu(true)} onAI={()=>setShowAI(true)} onGenerator={()=>setShowGenerator(true)} onOpenBattles={()=>setShowBattles(true)} onBattlePick={()=>setShowBattlePick(true)} onStartBattle={()=>setShowGameMode(true)} onOpenCase={()=>setShowCaseOpen(true)} onOpenGloryPath={()=>setShowLeagueInfo(true)} onOpenLeagueInfo={()=>setShowLeagueInfo(true)} onOpenBattlePass={()=>setShowBattlePass(true)} onGoToShop={()=>featureEnabled(runtimeStatus,'shop')?setNavTab(0):showTempUnavailable()} onDailyLogin={()=>setShowDailyLogin(true)} dailyStatus={dailyStatus} profile={profile}/>
         ) : navTab===0 ? (
           <ShopScreen profile={profile} onProfileUpdate={function(p){ setProfile(p); }}/>
         ) : navTab===1 ? (
@@ -17799,9 +19630,8 @@ const App = () => {
       {showCaseOpen   && <CaseOpenScreen onClose={()=>setShowCaseOpen(false)} onDone={()=>{invalidateInventoryCaches();setShowCaseOpen(false);window.reloadFreshProfile().then(d=>{if(d)setProfile(d);});completeNewbieTask('open_starter_case');}} profile={profile}/>}
       {pendingCaseOpen && <CaseOpenScreen userCaseId={pendingCaseOpen.userCaseId} initialTier={pendingCaseOpen.initialTier} onClose={()=>setPendingCaseOpen(null)} onDone={()=>{invalidateInventoryCaches();setPendingCaseOpen(null);window.reloadFreshProfile().then(d=>{if(d)setProfile(d);});}} profile={profile}/>}
       {showInfo       && <InfoSheet      onClose={()=>setShowInfo(false)}/>}
-      {showGloryPath  && <TrophyRoadSheet onClose={()=>setShowGloryPath(false)} profile={profile}/>}
       {showDailyLogin && <DailyLoginSheet onClose={()=>setShowDailyLogin(false)} profile={profile} status={dailyStatus} onClaimed={onDailyClaimed}/>}
-      {showLeagueInfo && <LeagueInfoSheet onClose={()=>setShowLeagueInfo(false)} onOpenGloryPath={()=>{setShowLeagueInfo(false);setShowGloryPath(true);}} profile={profile}/>}
+      {showLeagueInfo && <LeagueInfoSheet onClose={()=>setShowLeagueInfo(false)} profile={profile}/>}
       {showPreBattle  && <PreBattleScreen  data={window.__preBattleData} onClose={()=>{setShowPreBattle(false);window.__preBattleData=null;}}/>}
       {showSupport    && <SupportSheet    onClose={()=>setShowSupport(false)}/>}
       {showBattlePass && <BattlePassSheet onClose={()=>setShowBattlePass(false)} profile={profile} onGoToShop={()=>featureEnabled(runtimeStatus,'shop')?setNavTab(0):showTempUnavailable()} onOpenExtraPassCase={(c)=>{setPendingCaseOpen({userCaseId:c?.user_case_id, initialTier:c?.case_tier || c?.reward_amount || 1});setShowBattlePass(false);}}/>}
@@ -18755,38 +20585,87 @@ const LeagueInfoSheet = ({onClose, onOpenGloryPath, profile}) => {
 
   const viewLeague = LEAGUE_MAP[viewId] || LEAGUE_LIST[0];
   const nextLeague = viewId < 10 ? LEAGUE_MAP[viewId + 1] : null;
-  const prevLeague = viewId > 1 ? LEAGUE_MAP[viewId - 1] : null;
   const progressMin = viewLeague.min;
   const progressMax = nextLeague ? nextLeague.min : 10000;
   const rawProgress = progressMax > progressMin
     ? ((Math.min(Math.max(trophies, progressMin), progressMax) - progressMin) / (progressMax - progressMin)) * 100
     : 100;
-  const tierProgress = viewId < currentId ? 100 : clampPercent(rawProgress);
+  const tierProgress = clampPercent(rawProgress);
   const remainingToNext = nextLeague ? Math.max(0, nextLeague.min - trophies) : Math.max(0, 10000 - trophies);
-  const progressCopy = viewId < currentId
-    ? `${viewLeague.name} пройдена`
-    : viewId > currentId
-      ? `До ${viewLeague.name} осталось ${formatLeagueNumber(Math.max(0, viewLeague.min - trophies))} трофеев`
-      : nextLeague
-        ? `До ${nextLeague.name} осталось ${formatLeagueNumber(remainingToNext)} трофеев`
-        : remainingToNext > 0
-          ? `До вершины Extra осталось ${formatLeagueNumber(remainingToNext)} трофеев`
-          : 'Extra открыта';
-  const roadmapLeft = prevLeague ? `${prevLeague.name} пройдена` : 'Стартовая лига';
-  const roadmapRight = nextLeague
-    ? `${nextLeague.name} открывается на ${formatLeagueNumber(nextLeague.min)}`
-    : 'Extra открыта';
-  const rewardMilestones = leagueRewardCards(viewLeague);
-  const firstFutureReward = rewardMilestones.find(milestone => milestone.trophies >= trophies);
+  const progressCopy = nextLeague
+    ? `До ${nextLeague.name} осталось ${formatLeagueNumber(remainingToNext)} трофеев`
+    : remainingToNext > 0
+      ? `До вершины Extra осталось ${formatLeagueNumber(remainingToNext)} трофеев`
+      : 'Extra открыта';
   const activeRgb = hexToLeagueRgb(viewLeague.color);
 
-  const openGloryPath = () => {
-    if (onOpenGloryPath) onOpenGloryPath();
+  // ── Trophy Road (Glory Path) — folded from TrophyRoadSheet: live claimable tiers + claim ──
+  // onOpenGloryPath is retained as a dead-but-present prop (the trophy road is now inline here).
+  const [tiers, setTiers] = React.useState([]);
+  const [loading, setLoading] = React.useState(true);
+  const [claiming, setClaiming] = React.useState({});
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const r = await fetch(_buildAuthUrl('/api/rewards/track/glory'));
+      const d = await r.json();
+      setTiers(d.tiers || []);
+    } catch (e) {}
+    setLoading(false);
   };
+  React.useEffect(() => { load(); }, [profile?.user_id, profile?.trophies]);
+
+  const handleClaim = async (pos) => {
+    if (claiming[pos]) return;
+    setClaiming(c => ({...c, [pos]: true}));
+    try {
+      const r = await fetch(_buildAuthUrl('/api/rewards/claim'), {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({track_type: "glory", position: pos})
+      });
+      const d = await r.json();
+      if (d.success) {
+        window._playSfx?.('success-sound');
+        setTiers(prev => prev.map(t => t.position === pos ? {...t, claimed: true, available: false} : t));
+        window.reloadFreshProfile?.().then(p => { if (p && window.__updateProfile) window.__updateProfile(p); });
+      }
+    } catch (e) {}
+    setClaiming(c => ({...c, [pos]: false}));
+  };
+
+  // reward_type → {icon, text} (kept 1:1 with TrophyRoadSheet's mapping at 19696-19722).
+  const rewardLabel = (r) => {
+    const amt = (r.reward_amount != null ? r.reward_amount.toLocaleString('ru-RU') + ' ' : '');
+    if (r.reward_type === 'coins') return {icon: '💰', text: amt + ruPlural(r.reward_amount, ['монета', 'монеты', 'монет'])};
+    if (r.reward_type === 'gems') return {icon: '💎', text: amt + ruPlural(r.reward_amount, ['гем', 'гема', 'гемов'])};
+    if (r.reward_type === 'keys') return {icon: '🔑', text: amt + ruPlural(r.reward_amount, ['ключ', 'ключа', 'ключей'])};
+    if (r.reward_type === 'case') { const t = r.reward_meta?.case_tier || r.reward_amount || 1; return {icon: '📦', text: 'T' + t + ' кейс'}; }
+    if (r.reward_type === 'card') return {icon: '🃏', text: 'случ. карта'};
+    if (r.reward_type === 'specific_card') return {icon: '🃏', text: 'конкр. карта'};
+    if (r.reward_type === 'particles') { const rarity = r.reward_meta?.rarity || 'common'; return {icon: '🧩', text: amt + ruPlural(r.reward_amount, ['частица', 'частицы', 'частиц']) + ' (' + rarityNameRu(rarity).toLowerCase() + ')'}; }
+    if (r.reward_type === 'cosmetic') return {icon: '🎨', text: 'косметика'};
+    return {icon: '🎁', text: amt || 'Награда'};
+  };
+  const tierTitle = (tier) => {
+    const texts = (tier.rewards || []).map(rewardLabel).map(x => x.text).filter(Boolean);
+    return texts.length ? texts.join(' + ') : 'Награда';
+  };
+  const tierIcon = (tier) => {
+    const rw = tier.rewards || [];
+    return rw.length ? rewardLabel(rw[0]).icon : '🎁';
+  };
+  // Filter the global Glory Path tiers to the viewed league's trophy window
+  // (viewLeague.min … nextLeague.min). Browsing leagues (#24) re-filters this
+  // automatically since it derives from viewLeague/nextLeague. The promotion
+  // tier sitting at nextLeague.min belongs to the NEXT league, so use `<` not
+  // `<=` to keep it out of this window.
+  const windowTiers = tiers.filter(t => t.position >= viewLeague.min && t.position < (nextLeague ? nextLeague.min : 10000));
+  const firstAvailablePos = windowTiers.find(t => t.available)?.position;
 
   return (
     <div
-      className="league-redesign-screen"
+      className="league-redesign-screen mm-redesign"
       style={{'--league-active': viewLeague.color, '--league-active-rgb': activeRgb}}
       aria-label="Моя лига"
     >
@@ -18801,81 +20680,51 @@ const LeagueInfoSheet = ({onClose, onOpenGloryPath, profile}) => {
             <h1>Моя лига</h1>
             <span>ExtraArena Glory Path</span>
           </div>
-          <button className="league-redesign-icon-btn" onClick={openGloryPath} aria-label="Трофейная дорога">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-              <path d="M7 4h10v3h3a2 2 0 0 1 2 2c0 3.1-2.2 5.3-5 5.8A5.4 5.4 0 0 1 13 18v2h3v2H8v-2h3v-2a5.4 5.4 0 0 1-4-3.2C4.2 14.3 2 12.1 2 9a2 2 0 0 1 2-2h3V4Z" fill="currentColor"/>
-            </svg>
+          <button className="league-redesign-icon-btn" onClick={onClose} aria-label="Закрыть">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"/></svg>
           </button>
         </header>
 
-        <section className="league-redesign-roadmap" aria-label="RoadMap лиг">
-          <div className="league-redesign-line">
-            {LEAGUE_LIST.map(l => {
-              const isActive = l.id === viewId;
-              const isDone = l.id < currentId;
-              return (
-                <span key={l.id} className={`league-redesign-node ${isDone ? 'done' : ''} ${isActive ? 'active' : ''}`}>
-                  <img src={LEAGUE_ART_BY_ID[l.id]} alt={l.name}/>
-                </span>
-              );
-            })}
-          </div>
-          <div className="league-redesign-roadmap-meta">
-            <span>{roadmapLeft}</span>
-            <span>{roadmapRight}</span>
-          </div>
-        </section>
-
-        <section className="league-redesign-hero" aria-label={`Текущая лига ${viewLeague.name}`}>
-          <div className="league-redesign-hero-head">
-            <div className="league-redesign-rank-label">
-              <div className="league-redesign-rank-number">{viewLeague.id}</div>
-              <div className="league-redesign-rank-title">
+        <section className="sheet-hero" aria-label={`Текущая лига ${viewLeague.name}`}>
+          <div className="sheet-hero-head">
+            <div className="sheet-rank">
+              <div className="sheet-rank-number">{viewLeague.id}</div>
+              <div className="sheet-rank-copy">
                 <strong>{viewLeague.name}</strong>
                 <span>{leagueRangeLabel(viewLeague)}</span>
               </div>
             </div>
-            <div className="league-redesign-trophy-pill">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                <path d="M7 4h10v3h3a2 2 0 0 1 2 2c0 3.1-2.2 5.3-5 5.8A5.4 5.4 0 0 1 13 18v2h3v2H8v-2h3v-2a5.4 5.4 0 0 1-4-3.2C4.2 14.3 2 12.1 2 9a2 2 0 0 1 2-2h3V4Z" fill="currentColor"/>
-              </svg>
+            <div className="sheet-trophy-pill" aria-label="Текущие трофеи">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 4h10v3h3a2 2 0 0 1 2 2c0 3.1-2.2 5.3-5 5.8A5.4 5.4 0 0 1 13 18v2h3v2H8v-2h3v-2a5.4 5.4 0 0 1-4-3.2C4.2 14.3 2 12.1 2 9a2 2 0 0 1 2-2h3V4Z" fill="currentColor"/></svg>
               {formatLeagueNumber(trophies)}
             </div>
           </div>
 
-          <div className="league-redesign-badge-stage">
-            <button
-              className="league-redesign-side-arrow left"
-              onClick={() => setViewId(id => Math.max(1, id - 1))}
-              disabled={!prevLeague}
-              aria-label="Предыдущая лига"
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                <path d="M15 5l-7 7 7 7" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
+          <div className="sheet-badge-row" style={{display:'flex',alignItems:'center',justifyContent:'center',gap:'14px'}}>
+            <button className="league-redesign-icon-btn" type="button"
+              onClick={() => setViewId(v => Math.max(1, v - 1))}
+              disabled={viewId <= 1} aria-label="Предыдущая лига"
+              style={viewId <= 1 ? {opacity:0.35, cursor:'default'} : undefined}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M15 5l-7 7 7 7" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/></svg>
             </button>
-            <img className="league-redesign-badge" src={LEAGUE_ART_BY_ID[viewLeague.id]} alt={`${viewLeague.name} league badge`}/>
-            <button
-              className="league-redesign-side-arrow right"
-              onClick={() => setViewId(id => Math.min(10, id + 1))}
-              disabled={!nextLeague}
-              aria-label="Следующая лига"
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                <path d="M9 5l7 7-7 7" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
+            <div className="sheet-badge-stage" aria-hidden="true">
+              <img src={LEAGUE_ART_BY_ID[viewId]} alt={`${viewLeague.name} league badge`}/>
+            </div>
+            <button className="league-redesign-icon-btn" type="button"
+              onClick={() => setViewId(v => Math.min(10, v + 1))}
+              disabled={viewId >= 10} aria-label="Следующая лига"
+              style={viewId >= 10 ? {opacity:0.35, cursor:'default'} : undefined}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M9 5l7 7-7 7" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/></svg>
             </button>
           </div>
 
-          <div className="league-redesign-progress-panel" aria-label="Прогресс до следующей лиги">
-            <div className="league-redesign-progress-top">
+          <div className="sheet-progress-panel" aria-label={`Прогресс до ${nextLeague ? nextLeague.name : 'вершины'}`}>
+            <div className="sheet-progress-top">
               <span>{progressCopy}</span>
               <strong>{Math.round(tierProgress)}%</strong>
             </div>
-            <div className="league-redesign-bar">
-              <div className="league-redesign-bar-fill" style={{width:`${tierProgress}%`}}/>
-            </div>
-            <div className="league-redesign-progress-meta">
+            <div className="bar" aria-hidden="true"><span style={{width: tierProgress + '%'}}/></div>
+            <div className="sheet-progress-meta">
               <span>{formatLeagueNumber(progressMin)}</span>
               <span>{formatLeagueNumber(Math.min(Math.max(trophies, progressMin), progressMax))} / {formatLeagueNumber(progressMax)}</span>
               <span>{formatLeagueNumber(progressMax)}</span>
@@ -18883,40 +20732,59 @@ const LeagueInfoSheet = ({onClose, onOpenGloryPath, profile}) => {
           </div>
         </section>
 
-        <section className="league-redesign-rewards" aria-label={`Награды ${viewLeague.name}`}>
-          <div className="league-redesign-section-title">
-            <h2>Награды в этой лиге</h2>
-            <span>Glory Path</span>
-          </div>
-          <div
-            className="league-redesign-reward-grid"
-            style={{gridTemplateColumns: rewardMilestones.length === 1 ? '1fr' : undefined}}
-          >
-            {rewardMilestones.map((milestone, index) => {
-              const reward = (milestone.rewards || [])[0];
-              const isNext = firstFutureReward && firstFutureReward.trophies === milestone.trophies;
+        <div className="sheet-section-head" style={{justifyContent:'center'}}>
+          <h3>Награды Trophy Road</h3>
+        </div>
+
+        <div className="sheet-trophy-road" aria-label="Награды трофейной дороги">
+          {loading && tiers.length === 0 ? (
+            <div style={{textAlign:'center', padding:'32px', color:'var(--muted)'}}>Загрузка...</div>
+          ) : windowTiers.length === 0 ? (
+            <div style={{textAlign:'center', padding:'32px', color:'var(--muted)'}}>Награды скоро появятся</div>
+          ) : (
+            windowTiers.map((tier, i) => {
+              const isClaimed = !!tier.claimed;
+              const isAvailable = !!tier.available;
+              const isLocked = !!tier.locked;
+              const isNext = isAvailable && tier.position === firstAvailablePos;
+              const remaining = Math.max(0, tier.position - trophies);
+              const cls = 'road-reward' + (isNext ? ' next' : '');
+              const icon = isClaimed ? '✓' : tierIcon(tier);
+              const title = tierTitle(tier);
+              let subtitle;
+              if (isClaimed) subtitle = 'Получено';
+              else if (isAvailable) subtitle = 'Можно забрать';
+              else if (isLocked) subtitle = 'Ещё ' + remaining.toLocaleString('ru-RU') + ' 🏆';
+              else subtitle = 'Награда на ' + tier.position.toLocaleString('ru-RU') + ' трофеев';
+              const chipText = isNext
+                ? tier.position.toLocaleString('ru-RU') + ' · +' + (tier.position - trophies).toLocaleString('ru-RU')
+                : tier.position.toLocaleString('ru-RU');
               return (
-                <article key={`${viewLeague.id}-${milestone.trophies}-${index}`} className={`league-redesign-reward-card ${isNext ? 'next' : ''}`}>
-                  <span className="league-redesign-reward-chip">{leagueRewardChip(milestone, trophies)}</span>
-                  <div className="league-redesign-reward-icon" aria-hidden="true">
-                    <LeagueRewardIcon type={reward?.type}/>
+                <article key={i} className={cls} style={isLocked ? {opacity: 0.55} : undefined}>
+                  <div className="road-icon" aria-hidden="true">{icon}</div>
+                  <div className="road-copy">
+                    <strong>{title}</strong>
+                    <span>{subtitle}</span>
                   </div>
-                  <strong>{leagueRewardTitle(reward)}</strong>
-                  <p>{leagueRewardText(milestone, reward)}</p>
+                  {isAvailable ? (
+                    <button onClick={() => handleClaim(tier.position)} disabled={!!claiming[tier.position]} style={{marginLeft:'auto', background:'linear-gradient(135deg, var(--orange), var(--orange-lt))', border:'none', borderRadius:'10px', padding:'8px 14px', color:'#fff', fontSize:'12px', fontWeight:800, fontFamily:"'Exo 2',sans-serif", cursor:'pointer', boxShadow:'0 3px 12px rgba(245,146,30,0.4)', flexShrink:0}}>
+                      {claiming[tier.position] ? '...' : 'Забрать'}
+                    </button>
+                  ) : (
+                    <div className="road-chip">{chipText}</div>
+                  )}
                 </article>
               );
-            })}
-          </div>
-        </section>
+            })
+          )}
+        </div>
       </section>
-
-      <div className="league-redesign-home-indicator" aria-hidden="true"></div>
     </div>
   );
 };
 
 ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
 </script>
-<script src="index.compiled.js?v=b500f6f3f4de"></script>
+<script src="index.compiled.js?v=22732fee4e0d"></script>
 </body>
 </html>

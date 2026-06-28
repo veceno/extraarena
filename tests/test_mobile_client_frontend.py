@@ -79,8 +79,8 @@ def test_league_info_sheet_uses_handoff_redesign():
 
     assert "league-redesign-screen" in source
     assert "ExtraArena Glory Path" in sheet
-    assert "LEAGUE_ART_BY_ID[l.id]" in sheet
-    assert "Награды в этой лиге" in sheet
+    assert "LEAGUE_ART_BY_ID[viewId]" in sheet
+    assert "Награды Trophy Road" in sheet
     assert "onOpenGloryPath" in sheet
 
 
@@ -714,7 +714,7 @@ def test_mobile_profile_mutations_invalidate_stale_cached_profile():
     assert "window.reloadFreshProfile" in source
     assert "window.eaInvalidateJson?.('/api/mobile/shop-bootstrap')" in source
     assert "window.reloadFreshProfile().then(function(data)" in source
-    assert "window.reloadFreshProfile().then(p=>{if(p)window.__updateProfile(p);});" in source
+    assert "window.reloadFreshProfile().then(d => { if (d && window.__updateProfile) window.__updateProfile(d); });" in source
     assert "onDone={()=>{invalidateInventoryCaches();setShowCaseOpen(false);window.reloadFreshProfile()" in source
 
 
