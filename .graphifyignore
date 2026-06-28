@@ -119,6 +119,36 @@ rlhf_env/audit/**
 rlhf_env/tests/**
 !rlhf_env/tests/*.py
 
+# ExtraOrchestra — scenario-replay + mp4/gif export utility (port 8095, mirrors
+# the rlhf_env borrow pattern). Source + docs + tests + scenarios + the visual
+# graph editor (static/, original code) + scripts; exclude borrowed webapp
+# (duplicate of webapp/), recordings, runtime artifacts, venv, pycache.
+!extra_orchestra/
+extra_orchestra/**
+!extra_orchestra/*.py
+!extra_orchestra/*.md
+!extra_orchestra/*.json
+!extra_orchestra/*.txt
+!extra_orchestra/*.sh
+!extra_orchestra/components/
+extra_orchestra/components/**
+!extra_orchestra/components/*.py
+!extra_orchestra/tests/
+extra_orchestra/tests/**
+!extra_orchestra/tests/*.py
+!extra_orchestra/static/
+extra_orchestra/static/**
+!extra_orchestra/static/*.js
+!extra_orchestra/static/*.html
+!extra_orchestra/static/*.css
+!extra_orchestra/scenarios/
+extra_orchestra/scenarios/**
+!extra_orchestra/scenarios/*.json
+!extra_orchestra/scripts/
+extra_orchestra/scripts/**
+!extra_orchestra/scripts/*.py
+!extra_orchestra/scripts/*.sh
+
 !TrainV3/
 TrainV3/**
 !TrainV3/README.md

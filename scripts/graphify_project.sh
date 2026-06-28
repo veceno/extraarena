@@ -48,5 +48,5 @@ GRAPHIFY_MAX_WORKERS="${GRAPHIFY_MAX_WORKERS:-1}" graphify extract . \
   --out . \
   --no-cluster \
   --max-workers "${GRAPHIFY_MAX_WORKERS:-1}" \
-  "${BACKEND_ARGS[@]}" \
+  ${BACKEND_ARGS[@]+"${BACKEND_ARGS[@]}"} \
   "${EXCLUDES[@]}"
