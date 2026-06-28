@@ -74,7 +74,7 @@ from infrastructure.case_system import (
 )
 from infrastructure.payments_logic import process_successful_payment
 from infrastructure.rustore_payments import resolve_rustore_product_id
-from infrastructure.telegram_proxy import create_telegram_aiohttp_session
+from infrastructure.telegram_proxy import create_telegram_aiohttp_session, create_telegram_bot
 from infrastructure.shop_config import (
     CASE_PACKS,
     SHOP_PRICES,
@@ -9102,7 +9102,7 @@ def create_web_app(
             if hasattr(db, "sync_user_key_cases"):
                 await db.sync_user_key_cases(user_id)
             cases = await db.get_user_cases(user_id)
-            return web.json_response({"success": True, "cases": cases})
+            return web.json_response({"success": True, "cases": _serialize_datetime(cases)})
         except Exception as e:
             import logging
             logging.getLogger(__name__).error(
@@ -17494,8 +17494,7 @@ def create_web_app(
             )
 
             # Отправляем инвойс через Telegram Bot API
-            from aiogram import Bot
-            bot = Bot(token=bot_token)
+            bot = create_telegram_bot(token=bot_token)
 
             try:
                 # Формируем детали счета с пояснениями для пользователя
@@ -18882,19 +18881,20 @@ def create_web_app(
         if not file_id:
             return web.json_response({"error": "file_id_required"}, status=400)
 
-        import logging, aiohttp
+        import logging
         logger = logging.getLogger(__name__)
         token = app["bot_token"]
 
         try:
-            from aiogram import Bot
-            bot = Bot(token=token)
-            tg_file = await bot.get_file(file_id)
-            file_path = tg_file.file_path
-            await bot.session.close()
+            bot = create_telegram_bot(token=token)
+            try:
+                tg_file = await bot.get_file(file_id)
+                file_path = tg_file.file_path
+            finally:
+                await bot.session.close()
 
             url = f"https://api.telegram.org/file/bot{token}/{file_path}"
-            async with aiohttp.ClientSession() as session:
+            async with _create_telegram_api_session() as session:
                 async with session.get(url) as resp:
                     if resp.status != 200:
                         return web.json_response({"error": "file_not_found"}, status=404)
@@ -21036,6 +21036,8 @@ def create_web_app(
             return url
         if parsed and "/api/payments/robokassa/pay/" not in parsed.path:
             return url
+        if parsed and "/api/payments/robokassa/pay/" in parsed.path:
+            return url
 
         payment = await db.get_payment_by_id(pid)
         metadata = payment.get("metadata") if isinstance(payment, dict) else None
@@ -21259,6 +21261,45 @@ def create_web_app(
         except Exception as e:
             logger.error("Ошибка checkout_start: %s", e, exc_info=True)
             return web.json_response({"error": "internal_server_error", "message": str(e)}, status=500)
+
+    async def checkout_summary_handler(request: web.Request) -> web.Response:
+        jti = str(request.rel_url.query.get("jti") or request.rel_url.query.get("checkout_jti") or "").strip()
+        if not jti:
+            return web.json_response({"error": "missing_jti"}, status=400)
+
+        try:
+            session = await db.get_checkout_session(jti)
+            if not session:
+                return web.json_response({"error": "session_not_found"}, status=404)
+
+            expires_at = session.get("expires_at")
+            try:
+                if hasattr(expires_at, "timestamp"):
+                    session_exp = float(expires_at.timestamp())
+                else:
+                    session_exp = float(expires_at or 0)
+            except (TypeError, ValueError):
+                session_exp = 0
+            if session_exp and time.time() > session_exp:
+                return web.json_response(
+                    {"error": "session_expired", "message": "Checkout session expired, please restart purchase"},
+                    status=400,
+                )
+
+            metadata = session.get("metadata") if isinstance(session.get("metadata"), dict) else {}
+            item_type = str(session.get("item_type") or metadata.get("item_type") or "")
+            item_name = str(metadata.get("item_name") or session.get("item_name") or item_type)
+            return web.json_response({
+                "success": True,
+                "checkout_jti": jti,
+                "item_type": item_type,
+                "item_name": item_name,
+                "amount_rub": float(session.get("amount") or metadata.get("amount_rub") or 0),
+                "currency": str(metadata.get("currency") or "RUB"),
+            })
+        except Exception as e:
+            logging.getLogger(__name__).error("Ошибка checkout_summary: %s", e, exc_info=True)
+            return web.json_response({"error": "internal_server_error"}, status=500)
 
     # POST /api/payments/checkout/create — проверка токена, поиск/создание YooKassa payment (идемпотентно)
     async def checkout_create_handler(request: web.Request) -> web.Response:
@@ -21490,6 +21531,7 @@ def create_web_app(
 
     app.router.add_post("/api/payments/checkout/public/start", checkout_public_start_handler)
     app.router.add_post("/api/payments/checkout/start", checkout_start_handler)
+    app.router.add_get("/api/payments/checkout/summary", checkout_summary_handler)
     app.router.add_post("/api/payments/checkout/create", checkout_create_handler)
 
     # Register ExtraID handlers

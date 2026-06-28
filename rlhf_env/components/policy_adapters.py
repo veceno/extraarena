@@ -210,6 +210,38 @@ def _layer_a_fallback_detector(
         return None
 
 
+def _sidecar_kind_detector(
+    path: Optional[str], sidecar: Dict[str, Any], name: Optional[str]
+) -> Optional[str]:
+    """Sidecar-based kind detector — работает БЕЗ gitignored layer A.
+
+    V4-экспорты несут inference-контракт в sidecar (``.onnx.json``):
+    ``model_version`` / ``inputs`` / ``outputs`` / ``action_feature_dim``
+    достаточно, чтобы промаршрутизировать модель в ``action_onnx`` или
+    ``legacy_onnx`` без inspect-проба. Если sidecar не указывает kind —
+    возвращаем None, и цепочка детекторов идёт дальше (→ layer-A fallback).
+
+    Ported from the earlier ``_derive_kind_from_sidecar`` iteration so prod
+    RLHF deploys can scan V4 ONNX files without the benchmark-only inspector.
+    """
+    if not path or not sidecar:
+        return None
+    model_version = str(sidecar.get("model_version") or "")
+    inputs = {str(n) for n in sidecar.get("inputs", [])}
+    outputs = {str(n) for n in sidecar.get("outputs", [])}
+    if (
+        model_version == "classic_action_conditioned_onnx_v1"
+        or {"observation", "action_features"}.issubset(inputs)
+        or sidecar.get("action_feature_dim") is not None
+    ):
+        return "action_onnx"
+    if model_version.startswith("classic_") and "action_conditioned" not in model_version:
+        return "legacy_onnx"
+    if inputs and "observation" in inputs and "logits" in outputs:
+        return "legacy_onnx"
+    return None
+
+
 # ----------------------------------------------------------------------------
 # Реестр
 # ----------------------------------------------------------------------------
@@ -373,6 +405,9 @@ def _register_builtins(reg: AdapterRegistry) -> None:
     reg.register("v5", _factory_v5)
     # layer-A fallback детектор — низший приоритет (добавлен первым, LIFO → последний).
     reg.register_detector(_layer_a_fallback_detector)
+    # sidecar-детектор — выше layer-A fallback (LIFO): определяет V4/V3 по sidecar
+    # без gitignored inspect_model. Добавлен последним → в голове списка.
+    reg.register_detector(_sidecar_kind_detector)
 
 
 __all__ = [

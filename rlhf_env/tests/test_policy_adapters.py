@@ -150,3 +150,60 @@ def test_build_policy_delegates_to_registry():
     from rlhf_env.components.policy_factory import build_policy
     p = build_policy({"name": "random", "seed": 3})
     assert p.kind == "random"
+
+def test_sidecar_detector_v4_without_layer_a(tmp_path):
+    """V4 ONNX определяется как action_onnx по sidecar — без gitignored inspector.
+
+    Воспроизводит prod-сценарий: scan V4 ONNX без layer A (ai.model_benchmark
+    отсутствует) — sidecar несёт inference-контракт.
+    """
+    import json
+    from rlhf_env.components.policy_adapters import default_registry, _sidecar_kind_detector
+
+    sidecar = {
+        "model_version": "classic_action_conditioned_onnx_v1",
+        "inputs": ["observation", "action_features"],
+        "outputs": ["logits", "value"],
+        "obs_dim": 1456,
+        "action_feature_dim": 171,
+        "max_candidate_actions": 601,
+    }
+    # детектор напрямую
+    assert _sidecar_kind_detector("/abs/path/extra-lr-v4-max.onnx", sidecar, "v4") == "action_onnx"
+    # через реестр (sidecar приоритетнее layer-A fallback)
+    assert default_registry().detect_kind("/abs/path/extra-lr-v4-max.onnx", sidecar, name="v4") == "action_onnx"
+
+    # legacy по model_version classic_* без action_conditioned
+    legacy_sc = {"model_version": "classic_legacy_v1", "inputs": ["observation"], "outputs": ["logits"]}
+    assert _sidecar_kind_detector("/x.onnx", legacy_sc, "v3") == "legacy_onnx"
+
+    # нет sidecar / нет path → None (не валит, передаёт дальше по цепочке)
+    assert _sidecar_kind_detector(None, sidecar, "x") is None
+    assert _sidecar_kind_detector("/x.onnx", {}, "x") is None
+
+
+def test_scan_directory_derives_v4_kind_from_sidecar(tmp_path):
+    """PolicyRegistry.scan_directory сканирует V4 ONNX по sidecar без layer A."""
+    import json
+    from rlhf_env.components.policy_registry import PolicyRegistry
+
+    onnx = tmp_path / "extra-lr-v4-max.onnx"
+    onnx.write_bytes(b"not a real onnx model")
+    onnx.with_suffix(".onnx.json").write_text(
+        json.dumps(
+            {
+                "model_version": "classic_action_conditioned_onnx_v1",
+                "inputs": ["observation", "action_features"],
+                "outputs": ["logits", "value"],
+                "obs_dim": 1456,
+                "action_feature_dim": 171,
+                "max_candidate_actions": 601,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    reg = PolicyRegistry.scan(tmp_path)
+    spec = reg.get("extra-lr-v4-max")
+    assert spec is not None
+    assert spec.kind == "action_onnx"
