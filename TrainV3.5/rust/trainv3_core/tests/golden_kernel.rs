@@ -155,6 +155,42 @@ fn rust_kernel_apply_action_matches_mana_draw_python_transitions() {
 }
 
 #[test]
+fn rust_kernel_apply_action_matches_rebirth_python_transitions() {
+    // Phase 3 (REBIRTH-1): card 50 Бан (rebirth_1, 8 mana 3/7) is killed by
+    // Сайтама's instant_kill attack. The rebirth pre-pass in
+    // cleanup_dead_units_for_player resurrects Бан with 1 HP and consumes the
+    // rebirth_1 mechanic string. Multi-card deck (8× Бан vs 8× Сайтама);
+    // recorded-outcome RNG handles draw parity. State-transition only.
+    let raw = include_str!("fixtures/golden_trace_rebirth.json");
+    let trace: GoldenTrace = serde_json::from_str(raw).expect("fixture parses");
+    assert_trace_state_transitions_match(&trace);
+}
+
+#[test]
+fn rust_kernel_apply_action_matches_crime_and_punishment_python_transitions() {
+    // Phase 3 (CAP-1): card 49 Достоевский hero (crime_and_punishment_2).
+    // When a friendly minion (Скелет) dies to Сайтама's instant_kill, CAP
+    // deals 2 damage to the opponent hero via DIRECT hp subtraction (not
+    // apply_damage — bypasses armor/reflect). The fixture verifies p2 hero
+    // hp 30→28. Multi-card deck; recorded-outcome RNG. State-transition only.
+    let raw = include_str!("fixtures/golden_trace_cap.json");
+    let trace: GoldenTrace = serde_json::from_str(raw).expect("fixture parses");
+    assert_trace_state_transitions_match(&trace);
+}
+
+#[test]
+fn rust_kernel_apply_action_matches_consume_ally_python_transitions() {
+    // Phase 3 (CLN-3): card 20 Канеки Кен (consume_ally, 3 mana 2/2) consumes
+    // a friendly Скелет (2/1). The consumed ally is REMOVED from board and sent
+    // to graveyard; its attack/hp/max_hp are added to the played card
+    // (2+2=4, 2+1=3). The consumed ally's deathrattle does NOT fire. Multi-card
+    // deck; recorded-outcome RNG. State-transition only.
+    let raw = include_str!("fixtures/golden_trace_consume_ally.json");
+    let trace: GoldenTrace = serde_json::from_str(raw).expect("fixture parses");
+    assert_trace_state_transitions_match(&trace);
+}
+
+#[test]
 fn batched_rollout_worker_matches_python_trace_with_internal_history() {
     let raw = include_str!("fixtures/golden_trace_scripted_basic.json");
     let trace: GoldenTrace = serde_json::from_str(raw).expect("fixture parses");

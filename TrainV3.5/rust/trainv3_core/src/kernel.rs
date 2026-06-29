@@ -889,6 +889,26 @@ fn apply_play_card(
     player.mana -= card.mana_cost;
     let mut card = player.hand.remove(hand_index);
     if card.is_warrior() {
+        // consume_ally (Phase 3: CLN-3). Mirrors core/engine.py
+        // _handle_play_card: consume the targeted friendly ally BEFORE
+        // placing the new card on board. The consumed unit's current
+        // attack/hp/max_hp are added to the played card; the consumed unit
+        // is removed from board and sent to graveyard. Its deathrattle does
+        // NOT fire (consume = "devour", not "kill" — by design). Target_code
+        // 9..=15 maps to friendly board index 0..6 (same encoding as
+        // mask_targets_for_card / apply_damage_to_play_target). The card's
+        // base_* fields are NOT touched, so the buff is lost on reshuffle
+        // (reset_to_base_state restores original stats) — matches Python.
+        if card.has_mechanic("consume_ally") {
+            let consume_idx = target_code.saturating_sub(9);
+            if consume_idx < player.board.len() {
+                let consumed = player.board.remove(consume_idx);
+                card.attack += consumed.attack;
+                card.hp += consumed.hp;
+                card.max_hp += consumed.max_hp;
+                player.graveyard.push(consumed);
+            }
+        }
         let position = board_position.min(player.board.len());
         card.is_ready = card.has_mechanic("charge");
         let card_id = card.card_id;
@@ -2106,16 +2126,80 @@ fn cleanup_dead_units(state: &mut KernelState) {
 }
 
 fn cleanup_dead_units_for_player(player: &mut KernelPlayer, opponent: &mut KernelPlayer) {
+    // --- Rebirth pre-pass (Phase 3: REBIRTH-1). Mirrors
+    // core/engine.py::_cleanup_dead_units: a unit with rebirth_N at lethal
+    // damage survives with N HP (one-shot — the rebirth_N mechanic string is
+    // removed). Runs BEFORE deathrattle/CAP so the saved unit is not
+    // considered dead, its deathrattle does not fire. This pre-pass runs EACH
+    // cleanup loop iteration (the outer cleanup_dead_units loop repeats until
+    // board sizes stabilise, because deathrattles can kill more units — those
+    // subsequent deaths must also consider rebirth).
+    for unit in player.board.iter_mut() {
+        if unit.hp > 0 {
+            continue;
+        }
+        if let Some(rebirth_hp) = parse_rebirth(&unit.mechanics) {
+            if rebirth_hp > 0 {
+                unit.hp = rebirth_hp;
+                consume_rebirth(&mut unit.mechanics);
+            }
+        }
+    }
+
+    // --- crime_and_punishment (Phase 3: CAP-1). Mirrors
+    // core/engine.py::_cleanup_dead_units: parse the hero passive once, then
+    // for EACH dead friendly minion deal N damage to the OPPONENT hero via
+    // DIRECT hp subtraction (max(0, hp - N)) — NOT apply_damage. This bypasses
+    // armor/reflect/lifesteal and does NOT chain deathrattles from this damage
+    // (audit risk note: confirmed in Python — line `opponent.hero.hp = max(0,
+    // opponent.hero.hp - cap_damage)`).
+    let cap_damage = parse_crime_and_punishment(&player.hero.mechanics);
+
     let mut alive = Vec::with_capacity(player.board.len());
     for unit in player.board.drain(..) {
         if unit.hp <= 0 {
             apply_deathrattle_effects(&unit, opponent);
+            if cap_damage > 0 && opponent.hero.hp > 0 {
+                opponent.hero.hp = (opponent.hero.hp - cap_damage).max(0);
+            }
             player.graveyard.push(unit);
         } else {
             alive.push(unit);
         }
     }
     player.board = alive;
+}
+
+/// Parse `rebirth_N` from a mechanics list → N (first match). Mirrors
+/// core/effects.py::parse_rebirth.
+fn parse_rebirth(mechanics: &[String]) -> Option<i32> {
+    for m in mechanics {
+        if let Some(rest) = m.strip_prefix("rebirth_") {
+            if let Ok(n) = rest.parse::<i32>() {
+                return Some(n);
+            }
+        }
+    }
+    None
+}
+
+/// Remove all `rebirth_*` mechanic strings (one-shot consumption). Mirrors
+/// core/effects.py::consume_rebirth.
+fn consume_rebirth(mechanics: &mut Vec<String>) {
+    mechanics.retain(|m| !m.starts_with("rebirth_"));
+}
+
+/// Parse `crime_and_punishment_N` from a mechanics list → N (first match).
+/// Mirrors core/effects.py::parse_crime_and_punishment.
+fn parse_crime_and_punishment(mechanics: &[String]) -> i32 {
+    for m in mechanics {
+        if let Some(rest) = m.strip_prefix("crime_and_punishment_") {
+            if let Ok(n) = rest.parse::<i32>() {
+                return n;
+            }
+        }
+    }
+    0
 }
 
 fn apply_deathrattle_effects(unit: &KernelCard, opponent: &mut KernelPlayer) {
@@ -2464,5 +2548,199 @@ mod draw_tests {
         assert!(apply_mana_draw(&mut p, false, &mut draw_rng).is_ok());
         assert_eq!(p.mana, 0);
         assert_eq!(p.mana_draw_count_this_turn, 3);
+    }
+
+    // ---- Phase 3: rebirth (REBIRTH-1) ----
+
+    fn card_with_mechanics(id: i32, cost: i32, atk: i32, hp: i32, mechanics: Vec<&str>) -> KernelCard {
+        KernelCard {
+            card_id: id,
+            card_type: "warrior".to_string(),
+            mana_cost: cost,
+            attack: atk,
+            hp,
+            max_hp: hp,
+            mechanics: mechanics.into_iter().map(String::from).collect(),
+            is_ready: false,
+            is_frozen: false,
+            level: 1,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn parse_rebirth_extracts_n_from_mechanic() {
+        assert_eq!(parse_rebirth(&["rebirth_1".to_string()]), Some(1));
+        assert_eq!(parse_rebirth(&["rebirth_3".to_string()]), Some(3));
+        assert_eq!(parse_rebirth(&["shield".to_string(), "rebirth_2".to_string()]), Some(2));
+        assert_eq!(parse_rebirth(&["shield".to_string()]), None);
+        assert_eq!(parse_rebirth(&[]), None);
+    }
+
+    #[test]
+    fn consume_rebirth_removes_all_rebirth_mechanics() {
+        let mut m = vec!["rebirth_1".to_string(), "shield".to_string(), "rebirth_2".to_string()];
+        consume_rebirth(&mut m);
+        assert_eq!(m, vec!["shield".to_string()]);
+    }
+
+    #[test]
+    fn cleanup_rebirth_resurrects_unit_with_n_hp_and_consumes_charge() {
+        // Card 50 Бан: rebirth_1. Unit at 0 hp survives with 1 hp, mechanic removed.
+        let mut p = player_with(Vec::new(), Vec::new());
+        p.board = vec![card_with_mechanics(50, 3, 2, 0, vec!["rebirth_1"])];
+        let mut opp = player_with(Vec::new(), Vec::new());
+        cleanup_dead_units_for_player(&mut p, &mut opp);
+        assert_eq!(p.board.len(), 1, "rebirthed unit stays on board");
+        assert_eq!(p.board[0].hp, 1, "hp set to rebirth_N");
+        assert!(!p.board[0].mechanics.iter().any(|m| m.starts_with("rebirth_")), "charge consumed");
+        assert_eq!(p.graveyard.len(), 0, "not sent to graveyard");
+    }
+
+    #[test]
+    fn cleanup_rebirth_does_not_trigger_deathrattle_for_saved_unit() {
+        // A unit with both rebirth_1 and deathrattle_aoe_damage_2: rebirth saves it,
+        // deathrattle must NOT fire (opponent hero hp unchanged).
+        let mut p = player_with(Vec::new(), Vec::new());
+        p.board = vec![card_with_mechanics(50, 3, 2, 0, vec!["rebirth_1", "deathrattle_aoe_damage_2"])];
+        let mut opp = player_with(Vec::new(), Vec::new());
+        let hero_hp_before = opp.hero.hp;
+        cleanup_dead_units_for_player(&mut p, &mut opp);
+        assert_eq!(p.board.len(), 1);
+        assert_eq!(p.board[0].hp, 1);
+        assert_eq!(opp.hero.hp, hero_hp_before, "deathrattle did NOT fire for rebirthed unit");
+    }
+
+    #[test]
+    fn cleanup_without_rebirth_sends_unit_to_graveyard() {
+        let mut p = player_with(Vec::new(), Vec::new());
+        p.board = vec![card_with_mechanics(27, 2, 1, 0, vec![])];
+        let mut opp = player_with(Vec::new(), Vec::new());
+        cleanup_dead_units_for_player(&mut p, &mut opp);
+        assert_eq!(p.board.len(), 0);
+        assert_eq!(p.graveyard.len(), 1);
+        assert_eq!(p.graveyard[0].card_id, 27);
+    }
+
+    // ---- Phase 3: crime_and_punishment (CAP-1) ----
+
+    #[test]
+    fn parse_crime_and_punishment_extracts_n() {
+        assert_eq!(parse_crime_and_punishment(&["crime_and_punishment_2".to_string()]), 2);
+        assert_eq!(parse_crime_and_punishment(&["armor_1".to_string(), "crime_and_punishment_3".to_string()]), 3);
+        assert_eq!(parse_crime_and_punishment(&["armor_1".to_string()]), 0);
+        assert_eq!(parse_crime_and_punishment(&[]), 0);
+    }
+
+    #[test]
+    fn cleanup_cap_deals_direct_hp_subtraction_to_opponent_hero() {
+        // Card 49 Достоевский hero: crime_and_punishment_2. When a friendly minion
+        // dies, opponent hero takes 2 damage via DIRECT subtraction (not apply_damage).
+        let mut p = player_with(Vec::new(), Vec::new());
+        p.hero.mechanics = vec!["crime_and_punishment_2".to_string()];
+        p.board = vec![card_with_mechanics(27, 2, 1, 0, vec![])];
+        let mut opp = player_with(Vec::new(), Vec::new());
+        // Give opponent hero armor to confirm CAP bypasses it.
+        opp.hero.mechanics = vec!["armor_1_3".to_string()];
+        let opp_hero_hp_before = opp.hero.hp;
+        cleanup_dead_units_for_player(&mut p, &mut opp);
+        assert_eq!(p.board.len(), 0, "dead unit removed");
+        assert_eq!(p.graveyard.len(), 1);
+        // Direct subtraction: hp - 2, armor NOT applied.
+        assert_eq!(opp.hero.hp, opp_hero_hp_before - 2, "CAP bypasses armor (direct subtraction)");
+    }
+
+    #[test]
+    fn cleanup_cap_fires_for_each_dead_friendly_minion() {
+        let mut p = player_with(Vec::new(), Vec::new());
+        p.hero.mechanics = vec!["crime_and_punishment_2".to_string()];
+        p.board = vec![
+            card_with_mechanics(27, 2, 1, 0, vec![]),
+            card_with_mechanics(28, 2, 1, 0, vec![]),
+        ];
+        let mut opp = player_with(Vec::new(), Vec::new());
+        let opp_hero_hp_before = opp.hero.hp;
+        cleanup_dead_units_for_player(&mut p, &mut opp);
+        assert_eq!(p.graveyard.len(), 2);
+        assert_eq!(opp.hero.hp, opp_hero_hp_before - 4, "2 dead minions → 2*2=4 CAP damage");
+    }
+
+    #[test]
+    fn cleanup_cap_does_not_fire_when_no_friendly_minion_dies() {
+        let mut p = player_with(Vec::new(), Vec::new());
+        p.hero.mechanics = vec!["crime_and_punishment_2".to_string()];
+        p.board = vec![card_with_mechanics(27, 2, 1, 3, vec![])];
+        let mut opp = player_with(Vec::new(), Vec::new());
+        let opp_hero_hp_before = opp.hero.hp;
+        cleanup_dead_units_for_player(&mut p, &mut opp);
+        assert_eq!(p.board.len(), 1, "alive unit stays");
+        assert_eq!(opp.hero.hp, opp_hero_hp_before, "no CAP when no minion dies");
+    }
+
+    // ---- Phase 3: consume_ally (CLN-3) ----
+
+    #[test]
+    fn cleanup_rebirth_pre_pass_runs_each_loop_iteration() {
+        // Two units die in the same cleanup pass: one with rebirth, one without.
+        // Both should be handled correctly in a single call.
+        let mut p = player_with(Vec::new(), Vec::new());
+        p.board = vec![
+            card_with_mechanics(50, 3, 2, 0, vec!["rebirth_1"]),
+            card_with_mechanics(27, 2, 1, 0, vec![]),
+        ];
+        let mut opp = player_with(Vec::new(), Vec::new());
+        cleanup_dead_units_for_player(&mut p, &mut opp);
+        assert_eq!(p.board.len(), 1, "rebirthed unit stays, dead unit removed");
+        assert_eq!(p.board[0].card_id, 50);
+        assert_eq!(p.board[0].hp, 1);
+        assert_eq!(p.graveyard.len(), 1);
+        assert_eq!(p.graveyard[0].card_id, 27);
+    }
+
+    #[test]
+    fn apply_play_card_consume_ally_removes_consumed_and_adds_stats() {
+        // Card 20 Канеки Кен: consume_ally. Consume a friendly 2/3 ally →
+        // card becomes (1+2)/(2+3) = 3/5, ally removed to graveyard.
+        let mut state = KernelState {
+            current_turn_owner_id: 1,
+            turn_number: 1,
+            status: "ongoing".to_string(),
+            p1: player_with(Vec::new(), vec![card_with_mechanics(20, 3, 1, 2, vec!["consume_ally"])]),
+            p2: player_with(Vec::new(), Vec::new()),
+        };
+        state.p1.user_id = 1;
+        state.p2.user_id = 2;
+        state.p1.board = vec![card_with_mechanics(27, 2, 2, 3, vec![])];
+        state.current_turn_owner_id = 1;
+        state.status = "ongoing".to_string();
+        let kernel = RolloutKernel::new(KernelConfig::default());
+        // Find a legal action_id for the consume_ally play (target_code 9 =
+        // friendly board[0]). build_action_mask encodes play targets at
+        // base + 9 + board_idx; with AppendOnly only position=board.len() is
+        // legal.
+        let mask = build_action_mask(&state, 1, PlacementMode::AppendOnly);
+        // Find the consume_ally play action: PlayCard with hand_index=0 and
+        // target_code=9 (friendly board[0]). EndTurn at id 0 is also legal,
+        // so scan for the right decode.
+        let action_id = (0..mask.len())
+            .filter(|&i| mask[i] == 1.0)
+            .find(|&i| matches!(
+                decode_action_id(i),
+                Some(CandidateAction::PlayCard { hand_index: 0, target_code: 9, .. })
+            ))
+            .expect("consume_ally play action is legal");
+        let mut rng = crate::worker::WorkerRng::Deterministic;
+        let mut rng = crate::worker::WorkerRng::Deterministic;
+        let mut draw_rng = DrawRng::live(&mut rng);
+        let out = kernel.apply_action(&state, 1, action_id, false, &mut draw_rng);
+        assert!(out.is_ok(), "consume_ally play applies: {:?}", out.err());
+        let new = out.unwrap().state;
+        assert_eq!(new.p1.board.len(), 1, "consumed ally removed, new card placed");
+        assert_eq!(new.p1.board[0].card_id, 20);
+        assert_eq!(new.p1.board[0].attack, 3, "1 + 2 = 3");
+        assert_eq!(new.p1.board[0].hp, 5, "2 + 3 = 5");
+        assert_eq!(new.p1.board[0].max_hp, 5, "2 + 3 = 5");
+        assert_eq!(new.p1.graveyard.len(), 1, "consumed ally in graveyard");
+        assert_eq!(new.p1.graveyard[0].card_id, 27);
     }
 }

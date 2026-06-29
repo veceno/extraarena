@@ -1,0 +1,6493 @@
+{
+  "schema": "trainv3-golden-trace-v1",
+  "env_config": {
+    "seed": 100,
+    "verify_mask": true,
+    "placement_mode": "append_only",
+    "include_preview": false,
+    "include_v5": true,
+    "adaptive_strength": 1.0,
+    "own_hand_identity_known": true,
+    "own_deck_known": true,
+    "enemy_hand_known": true,
+    "enemy_deck_known": true,
+    "enemy_deck_order_known": false,
+    "draw_assist_enabled": false,
+    "draw_assist_strength": 0.0,
+    "assembler_enabled": false,
+    "assembler_strength": 0.0,
+    "desirerer_enabled": false,
+    "desirerer_strength": 0.0,
+    "teacher_hint_available": false,
+    "assist_profile_id": 0,
+    "level_handicap": {},
+    "v5_weighted_reward": true,
+    "mana_per_turn": 10,
+    "overdraw_to_discard": false
+  },
+  "initial": {
+    "state": {
+      "current_turn_owner_id": 1,
+      "turn_number": 1,
+      "status": "ongoing",
+      "p1": {
+        "user_id": 1,
+        "mana": 1,
+        "max_mana": 1,
+        "hero": {
+          "card_id": 0,
+          "type": "hero",
+          "mana_cost": 0,
+          "attack": 0,
+          "hp": 30,
+          "max_hp": 30,
+          "mechanics": [],
+          "is_ready": true,
+          "is_frozen": false,
+          "level": 1,
+          "skip_count": 0,
+          "base_attack": 0,
+          "base_hp": 30,
+          "base_max_hp": 30,
+          "base_mana_cost": 0,
+          "base_mechanics": [],
+          "base_snapshot_set": true
+        },
+        "hand": [
+          {
+            "card_id": 50,
+            "type": "warrior",
+            "mana_cost": 8,
+            "attack": 3,
+            "hp": 7,
+            "max_hp": 7,
+            "mechanics": [
+              "rebirth_1"
+            ],
+            "is_ready": false,
+            "is_frozen": false,
+            "level": 1,
+            "skip_count": 0,
+            "base_attack": 3,
+            "base_hp": 7,
+            "base_max_hp": 7,
+            "base_mana_cost": 8,
+            "base_mechanics": [
+              "rebirth_1"
+            ],
+            "base_snapshot_set": true
+          },
+          {
+            "card_id": 50,
+            "type": "warrior",
+            "mana_cost": 8,
+            "attack": 3,
+            "hp": 7,
+            "max_hp": 7,
+            "mechanics": [
+              "rebirth_1"
+            ],
+            "is_ready": false,
+            "is_frozen": false,
+            "level": 1,
+            "skip_count": 0,
+            "base_attack": 3,
+            "base_hp": 7,
+            "base_max_hp": 7,
+            "base_mana_cost": 8,
+            "base_mechanics": [
+              "rebirth_1"
+            ],
+            "base_snapshot_set": true
+          },
+          {
+            "card_id": 50,
+            "type": "warrior",
+            "mana_cost": 8,
+            "attack": 3,
+            "hp": 7,
+            "max_hp": 7,
+            "mechanics": [
+              "rebirth_1"
+            ],
+            "is_ready": false,
+            "is_frozen": false,
+            "level": 1,
+            "skip_count": 0,
+            "base_attack": 3,
+            "base_hp": 7,
+            "base_max_hp": 7,
+            "base_mana_cost": 8,
+            "base_mechanics": [
+              "rebirth_1"
+            ],
+            "base_snapshot_set": true
+          }
+        ],
+        "board": [],
+        "deck": [
+          {
+            "card_id": 50,
+            "type": "warrior",
+            "mana_cost": 8,
+            "attack": 3,
+            "hp": 7,
+            "max_hp": 7,
+            "mechanics": [
+              "rebirth_1"
+            ],
+            "is_ready": false,
+            "is_frozen": false,
+            "level": 1,
+            "skip_count": 0,
+            "base_attack": 3,
+            "base_hp": 7,
+            "base_max_hp": 7,
+            "base_mana_cost": 8,
+            "base_mechanics": [
+              "rebirth_1"
+            ],
+            "base_snapshot_set": true
+          },
+          {
+            "card_id": 50,
+            "type": "warrior",
+            "mana_cost": 8,
+            "attack": 3,
+            "hp": 7,
+            "max_hp": 7,
+            "mechanics": [
+              "rebirth_1"
+            ],
+            "is_ready": false,
+            "is_frozen": false,
+            "level": 1,
+            "skip_count": 0,
+            "base_attack": 3,
+            "base_hp": 7,
+            "base_max_hp": 7,
+            "base_mana_cost": 8,
+            "base_mechanics": [
+              "rebirth_1"
+            ],
+            "base_snapshot_set": true
+          },
+          {
+            "card_id": 50,
+            "type": "warrior",
+            "mana_cost": 8,
+            "attack": 3,
+            "hp": 7,
+            "max_hp": 7,
+            "mechanics": [
+              "rebirth_1"
+            ],
+            "is_ready": false,
+            "is_frozen": false,
+            "level": 1,
+            "skip_count": 0,
+            "base_attack": 3,
+            "base_hp": 7,
+            "base_max_hp": 7,
+            "base_mana_cost": 8,
+            "base_mechanics": [
+              "rebirth_1"
+            ],
+            "base_snapshot_set": true
+          },
+          {
+            "card_id": 50,
+            "type": "warrior",
+            "mana_cost": 8,
+            "attack": 3,
+            "hp": 7,
+            "max_hp": 7,
+            "mechanics": [
+              "rebirth_1"
+            ],
+            "is_ready": false,
+            "is_frozen": false,
+            "level": 1,
+            "skip_count": 0,
+            "base_attack": 3,
+            "base_hp": 7,
+            "base_max_hp": 7,
+            "base_mana_cost": 8,
+            "base_mechanics": [
+              "rebirth_1"
+            ],
+            "base_snapshot_set": true
+          },
+          {
+            "card_id": 50,
+            "type": "warrior",
+            "mana_cost": 8,
+            "attack": 3,
+            "hp": 7,
+            "max_hp": 7,
+            "mechanics": [
+              "rebirth_1"
+            ],
+            "is_ready": false,
+            "is_frozen": false,
+            "level": 1,
+            "skip_count": 0,
+            "base_attack": 3,
+            "base_hp": 7,
+            "base_max_hp": 7,
+            "base_mana_cost": 8,
+            "base_mechanics": [
+              "rebirth_1"
+            ],
+            "base_snapshot_set": true
+          }
+        ],
+        "graveyard": [],
+        "mana_draw_count_this_turn": 0
+      },
+      "p2": {
+        "user_id": 2,
+        "mana": 0,
+        "max_mana": 0,
+        "hero": {
+          "card_id": 0,
+          "type": "hero",
+          "mana_cost": 0,
+          "attack": 0,
+          "hp": 30,
+          "max_hp": 30,
+          "mechanics": [],
+          "is_ready": true,
+          "is_frozen": false,
+          "level": 1,
+          "skip_count": 0,
+          "base_attack": 0,
+          "base_hp": 30,
+          "base_max_hp": 30,
+          "base_mana_cost": 0,
+          "base_mechanics": [],
+          "base_snapshot_set": true
+        },
+        "hand": [
+          {
+            "card_id": 25,
+            "type": "warrior",
+            "mana_cost": 10,
+            "attack": 10,
+            "hp": 10,
+            "max_hp": 10,
+            "mechanics": [
+              "instant_kill"
+            ],
+            "is_ready": false,
+            "is_frozen": false,
+            "level": 1,
+            "skip_count": 0,
+            "base_attack": 10,
+            "base_hp": 10,
+            "base_max_hp": 10,
+            "base_mana_cost": 10,
+            "base_mechanics": [
+              "instant_kill"
+            ],
+            "base_snapshot_set": true
+          },
+          {
+            "card_id": 25,
+            "type": "warrior",
+            "mana_cost": 10,
+            "attack": 10,
+            "hp": 10,
+            "max_hp": 10,
+            "mechanics": [
+              "instant_kill"
+            ],
+            "is_ready": false,
+            "is_frozen": false,
+            "level": 1,
+            "skip_count": 0,
+            "base_attack": 10,
+            "base_hp": 10,
+            "base_max_hp": 10,
+            "base_mana_cost": 10,
+            "base_mechanics": [
+              "instant_kill"
+            ],
+            "base_snapshot_set": true
+          },
+          {
+            "card_id": 25,
+            "type": "warrior",
+            "mana_cost": 10,
+            "attack": 10,
+            "hp": 10,
+            "max_hp": 10,
+            "mechanics": [
+              "instant_kill"
+            ],
+            "is_ready": false,
+            "is_frozen": false,
+            "level": 1,
+            "skip_count": 0,
+            "base_attack": 10,
+            "base_hp": 10,
+            "base_max_hp": 10,
+            "base_mana_cost": 10,
+            "base_mechanics": [
+              "instant_kill"
+            ],
+            "base_snapshot_set": true
+          }
+        ],
+        "board": [],
+        "deck": [
+          {
+            "card_id": 25,
+            "type": "warrior",
+            "mana_cost": 10,
+            "attack": 10,
+            "hp": 10,
+            "max_hp": 10,
+            "mechanics": [
+              "instant_kill"
+            ],
+            "is_ready": false,
+            "is_frozen": false,
+            "level": 1,
+            "skip_count": 0,
+            "base_attack": 10,
+            "base_hp": 10,
+            "base_max_hp": 10,
+            "base_mana_cost": 10,
+            "base_mechanics": [
+              "instant_kill"
+            ],
+            "base_snapshot_set": true
+          },
+          {
+            "card_id": 25,
+            "type": "warrior",
+            "mana_cost": 10,
+            "attack": 10,
+            "hp": 10,
+            "max_hp": 10,
+            "mechanics": [
+              "instant_kill"
+            ],
+            "is_ready": false,
+            "is_frozen": false,
+            "level": 1,
+            "skip_count": 0,
+            "base_attack": 10,
+            "base_hp": 10,
+            "base_max_hp": 10,
+            "base_mana_cost": 10,
+            "base_mechanics": [
+              "instant_kill"
+            ],
+            "base_snapshot_set": true
+          },
+          {
+            "card_id": 25,
+            "type": "warrior",
+            "mana_cost": 10,
+            "attack": 10,
+            "hp": 10,
+            "max_hp": 10,
+            "mechanics": [
+              "instant_kill"
+            ],
+            "is_ready": false,
+            "is_frozen": false,
+            "level": 1,
+            "skip_count": 0,
+            "base_attack": 10,
+            "base_hp": 10,
+            "base_max_hp": 10,
+            "base_mana_cost": 10,
+            "base_mechanics": [
+              "instant_kill"
+            ],
+            "base_snapshot_set": true
+          },
+          {
+            "card_id": 25,
+            "type": "warrior",
+            "mana_cost": 10,
+            "attack": 10,
+            "hp": 10,
+            "max_hp": 10,
+            "mechanics": [
+              "instant_kill"
+            ],
+            "is_ready": false,
+            "is_frozen": false,
+            "level": 1,
+            "skip_count": 0,
+            "base_attack": 10,
+            "base_hp": 10,
+            "base_max_hp": 10,
+            "base_mana_cost": 10,
+            "base_mechanics": [
+              "instant_kill"
+            ],
+            "base_snapshot_set": true
+          },
+          {
+            "card_id": 25,
+            "type": "warrior",
+            "mana_cost": 10,
+            "attack": 10,
+            "hp": 10,
+            "max_hp": 10,
+            "mechanics": [
+              "instant_kill"
+            ],
+            "is_ready": false,
+            "is_frozen": false,
+            "level": 1,
+            "skip_count": 0,
+            "base_attack": 10,
+            "base_hp": 10,
+            "base_max_hp": 10,
+            "base_mana_cost": 10,
+            "base_mechanics": [
+              "instant_kill"
+            ],
+            "base_snapshot_set": true
+          }
+        ],
+        "graveyard": [],
+        "mana_draw_count_this_turn": 0
+      }
+    },
+    "history_events": [],
+    "state_sha256": "b2066d20bdab1dc86aa2c46a6f6aa3a53b44477207173053435ff598fa88bc4a",
+    "obs_sha256_f32_le": "7896d0a1aa66a88c3361aa542782974e4f9fe1aff98dfd9396bfdc33aa30df5d",
+    "mask_sha256_f32_le": "69ba8d7d0d3cac51fbe340c31cde59ea84f03bca452faf27ab3a56855622f432",
+    "action_features_sha256_f32_le": "473443887784c677649e88ef69275ddf48fdef6e42ff2b8f7a9304a57716c469",
+    "legal_ids": [
+      0
+    ],
+    "obs_v5_sha256_f32_le": "9bb04e5172c644e373a3d36f20f876b858570b82ff660f1a0fbcce1c20bfee37",
+    "obs_v5_dim": 6480
+  },
+  "steps": [
+    {
+      "t": 0,
+      "acting_player_id": 1,
+      "action_id": 0,
+      "mana_draw_legal": false,
+      "mana_draw_taken": false,
+      "pre": {
+        "state": {
+          "current_turn_owner_id": 1,
+          "turn_number": 1,
+          "status": "ongoing",
+          "p1": {
+            "user_id": 1,
+            "mana": 1,
+            "max_mana": 1,
+            "hero": {
+              "card_id": 0,
+              "type": "hero",
+              "mana_cost": 0,
+              "attack": 0,
+              "hp": 30,
+              "max_hp": 30,
+              "mechanics": [],
+              "is_ready": true,
+              "is_frozen": false,
+              "level": 1,
+              "skip_count": 0,
+              "base_attack": 0,
+              "base_hp": 30,
+              "base_max_hp": 30,
+              "base_mana_cost": 0,
+              "base_mechanics": [],
+              "base_snapshot_set": true
+            },
+            "hand": [
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "board": [],
+            "deck": [
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "graveyard": [],
+            "mana_draw_count_this_turn": 0
+          },
+          "p2": {
+            "user_id": 2,
+            "mana": 0,
+            "max_mana": 0,
+            "hero": {
+              "card_id": 0,
+              "type": "hero",
+              "mana_cost": 0,
+              "attack": 0,
+              "hp": 30,
+              "max_hp": 30,
+              "mechanics": [],
+              "is_ready": true,
+              "is_frozen": false,
+              "level": 1,
+              "skip_count": 0,
+              "base_attack": 0,
+              "base_hp": 30,
+              "base_max_hp": 30,
+              "base_mana_cost": 0,
+              "base_mechanics": [],
+              "base_snapshot_set": true
+            },
+            "hand": [
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "board": [],
+            "deck": [
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "graveyard": [],
+            "mana_draw_count_this_turn": 0
+          }
+        },
+        "history_events": [],
+        "state_sha256": "b2066d20bdab1dc86aa2c46a6f6aa3a53b44477207173053435ff598fa88bc4a",
+        "obs_sha256_f32_le": "7896d0a1aa66a88c3361aa542782974e4f9fe1aff98dfd9396bfdc33aa30df5d",
+        "mask_sha256_f32_le": "69ba8d7d0d3cac51fbe340c31cde59ea84f03bca452faf27ab3a56855622f432",
+        "action_features_sha256_f32_le": "473443887784c677649e88ef69275ddf48fdef6e42ff2b8f7a9304a57716c469",
+        "legal_ids": [
+          0
+        ],
+        "obs_v5_sha256_f32_le": "9bb04e5172c644e373a3d36f20f876b858570b82ff660f1a0fbcce1c20bfee37",
+        "obs_v5_dim": 6480
+      },
+      "base_reward": 0.0,
+      "reward": 0.0,
+      "reward_components_v5": {
+        "hp_potential_delta": 0.0,
+        "board_power_delta": 0.0,
+        "my_board_power": 0.0,
+        "enemy_board_power": 0.0,
+        "board_power_ratio": 0.0,
+        "board_under_0_7": false,
+        "own_board_wiped": false,
+        "my_board_count_delta": 0,
+        "enemy_board_count_delta": 0
+      },
+      "terminated": false,
+      "truncated": false,
+      "info": {
+        "current_player_id": 2,
+        "legal_actions": 5,
+        "status": "ongoing",
+        "p1_hp": 30,
+        "p2_hp": 30
+      },
+      "draw_picks": [
+        3,
+        3
+      ],
+      "reshuffle_orders": [],
+      "post": {
+        "state": {
+          "current_turn_owner_id": 2,
+          "turn_number": 2,
+          "status": "ongoing",
+          "p1": {
+            "user_id": 1,
+            "mana": 1,
+            "max_mana": 1,
+            "hero": {
+              "card_id": 0,
+              "type": "hero",
+              "mana_cost": 0,
+              "attack": 0,
+              "hp": 30,
+              "max_hp": 30,
+              "mechanics": [],
+              "is_ready": true,
+              "is_frozen": false,
+              "level": 1,
+              "skip_count": 0,
+              "base_attack": 0,
+              "base_hp": 30,
+              "base_max_hp": 30,
+              "base_mana_cost": 0,
+              "base_mechanics": [],
+              "base_snapshot_set": true
+            },
+            "hand": [
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "board": [],
+            "deck": [
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "graveyard": [],
+            "mana_draw_count_this_turn": 0
+          },
+          "p2": {
+            "user_id": 2,
+            "mana": 10,
+            "max_mana": 10,
+            "hero": {
+              "card_id": 0,
+              "type": "hero",
+              "mana_cost": 0,
+              "attack": 0,
+              "hp": 30,
+              "max_hp": 30,
+              "mechanics": [],
+              "is_ready": true,
+              "is_frozen": false,
+              "level": 1,
+              "skip_count": 0,
+              "base_attack": 0,
+              "base_hp": 30,
+              "base_max_hp": 30,
+              "base_mana_cost": 0,
+              "base_mechanics": [],
+              "base_snapshot_set": true
+            },
+            "hand": [
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "board": [],
+            "deck": [
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "graveyard": [],
+            "mana_draw_count_this_turn": 0
+          }
+        },
+        "history_events": [
+          {
+            "actor_id": 1,
+            "action_id": 0,
+            "action_type": "end_turn",
+            "enemy_hero_hp_delta": 0,
+            "own_hero_hp_delta": 0,
+            "my_board_count_delta": 0,
+            "enemy_board_count_delta": 0,
+            "board_power_delta": 0.0,
+            "turn_number": 2
+          }
+        ],
+        "state_sha256": "ccdf788d0e62777ea29ab069d8ffd1d11b58d4f1dc6b37f02c46b848808619c4",
+        "obs_sha256_f32_le": "9870d1424cfe6215e39e5f97bcd37a74d9b384d3328f3c173e54f5ee1d2f282f",
+        "mask_sha256_f32_le": "e566cfffba8f941a488c615bd43106c2ed869deb34d5a56839a7707fd3384265",
+        "action_features_sha256_f32_le": "bedd6cec40262dcbc82d3bd0d2db96f72a27a87b267bb67a37c7ebd974f45014",
+        "legal_ids": [
+          0,
+          1,
+          137,
+          273,
+          409
+        ],
+        "obs_v5_sha256_f32_le": "22ec807541e6858040cf89e5db0b12776c7d608a02c2fa4e5aa6dd53912087ea",
+        "obs_v5_dim": 6480
+      }
+    },
+    {
+      "t": 1,
+      "acting_player_id": 2,
+      "action_id": 1,
+      "mana_draw_legal": false,
+      "mana_draw_taken": false,
+      "pre": {
+        "state": {
+          "current_turn_owner_id": 2,
+          "turn_number": 2,
+          "status": "ongoing",
+          "p1": {
+            "user_id": 1,
+            "mana": 1,
+            "max_mana": 1,
+            "hero": {
+              "card_id": 0,
+              "type": "hero",
+              "mana_cost": 0,
+              "attack": 0,
+              "hp": 30,
+              "max_hp": 30,
+              "mechanics": [],
+              "is_ready": true,
+              "is_frozen": false,
+              "level": 1,
+              "skip_count": 0,
+              "base_attack": 0,
+              "base_hp": 30,
+              "base_max_hp": 30,
+              "base_mana_cost": 0,
+              "base_mechanics": [],
+              "base_snapshot_set": true
+            },
+            "hand": [
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "board": [],
+            "deck": [
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "graveyard": [],
+            "mana_draw_count_this_turn": 0
+          },
+          "p2": {
+            "user_id": 2,
+            "mana": 10,
+            "max_mana": 10,
+            "hero": {
+              "card_id": 0,
+              "type": "hero",
+              "mana_cost": 0,
+              "attack": 0,
+              "hp": 30,
+              "max_hp": 30,
+              "mechanics": [],
+              "is_ready": true,
+              "is_frozen": false,
+              "level": 1,
+              "skip_count": 0,
+              "base_attack": 0,
+              "base_hp": 30,
+              "base_max_hp": 30,
+              "base_mana_cost": 0,
+              "base_mechanics": [],
+              "base_snapshot_set": true
+            },
+            "hand": [
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "board": [],
+            "deck": [
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "graveyard": [],
+            "mana_draw_count_this_turn": 0
+          }
+        },
+        "history_events": [
+          {
+            "actor_id": 1,
+            "action_id": 0,
+            "action_type": "end_turn",
+            "enemy_hero_hp_delta": 0,
+            "own_hero_hp_delta": 0,
+            "my_board_count_delta": 0,
+            "enemy_board_count_delta": 0,
+            "board_power_delta": 0.0,
+            "turn_number": 2
+          }
+        ],
+        "state_sha256": "ccdf788d0e62777ea29ab069d8ffd1d11b58d4f1dc6b37f02c46b848808619c4",
+        "obs_sha256_f32_le": "9870d1424cfe6215e39e5f97bcd37a74d9b384d3328f3c173e54f5ee1d2f282f",
+        "mask_sha256_f32_le": "e566cfffba8f941a488c615bd43106c2ed869deb34d5a56839a7707fd3384265",
+        "action_features_sha256_f32_le": "bedd6cec40262dcbc82d3bd0d2db96f72a27a87b267bb67a37c7ebd974f45014",
+        "legal_ids": [
+          0,
+          1,
+          137,
+          273,
+          409
+        ],
+        "obs_v5_sha256_f32_le": "22ec807541e6858040cf89e5db0b12776c7d608a02c2fa4e5aa6dd53912087ea",
+        "obs_v5_dim": 6480
+      },
+      "base_reward": 0.02,
+      "reward": 0.03500000014901161,
+      "reward_components_v5": {
+        "hp_potential_delta": 0.0,
+        "board_power_delta": 100.0,
+        "my_board_power": 100.0,
+        "enemy_board_power": 0.0,
+        "board_power_ratio": 100.0,
+        "board_under_0_7": false,
+        "own_board_wiped": false,
+        "my_board_count_delta": 1,
+        "enemy_board_count_delta": 0
+      },
+      "terminated": false,
+      "truncated": false,
+      "info": {
+        "current_player_id": 2,
+        "legal_actions": 1,
+        "status": "ongoing",
+        "p1_hp": 30,
+        "p2_hp": 30
+      },
+      "draw_picks": [
+        3
+      ],
+      "reshuffle_orders": [],
+      "post": {
+        "state": {
+          "current_turn_owner_id": 2,
+          "turn_number": 2,
+          "status": "ongoing",
+          "p1": {
+            "user_id": 1,
+            "mana": 1,
+            "max_mana": 1,
+            "hero": {
+              "card_id": 0,
+              "type": "hero",
+              "mana_cost": 0,
+              "attack": 0,
+              "hp": 30,
+              "max_hp": 30,
+              "mechanics": [],
+              "is_ready": true,
+              "is_frozen": false,
+              "level": 1,
+              "skip_count": 0,
+              "base_attack": 0,
+              "base_hp": 30,
+              "base_max_hp": 30,
+              "base_mana_cost": 0,
+              "base_mechanics": [],
+              "base_snapshot_set": true
+            },
+            "hand": [
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "board": [],
+            "deck": [
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "graveyard": [],
+            "mana_draw_count_this_turn": 0
+          },
+          "p2": {
+            "user_id": 2,
+            "mana": 0,
+            "max_mana": 10,
+            "hero": {
+              "card_id": 0,
+              "type": "hero",
+              "mana_cost": 0,
+              "attack": 0,
+              "hp": 30,
+              "max_hp": 30,
+              "mechanics": [],
+              "is_ready": true,
+              "is_frozen": false,
+              "level": 1,
+              "skip_count": 0,
+              "base_attack": 0,
+              "base_hp": 30,
+              "base_max_hp": 30,
+              "base_mana_cost": 0,
+              "base_mechanics": [],
+              "base_snapshot_set": true
+            },
+            "hand": [
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "board": [
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "deck": [
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "graveyard": [],
+            "mana_draw_count_this_turn": 0
+          }
+        },
+        "history_events": [
+          {
+            "actor_id": 1,
+            "action_id": 0,
+            "action_type": "end_turn",
+            "enemy_hero_hp_delta": 0,
+            "own_hero_hp_delta": 0,
+            "my_board_count_delta": 0,
+            "enemy_board_count_delta": 0,
+            "board_power_delta": 0.0,
+            "turn_number": 2
+          },
+          {
+            "actor_id": 2,
+            "action_id": 1,
+            "action_type": "play_card",
+            "enemy_hero_hp_delta": 0,
+            "own_hero_hp_delta": 0,
+            "my_board_count_delta": 1,
+            "enemy_board_count_delta": 0,
+            "board_power_delta": 100.0,
+            "turn_number": 2
+          }
+        ],
+        "state_sha256": "949282bcdc6ede6e9e57ed1410f172344232116f21cdd98896b4652dabde0563",
+        "obs_sha256_f32_le": "1f85856e81dd7e66ab01419e8c016b1b2ecc1661e3a668c4310435bf11fe6762",
+        "mask_sha256_f32_le": "69ba8d7d0d3cac51fbe340c31cde59ea84f03bca452faf27ab3a56855622f432",
+        "action_features_sha256_f32_le": "473443887784c677649e88ef69275ddf48fdef6e42ff2b8f7a9304a57716c469",
+        "legal_ids": [
+          0
+        ],
+        "obs_v5_sha256_f32_le": "1af3edd51e26763c81e216421fba68f65c70d4b2955acea08d87d1698ea2f6d2",
+        "obs_v5_dim": 6480
+      }
+    },
+    {
+      "t": 2,
+      "acting_player_id": 2,
+      "action_id": 0,
+      "mana_draw_legal": false,
+      "mana_draw_taken": false,
+      "pre": {
+        "state": {
+          "current_turn_owner_id": 2,
+          "turn_number": 2,
+          "status": "ongoing",
+          "p1": {
+            "user_id": 1,
+            "mana": 1,
+            "max_mana": 1,
+            "hero": {
+              "card_id": 0,
+              "type": "hero",
+              "mana_cost": 0,
+              "attack": 0,
+              "hp": 30,
+              "max_hp": 30,
+              "mechanics": [],
+              "is_ready": true,
+              "is_frozen": false,
+              "level": 1,
+              "skip_count": 0,
+              "base_attack": 0,
+              "base_hp": 30,
+              "base_max_hp": 30,
+              "base_mana_cost": 0,
+              "base_mechanics": [],
+              "base_snapshot_set": true
+            },
+            "hand": [
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "board": [],
+            "deck": [
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "graveyard": [],
+            "mana_draw_count_this_turn": 0
+          },
+          "p2": {
+            "user_id": 2,
+            "mana": 0,
+            "max_mana": 10,
+            "hero": {
+              "card_id": 0,
+              "type": "hero",
+              "mana_cost": 0,
+              "attack": 0,
+              "hp": 30,
+              "max_hp": 30,
+              "mechanics": [],
+              "is_ready": true,
+              "is_frozen": false,
+              "level": 1,
+              "skip_count": 0,
+              "base_attack": 0,
+              "base_hp": 30,
+              "base_max_hp": 30,
+              "base_mana_cost": 0,
+              "base_mechanics": [],
+              "base_snapshot_set": true
+            },
+            "hand": [
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "board": [
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "deck": [
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "graveyard": [],
+            "mana_draw_count_this_turn": 0
+          }
+        },
+        "history_events": [
+          {
+            "actor_id": 1,
+            "action_id": 0,
+            "action_type": "end_turn",
+            "enemy_hero_hp_delta": 0,
+            "own_hero_hp_delta": 0,
+            "my_board_count_delta": 0,
+            "enemy_board_count_delta": 0,
+            "board_power_delta": 0.0,
+            "turn_number": 2
+          },
+          {
+            "actor_id": 2,
+            "action_id": 1,
+            "action_type": "play_card",
+            "enemy_hero_hp_delta": 0,
+            "own_hero_hp_delta": 0,
+            "my_board_count_delta": 1,
+            "enemy_board_count_delta": 0,
+            "board_power_delta": 100.0,
+            "turn_number": 2
+          }
+        ],
+        "state_sha256": "949282bcdc6ede6e9e57ed1410f172344232116f21cdd98896b4652dabde0563",
+        "obs_sha256_f32_le": "1f85856e81dd7e66ab01419e8c016b1b2ecc1661e3a668c4310435bf11fe6762",
+        "mask_sha256_f32_le": "69ba8d7d0d3cac51fbe340c31cde59ea84f03bca452faf27ab3a56855622f432",
+        "action_features_sha256_f32_le": "473443887784c677649e88ef69275ddf48fdef6e42ff2b8f7a9304a57716c469",
+        "legal_ids": [
+          0
+        ],
+        "obs_v5_sha256_f32_le": "1af3edd51e26763c81e216421fba68f65c70d4b2955acea08d87d1698ea2f6d2",
+        "obs_v5_dim": 6480
+      },
+      "base_reward": 0.0,
+      "reward": 0.0,
+      "reward_components_v5": {
+        "hp_potential_delta": 0.0,
+        "board_power_delta": 0.0,
+        "my_board_power": 100.0,
+        "enemy_board_power": 0.0,
+        "board_power_ratio": 100.0,
+        "board_under_0_7": false,
+        "own_board_wiped": false,
+        "my_board_count_delta": 0,
+        "enemy_board_count_delta": 0
+      },
+      "terminated": false,
+      "truncated": false,
+      "info": {
+        "current_player_id": 1,
+        "legal_actions": 5,
+        "status": "ongoing",
+        "p1_hp": 30,
+        "p2_hp": 30
+      },
+      "draw_picks": [
+        3,
+        1
+      ],
+      "reshuffle_orders": [],
+      "post": {
+        "state": {
+          "current_turn_owner_id": 1,
+          "turn_number": 3,
+          "status": "ongoing",
+          "p1": {
+            "user_id": 1,
+            "mana": 10,
+            "max_mana": 10,
+            "hero": {
+              "card_id": 0,
+              "type": "hero",
+              "mana_cost": 0,
+              "attack": 0,
+              "hp": 30,
+              "max_hp": 30,
+              "mechanics": [],
+              "is_ready": true,
+              "is_frozen": false,
+              "level": 1,
+              "skip_count": 0,
+              "base_attack": 0,
+              "base_hp": 30,
+              "base_max_hp": 30,
+              "base_mana_cost": 0,
+              "base_mechanics": [],
+              "base_snapshot_set": true
+            },
+            "hand": [
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "board": [],
+            "deck": [
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "graveyard": [],
+            "mana_draw_count_this_turn": 0
+          },
+          "p2": {
+            "user_id": 2,
+            "mana": 0,
+            "max_mana": 10,
+            "hero": {
+              "card_id": 0,
+              "type": "hero",
+              "mana_cost": 0,
+              "attack": 0,
+              "hp": 30,
+              "max_hp": 30,
+              "mechanics": [],
+              "is_ready": true,
+              "is_frozen": false,
+              "level": 1,
+              "skip_count": 0,
+              "base_attack": 0,
+              "base_hp": 30,
+              "base_max_hp": 30,
+              "base_mana_cost": 0,
+              "base_mechanics": [],
+              "base_snapshot_set": true
+            },
+            "hand": [
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "board": [
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "deck": [
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "graveyard": [],
+            "mana_draw_count_this_turn": 0
+          }
+        },
+        "history_events": [
+          {
+            "actor_id": 1,
+            "action_id": 0,
+            "action_type": "end_turn",
+            "enemy_hero_hp_delta": 0,
+            "own_hero_hp_delta": 0,
+            "my_board_count_delta": 0,
+            "enemy_board_count_delta": 0,
+            "board_power_delta": 0.0,
+            "turn_number": 2
+          },
+          {
+            "actor_id": 2,
+            "action_id": 1,
+            "action_type": "play_card",
+            "enemy_hero_hp_delta": 0,
+            "own_hero_hp_delta": 0,
+            "my_board_count_delta": 1,
+            "enemy_board_count_delta": 0,
+            "board_power_delta": 100.0,
+            "turn_number": 2
+          },
+          {
+            "actor_id": 2,
+            "action_id": 0,
+            "action_type": "end_turn",
+            "enemy_hero_hp_delta": 0,
+            "own_hero_hp_delta": 0,
+            "my_board_count_delta": 0,
+            "enemy_board_count_delta": 0,
+            "board_power_delta": 0.0,
+            "turn_number": 3
+          }
+        ],
+        "state_sha256": "18ef65566f59f33383fc301118bb4a54bbc6f7f06ab409467e13fd199e1e9417",
+        "obs_sha256_f32_le": "12ecf4a7d09ea0d7b78b9de823b107e6c92d829e64b07b77c2e95efa66d85b0b",
+        "mask_sha256_f32_le": "e566cfffba8f941a488c615bd43106c2ed869deb34d5a56839a7707fd3384265",
+        "action_features_sha256_f32_le": "991da33bb9d5dcffe546f675b4011f2b3f81b45aa3c470ae61fcddc05b9ed687",
+        "legal_ids": [
+          0,
+          1,
+          137,
+          273,
+          409
+        ],
+        "obs_v5_sha256_f32_le": "52144bd38bbd69e9dc3866f40b959e43ca870c9a33632bec3118f5139d903ecc",
+        "obs_v5_dim": 6480
+      }
+    },
+    {
+      "t": 3,
+      "acting_player_id": 1,
+      "action_id": 1,
+      "mana_draw_legal": false,
+      "mana_draw_taken": false,
+      "pre": {
+        "state": {
+          "current_turn_owner_id": 1,
+          "turn_number": 3,
+          "status": "ongoing",
+          "p1": {
+            "user_id": 1,
+            "mana": 10,
+            "max_mana": 10,
+            "hero": {
+              "card_id": 0,
+              "type": "hero",
+              "mana_cost": 0,
+              "attack": 0,
+              "hp": 30,
+              "max_hp": 30,
+              "mechanics": [],
+              "is_ready": true,
+              "is_frozen": false,
+              "level": 1,
+              "skip_count": 0,
+              "base_attack": 0,
+              "base_hp": 30,
+              "base_max_hp": 30,
+              "base_mana_cost": 0,
+              "base_mechanics": [],
+              "base_snapshot_set": true
+            },
+            "hand": [
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "board": [],
+            "deck": [
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "graveyard": [],
+            "mana_draw_count_this_turn": 0
+          },
+          "p2": {
+            "user_id": 2,
+            "mana": 0,
+            "max_mana": 10,
+            "hero": {
+              "card_id": 0,
+              "type": "hero",
+              "mana_cost": 0,
+              "attack": 0,
+              "hp": 30,
+              "max_hp": 30,
+              "mechanics": [],
+              "is_ready": true,
+              "is_frozen": false,
+              "level": 1,
+              "skip_count": 0,
+              "base_attack": 0,
+              "base_hp": 30,
+              "base_max_hp": 30,
+              "base_mana_cost": 0,
+              "base_mechanics": [],
+              "base_snapshot_set": true
+            },
+            "hand": [
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "board": [
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "deck": [
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "graveyard": [],
+            "mana_draw_count_this_turn": 0
+          }
+        },
+        "history_events": [
+          {
+            "actor_id": 1,
+            "action_id": 0,
+            "action_type": "end_turn",
+            "enemy_hero_hp_delta": 0,
+            "own_hero_hp_delta": 0,
+            "my_board_count_delta": 0,
+            "enemy_board_count_delta": 0,
+            "board_power_delta": 0.0,
+            "turn_number": 2
+          },
+          {
+            "actor_id": 2,
+            "action_id": 1,
+            "action_type": "play_card",
+            "enemy_hero_hp_delta": 0,
+            "own_hero_hp_delta": 0,
+            "my_board_count_delta": 1,
+            "enemy_board_count_delta": 0,
+            "board_power_delta": 100.0,
+            "turn_number": 2
+          },
+          {
+            "actor_id": 2,
+            "action_id": 0,
+            "action_type": "end_turn",
+            "enemy_hero_hp_delta": 0,
+            "own_hero_hp_delta": 0,
+            "my_board_count_delta": 0,
+            "enemy_board_count_delta": 0,
+            "board_power_delta": 0.0,
+            "turn_number": 3
+          }
+        ],
+        "state_sha256": "18ef65566f59f33383fc301118bb4a54bbc6f7f06ab409467e13fd199e1e9417",
+        "obs_sha256_f32_le": "12ecf4a7d09ea0d7b78b9de823b107e6c92d829e64b07b77c2e95efa66d85b0b",
+        "mask_sha256_f32_le": "e566cfffba8f941a488c615bd43106c2ed869deb34d5a56839a7707fd3384265",
+        "action_features_sha256_f32_le": "991da33bb9d5dcffe546f675b4011f2b3f81b45aa3c470ae61fcddc05b9ed687",
+        "legal_ids": [
+          0,
+          1,
+          137,
+          273,
+          409
+        ],
+        "obs_v5_sha256_f32_le": "52144bd38bbd69e9dc3866f40b959e43ca870c9a33632bec3118f5139d903ecc",
+        "obs_v5_dim": 6480
+      },
+      "base_reward": 0.02,
+      "reward": 0.012350000441074371,
+      "reward_components_v5": {
+        "hp_potential_delta": 0.0,
+        "board_power_delta": 21.0,
+        "my_board_power": 21.0,
+        "enemy_board_power": 100.0,
+        "board_power_ratio": 0.21,
+        "board_under_0_7": true,
+        "own_board_wiped": false,
+        "my_board_count_delta": 1,
+        "enemy_board_count_delta": 0
+      },
+      "terminated": false,
+      "truncated": false,
+      "info": {
+        "current_player_id": 1,
+        "legal_actions": 1,
+        "status": "ongoing",
+        "p1_hp": 30,
+        "p2_hp": 30
+      },
+      "draw_picks": [
+        1
+      ],
+      "reshuffle_orders": [],
+      "post": {
+        "state": {
+          "current_turn_owner_id": 1,
+          "turn_number": 3,
+          "status": "ongoing",
+          "p1": {
+            "user_id": 1,
+            "mana": 2,
+            "max_mana": 10,
+            "hero": {
+              "card_id": 0,
+              "type": "hero",
+              "mana_cost": 0,
+              "attack": 0,
+              "hp": 30,
+              "max_hp": 30,
+              "mechanics": [],
+              "is_ready": true,
+              "is_frozen": false,
+              "level": 1,
+              "skip_count": 0,
+              "base_attack": 0,
+              "base_hp": 30,
+              "base_max_hp": 30,
+              "base_mana_cost": 0,
+              "base_mechanics": [],
+              "base_snapshot_set": true
+            },
+            "hand": [
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "board": [
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "deck": [
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "graveyard": [],
+            "mana_draw_count_this_turn": 0
+          },
+          "p2": {
+            "user_id": 2,
+            "mana": 0,
+            "max_mana": 10,
+            "hero": {
+              "card_id": 0,
+              "type": "hero",
+              "mana_cost": 0,
+              "attack": 0,
+              "hp": 30,
+              "max_hp": 30,
+              "mechanics": [],
+              "is_ready": true,
+              "is_frozen": false,
+              "level": 1,
+              "skip_count": 0,
+              "base_attack": 0,
+              "base_hp": 30,
+              "base_max_hp": 30,
+              "base_mana_cost": 0,
+              "base_mechanics": [],
+              "base_snapshot_set": true
+            },
+            "hand": [
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "board": [
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "deck": [
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "graveyard": [],
+            "mana_draw_count_this_turn": 0
+          }
+        },
+        "history_events": [
+          {
+            "actor_id": 1,
+            "action_id": 0,
+            "action_type": "end_turn",
+            "enemy_hero_hp_delta": 0,
+            "own_hero_hp_delta": 0,
+            "my_board_count_delta": 0,
+            "enemy_board_count_delta": 0,
+            "board_power_delta": 0.0,
+            "turn_number": 2
+          },
+          {
+            "actor_id": 2,
+            "action_id": 1,
+            "action_type": "play_card",
+            "enemy_hero_hp_delta": 0,
+            "own_hero_hp_delta": 0,
+            "my_board_count_delta": 1,
+            "enemy_board_count_delta": 0,
+            "board_power_delta": 100.0,
+            "turn_number": 2
+          },
+          {
+            "actor_id": 2,
+            "action_id": 0,
+            "action_type": "end_turn",
+            "enemy_hero_hp_delta": 0,
+            "own_hero_hp_delta": 0,
+            "my_board_count_delta": 0,
+            "enemy_board_count_delta": 0,
+            "board_power_delta": 0.0,
+            "turn_number": 3
+          },
+          {
+            "actor_id": 1,
+            "action_id": 1,
+            "action_type": "play_card",
+            "enemy_hero_hp_delta": 0,
+            "own_hero_hp_delta": 0,
+            "my_board_count_delta": 1,
+            "enemy_board_count_delta": 0,
+            "board_power_delta": 21.0,
+            "turn_number": 3
+          }
+        ],
+        "state_sha256": "caffbb8533fc00de83f8b4fc7375de1f2626127fbfff572bf4c843562d5e2eb3",
+        "obs_sha256_f32_le": "a1d687d0734c31646ae510ed5d908b2d0af6715346b53062211e684dd810a0a4",
+        "mask_sha256_f32_le": "69ba8d7d0d3cac51fbe340c31cde59ea84f03bca452faf27ab3a56855622f432",
+        "action_features_sha256_f32_le": "473443887784c677649e88ef69275ddf48fdef6e42ff2b8f7a9304a57716c469",
+        "legal_ids": [
+          0
+        ],
+        "obs_v5_sha256_f32_le": "64a0f28f3163ae2f6205f5942f0dc9d244b450c52be6386e15e346bfca10ebc1",
+        "obs_v5_dim": 6480
+      }
+    },
+    {
+      "t": 4,
+      "acting_player_id": 1,
+      "action_id": 0,
+      "mana_draw_legal": true,
+      "mana_draw_taken": false,
+      "pre": {
+        "state": {
+          "current_turn_owner_id": 1,
+          "turn_number": 3,
+          "status": "ongoing",
+          "p1": {
+            "user_id": 1,
+            "mana": 2,
+            "max_mana": 10,
+            "hero": {
+              "card_id": 0,
+              "type": "hero",
+              "mana_cost": 0,
+              "attack": 0,
+              "hp": 30,
+              "max_hp": 30,
+              "mechanics": [],
+              "is_ready": true,
+              "is_frozen": false,
+              "level": 1,
+              "skip_count": 0,
+              "base_attack": 0,
+              "base_hp": 30,
+              "base_max_hp": 30,
+              "base_mana_cost": 0,
+              "base_mechanics": [],
+              "base_snapshot_set": true
+            },
+            "hand": [
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "board": [
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "deck": [
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "graveyard": [],
+            "mana_draw_count_this_turn": 0
+          },
+          "p2": {
+            "user_id": 2,
+            "mana": 0,
+            "max_mana": 10,
+            "hero": {
+              "card_id": 0,
+              "type": "hero",
+              "mana_cost": 0,
+              "attack": 0,
+              "hp": 30,
+              "max_hp": 30,
+              "mechanics": [],
+              "is_ready": true,
+              "is_frozen": false,
+              "level": 1,
+              "skip_count": 0,
+              "base_attack": 0,
+              "base_hp": 30,
+              "base_max_hp": 30,
+              "base_mana_cost": 0,
+              "base_mechanics": [],
+              "base_snapshot_set": true
+            },
+            "hand": [
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "board": [
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "deck": [
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "graveyard": [],
+            "mana_draw_count_this_turn": 0
+          }
+        },
+        "history_events": [
+          {
+            "actor_id": 1,
+            "action_id": 0,
+            "action_type": "end_turn",
+            "enemy_hero_hp_delta": 0,
+            "own_hero_hp_delta": 0,
+            "my_board_count_delta": 0,
+            "enemy_board_count_delta": 0,
+            "board_power_delta": 0.0,
+            "turn_number": 2
+          },
+          {
+            "actor_id": 2,
+            "action_id": 1,
+            "action_type": "play_card",
+            "enemy_hero_hp_delta": 0,
+            "own_hero_hp_delta": 0,
+            "my_board_count_delta": 1,
+            "enemy_board_count_delta": 0,
+            "board_power_delta": 100.0,
+            "turn_number": 2
+          },
+          {
+            "actor_id": 2,
+            "action_id": 0,
+            "action_type": "end_turn",
+            "enemy_hero_hp_delta": 0,
+            "own_hero_hp_delta": 0,
+            "my_board_count_delta": 0,
+            "enemy_board_count_delta": 0,
+            "board_power_delta": 0.0,
+            "turn_number": 3
+          },
+          {
+            "actor_id": 1,
+            "action_id": 1,
+            "action_type": "play_card",
+            "enemy_hero_hp_delta": 0,
+            "own_hero_hp_delta": 0,
+            "my_board_count_delta": 1,
+            "enemy_board_count_delta": 0,
+            "board_power_delta": 21.0,
+            "turn_number": 3
+          }
+        ],
+        "state_sha256": "caffbb8533fc00de83f8b4fc7375de1f2626127fbfff572bf4c843562d5e2eb3",
+        "obs_sha256_f32_le": "a1d687d0734c31646ae510ed5d908b2d0af6715346b53062211e684dd810a0a4",
+        "mask_sha256_f32_le": "69ba8d7d0d3cac51fbe340c31cde59ea84f03bca452faf27ab3a56855622f432",
+        "action_features_sha256_f32_le": "473443887784c677649e88ef69275ddf48fdef6e42ff2b8f7a9304a57716c469",
+        "legal_ids": [
+          0
+        ],
+        "obs_v5_sha256_f32_le": "64a0f28f3163ae2f6205f5942f0dc9d244b450c52be6386e15e346bfca10ebc1",
+        "obs_v5_dim": 6480
+      },
+      "base_reward": 0.0,
+      "reward": -0.01080000028014183,
+      "reward_components_v5": {
+        "hp_potential_delta": 0.0,
+        "board_power_delta": 0.0,
+        "my_board_power": 21.0,
+        "enemy_board_power": 100.0,
+        "board_power_ratio": 0.21,
+        "board_under_0_7": true,
+        "own_board_wiped": false,
+        "my_board_count_delta": 0,
+        "enemy_board_count_delta": 0
+      },
+      "terminated": false,
+      "truncated": false,
+      "info": {
+        "current_player_id": 2,
+        "legal_actions": 7,
+        "status": "ongoing",
+        "p1_hp": 30,
+        "p2_hp": 30
+      },
+      "draw_picks": [
+        1,
+        1
+      ],
+      "reshuffle_orders": [],
+      "post": {
+        "state": {
+          "current_turn_owner_id": 2,
+          "turn_number": 4,
+          "status": "ongoing",
+          "p1": {
+            "user_id": 1,
+            "mana": 2,
+            "max_mana": 10,
+            "hero": {
+              "card_id": 0,
+              "type": "hero",
+              "mana_cost": 0,
+              "attack": 0,
+              "hp": 30,
+              "max_hp": 30,
+              "mechanics": [],
+              "is_ready": true,
+              "is_frozen": false,
+              "level": 1,
+              "skip_count": 0,
+              "base_attack": 0,
+              "base_hp": 30,
+              "base_max_hp": 30,
+              "base_mana_cost": 0,
+              "base_mechanics": [],
+              "base_snapshot_set": true
+            },
+            "hand": [
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "board": [
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "deck": [
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "graveyard": [],
+            "mana_draw_count_this_turn": 0
+          },
+          "p2": {
+            "user_id": 2,
+            "mana": 10,
+            "max_mana": 10,
+            "hero": {
+              "card_id": 0,
+              "type": "hero",
+              "mana_cost": 0,
+              "attack": 0,
+              "hp": 30,
+              "max_hp": 30,
+              "mechanics": [],
+              "is_ready": true,
+              "is_frozen": false,
+              "level": 1,
+              "skip_count": 0,
+              "base_attack": 0,
+              "base_hp": 30,
+              "base_max_hp": 30,
+              "base_mana_cost": 0,
+              "base_mechanics": [],
+              "base_snapshot_set": true
+            },
+            "hand": [
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "board": [
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": true,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "deck": [
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "graveyard": [],
+            "mana_draw_count_this_turn": 0
+          }
+        },
+        "history_events": [
+          {
+            "actor_id": 1,
+            "action_id": 0,
+            "action_type": "end_turn",
+            "enemy_hero_hp_delta": 0,
+            "own_hero_hp_delta": 0,
+            "my_board_count_delta": 0,
+            "enemy_board_count_delta": 0,
+            "board_power_delta": 0.0,
+            "turn_number": 2
+          },
+          {
+            "actor_id": 2,
+            "action_id": 1,
+            "action_type": "play_card",
+            "enemy_hero_hp_delta": 0,
+            "own_hero_hp_delta": 0,
+            "my_board_count_delta": 1,
+            "enemy_board_count_delta": 0,
+            "board_power_delta": 100.0,
+            "turn_number": 2
+          },
+          {
+            "actor_id": 2,
+            "action_id": 0,
+            "action_type": "end_turn",
+            "enemy_hero_hp_delta": 0,
+            "own_hero_hp_delta": 0,
+            "my_board_count_delta": 0,
+            "enemy_board_count_delta": 0,
+            "board_power_delta": 0.0,
+            "turn_number": 3
+          },
+          {
+            "actor_id": 1,
+            "action_id": 1,
+            "action_type": "play_card",
+            "enemy_hero_hp_delta": 0,
+            "own_hero_hp_delta": 0,
+            "my_board_count_delta": 1,
+            "enemy_board_count_delta": 0,
+            "board_power_delta": 21.0,
+            "turn_number": 3
+          },
+          {
+            "actor_id": 1,
+            "action_id": 0,
+            "action_type": "end_turn",
+            "enemy_hero_hp_delta": 0,
+            "own_hero_hp_delta": 0,
+            "my_board_count_delta": 0,
+            "enemy_board_count_delta": 0,
+            "board_power_delta": 0.0,
+            "turn_number": 4
+          }
+        ],
+        "state_sha256": "b6af65f471b0119602199c05836edd350fc2b46c64305dfe75a598aa04e98ea9",
+        "obs_sha256_f32_le": "d44289351bffa41e32aafae61832817d8639030bd682694b560edee9c9958c68",
+        "mask_sha256_f32_le": "8988bcbdc7094b32ecee6a1613dc3808a5943a43984cf3a00c61bdbb64dce56d",
+        "action_features_sha256_f32_le": "b375d8dd68a0fb64a213d52deee77e0c7d4c8b9a03acafb85f99bec3bd94e452",
+        "legal_ids": [
+          0,
+          18,
+          154,
+          290,
+          426,
+          545,
+          552
+        ],
+        "obs_v5_sha256_f32_le": "cb66b2c4b71c7399136987553e96d9b84ee5e401e3615323b33daab83cbe5ecd",
+        "obs_v5_dim": 6480
+      }
+    },
+    {
+      "t": 5,
+      "acting_player_id": 2,
+      "action_id": 545,
+      "mana_draw_legal": false,
+      "mana_draw_taken": false,
+      "pre": {
+        "state": {
+          "current_turn_owner_id": 2,
+          "turn_number": 4,
+          "status": "ongoing",
+          "p1": {
+            "user_id": 1,
+            "mana": 2,
+            "max_mana": 10,
+            "hero": {
+              "card_id": 0,
+              "type": "hero",
+              "mana_cost": 0,
+              "attack": 0,
+              "hp": 30,
+              "max_hp": 30,
+              "mechanics": [],
+              "is_ready": true,
+              "is_frozen": false,
+              "level": 1,
+              "skip_count": 0,
+              "base_attack": 0,
+              "base_hp": 30,
+              "base_max_hp": 30,
+              "base_mana_cost": 0,
+              "base_mechanics": [],
+              "base_snapshot_set": true
+            },
+            "hand": [
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "board": [
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "deck": [
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "graveyard": [],
+            "mana_draw_count_this_turn": 0
+          },
+          "p2": {
+            "user_id": 2,
+            "mana": 10,
+            "max_mana": 10,
+            "hero": {
+              "card_id": 0,
+              "type": "hero",
+              "mana_cost": 0,
+              "attack": 0,
+              "hp": 30,
+              "max_hp": 30,
+              "mechanics": [],
+              "is_ready": true,
+              "is_frozen": false,
+              "level": 1,
+              "skip_count": 0,
+              "base_attack": 0,
+              "base_hp": 30,
+              "base_max_hp": 30,
+              "base_mana_cost": 0,
+              "base_mechanics": [],
+              "base_snapshot_set": true
+            },
+            "hand": [
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "board": [
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": true,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "deck": [
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "graveyard": [],
+            "mana_draw_count_this_turn": 0
+          }
+        },
+        "history_events": [
+          {
+            "actor_id": 1,
+            "action_id": 0,
+            "action_type": "end_turn",
+            "enemy_hero_hp_delta": 0,
+            "own_hero_hp_delta": 0,
+            "my_board_count_delta": 0,
+            "enemy_board_count_delta": 0,
+            "board_power_delta": 0.0,
+            "turn_number": 2
+          },
+          {
+            "actor_id": 2,
+            "action_id": 1,
+            "action_type": "play_card",
+            "enemy_hero_hp_delta": 0,
+            "own_hero_hp_delta": 0,
+            "my_board_count_delta": 1,
+            "enemy_board_count_delta": 0,
+            "board_power_delta": 100.0,
+            "turn_number": 2
+          },
+          {
+            "actor_id": 2,
+            "action_id": 0,
+            "action_type": "end_turn",
+            "enemy_hero_hp_delta": 0,
+            "own_hero_hp_delta": 0,
+            "my_board_count_delta": 0,
+            "enemy_board_count_delta": 0,
+            "board_power_delta": 0.0,
+            "turn_number": 3
+          },
+          {
+            "actor_id": 1,
+            "action_id": 1,
+            "action_type": "play_card",
+            "enemy_hero_hp_delta": 0,
+            "own_hero_hp_delta": 0,
+            "my_board_count_delta": 1,
+            "enemy_board_count_delta": 0,
+            "board_power_delta": 21.0,
+            "turn_number": 3
+          },
+          {
+            "actor_id": 1,
+            "action_id": 0,
+            "action_type": "end_turn",
+            "enemy_hero_hp_delta": 0,
+            "own_hero_hp_delta": 0,
+            "my_board_count_delta": 0,
+            "enemy_board_count_delta": 0,
+            "board_power_delta": 0.0,
+            "turn_number": 4
+          }
+        ],
+        "state_sha256": "b6af65f471b0119602199c05836edd350fc2b46c64305dfe75a598aa04e98ea9",
+        "obs_sha256_f32_le": "d44289351bffa41e32aafae61832817d8639030bd682694b560edee9c9958c68",
+        "mask_sha256_f32_le": "8988bcbdc7094b32ecee6a1613dc3808a5943a43984cf3a00c61bdbb64dce56d",
+        "action_features_sha256_f32_le": "b375d8dd68a0fb64a213d52deee77e0c7d4c8b9a03acafb85f99bec3bd94e452",
+        "legal_ids": [
+          0,
+          18,
+          154,
+          290,
+          426,
+          545,
+          552
+        ],
+        "obs_v5_sha256_f32_le": "cb66b2c4b71c7399136987553e96d9b84ee5e401e3615323b33daab83cbe5ecd",
+        "obs_v5_dim": 6480
+      },
+      "base_reward": 0.0,
+      "reward": -0.0017999999690800905,
+      "reward_components_v5": {
+        "hp_potential_delta": 0.0,
+        "board_power_delta": -12.0,
+        "my_board_power": 70.0,
+        "enemy_board_power": 3.0,
+        "board_power_ratio": 23.333333333333332,
+        "board_under_0_7": false,
+        "own_board_wiped": false,
+        "my_board_count_delta": 0,
+        "enemy_board_count_delta": 0
+      },
+      "terminated": false,
+      "truncated": false,
+      "info": {
+        "current_player_id": 2,
+        "legal_actions": 5,
+        "status": "ongoing",
+        "p1_hp": 30,
+        "p2_hp": 30
+      },
+      "draw_picks": [
+        1
+      ],
+      "reshuffle_orders": [],
+      "post": {
+        "state": {
+          "current_turn_owner_id": 2,
+          "turn_number": 4,
+          "status": "ongoing",
+          "p1": {
+            "user_id": 1,
+            "mana": 2,
+            "max_mana": 10,
+            "hero": {
+              "card_id": 0,
+              "type": "hero",
+              "mana_cost": 0,
+              "attack": 0,
+              "hp": 30,
+              "max_hp": 30,
+              "mechanics": [],
+              "is_ready": true,
+              "is_frozen": false,
+              "level": 1,
+              "skip_count": 0,
+              "base_attack": 0,
+              "base_hp": 30,
+              "base_max_hp": 30,
+              "base_mana_cost": 0,
+              "base_mechanics": [],
+              "base_snapshot_set": true
+            },
+            "hand": [
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "board": [
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 1,
+                "max_hp": 7,
+                "mechanics": [],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "deck": [
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 50,
+                "type": "warrior",
+                "mana_cost": 8,
+                "attack": 3,
+                "hp": 7,
+                "max_hp": 7,
+                "mechanics": [
+                  "rebirth_1"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 3,
+                "base_hp": 7,
+                "base_max_hp": 7,
+                "base_mana_cost": 8,
+                "base_mechanics": [
+                  "rebirth_1"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "graveyard": [],
+            "mana_draw_count_this_turn": 0
+          },
+          "p2": {
+            "user_id": 2,
+            "mana": 10,
+            "max_mana": 10,
+            "hero": {
+              "card_id": 0,
+              "type": "hero",
+              "mana_cost": 0,
+              "attack": 0,
+              "hp": 30,
+              "max_hp": 30,
+              "mechanics": [],
+              "is_ready": true,
+              "is_frozen": false,
+              "level": 1,
+              "skip_count": 0,
+              "base_attack": 0,
+              "base_hp": 30,
+              "base_max_hp": 30,
+              "base_mana_cost": 0,
+              "base_mechanics": [],
+              "base_snapshot_set": true
+            },
+            "hand": [
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "board": [
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 7,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "deck": [
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              },
+              {
+                "card_id": 25,
+                "type": "warrior",
+                "mana_cost": 10,
+                "attack": 10,
+                "hp": 10,
+                "max_hp": 10,
+                "mechanics": [
+                  "instant_kill"
+                ],
+                "is_ready": false,
+                "is_frozen": false,
+                "level": 1,
+                "skip_count": 0,
+                "base_attack": 10,
+                "base_hp": 10,
+                "base_max_hp": 10,
+                "base_mana_cost": 10,
+                "base_mechanics": [
+                  "instant_kill"
+                ],
+                "base_snapshot_set": true
+              }
+            ],
+            "graveyard": [],
+            "mana_draw_count_this_turn": 0
+          }
+        },
+        "history_events": [
+          {
+            "actor_id": 1,
+            "action_id": 0,
+            "action_type": "end_turn",
+            "enemy_hero_hp_delta": 0,
+            "own_hero_hp_delta": 0,
+            "my_board_count_delta": 0,
+            "enemy_board_count_delta": 0,
+            "board_power_delta": 0.0,
+            "turn_number": 2
+          },
+          {
+            "actor_id": 2,
+            "action_id": 1,
+            "action_type": "play_card",
+            "enemy_hero_hp_delta": 0,
+            "own_hero_hp_delta": 0,
+            "my_board_count_delta": 1,
+            "enemy_board_count_delta": 0,
+            "board_power_delta": 100.0,
+            "turn_number": 2
+          },
+          {
+            "actor_id": 2,
+            "action_id": 0,
+            "action_type": "end_turn",
+            "enemy_hero_hp_delta": 0,
+            "own_hero_hp_delta": 0,
+            "my_board_count_delta": 0,
+            "enemy_board_count_delta": 0,
+            "board_power_delta": 0.0,
+            "turn_number": 3
+          },
+          {
+            "actor_id": 1,
+            "action_id": 1,
+            "action_type": "play_card",
+            "enemy_hero_hp_delta": 0,
+            "own_hero_hp_delta": 0,
+            "my_board_count_delta": 1,
+            "enemy_board_count_delta": 0,
+            "board_power_delta": 21.0,
+            "turn_number": 3
+          },
+          {
+            "actor_id": 1,
+            "action_id": 0,
+            "action_type": "end_turn",
+            "enemy_hero_hp_delta": 0,
+            "own_hero_hp_delta": 0,
+            "my_board_count_delta": 0,
+            "enemy_board_count_delta": 0,
+            "board_power_delta": 0.0,
+            "turn_number": 4
+          },
+          {
+            "actor_id": 2,
+            "action_id": 545,
+            "action_type": "attack",
+            "enemy_hero_hp_delta": 0,
+            "own_hero_hp_delta": 0,
+            "my_board_count_delta": 0,
+            "enemy_board_count_delta": 0,
+            "board_power_delta": -12.0,
+            "turn_number": 4
+          }
+        ],
+        "state_sha256": "78f87692c218280cdcc7aa499411660a14dd7351e4b1e2335a1d2233f14fd177",
+        "obs_sha256_f32_le": "96a94a54785bc9385b520d92faa8e26bc1a30db8bc205144670c44a83f90e6c5",
+        "mask_sha256_f32_le": "ea1c497f1d8559f291dc57ca3de8ee84e6d6fc8b54fe0596634545062cb12266",
+        "action_features_sha256_f32_le": "87812f2b2f47cfc0d66072802b37dd4b3d08b0c186b42571cbf36b0ad8810ea8",
+        "legal_ids": [
+          0,
+          18,
+          154,
+          290,
+          426
+        ],
+        "obs_v5_sha256_f32_le": "64e6b5233d69ef732f55086e695ed06c40e387acb053eb8e6a4bad0e8a8395d6",
+        "obs_v5_dim": 6480
+      }
+    }
+  ]
+}
