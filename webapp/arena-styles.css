@@ -1231,6 +1231,10 @@ body.arena-page::after {
 }
 .board-unit-card.unit-sleeping { cursor: not-allowed !important; }
 .board-unit-card.unit-sleeping:hover { transform: none !important; }
+/* Спящий боец, являющийся валидной целью атаки, читается как цель, а не как
+   "недоступно": прицел перебивает not-allowed от сна (onboarding «выбор цели»
+   предлагает тапнуть спящего Стива как цель — иначе курсор говорит «не кликать»). */
+.board-unit-card.unit-sleeping.attack-target { cursor: crosshair !important; }
 .board-unit-card.unit-defeated {
   opacity: 0.72;
   filter: grayscale(0.75) brightness(0.82);
@@ -2457,6 +2461,10 @@ body.arena-page::after {
 .board-unit-card.card-frozen .unit-card-art { filter: hue-rotate(180deg) brightness(1.2) saturate(0.5) !important; }
 .board-unit-card.unit-sleeping .unit-card-art,
 .board-unit-card.status-sleep .unit-card-art { filter: grayscale(0.5) contrast(0.8); }
+/* У валидной цели атаки арт не затемняется спящим фильтром — иначе красная рамка
+   цели на спящем бойце читается как «недоступно» (onboarding «выбор цели»:
+   спящий Стив как цель атаки; Z-иконка сна остаётся, так что «спит» всё ещё видно). */
+.board-unit-card.attack-target .unit-card-art { filter: none; }
 .board-unit-card.status-stealth { filter: opacity(0.65) brightness(0.85); }
 
 /* Floating text */

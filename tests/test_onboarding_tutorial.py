@@ -245,13 +245,16 @@ def test_tutorial_battle_engine_advances_through_scripted_victory():
     engine = TutorialBattleEngine(user_id=USER_ID)
 
     assert _tutorial(engine)["step_index"] == 0
+    assert _tutorial(engine)["step_id"] == "goal"
 
+    # step0 goal (continue) → step1 play_attacker
     assert engine.apply_tutorial_action({"type": "continue"}) == {
         "success": True,
         "tutorial_step": 1,
     }
     assert _tutorial(engine)["hand_attacker_instance_id"]
 
+    # step1 play_attacker (play Слайм) → step2 sleep
     play_attacker = engine.apply_tutorial_action(
         {"type": "play_card", "card_id": 37, "hand_index": 0}
     )
@@ -259,35 +262,48 @@ def test_tutorial_battle_engine_advances_through_scripted_victory():
     assert play_attacker["tutorial_step"] == 2
     assert _tutorial(engine)["attacker_instance_id"]
 
+    # step2 sleep (end_turn) → p2 plays Стив → step3 threat
     end_turn = engine.apply_tutorial_action({"type": "end_turn"})
     assert end_turn["success"] is True
     assert end_turn["tutorial_step"] == 3
+    assert [card.card_id for card in engine._arena.state.p2.board] == [40]
 
+    # step3 threat (continue) → p2 ends turn → step4 choose_target
+    threat = engine.apply_tutorial_action({"type": "continue"})
+    assert threat["success"] is True
+    assert threat["tutorial_step"] == 4
+
+    # step4 choose_target (attack hero 8→4) → step5 tempo
     first_attack = _attack_opponent_hero(engine)
     assert first_attack["success"] is True
-    assert first_attack["tutorial_step"] == 4
+    assert first_attack["tutorial_step"] == 5
     assert engine._arena.state.p2.hero.hp == 4
 
+    # step5 tempo (continue) → step6 danger → step7 taunt_intro
+    assert engine.apply_tutorial_action({"type": "continue"})["tutorial_step"] == 6
+    assert engine.apply_tutorial_action({"type": "continue"})["tutorial_step"] == 7
+
+    # step7 taunt_intro (play Альфонс) → p1 ends → step8 taunt_demo
     play_alphonse = engine.apply_tutorial_action(
         {"type": "play_card", "card_id": 39, "hand_index": 0}
     )
     assert play_alphonse["success"] is True
-    assert play_alphonse["tutorial_step"] == 5
+    assert play_alphonse["tutorial_step"] == 8
     assert _tutorial(engine)["step_id"] == "taunt_demo"
     assert _tutorial(engine)["alphonse_instance_id"]
-    assert any(card.card_id == 39 for card in engine._arena.state.p1.board)
+    assert [card.card_id for card in engine._arena.state.p1.board] == [37, 39]
 
+    # step8 taunt_demo (auto_continue) → Стив attacks Альфонс (dies) → p2 ends → step9 lethal
     taunt_demo = engine.apply_tutorial_action({"type": "auto_continue"})
     assert taunt_demo["success"] is True
-    assert taunt_demo["tutorial_step"] == 6
-    assert taunt_demo["after_message"] == "Видишь? Это Провокация. Враг обязан сначала ударить Альфонса."
-    assert _tutorial(engine)["step_id"] == "taunt_hit"
-    assert any(card.card_id == 39 and card.hp == 0 for card in engine._arena.state.p1.board)
+    assert taunt_demo["tutorial_step"] == 9
+    assert taunt_demo["after_message"] == "Враг атакует Альфонса. Вот так работает Провокация — она закрывает героя и ломает план врага."
+    assert _tutorial(engine)["step_id"] == "lethal"
+    # Real engine death processing removes Альфонс — no hp-0 corpse stays behind.
+    assert not any(card.card_id == 39 for card in engine._arena.state.p1.board)
+    assert [card.card_id for card in engine._arena.state.p1.board] == [37]
 
-    taunt_hit = engine.apply_tutorial_action({"type": "auto_continue"})
-    assert taunt_hit["success"] is True
-    assert taunt_hit["tutorial_step"] == 7
-
+    # step9 lethal (attack hero 4→0) → step10 victory (real P1_WIN)
     lethal_attack = _attack_opponent_hero(engine)
     assert lethal_attack["success"] is True
     assert lethal_attack["tutorial_step"] == TUTORIAL_FINAL_STEP
@@ -298,7 +314,7 @@ def test_tutorial_battle_engine_advances_through_scripted_victory():
 
 
 def test_tutorial_battle_engine_rejects_wrong_card_on_alphonse_step():
-    engine = TutorialBattleEngine(user_id=USER_ID, tutorial_step=4)
+    engine = TutorialBattleEngine(user_id=USER_ID, tutorial_step=7)
 
     result = engine.apply_tutorial_action(
         {"type": "play_card", "card_id": 37, "hand_index": 0}
@@ -308,7 +324,7 @@ def test_tutorial_battle_engine_rejects_wrong_card_on_alphonse_step():
         "success": False,
         "error": "tutorial_wrong_action",
         "feedback": "Сейчас нужен Альфонс. Он примет удар на себя.",
-        "tutorial_step": 4,
+        "tutorial_step": 7,
     }
 
 
@@ -319,10 +335,10 @@ def test_tutorial_payload_uses_onboarding_midoria_asset():
 
 
 def test_tutorial_card_ids_survive_step_rebuild_before_attack():
-    engine = TutorialBattleEngine(user_id=USER_ID, tutorial_step=3)
+    engine = TutorialBattleEngine(user_id=USER_ID, tutorial_step=4)
     attacker_id_from_rendered_state = _tutorial(engine)["attacker_instance_id"]
 
-    engine.set_tutorial_step(3)
+    engine.set_tutorial_step(4)
     result = engine.apply_tutorial_action(
         {
             "type": "attack",
@@ -332,7 +348,7 @@ def test_tutorial_card_ids_survive_step_rebuild_before_attack():
     )
 
     assert result["success"] is True
-    assert result["tutorial_step"] == 4
+    assert result["tutorial_step"] == 5
     assert engine._arena.state.p2.hero.hp == 4
 
 
@@ -346,37 +362,33 @@ def test_tutorial_battle_uses_tutorial_only_names_and_long_timer():
 
 
 def test_tutorial_payload_exposes_screen_progress_and_previous_message():
-    end_turn_payload = TutorialBattleEngine(user_id=USER_ID, tutorial_step=2).tutorial_payload()
-    taunt_payload = TutorialBattleEngine(user_id=USER_ID, tutorial_step=5).tutorial_payload()
-    taunt_hit_payload = TutorialBattleEngine(user_id=USER_ID, tutorial_step=6).tutorial_payload()
-    lethal_payload = TutorialBattleEngine(user_id=USER_ID, tutorial_step=7).tutorial_payload()
+    sleep_payload = TutorialBattleEngine(user_id=USER_ID, tutorial_step=2).tutorial_payload()
+    taunt_payload = TutorialBattleEngine(user_id=USER_ID, tutorial_step=8).tutorial_payload()
+    lethal_payload = TutorialBattleEngine(user_id=USER_ID, tutorial_step=9).tutorial_payload()
 
-    assert end_turn_payload["display_step"] == 2
-    assert end_turn_payload["display_steps_total"] == TUTORIAL_FINAL_STEP
-    assert end_turn_payload["player_step"] == end_turn_payload["display_step"]
-    assert end_turn_payload["player_steps_total"] == TUTORIAL_FINAL_STEP
-    assert end_turn_payload["previous_message"] == "Он спит до следующего хода. Нормально: только вышел на поле."
-    assert taunt_payload["display_step"] == 5
+    assert sleep_payload["display_step"] == 2
+    assert sleep_payload["display_steps_total"] == TUTORIAL_FINAL_STEP
+    assert sleep_payload["player_step"] == sleep_payload["display_step"]
+    assert sleep_payload["player_steps_total"] == TUTORIAL_FINAL_STEP
+    # no `after` on step1 → previous_message falls back to step1's message
+    assert sleep_payload["previous_message"] == "Ставим бойца на поле. Он не атакует сразу: сначала занимает позицию."
+
+    assert taunt_payload["display_step"] == 8
     assert taunt_payload["display_steps_total"] == TUTORIAL_FINAL_STEP
     assert taunt_payload["player_step"] == taunt_payload["display_step"]
     assert taunt_payload["player_steps_total"] == TUTORIAL_FINAL_STEP
     assert taunt_payload["auto_advance_delay_ms"] >= 5000
-    assert taunt_payload["previous_message"] == "Теперь Альфонс. Он закрывает проход к герою."
-    assert taunt_hit_payload["display_step"] == 6
-    assert taunt_hit_payload["display_steps_total"] == TUTORIAL_FINAL_STEP
-    assert taunt_hit_payload["player_step"] == taunt_hit_payload["display_step"]
-    assert taunt_hit_payload["player_steps_total"] == TUTORIAL_FINAL_STEP
-    assert taunt_hit_payload["auto_advance_delay_ms"] >= 5000
-    assert taunt_hit_payload["previous_message"] == "Видишь? Это Провокация. Враг обязан сначала ударить Альфонса."
-    assert lethal_payload["display_step"] == 7
+    assert taunt_payload["previous_message"] == "У Альфонса Провокация. Враг обязан сначала атаковать его."
+
+    assert lethal_payload["display_step"] == 9
     assert lethal_payload["display_steps_total"] == TUTORIAL_FINAL_STEP
     assert lethal_payload["player_step"] == lethal_payload["display_step"]
     assert lethal_payload["player_steps_total"] == TUTORIAL_FINAL_STEP
-    assert lethal_payload["previous_message"] == "Стив ударил Альфонса. Провокация сработала — путь к герою открыт."
+    assert lethal_payload["previous_message"] == "Враг атакует Альфонса. Вот так работает Провокация — она закрывает героя и ломает план врага."
 
 
 def test_tutorial_alphonse_step_preserves_card_before_scripted_opponent_attack():
-    engine = TutorialBattleEngine(user_id=USER_ID, tutorial_step=4)
+    engine = TutorialBattleEngine(user_id=USER_ID, tutorial_step=7)
 
     result = engine.apply_tutorial_action(
         {"type": "play_card", "card_id": 39, "hand_index": 0}
@@ -384,10 +396,10 @@ def test_tutorial_alphonse_step_preserves_card_before_scripted_opponent_attack()
     state = engine.get_full_state(viewer_id=USER_ID)
 
     assert result["success"] is True
-    assert result["tutorial_step"] == 5
+    assert result["tutorial_step"] == 8
     assert state["tutorial"]["step_id"] == "taunt_demo"
     assert state["tutorial"]["is_auto_step"] is True
-    assert state["tutorial"]["player_step"] == 5
+    assert state["tutorial"]["player_step"] == 8
     assert state["tutorial"]["auto_advance_delay_ms"] >= 5000
     assert [card["card_id"] for card in state["player"]["board"]] == [37, 39]
     assert state["current_player_id"] == engine.bot_id
@@ -395,31 +407,20 @@ def test_tutorial_alphonse_step_preserves_card_before_scripted_opponent_attack()
 
 
 def test_tutorial_auto_taunt_demo_shows_visible_opponent_attack_before_lethal():
-    engine = TutorialBattleEngine(user_id=USER_ID, tutorial_step=5)
+    engine = TutorialBattleEngine(user_id=USER_ID, tutorial_step=8)
 
     result = engine.apply_tutorial_action({"type": "auto_continue"})
     state = engine.get_full_state(viewer_id=USER_ID)
 
     assert result["success"] is True
-    assert result["tutorial_step"] == 6
-    assert result["after_message"] == "Видишь? Это Провокация. Враг обязан сначала ударить Альфонса."
-    assert state["tutorial"]["step_id"] == "taunt_hit"
-    assert state["tutorial"]["player_step"] == 6
-    assert state["tutorial"]["is_auto_step"] is True
-    assert state["tutorial"]["auto_advance_delay_ms"] >= 5000
-    assert [card["card_id"] for card in state["player"]["board"]] == [37, 39]
-    assert next(card for card in state["player"]["board"] if card["card_id"] == 39)["hp"] == 0
-    assert state["current_player_id"] == engine.bot_id
-    assert state["is_my_turn"] is False
-
-    result = engine.apply_tutorial_action({"type": "auto_continue"})
-    state = engine.get_full_state(viewer_id=USER_ID)
-
-    assert result["success"] is True
-    assert result["tutorial_step"] == 7
-    assert result["after_message"] == "Стив ударил Альфонса. Провокация сработала — путь к герою открыт."
+    assert result["tutorial_step"] == 9
+    assert result["after_message"] == "Враг атакует Альфонса. Вот так работает Провокация — она закрывает героя и ломает план врага."
     assert state["tutorial"]["step_id"] == "lethal"
-    assert state["tutorial"]["player_step"] == 7
+    assert state["tutorial"]["player_step"] == 9
+    # the lethal step is a player attack, not an auto step
+    assert state["tutorial"]["is_auto_step"] is False
+    # Real engine death processing removes Альфонс (taunt absorbed the hit);
+    # the opponent attack is still visible (Стив's hp drops, Альфонс gone).
     assert [card["card_id"] for card in state["player"]["board"]] == [37]
     assert state["is_my_turn"] is True
 
@@ -960,11 +961,14 @@ def test_tutorial_state_exposes_only_current_guided_battle_action():
         0: [],
         1: [("play_card", 0, None, False)],
         2: [("end_turn", None, None, False)],
-        3: [("attack", None, None, True)],
-        4: [("play_card", 0, None, False)],
+        3: [],
+        4: "choose_target",  # special: hero entry + Стив minion entry (dynamic id)
         5: [],
         6: [],
-        7: [("attack", None, None, True)],
+        7: [("play_card", 0, None, False)],
+        8: [],
+        9: [("attack", None, None, True)],
+        10: [],
     }
 
     for step, expected_actions in expected.items():
@@ -979,4 +983,66 @@ def test_tutorial_state_exposes_only_current_guided_battle_action():
             )
             for action in state["legal_actions"]
         ]
-        assert actions == expected_actions
+        if expected_actions == "choose_target":
+            # hero entry (target_id None, is_hero True) + Стив minion entry (dynamic id)
+            assert len(actions) == 2
+            assert ("attack", None, None, True) in actions
+            steve_id = str(engine._arena.state.p2.board[0].instance_id)
+            assert ("attack", None, steve_id, False) in actions
+        else:
+            assert actions == expected_actions
+
+
+def test_tutorial_choose_target_advertises_minion_target():
+    engine = TutorialBattleEngine(user_id=USER_ID, tutorial_step=4)
+    actions = engine._tutorial_legal_actions()
+
+    # hero entry + one minion entry per opponent board minion (Стив)
+    assert len(actions) == 2
+    attacker_id = _tutorial(engine)["attacker_instance_id"]
+    steve_id = str(engine._arena.state.p2.board[0].instance_id)
+
+    hero_entry = next(a for a in actions if a["target_is_hero"])
+    assert hero_entry == {
+        "type": "attack",
+        "attacker_id": attacker_id,
+        "target_id": None,
+        "target_is_hero": True,
+    }
+    minion_entry = next(a for a in actions if not a["target_is_hero"])
+    assert minion_entry == {
+        "type": "attack",
+        "attacker_id": attacker_id,
+        "target_id": steve_id,
+        "target_is_hero": False,
+    }
+
+
+def test_tutorial_choose_target_wrong_minion_tap_is_rejected_with_custom_feedback():
+    engine = TutorialBattleEngine(user_id=USER_ID, tutorial_step=4)
+    slime_id = _tutorial(engine)["attacker_instance_id"]
+    steve_id = str(engine._arena.state.p2.board[0].instance_id)
+    hero_hp_before = engine._arena.state.p2.hero.hp
+
+    # tapping Стив is mechanically legal but pedagogically wrong → custom feedback, no state change
+    result = engine.apply_tutorial_action(
+        {"type": "attack", "attacker_id": slime_id, "target_id": steve_id, "target_is_hero": False}
+    )
+    assert result == {
+        "success": False,
+        "error": "tutorial_wrong_action",
+        "feedback": "Можно, но сейчас выгоднее бить героя: его HP — условие победы.",
+        "tutorial_step": 4,
+    }
+    # no state mutation: hero HP unchanged, still on choose_target
+    assert engine._arena.state.p2.hero.hp == hero_hp_before
+    assert engine.tutorial_step == 4
+    assert _tutorial(engine)["step_id"] == "choose_target"
+
+    # retry by tapping the hero → advances to tempo, real 8→4
+    retry = engine.apply_tutorial_action(
+        {"type": "attack", "attacker_id": slime_id, "target_is_hero": True}
+    )
+    assert retry["success"] is True
+    assert retry["tutorial_step"] == 5
+    assert engine._arena.state.p2.hero.hp == 4

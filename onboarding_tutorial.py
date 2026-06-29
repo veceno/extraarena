@@ -1,12 +1,45 @@
+"""Граф-сценарный онбординг-туториал (prod-safe).
+
+Раньше обучение было захардкоженным пошаговым автоматом: ``TUTORIAL_STEPS``
+(словарь) + ``_build_state_for_step``, который на каждом шаге **телепортировал**
+свежий ``GameState`` в нужную расстановку, подделывая последствия (летал фейком
+hero.hp=0; «удар по Альфонсу» оставлял труп hp=0 на доске). Противник по-настоящему
+не ходил — ``auto_continue`` просто переключал шаги.
+
+Теперь обучение описано **одним граф-сценарием** ``scenarios/onboarding_basic.json``
+(формат ``extra_orchestra.scenario.v2`` — тот же, что в ExtraOrchestra): init-сцена
++ один путь узлов (action/scene/turn). Состояние строится **один раз** из init-сцены
+и обходится по графу через **настоящий** движок (``BattleEngine.execute_action`` →
+``ArenaEnvironment.step``): p1-шаги (узлы action side=p1 с ``tutorial``) ждут новичка,
+прочие action-узлы (ходы оппонента, end_turn-ы) auto-применяются. Состояние наследуется
+по пути, последствия настоящие (летал — реальный ``P1_WIN``, смерть Альфонса — реальное
+удаление с доски).
+
+**Prod-независимость:** модуль НЕ импортирует ``extra_orchestra`` — это dev-утилита
+(MCP :8095, граф-редактор, preview/export), её нет на проде. Здесь используются только
+prod-модули (``battle_engine``, ``core.*``, ``infrastructure.*``) + репозиторный
+``cards.json`` + детерминированные ``uuid5`` instance_id по той же формуле/seed, что в
+``cards_catalog.deterministic_instance_id``. Поэтому dev-``preview_frames`` оркестры
+предсказывает prod-состояние туториала **точно** — тот же сценарий валидируется/предпросматривается/экспортируется
+оркестрой в dev без правок prod-кода. Внешний контракт (``tutorial_payload``, имена
+констант/класса, форма результатов ``apply_tutorial_action``) сохранён побайтово →
+``web/server.py`` правок не требует.
+"""
 from __future__ import annotations
 
+import json
+import logging
+from pathlib import Path
+from random import Random
 from typing import Any, Optional
-from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
+from uuid import NAMESPACE_DNS, uuid5
 
 from battle_engine import BattleEngine
 from core.actions import AttackAction, EndTurnAction, PlayCardAction
 from core.engine import ArenaEnvironment
-from core.state import CardInstance, CardType, GameState, GameStatus, PlayerState
+from core.state import GameState, GameStatus, PlayerState
+
+logger = logging.getLogger(__name__)
 
 
 ONBOARDING_STATUS_NOT_STARTED = "not_started"
@@ -69,85 +102,7 @@ NEWBIE_PATH_TASKS = [
 
 TUTORIAL_BOT_ID_OFFSET = 9_000_000_000_000
 TUTORIAL_TURN_DURATION_SECONDS = 99
-TUTORIAL_TAUNT_DEMO_STEP = 5
-TUTORIAL_TAUNT_HIT_STEP = 6
-TUTORIAL_LETHAL_STEP = 7
-TUTORIAL_FINAL_STEP = 8
-TUTORIAL_DISPLAY_STEPS_TOTAL = TUTORIAL_FINAL_STEP
 TUTORIAL_SCRIPTED_AUTO_DELAY_MS = 5600
-
-
-TUTORIAL_STEPS = {
-    0: {
-        "id": "battle_start",
-        "message": "Вот твой герой. Вот герой врага. Его HP — наша цель.",
-        "hint": None,
-        "target": "opponent_hero",
-        "allowed": {"type": "continue"},
-    },
-    1: {
-        "id": "play_attacker",
-        "message": "Ставь бойца на поле. Ему нужно занять позицию, прежде чем бить.",
-        "hint": "Выставь эту карту",
-        "target": "hand_card:37",
-        "allowed": {"type": "play_card", "card_id": 37},
-        "after": "Он спит до следующего хода. Нормально: только вышел на поле.",
-    },
-    2: {
-        "id": "end_turn",
-        "message": "Жми конец хода. Пусть враг сделает ход.",
-        "hint": "Завершить ход",
-        "target": "end_turn",
-        "allowed": {"type": "end_turn"},
-        "after": "Враг выставил сильного бойца. Выглядит неприятно, но у нас есть броня потяжелее.",
-    },
-    3: {
-        "id": "attack_hero",
-        "message": "Наш боец готов. Бей героя, не разменивайся. HP вниз — победа ближе.",
-        "hint": "Выбери бойца и нажми героя врага",
-        "target": "opponent_hero",
-        "allowed": {"type": "attack", "attacker_card_id": 37, "target_is_hero": True},
-    },
-    4: {
-        "id": "play_alphonse",
-        "message": "Теперь Альфонс. Он закрывает проход к герою.",
-        "hint": "Выставь Альфонса",
-        "target": "hand_card:39",
-        "allowed": {"type": "play_card", "card_id": 39},
-    },
-    5: {
-        "id": "taunt_demo",
-        "message": "Видишь? Это Провокация. Враг обязан сначала ударить Альфонса.",
-        "hint": None,
-        "target": "board_card:39",
-        "allowed": {"type": "auto_continue"},
-        "is_auto_step": True,
-        "auto_advance_delay_ms": TUTORIAL_SCRIPTED_AUTO_DELAY_MS,
-    },
-    6: {
-        "id": "taunt_hit",
-        "message": "Стив ударил Альфонса. Провокация сработала — путь к герою открыт.",
-        "hint": None,
-        "target": "board_card:39",
-        "allowed": {"type": "auto_continue"},
-        "is_auto_step": True,
-        "auto_advance_delay_ms": TUTORIAL_SCRIPTED_AUTO_DELAY_MS,
-    },
-    7: {
-        "id": "lethal",
-        "message": "Путь открыт. Добивай героя.",
-        "hint": "Атакуй героя врага",
-        "target": "opponent_hero",
-        "allowed": {"type": "attack", "attacker_card_id": 37, "target_is_hero": True},
-    },
-    8: {
-        "id": "victory",
-        "message": "Готово. Главное правило поймано: победа — это 0 HP у героя врага.\nТеперь покажу, где собирать отряд и искать новые бои.",
-        "hint": "В меню",
-        "target": None,
-        "allowed": {"type": "complete"},
-    },
-}
 
 
 WRONG_ACTION_FEEDBACK = {
@@ -174,52 +129,190 @@ def _safe_int(value: Any, default: int | None = None) -> int | None:
         return default
 
 
-def _tutorial_instance_id(user_id: int, key: str) -> UUID:
-    return uuid5(NAMESPACE_URL, f"extraarena:onboarding-tutorial:{int(user_id)}:{key}")
+# ---------------------------------------------------------------------------
+# Конфиг обучения: сценарий-граф (prod-asset, лежит в репо рядом с модулем).
+# ---------------------------------------------------------------------------
+
+_TUTORIAL_SEED = 42
+_REPO_ROOT = Path(__file__).resolve().parent
+_TUTORIAL_SCENARIO_PATH = _REPO_ROOT / "scenarios" / "onboarding_basic.json"
+_CARDS_JSON_PATH = _REPO_ROOT / "cards.json"
 
 
-def _hero(name: str, hp: int, *, instance_id: UUID | None = None) -> CardInstance:
-    return CardInstance(
-        instance_id=instance_id or uuid4(),
-        card_id=1,
-        name=name,
-        card_type=CardType.HERO,
-        rarity="start",
-        mana_cost=0,
-        attack=0,
-        hp=hp,
-        max_hp=hp,
-        mechanics=[],
-        is_ready=True,
-        description="Герой",
+def _load_cards_by_id() -> dict[int, dict[str, Any]]:
+    data = json.loads(_CARDS_JSON_PATH.read_text(encoding="utf-8"))
+    by_id: dict[int, dict[str, Any]] = {}
+    for row in data:
+        try:
+            by_id[int(row["id"])] = row
+        except (KeyError, TypeError, ValueError):
+            continue
+    return by_id
+
+
+_CARDS_BY_ID = _load_cards_by_id()
+
+
+def _deterministic_instance_id(*, seed: int, side: str, zone: str, index: int, card_id: int, level: int):
+    """Стабильный instance_id по позиции карты в сценарии.
+
+    Та же формула/seed, что ``cards_catalog.deterministic_instance_id`` в
+    extra_orchestra → реплеи (вкл. dev preview_frames) дают идентичные id.
+    """
+    key = f"{int(seed)}:{side}:{zone}:{int(index)}:{int(card_id)}:{int(level)}"
+    return uuid5(NAMESPACE_DNS, "extra-orchestra:" + key)
+
+
+def _build_card_from_spec(spec: dict[str, Any], *, seed: int, side: str, zone: str, index: int):
+    """CardInstance из сценарной spec карты: база из cards.json + overrides + id.
+
+    prod-локальный аналог ``CardsCatalog.build_instance`` (без импорта
+    extra_orchestra). overrides: mechanics/attack/hp/max_hp/is_ready/is_frozen.
+    """
+    card_id = int(spec.get("card_id", 0) or 0)
+    level = int(spec.get("level", 1) or 1)
+    row = _CARDS_BY_ID[card_id]
+    from core.converter import card_from_db
+
+    card = card_from_db(row, level)
+    card.instance_id = _deterministic_instance_id(
+        seed=seed, side=side, zone=zone, index=index, card_id=card_id, level=level
+    )
+    if spec.get("mechanics_override") is not None:
+        card.mechanics = list(spec["mechanics_override"])
+    if spec.get("attack_override") is not None:
+        card.attack = int(spec["attack_override"])
+    if spec.get("hp_override") is not None:
+        card.hp = int(spec["hp_override"])
+    if spec.get("max_hp_override") is not None:
+        card.max_hp = int(spec["max_hp_override"])
+    if spec.get("is_ready") is not None:
+        card.is_ready = bool(spec["is_ready"])
+    if spec.get("is_frozen") is not None:
+        card.is_frozen = bool(spec["is_frozen"])
+    return card
+
+
+def _build_card_list(items, *, seed: int, side: str, zone: str):
+    return [
+        _build_card_from_spec(it, seed=seed, side=side, zone=zone, index=i)
+        for i, it in enumerate(items or [])
+    ]
+
+
+def _build_player(side_spec: dict[str, Any], user_id: int, *, seed: int, side: str) -> PlayerState:
+    hero_spec = side_spec.get("hero") or {"card_id": 1, "level": 1}
+    hero = _build_card_from_spec(hero_spec, seed=seed, side=side, zone="hero", index=0)
+    mana = int(side_spec.get("mana", 0) or 0)
+    return PlayerState(
+        user_id=int(user_id),
+        is_bot=bool(side_spec.get("is_bot", False)),
+        hero=hero,
+        mana=mana,
+        max_mana=int(side_spec.get("max_mana", mana) or 0),
+        hand=_build_card_list(side_spec.get("hand", []), seed=seed, side=side, zone="hand"),
+        board=_build_card_list(side_spec.get("board", []), seed=seed, side=side, zone="board"),
+        deck=_build_card_list(side_spec.get("deck", []), seed=seed, side=side, zone="deck"),
+        trophies=int(side_spec.get("trophies", 0) or 0),
     )
 
 
-def _warrior(
-    card_id: int,
-    name: str,
-    attack: int,
-    hp: int,
-    mana: int,
-    mechanics: Optional[list[str]] = None,
-    *,
-    instance_id: UUID | None = None,
-) -> CardInstance:
-    return CardInstance(
-        instance_id=instance_id or uuid4(),
-        card_id=card_id,
-        name=name,
-        card_type=CardType.WARRIOR,
-        rarity="start",
-        mana_cost=mana,
-        attack=attack,
-        hp=hp,
-        max_hp=hp,
-        mechanics=list(mechanics or []),
-        is_ready=False,
-        description="Учебная карта" if card_id != 39 else "Душа в доспехах. Обладает Провокацией и защищает слабых.",
-        mechanics_desc="Провокация: враг обязан атаковать эту карту первой." if card_id == 39 else "",
+class TutorialArenaEnvironment(ArenaEnvironment):
+    """ArenaEnvironment для онбординг-туториала.
+
+    Сценарий онбординга — скриптовый: колоды пустые, добор карт не предусмотрен
+    (руки автор задаёт явно в init/узлах). Базовый ``_handle_end_turn`` честно
+    добирает 1 карту в начале хода; при пустой колоде это resurrect'ит сброс
+    (reshuffle graveyard → deck → hand) — убитый Альфонс возвращается в руку
+    новичка на следующем конце хода. В туториале «мёртв = мёртв», поэтому перед
+    добором чистим graveyard того, кто добирает (opponent): тогда
+    ``draw_one_from_deck`` идёт по пути fatigue (пустая колода + пустой сброс →
+    ``return False``), и убитые бойцы не воскресают. Остальная логика
+    end-of-turn (смена хода, мана, пробуждение, реген) остаётся как в базе.
+    """
+
+    def _handle_end_turn(self, player: PlayerState, opponent: PlayerState) -> None:
+        opponent.graveyard.clear()
+        super()._handle_end_turn(player, opponent)
+
+
+def _build_initial_arena(scenario: dict[str, Any], p1_uid: int, p2_uid: int, *, mode_config) -> ArenaEnvironment:
+    """Построить ArenaEnvironment один раз из init-сцены (apply_start_effects=False).
+
+    Фактические user_id берутся снаружи (p1_uid=новичок, p2_uid=бот), НЕ из
+    сценарных плейсхолдеров 1001/2002 — instance_id всё равно side-based (uuid5
+    по side/zone/index/card_id), поэтому совпадает с dev preview_frames оркестры.
+    """
+    graph = scenario["graph"]
+    init_node = next(n for n in graph["nodes"] if n["id"] == graph["start"])
+    scene = init_node["scene"]
+    seed = int(scenario.get("seed", 0) or 0)
+    p1 = _build_player(scene.get("p1") or {}, p1_uid, seed=seed, side="p1")
+    p2 = _build_player(scene.get("p2") or {}, p2_uid, seed=seed, side="p2")
+    starting_side = scene.get("starting_side", "p1")
+    current_turn_owner_id = int(p1_uid) if starting_side == "p1" else int(p2_uid)
+    state = GameState(
+        p1=p1,
+        p2=p2,
+        current_turn_owner_id=current_turn_owner_id,
+        turn_number=int(scene.get("turn_number", 1) or 1),
+        status=GameStatus.ONGOING,
     )
+    # apply_start_effects=False: init-сцена остаётся ровно как автор описал;
+    # start-of-turn эффекты следующих ходов честно применятся через end_turn.
+    # TutorialArenaEnvironment: подавляет resurrect убитых бойцов из сброса
+    # при конце хода (см. класс) — иначе Альфонс возвращается в руку после смерти.
+    return TutorialArenaEnvironment(
+        state,
+        classic_params=mode_config.classic,
+        apply_start_effects=False,
+        rng=Random(seed),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Граф → линейный путь + step-узлы (узлы с tutorial). TUTORIAL_STEPS выводится
+# из графа, чтобы web/server.py (TUTORIAL_STEPS.get(step-1).get("id")) не менять.
+# ---------------------------------------------------------------------------
+
+
+def _load_tutorial_scenario() -> dict[str, Any]:
+    return json.loads(_TUTORIAL_SCENARIO_PATH.read_text(encoding="utf-8"))
+
+
+def _build_linear_path(scenario: dict[str, Any]) -> list[dict[str, Any]]:
+    graph = scenario["graph"]
+    nodes_by_id = {n["id"]: n for n in graph["nodes"]}
+    outgoing: dict[str, str | None] = {}
+    for edge in graph.get("edges", []):
+        outgoing.setdefault(edge["from"], edge["to"])
+    path: list[dict[str, Any]] = []
+    cur = graph["start"]
+    seen: set[str] = set()
+    while cur is not None and cur in nodes_by_id and cur not in seen:
+        seen.add(cur)
+        node = nodes_by_id[cur]
+        path.append(node)
+        cur = outgoing.get(cur)
+    return path
+
+
+_TUTORIAL_SCENARIO = _load_tutorial_scenario()
+_TUTORIAL_PATH = _build_linear_path(_TUTORIAL_SCENARIO)
+_TUTORIAL_STEP_NODES = [n for n in _TUTORIAL_PATH if n.get("tutorial")]
+_TUTORIAL_STEP_INDEX_OF = {n["id"]: i for i, n in enumerate(_TUTORIAL_STEP_NODES)}
+_TUTORIAL_PATH_INDEX_OF = {n["id"]: i for i, n in enumerate(_TUTORIAL_PATH)}
+
+TUTORIAL_STEPS: dict[int, dict[str, Any]] = {
+    i: dict(node["tutorial"]) for i, node in enumerate(_TUTORIAL_STEP_NODES)
+}
+TUTORIAL_FINAL_STEP = len(_TUTORIAL_STEP_NODES) - 1
+TUTORIAL_DISPLAY_STEPS_TOTAL = TUTORIAL_FINAL_STEP
+
+
+# ---------------------------------------------------------------------------
+# Хелперы payload (читают наследованное состояние real-движка).
+# ---------------------------------------------------------------------------
 
 
 def _snapshot_id_for_card(engine: "TutorialBattleEngine", card_id: int, owner: str, zone: str) -> str | None:
@@ -227,7 +320,7 @@ def _snapshot_id_for_card(engine: "TutorialBattleEngine", card_id: int, owner: s
         return None
     state = engine._arena.state
     player = state.p1 if owner == "player" else state.p2
-    cards: list[CardInstance]
+    cards: list
     if zone == "hand":
         cards = player.hand
     elif zone == "board":
@@ -250,7 +343,12 @@ def _previous_tutorial_message(step_index: int) -> str | None:
 
 
 class TutorialBattleEngine(BattleEngine):
-    """Deterministic onboarding battle controlled by a server-side step machine."""
+    """Deterministic onboarding battle driven by the onboarding graph-scenario.
+
+    Subclass prod ``BattleEngine`` (NOT OrchestraBattleEngine): ходы применяются
+    через настоящий ``execute_action`` → ``ArenaEnvironment.step``, состояние
+    наследуется по пути графа. p1-шаги ждут новичка, остальные узлы auto-применяются.
+    """
 
     def __init__(self, *, user_id: int, tutorial_step: int = 0, db: Any = None, active_matches: Optional[dict[str, BattleEngine]] = None) -> None:
         bot_id = tutorial_bot_id_for_user(user_id)
@@ -264,135 +362,160 @@ class TutorialBattleEngine(BattleEngine):
             p2_name="Кто-то злой",
             game_mode="training",
         )
-        self.turn_duration = TUTORIAL_TURN_DURATION_SECONDS
+        # Параметры режима — из сценария (99с/mana_per_turn=1/no sudden death),
+        # чтобы и арена, и сериализатор были согласованы с onboarding-конфигом.
+        from dataclasses import replace
+        from infrastructure.match_modes import ClassicParams
+
+        classic = self._classic_params_from(_TUTORIAL_SCENARIO.get("classic_params"))
+        self.mode_config = replace(self.mode_config, classic=classic)
+        self.turn_duration = self.mode_config.classic.turn_duration_seconds
+
         self.tutorial_step = max(0, min(int(tutorial_step or 0), TUTORIAL_FINAL_STEP))
         self.is_onboarding_tutorial = True
         self.bot_id = bot_id
-        self._build_state_for_step(self.tutorial_step)
+        self._rng_seed = _TUTORIAL_SEED
+        self._replay_to_step(self.tutorial_step)
 
-    def _build_state_for_step(self, step: int) -> None:
-        user_id = int(self.player_ids[0])
-        bot_id = int(self.player_ids[1])
-        player = PlayerState(
-            user_id=user_id,
-            is_bot=False,
-            hero=_hero("Твой герой", 18, instance_id=_tutorial_instance_id(user_id, "player-hero")),
-            mana=2,
-            max_mana=2,
-            hand=[],
-            board=[],
-            deck=[],
-            trophies=0,
-        )
-        opponent = PlayerState(
-            user_id=bot_id,
-            is_bot=True,
-            hero=_hero("Герой врага", 7, instance_id=_tutorial_instance_id(user_id, "opponent-hero")),
-            mana=2,
-            max_mana=2,
-            hand=[],
-            board=[],
-            deck=[],
-            trophies=0,
+    @staticmethod
+    def _classic_params_from(spec: Optional[dict[str, Any]]):
+        from infrastructure.match_modes import ClassicParams
+
+        spec = spec or {}
+        fields = {f.name for f in ClassicParams.__dataclass_fields__.values()}
+        kwargs = {k: v for k, v in spec.items() if k in fields and v is not None}
+        return ClassicParams(**kwargs)
+
+    # -- deterministic state build + replay ---------------------------------
+
+    def _build_fresh_arena(self) -> ArenaEnvironment:
+        return _build_initial_arena(
+            _TUTORIAL_SCENARIO,
+            int(self.player_ids[0]),
+            int(self.player_ids[1]),
+            mode_config=self.mode_config,
         )
 
-        attacker = _warrior(37, "Слайм", 3, 2, 1, instance_id=_tutorial_instance_id(user_id, "player-attacker-37"))
-        threat = _warrior(40, "Стив", 3, 3, 3, instance_id=_tutorial_instance_id(user_id, "opponent-threat-40"))
-        alphonse = _warrior(
-            39,
-            "Альфонс Элрик",
-            1,
-            3,
-            2,
-            ["taunt"],
-            instance_id=_tutorial_instance_id(user_id, "player-alphonse-39"),
-        )
-
-        current_owner = user_id
-        turn = 1
-
-        if step <= 1:
-            player.hand = [attacker]
-        elif step == 2:
-            attacker.is_ready = False
-            player.board = [attacker]
-            player.hand = [alphonse]
-        elif step == 3:
-            attacker.is_ready = True
-            player.board = [attacker]
-            player.hand = [alphonse]
-            opponent.board = [threat]
-            opponent.hero.hp = 7
-            turn = 3
-        elif step == 4:
-            attacker.is_ready = False
-            player.board = [attacker]
-            player.hand = [alphonse]
-            opponent.board = [threat]
-            opponent.hero.hp = 4
-            turn = 3
-        elif step == TUTORIAL_TAUNT_DEMO_STEP:
-            attacker.is_ready = False
-            threat.is_ready = True
-            player.board = [attacker, alphonse]
-            player.hand = []
-            opponent.board = [threat]
-            opponent.hero.hp = 4
-            current_owner = bot_id
-            turn = 4
-        elif step == TUTORIAL_TAUNT_HIT_STEP:
-            attacker.is_ready = False
-            threat.is_ready = False
-            threat.hp = 2
-            alphonse.hp = 0
-            alphonse.is_ready = False
-            player.board = [attacker, alphonse]
-            player.hand = []
-            opponent.board = [threat]
-            opponent.hero.hp = 4
-            current_owner = bot_id
-            turn = 4
-        elif step == TUTORIAL_LETHAL_STEP:
-            attacker.is_ready = True
-            threat.is_ready = False
-            threat.hp = 2
-            player.board = [attacker]
-            player.hand = []
-            opponent.board = [threat]
-            opponent.hero.hp = 4
-            turn = 5
-        else:
-            attacker.is_ready = False
-            player.board = [attacker]
-            player.hand = []
-            opponent.board = [threat]
-            opponent.hero.hp = 0
-            current_owner = user_id
-            turn = 5
-
-        game_state = GameState(
-            p1=player,
-            p2=opponent,
-            current_turn_owner_id=current_owner,
-            turn_number=turn,
-            status=GameStatus.P1_WIN if step >= TUTORIAL_FINAL_STEP else GameStatus.ONGOING,
-        )
-        if step == TUTORIAL_TAUNT_DEMO_STEP:
-            game_state.action_history.append(("opponent", "Кто-то злой готовит удар, но Провокация Альфонса закрывает героя."))
-        elif step == TUTORIAL_TAUNT_HIT_STEP:
-            game_state.action_history.append(("opponent", "Стив ударил Альфонса на 3 HP. Провокация защитила героя."))
-        elif step == TUTORIAL_LETHAL_STEP:
-            game_state.action_history.append(("opponent", "Стив ударил Альфонса. Провокация сработала и открыла путь к герою."))
-        self._arena = ArenaEnvironment(game_state, classic_params=self.mode_config.classic)
-        self.current_player_id = current_owner
-        self.turn = turn
+    def _sync_engine_state(self) -> None:
+        state = self._arena.state
+        self.current_player_id = state.current_turn_owner_id
+        self.turn = state.turn_number
+        self.is_ended = state.status != GameStatus.ONGOING
         self.client_ready = True
-        self.client_ready_users = {user_id}
-        self.is_ended = step >= TUTORIAL_FINAL_STEP
+        self.client_ready_users = {int(self.player_ids[0]), int(self.player_ids[1])}
+
+    def _side_uid(self, side: str) -> int:
+        return int(self.player_ids[0]) if side == "p1" else int(self.player_ids[1])
+
+    def _action_obj_from_node(self, node: dict[str, Any], side_uid: int):
+        """BaseAction из узла графа (auto-применение silent/p1-replay ходов).
+
+        Индексы разрешаются по board/hand действующей стороны (автор-френдли).
+        """
+        spec = node.get("action") or {}
+        atype = spec.get("type")
+        player, opponent = self._arena._resolve_player_pair(side_uid)
+        if atype == "play_card":
+            hand_index = int(spec.get("hand_index", 0) or 0)
+            target_id = None
+            if spec.get("target_is_hero"):
+                target_id = str(opponent.hero.instance_id)
+            elif spec.get("target_index") is not None:
+                ti = int(spec["target_index"])
+                if 0 <= ti < len(opponent.board):
+                    target_id = str(opponent.board[ti].instance_id)
+            elif spec.get("target_id") is not None:
+                target_id = spec["target_id"]
+            return PlayCardAction(hand_index=hand_index, target_id=target_id, position=spec.get("position"))
+        if atype == "attack":
+            attacker_id = spec.get("attacker_id")
+            if attacker_id is None and spec.get("attacker_index") is not None:
+                ai = int(spec["attacker_index"])
+                if 0 <= ai < len(player.board):
+                    attacker_id = str(player.board[ai].instance_id)
+            target_id = spec.get("target_id")
+            target_is_hero = bool(spec.get("target_is_hero", False))
+            if not target_is_hero and target_id is None and spec.get("target_index") is not None:
+                ti = int(spec["target_index"])
+                if 0 <= ti < len(opponent.board):
+                    target_id = str(opponent.board[ti].instance_id)
+            return AttackAction(
+                attacker_id=str(attacker_id) if attacker_id is not None else "",
+                target_id=target_id,
+                target_is_hero=target_is_hero,
+            )
+        if atype == "end_turn":
+            return EndTurnAction()
+        raise ValueError(f"unknown tutorial action type: {atype}")
+
+    def _apply_node(self, node: dict[str, Any]) -> dict[str, Any]:
+        """Применить action-узел графа через настоящий execute_action (silent/replay)."""
+        side_uid = self._side_uid(node.get("side", "p1"))
+        action_obj = self._action_obj_from_node(node, side_uid)
+        result = self.execute_action(side_uid, action_obj)
+        if result.get("success") is False:
+            # Сценарий провалидирован в dev (preview_frames); failure здесь =
+            # баг авторства сценария (нелегальный ход/side-guard). Не глотаем тихо.
+            raise RuntimeError(
+                f"tutorial scenario action failed at node {node.get('id')!r}: {result.get('error')}"
+            )
+        return result
+
+    def _replay_to_step(self, step: int) -> None:
+        """Детерминированный реплей из init до step-узла N (auto-проигрывая все action-узлы до него)."""
+        import core.effects as _effects
+
+        self._rng_seed = _TUTORIAL_SEED
+        orig_random = _effects.random
+        _effects.random = Random(_TUTORIAL_SEED)
+        try:
+            self._arena = self._build_fresh_arena()
+            self._rng = Random(_TUTORIAL_SEED)
+            target_path_index = _TUTORIAL_PATH_INDEX_OF[_TUTORIAL_STEP_NODES[step]["id"]]
+            # применяем все action-узлы ПЕРЕД step-узлом N (init s0 = path[0] уже построен)
+            for node in _TUTORIAL_PATH[1:target_path_index]:
+                if node.get("kind") == "action":
+                    self._apply_node(node)
+            self.tutorial_step = step
+        finally:
+            _effects.random = orig_random
+        self._sync_engine_state()
 
     def set_tutorial_step(self, step: int) -> None:
-        self.tutorial_step = max(0, min(int(step), TUTORIAL_FINAL_STEP))
-        self._build_state_for_step(self.tutorial_step)
+        self._replay_to_step(max(0, min(int(step), TUTORIAL_FINAL_STEP)))
+
+    # -- advance along the graph -------------------------------------------
+
+    def _advance_to_next_step(self, from_path_index: int) -> dict[str, Any] | None:
+        """Применить silent action-узлы после from_path_index до ближайшего step-узла.
+
+        Возвращает результат последнего применённого действия (нужно для game_over
+        при летале) или None, если silent-узлов не было.
+        """
+        import core.effects as _effects
+
+        orig_random = _effects.random
+        _effects.random = getattr(self, "_rng", Random(_TUTORIAL_SEED))
+        last_result: dict[str, Any] | None = None
+        try:
+            cursor = from_path_index
+            while cursor < len(_TUTORIAL_PATH):
+                node = _TUTORIAL_PATH[cursor]
+                if node.get("tutorial"):
+                    break  # дошли до следующего step-узла
+                if node.get("kind") == "action":
+                    last_result = self._apply_node(node)
+                cursor += 1
+            if cursor < len(_TUTORIAL_PATH):
+                self.tutorial_step = _TUTORIAL_STEP_INDEX_OF[_TUTORIAL_PATH[cursor]["id"]]
+            else:
+                self.tutorial_step = TUTORIAL_FINAL_STEP
+        finally:
+            _effects.random = orig_random
+        self._sync_engine_state()
+        return last_result
+
+    # -- public API (contract preserved) ------------------------------------
 
     def get_full_state(self, viewer_id: Optional[int] = None) -> dict[str, Any]:
         state = super().get_full_state(viewer_id=viewer_id)
@@ -482,7 +605,7 @@ class TutorialBattleEngine(BattleEngine):
             )
             if not attacker:
                 return []
-            return [
+            actions: list[dict[str, Any]] = [
                 {
                     "type": "attack",
                     "attacker_id": str(attacker.instance_id),
@@ -490,18 +613,39 @@ class TutorialBattleEngine(BattleEngine):
                     "target_is_hero": bool(allowed.get("target_is_hero")),
                 }
             ]
+            # also_allow_minion_targets: advertise every opponent board minion as an
+            # extra attackable target (with target_is_hero=False) so the arena can offer
+            # a "choose your target" step where tapping a minion is a wrong, redirectable
+            # action. validate_tutorial_action still rejects minion taps via the
+            # target_is_hero mismatch — this flag only widens what's highlighted/tappable.
+            if allowed.get("also_allow_minion_targets"):
+                for minion in state.p2.board:
+                    actions.append({
+                        "type": "attack",
+                        "attacker_id": str(attacker.instance_id),
+                        "target_id": str(minion.instance_id),
+                        "target_is_hero": False,
+                    })
+            return actions
 
         return []
 
     def _wrong_feedback_for(self, action: dict[str, Any]) -> str:
-        allowed = TUTORIAL_STEPS.get(self.tutorial_step, {}).get("allowed", {})
-        if self.tutorial_step == 4 and action.get("type") == "play_card":
-            return WRONG_ACTION_FEEDBACK["wrong_alphonse"]
-        if action.get("type") == "attack" and not action.get("target_is_hero") and allowed.get("target_is_hero"):
-            return WRONG_ACTION_FEEDBACK["wrong_target"]
-        if action.get("type") == "attack" and self.tutorial_step <= 2:
-            return WRONG_ACTION_FEEDBACK["sleeping_unit"]
-        return WRONG_ACTION_FEEDBACK["generic"]
+        step = TUTORIAL_STEPS.get(self.tutorial_step, {})
+        allowed = step.get("allowed", {}) or {}
+        # Per-step override: a tutorial node may carry a `wrong_feedback` dict keyed by
+        # reason (wrong_target / wrong_card / sleeping_unit / generic) to replace the
+        # generic WRONG_ACTION_FEEDBACK text for that step. Falls back to the shared
+        # constants when the step doesn't define one for the matched reason.
+        wf = step.get("wrong_feedback", {}) or {}
+        atype = action.get("type")
+        if atype == "attack" and not action.get("target_is_hero") and allowed.get("target_is_hero"):
+            return wf.get("wrong_target") or WRONG_ACTION_FEEDBACK["wrong_target"]
+        if atype == "play_card":
+            return wf.get("wrong_card") or WRONG_ACTION_FEEDBACK["wrong_alphonse"]
+        if atype == "attack":
+            return wf.get("sleeping_unit") or WRONG_ACTION_FEEDBACK["sleeping_unit"]
+        return wf.get("generic") or WRONG_ACTION_FEEDBACK["generic"]
 
     def validate_tutorial_action(self, action: dict[str, Any]) -> tuple[bool, str]:
         step = TUTORIAL_STEPS.get(self.tutorial_step)
@@ -542,22 +686,25 @@ class TutorialBattleEngine(BattleEngine):
                 "tutorial_step": self.tutorial_step,
             }
 
+        left_step = self.tutorial_step
+        left_node = _TUTORIAL_STEP_NODES[left_step]
+        left_path_index = _TUTORIAL_PATH_INDEX_OF[left_node["id"]]
+
+        # continue / auto_continue / complete — beat-шаги (без действия пользователя).
         if action["type"] == "continue":
-            self.set_tutorial_step(1)
+            self._advance_to_next_step(left_path_index + 1)
             return {"success": True, "tutorial_step": self.tutorial_step}
 
         if action["type"] == "auto_continue":
-            previous_message = TUTORIAL_STEPS.get(self.tutorial_step, {}).get("message")
-            if self.tutorial_step == TUTORIAL_TAUNT_DEMO_STEP:
-                next_step = TUTORIAL_TAUNT_HIT_STEP
+            previous_message = TUTORIAL_STEPS.get(left_step, {}).get("message")
+            self._advance_to_next_step(left_path_index + 1)
+            leaving_step_id = (left_node.get("tutorial") or {}).get("id")
+            if leaving_step_id == "taunt_demo":
                 scripted_event = "opponent_attack_taunt"
-            elif self.tutorial_step == TUTORIAL_TAUNT_HIT_STEP:
-                next_step = TUTORIAL_LETHAL_STEP
+            elif leaving_step_id == "taunt_hit":
                 scripted_event = "opponent_attacked_taunt"
             else:
-                next_step = min(self.tutorial_step + 1, TUTORIAL_FINAL_STEP)
                 scripted_event = "tutorial_auto_continue"
-            self.set_tutorial_step(next_step)
             return {
                 "success": True,
                 "tutorial_step": self.tutorial_step,
@@ -566,9 +713,15 @@ class TutorialBattleEngine(BattleEngine):
             }
 
         if action["type"] == "complete":
-            self.set_tutorial_step(TUTORIAL_FINAL_STEP)
-            return {"success": True, "tutorial_step": self.tutorial_step, "game_over": True, "winner_id": int(self.player_ids[0])}
+            self.tutorial_step = TUTORIAL_FINAL_STEP
+            return {
+                "success": True,
+                "tutorial_step": self.tutorial_step,
+                "game_over": True,
+                "winner_id": int(self.player_ids[0]),
+            }
 
+        # play_card / attack / end_turn — action-шаг: действие новичка через real-движок.
         if action["type"] == "play_card":
             position = len(self._arena.state.p1.board) if self._arena else 0
             action_obj = PlayCardAction(
@@ -589,13 +742,13 @@ class TutorialBattleEngine(BattleEngine):
         if result.get("success") is False:
             return result
 
-        next_step = min(self.tutorial_step + 1, TUTORIAL_FINAL_STEP)
-        self.set_tutorial_step(next_step)
+        self._advance_to_next_step(left_path_index + 1)
+        after_message = TUTORIAL_STEPS.get(left_step, {}).get("after")
         payload: dict[str, Any] = {
             "success": True,
             "tutorial_step": self.tutorial_step,
-            "after_message": TUTORIAL_STEPS.get(self.tutorial_step - 1, {}).get("after"),
+            "after_message": after_message,
         }
-        if self.tutorial_step >= TUTORIAL_FINAL_STEP:
-            payload.update({"game_over": True, "winner_id": int(self.player_ids[0])})
+        if result.get("game_over") or self.tutorial_step >= TUTORIAL_FINAL_STEP:
+            payload.update({"game_over": True, "winner_id": int(result.get("winner_id") or self.player_ids[0])})
         return payload

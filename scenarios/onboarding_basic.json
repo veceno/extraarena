@@ -1,0 +1,244 @@
+{
+  "schema": "extra_orchestra.scenario.v2",
+  "name": "onboarding_basic",
+  "match_id": "onboarding",
+  "seed": 42,
+  "viewer_side": "p1",
+  "game_mode": "classic",
+  "classic_params": {
+    "turn_duration_seconds": 99,
+    "mana_per_turn": 1,
+    "sudden_death_enabled": false
+  },
+  "graph": {
+    "start": "s0",
+    "nodes": [
+      {
+        "id": "s0",
+        "kind": "scene",
+        "scene": {
+          "type": "init",
+          "turn_number": 1,
+          "starting_side": "p1",
+          "display_ms": 1200,
+          "p1": {
+            "user_id": 1001,
+            "nickname": "Ты",
+            "is_bot": false,
+            "mana": 2,
+            "max_mana": 2,
+            "hero": {"card_id": 1, "level": 1, "hp_override": 18, "max_hp_override": 18},
+            "hand": [
+              {"card_id": 37, "level": 1, "attack_override": 4},
+              {"card_id": 39, "level": 1}
+            ],
+            "board": [],
+            "deck": []
+          },
+          "p2": {
+            "user_id": 2002,
+            "nickname": "Кто-то злой",
+            "is_bot": true,
+            "mana": 3,
+            "max_mana": 3,
+            "hero": {"card_id": 1, "level": 1, "hp_override": 8, "max_hp_override": 8},
+            "hand": [
+              {"card_id": 40, "level": 1}
+            ],
+            "board": [],
+            "deck": []
+          }
+        }
+      },
+      {
+        "id": "step0",
+        "kind": "scene",
+        "scene": {"type": "hold", "display_ms": 1200},
+        "tutorial": {
+          "id": "goal",
+          "message": "Побеждает тот, кто опустит HP героя врага до нуля. Карты на поле — способ добраться до героя.",
+          "hint": null,
+          "target": "opponent_hero",
+          "allowed": {"type": "continue"}
+        }
+      },
+      {
+        "id": "step1",
+        "kind": "action",
+        "side": "p1",
+        "action": {"type": "play_card", "hand_index": 0, "delay_ms": 800},
+        "tutorial": {
+          "id": "play_attacker",
+          "message": "Ставим бойца на поле. Он не атакует сразу: сначала занимает позицию.",
+          "hint": "Выставь эту карту",
+          "target": "hand_card:37",
+          "allowed": {"type": "play_card", "card_id": 37}
+        }
+      },
+      {
+        "id": "step2",
+        "kind": "action",
+        "side": "p1",
+        "action": {"type": "end_turn", "delay_ms": 500},
+        "tutorial": {
+          "id": "sleep",
+          "message": "Видишь метку сна? Новые бойцы обычно ждут следующий ход. Теперь, заверши ход.",
+          "hint": "Завершить ход",
+          "target": "end_turn",
+          "allowed": {"type": "end_turn"}
+        }
+      },
+      {
+        "id": "p2_play",
+        "kind": "action",
+        "side": "p2",
+        "action": {"type": "play_card", "hand_index": 0, "delay_ms": 800}
+      },
+      {
+        "id": "step3",
+        "kind": "scene",
+        "scene": {"type": "hold", "display_ms": 1200},
+        "tutorial": {
+          "id": "threat",
+          "message": "У врага появился боец. Но наша цель всё ещё герой. Не каждая карта врага требует размена.",
+          "hint": null,
+          "target": "opponent_hero",
+          "allowed": {"type": "continue"}
+        }
+      },
+      {
+        "id": "p2_end",
+        "kind": "action",
+        "side": "p2",
+        "action": {"type": "end_turn", "delay_ms": 500}
+      },
+      {
+        "id": "step4",
+        "kind": "action",
+        "side": "p1",
+        "action": {"type": "attack", "attacker_index": 0, "target_is_hero": true, "delay_ms": 800},
+        "tutorial": {
+          "id": "choose_target",
+          "message": "Слайм готов. Попробуй выбрать, куда выгоднее ударить.",
+          "hint": "Выбери бойца и нажми героя врага",
+          "target": "opponent_hero",
+          "allowed": {"type": "attack", "attacker_card_id": 37, "target_is_hero": true, "also_allow_minion_targets": true},
+          "wrong_feedback": {"wrong_target": "Можно, но сейчас выгоднее бить героя: его HP — условие победы."}
+        }
+      },
+      {
+        "id": "step5",
+        "kind": "scene",
+        "scene": {"type": "hold", "display_ms": 1200},
+        "tutorial": {
+          "id": "tempo",
+          "message": "Отлично. Мы не просто нанесли урон — мы приблизили победу. Считай, сколько ударов осталось до 0 HP.",
+          "hint": null,
+          "target": "opponent_hero",
+          "allowed": {"type": "continue"}
+        }
+      },
+      {
+        "id": "step6",
+        "kind": "scene",
+        "scene": {"type": "hold", "display_ms": 1200},
+        "tutorial": {
+          "id": "danger",
+          "message": "Стив ударит больно. Если он дойдёт до героя, мы потеряем темп. Нужен защитник.",
+          "hint": null,
+          "target": "opponent_hero",
+          "allowed": {"type": "continue"}
+        }
+      },
+      {
+        "id": "step7",
+        "kind": "action",
+        "side": "p1",
+        "action": {"type": "play_card", "hand_index": 0, "delay_ms": 800},
+        "tutorial": {
+          "id": "taunt_intro",
+          "message": "У Альфонса Провокация. Враг обязан сначала атаковать его.",
+          "hint": "Выставь Альфонса",
+          "target": "hand_card:39",
+          "allowed": {"type": "play_card", "card_id": 39},
+          "wrong_feedback": {"wrong_card": "Сейчас нужен Альфонс. Он примет удар на себя."}
+        }
+      },
+      {
+        "id": "p1_end",
+        "kind": "action",
+        "side": "p1",
+        "action": {"type": "end_turn", "delay_ms": 500}
+      },
+      {
+        "id": "step8",
+        "kind": "scene",
+        "scene": {"type": "hold", "display_ms": 5600},
+        "tutorial": {
+          "id": "taunt_demo",
+          "message": "Враг атакует Альфонса. Вот так работает Провокация — она закрывает героя и ломает план врага.",
+          "hint": null,
+          "target": "board_card:39",
+          "allowed": {"type": "auto_continue"},
+          "is_auto_step": true,
+          "auto_advance_delay_ms": 5600
+        }
+      },
+      {
+        "id": "p2_attack",
+        "kind": "action",
+        "side": "p2",
+        "action": {"type": "attack", "attacker_index": 0, "target_index": 1, "delay_ms": 800}
+      },
+      {
+        "id": "p2_end2",
+        "kind": "action",
+        "side": "p2",
+        "action": {"type": "end_turn", "delay_ms": 500}
+      },
+      {
+        "id": "step9",
+        "kind": "action",
+        "side": "p1",
+        "action": {"type": "attack", "attacker_index": 0, "target_is_hero": true, "delay_ms": 800},
+        "tutorial": {
+          "id": "lethal",
+          "message": "Теперь путь открыт. У героя врага мало HP. Добивай.",
+          "hint": "Атакуй героя врага",
+          "target": "opponent_hero",
+          "allowed": {"type": "attack", "attacker_card_id": 37, "target_is_hero": true}
+        }
+      },
+      {
+        "id": "step10",
+        "kind": "scene",
+        "scene": {"type": "hold", "display_ms": 1200},
+        "tutorial": {
+          "id": "victory",
+          "message": "Готово. Победа — это 0 HP у героя врага. Теперь покажу, где собирать отряд и искать бои.",
+          "hint": "В меню",
+          "target": null,
+          "allowed": {"type": "complete"}
+        }
+      }
+    ],
+    "edges": [
+      {"id": "e1", "from": "s0", "to": "step0"},
+      {"id": "e2", "from": "step0", "to": "step1"},
+      {"id": "e3", "from": "step1", "to": "step2"},
+      {"id": "e4", "from": "step2", "to": "p2_play"},
+      {"id": "e5", "from": "p2_play", "to": "step3"},
+      {"id": "e6", "from": "step3", "to": "p2_end"},
+      {"id": "e7", "from": "p2_end", "to": "step4"},
+      {"id": "e8", "from": "step4", "to": "step5"},
+      {"id": "e9", "from": "step5", "to": "step6"},
+      {"id": "e10", "from": "step6", "to": "step7"},
+      {"id": "e11", "from": "step7", "to": "p1_end"},
+      {"id": "e12", "from": "p1_end", "to": "step8"},
+      {"id": "e13", "from": "step8", "to": "p2_attack"},
+      {"id": "e14", "from": "p2_attack", "to": "p2_end2"},
+      {"id": "e15", "from": "p2_end2", "to": "step9"},
+      {"id": "e16", "from": "step9", "to": "step10"}
+    ]
+  }
+}
