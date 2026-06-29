@@ -732,6 +732,20 @@ fn mask_targets_for_card(
         .iter()
         .any(|m| m.contains("freeze") || m.contains("battlecry_freeze"));
     let is_choose_shield_damage = mechanics.iter().any(|m| m.contains("choose_shield_damage"));
+    // TAMHP (card 52): target_ally_max_hp_plus[_universal]_N. The universal
+    // variant allows the own-hero target (code 16); the bare variant forbids
+    // hero. Both share friendly-minion target codes 9..15. Mirrors
+    // core/engine.py `get_valid_targets` branches for is_max_hp_plus_universal
+    // / is_max_hp_plus. Strictly additive: only cards whose mechanics contain
+    // `target_ally_max_hp_plus` (card 52) reach this branch; all other cards
+    // have is_max_hp_plus_* = false and skip it, leaving existing masks
+    // byte-identical (frozen-classic guard).
+    let is_max_hp_plus_universal = mechanics
+        .iter()
+        .any(|m| m.starts_with("target_ally_max_hp_plus_universal"));
+    let is_max_hp_plus = mechanics
+        .iter()
+        .any(|m| m.starts_with("target_ally_max_hp_plus_") && !m.starts_with("target_ally_max_hp_plus_universal"));
 
     if is_consume {
         for target_idx in 0..me.board.len() {
@@ -776,6 +790,27 @@ fn mask_targets_for_card(
             mask[base + 9 + target_idx] = 1.0;
         }
         mask[base + 16] = 1.0;
+        return;
+    }
+
+    // TAMHP universal (card 52): friendly board minions (9..15) + own hero
+    // (16). Mirrors core/engine.py `get_valid_targets` is_max_hp_plus_universal
+    // branch. Additive: only card 52 reaches here.
+    if is_max_hp_plus_universal {
+        for target_idx in 0..me.board.len() {
+            mask[base + 9 + target_idx] = 1.0;
+        }
+        mask[base + 16] = 1.0;
+        return;
+    }
+
+    // TAMHP non-universal: friendly board minions only (no hero). Mirrors
+    // core/engine.py is_max_hp_plus branch. No card currently uses the bare
+    // variant, but the branch is symmetric with the universal one.
+    if is_max_hp_plus {
+        for target_idx in 0..me.board.len() {
+            mask[base + 9 + target_idx] = 1.0;
+        }
         return;
     }
 
@@ -969,6 +1004,7 @@ fn apply_play_card(
             target_code,
             overdraw_to_discard,
             draw_rng,
+            Some(position),
         );
     } else if card.is_potion() {
         let card_id = card.card_id;
@@ -981,6 +1017,7 @@ fn apply_play_card(
             target_code,
             overdraw_to_discard,
             draw_rng,
+            None,
         );
         player.graveyard.push(card);
     }
@@ -1170,6 +1207,12 @@ fn apply_play_effects(
     target_code: usize,
     overdraw_to_discard: bool,
     draw_rng: &mut DrawRng,
+    // Index of the just-played card in `owner.board` (warriors only), so
+    // team_wide_shield can self-exclude the played card (mirrors
+    // core/effects.py `effect_team_wide_shield`:
+    // `u.instance_id != card.instance_id`). `None` for potions (card goes to
+    // graveyard, never on board) — team_wide_shield is warrior-only anyway.
+    self_board_index: Option<usize>,
 ) {
     for mechanic in mechanics {
         if mechanic.starts_with("deathrattle_") {
@@ -1246,7 +1289,101 @@ fn apply_play_effects(
                     }
                 }
             }
+        } else if mechanic == "aoe_silence" {
+            // AOE-SILENCE-1 (card 47 Солдатик): strip ALL mechanics from up to
+            // 3 enemy minions that currently have mechanics. Mirrors
+            // core/effects.py `effect_aoe_silence`: candidates are
+            // `[u for u in opponent.board if u.mechanics]` and `_silence_units`
+            // clears `unit.mechanics = []` (limit=3). Status flags
+            // (is_frozen, is_ready, instant_kill_used, ...) are NOT touched —
+            // only the mechanics list. No damage; shield does NOT protect
+            // (silence strips the shield mechanic too, since shield lives in
+            // `mechanics`). The just-played card is irrelevant here (targets
+            // are enemy minions).
+            let mut silenced = 0;
+            for target in opponent.board.iter_mut() {
+                if target.mechanics.is_empty() {
+                    continue;
+                }
+                target.mechanics.clear();
+                silenced += 1;
+                if silenced >= 3 {
+                    break;
+                }
+            }
+        } else if mechanic == "team_wide_shield" {
+            // TWS-1/2 (card 48 Соул Гудман): grant a one-shot `shield` to up
+            // to 3 friendly minions, EXCLUDING the just-played card itself.
+            // Mirrors core/effects.py `effect_team_wide_shield`:
+            // `targets = [u for u in owner.board if u.instance_id !=
+            //  card.instance_id]` then `_grant_shields(targets, limit=3)`.
+            // At this point the played card is already inserted into
+            // owner.board at `self_board_index`; self-exclusion skips that
+            // index so it does NOT consume one of the 3 shield slots. Units
+            // that already have `shield` are skipped (don't waste the limit).
+            // The hero is NOT a target (mechanic is "cards on board" only).
+            let mut granted = 0;
+            for (idx, unit) in owner.board.iter_mut().enumerate() {
+                if Some(idx) == self_board_index {
+                    continue;
+                }
+                if unit.has_mechanic("shield") {
+                    continue;
+                }
+                unit.mechanics.push("shield".to_string());
+                granted += 1;
+                if granted >= 3 {
+                    break;
+                }
+            }
+        } else if let Some(amount) = mechanic
+            .strip_prefix("target_ally_max_hp_plus_universal_")
+            .and_then(parse_i32_prefix)
+        {
+            // TAMHP-1/2/3 (card 52 Криста Ленц, universal variant): bump the
+            // targeted friendly unit's (or own hero's) max_hp by `amount` via
+            // DIRECT increase. Current hp is NOT changed (no healing; the
+            // delta only raises the ceiling). NO clamp via heal_card (audit
+            // risk note). Mirrors core/effects.py
+            // `target_ally_max_hp_plus_universal_N` handler: `unit.max_hp +=
+            // hp_bonus` / `owner.hero.max_hp += hp_bonus`. target_code 9..=15
+            // → owner.board[0..6]; target_code 16 → owner.hero. Universal
+            // allows hero; the non-universal variant below forbids hero.
+            apply_max_hp_plus(owner, target_code, amount, true);
+        } else if let Some(rest) = mechanic.strip_prefix("target_ally_max_hp_plus_") {
+            // TAMHP non-universal variant (`target_ally_max_hp_plus_N`,
+            // allow_hero=False). The universal branch above handles the
+            // `_universal_` prefix, so `rest` here is the bare `N` (the
+            // universal case already returned). Guard: only parse if `rest`
+            // is a pure integer (skip `universal_...` which was already
+            // consumed above — defensive double-check).
+            if let Some(amount) = parse_i32_prefix(rest) {
+                apply_max_hp_plus(owner, target_code, amount, false);
+            }
         }
+    }
+}
+
+/// Apply `target_ally_max_hp_plus[_universal]_N` to the play target. Bumps
+/// `max_hp` by `amount` directly (no hp change, no heal_card clamp). When
+/// `allow_hero` is false, target_code 16 (own hero) is ignored — matching the
+/// non-universal variant in core/effects.py (`allow_hero=False`).
+fn apply_max_hp_plus(
+    owner: &mut KernelPlayer,
+    target_code: usize,
+    amount: i32,
+    allow_hero: bool,
+) {
+    match target_code {
+        9..=15 => {
+            if let Some(target) = owner.board.get_mut(target_code - 9) {
+                target.max_hp += amount;
+            }
+        }
+        16 if allow_hero => {
+            owner.hero.max_hp += amount;
+        }
+        _ => {}
     }
 }
 
@@ -2042,6 +2179,13 @@ fn requires_target(mechanics: &[String]) -> bool {
                 || has_prefixed_number(m, "spell_damage_")
                 || has_prefixed_number(m, "battlecry_buff_")
                 || has_prefixed_number(m, "freeze_")
+                // TAMHP (card 52): target_ally_max_hp_plus[_universal]_N
+                // requires a friendly-minion (universal: +hero) target. The
+                // universal check must come first — `target_ally_max_hp_plus_`
+                // would strip to `universal_N` which fails the int parse, so
+                // both prefixes are listed.
+                || has_prefixed_number(m, "target_ally_max_hp_plus_universal_")
+                || has_prefixed_number(m, "target_ally_max_hp_plus_")
         })
 }
 
@@ -2985,6 +3129,314 @@ mod draw_tests {
         assert_eq!(new.p1.board[0].max_hp, 5, "2 + 3 = 5");
         assert_eq!(new.p1.graveyard.len(), 1, "consumed ally in graveyard");
         assert_eq!(new.p1.graveyard[0].card_id, 27);
+    }
+
+    // ---- Phase 5: aoe_silence / team_wide_shield / target_ally_max_hp_plus ----
+
+    /// Find a legal PlayCard action for `hand_index` with `target_code`.
+    /// Mirrors find_attack_action. AppendOnly means only position=board.len()
+    /// is legal for warriors, so the scan finds the single matching action.
+    fn find_play_action(state: &KernelState, player_id: i32, hand_index: usize, target_code: usize) -> usize {
+        let mask = build_action_mask(state, player_id, PlacementMode::AppendOnly);
+        (0..mask.len())
+            .filter(|&i| mask[i] == 1.0)
+            .find(|&i| matches!(
+                decode_action_id(i),
+                Some(CandidateAction::PlayCard { hand_index: hi, target_code: tc, .. })
+                    if hi == hand_index && tc == target_code
+            ))
+            .unwrap_or_else(|| panic!(
+                "no legal play action for hand_index={hand_index} target_code={target_code}; legal={:?}",
+                legal_action_ids(&mask)
+            ))
+    }
+
+    fn legal_action_ids(mask: &[f32]) -> Vec<usize> {
+        (0..mask.len()).filter(|&i| mask[i] == 1.0).collect()
+    }
+
+    #[test]
+    fn requires_target_recognizes_target_ally_max_hp_plus_variants() {
+        // TAMHP-1: both universal and bare variants require a friendly target.
+        assert!(requires_target(&["target_ally_max_hp_plus_universal_1".to_string()]));
+        assert!(requires_target(&["target_ally_max_hp_plus_universal_7".to_string()]));
+        assert!(requires_target(&["target_ally_max_hp_plus_3".to_string()]));
+        // Mixed with irrelevant mechanics still requires.
+        assert!(requires_target(&["shield".to_string(), "target_ally_max_hp_plus_universal_2".to_string()]));
+        // Non-TAMHP mechanics alone do not require (sanity: no false positive).
+        assert!(!requires_target(&["shield".to_string()]));
+        assert!(!requires_target(&["aoe_silence".to_string()]));
+        assert!(!requires_target(&["team_wide_shield".to_string()]));
+    }
+
+    #[test]
+    fn apply_play_aoe_silence_strips_up_to_three_enemy_mechanics() {
+        // AOE-SILENCE-1 (card 47 Солдатик): strip mechanics from up to 3 enemy
+        // minions that have mechanics. 3 enemy Сукуна (cleave_1_2) → all cleared.
+        let mut state = KernelState {
+            current_turn_owner_id: 1,
+            turn_number: 1,
+            status: "ongoing".to_string(),
+            p1: player_with(Vec::new(), vec![card_with_mechanics(47, 7, 4, 5, vec!["aoe_silence"])]),
+            p2: player_with(Vec::new(), Vec::new()),
+        };
+        state.p1.user_id = 1;
+        state.p2.user_id = 2;
+        state.p2.board = vec![
+            card_with_mechanics(23, 7, 7, 5, vec!["cleave_1_2"]),
+            card_with_mechanics(23, 7, 7, 5, vec!["cleave_1_2"]),
+            card_with_mechanics(23, 7, 7, 5, vec!["cleave_1_2"]),
+        ];
+        // aoe_silence does not require a target → target_code 0.
+        let action_id = find_play_action(&state, 1, 0, 0);
+        let mut rng = crate::worker::WorkerRng::Deterministic;
+        let mut draw_rng = DrawRng::live(&mut rng);
+        let new = kernel_apply(&state, 1, action_id, &mut draw_rng);
+        // All 3 enemy minions stripped of mechanics (cleave_1_2 removed).
+        assert_eq!(new.p2.board.len(), 3);
+        for u in &new.p2.board {
+            assert!(u.mechanics.is_empty(), "enemy minion should be silenced, got {:?}", u.mechanics);
+        }
+        // Status flags untouched (is_frozen false here anyway — sanity).
+        // The played Солдатик retains its own aoe_silence mechanic (silence
+        // does NOT self-strip — it targets enemy minions only).
+        let soldatik = new.p1.board.iter().find(|c| c.card_id == 47).unwrap();
+        assert!(soldatik.mechanics.iter().any(|m| m == "aoe_silence"));
+    }
+
+    #[test]
+    fn apply_play_aoe_silence_respects_limit_and_skips_mechanicless_units() {
+        // 4 enemy minions with mechanics + 1 without. limit=3 → only 3
+        // stripped; the mechanicless unit is skipped (does not consume limit).
+        let mut state = KernelState {
+            current_turn_owner_id: 1,
+            turn_number: 1,
+            status: "ongoing".to_string(),
+            p1: player_with(Vec::new(), vec![card_with_mechanics(47, 7, 4, 5, vec!["aoe_silence"])]),
+            p2: player_with(Vec::new(), Vec::new()),
+        };
+        state.p1.user_id = 1;
+        state.p2.user_id = 2;
+        state.p2.board = vec![
+            card_with_mechanics(23, 7, 7, 5, vec!["cleave_1_2"]),
+            card_with_mechanics(27, 1, 2, 1, vec![]),           // no mechanics — skipped
+            card_with_mechanics(24, 9, 5, 5, vec!["shield"]),
+            card_with_mechanics(23, 7, 7, 5, vec!["cleave_1_2"]),
+            card_with_mechanics(23, 7, 7, 5, vec!["cleave_1_2"]),
+        ];
+        let action_id = find_play_action(&state, 1, 0, 0);
+        let mut rng = crate::worker::WorkerRng::Deterministic;
+        let mut draw_rng = DrawRng::live(&mut rng);
+        let new = kernel_apply(&state, 1, action_id, &mut draw_rng);
+        // Exactly 3 of the 4-with-mechanics stripped; one retains its mechanic
+        // (the 4th in board order, since silence iterates front-to-back and
+        // the mechanicless unit at index 1 is skipped without consuming limit).
+        let silenced_count = new.p2.board.iter().filter(|u| u.mechanics.is_empty()).count();
+        assert_eq!(silenced_count, 4, "3 stripped + 1 originally-mechanicless = 4 empty");
+        let with_mechanics: Vec<&KernelCard> = new.p2.board.iter().filter(|u| !u.mechanics.is_empty()).collect();
+        assert_eq!(with_mechanics.len(), 1, "exactly one enemy retains mechanics (limit=3)");
+        assert_eq!(with_mechanics[0].card_id, 23, "the 4th cleave unit (index 4) is the one not silenced");
+    }
+
+    #[test]
+    fn apply_play_team_wide_shield_grants_shield_to_up_to_three_allies_excluding_self() {
+        // TWS-1/2 (card 48 Соул Гудман): shield up to 3 friendly minions,
+        // EXCLUDING the just-played card. 3 Скелет on board → all 3 get shield;
+        // Соул Гудман does NOT (self-exclusion — TWS-2).
+        let mut state = KernelState {
+            current_turn_owner_id: 1,
+            turn_number: 1,
+            status: "ongoing".to_string(),
+            p1: player_with(Vec::new(), vec![card_with_mechanics(48, 7, 2, 4, vec!["team_wide_shield"])]),
+            p2: player_with(Vec::new(), Vec::new()),
+        };
+        state.p1.user_id = 1;
+        state.p2.user_id = 2;
+        state.p1.board = vec![
+            card_with_mechanics(27, 1, 2, 1, vec![]),
+            card_with_mechanics(27, 1, 2, 1, vec![]),
+            card_with_mechanics(27, 1, 2, 1, vec![]),
+        ];
+        let action_id = find_play_action(&state, 1, 0, 0);
+        let mut rng = crate::worker::WorkerRng::Deterministic;
+        let mut draw_rng = DrawRng::live(&mut rng);
+        let new = kernel_apply(&state, 1, action_id, &mut draw_rng);
+        // 3 Скелет + Соул Гудман on board (cap 5 ok).
+        let skeletons: Vec<&KernelCard> = new.p1.board.iter().filter(|c| c.card_id == 27).collect();
+        assert_eq!(skeletons.len(), 3);
+        for s in &skeletons {
+            assert!(s.has_mechanic("shield"), "Скелет should gain shield, got {:?}", s.mechanics);
+        }
+        let soul = new.p1.board.iter().find(|c| c.card_id == 48).unwrap();
+        assert!(!soul.has_mechanic("shield"), "Соул Гудман should self-exclude (no shield), got {:?}", soul.mechanics);
+    }
+
+    #[test]
+    fn apply_play_team_wide_shield_respects_limit_of_three() {
+        // 4 friendly unshielded minions on board (board cap 5 → playing Соул
+        // Гудман makes 5). limit=3 → exactly 3 gain shield, 1 remains
+        // unshielded (beyond limit). Played card is self-excluded and NOT
+        // counted. Mirrors core/effects.py `_grant_shields(limit=3)`.
+        let mut state = KernelState {
+            current_turn_owner_id: 1,
+            turn_number: 1,
+            status: "ongoing".to_string(),
+            p1: player_with(Vec::new(), vec![card_with_mechanics(48, 7, 2, 4, vec!["team_wide_shield"])]),
+            p2: player_with(Vec::new(), Vec::new()),
+        };
+        state.p1.user_id = 1;
+        state.p2.user_id = 2;
+        state.p1.board = vec![
+            card_with_mechanics(27, 1, 2, 1, vec![]),
+            card_with_mechanics(27, 1, 2, 1, vec![]),
+            card_with_mechanics(27, 1, 2, 1, vec![]),
+            card_with_mechanics(27, 1, 2, 1, vec![]),
+        ];
+        let action_id = find_play_action(&state, 1, 0, 0);
+        let mut rng = crate::worker::WorkerRng::Deterministic;
+        let mut draw_rng = DrawRng::live(&mut rng);
+        let new = kernel_apply(&state, 1, action_id, &mut draw_rng);
+        let skeletons: Vec<&KernelCard> = new.p1.board.iter().filter(|c| c.card_id == 27).collect();
+        assert_eq!(skeletons.len(), 4);
+        let shielded = skeletons.iter().filter(|c| c.has_mechanic("shield")).count();
+        assert_eq!(shielded, 3, "exactly 3 of 4 gain shield (limit=3); 1 beyond limit");
+        let soul = new.p1.board.iter().find(|c| c.card_id == 48).unwrap();
+        assert!(!soul.has_mechanic("shield"), "Соул Гудман self-excluded");
+    }
+
+    #[test]
+    fn apply_play_tamhp_universal_bumps_friendly_minion_max_hp_no_clamp() {
+        // TAMHP-1/2/3 (card 52 Криста Ленц, target_ally_max_hp_plus_universal_1):
+        // target a friendly minion (code 9) → max_hp += 1, hp UNCHANGED (direct
+        // increase, no heal_card clamp). Verify hp stays below new max_hp.
+        let mut state = KernelState {
+            current_turn_owner_id: 1,
+            turn_number: 1,
+            status: "ongoing".to_string(),
+            p1: player_with(Vec::new(), vec![card_with_mechanics(52, 2, 1, 2, vec!["target_ally_max_hp_plus_universal_1"])]),
+            p2: player_with(Vec::new(), Vec::new()),
+        };
+        state.p1.user_id = 1;
+        state.p2.user_id = 2;
+        // Friendly minion with hp=1, max_hp=3 (damaged). Bumping max_hp to 4
+        // must NOT raise hp (no heal_card clamp) — hp stays 1.
+        state.p1.board = vec![card_with_mechanics(27, 1, 2, 1, vec![])];
+        state.p1.board[0].max_hp = 3;
+        let action_id = find_play_action(&state, 1, 0, 9);
+        let mut rng = crate::worker::WorkerRng::Deterministic;
+        let mut draw_rng = DrawRng::live(&mut rng);
+        let new = kernel_apply(&state, 1, action_id, &mut draw_rng);
+        // Board: [Скелет (target), Криста (played)]. Скелет is index 0.
+        let skel = new.p1.board.iter().find(|c| c.card_id == 27).unwrap();
+        assert_eq!(skel.max_hp, 4, "max_hp 3 + 1 = 4 (direct increase)");
+        assert_eq!(skel.hp, 1, "hp UNCHANGED (no heal_card clamp) — audit risk note honored");
+    }
+
+    #[test]
+    fn apply_play_tamhp_universal_bumps_own_hero_max_hp() {
+        // TAMHP universal allows own hero (code 16). hero max_hp 30 → 31, hp
+        // unchanged.
+        let mut state = KernelState {
+            current_turn_owner_id: 1,
+            turn_number: 1,
+            status: "ongoing".to_string(),
+            p1: player_with(Vec::new(), vec![card_with_mechanics(52, 2, 1, 2, vec!["target_ally_max_hp_plus_universal_1"])]),
+            p2: player_with(Vec::new(), Vec::new()),
+        };
+        state.p1.user_id = 1;
+        state.p2.user_id = 2;
+        // No friendly minions → only own-hero target (code 16) is legal.
+        let action_id = find_play_action(&state, 1, 0, 16);
+        let mut rng = crate::worker::WorkerRng::Deterministic;
+        let mut draw_rng = DrawRng::live(&mut rng);
+        let hero_before = state.p1.hero.max_hp;
+        let hero_hp_before = state.p1.hero.hp;
+        let new = kernel_apply(&state, 1, action_id, &mut draw_rng);
+        assert_eq!(new.p1.hero.max_hp, hero_before + 1, "hero max_hp 30 + 1 = 31");
+        assert_eq!(new.p1.hero.hp, hero_hp_before, "hero hp unchanged");
+    }
+
+    #[test]
+    fn apply_play_tamhp_playable_both_sides() {
+        // User decision: card52 playable on BOTH sides. p2 plays Криста
+        // targeting its friendly minion (code 9 from p2's perspective) →
+        // p2's Скелет max_hp bumps. Verifies the target plumbing works for
+        // whichever player plays it (AC-FFI-4).
+        let mut state = KernelState {
+            current_turn_owner_id: 2,
+            turn_number: 1,
+            status: "ongoing".to_string(),
+            p1: player_with(Vec::new(), Vec::new()),
+            p2: player_with(Vec::new(), vec![card_with_mechanics(52, 2, 1, 2, vec!["target_ally_max_hp_plus_universal_1"])]),
+        };
+        state.p1.user_id = 1;
+        state.p2.user_id = 2;
+        state.p2.board = vec![card_with_mechanics(27, 1, 2, 1, vec![])];
+        state.p2.board[0].max_hp = 3;
+        // p2 is the current turn owner; find a legal play for p2 targeting
+        // friendly board[0] (code 9).
+        let action_id = find_play_action(&state, 2, 0, 9);
+        let mut rng = crate::worker::WorkerRng::Deterministic;
+        let mut draw_rng = DrawRng::live(&mut rng);
+        let new = kernel_apply(&state, 2, action_id, &mut draw_rng);
+        let skel = new.p2.board.iter().find(|c| c.card_id == 27).unwrap();
+        assert_eq!(skel.max_hp, 4, "p2's Скелет max_hp 3 + 1 = 4");
+        assert_eq!(skel.hp, 1, "hp unchanged");
+    }
+
+    #[test]
+    fn mask_targets_for_card_tamhp_universal_enables_friendly_minion_and_hero_codes() {
+        // Frozen-classic additive guard: card52's mask enables friendly-minion
+        // codes 9..15 (for existing minions) + own-hero code 16. Verifies the
+        // additive branch in mask_targets_for_card and that card52 is playable
+        // (at least the hero target) even with an empty board.
+        let mut state = KernelState {
+            current_turn_owner_id: 1,
+            turn_number: 1,
+            status: "ongoing".to_string(),
+            p1: player_with(Vec::new(), vec![card_with_mechanics(52, 2, 1, 2, vec!["target_ally_max_hp_plus_universal_1"])]),
+            p2: player_with(Vec::new(), Vec::new()),
+        };
+        state.p1.user_id = 1;
+        state.p2.user_id = 2;
+        state.p1.board = vec![
+            card_with_mechanics(27, 1, 2, 1, vec![]),
+            card_with_mechanics(27, 1, 2, 1, vec![]),
+        ];
+        let mask = build_action_mask(&state, 1, PlacementMode::AppendOnly);
+        // The play action for hand_index=0 (Криста) at the AppendOnly position
+        // with each valid target_code must be legal.
+        for tc in [9_usize, 10, 16] {
+            let found = (0..mask.len())
+                .filter(|&i| mask[i] == 1.0)
+                .any(|i| matches!(
+                    decode_action_id(i),
+                    Some(CandidateAction::PlayCard { hand_index: 0, target_code, .. }) if target_code == tc
+                ));
+            assert!(found, "target_code {tc} should be legal for card52");
+        }
+        // target_code 0 (no target) must NOT be legal — card52 requires a target.
+        let no_tgt = (0..mask.len())
+            .filter(|&i| mask[i] == 1.0)
+            .any(|i| matches!(
+                decode_action_id(i),
+                Some(CandidateAction::PlayCard { hand_index: 0, target_code: 0, .. })
+            ));
+        assert!(!no_tgt, "card52 must require a target (target_code 0 illegal)");
+    }
+
+    /// Helper: apply an action via RolloutKernel and return the new state.
+    fn kernel_apply(
+        state: &KernelState,
+        player_id: i32,
+        action_id: usize,
+        draw_rng: &mut DrawRng,
+    ) -> KernelState {
+        let kernel = RolloutKernel::new(KernelConfig::default());
+        kernel
+            .apply_action(state, player_id, action_id, false, draw_rng)
+            .expect("action applies")
+            .state
     }
 
     // ---- Phase 4: cleave / instant_kill / freeze / armor_X_Y ----

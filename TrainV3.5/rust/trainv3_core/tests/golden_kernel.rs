@@ -251,6 +251,60 @@ fn rust_kernel_apply_action_matches_armor_python_transitions() {
 }
 
 #[test]
+fn rust_kernel_apply_action_matches_aoe_silence_python_transitions() {
+    // Phase 5 (AOE-SILENCE-1): card 47 Солдатик (cost 7, 4/5, aoe_silence).
+    // p1 fills board with 3 Сукуна (card 23, cleave_1_2 — a passive warrior
+    // attack mechanic, no play target required). p2 plays Солдатик →
+    // aoe_silence strips `mechanics` from up to 3 enemy minions that have
+    // mechanics (all 3 Сукуна → cleave_1_2 removed, mechanics=[]). Mirrors
+    // core/effects.py `effect_aoe_silence` (limit=3, candidates =
+    // `[u for u in opponent.board if u.mechanics]`, `unit.mechanics = []`).
+    // Status flags (is_frozen/is_ready/instant_kill_used) are NOT touched.
+    // Multi-card deck; recorded-outcome RNG. State-transition only.
+    let raw = include_str!("fixtures/golden_trace_aoe_silence.json");
+    let trace: GoldenTrace = serde_json::from_str(raw).expect("fixture parses");
+    assert_trace_state_transitions_match(&trace);
+}
+
+#[test]
+fn rust_kernel_apply_action_matches_team_wide_shield_python_transitions() {
+    // Phase 5 (TWS-1/2): card 48 Соул Гудман (cost 7, 2/4, team_wide_shield).
+    // p1 plays 3 Скелет (card 27, no mechanics), then plays Соул Гудман →
+    // team_wide_shield grants `shield` to up to 3 friendly minions EXCLUDING
+    // the just-played card (TWS-2 self-exclusion — mirrors core/effects.py
+    // `effect_team_wide_shield`:
+    // `targets = [u for u in owner.board if u.instance_id != card.instance_id]`).
+    // After: 3 Скелет gain `shield`; Соул Гудман does NOT have `shield`.
+    // NOTE: the audit note TWS-2 in the task brief speculated Python "includes"
+    // the played card; Python in fact SELF-EXCLUDES it (code+comment confirm),
+    // and Rust matches Python (the frozen oracle). Multi-card deck; recorded-
+    // outcome RNG. State-transition only.
+    let raw = include_str!("fixtures/golden_trace_team_wide_shield.json");
+    let trace: GoldenTrace = serde_json::from_str(raw).expect("fixture parses");
+    assert_trace_state_transitions_match(&trace);
+}
+
+#[test]
+fn rust_kernel_apply_action_matches_tamhp_python_transitions() {
+    // Phase 5 (TAMHP-1/2/3, AC-FFI-4): card 52 Криста Ленц (cost 2, 1/2,
+    // target_ally_max_hp_plus_universal_1). Played by BOTH players (user
+    // decision: "playable everywhere"). Exercises BOTH target families:
+    //   - friendly minion target (code 9): p1 and p2 each play Криста
+    //     targeting their Скелет → Скелет.max_hp += 1 (hp UNCHANGED — direct
+    //     increase, NO clamp via heal_card; audit risk note honored).
+    //   - own hero target (code 16): p1 plays Криста targeting own hero →
+    //     hero.max_hp += 1 (hp unchanged).
+    // Mirrors core/effects.py `target_ally_max_hp_plus_universal_N` handler.
+    // The Rust `requires_target` + `mask_targets_for_card` additive branch
+    // (friendly-minion codes 9..15 + own-hero code 16) makes card52 playable
+    // on both sides. Multi-card deck; recorded-outcome RNG. State-transition
+    // only.
+    let raw = include_str!("fixtures/golden_trace_tamhp.json");
+    let trace: GoldenTrace = serde_json::from_str(raw).expect("fixture parses");
+    assert_trace_state_transitions_match(&trace);
+}
+
+#[test]
 fn batched_rollout_worker_matches_python_trace_with_internal_history() {
     let raw = include_str!("fixtures/golden_trace_scripted_basic.json");
     let trace: GoldenTrace = serde_json::from_str(raw).expect("fixture parses");

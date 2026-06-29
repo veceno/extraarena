@@ -285,6 +285,23 @@ def _mask_targets_for_card(mask, base, mechanics, me, enemy):
     is_delete = any("delete_target" in m for m in mechanics)
     is_freeze = any("freeze" in m or "battlecry_freeze" in m for m in mechanics)
     is_csd = any("choose_shield_damage" in m for m in mechanics)
+    # TAMHP (card 52): target_ally_max_hp_plus[_universal]_N. Frozen-classic
+    # ADDITIVE exception (user-authorized): a new branch using EXISTING
+    # target-slot space (friendly-minion codes 9..15 + own-hero code 16 —
+    # both already part of the frozen 17-target layout). Strictly additive:
+    # only cards whose mechanics contain `target_ally_max_hp_plus` reach this
+    # branch; for all other cards is_max_hp_plus_* is False and every existing
+    # branch below/above is byte-identical. The universal variant allows the
+    # own-hero target (code 16); the bare variant forbids hero. Mirrors
+    # core/engine.py `get_valid_targets` is_max_hp_plus_universal / is_max_hp_plus.
+    is_max_hp_plus_universal = any(
+        m.startswith("target_ally_max_hp_plus_universal") for m in mechanics
+    )
+    is_max_hp_plus = any(
+        m.startswith("target_ally_max_hp_plus_")
+        and not m.startswith("target_ally_max_hp_plus_universal")
+        for m in mechanics
+    )
 
     if is_consume:
         for t_idx in range(len(me.board)):
@@ -318,6 +335,20 @@ def _mask_targets_for_card(mask, base, mechanics, me, enemy):
         for t_idx in range(len(me.board)):
             mask[base + 9 + t_idx] = 1.0
         mask[base + 16] = 1.0
+        return
+
+    # TAMHP universal (card 52): friendly board minions (9..15) + own hero
+    # (16). Additive — only card 52 reaches here.
+    if is_max_hp_plus_universal:
+        for t_idx in range(len(me.board)):
+            mask[base + 9 + t_idx] = 1.0
+        mask[base + 16] = 1.0
+        return
+
+    # TAMHP non-universal: friendly board minions only (no hero).
+    if is_max_hp_plus:
+        for t_idx in range(len(me.board)):
+            mask[base + 9 + t_idx] = 1.0
         return
 
     if is_heal:
