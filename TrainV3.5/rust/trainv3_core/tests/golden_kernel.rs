@@ -191,6 +191,66 @@ fn rust_kernel_apply_action_matches_consume_ally_python_transitions() {
 }
 
 #[test]
+fn rust_kernel_apply_action_matches_cleave_python_transitions() {
+    // Phase 4 (TA-1 cleave): card 23 Сукуна (cleave_1_2, 7/7) attacks the
+    // middle of 3 Скелет lvl5 (3/2). The main target dies to 7 damage;
+    // cleave splashes 1 damage to each living neighbour (indices 0 and 2),
+    // leaving them at 1 HP. `cleave_X_Y` parses X=1 for the splash (the _Y
+    // hit-count is the potion-battlecry form, unused for warrior attack
+    // cleave). The counter-attack (3) drops Сукуна to 4 HP. Multi-card
+    // deck; recorded-outcome RNG. State-transition only.
+    let raw = include_str!("fixtures/golden_trace_cleave.json");
+    let trace: GoldenTrace = serde_json::from_str(raw).expect("fixture parses");
+    assert_trace_state_transitions_match(&trace);
+}
+
+#[test]
+fn rust_kernel_apply_action_matches_instant_kill_python_transitions() {
+    // Phase 4 (TA-2 instant_kill): card 25 Сайтама (instant_kill, 10/10)
+    // attacks Атакующий Титан lvl10 (15/15). Normal damage would leave 5 HP;
+    // instant_kill sets hp=0 → Титан dies (and Сайтама dies to the 15
+    // counter). Without instant_kill Титан would survive at 5 HP, so this
+    // fixture distinguishes the mechanic. instant_kill_used is set (one-shot)
+    // but NOT serialized into the state payload (skip_serializing), so the
+    // matcher verifies the kill effect, not the flag. Multi-card deck;
+    // recorded-outcome RNG. State-transition only.
+    let raw = include_str!("fixtures/golden_trace_instant_kill.json");
+    let trace: GoldenTrace = serde_json::from_str(raw).expect("fixture parses");
+    assert_trace_state_transitions_match(&trace);
+}
+
+#[test]
+fn rust_kernel_apply_action_matches_freeze_python_transitions() {
+    // Phase 4 (TA-3 freeze): card 19 Саб-Зиро (battlecry_freeze, 3/4) is
+    // played targeting an enemy Скелет → is_frozen=True (shield would block,
+    // not exercised here). The next end-turn thaws it (is_frozen=False,
+    // is_ready=False — skips one activation). The fixture verifies both the
+    // frozen post-state of the play step and the thawed/skipped post-state
+    // of the following end-turn. Multi-card deck; recorded-outcome RNG.
+    // State-transition only.
+    let raw = include_str!("fixtures/golden_trace_freeze.json");
+    let trace: GoldenTrace = serde_json::from_str(raw).expect("fixture parses");
+    assert_trace_state_transitions_match(&trace);
+}
+
+#[test]
+fn rust_kernel_apply_action_matches_armor_python_transitions() {
+    // Phase 4 (TA-4 armor_X_Y range roll + recorded-outcome RNG extension):
+    // Даркнесс hero (card 5) with `armor_1_3` injected post-conversion (the
+    // converter collapses armor_X_Y → armor_X at deck-construction, so the
+    // fixture re-injects the range form to exercise the engine's randint
+    // path). Сукуна (7 atk) attacks the hero → apply_damage_modifiers rolls
+    // randint(1,3)=1 → hero takes 6 (45→39). The fixture's step 4 carries
+    // `randint_rolls=[1]`; Rust's `roll_range` pops that recorded value via
+    // `DrawRng::Recorded.randint_rolls`. verify_mask=False on this fixture
+    // avoids phantom randint rolls from `_verify_mask` clone-execution.
+    // Multi-card deck; recorded-outcome RNG. State-transition only.
+    let raw = include_str!("fixtures/golden_trace_armor.json");
+    let trace: GoldenTrace = serde_json::from_str(raw).expect("fixture parses");
+    assert_trace_state_transitions_match(&trace);
+}
+
+#[test]
 fn batched_rollout_worker_matches_python_trace_with_internal_history() {
     let raw = include_str!("fixtures/golden_trace_scripted_basic.json");
     let trace: GoldenTrace = serde_json::from_str(raw).expect("fixture parses");
@@ -1334,7 +1394,11 @@ fn assert_trace_transitions_match(trace: &GoldenTrace) {
 fn assert_trace_state_transitions_match(trace: &GoldenTrace) {
     let kernel = RolloutKernel::new(KernelConfig::from_trace_config(&trace.env_config));
     for step in &trace.steps {
-        let mut draw_rng = DrawRng::recorded(step.draw_picks.clone(), step.reshuffle_orders.clone());
+        let mut draw_rng = DrawRng::recorded(
+            step.draw_picks.clone(),
+            step.reshuffle_orders.clone(),
+            step.randint_rolls.clone(),
+        );
         let actual = kernel
             .apply_action(&step.pre.state, step.acting_player_id, step.action_id, step.mana_draw_taken, &mut draw_rng)
             .expect("scripted action applies");

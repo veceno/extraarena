@@ -171,20 +171,28 @@ class _RecordingRng:
 
 
 class _DrawRecorder:
-    """Records the two outcome streams for the recorded-outcome RNG protocol.
+    """Records the outcome streams for the recorded-outcome RNG protocol.
 
     `picks`  : the chosen deck index (usize) for every `_weighted_choice_idx`
                call — i.e. every weighted draw (clean draw + overdraw-discard).
     `orders` : the post-shuffle deck card_id sequence for every
                graveyard→deck reshuffle.
+    `randint_rolls` : the result of every module-level `random.randint(a, b)`
+               call during a step (Phase 4: `armor_X_Y` range roll in
+               `core/effects.py::apply_damage_modifiers`; reused in Phase 6
+               for card15 `cast_random_spell` spell-choice). Rust replays
+               these via `roll_range` in the SAME call order — Rust must
+               call `roll_range` at exactly the Python `random.randint`
+               call sites so the streams stay aligned.
 
-    Both lists are appended to in call order across the whole step loop; the
+    All lists are appended to in call order across the whole step loop; the
     per-step slice is computed by snapshotting lengths before each step.
     """
 
     def __init__(self) -> None:
         self.picks: list[int] = []
         self.orders: list[list[int]] = []
+        self.randint_rolls: list[int] = []
 
     def install(self, env: ClassicRLEnv) -> callable:
         """Install the recording instrumentation on `env`.
@@ -212,9 +220,28 @@ class _DrawRecorder:
         # now the recording proxy; this is intentional — it forwards to the
         # original MT19937 so picks stay deterministic.
 
+        # Phase 4: record module-level `random.randint` outcomes (armor_X_Y
+        # range roll, future card15 spell choice). `core/effects.py` calls
+        # `random.randint(...)` (the module-level function bound to
+        # `random._inst`, which ClassicRLEnv.reset seeds via
+        # `rand_mod.seed(seed)`). Patching `random.randint` captures every
+        # call site that routes through the module-level random — Rust mirrors
+        # those exact call sites with `roll_range`.
+        import random as _random_module
+
+        original_randint = _random_module.randint
+
+        def _recording_randint(a: int, b: int) -> int:
+            result = original_randint(a, b)
+            recorder.randint_rolls.append(int(result))
+            return result
+
+        _random_module.randint = _recording_randint
+
         def _restore() -> None:
             _core_engine._weighted_choice_idx = original_wci
             env._env._rng = original_rng
+            _random_module.randint = original_randint
 
         return _restore
 
@@ -240,6 +267,7 @@ def build_golden_trace(
     action_ids: list[int] | None = None,
     mana_draw_flags: list[bool] | None = None,
     mana_per_turn: int = 1,
+    post_reset_setup: "callable | None" = None,
 ) -> dict[str, Any]:
     """Build a deterministic TrainV3 parity trace from Python TrainV2."""
     if choose not in {"first", "last"}:
@@ -271,6 +299,15 @@ def build_golden_trace(
         p1_levels=p1_levels,
         p2_levels=p2_levels,
     )
+    # Optional post-reset state mutation hook (Phase 4: the armor_X_Y fixture
+    # injects `armor_1_3` directly into the hero's mechanics, because
+    # `core/converter._normalize_mechanic` collapses `armor_X_Y` → `armor_X`
+    # at deck-construction and the engine would otherwise never see the
+    # range form. This is a TEST-only injection to exercise the engine's
+    # `random.randint` armor path; prod decks always carry the collapsed
+    # `armor_X` form. Runs AFTER reset, BEFORE recorder install + step loop.
+    if post_reset_setup is not None:
+        post_reset_setup(env)
     level_handicap = _level_handicap_payload(p1_level=p1_level, p2_level=p2_level)
 
     trace: dict[str, Any] = {
@@ -319,9 +356,11 @@ def build_golden_trace(
     try:
         for t in range(steps):
             # Snapshot recorder lengths BEFORE the step so the per-step slices
-            # (draw_picks / reshuffle_orders) capture only this step's outcomes.
+            # (draw_picks / reshuffle_orders / randint_rolls) capture only this
+            # step's outcomes.
             picks_before = len(recorder.picks)
             orders_before = len(recorder.orders)
+            randint_before = len(recorder.randint_rolls)
             pre = _snapshot_hashes(
                 env,
                 include_preview=include_preview,
@@ -386,6 +425,7 @@ def build_golden_trace(
                 [int(cid) for cid in order]
                 for order in recorder.orders[orders_before:]
             ]
+            randint_rolls = [int(r) for r in recorder.randint_rolls[randint_before:]]
             trace["steps"].append(
                 {
                     "t": t,
@@ -408,6 +448,7 @@ def build_golden_trace(
                     },
                     "draw_picks": draw_picks,
                     "reshuffle_orders": reshuffle_orders,
+                    "randint_rolls": randint_rolls,
                     "post": post,
                 }
             )

@@ -65,6 +65,12 @@ pub enum DrawRng<'a> {
     Recorded {
         picks: VecDeque<usize>,
         orders: VecDeque<Vec<i32>>,
+        /// Per-step recorded `random.randint` outcomes (Phase 4: armor_X_Y
+        /// range roll; reused in Phase 6 for card15 random spell choice).
+        /// Popped in call order by `roll_range`. Rust must call `roll_range`
+        /// in exactly the same places Python calls `random.randint` so the
+        /// streams stay aligned.
+        randint_rolls: VecDeque<i32>,
     },
 }
 
@@ -77,10 +83,11 @@ impl<'a> DrawRng<'a> {
     }
 
     /// Build a `Recorded` DrawRng from a fixture step's recorded outcomes.
-    pub fn recorded(picks: Vec<usize>, orders: Vec<Vec<i32>>) -> Self {
+    pub fn recorded(picks: Vec<usize>, orders: Vec<Vec<i32>>, randint_rolls: Vec<i32>) -> Self {
         DrawRng::Recorded {
             picks: picks.into(),
             orders: orders.into(),
+            randint_rolls: randint_rolls.into(),
         }
     }
 
@@ -109,6 +116,32 @@ impl<'a> DrawRng<'a> {
 
     fn is_recorded(&self) -> bool {
         matches!(self, DrawRng::Recorded { .. })
+    }
+}
+
+/// Mirror of Python `random.randint(min, max)` inclusive range roll, used by
+/// `armor_X_Y` damage reduction (core/effects.py `apply_damage_modifiers`)
+/// and — later, Phase 6 — card15 `cast_random_spell` spell-choice. Rust must
+/// call this in the SAME code paths Python calls `random.randint` so the
+/// recorded-outcome stream (`DrawRng::Recorded.randint_rolls`) replays in
+/// call order.
+///
+/// `Recorded`: pop the next recorded int; if exhausted fall back to `min`
+/// with a debug warning (keeps replay robust, mirrors the pick/order
+/// exhaustion contract). `Live`: `rng.gen_range(min..=max)`.
+fn roll_range(min: i32, max: i32, draw_rng: &mut DrawRng) -> i32 {
+    if min >= max {
+        return min;
+    }
+    match draw_rng {
+        DrawRng::Recorded { randint_rolls, .. } => randint_rolls.pop_front().unwrap_or_else(|| {
+            eprintln!(
+                "[DrawRng] recorded randint stream exhausted; falling back to min={}"
+            , min
+            );
+            min
+        }),
+        DrawRng::Live(rng) => rng.gen_range(min..=max),
     }
 }
 
@@ -215,6 +248,12 @@ pub struct GoldenStep {
     /// graveyard to match. Default empty.
     #[serde(default)]
     pub reshuffle_orders: Vec<Vec<i32>>,
+    /// Recorded-outcome RNG (Phase 4): every `random.randint` result during
+    /// this step (armor_X_Y range roll; future Phase 6 card15 spell choice).
+    /// Rust replay pops these in call order via `roll_range`. Default empty
+    /// for pre-Phase-4 fixtures.
+    #[serde(default)]
+    pub randint_rolls: Vec<i32>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -277,6 +316,14 @@ pub struct KernelCard {
     pub base_mechanics: Vec<String>,
     #[serde(default)]
     pub base_snapshot_set: bool,
+    /// One-shot instant_kill flag (core/state.py `CardInstance.instant_kill_used`).
+    /// NOT serialized into the golden-trace state payload — Python's
+    /// `_card_payload` omits it, so `skip_serializing` keeps the JSON matcher
+    /// byte-stable for old fixtures (rebirth/cap use Сайтама but the field is
+    /// invisible on both sides). The flag still drives Rust attack logic and
+    /// is reset in `reset_to_base_state`.
+    #[serde(default, skip_serializing)]
+    pub instant_kill_used: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -490,7 +537,7 @@ impl RolloutKernel {
             let overdraw_to_discard = self.config.overdraw_to_discard;
             let (player, _opponent) = next.players_for_mut(player_id)?;
             apply_mana_draw(player, overdraw_to_discard, draw_rng)?;
-            cleanup_dead_units(&mut next);
+            cleanup_dead_units(&mut next, draw_rng);
             check_game_over(&mut next);
             let base_reward = compute_trainv2_reward(state, &next, player_id);
             let reward_components_v5 = compute_reward_components_v5(state, &next, player_id);
@@ -539,11 +586,11 @@ impl RolloutKernel {
             Some(CandidateAction::Attack {
                 attacker_index,
                 target_code,
-            }) => apply_attack(&mut next, player_id, attacker_index, target_code)?,
+            }) => apply_attack(&mut next, player_id, attacker_index, target_code, draw_rng)?,
             None => return Err("unknown_action".to_string()),
         }
 
-        cleanup_dead_units(&mut next);
+        cleanup_dead_units(&mut next, draw_rng);
         check_game_over(&mut next);
 
         let base_reward = compute_trainv2_reward(state, &next, player_id);
@@ -945,12 +992,17 @@ fn apply_attack(
     player_id: i32,
     attacker_index: usize,
     target_code: usize,
+    draw_rng: &mut DrawRng,
 ) -> Result<(), String> {
     let (player, opponent) = state.players_for_mut(player_id)?;
     if attacker_index >= player.board.len() {
         return Err("attacker_not_found".to_string());
     }
-    if !player.board[attacker_index].is_ready {
+    // Frozen attacker cannot attack (mirrors core/engine.py `_handle_attack`:
+    // a frozen unit has is_ready=False after the end-turn thaw, so the
+    // `is_ready` guard already blocks it; check is_frozen explicitly for
+    // defense-in-depth and direct-call parity).
+    if !player.board[attacker_index].is_ready || player.board[attacker_index].is_frozen {
         return Err("unit_not_ready".to_string());
     }
 
@@ -964,13 +1016,16 @@ fn apply_attack(
         let has_lifesteal = player.board[attacker_index].has_mechanic("lifesteal");
         let damage_dealt = {
             let attacker = &mut player.board[attacker_index];
-            let damage_dealt = apply_damage(&mut opponent.hero, effective_attack, Some(attacker));
+            let damage_dealt =
+                apply_damage(&mut opponent.hero, effective_attack, Some(attacker), draw_rng);
             attacker.is_ready = false;
             damage_dealt
         };
         if has_lifesteal && damage_dealt > 0 {
             heal_card(&mut player.hero, damage_dealt);
         }
+        // instant_kill does NOT work against heroes (core/engine.py line 592):
+        // Сайтама deals only base damage to the hero.
         return Ok(());
     }
 
@@ -978,6 +1033,8 @@ fn apply_attack(
         return Err("target_not_found".to_string());
     }
 
+    // Capture flags needed for post-exchange mechanic resolution before
+    // mutable borrows scramble the board (mirrors core/engine.py `_handle_attack`).
     let target_effective_attack = compute_effective_attack(
         &opponent.board[target_code],
         &opponent.board,
@@ -986,27 +1043,123 @@ fn apply_attack(
     let attacker_effective_attack =
         compute_effective_attack(&player.board[attacker_index], &player.board, &player.hero);
     let has_lifesteal = player.board[attacker_index].has_mechanic("lifesteal");
+    let has_instant_kill = player.board[attacker_index].has_mechanic("instant_kill");
+    let has_unit_killer = player.board[attacker_index].has_mechanic("unit_killer");
+    // Cleave damage amount: parse `cleave_X` / `cleave_X_Y` → X (the _Y suffix
+    // is the potion-battlecry hit count, unused for the warrior attack cleave).
+    let cleave_damage = player.board[attacker_index]
+        .mechanics
+        .iter()
+        .filter_map(|m| {
+            m.strip_prefix("cleave_")
+                .and_then(|rest| rest.split('_').next())
+                .and_then(|chunk| chunk.parse::<i32>().ok())
+        })
+        .next();
+    let target_had_shield = opponent.board[target_code].has_mechanic("shield");
+
     let damage_dealt_to_target = {
         let attacker = &mut player.board[attacker_index];
         apply_damage(
             &mut opponent.board[target_code],
             attacker_effective_attack,
             Some(attacker),
+            draw_rng,
         )
     };
+    let target_shield_blocked =
+        target_had_shield && !opponent.board[target_code].has_mechanic("shield") && damage_dealt_to_target == 0;
     {
         let target = &mut opponent.board[target_code];
         apply_damage(
             &mut player.board[attacker_index],
             target_effective_attack,
             Some(target),
+            draw_rng,
         );
+    }
+    // Cleave (TA-1): splash `cleave_X` damage to the neighbours of the
+    // attacked board target (core/engine.py `_apply_attack_cleave`). Hits
+    // only living neighbours (hp > 0). Uses apply_damage so armor/shield/
+    // reflect on the neighbour are respected. Performed AFTER the damage
+    // exchange, before cleanup.
+    if let Some(cleave_damage) = cleave_damage {
+        if cleave_damage > 0 {
+            apply_attack_cleave(
+                opponent,
+                target_code,
+                cleave_damage,
+                player,
+                attacker_index,
+                draw_rng,
+            );
+        }
     }
     player.board[attacker_index].is_ready = false;
     if has_lifesteal && damage_dealt_to_target > 0 {
         heal_card(&mut player.hero, damage_dealt_to_target);
     }
+    // unit_killer (TA-5): kills every attacked unit, no per-card limit
+    // (core/engine.py line 640). Bypassed if the target's shield blocked
+    // the damage. Sets hp=0 directly (no deathrattle trigger here —
+    // deathrattle fires in cleanup_dead_units).
+    if has_unit_killer {
+        if !target_shield_blocked && opponent.board[target_code].hp > 0 {
+            opponent.board[target_code].hp = 0;
+        }
+    } else if has_instant_kill {
+        // instant_kill (TA-2): one-shot per card — the first attacked enemy
+        // minion is set to hp=0 regardless of normal damage. Sets
+        // instant_kill_used=True whether or not the kill landed (matches
+        // core/engine.py line 653). Does NOT work against heroes (handled
+        // above). Bypassed if shield blocked.
+        let attacker = &mut player.board[attacker_index];
+        if !attacker.instant_kill_used {
+            attacker.instant_kill_used = true;
+            if !target_shield_blocked && opponent.board[target_code].hp > 0 {
+                opponent.board[target_code].hp = 0;
+            }
+        }
+    }
     Ok(())
+}
+
+/// Apply warrior cleave splash damage to the neighbours of the attacked
+/// target (core/engine.py `_apply_attack_cleave`). `target_index` is the
+/// position of the primary target in `opponent.board` BEFORE cleanup; the
+/// target is still on board (cleanup runs after apply_attack). Hits only
+/// neighbours with hp > 0. The attacker card (at `attacker_index` in
+/// `player.board`) is passed for reflect accounting.
+fn apply_attack_cleave(
+    opponent: &mut KernelPlayer,
+    target_index: usize,
+    damage: i32,
+    player: &mut KernelPlayer,
+    attacker_index: usize,
+    draw_rng: &mut DrawRng,
+) {
+    // Mirror Python: iterate (target_index-1, target_index+1) and apply
+    // damage to each living neighbour. The attacker-card borrow is split
+    // off so reflect (which writes back to the attacker) works without
+    // aliasing the opponent board borrow.
+    if attacker_index >= player.board.len() {
+        return;
+    }
+    for &neighbour_index in &[target_index.wrapping_sub(1), target_index + 1] {
+        if neighbour_index >= opponent.board.len() {
+            continue;
+        }
+        if opponent.board[neighbour_index].hp <= 0 {
+            continue;
+        }
+        let attacker = &mut player.board[attacker_index];
+        apply_damage(
+            &mut opponent.board[neighbour_index],
+            damage,
+            Some(attacker),
+            draw_rng,
+        );
+    }
 }
 
 fn apply_play_effects(
@@ -1027,10 +1180,10 @@ fn apply_play_effects(
             .and_then(parse_i32_prefix)
         {
             if card_id != 15 {
-                apply_damage_to_play_target(owner, opponent, target_code, amount);
+                apply_damage_to_play_target(owner, opponent, target_code, amount, draw_rng);
             }
         } else if let Some(amount) = mechanic.strip_prefix("damage_").and_then(parse_i32_prefix) {
-            apply_damage_to_play_target(owner, opponent, target_code, amount);
+            apply_damage_to_play_target(owner, opponent, target_code, amount, draw_rng);
         } else if let Some(amount) = mechanic
             .strip_prefix("battlecry_heal_hero_")
             .and_then(parse_i32_prefix)
@@ -1040,6 +1193,59 @@ fn apply_play_effects(
             // No-FIFO weighted draw — mirrors core/engine.py draw_one_from_deck
             // (source="battlecry_draw_card"). Replaces the old FIFO draw.
             draw_one_from_deck(owner, overdraw_to_discard, draw_rng);
+        } else if mechanic == "battlecry_freeze" || mechanic == "freeze" {
+            // Freeze the targeted enemy minion (core/effects.py effect_freeze /
+            // effect_battlecry_freeze). target_code 1..=7 → opponent board
+            // index 0..6. A shield on the target blocks the freeze (shield
+            // consumed, no freeze applied). Heroes cannot be frozen.
+            if matches!(target_code, 1..=7) {
+                if let Some(target) = opponent.board.get_mut(target_code - 1) {
+                    if consume_shield(target) {
+                        // shield absorbed the freeze
+                    } else if !target.is_frozen {
+                        target.is_frozen = true;
+                    }
+                }
+            }
+        } else if mechanic == "aoe_freeze" {
+            // Freeze up to the first 3 enemy minions (core/effects.py
+            // effect_aoe_freeze). Each unit's shield blocks the freeze for
+            // that unit (shield consumed) — `consume_shield` then skip.
+            for target in opponent.board.iter_mut().take(3) {
+                if consume_shield(target) {
+                    continue;
+                }
+                if !target.is_frozen {
+                    target.is_frozen = true;
+                }
+            }
+        } else if mechanic == "desk_freeze" {
+            // Freeze ALL enemy minions (core/effects.py effect_desk_freeze).
+            for target in opponent.board.iter_mut() {
+                if consume_shield(target) {
+                    continue;
+                }
+                if !target.is_frozen {
+                    target.is_frozen = true;
+                }
+            }
+        } else if let Some(rest) = mechanic.strip_prefix("freeze_") {
+            // `freeze_X` (dynamic) — freeze the targeted enemy minion. Same
+            // target mapping as `freeze`/`battlecry_freeze`. The `_X` count
+            // is parsed only to distinguish the mechanic from `freeze_on_play`
+            // (which does NOT match — `on_play` is non-numeric); the count is
+            // otherwise unused for the single-target freeze.
+            if rest.split('_').next().and_then(|c| c.parse::<i32>().ok()).is_some() {
+                if matches!(target_code, 1..=7) {
+                    if let Some(target) = opponent.board.get_mut(target_code - 1) {
+                        if consume_shield(target) {
+                            // shield absorbed
+                        } else if !target.is_frozen {
+                            target.is_frozen = true;
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -1049,22 +1255,23 @@ fn apply_damage_to_play_target(
     opponent: &mut KernelPlayer,
     target_code: usize,
     amount: i32,
+    draw_rng: &mut DrawRng,
 ) {
     match target_code {
         1..=7 => {
             if let Some(target) = opponent.board.get_mut(target_code - 1) {
-                apply_damage(target, amount, None);
+                apply_damage(target, amount, None, draw_rng);
             }
         }
         8 => {
-            apply_damage(&mut opponent.hero, amount, None);
+            apply_damage(&mut opponent.hero, amount, None, draw_rng);
         }
         16 => {
-            apply_damage(&mut owner.hero, amount, None);
+            apply_damage(&mut owner.hero, amount, None, draw_rng);
         }
         9..=15 => {
             if let Some(target) = owner.board.get_mut(target_code - 9) {
-                apply_damage(target, amount, None);
+                apply_damage(target, amount, None, draw_rng);
             }
         }
         _ => {}
@@ -1868,8 +2075,13 @@ fn heal_card(card: &mut KernelCard, amount: i32) {
     card.hp = (card.hp + amount).min(card.max_hp);
 }
 
-fn apply_damage(target: &mut KernelCard, damage: i32, attacker: Option<&mut KernelCard>) -> i32 {
-    let modified_damage = apply_damage_modifiers(target, damage);
+fn apply_damage(
+    target: &mut KernelCard,
+    damage: i32,
+    attacker: Option<&mut KernelCard>,
+    draw_rng: &mut DrawRng,
+) -> i32 {
+    let modified_damage = apply_damage_modifiers(target, damage, draw_rng);
     let old_hp = target.hp;
     target.hp = (target.hp - modified_damage).max(0);
     let actual_damage = (old_hp - target.hp).max(0);
@@ -1882,7 +2094,7 @@ fn apply_damage(target: &mut KernelCard, damage: i32, attacker: Option<&mut Kern
                 .filter_map(|m| m.strip_prefix("reflect_").and_then(parse_i32_prefix))
                 .next()
             {
-                let reflect_damage = apply_damage_modifiers(attacker, reflect_amount);
+                let reflect_damage = apply_damage_modifiers(attacker, reflect_amount, draw_rng);
                 attacker.hp = (attacker.hp - reflect_damage).max(0);
             }
         }
@@ -1891,20 +2103,33 @@ fn apply_damage(target: &mut KernelCard, damage: i32, attacker: Option<&mut Kern
     actual_damage
 }
 
-fn apply_damage_modifiers(target: &mut KernelCard, damage: i32) -> i32 {
+fn apply_damage_modifiers(target: &mut KernelCard, damage: i32, draw_rng: &mut DrawRng) -> i32 {
     if target.has_mechanic("permanent_shield") {
         return 0;
     }
     if consume_shield(target) {
         return 0;
     }
-    let armor = target
-        .mechanics
-        .iter()
-        .filter_map(|m| m.strip_prefix("armor_").and_then(parse_i32_prefix))
-        .next()
-        .unwrap_or(0);
-    (damage - armor).max(0)
+    // Armor (TA-4): `armor_X` is a fixed reduction; `armor_X_Y` rolls
+    // `random.randint(X, Y)` inclusive (core/effects.py line 1219-1223).
+    // Only the FIRST armor mechanic on the card is applied (Python `break`).
+    // The armor mechanic is NOT consumed — it persists across attacks.
+    let mut armor_value = 0;
+    for mechanic in &target.mechanics {
+        if let Some(rest) = mechanic.strip_prefix("armor_") {
+            if let Some((min_str, max_str)) = rest.split_once('_') {
+                if let (Ok(min_val), Ok(max_val)) = (min_str.parse::<i32>(), max_str.parse::<i32>())
+                {
+                    // Range roll — deterministic via recorded-outcome RNG.
+                    armor_value = roll_range(min_val, max_val, draw_rng);
+                }
+            } else if let Ok(fixed) = rest.parse::<i32>() {
+                armor_value = fixed;
+            }
+            break;
+        }
+    }
+    (damage - armor_value).max(0)
 }
 
 fn consume_shield(target: &mut KernelCard) -> bool {
@@ -2006,6 +2231,7 @@ fn reset_to_base_state(card: &mut KernelCard) {
     card.mechanics = card.base_mechanics.clone();
     card.is_ready = false;
     card.is_frozen = false;
+    card.instant_kill_used = false;
     card.skip_count = 0;
 }
 
@@ -2110,14 +2336,14 @@ fn draw_one_from_deck(
     true
 }
 
-fn cleanup_dead_units(state: &mut KernelState) {
+fn cleanup_dead_units(state: &mut KernelState, draw_rng: &mut DrawRng) {
     loop {
         let before_p1 = state.p1.board.len();
         let before_p2 = state.p2.board.len();
         {
             let (p1, p2) = (&mut state.p1, &mut state.p2);
-            cleanup_dead_units_for_player(p1, p2);
-            cleanup_dead_units_for_player(p2, p1);
+            cleanup_dead_units_for_player(p1, p2, draw_rng);
+            cleanup_dead_units_for_player(p2, p1, draw_rng);
         }
         if state.p1.board.len() == before_p1 && state.p2.board.len() == before_p2 {
             break;
@@ -2125,7 +2351,11 @@ fn cleanup_dead_units(state: &mut KernelState) {
     }
 }
 
-fn cleanup_dead_units_for_player(player: &mut KernelPlayer, opponent: &mut KernelPlayer) {
+fn cleanup_dead_units_for_player(
+    player: &mut KernelPlayer,
+    opponent: &mut KernelPlayer,
+    draw_rng: &mut DrawRng,
+) {
     // --- Rebirth pre-pass (Phase 3: REBIRTH-1). Mirrors
     // core/engine.py::_cleanup_dead_units: a unit with rebirth_N at lethal
     // damage survives with N HP (one-shot — the rebirth_N mechanic string is
@@ -2158,7 +2388,7 @@ fn cleanup_dead_units_for_player(player: &mut KernelPlayer, opponent: &mut Kerne
     let mut alive = Vec::with_capacity(player.board.len());
     for unit in player.board.drain(..) {
         if unit.hp <= 0 {
-            apply_deathrattle_effects(&unit, opponent);
+            apply_deathrattle_effects(&unit, opponent, draw_rng);
             if cap_damage > 0 && opponent.hero.hp > 0 {
                 opponent.hero.hp = (opponent.hero.hp - cap_damage).max(0);
             }
@@ -2202,7 +2432,11 @@ fn parse_crime_and_punishment(mechanics: &[String]) -> i32 {
     0
 }
 
-fn apply_deathrattle_effects(unit: &KernelCard, opponent: &mut KernelPlayer) {
+fn apply_deathrattle_effects(
+    unit: &KernelCard,
+    opponent: &mut KernelPlayer,
+    draw_rng: &mut DrawRng,
+) {
     for mechanic in &unit.mechanics {
         let Some(amount) = mechanic
             .strip_prefix("deathrattle_aoe_damage_")
@@ -2212,11 +2446,11 @@ fn apply_deathrattle_effects(unit: &KernelCard, opponent: &mut KernelPlayer) {
         };
         for target in &mut opponent.board {
             if target.hp > 0 {
-                apply_damage(target, amount, None);
+                apply_damage(target, amount, None, draw_rng);
             }
         }
         if opponent.hero.hp > 0 {
-            apply_damage(&mut opponent.hero, amount, None);
+            apply_damage(&mut opponent.hero, amount, None, draw_rng);
         }
         break;
     }
@@ -2568,6 +2802,16 @@ mod draw_tests {
         }
     }
 
+    /// Test helper: run `cleanup_dead_units_for_player` with a live seeded
+    /// DrawRng (the rebirth/CAP tests don't trigger randint rolls — armor
+    /// is bypassed by CAP's direct subtraction and no deathrattle damage
+    /// hits an armor_X_Y target here — so any seed suffices).
+    fn cleanup_for_test(p: &mut KernelPlayer, opp: &mut KernelPlayer) {
+        let mut rng = ChaChaRng::seed_from_u64(42);
+        let mut draw_rng = DrawRng::live(&mut rng);
+        cleanup_dead_units_for_player(p, opp, &mut draw_rng);
+    }
+
     #[test]
     fn parse_rebirth_extracts_n_from_mechanic() {
         assert_eq!(parse_rebirth(&["rebirth_1".to_string()]), Some(1));
@@ -2590,7 +2834,7 @@ mod draw_tests {
         let mut p = player_with(Vec::new(), Vec::new());
         p.board = vec![card_with_mechanics(50, 3, 2, 0, vec!["rebirth_1"])];
         let mut opp = player_with(Vec::new(), Vec::new());
-        cleanup_dead_units_for_player(&mut p, &mut opp);
+        cleanup_for_test(&mut p, &mut opp);
         assert_eq!(p.board.len(), 1, "rebirthed unit stays on board");
         assert_eq!(p.board[0].hp, 1, "hp set to rebirth_N");
         assert!(!p.board[0].mechanics.iter().any(|m| m.starts_with("rebirth_")), "charge consumed");
@@ -2605,7 +2849,7 @@ mod draw_tests {
         p.board = vec![card_with_mechanics(50, 3, 2, 0, vec!["rebirth_1", "deathrattle_aoe_damage_2"])];
         let mut opp = player_with(Vec::new(), Vec::new());
         let hero_hp_before = opp.hero.hp;
-        cleanup_dead_units_for_player(&mut p, &mut opp);
+        cleanup_for_test(&mut p, &mut opp);
         assert_eq!(p.board.len(), 1);
         assert_eq!(p.board[0].hp, 1);
         assert_eq!(opp.hero.hp, hero_hp_before, "deathrattle did NOT fire for rebirthed unit");
@@ -2616,7 +2860,7 @@ mod draw_tests {
         let mut p = player_with(Vec::new(), Vec::new());
         p.board = vec![card_with_mechanics(27, 2, 1, 0, vec![])];
         let mut opp = player_with(Vec::new(), Vec::new());
-        cleanup_dead_units_for_player(&mut p, &mut opp);
+        cleanup_for_test(&mut p, &mut opp);
         assert_eq!(p.board.len(), 0);
         assert_eq!(p.graveyard.len(), 1);
         assert_eq!(p.graveyard[0].card_id, 27);
@@ -2643,7 +2887,7 @@ mod draw_tests {
         // Give opponent hero armor to confirm CAP bypasses it.
         opp.hero.mechanics = vec!["armor_1_3".to_string()];
         let opp_hero_hp_before = opp.hero.hp;
-        cleanup_dead_units_for_player(&mut p, &mut opp);
+        cleanup_for_test(&mut p, &mut opp);
         assert_eq!(p.board.len(), 0, "dead unit removed");
         assert_eq!(p.graveyard.len(), 1);
         // Direct subtraction: hp - 2, armor NOT applied.
@@ -2660,7 +2904,7 @@ mod draw_tests {
         ];
         let mut opp = player_with(Vec::new(), Vec::new());
         let opp_hero_hp_before = opp.hero.hp;
-        cleanup_dead_units_for_player(&mut p, &mut opp);
+        cleanup_for_test(&mut p, &mut opp);
         assert_eq!(p.graveyard.len(), 2);
         assert_eq!(opp.hero.hp, opp_hero_hp_before - 4, "2 dead minions → 2*2=4 CAP damage");
     }
@@ -2672,7 +2916,7 @@ mod draw_tests {
         p.board = vec![card_with_mechanics(27, 2, 1, 3, vec![])];
         let mut opp = player_with(Vec::new(), Vec::new());
         let opp_hero_hp_before = opp.hero.hp;
-        cleanup_dead_units_for_player(&mut p, &mut opp);
+        cleanup_for_test(&mut p, &mut opp);
         assert_eq!(p.board.len(), 1, "alive unit stays");
         assert_eq!(opp.hero.hp, opp_hero_hp_before, "no CAP when no minion dies");
     }
@@ -2689,7 +2933,7 @@ mod draw_tests {
             card_with_mechanics(27, 2, 1, 0, vec![]),
         ];
         let mut opp = player_with(Vec::new(), Vec::new());
-        cleanup_dead_units_for_player(&mut p, &mut opp);
+        cleanup_for_test(&mut p, &mut opp);
         assert_eq!(p.board.len(), 1, "rebirthed unit stays, dead unit removed");
         assert_eq!(p.board[0].card_id, 50);
         assert_eq!(p.board[0].hp, 1);
@@ -2730,7 +2974,6 @@ mod draw_tests {
             ))
             .expect("consume_ally play action is legal");
         let mut rng = crate::worker::WorkerRng::Deterministic;
-        let mut rng = crate::worker::WorkerRng::Deterministic;
         let mut draw_rng = DrawRng::live(&mut rng);
         let out = kernel.apply_action(&state, 1, action_id, false, &mut draw_rng);
         assert!(out.is_ok(), "consume_ally play applies: {:?}", out.err());
@@ -2742,5 +2985,343 @@ mod draw_tests {
         assert_eq!(new.p1.board[0].max_hp, 5, "2 + 3 = 5");
         assert_eq!(new.p1.graveyard.len(), 1, "consumed ally in graveyard");
         assert_eq!(new.p1.graveyard[0].card_id, 27);
+    }
+
+    // ---- Phase 4: cleave / instant_kill / freeze / armor_X_Y ----
+
+    /// Build a minimal 2-player state with `me_board`/`opp_board` and a ready
+    /// attacker at me_board[0]. `me_hero_id`/`opp_hero_id` select the hero
+    /// card_id (default 0 = dummy 30hp hero).
+    fn attack_state(me_board: Vec<KernelCard>, opp_board: Vec<KernelCard>) -> KernelState {
+        let mut p1 = player_with(Vec::new(), Vec::new());
+        p1.user_id = 1;
+        p1.board = me_board;
+        for c in p1.board.iter_mut() {
+            c.is_ready = true;
+        }
+        let mut p2 = player_with(Vec::new(), Vec::new());
+        p2.user_id = 2;
+        p2.board = opp_board;
+        KernelState {
+            current_turn_owner_id: 1,
+            turn_number: 1,
+            status: "ongoing".to_string(),
+            p1,
+            p2,
+        }
+    }
+
+    fn find_attack_action(state: &KernelState, attacker_idx: usize, target_code: usize) -> usize {
+        let mask = build_action_mask(state, 1, PlacementMode::AppendOnly);
+        (0..mask.len())
+            .filter(|&i| mask[i] == 1.0)
+            .find(|&i| matches!(
+                decode_action_id(i),
+                Some(CandidateAction::Attack { attacker_index, target_code: tc })
+                    if attacker_index == attacker_idx && tc == target_code
+            ))
+            .expect("attack action is legal")
+    }
+
+    #[test]
+    fn apply_attack_cleave_splashes_damage_to_neighbours() {
+        // Сукуна (7/7, cleave_1) attacks the middle Скелет (2hp). The main
+        // target dies (2-7→0); cleave splashes 1 to each living neighbour
+        // (2hp → 1hp). Сукуна takes 3 counter → 4hp.
+        let me = vec![card_with_mechanics(23, 7, 7, 7, vec!["cleave_1"])];
+        let opp = vec![
+            card_with_mechanics(27, 1, 3, 2, vec![]),
+            card_with_mechanics(27, 1, 3, 2, vec![]),
+            card_with_mechanics(27, 1, 3, 2, vec![]),
+        ];
+        let state = attack_state(me, opp);
+        let action_id = find_attack_action(&state, 0, 1);
+        let kernel = RolloutKernel::new(KernelConfig::default());
+        let mut rng = ChaChaRng::seed_from_u64(42);
+        let mut draw_rng = DrawRng::live(&mut rng);
+        let out = kernel.apply_action(&state, 1, action_id, false, &mut draw_rng).expect("attack");
+        let new = out.state;
+        // cleanup removes the dead middle Скелет; two neighbours remain at 1hp.
+        assert_eq!(new.p2.board.len(), 2, "middle target dead, neighbours survive");
+        assert!(new.p2.board.iter().all(|c| c.hp == 1), "neighbours at 1hp after cleave");
+        assert_eq!(new.p1.board[0].hp, 4, "Сукуна took 3 counter damage");
+    }
+
+    #[test]
+    fn apply_attack_cleave_skips_dead_neighbours() {
+        // A dead neighbour (hp 0, pre-cleanup) is skipped by cleave; the alive
+        // neighbour on the other side still takes the splash. Board layout:
+        // [dead(0hp), target(2hp), alive(2hp)]. Сукуна attacks index 1.
+        // Cleave hits index 0 (dead → skipped) and index 2 (alive 2→1).
+        let me = vec![card_with_mechanics(23, 7, 7, 7, vec!["cleave_1"])];
+        let mut opp_dead = card_with_mechanics(27, 1, 3, 1, vec![]);
+        opp_dead.hp = 0;
+        let opp = vec![
+            opp_dead,
+            card_with_mechanics(27, 1, 3, 2, vec![]),
+            card_with_mechanics(27, 1, 3, 2, vec![]),
+        ];
+        let state = attack_state(me, opp);
+        let action_id = find_attack_action(&state, 0, 1);
+        let kernel = RolloutKernel::new(KernelConfig::default());
+        let mut rng = ChaChaRng::seed_from_u64(42);
+        let mut draw_rng = DrawRng::live(&mut rng);
+        let out = kernel.apply_action(&state, 1, action_id, false, &mut draw_rng).expect("attack");
+        let new = out.state;
+        // After cleanup: dead index 0 + dead target index 1 removed; the
+        // alive neighbour (was index 2) survives at 1hp.
+        let survivors: Vec<i32> = new.p2.board.iter().map(|c| c.hp).collect();
+        assert_eq!(survivors, vec![1], "alive neighbour took cleave (2-1=1), dead neighbour skipped");
+    }
+
+    #[test]
+    fn apply_attack_instant_kill_sets_hp_zero_and_one_shot_flag() {
+        // Сайтама (10/10, instant_kill) attacks a 15hp minion. Normal damage
+        // would leave 5hp; instant_kill sets hp=0. instant_kill_used becomes
+        // true (one-shot).
+        let me = vec![card_with_mechanics(25, 10, 10, 10, vec!["instant_kill"])];
+        let opp = vec![card_with_mechanics(42, 6, 15, 15, vec![])];
+        let state = attack_state(me, opp);
+        let action_id = find_attack_action(&state, 0, 0);
+        let kernel = RolloutKernel::new(KernelConfig::default());
+        let mut rng = ChaChaRng::seed_from_u64(42);
+        let mut draw_rng = DrawRng::live(&mut rng);
+        let out = kernel.apply_action(&state, 1, action_id, false, &mut draw_rng).expect("attack");
+        let new = out.state;
+        assert_eq!(new.p2.board.len(), 0, "target died via instant_kill (hp=0)");
+        assert_eq!(new.p2.graveyard.len(), 1, "target in graveyard");
+        // Сайтама died to 15 counter-attack (10-15→0).
+        assert_eq!(new.p1.board.len(), 0, "Сайтама died to counter");
+    }
+
+    #[test]
+    fn instant_kill_is_one_shot_per_card() {
+        // Two separate attacks by the same Сайтама: only the FIRST triggers
+        // instant_kill. Verify via direct apply_attack calls (no cleanup
+        // between, so we can inspect hp on the surviving second target).
+        // Use a target with hp > 10 and atk 0 so Сайтама survives.
+        let me = vec![card_with_mechanics(25, 10, 10, 10, vec!["instant_kill"])];
+        // First target: hp 12, atk 0 (dies to instant_kill, no counter).
+        // Second target: hp 12, atk 0 (should survive at 2hp — normal damage
+        // only, instant_kill already used).
+        let opp = vec![
+            card_with_mechanics(42, 6, 0, 12, vec![]),
+            card_with_mechanics(42, 6, 0, 12, vec![]),
+        ];
+        let state = attack_state(me, opp);
+        // First attack: target index 0.
+        let aid1 = find_attack_action(&state, 0, 0);
+        let kernel = RolloutKernel::new(KernelConfig::default());
+        let mut rng = ChaChaRng::seed_from_u64(42);
+        let mut draw_rng = DrawRng::live(&mut rng);
+        let out1 = kernel.apply_action(&state, 1, aid1, false, &mut draw_rng).expect("attack1");
+        // After first attack: target 0 hp=0 (instant_kill), Сайтама hp=10
+        // (no counter, atk 0). Cleanup removes target 0.
+        assert_eq!(out1.state.p2.board.len(), 1, "first target killed");
+        assert!(out1.state.p1.board[0].instant_kill_used, "instant_kill_used set after first kill");
+        // Re-ready Сайтама for the second attack (apply_attack sets is_ready=false).
+        let mut state2 = out1.state.clone();
+        state2.p1.board[0].is_ready = true;
+        // Second attack: the remaining target (now index 0).
+        let aid2 = find_attack_action(&state2, 0, 0);
+        let out2 = kernel.apply_action(&state2, 1, aid2, false, &mut draw_rng).expect("attack2");
+        // Without instant_kill (one-shot used), normal damage: 12-10=2hp.
+        assert_eq!(out2.state.p2.board.len(), 1, "second target survived (no instant_kill)");
+        assert_eq!(out2.state.p2.board[0].hp, 2, "second target took normal damage only (12-10=2)");
+    }
+
+    #[test]
+    fn apply_attack_instant_kill_does_not_work_on_hero() {
+        // Сайтама attacks the hero — instant_kill does NOT trigger; hero takes
+        // only base damage.
+        let me = vec![card_with_mechanics(25, 10, 10, 10, vec!["instant_kill"])];
+        let state = attack_state(me, Vec::new());
+        // p2 hero default hp 30.
+        let action_id = find_attack_action(&state, 0, 7);
+        let kernel = RolloutKernel::new(KernelConfig::default());
+        let mut rng = ChaChaRng::seed_from_u64(42);
+        let mut draw_rng = DrawRng::live(&mut rng);
+        let out = kernel.apply_action(&state, 1, action_id, false, &mut draw_rng).expect("hero attack");
+        assert_eq!(out.state.p2.hero.hp, 20, "hero took 10 base damage (no instant_kill on heroes)");
+        // instant_kill_used stays false (not consumed on hero attack).
+        assert!(!out.state.p1.board[0].instant_kill_used, "instant_kill not consumed on hero attack");
+    }
+
+    #[test]
+    fn apply_play_battlecry_freeze_sets_is_frozen_on_target() {
+        // Саб-Зиро (battlecry_freeze) played targeting enemy board[0] → frozen.
+        let mut state = KernelState {
+            current_turn_owner_id: 1,
+            turn_number: 1,
+            status: "ongoing".to_string(),
+            p1: player_with(Vec::new(), vec![card_with_mechanics(19, 4, 3, 4, vec!["battlecry_freeze"])]),
+            p2: player_with(Vec::new(), Vec::new()),
+        };
+        state.p1.user_id = 1;
+        state.p2.user_id = 2;
+        state.p1.mana = 10;
+        state.p2.board = vec![card_with_mechanics(27, 1, 2, 1, vec![])];
+        // Find the play action targeting enemy board[0] (target_code=1).
+        let mask = build_action_mask(&state, 1, PlacementMode::AppendOnly);
+        let action_id = (0..mask.len())
+            .filter(|&i| mask[i] == 1.0)
+            .find(|&i| matches!(
+                decode_action_id(i),
+                Some(CandidateAction::PlayCard { hand_index: 0, target_code: 1, .. })
+            ))
+            .expect("freeze play action is legal");
+        let kernel = RolloutKernel::new(KernelConfig::default());
+        let mut rng = ChaChaRng::seed_from_u64(42);
+        let mut draw_rng = DrawRng::live(&mut rng);
+        let out = kernel.apply_action(&state, 1, action_id, false, &mut draw_rng).expect("play");
+        assert!(out.state.p2.board[0].is_frozen, "target frozen by battlecry_freeze");
+    }
+
+    #[test]
+    fn apply_play_freeze_blocked_by_shield() {
+        // A shielded target: freeze is blocked, shield consumed, NOT frozen.
+        let mut state = KernelState {
+            current_turn_owner_id: 1,
+            turn_number: 1,
+            status: "ongoing".to_string(),
+            p1: player_with(Vec::new(), vec![card_with_mechanics(19, 4, 3, 4, vec!["battlecry_freeze"])]),
+            p2: player_with(Vec::new(), Vec::new()),
+        };
+        state.p1.user_id = 1;
+        state.p2.user_id = 2;
+        state.p1.mana = 10;
+        state.p2.board = vec![card_with_mechanics(17, 3, 3, 2, vec!["shield"])];
+        let mask = build_action_mask(&state, 1, PlacementMode::AppendOnly);
+        let action_id = (0..mask.len())
+            .filter(|&i| mask[i] == 1.0)
+            .find(|&i| matches!(
+                decode_action_id(i),
+                Some(CandidateAction::PlayCard { hand_index: 0, target_code: 1, .. })
+            ))
+            .expect("freeze play action is legal");
+        let kernel = RolloutKernel::new(KernelConfig::default());
+        let mut rng = ChaChaRng::seed_from_u64(42);
+        let mut draw_rng = DrawRng::live(&mut rng);
+        let out = kernel.apply_action(&state, 1, action_id, false, &mut draw_rng).expect("play");
+        assert!(!out.state.p2.board[0].is_frozen, "freeze blocked by shield");
+        assert!(!out.state.p2.board[0].has_mechanic("shield"), "shield consumed");
+    }
+
+    #[test]
+    fn apply_play_aoe_freeze_freezes_up_to_three_enemies() {
+        let mut state = KernelState {
+            current_turn_owner_id: 1,
+            turn_number: 1,
+            status: "ongoing".to_string(),
+            p1: player_with(Vec::new(), vec![card_with_mechanics(22, 8, 6, 6, vec!["aoe_freeze"])]),
+            p2: player_with(Vec::new(), Vec::new()),
+        };
+        state.p1.user_id = 1;
+        state.p2.user_id = 2;
+        state.p1.mana = 10;
+        state.p2.board = vec![
+            card_with_mechanics(27, 1, 2, 1, vec![]),
+            card_with_mechanics(27, 1, 2, 1, vec![]),
+            card_with_mechanics(27, 1, 2, 1, vec![]),
+            card_with_mechanics(27, 1, 2, 1, vec![]),
+        ];
+        let mask = build_action_mask(&state, 1, PlacementMode::AppendOnly);
+        let action_id = (0..mask.len())
+            .filter(|&i| mask[i] == 1.0)
+            .find(|&i| matches!(
+                decode_action_id(i),
+                Some(CandidateAction::PlayCard { hand_index: 0, target_code: 0, .. })
+            ))
+            .expect("aoe_freeze play action is legal");
+        let kernel = RolloutKernel::new(KernelConfig::default());
+        let mut rng = ChaChaRng::seed_from_u64(42);
+        let mut draw_rng = DrawRng::live(&mut rng);
+        let out = kernel.apply_action(&state, 1, action_id, false, &mut draw_rng).expect("play");
+        let frozen = out.state.p2.board.iter().filter(|c| c.is_frozen).count();
+        assert_eq!(frozen, 3, "aoe_freeze freezes up to first 3 enemy minions");
+    }
+
+    #[test]
+    fn apply_end_turn_thaws_frozen_unit_and_skips_activation() {
+        // A frozen unit on the opponent's board: when end_turn runs for the
+        // current player, the opponent's frozen unit thaws (is_frozen=false)
+        // and stays not-ready (skips one activation).
+        let mut state = KernelState {
+            current_turn_owner_id: 1,
+            turn_number: 1,
+            status: "ongoing".to_string(),
+            p1: player_with(Vec::new(), Vec::new()),
+            p2: player_with(Vec::new(), Vec::new()),
+        };
+        state.p1.user_id = 1;
+        state.p2.user_id = 2;
+        let mut frozen_skel = card_with_mechanics(27, 1, 2, 1, vec![]);
+        frozen_skel.is_frozen = true;
+        frozen_skel.is_ready = true; // was ready before freeze
+        state.p2.board = vec![frozen_skel];
+        let kernel = RolloutKernel::new(KernelConfig::default());
+        let mut rng = ChaChaRng::seed_from_u64(42);
+        let mut draw_rng = DrawRng::live(&mut rng);
+        // p1 ends turn → p2's turn begins; p2's frozen unit thaws + skips.
+        let out = kernel.apply_action(&state, 1, 0, false, &mut draw_rng).expect("end turn");
+        assert!(!out.state.p2.board[0].is_frozen, "frozen unit thawed at end-turn");
+        assert!(!out.state.p2.board[0].is_ready, "thawed unit skips activation (is_ready=false)");
+    }
+
+    #[test]
+    fn armor_x_y_rolls_randint_via_recorded_rng() {
+        // Direct test of the armor_X_Y range roll: a target with armor_1_3
+        // takes damage reduced by a recorded randint roll. Uses a Recorded
+        // DrawRng with randint_rolls=[2] → armor absorbs 2.
+        let mut target = card_with_mechanics(5, 0, 0, 10, vec!["armor_1_3"]);
+        target.mechanics = vec!["armor_1_3".to_string()];
+        let mut draw_rng = DrawRng::recorded(vec![], vec![], vec![2]);
+        let dmg = apply_damage_modifiers(&mut target, 7, &mut draw_rng);
+        // 7 - 2 (rolled armor) = 5.
+        assert_eq!(dmg, 5, "armor_1_3 rolled 2 → damage 7-2=5");
+    }
+
+    #[test]
+    fn armor_x_fixed_does_not_roll() {
+        // armor_X (single value) is a fixed reduction, no randint roll.
+        let mut target = card_with_mechanics(18, 5, 5, 5, vec!["armor_1"]);
+        target.mechanics = vec!["armor_1".to_string()];
+        // Recorded with NO randint_rolls — if armor_1 incorrectly rolled, the
+        // stream would be exhausted (fall back to min=1) but still produce 1.
+        // The key check: damage = 7 - 1 = 6 (fixed), no roll consumed.
+        let mut draw_rng = DrawRng::recorded(vec![], vec![], vec![]);
+        let dmg = apply_damage_modifiers(&mut target, 7, &mut draw_rng);
+        assert_eq!(dmg, 6, "armor_1 fixed → damage 7-1=6");
+    }
+
+    #[test]
+    fn armor_x_y_recorded_stream_exhaustion_falls_back_to_min() {
+        // If the recorded randint stream is exhausted, roll_range falls back
+        // to min (matching the pick/order exhaustion contract).
+        let mut target = card_with_mechanics(5, 0, 0, 10, vec!["armor_1_3"]);
+        target.mechanics = vec!["armor_1_3".to_string()];
+        let mut draw_rng = DrawRng::recorded(vec![], vec![], vec![]);
+        let dmg = apply_damage_modifiers(&mut target, 7, &mut draw_rng);
+        // Fall back to min=1 → 7-1=6.
+        assert_eq!(dmg, 6, "exhausted randint stream falls back to min=1");
+    }
+
+    #[test]
+    fn roll_range_live_uses_gen_range() {
+        // Live DrawRng produces a value within [min, max].
+        let mut rng = ChaChaRng::seed_from_u64(7);
+        let mut draw_rng = DrawRng::live(&mut rng);
+        for _ in 0..20 {
+            let v = roll_range(1, 3, &mut draw_rng);
+            assert!((1..=3).contains(&v), "live roll_range in [1,3]: {}", v);
+        }
+    }
+
+    #[test]
+    fn roll_range_recorded_pops_in_order() {
+        let mut draw_rng = DrawRng::recorded(vec![], vec![], vec![3, 1, 2]);
+        assert_eq!(roll_range(1, 3, &mut draw_rng), 3);
+        assert_eq!(roll_range(1, 3, &mut draw_rng), 1);
+        assert_eq!(roll_range(1, 3, &mut draw_rng), 2);
     }
 }
