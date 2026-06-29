@@ -305,6 +305,37 @@ fn rust_kernel_apply_action_matches_tamhp_python_transitions() {
 }
 
 #[test]
+fn rust_kernel_apply_action_matches_random_battlecry_python_transitions() {
+    // Phase 6 (AC-FFI-2, TA-5): card 15 Тока Киришима (cost 2, 2/1, warrior,
+    // `battlecry_damage_1_random`). Python `_apply_random_battlecry_damage`
+    // (core/effects.py line 67-83) builds `targets = list(opponent.board) +
+    // [opponent.hero]` and picks one via `random.choice`, dealing 1 damage.
+    // The chosen index is recorded in the new `choice_rolls` stream; Rust
+    // replays it via `roll_choice` (mechanic-driven, NOT card_id). p1 has 2
+    // Скелет on board → targets list has 3 entries; the recorded roll picks
+    // index 1 (2nd Скелет) which dies (hp 1→0, removed). Multi-card deck;
+    // recorded-outcome RNG (choice_rolls). State-transition only.
+    let raw = include_str!("fixtures/golden_trace_random_battlecry.json");
+    let trace: GoldenTrace = serde_json::from_str(raw).expect("fixture parses");
+    assert_trace_state_transitions_match(&trace);
+}
+
+#[test]
+fn rust_kernel_apply_action_matches_shield_refresh_python_transitions() {
+    // Phase 6 (TWS-3, AC-FFI-3): card 24 Годжо Сатору (cost 9, 5/6, warrior,
+    // `["shield", "shield_refresh"]`). Python `core/engine.py::_handle_end_turn`
+    // (line 728) refreshes `shield` at the start of the owner's turn when the
+    // unit has `shield_refresh` and no current `shield`. The fixture consumes
+    // the shield via an enemy Скелет attack (shield gone, hp unchanged), then
+    // ends the enemy turn → owner's turn start re-adds `shield` (mechanic-
+    // driven via `has_mechanic("shield_refresh")`, NOT card_id == 24). No
+    // choice_rolls (no random.choice mechanic exercised). State-transition only.
+    let raw = include_str!("fixtures/golden_trace_shield_refresh.json");
+    let trace: GoldenTrace = serde_json::from_str(raw).expect("fixture parses");
+    assert_trace_state_transitions_match(&trace);
+}
+
+#[test]
 fn batched_rollout_worker_matches_python_trace_with_internal_history() {
     let raw = include_str!("fixtures/golden_trace_scripted_basic.json");
     let trace: GoldenTrace = serde_json::from_str(raw).expect("fixture parses");
@@ -1452,6 +1483,7 @@ fn assert_trace_state_transitions_match(trace: &GoldenTrace) {
             step.draw_picks.clone(),
             step.reshuffle_orders.clone(),
             step.randint_rolls.clone(),
+            step.choice_rolls.clone(),
         );
         let actual = kernel
             .apply_action(&step.pre.state, step.acting_player_id, step.action_id, step.mana_draw_taken, &mut draw_rng)

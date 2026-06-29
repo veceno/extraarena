@@ -179,11 +179,18 @@ class _DrawRecorder:
                graveyard→deck reshuffle.
     `randint_rolls` : the result of every module-level `random.randint(a, b)`
                call during a step (Phase 4: `armor_X_Y` range roll in
-               `core/effects.py::apply_damage_modifiers`; reused in Phase 6
-               for card15 `cast_random_spell` spell-choice). Rust replays
+               `core/effects.py::apply_damage_modifiers`). Rust replays
                these via `roll_range` in the SAME call order — Rust must
                call `roll_range` at exactly the Python `random.randint`
                call sites so the streams stay aligned.
+    `choice_rolls` : the 0-based index chosen by every module-level
+               `random.choice(seq)` call during a step (Phase 6: card15
+               `battlecry_damage_X_random` random-target pick in
+               `core/effects.py::_apply_random_battlecry_damage`, where
+               `targets = list(opponent.board) + [opponent.hero]`). Rust
+               replays these via `roll_choice` in the SAME call order —
+               Rust must call `roll_choice` at exactly the Python
+               `random.choice` call sites so the streams stay aligned.
 
     All lists are appended to in call order across the whole step loop; the
     per-step slice is computed by snapshotting lengths before each step.
@@ -193,6 +200,7 @@ class _DrawRecorder:
         self.picks: list[int] = []
         self.orders: list[list[int]] = []
         self.randint_rolls: list[int] = []
+        self.choice_rolls: list[int] = []
 
     def install(self, env: ClassicRLEnv) -> callable:
         """Install the recording instrumentation on `env`.
@@ -238,10 +246,33 @@ class _DrawRecorder:
 
         _random_module.randint = _recording_randint
 
+        # Phase 6: record module-level `random.choice` outcomes (card15
+        # `battlecry_damage_X_random` random-target pick). `core/effects.py`
+        # calls `random.choice(...)` (module-level). We record the 0-based
+        # index of the chosen element within the input sequence (matched by
+        # identity via `id()` so duplicate-valued cards with unique
+        # instance_ids still resolve correctly). Rust mirrors the exact
+        # call sites with `roll_choice`.
+        original_choice = _random_module.choice
+
+        def _recording_choice(seq):
+            result = original_choice(seq)
+            seq_list = list(seq)
+            result_id = id(result)
+            idx = next(
+                (i for i, x in enumerate(seq_list) if id(x) == result_id),
+                0,
+            )
+            recorder.choice_rolls.append(int(idx))
+            return result
+
+        _random_module.choice = _recording_choice
+
         def _restore() -> None:
             _core_engine._weighted_choice_idx = original_wci
             env._env._rng = original_rng
             _random_module.randint = original_randint
+            _random_module.choice = original_choice
 
         return _restore
 
@@ -361,6 +392,7 @@ def build_golden_trace(
             picks_before = len(recorder.picks)
             orders_before = len(recorder.orders)
             randint_before = len(recorder.randint_rolls)
+            choice_before = len(recorder.choice_rolls)
             pre = _snapshot_hashes(
                 env,
                 include_preview=include_preview,
@@ -426,6 +458,7 @@ def build_golden_trace(
                 for order in recorder.orders[orders_before:]
             ]
             randint_rolls = [int(r) for r in recorder.randint_rolls[randint_before:]]
+            choice_rolls = [int(i) for i in recorder.choice_rolls[choice_before:]]
             trace["steps"].append(
                 {
                     "t": t,
@@ -449,6 +482,7 @@ def build_golden_trace(
                     "draw_picks": draw_picks,
                     "reshuffle_orders": reshuffle_orders,
                     "randint_rolls": randint_rolls,
+                    "choice_rolls": choice_rolls,
                     "post": post,
                 }
             )

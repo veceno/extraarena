@@ -66,11 +66,19 @@ pub enum DrawRng<'a> {
         picks: VecDeque<usize>,
         orders: VecDeque<Vec<i32>>,
         /// Per-step recorded `random.randint` outcomes (Phase 4: armor_X_Y
-        /// range roll; reused in Phase 6 for card15 random spell choice).
-        /// Popped in call order by `roll_range`. Rust must call `roll_range`
-        /// in exactly the same places Python calls `random.randint` so the
-        /// streams stay aligned.
+        /// range roll). Popped in call order by `roll_range`. Rust must call
+        /// `roll_range` in exactly the same places Python calls
+        /// `random.randint` so the streams stay aligned.
         randint_rolls: VecDeque<i32>,
+        /// Per-step recorded `random.choice` outcomes (Phase 6: card15
+        /// `battlecry_damage_X_random` random-target pick). Each entry is the
+        /// 0-based index into the Python `targets` list
+        /// (`list(opponent.board) + [opponent.hero]`) that `random.choice`
+        /// returned. Popped in call order by `roll_choice`. Rust must call
+        /// `roll_choice` in exactly the same places Python calls
+        /// `random.choice` so the streams stay aligned. Default empty for
+        /// pre-Phase-6 fixtures.
+        choice_rolls: VecDeque<i32>,
     },
 }
 
@@ -83,11 +91,17 @@ impl<'a> DrawRng<'a> {
     }
 
     /// Build a `Recorded` DrawRng from a fixture step's recorded outcomes.
-    pub fn recorded(picks: Vec<usize>, orders: Vec<Vec<i32>>, randint_rolls: Vec<i32>) -> Self {
+    pub fn recorded(
+        picks: Vec<usize>,
+        orders: Vec<Vec<i32>>,
+        randint_rolls: Vec<i32>,
+        choice_rolls: Vec<i32>,
+    ) -> Self {
         DrawRng::Recorded {
             picks: picks.into(),
             orders: orders.into(),
             randint_rolls: randint_rolls.into(),
+            choice_rolls: choice_rolls.into(),
         }
     }
 
@@ -142,6 +156,40 @@ fn roll_range(min: i32, max: i32, draw_rng: &mut DrawRng) -> i32 {
             min
         }),
         DrawRng::Live(rng) => rng.gen_range(min..=max),
+    }
+}
+
+/// Mirror of Python `random.choice(seq)` — returns a 0-based index into a
+/// list of length `n`. Used by card15 `battlecry_damage_X_random`
+/// (core/effects.py `_apply_random_battlecry_damage`: `random.choice(targets)`
+/// where `targets = list(opponent.board) + [opponent.hero]`). Rust must call
+/// this in the SAME code paths Python calls `random.choice` so the
+/// recorded-outcome stream (`DrawRng::Recorded.choice_rolls`) replays in
+/// call order.
+///
+/// `Recorded`: pop the next recorded index; if exhausted fall back to `0`
+/// with a debug warning (keeps replay robust, mirrors the pick/order
+/// exhaustion contract). The popped value is clamped to `[0, n)` so a stale
+/// fixture entry can't index out of bounds. `Live`: `rng.gen_range(0..n)`.
+fn roll_choice(n: usize, draw_rng: &mut DrawRng) -> usize {
+    if n == 0 {
+        return 0;
+    }
+    if n == 1 {
+        return 0;
+    }
+    match draw_rng {
+        DrawRng::Recorded { choice_rolls, .. } => {
+            let raw = choice_rolls.pop_front().unwrap_or_else(|| {
+                eprintln!(
+                    "[DrawRng] recorded choice stream exhausted; falling back to 0"
+                );
+                0
+            });
+            let idx = raw.clamp(0, (n - 1) as i32) as usize;
+            idx
+        }
+        DrawRng::Live(rng) => rng.gen_range(0..n),
     }
 }
 
@@ -249,11 +297,17 @@ pub struct GoldenStep {
     #[serde(default)]
     pub reshuffle_orders: Vec<Vec<i32>>,
     /// Recorded-outcome RNG (Phase 4): every `random.randint` result during
-    /// this step (armor_X_Y range roll; future Phase 6 card15 spell choice).
-    /// Rust replay pops these in call order via `roll_range`. Default empty
-    /// for pre-Phase-4 fixtures.
+    /// this step (armor_X_Y range roll). Rust replay pops these in call order
+    /// via `roll_range`. Default empty for pre-Phase-4 fixtures.
     #[serde(default)]
     pub randint_rolls: Vec<i32>,
+    /// Recorded-outcome RNG (Phase 6): every `random.choice` result during
+    /// this step, as the 0-based index into the Python `targets` list (card15
+    /// `battlecry_damage_X_random` random-target pick). Rust replay pops
+    /// these in call order via `roll_choice`. Default empty for pre-Phase-6
+    /// fixtures (no `random.choice` mechanic exercised → no replay needed).
+    #[serde(default)]
+    pub choice_rolls: Vec<i32>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -927,7 +981,12 @@ fn apply_end_turn(
         } else {
             unit.is_ready = true;
         }
-        if unit.card_id == 24 && !unit.has_mechanic("shield") {
+        // shield_refresh (core/engine.py line 728): at the start of the
+        // owner's turn, a unit with `shield_refresh` and NO current `shield`
+        // regains its one-time shield. Mechanic-driven (not card_id) so any
+        // card with `shield_refresh` (e.g. card24 "Годжо Сатору") behaves
+        // correctly — future-proof + matches Python.
+        if unit.has_mechanic("shield_refresh") && !unit.has_mechanic("shield") {
             unit.mechanics.push("shield".to_string());
         }
         apply_regen(unit);
@@ -1200,7 +1259,7 @@ fn apply_attack_cleave(
 }
 
 fn apply_play_effects(
-    card_id: i32,
+    _card_id: i32,
     mechanics: &[String],
     owner: &mut KernelPlayer,
     opponent: &mut KernelPlayer,
@@ -1218,13 +1277,24 @@ fn apply_play_effects(
         if mechanic.starts_with("deathrattle_") {
             continue;
         }
-        if let Some(amount) = mechanic
+        if is_random_battlecry_damage_mechanic(mechanic) {
+            // card15 `battlecry_damage_X_random` (core/effects.py
+            // `_apply_random_battlecry_damage`): pick a random enemy target
+            // via `random.choice(list(opponent.board) + [opponent.hero])` and
+            // deal X damage to it. Mechanic-driven (not card_id) so any card
+            // with this mechanic behaves correctly. The random pick routes
+            // through the recorded-outcome `choice_rolls` stream.
+            let amount = mechanic
+                .strip_prefix("battlecry_damage_")
+                .and_then(|rest| rest.strip_suffix("_random"))
+                .and_then(parse_i32_prefix)
+                .unwrap_or(0);
+            apply_random_battlecry_damage(opponent, amount, draw_rng);
+        } else if let Some(amount) = mechanic
             .strip_prefix("battlecry_damage_")
             .and_then(parse_i32_prefix)
         {
-            if card_id != 15 {
-                apply_damage_to_play_target(owner, opponent, target_code, amount, draw_rng);
-            }
+            apply_damage_to_play_target(owner, opponent, target_code, amount, draw_rng);
         } else if let Some(amount) = mechanic.strip_prefix("damage_").and_then(parse_i32_prefix) {
             apply_damage_to_play_target(owner, opponent, target_code, amount, draw_rng);
         } else if let Some(amount) = mechanic
@@ -1412,6 +1482,33 @@ fn apply_damage_to_play_target(
             }
         }
         _ => {}
+    }
+}
+
+/// Card15 `battlecry_damage_X_random` (core/effects.py
+/// `_apply_random_battlecry_damage`): build `targets = list(opponent.board) +
+/// [opponent.hero]`, pick one via `random.choice`, and deal `amount` damage.
+/// The random pick routes through `roll_choice` (recorded-outcome
+/// `choice_rolls` stream) so Rust reproduces Python's recorded target in
+/// fixtures and rolls fresh in training. Shield/armor on the target apply via
+/// `apply_damage` (mirrors Python `apply_damage` → `apply_damage_modifiers`).
+fn apply_random_battlecry_damage(
+    opponent: &mut KernelPlayer,
+    amount: i32,
+    draw_rng: &mut DrawRng,
+) {
+    if amount <= 0 {
+        return;
+    }
+    let n = opponent.board.len() + 1; // +1 for hero
+    let idx = roll_choice(n, draw_rng);
+    if idx < opponent.board.len() {
+        // Order matters: borrow the board target mutably without also
+        // borrowing `opponent.hero` (split borrow).
+        let target = &mut opponent.board[idx];
+        apply_damage(target, amount, None, draw_rng);
+    } else {
+        apply_damage(&mut opponent.hero, amount, None, draw_rng);
     }
 }
 
@@ -2198,7 +2295,23 @@ fn has_prefixed_number(value: &str, prefix: &str) -> bool {
 }
 
 fn is_random_battlecry_damage_card(card: &KernelCard) -> bool {
-    card.card_id == 15
+    // Mirrors core/effects.py `is_random_battlecry_damage_card`: a card opts
+    // into random battlecry damage via a `battlecry_damage_X_random` mechanic
+    // (e.g. card15 "Тока Киришима" carries `battlecry_damage_1_random`).
+    // Mechanic-driven so any future card with the same mechanic behaves
+    // correctly — no card_id hardcode.
+    card.mechanics
+        .iter()
+        .any(|m| is_random_battlecry_damage_mechanic(m))
+}
+
+/// Matches the regex `battlecry_damage_\d+_random$` (core/effects.py line 62).
+fn is_random_battlecry_damage_mechanic(mechanic: &str) -> bool {
+    mechanic
+        .strip_prefix("battlecry_damage_")
+        .and_then(|rest| rest.strip_suffix("_random"))
+        .map(|num| !num.is_empty() && num.bytes().all(|b| b.is_ascii_digit()))
+        .unwrap_or(false)
 }
 
 fn apply_regen(card: &mut KernelCard) {
@@ -3727,7 +3840,7 @@ mod draw_tests {
         // DrawRng with randint_rolls=[2] → armor absorbs 2.
         let mut target = card_with_mechanics(5, 0, 0, 10, vec!["armor_1_3"]);
         target.mechanics = vec!["armor_1_3".to_string()];
-        let mut draw_rng = DrawRng::recorded(vec![], vec![], vec![2]);
+        let mut draw_rng = DrawRng::recorded(vec![], vec![], vec![2], vec![]);
         let dmg = apply_damage_modifiers(&mut target, 7, &mut draw_rng);
         // 7 - 2 (rolled armor) = 5.
         assert_eq!(dmg, 5, "armor_1_3 rolled 2 → damage 7-2=5");
@@ -3741,7 +3854,7 @@ mod draw_tests {
         // Recorded with NO randint_rolls — if armor_1 incorrectly rolled, the
         // stream would be exhausted (fall back to min=1) but still produce 1.
         // The key check: damage = 7 - 1 = 6 (fixed), no roll consumed.
-        let mut draw_rng = DrawRng::recorded(vec![], vec![], vec![]);
+        let mut draw_rng = DrawRng::recorded(vec![], vec![], vec![], vec![]);
         let dmg = apply_damage_modifiers(&mut target, 7, &mut draw_rng);
         assert_eq!(dmg, 6, "armor_1 fixed → damage 7-1=6");
     }
@@ -3752,7 +3865,7 @@ mod draw_tests {
         // to min (matching the pick/order exhaustion contract).
         let mut target = card_with_mechanics(5, 0, 0, 10, vec!["armor_1_3"]);
         target.mechanics = vec!["armor_1_3".to_string()];
-        let mut draw_rng = DrawRng::recorded(vec![], vec![], vec![]);
+        let mut draw_rng = DrawRng::recorded(vec![], vec![], vec![], vec![]);
         let dmg = apply_damage_modifiers(&mut target, 7, &mut draw_rng);
         // Fall back to min=1 → 7-1=6.
         assert_eq!(dmg, 6, "exhausted randint stream falls back to min=1");
@@ -3771,9 +3884,214 @@ mod draw_tests {
 
     #[test]
     fn roll_range_recorded_pops_in_order() {
-        let mut draw_rng = DrawRng::recorded(vec![], vec![], vec![3, 1, 2]);
+        let mut draw_rng = DrawRng::recorded(vec![], vec![], vec![3, 1, 2], vec![]);
         assert_eq!(roll_range(1, 3, &mut draw_rng), 3);
         assert_eq!(roll_range(1, 3, &mut draw_rng), 1);
         assert_eq!(roll_range(1, 3, &mut draw_rng), 2);
+    }
+
+    // ---- Phase 6: random_battlecry (card15) + shield_refresh (card24) ----
+
+    #[test]
+    fn is_random_battlecry_damage_card_is_mechanic_driven_not_card_id() {
+        // Any card carrying `battlecry_damage_X_random` is a random-battlecry-
+        // damage card — mechanic-driven, NOT card_id == 15.
+        let card15 = card_with_mechanics(15, 2, 2, 1, vec!["battlecry_damage_1_random"]);
+        assert!(is_random_battlecry_damage_card(&card15), "card15 matches");
+        // A different card_id with the same mechanic also matches (future-proof).
+        let other = card_with_mechanics(999, 2, 2, 1, vec!["battlecry_damage_3_random"]);
+        assert!(is_random_battlecry_damage_card(&other), "card999 with mechanic matches");
+        // A targeted battlecry_damage card does NOT match.
+        let targeted = card_with_mechanics(19, 2, 2, 1, vec!["battlecry_damage_1"]);
+        assert!(!is_random_battlecry_damage_card(&targeted), "targeted does not match");
+        // No-mechanic card does NOT match.
+        let plain = card_with_mechanics(27, 1, 2, 1, vec![]);
+        assert!(!is_random_battlecry_damage_card(&plain), "plain does not match");
+        // card_id == 15 but WITHOUT the mechanic does NOT match (mechanic is
+        // the sole discriminator, not the id).
+        let id_only = card_with_mechanics(15, 2, 2, 1, vec![]);
+        assert!(!is_random_battlecry_damage_card(&id_only), "card_id 15 without mechanic does not match");
+    }
+
+    #[test]
+    fn roll_choice_recorded_pops_index_in_order() {
+        // Recorded choice_rolls pop in call order; clamp keeps stale entries
+        // in-bounds.
+        let mut draw_rng = DrawRng::recorded(vec![], vec![], vec![], vec![2, 0, 1]);
+        assert_eq!(roll_choice(3, &mut draw_rng), 2);
+        assert_eq!(roll_choice(3, &mut draw_rng), 0);
+        assert_eq!(roll_choice(3, &mut draw_rng), 1);
+    }
+
+    #[test]
+    fn roll_choice_recorded_clamps_out_of_range_index() {
+        // A stale fixture entry larger than n-1 is clamped to n-1 (robust
+        // replay, mirrors the pick/order exhaustion contract).
+        let mut draw_rng = DrawRng::recorded(vec![], vec![], vec![], vec![99]);
+        assert_eq!(roll_choice(3, &mut draw_rng), 2, "99 clamped to 2 (n-1)");
+    }
+
+    #[test]
+    fn roll_choice_recorded_exhaustion_falls_back_to_zero() {
+        // Empty stream → fall back to 0.
+        let mut draw_rng = DrawRng::recorded(vec![], vec![], vec![], vec![]);
+        assert_eq!(roll_choice(3, &mut draw_rng), 0, "exhausted stream falls back to 0");
+    }
+
+    #[test]
+    fn roll_choice_live_uses_gen_range() {
+        let mut rng = ChaChaRng::seed_from_u64(11);
+        let mut draw_rng = DrawRng::live(&mut rng);
+        for _ in 0..20 {
+            let v = roll_choice(5, &mut draw_rng);
+            assert!((0..5).contains(&v), "live roll_choice in [0,5): {}", v);
+        }
+    }
+
+    #[test]
+    fn random_battlecry_damage_uses_recorded_choice_roll() {
+        // card15-equivalent: a card with `battlecry_damage_1_random` is played
+        // against an opponent with 2 minions (board) + hero → targets list has
+        // 3 entries. Recorded choice_rolls=[1] → the 2nd minion (board[1]) is
+        // hit for 1 damage. Mechanic-driven (card_id 999, not 15).
+        let mut state = KernelState {
+            current_turn_owner_id: 1,
+            turn_number: 1,
+            status: "ongoing".to_string(),
+            p1: player_with(Vec::new(), vec![card_with_mechanics(999, 2, 2, 1, vec!["battlecry_damage_1_random"])]),
+            p2: player_with(Vec::new(), Vec::new()),
+        };
+        state.p1.user_id = 1;
+        state.p2.user_id = 2;
+        // opponent (p2) board: 2 minions with 2 hp each (so 1 damage doesn't
+        // kill — easy to assert the hit).
+        state.p2.board = vec![
+            card_with_mechanics(27, 1, 2, 2, vec![]),
+            card_with_mechanics(27, 1, 2, 2, vec![]),
+        ];
+        let kernel = RolloutKernel::new(KernelConfig::default());
+        // Play the random-battlecry card (hand_index 0, no target required —
+        // random battlecry does not need a target). Find the legal play action
+        // with target_code 0.
+        let action_id = find_play_action(&state, 1, 0, 0);
+        let mut draw_rng = DrawRng::recorded(vec![], vec![], vec![], vec![1]);
+        let out = kernel.apply_action(&state, 1, action_id, false, &mut draw_rng);
+        assert!(out.is_ok(), "random battlecry play applies: {:?}", out.err());
+        let new = out.unwrap().state;
+        // targets = list(opponent.board) + [opponent.hero]; index 1 = board[1].
+        assert_eq!(new.p2.board[0].hp, 2, "board[0] untouched (choice index 1)");
+        assert_eq!(new.p2.board[1].hp, 1, "board[1] took 1 damage (choice index 1)");
+        assert_eq!(new.p2.hero.hp, 30, "hero untouched (choice index 1)");
+        // The played card is on p1's board.
+        assert_eq!(new.p1.board.len(), 1);
+        assert_eq!(new.p1.board[0].card_id, 999);
+    }
+
+    #[test]
+    fn random_battlecry_damage_can_target_hero() {
+        // Same mechanic, recorded choice_rolls=[2] → index 2 = opponent hero.
+        // opponent board has 2 minions (indices 0,1) + hero (index 2).
+        let mut state = KernelState {
+            current_turn_owner_id: 1,
+            turn_number: 1,
+            status: "ongoing".to_string(),
+            p1: player_with(Vec::new(), vec![card_with_mechanics(999, 2, 2, 1, vec!["battlecry_damage_1_random"])]),
+            p2: player_with(Vec::new(), Vec::new()),
+        };
+        state.p1.user_id = 1;
+        state.p2.user_id = 2;
+        state.p2.board = vec![
+            card_with_mechanics(27, 1, 2, 2, vec![]),
+            card_with_mechanics(27, 1, 2, 2, vec![]),
+        ];
+        let kernel = RolloutKernel::new(KernelConfig::default());
+        let action_id = find_play_action(&state, 1, 0, 0);
+        let mut draw_rng = DrawRng::recorded(vec![], vec![], vec![], vec![2]);
+        let out = kernel.apply_action(&state, 1, action_id, false, &mut draw_rng);
+        assert!(out.is_ok(), "random battlecry play applies: {:?}", out.err());
+        let new = out.unwrap().state;
+        assert_eq!(new.p2.board[0].hp, 2, "board[0] untouched (choice index 2 = hero)");
+        assert_eq!(new.p2.board[1].hp, 2, "board[1] untouched (choice index 2 = hero)");
+        assert_eq!(new.p2.hero.hp, 29, "hero took 1 damage (choice index 2)");
+    }
+
+    #[test]
+    fn shield_refresh_mechanic_driven_end_of_turn_restores_shield() {
+        // card24-equivalent: a unit with `shield_refresh` (and NO current
+        // `shield`) on the opponent's board regains `shield` at the start of
+        // its owner's turn (i.e. when the OTHER player ends turn). Mechanic-
+        // driven (card_id 999, not 24).
+        let mut state = KernelState {
+            current_turn_owner_id: 1,
+            turn_number: 1,
+            status: "ongoing".to_string(),
+            p1: player_with(Vec::new(), Vec::new()),
+            p2: player_with(Vec::new(), Vec::new()),
+        };
+        state.p1.user_id = 1;
+        state.p2.user_id = 2;
+        // p2's unit has shield_refresh but shield was already consumed (no
+        // `shield` mechanic present).
+        state.p2.board = vec![card_with_mechanics(999, 9, 5, 6, vec!["shield_refresh"])];
+        let kernel = RolloutKernel::new(KernelConfig::default());
+        let mut det_rng = crate::worker::WorkerRng::Deterministic;
+        let mut draw_rng = DrawRng::live(&mut det_rng);
+        // p1 ends turn → p2's turn begins → p2's unit regains shield.
+        let out = kernel.apply_action(&state, 1, 0, false, &mut draw_rng).expect("end turn");
+        assert!(
+            out.state.p2.board[0].mechanics.iter().any(|m| m == "shield"),
+            "shield_refresh re-adds shield at owner turn start"
+        );
+        // shield_refresh itself is NOT consumed (persists, matches Python).
+        assert!(
+            out.state.p2.board[0].mechanics.iter().any(|m| m == "shield_refresh"),
+            "shield_refresh mechanic persists"
+        );
+    }
+
+    #[test]
+    fn shield_refresh_does_not_double_add_when_shield_present() {
+        // If the unit already has `shield`, shield_refresh does NOT add a
+        // second shield (matches Python: `if "shield_refresh" in mechanics and
+        // "shield" not in mechanics`).
+        let mut state = KernelState {
+            current_turn_owner_id: 1,
+            turn_number: 1,
+            status: "ongoing".to_string(),
+            p1: player_with(Vec::new(), Vec::new()),
+            p2: player_with(Vec::new(), Vec::new()),
+        };
+        state.p1.user_id = 1;
+        state.p2.user_id = 2;
+        state.p2.board = vec![card_with_mechanics(24, 9, 5, 6, vec!["shield", "shield_refresh"])];
+        let kernel = RolloutKernel::new(KernelConfig::default());
+        let mut det_rng = crate::worker::WorkerRng::Deterministic;
+        let mut draw_rng = DrawRng::live(&mut det_rng);
+        let out = kernel.apply_action(&state, 1, 0, false, &mut draw_rng).expect("end turn");
+        let shield_count = out.state.p2.board[0].mechanics.iter().filter(|m| *m == "shield").count();
+        assert_eq!(shield_count, 1, "no duplicate shield added when already present");
+    }
+
+    #[test]
+    fn shield_refresh_no_op_for_unit_without_mechanic() {
+        // A unit WITHOUT shield_refresh does NOT gain shield at turn start.
+        let mut state = KernelState {
+            current_turn_owner_id: 1,
+            turn_number: 1,
+            status: "ongoing".to_string(),
+            p1: player_with(Vec::new(), Vec::new()),
+            p2: player_with(Vec::new(), Vec::new()),
+        };
+        state.p1.user_id = 1;
+        state.p2.user_id = 2;
+        state.p2.board = vec![card_with_mechanics(27, 1, 2, 1, vec![])];
+        let kernel = RolloutKernel::new(KernelConfig::default());
+        let mut det_rng = crate::worker::WorkerRng::Deterministic;
+        let mut draw_rng = DrawRng::live(&mut det_rng);
+        let out = kernel.apply_action(&state, 1, 0, false, &mut draw_rng).expect("end turn");
+        assert!(
+            !out.state.p2.board[0].mechanics.iter().any(|m| m == "shield"),
+            "plain unit does not gain shield"
+        );
     }
 }
