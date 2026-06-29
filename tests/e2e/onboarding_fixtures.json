@@ -1,0 +1,3747 @@
+{
+  "user_id": 12345,
+  "match_id": "tutorial-12345",
+  "final_step": 10,
+  "step0_state": {
+    "match_id": "tutorial-12345",
+    "turn": 1,
+    "current_player_id": 12345,
+    "is_my_turn": true,
+    "player_ids": [
+      12345,
+      9000000012345
+    ],
+    "viewer_id": 12345,
+    "match_status": "active",
+    "battle_started": true,
+    "ready_user_ids": [
+      12345,
+      9000000012345
+    ],
+    "waiting_for_user_ids": [],
+    "ready_count": 1,
+    "required_ready_count": 1,
+    "is_ended": false,
+    "game_over": false,
+    "winner_id": null,
+    "turn_time_remaining": 99.0,
+    "turn_duration": 99,
+    "turn_time_history": [],
+    "game_mode": "tutorial",
+    "ruleset": "classic",
+    "mode_config": {
+      "mode_id": "training",
+      "ruleset": "classic",
+      "label": "Training",
+      "available": true,
+      "classic": {
+        "turn_duration_seconds": 99,
+        "mana_per_turn": 1,
+        "hero_health_multiplier": 1.0,
+        "card_level_mode": "normal",
+        "bot_turn_delay_range": [
+          4.0,
+          6.0
+        ],
+        "bot_hard_turn_delay_range": [
+          1.5,
+          2.5
+        ],
+        "bot_action_gap_range": [
+          0.4,
+          0.8
+        ],
+        "bot_emergency_threshold_seconds": 5.0,
+        "spells_free": false,
+        "summon_ready_on_play": false,
+        "sudden_death_enabled": false,
+        "sudden_death_damage_start": 1,
+        "sudden_death_damage_step": 1,
+        "overdraw_to_discard": false,
+        "bots_allowed": true
+      },
+      "rewards": {
+        "enabled": false,
+        "trophies": false,
+        "coins": false,
+        "stars": false,
+        "win_counter": false
+      }
+    },
+    "sudden_death": {
+      "enabled": false
+    },
+    "player1_hp": 18,
+    "player2_hp": 8,
+    "player": {
+      "user_id": 12345,
+      "name": "Ты",
+      "avatar_url": null,
+      "title": "",
+      "rarity": "",
+      "extra_pass": null,
+      "nickname_glow_disabled": false,
+      "hide_player_id_public": false,
+      "background_url": null,
+      "is_bot": false,
+      "replacement_status": "active",
+      "mana": 2,
+      "max_mana": 2,
+      "mana_draw_count_this_turn": 0,
+      "trophies": 0,
+      "hero": {
+        "instance_id": "96fdb880-9f56-5215-8cb4-224fad8d7657",
+        "card_id": 1,
+        "name": "Искатель",
+        "description": "Начинающий герой, готовый к приключениям.",
+        "card_type": "hero",
+        "rarity": "start",
+        "level": 1,
+        "mana": 0,
+        "mana_cost": 0,
+        "attack": 0,
+        "atk": 0,
+        "hp": 18,
+        "hp_current": 18,
+        "max_hp": 18,
+        "mechanics": [],
+        "is_ready": false,
+        "can_attack": false,
+        "is_asleep": true,
+        "is_frozen": false,
+        "mechanics_desc": "",
+        "owner_id": null,
+        "image": "/DesignAssets/Cards/1.png"
+      },
+      "hand": [
+        {
+          "instance_id": "338f11f7-d2b6-5750-8a8f-81d3847fe847",
+          "card_id": 37,
+          "name": "Слайм",
+          "description": "Слабый монстр. Хорош для начала приключения.",
+          "card_type": "warrior",
+          "rarity": "start",
+          "level": 1,
+          "mana": 1,
+          "mana_cost": 1,
+          "attack": 4,
+          "atk": 4,
+          "hp": 2,
+          "hp_current": 2,
+          "max_hp": 2,
+          "mechanics": [],
+          "is_ready": false,
+          "can_attack": false,
+          "is_asleep": true,
+          "is_frozen": false,
+          "mechanics_desc": "",
+          "owner_id": null,
+          "image": "/DesignAssets/Cards/37.png"
+        },
+        {
+          "instance_id": "73363cbc-78f9-57d2-be6d-a5f3fed6204a",
+          "card_id": 39,
+          "name": "Альфонс Элрик",
+          "description": "Душа в доспехах. Обладает Провокацией и защищает слабых.",
+          "card_type": "warrior",
+          "rarity": "start",
+          "level": 1,
+          "mana": 2,
+          "mana_cost": 2,
+          "attack": 1,
+          "atk": 1,
+          "hp": 3,
+          "hp_current": 3,
+          "max_hp": 3,
+          "mechanics": [
+            "taunt"
+          ],
+          "is_ready": false,
+          "can_attack": false,
+          "is_asleep": true,
+          "is_frozen": false,
+          "mechanics_desc": "",
+          "owner_id": null,
+          "image": "/DesignAssets/Cards/39.png"
+        }
+      ],
+      "hand_count": 2,
+      "deck_count": 0,
+      "board": []
+    },
+    "opponent": {
+      "user_id": 9000000012345,
+      "name": "Кто-то злой",
+      "avatar_url": null,
+      "title": "",
+      "rarity": "",
+      "extra_pass": null,
+      "nickname_glow_disabled": false,
+      "hide_player_id_public": false,
+      "background_url": null,
+      "is_bot": true,
+      "replacement_status": "active",
+      "mana": 3,
+      "max_mana": 3,
+      "mana_draw_count_this_turn": 0,
+      "trophies": 0,
+      "hero": {
+        "instance_id": "36c8c281-0b4a-5b8a-a88b-e6208106eaf1",
+        "card_id": 1,
+        "name": "Искатель",
+        "description": "Начинающий герой, готовый к приключениям.",
+        "card_type": "hero",
+        "rarity": "start",
+        "level": 1,
+        "mana": 0,
+        "mana_cost": 0,
+        "attack": 0,
+        "atk": 0,
+        "hp": 8,
+        "hp_current": 8,
+        "max_hp": 8,
+        "mechanics": [],
+        "is_ready": false,
+        "can_attack": false,
+        "is_asleep": true,
+        "is_frozen": false,
+        "mechanics_desc": "",
+        "owner_id": null,
+        "image": "/DesignAssets/Cards/1.png"
+      },
+      "hand": [
+        {
+          "hidden": true
+        }
+      ],
+      "hand_count": 1,
+      "deck_count": 0,
+      "board": []
+    },
+    "legal_actions": [],
+    "action_history": [],
+    "is_onboarding_tutorial": true,
+    "tutorial": {
+      "step_index": 0,
+      "step_id": "goal",
+      "message": "Побеждает тот, кто опустит HP героя врага до нуля. Карты на поле — способ добраться до героя.",
+      "hint": null,
+      "target": "opponent_hero",
+      "allowed": {
+        "type": "continue"
+      },
+      "is_auto_step": false,
+      "player_step": null,
+      "player_steps_total": 10,
+      "display_step": null,
+      "display_steps_total": 10,
+      "previous_message": null,
+      "final_step": 10,
+      "wrong_action_feedback": {
+        "generic": "Сейчас не туда. Следуй подсветке.",
+        "wrong_target": "Эту цель пока не трогаем. Нам нужен герой.",
+        "sleeping_unit": "Рано. Эта карта еще спит.",
+        "wrong_alphonse": "Сейчас нужен Альфонс. Он примет удар на себя.",
+        "tutorial_lock": "Этот бой учебный. Действуем по плану."
+      },
+      "midoria_asset": "/DesignAssets/MidoriaOnboardingGuide.png",
+      "attacker_instance_id": null,
+      "alphonse_instance_id": null,
+      "hand_attacker_instance_id": "338f11f7-d2b6-5750-8a8f-81d3847fe847",
+      "hand_alphonse_instance_id": "73363cbc-78f9-57d2-be6d-a5f3fed6204a"
+    }
+  },
+  "responses": [
+    {
+      "match_id": "tutorial-12345",
+      "result": {
+        "success": true,
+        "tutorial_step": 1
+      },
+      "state": {
+        "match_id": "tutorial-12345",
+        "turn": 1,
+        "current_player_id": 12345,
+        "is_my_turn": true,
+        "player_ids": [
+          12345,
+          9000000012345
+        ],
+        "viewer_id": 12345,
+        "match_status": "active",
+        "battle_started": true,
+        "ready_user_ids": [
+          12345,
+          9000000012345
+        ],
+        "waiting_for_user_ids": [],
+        "ready_count": 1,
+        "required_ready_count": 1,
+        "is_ended": false,
+        "game_over": false,
+        "winner_id": null,
+        "turn_time_remaining": 99.0,
+        "turn_duration": 99,
+        "turn_time_history": [],
+        "game_mode": "tutorial",
+        "ruleset": "classic",
+        "mode_config": {
+          "mode_id": "training",
+          "ruleset": "classic",
+          "label": "Training",
+          "available": true,
+          "classic": {
+            "turn_duration_seconds": 99,
+            "mana_per_turn": 1,
+            "hero_health_multiplier": 1.0,
+            "card_level_mode": "normal",
+            "bot_turn_delay_range": [
+              4.0,
+              6.0
+            ],
+            "bot_hard_turn_delay_range": [
+              1.5,
+              2.5
+            ],
+            "bot_action_gap_range": [
+              0.4,
+              0.8
+            ],
+            "bot_emergency_threshold_seconds": 5.0,
+            "spells_free": false,
+            "summon_ready_on_play": false,
+            "sudden_death_enabled": false,
+            "sudden_death_damage_start": 1,
+            "sudden_death_damage_step": 1,
+            "overdraw_to_discard": false,
+            "bots_allowed": true
+          },
+          "rewards": {
+            "enabled": false,
+            "trophies": false,
+            "coins": false,
+            "stars": false,
+            "win_counter": false
+          }
+        },
+        "sudden_death": {
+          "enabled": false
+        },
+        "player1_hp": 18,
+        "player2_hp": 8,
+        "player": {
+          "user_id": 12345,
+          "name": "Ты",
+          "avatar_url": null,
+          "title": "",
+          "rarity": "",
+          "extra_pass": null,
+          "nickname_glow_disabled": false,
+          "hide_player_id_public": false,
+          "background_url": null,
+          "is_bot": false,
+          "replacement_status": "active",
+          "mana": 2,
+          "max_mana": 2,
+          "mana_draw_count_this_turn": 0,
+          "trophies": 0,
+          "hero": {
+            "instance_id": "96fdb880-9f56-5215-8cb4-224fad8d7657",
+            "card_id": 1,
+            "name": "Искатель",
+            "description": "Начинающий герой, готовый к приключениям.",
+            "card_type": "hero",
+            "rarity": "start",
+            "level": 1,
+            "mana": 0,
+            "mana_cost": 0,
+            "attack": 0,
+            "atk": 0,
+            "hp": 18,
+            "hp_current": 18,
+            "max_hp": 18,
+            "mechanics": [],
+            "is_ready": false,
+            "can_attack": false,
+            "is_asleep": true,
+            "is_frozen": false,
+            "mechanics_desc": "",
+            "owner_id": null,
+            "image": "/DesignAssets/Cards/1.png"
+          },
+          "hand": [
+            {
+              "instance_id": "338f11f7-d2b6-5750-8a8f-81d3847fe847",
+              "card_id": 37,
+              "name": "Слайм",
+              "description": "Слабый монстр. Хорош для начала приключения.",
+              "card_type": "warrior",
+              "rarity": "start",
+              "level": 1,
+              "mana": 1,
+              "mana_cost": 1,
+              "attack": 4,
+              "atk": 4,
+              "hp": 2,
+              "hp_current": 2,
+              "max_hp": 2,
+              "mechanics": [],
+              "is_ready": false,
+              "can_attack": false,
+              "is_asleep": true,
+              "is_frozen": false,
+              "mechanics_desc": "",
+              "owner_id": null,
+              "image": "/DesignAssets/Cards/37.png"
+            },
+            {
+              "instance_id": "73363cbc-78f9-57d2-be6d-a5f3fed6204a",
+              "card_id": 39,
+              "name": "Альфонс Элрик",
+              "description": "Душа в доспехах. Обладает Провокацией и защищает слабых.",
+              "card_type": "warrior",
+              "rarity": "start",
+              "level": 1,
+              "mana": 2,
+              "mana_cost": 2,
+              "attack": 1,
+              "atk": 1,
+              "hp": 3,
+              "hp_current": 3,
+              "max_hp": 3,
+              "mechanics": [
+                "taunt"
+              ],
+              "is_ready": false,
+              "can_attack": false,
+              "is_asleep": true,
+              "is_frozen": false,
+              "mechanics_desc": "",
+              "owner_id": null,
+              "image": "/DesignAssets/Cards/39.png"
+            }
+          ],
+          "hand_count": 2,
+          "deck_count": 0,
+          "board": []
+        },
+        "opponent": {
+          "user_id": 9000000012345,
+          "name": "Кто-то злой",
+          "avatar_url": null,
+          "title": "",
+          "rarity": "",
+          "extra_pass": null,
+          "nickname_glow_disabled": false,
+          "hide_player_id_public": false,
+          "background_url": null,
+          "is_bot": true,
+          "replacement_status": "active",
+          "mana": 3,
+          "max_mana": 3,
+          "mana_draw_count_this_turn": 0,
+          "trophies": 0,
+          "hero": {
+            "instance_id": "36c8c281-0b4a-5b8a-a88b-e6208106eaf1",
+            "card_id": 1,
+            "name": "Искатель",
+            "description": "Начинающий герой, готовый к приключениям.",
+            "card_type": "hero",
+            "rarity": "start",
+            "level": 1,
+            "mana": 0,
+            "mana_cost": 0,
+            "attack": 0,
+            "atk": 0,
+            "hp": 8,
+            "hp_current": 8,
+            "max_hp": 8,
+            "mechanics": [],
+            "is_ready": false,
+            "can_attack": false,
+            "is_asleep": true,
+            "is_frozen": false,
+            "mechanics_desc": "",
+            "owner_id": null,
+            "image": "/DesignAssets/Cards/1.png"
+          },
+          "hand": [
+            {
+              "hidden": true
+            }
+          ],
+          "hand_count": 1,
+          "deck_count": 0,
+          "board": []
+        },
+        "legal_actions": [
+          {
+            "type": "play_card",
+            "hand_index": 0,
+            "card_id": 37,
+            "target_id": null,
+            "position": 0
+          }
+        ],
+        "action_history": [],
+        "is_onboarding_tutorial": true,
+        "tutorial": {
+          "step_index": 1,
+          "step_id": "play_attacker",
+          "message": "Ставим бойца на поле. Он не атакует сразу: сначала занимает позицию.",
+          "hint": "Выставь эту карту",
+          "target": "hand_card:37",
+          "allowed": {
+            "type": "play_card",
+            "card_id": 37
+          },
+          "is_auto_step": false,
+          "player_step": 1,
+          "player_steps_total": 10,
+          "display_step": 1,
+          "display_steps_total": 10,
+          "previous_message": "Побеждает тот, кто опустит HP героя врага до нуля. Карты на поле — способ добраться до героя.",
+          "final_step": 10,
+          "wrong_action_feedback": {
+            "generic": "Сейчас не туда. Следуй подсветке.",
+            "wrong_target": "Эту цель пока не трогаем. Нам нужен герой.",
+            "sleeping_unit": "Рано. Эта карта еще спит.",
+            "wrong_alphonse": "Сейчас нужен Альфонс. Он примет удар на себя.",
+            "tutorial_lock": "Этот бой учебный. Действуем по плану."
+          },
+          "midoria_asset": "/DesignAssets/MidoriaOnboardingGuide.png",
+          "attacker_instance_id": null,
+          "alphonse_instance_id": null,
+          "hand_attacker_instance_id": "338f11f7-d2b6-5750-8a8f-81d3847fe847",
+          "hand_alphonse_instance_id": "73363cbc-78f9-57d2-be6d-a5f3fed6204a"
+        }
+      },
+      "onboarding": {
+        "status": "tutorial_battle",
+        "tutorial_step": 1
+      }
+    },
+    {
+      "match_id": "tutorial-12345",
+      "result": {
+        "success": true,
+        "tutorial_step": 2,
+        "after_message": null
+      },
+      "state": {
+        "match_id": "tutorial-12345",
+        "turn": 1,
+        "current_player_id": 12345,
+        "is_my_turn": true,
+        "player_ids": [
+          12345,
+          9000000012345
+        ],
+        "viewer_id": 12345,
+        "match_status": "active",
+        "battle_started": true,
+        "ready_user_ids": [
+          12345,
+          9000000012345
+        ],
+        "waiting_for_user_ids": [],
+        "ready_count": 1,
+        "required_ready_count": 1,
+        "is_ended": false,
+        "game_over": false,
+        "winner_id": null,
+        "turn_time_remaining": 99.0,
+        "turn_duration": 99,
+        "turn_time_history": [],
+        "game_mode": "tutorial",
+        "ruleset": "classic",
+        "mode_config": {
+          "mode_id": "training",
+          "ruleset": "classic",
+          "label": "Training",
+          "available": true,
+          "classic": {
+            "turn_duration_seconds": 99,
+            "mana_per_turn": 1,
+            "hero_health_multiplier": 1.0,
+            "card_level_mode": "normal",
+            "bot_turn_delay_range": [
+              4.0,
+              6.0
+            ],
+            "bot_hard_turn_delay_range": [
+              1.5,
+              2.5
+            ],
+            "bot_action_gap_range": [
+              0.4,
+              0.8
+            ],
+            "bot_emergency_threshold_seconds": 5.0,
+            "spells_free": false,
+            "summon_ready_on_play": false,
+            "sudden_death_enabled": false,
+            "sudden_death_damage_start": 1,
+            "sudden_death_damage_step": 1,
+            "overdraw_to_discard": false,
+            "bots_allowed": true
+          },
+          "rewards": {
+            "enabled": false,
+            "trophies": false,
+            "coins": false,
+            "stars": false,
+            "win_counter": false
+          }
+        },
+        "sudden_death": {
+          "enabled": false
+        },
+        "player1_hp": 18,
+        "player2_hp": 8,
+        "player": {
+          "user_id": 12345,
+          "name": "Ты",
+          "avatar_url": null,
+          "title": "",
+          "rarity": "",
+          "extra_pass": null,
+          "nickname_glow_disabled": false,
+          "hide_player_id_public": false,
+          "background_url": null,
+          "is_bot": false,
+          "replacement_status": "active",
+          "mana": 1,
+          "max_mana": 2,
+          "mana_draw_count_this_turn": 0,
+          "trophies": 0,
+          "hero": {
+            "instance_id": "96fdb880-9f56-5215-8cb4-224fad8d7657",
+            "card_id": 1,
+            "name": "Искатель",
+            "description": "Начинающий герой, готовый к приключениям.",
+            "card_type": "hero",
+            "rarity": "start",
+            "level": 1,
+            "mana": 0,
+            "mana_cost": 0,
+            "attack": 0,
+            "atk": 0,
+            "hp": 18,
+            "hp_current": 18,
+            "max_hp": 18,
+            "mechanics": [],
+            "is_ready": false,
+            "can_attack": false,
+            "is_asleep": true,
+            "is_frozen": false,
+            "mechanics_desc": "",
+            "owner_id": null,
+            "image": "/DesignAssets/Cards/1.png"
+          },
+          "hand": [
+            {
+              "instance_id": "73363cbc-78f9-57d2-be6d-a5f3fed6204a",
+              "card_id": 39,
+              "name": "Альфонс Элрик",
+              "description": "Душа в доспехах. Обладает Провокацией и защищает слабых.",
+              "card_type": "warrior",
+              "rarity": "start",
+              "level": 1,
+              "mana": 2,
+              "mana_cost": 2,
+              "attack": 1,
+              "atk": 1,
+              "hp": 3,
+              "hp_current": 3,
+              "max_hp": 3,
+              "mechanics": [
+                "taunt"
+              ],
+              "is_ready": false,
+              "can_attack": false,
+              "is_asleep": true,
+              "is_frozen": false,
+              "mechanics_desc": "",
+              "owner_id": null,
+              "image": "/DesignAssets/Cards/39.png"
+            }
+          ],
+          "hand_count": 1,
+          "deck_count": 0,
+          "board": [
+            {
+              "instance_id": "338f11f7-d2b6-5750-8a8f-81d3847fe847",
+              "card_id": 37,
+              "name": "Слайм",
+              "description": "Слабый монстр. Хорош для начала приключения.",
+              "card_type": "warrior",
+              "rarity": "start",
+              "level": 1,
+              "mana": 1,
+              "mana_cost": 1,
+              "attack": 4,
+              "atk": 4,
+              "hp": 2,
+              "hp_current": 2,
+              "max_hp": 2,
+              "mechanics": [],
+              "is_ready": false,
+              "can_attack": false,
+              "is_asleep": true,
+              "is_frozen": false,
+              "mechanics_desc": "",
+              "owner_id": 12345,
+              "image": "/DesignAssets/Cards/37.png"
+            }
+          ]
+        },
+        "opponent": {
+          "user_id": 9000000012345,
+          "name": "Кто-то злой",
+          "avatar_url": null,
+          "title": "",
+          "rarity": "",
+          "extra_pass": null,
+          "nickname_glow_disabled": false,
+          "hide_player_id_public": false,
+          "background_url": null,
+          "is_bot": true,
+          "replacement_status": "active",
+          "mana": 3,
+          "max_mana": 3,
+          "mana_draw_count_this_turn": 0,
+          "trophies": 0,
+          "hero": {
+            "instance_id": "36c8c281-0b4a-5b8a-a88b-e6208106eaf1",
+            "card_id": 1,
+            "name": "Искатель",
+            "description": "Начинающий герой, готовый к приключениям.",
+            "card_type": "hero",
+            "rarity": "start",
+            "level": 1,
+            "mana": 0,
+            "mana_cost": 0,
+            "attack": 0,
+            "atk": 0,
+            "hp": 8,
+            "hp_current": 8,
+            "max_hp": 8,
+            "mechanics": [],
+            "is_ready": false,
+            "can_attack": false,
+            "is_asleep": true,
+            "is_frozen": false,
+            "mechanics_desc": "",
+            "owner_id": null,
+            "image": "/DesignAssets/Cards/1.png"
+          },
+          "hand": [
+            {
+              "hidden": true
+            }
+          ],
+          "hand_count": 1,
+          "deck_count": 0,
+          "board": []
+        },
+        "legal_actions": [
+          {
+            "type": "end_turn"
+          }
+        ],
+        "action_history": [
+          {
+            "type": "player",
+            "text": "Вы Слайм выставлен"
+          }
+        ],
+        "is_onboarding_tutorial": true,
+        "tutorial": {
+          "step_index": 2,
+          "step_id": "sleep",
+          "message": "Видишь метку сна? Новые бойцы обычно ждут следующий ход. Теперь, заверши ход.",
+          "hint": "Завершить ход",
+          "target": "end_turn",
+          "allowed": {
+            "type": "end_turn"
+          },
+          "is_auto_step": false,
+          "player_step": 2,
+          "player_steps_total": 10,
+          "display_step": 2,
+          "display_steps_total": 10,
+          "previous_message": "Ставим бойца на поле. Он не атакует сразу: сначала занимает позицию.",
+          "final_step": 10,
+          "wrong_action_feedback": {
+            "generic": "Сейчас не туда. Следуй подсветке.",
+            "wrong_target": "Эту цель пока не трогаем. Нам нужен герой.",
+            "sleeping_unit": "Рано. Эта карта еще спит.",
+            "wrong_alphonse": "Сейчас нужен Альфонс. Он примет удар на себя.",
+            "tutorial_lock": "Этот бой учебный. Действуем по плану."
+          },
+          "midoria_asset": "/DesignAssets/MidoriaOnboardingGuide.png",
+          "attacker_instance_id": "338f11f7-d2b6-5750-8a8f-81d3847fe847",
+          "alphonse_instance_id": null,
+          "hand_attacker_instance_id": null,
+          "hand_alphonse_instance_id": "73363cbc-78f9-57d2-be6d-a5f3fed6204a"
+        }
+      },
+      "onboarding": {
+        "status": "tutorial_battle",
+        "tutorial_step": 2
+      }
+    },
+    {
+      "match_id": "tutorial-12345",
+      "result": {
+        "success": true,
+        "tutorial_step": 3,
+        "after_message": null
+      },
+      "state": {
+        "match_id": "tutorial-12345",
+        "turn": 2,
+        "current_player_id": 9000000012345,
+        "is_my_turn": false,
+        "player_ids": [
+          12345,
+          9000000012345
+        ],
+        "viewer_id": 12345,
+        "match_status": "active",
+        "battle_started": true,
+        "ready_user_ids": [
+          12345,
+          9000000012345
+        ],
+        "waiting_for_user_ids": [],
+        "ready_count": 1,
+        "required_ready_count": 1,
+        "is_ended": false,
+        "game_over": false,
+        "winner_id": null,
+        "turn_time_remaining": 98.99978354107589,
+        "turn_duration": 99,
+        "turn_time_history": [],
+        "game_mode": "tutorial",
+        "ruleset": "classic",
+        "mode_config": {
+          "mode_id": "training",
+          "ruleset": "classic",
+          "label": "Training",
+          "available": true,
+          "classic": {
+            "turn_duration_seconds": 99,
+            "mana_per_turn": 1,
+            "hero_health_multiplier": 1.0,
+            "card_level_mode": "normal",
+            "bot_turn_delay_range": [
+              4.0,
+              6.0
+            ],
+            "bot_hard_turn_delay_range": [
+              1.5,
+              2.5
+            ],
+            "bot_action_gap_range": [
+              0.4,
+              0.8
+            ],
+            "bot_emergency_threshold_seconds": 5.0,
+            "spells_free": false,
+            "summon_ready_on_play": false,
+            "sudden_death_enabled": false,
+            "sudden_death_damage_start": 1,
+            "sudden_death_damage_step": 1,
+            "overdraw_to_discard": false,
+            "bots_allowed": true
+          },
+          "rewards": {
+            "enabled": false,
+            "trophies": false,
+            "coins": false,
+            "stars": false,
+            "win_counter": false
+          }
+        },
+        "sudden_death": {
+          "enabled": false
+        },
+        "player1_hp": 18,
+        "player2_hp": 8,
+        "player": {
+          "user_id": 12345,
+          "name": "Ты",
+          "avatar_url": null,
+          "title": "",
+          "rarity": "",
+          "extra_pass": null,
+          "nickname_glow_disabled": false,
+          "hide_player_id_public": false,
+          "background_url": null,
+          "is_bot": false,
+          "replacement_status": "active",
+          "mana": 1,
+          "max_mana": 2,
+          "mana_draw_count_this_turn": 0,
+          "trophies": 0,
+          "hero": {
+            "instance_id": "96fdb880-9f56-5215-8cb4-224fad8d7657",
+            "card_id": 1,
+            "name": "Искатель",
+            "description": "Начинающий герой, готовый к приключениям.",
+            "card_type": "hero",
+            "rarity": "start",
+            "level": 1,
+            "mana": 0,
+            "mana_cost": 0,
+            "attack": 0,
+            "atk": 0,
+            "hp": 18,
+            "hp_current": 18,
+            "max_hp": 18,
+            "mechanics": [],
+            "is_ready": false,
+            "can_attack": false,
+            "is_asleep": true,
+            "is_frozen": false,
+            "mechanics_desc": "",
+            "owner_id": null,
+            "image": "/DesignAssets/Cards/1.png"
+          },
+          "hand": [
+            {
+              "instance_id": "73363cbc-78f9-57d2-be6d-a5f3fed6204a",
+              "card_id": 39,
+              "name": "Альфонс Элрик",
+              "description": "Душа в доспехах. Обладает Провокацией и защищает слабых.",
+              "card_type": "warrior",
+              "rarity": "start",
+              "level": 1,
+              "mana": 2,
+              "mana_cost": 2,
+              "attack": 1,
+              "atk": 1,
+              "hp": 3,
+              "hp_current": 3,
+              "max_hp": 3,
+              "mechanics": [
+                "taunt"
+              ],
+              "is_ready": false,
+              "can_attack": false,
+              "is_asleep": true,
+              "is_frozen": false,
+              "mechanics_desc": "",
+              "owner_id": null,
+              "image": "/DesignAssets/Cards/39.png"
+            }
+          ],
+          "hand_count": 1,
+          "deck_count": 0,
+          "board": [
+            {
+              "instance_id": "338f11f7-d2b6-5750-8a8f-81d3847fe847",
+              "card_id": 37,
+              "name": "Слайм",
+              "description": "Слабый монстр. Хорош для начала приключения.",
+              "card_type": "warrior",
+              "rarity": "start",
+              "level": 1,
+              "mana": 1,
+              "mana_cost": 1,
+              "attack": 4,
+              "atk": 4,
+              "hp": 2,
+              "hp_current": 2,
+              "max_hp": 2,
+              "mechanics": [],
+              "is_ready": false,
+              "can_attack": false,
+              "is_asleep": true,
+              "is_frozen": false,
+              "mechanics_desc": "",
+              "owner_id": 12345,
+              "image": "/DesignAssets/Cards/37.png"
+            }
+          ]
+        },
+        "opponent": {
+          "user_id": 9000000012345,
+          "name": "Кто-то злой",
+          "avatar_url": null,
+          "title": "",
+          "rarity": "",
+          "extra_pass": null,
+          "nickname_glow_disabled": false,
+          "hide_player_id_public": false,
+          "background_url": null,
+          "is_bot": true,
+          "replacement_status": "active",
+          "mana": 1,
+          "max_mana": 4,
+          "mana_draw_count_this_turn": 0,
+          "trophies": 0,
+          "hero": {
+            "instance_id": "36c8c281-0b4a-5b8a-a88b-e6208106eaf1",
+            "card_id": 1,
+            "name": "Искатель",
+            "description": "Начинающий герой, готовый к приключениям.",
+            "card_type": "hero",
+            "rarity": "start",
+            "level": 1,
+            "mana": 0,
+            "mana_cost": 0,
+            "attack": 0,
+            "atk": 0,
+            "hp": 8,
+            "hp_current": 8,
+            "max_hp": 8,
+            "mechanics": [],
+            "is_ready": false,
+            "can_attack": false,
+            "is_asleep": true,
+            "is_frozen": false,
+            "mechanics_desc": "",
+            "owner_id": null,
+            "image": "/DesignAssets/Cards/1.png"
+          },
+          "hand": [],
+          "hand_count": 0,
+          "deck_count": 0,
+          "board": [
+            {
+              "instance_id": "beed14d6-530b-5909-9572-4b76f47fb615",
+              "card_id": 40,
+              "name": "Стив",
+              "description": "Мастер выживания. Надежный квадратный боец.",
+              "card_type": "warrior",
+              "rarity": "start",
+              "level": 1,
+              "mana": 3,
+              "mana_cost": 3,
+              "attack": 3,
+              "atk": 3,
+              "hp": 3,
+              "hp_current": 3,
+              "max_hp": 3,
+              "mechanics": [],
+              "is_ready": false,
+              "can_attack": false,
+              "is_asleep": true,
+              "is_frozen": false,
+              "mechanics_desc": "",
+              "owner_id": 9000000012345,
+              "image": "/DesignAssets/Cards/40.png"
+            }
+          ]
+        },
+        "legal_actions": [],
+        "action_history": [
+          {
+            "type": "player",
+            "text": "Вы Слайм выставлен"
+          },
+          {
+            "type": "player",
+            "text": "Вы завершил(а) ход"
+          },
+          {
+            "type": "system",
+            "text": "——— Ход №2 ———"
+          },
+          {
+            "type": "opponent",
+            "text": "Противник Стив выставлен"
+          }
+        ],
+        "is_onboarding_tutorial": true,
+        "tutorial": {
+          "step_index": 3,
+          "step_id": "threat",
+          "message": "У врага появился боец. Но наша цель всё ещё герой. Не каждая карта врага требует размена.",
+          "hint": null,
+          "target": "opponent_hero",
+          "allowed": {
+            "type": "continue"
+          },
+          "is_auto_step": false,
+          "player_step": 3,
+          "player_steps_total": 10,
+          "display_step": 3,
+          "display_steps_total": 10,
+          "previous_message": "Видишь метку сна? Новые бойцы обычно ждут следующий ход. Теперь, заверши ход.",
+          "final_step": 10,
+          "wrong_action_feedback": {
+            "generic": "Сейчас не туда. Следуй подсветке.",
+            "wrong_target": "Эту цель пока не трогаем. Нам нужен герой.",
+            "sleeping_unit": "Рано. Эта карта еще спит.",
+            "wrong_alphonse": "Сейчас нужен Альфонс. Он примет удар на себя.",
+            "tutorial_lock": "Этот бой учебный. Действуем по плану."
+          },
+          "midoria_asset": "/DesignAssets/MidoriaOnboardingGuide.png",
+          "attacker_instance_id": "338f11f7-d2b6-5750-8a8f-81d3847fe847",
+          "alphonse_instance_id": null,
+          "hand_attacker_instance_id": null,
+          "hand_alphonse_instance_id": "73363cbc-78f9-57d2-be6d-a5f3fed6204a"
+        }
+      },
+      "onboarding": {
+        "status": "tutorial_battle",
+        "tutorial_step": 3
+      }
+    },
+    {
+      "match_id": "tutorial-12345",
+      "result": {
+        "success": true,
+        "tutorial_step": 4
+      },
+      "state": {
+        "match_id": "tutorial-12345",
+        "turn": 3,
+        "current_player_id": 12345,
+        "is_my_turn": true,
+        "player_ids": [
+          12345,
+          9000000012345
+        ],
+        "viewer_id": 12345,
+        "match_status": "active",
+        "battle_started": true,
+        "ready_user_ids": [
+          12345,
+          9000000012345
+        ],
+        "waiting_for_user_ids": [],
+        "ready_count": 1,
+        "required_ready_count": 1,
+        "is_ended": false,
+        "game_over": false,
+        "winner_id": null,
+        "turn_time_remaining": 98.9999779171776,
+        "turn_duration": 99,
+        "turn_time_history": [
+          {
+            "turn": 2,
+            "player_id": 9000000012345,
+            "side": "opponent",
+            "elapsed_seconds": 0.0
+          }
+        ],
+        "game_mode": "tutorial",
+        "ruleset": "classic",
+        "mode_config": {
+          "mode_id": "training",
+          "ruleset": "classic",
+          "label": "Training",
+          "available": true,
+          "classic": {
+            "turn_duration_seconds": 99,
+            "mana_per_turn": 1,
+            "hero_health_multiplier": 1.0,
+            "card_level_mode": "normal",
+            "bot_turn_delay_range": [
+              4.0,
+              6.0
+            ],
+            "bot_hard_turn_delay_range": [
+              1.5,
+              2.5
+            ],
+            "bot_action_gap_range": [
+              0.4,
+              0.8
+            ],
+            "bot_emergency_threshold_seconds": 5.0,
+            "spells_free": false,
+            "summon_ready_on_play": false,
+            "sudden_death_enabled": false,
+            "sudden_death_damage_start": 1,
+            "sudden_death_damage_step": 1,
+            "overdraw_to_discard": false,
+            "bots_allowed": true
+          },
+          "rewards": {
+            "enabled": false,
+            "trophies": false,
+            "coins": false,
+            "stars": false,
+            "win_counter": false
+          }
+        },
+        "sudden_death": {
+          "enabled": false
+        },
+        "player1_hp": 18,
+        "player2_hp": 8,
+        "player": {
+          "user_id": 12345,
+          "name": "Ты",
+          "avatar_url": null,
+          "title": "",
+          "rarity": "",
+          "extra_pass": null,
+          "nickname_glow_disabled": false,
+          "hide_player_id_public": false,
+          "background_url": null,
+          "is_bot": false,
+          "replacement_status": "active",
+          "mana": 3,
+          "max_mana": 3,
+          "mana_draw_count_this_turn": 0,
+          "trophies": 0,
+          "hero": {
+            "instance_id": "96fdb880-9f56-5215-8cb4-224fad8d7657",
+            "card_id": 1,
+            "name": "Искатель",
+            "description": "Начинающий герой, готовый к приключениям.",
+            "card_type": "hero",
+            "rarity": "start",
+            "level": 1,
+            "mana": 0,
+            "mana_cost": 0,
+            "attack": 0,
+            "atk": 0,
+            "hp": 18,
+            "hp_current": 18,
+            "max_hp": 18,
+            "mechanics": [],
+            "is_ready": false,
+            "can_attack": false,
+            "is_asleep": true,
+            "is_frozen": false,
+            "mechanics_desc": "",
+            "owner_id": null,
+            "image": "/DesignAssets/Cards/1.png"
+          },
+          "hand": [
+            {
+              "instance_id": "73363cbc-78f9-57d2-be6d-a5f3fed6204a",
+              "card_id": 39,
+              "name": "Альфонс Элрик",
+              "description": "Душа в доспехах. Обладает Провокацией и защищает слабых.",
+              "card_type": "warrior",
+              "rarity": "start",
+              "level": 1,
+              "mana": 2,
+              "mana_cost": 2,
+              "attack": 1,
+              "atk": 1,
+              "hp": 3,
+              "hp_current": 3,
+              "max_hp": 3,
+              "mechanics": [
+                "taunt"
+              ],
+              "is_ready": false,
+              "can_attack": false,
+              "is_asleep": true,
+              "is_frozen": false,
+              "mechanics_desc": "",
+              "owner_id": null,
+              "image": "/DesignAssets/Cards/39.png"
+            }
+          ],
+          "hand_count": 1,
+          "deck_count": 0,
+          "board": [
+            {
+              "instance_id": "338f11f7-d2b6-5750-8a8f-81d3847fe847",
+              "card_id": 37,
+              "name": "Слайм",
+              "description": "Слабый монстр. Хорош для начала приключения.",
+              "card_type": "warrior",
+              "rarity": "start",
+              "level": 1,
+              "mana": 1,
+              "mana_cost": 1,
+              "attack": 4,
+              "atk": 4,
+              "hp": 2,
+              "hp_current": 2,
+              "max_hp": 2,
+              "mechanics": [],
+              "is_ready": true,
+              "can_attack": true,
+              "is_asleep": false,
+              "is_frozen": false,
+              "mechanics_desc": "",
+              "owner_id": 12345,
+              "image": "/DesignAssets/Cards/37.png"
+            }
+          ]
+        },
+        "opponent": {
+          "user_id": 9000000012345,
+          "name": "Кто-то злой",
+          "avatar_url": null,
+          "title": "",
+          "rarity": "",
+          "extra_pass": null,
+          "nickname_glow_disabled": false,
+          "hide_player_id_public": false,
+          "background_url": null,
+          "is_bot": true,
+          "replacement_status": "active",
+          "mana": 1,
+          "max_mana": 4,
+          "mana_draw_count_this_turn": 0,
+          "trophies": 0,
+          "hero": {
+            "instance_id": "36c8c281-0b4a-5b8a-a88b-e6208106eaf1",
+            "card_id": 1,
+            "name": "Искатель",
+            "description": "Начинающий герой, готовый к приключениям.",
+            "card_type": "hero",
+            "rarity": "start",
+            "level": 1,
+            "mana": 0,
+            "mana_cost": 0,
+            "attack": 0,
+            "atk": 0,
+            "hp": 8,
+            "hp_current": 8,
+            "max_hp": 8,
+            "mechanics": [],
+            "is_ready": false,
+            "can_attack": false,
+            "is_asleep": true,
+            "is_frozen": false,
+            "mechanics_desc": "",
+            "owner_id": null,
+            "image": "/DesignAssets/Cards/1.png"
+          },
+          "hand": [],
+          "hand_count": 0,
+          "deck_count": 0,
+          "board": [
+            {
+              "instance_id": "beed14d6-530b-5909-9572-4b76f47fb615",
+              "card_id": 40,
+              "name": "Стив",
+              "description": "Мастер выживания. Надежный квадратный боец.",
+              "card_type": "warrior",
+              "rarity": "start",
+              "level": 1,
+              "mana": 3,
+              "mana_cost": 3,
+              "attack": 3,
+              "atk": 3,
+              "hp": 3,
+              "hp_current": 3,
+              "max_hp": 3,
+              "mechanics": [],
+              "is_ready": false,
+              "can_attack": false,
+              "is_asleep": true,
+              "is_frozen": false,
+              "mechanics_desc": "",
+              "owner_id": 9000000012345,
+              "image": "/DesignAssets/Cards/40.png"
+            }
+          ]
+        },
+        "legal_actions": [
+          {
+            "type": "attack",
+            "attacker_id": "338f11f7-d2b6-5750-8a8f-81d3847fe847",
+            "target_id": null,
+            "target_is_hero": true
+          },
+          {
+            "type": "attack",
+            "attacker_id": "338f11f7-d2b6-5750-8a8f-81d3847fe847",
+            "target_id": "beed14d6-530b-5909-9572-4b76f47fb615",
+            "target_is_hero": false
+          }
+        ],
+        "action_history": [
+          {
+            "type": "player",
+            "text": "Вы Слайм выставлен"
+          },
+          {
+            "type": "player",
+            "text": "Вы завершил(а) ход"
+          },
+          {
+            "type": "system",
+            "text": "——— Ход №2 ———"
+          },
+          {
+            "type": "opponent",
+            "text": "Противник Стив выставлен"
+          },
+          {
+            "type": "opponent",
+            "text": "Противник завершил(а) ход"
+          },
+          {
+            "type": "system",
+            "text": "——— Ход №3 ———"
+          }
+        ],
+        "is_onboarding_tutorial": true,
+        "tutorial": {
+          "step_index": 4,
+          "step_id": "choose_target",
+          "message": "Слайм готов. Попробуй выбрать, куда выгоднее ударить.",
+          "hint": "Выбери бойца и нажми героя врага",
+          "target": "opponent_hero",
+          "allowed": {
+            "type": "attack",
+            "attacker_card_id": 37,
+            "target_is_hero": true,
+            "also_allow_minion_targets": true
+          },
+          "is_auto_step": false,
+          "player_step": 4,
+          "player_steps_total": 10,
+          "display_step": 4,
+          "display_steps_total": 10,
+          "previous_message": "У врага появился боец. Но наша цель всё ещё герой. Не каждая карта врага требует размена.",
+          "final_step": 10,
+          "wrong_action_feedback": {
+            "generic": "Сейчас не туда. Следуй подсветке.",
+            "wrong_target": "Эту цель пока не трогаем. Нам нужен герой.",
+            "sleeping_unit": "Рано. Эта карта еще спит.",
+            "wrong_alphonse": "Сейчас нужен Альфонс. Он примет удар на себя.",
+            "tutorial_lock": "Этот бой учебный. Действуем по плану."
+          },
+          "midoria_asset": "/DesignAssets/MidoriaOnboardingGuide.png",
+          "attacker_instance_id": "338f11f7-d2b6-5750-8a8f-81d3847fe847",
+          "alphonse_instance_id": null,
+          "hand_attacker_instance_id": null,
+          "hand_alphonse_instance_id": "73363cbc-78f9-57d2-be6d-a5f3fed6204a"
+        }
+      },
+      "onboarding": {
+        "status": "tutorial_battle",
+        "tutorial_step": 4
+      }
+    },
+    {
+      "match_id": "tutorial-12345",
+      "result": {
+        "success": false,
+        "error": "tutorial_wrong_action",
+        "feedback": "Можно, но сейчас выгоднее бить героя: его HP — условие победы.",
+        "tutorial_step": 4
+      },
+      "state": {
+        "match_id": "tutorial-12345",
+        "turn": 3,
+        "current_player_id": 12345,
+        "is_my_turn": true,
+        "player_ids": [
+          12345,
+          9000000012345
+        ],
+        "viewer_id": 12345,
+        "match_status": "active",
+        "battle_started": true,
+        "ready_user_ids": [
+          12345,
+          9000000012345
+        ],
+        "waiting_for_user_ids": [],
+        "ready_count": 1,
+        "required_ready_count": 1,
+        "is_ended": false,
+        "game_over": false,
+        "winner_id": null,
+        "turn_time_remaining": 98.9998979170341,
+        "turn_duration": 99,
+        "turn_time_history": [
+          {
+            "turn": 2,
+            "player_id": 9000000012345,
+            "side": "opponent",
+            "elapsed_seconds": 0.0
+          }
+        ],
+        "game_mode": "tutorial",
+        "ruleset": "classic",
+        "mode_config": {
+          "mode_id": "training",
+          "ruleset": "classic",
+          "label": "Training",
+          "available": true,
+          "classic": {
+            "turn_duration_seconds": 99,
+            "mana_per_turn": 1,
+            "hero_health_multiplier": 1.0,
+            "card_level_mode": "normal",
+            "bot_turn_delay_range": [
+              4.0,
+              6.0
+            ],
+            "bot_hard_turn_delay_range": [
+              1.5,
+              2.5
+            ],
+            "bot_action_gap_range": [
+              0.4,
+              0.8
+            ],
+            "bot_emergency_threshold_seconds": 5.0,
+            "spells_free": false,
+            "summon_ready_on_play": false,
+            "sudden_death_enabled": false,
+            "sudden_death_damage_start": 1,
+            "sudden_death_damage_step": 1,
+            "overdraw_to_discard": false,
+            "bots_allowed": true
+          },
+          "rewards": {
+            "enabled": false,
+            "trophies": false,
+            "coins": false,
+            "stars": false,
+            "win_counter": false
+          }
+        },
+        "sudden_death": {
+          "enabled": false
+        },
+        "player1_hp": 18,
+        "player2_hp": 8,
+        "player": {
+          "user_id": 12345,
+          "name": "Ты",
+          "avatar_url": null,
+          "title": "",
+          "rarity": "",
+          "extra_pass": null,
+          "nickname_glow_disabled": false,
+          "hide_player_id_public": false,
+          "background_url": null,
+          "is_bot": false,
+          "replacement_status": "active",
+          "mana": 3,
+          "max_mana": 3,
+          "mana_draw_count_this_turn": 0,
+          "trophies": 0,
+          "hero": {
+            "instance_id": "96fdb880-9f56-5215-8cb4-224fad8d7657",
+            "card_id": 1,
+            "name": "Искатель",
+            "description": "Начинающий герой, готовый к приключениям.",
+            "card_type": "hero",
+            "rarity": "start",
+            "level": 1,
+            "mana": 0,
+            "mana_cost": 0,
+            "attack": 0,
+            "atk": 0,
+            "hp": 18,
+            "hp_current": 18,
+            "max_hp": 18,
+            "mechanics": [],
+            "is_ready": false,
+            "can_attack": false,
+            "is_asleep": true,
+            "is_frozen": false,
+            "mechanics_desc": "",
+            "owner_id": null,
+            "image": "/DesignAssets/Cards/1.png"
+          },
+          "hand": [
+            {
+              "instance_id": "73363cbc-78f9-57d2-be6d-a5f3fed6204a",
+              "card_id": 39,
+              "name": "Альфонс Элрик",
+              "description": "Душа в доспехах. Обладает Провокацией и защищает слабых.",
+              "card_type": "warrior",
+              "rarity": "start",
+              "level": 1,
+              "mana": 2,
+              "mana_cost": 2,
+              "attack": 1,
+              "atk": 1,
+              "hp": 3,
+              "hp_current": 3,
+              "max_hp": 3,
+              "mechanics": [
+                "taunt"
+              ],
+              "is_ready": false,
+              "can_attack": false,
+              "is_asleep": true,
+              "is_frozen": false,
+              "mechanics_desc": "",
+              "owner_id": null,
+              "image": "/DesignAssets/Cards/39.png"
+            }
+          ],
+          "hand_count": 1,
+          "deck_count": 0,
+          "board": [
+            {
+              "instance_id": "338f11f7-d2b6-5750-8a8f-81d3847fe847",
+              "card_id": 37,
+              "name": "Слайм",
+              "description": "Слабый монстр. Хорош для начала приключения.",
+              "card_type": "warrior",
+              "rarity": "start",
+              "level": 1,
+              "mana": 1,
+              "mana_cost": 1,
+              "attack": 4,
+              "atk": 4,
+              "hp": 2,
+              "hp_current": 2,
+              "max_hp": 2,
+              "mechanics": [],
+              "is_ready": true,
+              "can_attack": true,
+              "is_asleep": false,
+              "is_frozen": false,
+              "mechanics_desc": "",
+              "owner_id": 12345,
+              "image": "/DesignAssets/Cards/37.png"
+            }
+          ]
+        },
+        "opponent": {
+          "user_id": 9000000012345,
+          "name": "Кто-то злой",
+          "avatar_url": null,
+          "title": "",
+          "rarity": "",
+          "extra_pass": null,
+          "nickname_glow_disabled": false,
+          "hide_player_id_public": false,
+          "background_url": null,
+          "is_bot": true,
+          "replacement_status": "active",
+          "mana": 1,
+          "max_mana": 4,
+          "mana_draw_count_this_turn": 0,
+          "trophies": 0,
+          "hero": {
+            "instance_id": "36c8c281-0b4a-5b8a-a88b-e6208106eaf1",
+            "card_id": 1,
+            "name": "Искатель",
+            "description": "Начинающий герой, готовый к приключениям.",
+            "card_type": "hero",
+            "rarity": "start",
+            "level": 1,
+            "mana": 0,
+            "mana_cost": 0,
+            "attack": 0,
+            "atk": 0,
+            "hp": 8,
+            "hp_current": 8,
+            "max_hp": 8,
+            "mechanics": [],
+            "is_ready": false,
+            "can_attack": false,
+            "is_asleep": true,
+            "is_frozen": false,
+            "mechanics_desc": "",
+            "owner_id": null,
+            "image": "/DesignAssets/Cards/1.png"
+          },
+          "hand": [],
+          "hand_count": 0,
+          "deck_count": 0,
+          "board": [
+            {
+              "instance_id": "beed14d6-530b-5909-9572-4b76f47fb615",
+              "card_id": 40,
+              "name": "Стив",
+              "description": "Мастер выживания. Надежный квадратный боец.",
+              "card_type": "warrior",
+              "rarity": "start",
+              "level": 1,
+              "mana": 3,
+              "mana_cost": 3,
+              "attack": 3,
+              "atk": 3,
+              "hp": 3,
+              "hp_current": 3,
+              "max_hp": 3,
+              "mechanics": [],
+              "is_ready": false,
+              "can_attack": false,
+              "is_asleep": true,
+              "is_frozen": false,
+              "mechanics_desc": "",
+              "owner_id": 9000000012345,
+              "image": "/DesignAssets/Cards/40.png"
+            }
+          ]
+        },
+        "legal_actions": [
+          {
+            "type": "attack",
+            "attacker_id": "338f11f7-d2b6-5750-8a8f-81d3847fe847",
+            "target_id": null,
+            "target_is_hero": true
+          },
+          {
+            "type": "attack",
+            "attacker_id": "338f11f7-d2b6-5750-8a8f-81d3847fe847",
+            "target_id": "beed14d6-530b-5909-9572-4b76f47fb615",
+            "target_is_hero": false
+          }
+        ],
+        "action_history": [
+          {
+            "type": "player",
+            "text": "Вы Слайм выставлен"
+          },
+          {
+            "type": "player",
+            "text": "Вы завершил(а) ход"
+          },
+          {
+            "type": "system",
+            "text": "——— Ход №2 ———"
+          },
+          {
+            "type": "opponent",
+            "text": "Противник Стив выставлен"
+          },
+          {
+            "type": "opponent",
+            "text": "Противник завершил(а) ход"
+          },
+          {
+            "type": "system",
+            "text": "——— Ход №3 ———"
+          }
+        ],
+        "is_onboarding_tutorial": true,
+        "tutorial": {
+          "step_index": 4,
+          "step_id": "choose_target",
+          "message": "Слайм готов. Попробуй выбрать, куда выгоднее ударить.",
+          "hint": "Выбери бойца и нажми героя врага",
+          "target": "opponent_hero",
+          "allowed": {
+            "type": "attack",
+            "attacker_card_id": 37,
+            "target_is_hero": true,
+            "also_allow_minion_targets": true
+          },
+          "is_auto_step": false,
+          "player_step": 4,
+          "player_steps_total": 10,
+          "display_step": 4,
+          "display_steps_total": 10,
+          "previous_message": "У врага появился боец. Но наша цель всё ещё герой. Не каждая карта врага требует размена.",
+          "final_step": 10,
+          "wrong_action_feedback": {
+            "generic": "Сейчас не туда. Следуй подсветке.",
+            "wrong_target": "Эту цель пока не трогаем. Нам нужен герой.",
+            "sleeping_unit": "Рано. Эта карта еще спит.",
+            "wrong_alphonse": "Сейчас нужен Альфонс. Он примет удар на себя.",
+            "tutorial_lock": "Этот бой учебный. Действуем по плану."
+          },
+          "midoria_asset": "/DesignAssets/MidoriaOnboardingGuide.png",
+          "attacker_instance_id": "338f11f7-d2b6-5750-8a8f-81d3847fe847",
+          "alphonse_instance_id": null,
+          "hand_attacker_instance_id": null,
+          "hand_alphonse_instance_id": "73363cbc-78f9-57d2-be6d-a5f3fed6204a"
+        }
+      },
+      "onboarding": {
+        "status": "tutorial_battle",
+        "tutorial_step": 4
+      },
+      "feedback": "Можно, но сейчас выгоднее бить героя: его HP — условие победы.",
+      "_status": 409
+    },
+    {
+      "match_id": "tutorial-12345",
+      "result": {
+        "success": true,
+        "tutorial_step": 5,
+        "after_message": null
+      },
+      "state": {
+        "match_id": "tutorial-12345",
+        "turn": 3,
+        "current_player_id": 12345,
+        "is_my_turn": true,
+        "player_ids": [
+          12345,
+          9000000012345
+        ],
+        "viewer_id": 12345,
+        "match_status": "active",
+        "battle_started": true,
+        "ready_user_ids": [
+          12345,
+          9000000012345
+        ],
+        "waiting_for_user_ids": [],
+        "ready_count": 1,
+        "required_ready_count": 1,
+        "is_ended": false,
+        "game_over": false,
+        "winner_id": null,
+        "turn_time_remaining": 98.9996006670408,
+        "turn_duration": 99,
+        "turn_time_history": [
+          {
+            "turn": 2,
+            "player_id": 9000000012345,
+            "side": "opponent",
+            "elapsed_seconds": 0.0
+          }
+        ],
+        "game_mode": "tutorial",
+        "ruleset": "classic",
+        "mode_config": {
+          "mode_id": "training",
+          "ruleset": "classic",
+          "label": "Training",
+          "available": true,
+          "classic": {
+            "turn_duration_seconds": 99,
+            "mana_per_turn": 1,
+            "hero_health_multiplier": 1.0,
+            "card_level_mode": "normal",
+            "bot_turn_delay_range": [
+              4.0,
+              6.0
+            ],
+            "bot_hard_turn_delay_range": [
+              1.5,
+              2.5
+            ],
+            "bot_action_gap_range": [
+              0.4,
+              0.8
+            ],
+            "bot_emergency_threshold_seconds": 5.0,
+            "spells_free": false,
+            "summon_ready_on_play": false,
+            "sudden_death_enabled": false,
+            "sudden_death_damage_start": 1,
+            "sudden_death_damage_step": 1,
+            "overdraw_to_discard": false,
+            "bots_allowed": true
+          },
+          "rewards": {
+            "enabled": false,
+            "trophies": false,
+            "coins": false,
+            "stars": false,
+            "win_counter": false
+          }
+        },
+        "sudden_death": {
+          "enabled": false
+        },
+        "player1_hp": 18,
+        "player2_hp": 4,
+        "player": {
+          "user_id": 12345,
+          "name": "Ты",
+          "avatar_url": null,
+          "title": "",
+          "rarity": "",
+          "extra_pass": null,
+          "nickname_glow_disabled": false,
+          "hide_player_id_public": false,
+          "background_url": null,
+          "is_bot": false,
+          "replacement_status": "active",
+          "mana": 3,
+          "max_mana": 3,
+          "mana_draw_count_this_turn": 0,
+          "trophies": 0,
+          "hero": {
+            "instance_id": "96fdb880-9f56-5215-8cb4-224fad8d7657",
+            "card_id": 1,
+            "name": "Искатель",
+            "description": "Начинающий герой, готовый к приключениям.",
+            "card_type": "hero",
+            "rarity": "start",
+            "level": 1,
+            "mana": 0,
+            "mana_cost": 0,
+            "attack": 0,
+            "atk": 0,
+            "hp": 18,
+            "hp_current": 18,
+            "max_hp": 18,
+            "mechanics": [],
+            "is_ready": false,
+            "can_attack": false,
+            "is_asleep": true,
+            "is_frozen": false,
+            "mechanics_desc": "",
+            "owner_id": null,
+            "image": "/DesignAssets/Cards/1.png"
+          },
+          "hand": [
+            {
+              "instance_id": "73363cbc-78f9-57d2-be6d-a5f3fed6204a",
+              "card_id": 39,
+              "name": "Альфонс Элрик",
+              "description": "Душа в доспехах. Обладает Провокацией и защищает слабых.",
+              "card_type": "warrior",
+              "rarity": "start",
+              "level": 1,
+              "mana": 2,
+              "mana_cost": 2,
+              "attack": 1,
+              "atk": 1,
+              "hp": 3,
+              "hp_current": 3,
+              "max_hp": 3,
+              "mechanics": [
+                "taunt"
+              ],
+              "is_ready": false,
+              "can_attack": false,
+              "is_asleep": true,
+              "is_frozen": false,
+              "mechanics_desc": "",
+              "owner_id": null,
+              "image": "/DesignAssets/Cards/39.png"
+            }
+          ],
+          "hand_count": 1,
+          "deck_count": 0,
+          "board": [
+            {
+              "instance_id": "338f11f7-d2b6-5750-8a8f-81d3847fe847",
+              "card_id": 37,
+              "name": "Слайм",
+              "description": "Слабый монстр. Хорош для начала приключения.",
+              "card_type": "warrior",
+              "rarity": "start",
+              "level": 1,
+              "mana": 1,
+              "mana_cost": 1,
+              "attack": 4,
+              "atk": 4,
+              "hp": 2,
+              "hp_current": 2,
+              "max_hp": 2,
+              "mechanics": [],
+              "is_ready": false,
+              "can_attack": false,
+              "is_asleep": true,
+              "is_frozen": false,
+              "mechanics_desc": "",
+              "owner_id": 12345,
+              "image": "/DesignAssets/Cards/37.png"
+            }
+          ]
+        },
+        "opponent": {
+          "user_id": 9000000012345,
+          "name": "Кто-то злой",
+          "avatar_url": null,
+          "title": "",
+          "rarity": "",
+          "extra_pass": null,
+          "nickname_glow_disabled": false,
+          "hide_player_id_public": false,
+          "background_url": null,
+          "is_bot": true,
+          "replacement_status": "active",
+          "mana": 1,
+          "max_mana": 4,
+          "mana_draw_count_this_turn": 0,
+          "trophies": 0,
+          "hero": {
+            "instance_id": "36c8c281-0b4a-5b8a-a88b-e6208106eaf1",
+            "card_id": 1,
+            "name": "Искатель",
+            "description": "Начинающий герой, готовый к приключениям.",
+            "card_type": "hero",
+            "rarity": "start",
+            "level": 1,
+            "mana": 0,
+            "mana_cost": 0,
+            "attack": 0,
+            "atk": 0,
+            "hp": 4,
+            "hp_current": 4,
+            "max_hp": 8,
+            "mechanics": [],
+            "is_ready": false,
+            "can_attack": false,
+            "is_asleep": true,
+            "is_frozen": false,
+            "mechanics_desc": "",
+            "owner_id": null,
+            "image": "/DesignAssets/Cards/1.png"
+          },
+          "hand": [],
+          "hand_count": 0,
+          "deck_count": 0,
+          "board": [
+            {
+              "instance_id": "beed14d6-530b-5909-9572-4b76f47fb615",
+              "card_id": 40,
+              "name": "Стив",
+              "description": "Мастер выживания. Надежный квадратный боец.",
+              "card_type": "warrior",
+              "rarity": "start",
+              "level": 1,
+              "mana": 3,
+              "mana_cost": 3,
+              "attack": 3,
+              "atk": 3,
+              "hp": 3,
+              "hp_current": 3,
+              "max_hp": 3,
+              "mechanics": [],
+              "is_ready": false,
+              "can_attack": false,
+              "is_asleep": true,
+              "is_frozen": false,
+              "mechanics_desc": "",
+              "owner_id": 9000000012345,
+              "image": "/DesignAssets/Cards/40.png"
+            }
+          ]
+        },
+        "legal_actions": [],
+        "action_history": [
+          {
+            "type": "player",
+            "text": "Вы Слайм выставлен"
+          },
+          {
+            "type": "player",
+            "text": "Вы завершил(а) ход"
+          },
+          {
+            "type": "system",
+            "text": "——— Ход №2 ———"
+          },
+          {
+            "type": "opponent",
+            "text": "Противник Стив выставлен"
+          },
+          {
+            "type": "opponent",
+            "text": "Противник завершил(а) ход"
+          },
+          {
+            "type": "system",
+            "text": "——— Ход №3 ———"
+          },
+          {
+            "type": "player",
+            "text": "Вы Слайм наносит 4 урона по Герою"
+          }
+        ],
+        "is_onboarding_tutorial": true,
+        "tutorial": {
+          "step_index": 5,
+          "step_id": "tempo",
+          "message": "Отлично. Мы не просто нанесли урон — мы приблизили победу. Считай, сколько ударов осталось до 0 HP.",
+          "hint": null,
+          "target": "opponent_hero",
+          "allowed": {
+            "type": "continue"
+          },
+          "is_auto_step": false,
+          "player_step": 5,
+          "player_steps_total": 10,
+          "display_step": 5,
+          "display_steps_total": 10,
+          "previous_message": "Слайм готов. Попробуй выбрать, куда выгоднее ударить.",
+          "final_step": 10,
+          "wrong_action_feedback": {
+            "generic": "Сейчас не туда. Следуй подсветке.",
+            "wrong_target": "Эту цель пока не трогаем. Нам нужен герой.",
+            "sleeping_unit": "Рано. Эта карта еще спит.",
+            "wrong_alphonse": "Сейчас нужен Альфонс. Он примет удар на себя.",
+            "tutorial_lock": "Этот бой учебный. Действуем по плану."
+          },
+          "midoria_asset": "/DesignAssets/MidoriaOnboardingGuide.png",
+          "attacker_instance_id": "338f11f7-d2b6-5750-8a8f-81d3847fe847",
+          "alphonse_instance_id": null,
+          "hand_attacker_instance_id": null,
+          "hand_alphonse_instance_id": "73363cbc-78f9-57d2-be6d-a5f3fed6204a"
+        }
+      },
+      "onboarding": {
+        "status": "tutorial_battle",
+        "tutorial_step": 5
+      }
+    },
+    {
+      "match_id": "tutorial-12345",
+      "result": {
+        "success": true,
+        "tutorial_step": 6
+      },
+      "state": {
+        "match_id": "tutorial-12345",
+        "turn": 3,
+        "current_player_id": 12345,
+        "is_my_turn": true,
+        "player_ids": [
+          12345,
+          9000000012345
+        ],
+        "viewer_id": 12345,
+        "match_status": "active",
+        "battle_started": true,
+        "ready_user_ids": [
+          12345,
+          9000000012345
+        ],
+        "waiting_for_user_ids": [],
+        "ready_count": 1,
+        "required_ready_count": 1,
+        "is_ended": false,
+        "game_over": false,
+        "winner_id": null,
+        "turn_time_remaining": 98.9995295421686,
+        "turn_duration": 99,
+        "turn_time_history": [
+          {
+            "turn": 2,
+            "player_id": 9000000012345,
+            "side": "opponent",
+            "elapsed_seconds": 0.0
+          }
+        ],
+        "game_mode": "tutorial",
+        "ruleset": "classic",
+        "mode_config": {
+          "mode_id": "training",
+          "ruleset": "classic",
+          "label": "Training",
+          "available": true,
+          "classic": {
+            "turn_duration_seconds": 99,
+            "mana_per_turn": 1,
+            "hero_health_multiplier": 1.0,
+            "card_level_mode": "normal",
+            "bot_turn_delay_range": [
+              4.0,
+              6.0
+            ],
+            "bot_hard_turn_delay_range": [
+              1.5,
+              2.5
+            ],
+            "bot_action_gap_range": [
+              0.4,
+              0.8
+            ],
+            "bot_emergency_threshold_seconds": 5.0,
+            "spells_free": false,
+            "summon_ready_on_play": false,
+            "sudden_death_enabled": false,
+            "sudden_death_damage_start": 1,
+            "sudden_death_damage_step": 1,
+            "overdraw_to_discard": false,
+            "bots_allowed": true
+          },
+          "rewards": {
+            "enabled": false,
+            "trophies": false,
+            "coins": false,
+            "stars": false,
+            "win_counter": false
+          }
+        },
+        "sudden_death": {
+          "enabled": false
+        },
+        "player1_hp": 18,
+        "player2_hp": 4,
+        "player": {
+          "user_id": 12345,
+          "name": "Ты",
+          "avatar_url": null,
+          "title": "",
+          "rarity": "",
+          "extra_pass": null,
+          "nickname_glow_disabled": false,
+          "hide_player_id_public": false,
+          "background_url": null,
+          "is_bot": false,
+          "replacement_status": "active",
+          "mana": 3,
+          "max_mana": 3,
+          "mana_draw_count_this_turn": 0,
+          "trophies": 0,
+          "hero": {
+            "instance_id": "96fdb880-9f56-5215-8cb4-224fad8d7657",
+            "card_id": 1,
+            "name": "Искатель",
+            "description": "Начинающий герой, готовый к приключениям.",
+            "card_type": "hero",
+            "rarity": "start",
+            "level": 1,
+            "mana": 0,
+            "mana_cost": 0,
+            "attack": 0,
+            "atk": 0,
+            "hp": 18,
+            "hp_current": 18,
+            "max_hp": 18,
+            "mechanics": [],
+            "is_ready": false,
+            "can_attack": false,
+            "is_asleep": true,
+            "is_frozen": false,
+            "mechanics_desc": "",
+            "owner_id": null,
+            "image": "/DesignAssets/Cards/1.png"
+          },
+          "hand": [
+            {
+              "instance_id": "73363cbc-78f9-57d2-be6d-a5f3fed6204a",
+              "card_id": 39,
+              "name": "Альфонс Элрик",
+              "description": "Душа в доспехах. Обладает Провокацией и защищает слабых.",
+              "card_type": "warrior",
+              "rarity": "start",
+              "level": 1,
+              "mana": 2,
+              "mana_cost": 2,
+              "attack": 1,
+              "atk": 1,
+              "hp": 3,
+              "hp_current": 3,
+              "max_hp": 3,
+              "mechanics": [
+                "taunt"
+              ],
+              "is_ready": false,
+              "can_attack": false,
+              "is_asleep": true,
+              "is_frozen": false,
+              "mechanics_desc": "",
+              "owner_id": null,
+              "image": "/DesignAssets/Cards/39.png"
+            }
+          ],
+          "hand_count": 1,
+          "deck_count": 0,
+          "board": [
+            {
+              "instance_id": "338f11f7-d2b6-5750-8a8f-81d3847fe847",
+              "card_id": 37,
+              "name": "Слайм",
+              "description": "Слабый монстр. Хорош для начала приключения.",
+              "card_type": "warrior",
+              "rarity": "start",
+              "level": 1,
+              "mana": 1,
+              "mana_cost": 1,
+              "attack": 4,
+              "atk": 4,
+              "hp": 2,
+              "hp_current": 2,
+              "max_hp": 2,
+              "mechanics": [],
+              "is_ready": false,
+              "can_attack": false,
+              "is_asleep": true,
+              "is_frozen": false,
+              "mechanics_desc": "",
+              "owner_id": 12345,
+              "image": "/DesignAssets/Cards/37.png"
+            }
+          ]
+        },
+        "opponent": {
+          "user_id": 9000000012345,
+          "name": "Кто-то злой",
+          "avatar_url": null,
+          "title": "",
+          "rarity": "",
+          "extra_pass": null,
+          "nickname_glow_disabled": false,
+          "hide_player_id_public": false,
+          "background_url": null,
+          "is_bot": true,
+          "replacement_status": "active",
+          "mana": 1,
+          "max_mana": 4,
+          "mana_draw_count_this_turn": 0,
+          "trophies": 0,
+          "hero": {
+            "instance_id": "36c8c281-0b4a-5b8a-a88b-e6208106eaf1",
+            "card_id": 1,
+            "name": "Искатель",
+            "description": "Начинающий герой, готовый к приключениям.",
+            "card_type": "hero",
+            "rarity": "start",
+            "level": 1,
+            "mana": 0,
+            "mana_cost": 0,
+            "attack": 0,
+            "atk": 0,
+            "hp": 4,
+            "hp_current": 4,
+            "max_hp": 8,
+            "mechanics": [],
+            "is_ready": false,
+            "can_attack": false,
+            "is_asleep": true,
+            "is_frozen": false,
+            "mechanics_desc": "",
+            "owner_id": null,
+            "image": "/DesignAssets/Cards/1.png"
+          },
+          "hand": [],
+          "hand_count": 0,
+          "deck_count": 0,
+          "board": [
+            {
+              "instance_id": "beed14d6-530b-5909-9572-4b76f47fb615",
+              "card_id": 40,
+              "name": "Стив",
+              "description": "Мастер выживания. Надежный квадратный боец.",
+              "card_type": "warrior",
+              "rarity": "start",
+              "level": 1,
+              "mana": 3,
+              "mana_cost": 3,
+              "attack": 3,
+              "atk": 3,
+              "hp": 3,
+              "hp_current": 3,
+              "max_hp": 3,
+              "mechanics": [],
+              "is_ready": false,
+              "can_attack": false,
+              "is_asleep": true,
+              "is_frozen": false,
+              "mechanics_desc": "",
+              "owner_id": 9000000012345,
+              "image": "/DesignAssets/Cards/40.png"
+            }
+          ]
+        },
+        "legal_actions": [],
+        "action_history": [
+          {
+            "type": "player",
+            "text": "Вы Слайм выставлен"
+          },
+          {
+            "type": "player",
+            "text": "Вы завершил(а) ход"
+          },
+          {
+            "type": "system",
+            "text": "——— Ход №2 ———"
+          },
+          {
+            "type": "opponent",
+            "text": "Противник Стив выставлен"
+          },
+          {
+            "type": "opponent",
+            "text": "Противник завершил(а) ход"
+          },
+          {
+            "type": "system",
+            "text": "——— Ход №3 ———"
+          },
+          {
+            "type": "player",
+            "text": "Вы Слайм наносит 4 урона по Герою"
+          }
+        ],
+        "is_onboarding_tutorial": true,
+        "tutorial": {
+          "step_index": 6,
+          "step_id": "danger",
+          "message": "Стив ударит больно. Если он дойдёт до героя, мы потеряем темп. Нужен защитник.",
+          "hint": null,
+          "target": "opponent_hero",
+          "allowed": {
+            "type": "continue"
+          },
+          "is_auto_step": false,
+          "player_step": 6,
+          "player_steps_total": 10,
+          "display_step": 6,
+          "display_steps_total": 10,
+          "previous_message": "Отлично. Мы не просто нанесли урон — мы приблизили победу. Считай, сколько ударов осталось до 0 HP.",
+          "final_step": 10,
+          "wrong_action_feedback": {
+            "generic": "Сейчас не туда. Следуй подсветке.",
+            "wrong_target": "Эту цель пока не трогаем. Нам нужен герой.",
+            "sleeping_unit": "Рано. Эта карта еще спит.",
+            "wrong_alphonse": "Сейчас нужен Альфонс. Он примет удар на себя.",
+            "tutorial_lock": "Этот бой учебный. Действуем по плану."
+          },
+          "midoria_asset": "/DesignAssets/MidoriaOnboardingGuide.png",
+          "attacker_instance_id": "338f11f7-d2b6-5750-8a8f-81d3847fe847",
+          "alphonse_instance_id": null,
+          "hand_attacker_instance_id": null,
+          "hand_alphonse_instance_id": "73363cbc-78f9-57d2-be6d-a5f3fed6204a"
+        }
+      },
+      "onboarding": {
+        "status": "tutorial_battle",
+        "tutorial_step": 6
+      }
+    },
+    {
+      "match_id": "tutorial-12345",
+      "result": {
+        "success": true,
+        "tutorial_step": 7
+      },
+      "state": {
+        "match_id": "tutorial-12345",
+        "turn": 3,
+        "current_player_id": 12345,
+        "is_my_turn": true,
+        "player_ids": [
+          12345,
+          9000000012345
+        ],
+        "viewer_id": 12345,
+        "match_status": "active",
+        "battle_started": true,
+        "ready_user_ids": [
+          12345,
+          9000000012345
+        ],
+        "waiting_for_user_ids": [],
+        "ready_count": 1,
+        "required_ready_count": 1,
+        "is_ended": false,
+        "game_over": false,
+        "winner_id": null,
+        "turn_time_remaining": 98.99946712516248,
+        "turn_duration": 99,
+        "turn_time_history": [
+          {
+            "turn": 2,
+            "player_id": 9000000012345,
+            "side": "opponent",
+            "elapsed_seconds": 0.0
+          }
+        ],
+        "game_mode": "tutorial",
+        "ruleset": "classic",
+        "mode_config": {
+          "mode_id": "training",
+          "ruleset": "classic",
+          "label": "Training",
+          "available": true,
+          "classic": {
+            "turn_duration_seconds": 99,
+            "mana_per_turn": 1,
+            "hero_health_multiplier": 1.0,
+            "card_level_mode": "normal",
+            "bot_turn_delay_range": [
+              4.0,
+              6.0
+            ],
+            "bot_hard_turn_delay_range": [
+              1.5,
+              2.5
+            ],
+            "bot_action_gap_range": [
+              0.4,
+              0.8
+            ],
+            "bot_emergency_threshold_seconds": 5.0,
+            "spells_free": false,
+            "summon_ready_on_play": false,
+            "sudden_death_enabled": false,
+            "sudden_death_damage_start": 1,
+            "sudden_death_damage_step": 1,
+            "overdraw_to_discard": false,
+            "bots_allowed": true
+          },
+          "rewards": {
+            "enabled": false,
+            "trophies": false,
+            "coins": false,
+            "stars": false,
+            "win_counter": false
+          }
+        },
+        "sudden_death": {
+          "enabled": false
+        },
+        "player1_hp": 18,
+        "player2_hp": 4,
+        "player": {
+          "user_id": 12345,
+          "name": "Ты",
+          "avatar_url": null,
+          "title": "",
+          "rarity": "",
+          "extra_pass": null,
+          "nickname_glow_disabled": false,
+          "hide_player_id_public": false,
+          "background_url": null,
+          "is_bot": false,
+          "replacement_status": "active",
+          "mana": 3,
+          "max_mana": 3,
+          "mana_draw_count_this_turn": 0,
+          "trophies": 0,
+          "hero": {
+            "instance_id": "96fdb880-9f56-5215-8cb4-224fad8d7657",
+            "card_id": 1,
+            "name": "Искатель",
+            "description": "Начинающий герой, готовый к приключениям.",
+            "card_type": "hero",
+            "rarity": "start",
+            "level": 1,
+            "mana": 0,
+            "mana_cost": 0,
+            "attack": 0,
+            "atk": 0,
+            "hp": 18,
+            "hp_current": 18,
+            "max_hp": 18,
+            "mechanics": [],
+            "is_ready": false,
+            "can_attack": false,
+            "is_asleep": true,
+            "is_frozen": false,
+            "mechanics_desc": "",
+            "owner_id": null,
+            "image": "/DesignAssets/Cards/1.png"
+          },
+          "hand": [
+            {
+              "instance_id": "73363cbc-78f9-57d2-be6d-a5f3fed6204a",
+              "card_id": 39,
+              "name": "Альфонс Элрик",
+              "description": "Душа в доспехах. Обладает Провокацией и защищает слабых.",
+              "card_type": "warrior",
+              "rarity": "start",
+              "level": 1,
+              "mana": 2,
+              "mana_cost": 2,
+              "attack": 1,
+              "atk": 1,
+              "hp": 3,
+              "hp_current": 3,
+              "max_hp": 3,
+              "mechanics": [
+                "taunt"
+              ],
+              "is_ready": false,
+              "can_attack": false,
+              "is_asleep": true,
+              "is_frozen": false,
+              "mechanics_desc": "",
+              "owner_id": null,
+              "image": "/DesignAssets/Cards/39.png"
+            }
+          ],
+          "hand_count": 1,
+          "deck_count": 0,
+          "board": [
+            {
+              "instance_id": "338f11f7-d2b6-5750-8a8f-81d3847fe847",
+              "card_id": 37,
+              "name": "Слайм",
+              "description": "Слабый монстр. Хорош для начала приключения.",
+              "card_type": "warrior",
+              "rarity": "start",
+              "level": 1,
+              "mana": 1,
+              "mana_cost": 1,
+              "attack": 4,
+              "atk": 4,
+              "hp": 2,
+              "hp_current": 2,
+              "max_hp": 2,
+              "mechanics": [],
+              "is_ready": false,
+              "can_attack": false,
+              "is_asleep": true,
+              "is_frozen": false,
+              "mechanics_desc": "",
+              "owner_id": 12345,
+              "image": "/DesignAssets/Cards/37.png"
+            }
+          ]
+        },
+        "opponent": {
+          "user_id": 9000000012345,
+          "name": "Кто-то злой",
+          "avatar_url": null,
+          "title": "",
+          "rarity": "",
+          "extra_pass": null,
+          "nickname_glow_disabled": false,
+          "hide_player_id_public": false,
+          "background_url": null,
+          "is_bot": true,
+          "replacement_status": "active",
+          "mana": 1,
+          "max_mana": 4,
+          "mana_draw_count_this_turn": 0,
+          "trophies": 0,
+          "hero": {
+            "instance_id": "36c8c281-0b4a-5b8a-a88b-e6208106eaf1",
+            "card_id": 1,
+            "name": "Искатель",
+            "description": "Начинающий герой, готовый к приключениям.",
+            "card_type": "hero",
+            "rarity": "start",
+            "level": 1,
+            "mana": 0,
+            "mana_cost": 0,
+            "attack": 0,
+            "atk": 0,
+            "hp": 4,
+            "hp_current": 4,
+            "max_hp": 8,
+            "mechanics": [],
+            "is_ready": false,
+            "can_attack": false,
+            "is_asleep": true,
+            "is_frozen": false,
+            "mechanics_desc": "",
+            "owner_id": null,
+            "image": "/DesignAssets/Cards/1.png"
+          },
+          "hand": [],
+          "hand_count": 0,
+          "deck_count": 0,
+          "board": [
+            {
+              "instance_id": "beed14d6-530b-5909-9572-4b76f47fb615",
+              "card_id": 40,
+              "name": "Стив",
+              "description": "Мастер выживания. Надежный квадратный боец.",
+              "card_type": "warrior",
+              "rarity": "start",
+              "level": 1,
+              "mana": 3,
+              "mana_cost": 3,
+              "attack": 3,
+              "atk": 3,
+              "hp": 3,
+              "hp_current": 3,
+              "max_hp": 3,
+              "mechanics": [],
+              "is_ready": false,
+              "can_attack": false,
+              "is_asleep": true,
+              "is_frozen": false,
+              "mechanics_desc": "",
+              "owner_id": 9000000012345,
+              "image": "/DesignAssets/Cards/40.png"
+            }
+          ]
+        },
+        "legal_actions": [
+          {
+            "type": "play_card",
+            "hand_index": 0,
+            "card_id": 39,
+            "target_id": null,
+            "position": 1
+          }
+        ],
+        "action_history": [
+          {
+            "type": "player",
+            "text": "Вы Слайм выставлен"
+          },
+          {
+            "type": "player",
+            "text": "Вы завершил(а) ход"
+          },
+          {
+            "type": "system",
+            "text": "——— Ход №2 ———"
+          },
+          {
+            "type": "opponent",
+            "text": "Противник Стив выставлен"
+          },
+          {
+            "type": "opponent",
+            "text": "Противник завершил(а) ход"
+          },
+          {
+            "type": "system",
+            "text": "——— Ход №3 ———"
+          },
+          {
+            "type": "player",
+            "text": "Вы Слайм наносит 4 урона по Герою"
+          }
+        ],
+        "is_onboarding_tutorial": true,
+        "tutorial": {
+          "step_index": 7,
+          "step_id": "taunt_intro",
+          "message": "У Альфонса Провокация. Враг обязан сначала атаковать его.",
+          "hint": "Выставь Альфонса",
+          "target": "hand_card:39",
+          "allowed": {
+            "type": "play_card",
+            "card_id": 39
+          },
+          "is_auto_step": false,
+          "player_step": 7,
+          "player_steps_total": 10,
+          "display_step": 7,
+          "display_steps_total": 10,
+          "previous_message": "Стив ударит больно. Если он дойдёт до героя, мы потеряем темп. Нужен защитник.",
+          "final_step": 10,
+          "wrong_action_feedback": {
+            "generic": "Сейчас не туда. Следуй подсветке.",
+            "wrong_target": "Эту цель пока не трогаем. Нам нужен герой.",
+            "sleeping_unit": "Рано. Эта карта еще спит.",
+            "wrong_alphonse": "Сейчас нужен Альфонс. Он примет удар на себя.",
+            "tutorial_lock": "Этот бой учебный. Действуем по плану."
+          },
+          "midoria_asset": "/DesignAssets/MidoriaOnboardingGuide.png",
+          "attacker_instance_id": "338f11f7-d2b6-5750-8a8f-81d3847fe847",
+          "alphonse_instance_id": null,
+          "hand_attacker_instance_id": null,
+          "hand_alphonse_instance_id": "73363cbc-78f9-57d2-be6d-a5f3fed6204a"
+        }
+      },
+      "onboarding": {
+        "status": "tutorial_battle",
+        "tutorial_step": 7
+      }
+    },
+    {
+      "match_id": "tutorial-12345",
+      "result": {
+        "success": true,
+        "tutorial_step": 8,
+        "after_message": null
+      },
+      "state": {
+        "match_id": "tutorial-12345",
+        "turn": 4,
+        "current_player_id": 9000000012345,
+        "is_my_turn": false,
+        "player_ids": [
+          12345,
+          9000000012345
+        ],
+        "viewer_id": 12345,
+        "match_status": "active",
+        "battle_started": true,
+        "ready_user_ids": [
+          12345,
+          9000000012345
+        ],
+        "waiting_for_user_ids": [],
+        "ready_count": 1,
+        "required_ready_count": 1,
+        "is_ended": false,
+        "game_over": false,
+        "winner_id": null,
+        "turn_time_remaining": 98.99999466608278,
+        "turn_duration": 99,
+        "turn_time_history": [
+          {
+            "turn": 2,
+            "player_id": 9000000012345,
+            "side": "opponent",
+            "elapsed_seconds": 0.0
+          },
+          {
+            "turn": 3,
+            "player_id": 12345,
+            "side": "player",
+            "elapsed_seconds": 0.0
+          }
+        ],
+        "game_mode": "tutorial",
+        "ruleset": "classic",
+        "mode_config": {
+          "mode_id": "training",
+          "ruleset": "classic",
+          "label": "Training",
+          "available": true,
+          "classic": {
+            "turn_duration_seconds": 99,
+            "mana_per_turn": 1,
+            "hero_health_multiplier": 1.0,
+            "card_level_mode": "normal",
+            "bot_turn_delay_range": [
+              4.0,
+              6.0
+            ],
+            "bot_hard_turn_delay_range": [
+              1.5,
+              2.5
+            ],
+            "bot_action_gap_range": [
+              0.4,
+              0.8
+            ],
+            "bot_emergency_threshold_seconds": 5.0,
+            "spells_free": false,
+            "summon_ready_on_play": false,
+            "sudden_death_enabled": false,
+            "sudden_death_damage_start": 1,
+            "sudden_death_damage_step": 1,
+            "overdraw_to_discard": false,
+            "bots_allowed": true
+          },
+          "rewards": {
+            "enabled": false,
+            "trophies": false,
+            "coins": false,
+            "stars": false,
+            "win_counter": false
+          }
+        },
+        "sudden_death": {
+          "enabled": false
+        },
+        "player1_hp": 18,
+        "player2_hp": 4,
+        "player": {
+          "user_id": 12345,
+          "name": "Ты",
+          "avatar_url": null,
+          "title": "",
+          "rarity": "",
+          "extra_pass": null,
+          "nickname_glow_disabled": false,
+          "hide_player_id_public": false,
+          "background_url": null,
+          "is_bot": false,
+          "replacement_status": "active",
+          "mana": 1,
+          "max_mana": 3,
+          "mana_draw_count_this_turn": 0,
+          "trophies": 0,
+          "hero": {
+            "instance_id": "96fdb880-9f56-5215-8cb4-224fad8d7657",
+            "card_id": 1,
+            "name": "Искатель",
+            "description": "Начинающий герой, готовый к приключениям.",
+            "card_type": "hero",
+            "rarity": "start",
+            "level": 1,
+            "mana": 0,
+            "mana_cost": 0,
+            "attack": 0,
+            "atk": 0,
+            "hp": 18,
+            "hp_current": 18,
+            "max_hp": 18,
+            "mechanics": [],
+            "is_ready": false,
+            "can_attack": false,
+            "is_asleep": true,
+            "is_frozen": false,
+            "mechanics_desc": "",
+            "owner_id": null,
+            "image": "/DesignAssets/Cards/1.png"
+          },
+          "hand": [],
+          "hand_count": 0,
+          "deck_count": 0,
+          "board": [
+            {
+              "instance_id": "338f11f7-d2b6-5750-8a8f-81d3847fe847",
+              "card_id": 37,
+              "name": "Слайм",
+              "description": "Слабый монстр. Хорош для начала приключения.",
+              "card_type": "warrior",
+              "rarity": "start",
+              "level": 1,
+              "mana": 1,
+              "mana_cost": 1,
+              "attack": 4,
+              "atk": 4,
+              "hp": 2,
+              "hp_current": 2,
+              "max_hp": 2,
+              "mechanics": [],
+              "is_ready": false,
+              "can_attack": false,
+              "is_asleep": true,
+              "is_frozen": false,
+              "mechanics_desc": "",
+              "owner_id": 12345,
+              "image": "/DesignAssets/Cards/37.png"
+            },
+            {
+              "instance_id": "73363cbc-78f9-57d2-be6d-a5f3fed6204a",
+              "card_id": 39,
+              "name": "Альфонс Элрик",
+              "description": "Душа в доспехах. Обладает Провокацией и защищает слабых.",
+              "card_type": "warrior",
+              "rarity": "start",
+              "level": 1,
+              "mana": 2,
+              "mana_cost": 2,
+              "attack": 1,
+              "atk": 1,
+              "hp": 3,
+              "hp_current": 3,
+              "max_hp": 3,
+              "mechanics": [
+                "taunt"
+              ],
+              "is_ready": false,
+              "can_attack": false,
+              "is_asleep": true,
+              "is_frozen": false,
+              "mechanics_desc": "",
+              "owner_id": 12345,
+              "image": "/DesignAssets/Cards/39.png"
+            }
+          ]
+        },
+        "opponent": {
+          "user_id": 9000000012345,
+          "name": "Кто-то злой",
+          "avatar_url": null,
+          "title": "",
+          "rarity": "",
+          "extra_pass": null,
+          "nickname_glow_disabled": false,
+          "hide_player_id_public": false,
+          "background_url": null,
+          "is_bot": true,
+          "replacement_status": "active",
+          "mana": 5,
+          "max_mana": 5,
+          "mana_draw_count_this_turn": 0,
+          "trophies": 0,
+          "hero": {
+            "instance_id": "36c8c281-0b4a-5b8a-a88b-e6208106eaf1",
+            "card_id": 1,
+            "name": "Искатель",
+            "description": "Начинающий герой, готовый к приключениям.",
+            "card_type": "hero",
+            "rarity": "start",
+            "level": 1,
+            "mana": 0,
+            "mana_cost": 0,
+            "attack": 0,
+            "atk": 0,
+            "hp": 4,
+            "hp_current": 4,
+            "max_hp": 8,
+            "mechanics": [],
+            "is_ready": false,
+            "can_attack": false,
+            "is_asleep": true,
+            "is_frozen": false,
+            "mechanics_desc": "",
+            "owner_id": null,
+            "image": "/DesignAssets/Cards/1.png"
+          },
+          "hand": [],
+          "hand_count": 0,
+          "deck_count": 0,
+          "board": [
+            {
+              "instance_id": "beed14d6-530b-5909-9572-4b76f47fb615",
+              "card_id": 40,
+              "name": "Стив",
+              "description": "Мастер выживания. Надежный квадратный боец.",
+              "card_type": "warrior",
+              "rarity": "start",
+              "level": 1,
+              "mana": 3,
+              "mana_cost": 3,
+              "attack": 3,
+              "atk": 3,
+              "hp": 3,
+              "hp_current": 3,
+              "max_hp": 3,
+              "mechanics": [],
+              "is_ready": true,
+              "can_attack": true,
+              "is_asleep": false,
+              "is_frozen": false,
+              "mechanics_desc": "",
+              "owner_id": 9000000012345,
+              "image": "/DesignAssets/Cards/40.png"
+            }
+          ]
+        },
+        "legal_actions": [],
+        "action_history": [
+          {
+            "type": "player",
+            "text": "Вы Слайм выставлен"
+          },
+          {
+            "type": "player",
+            "text": "Вы завершил(а) ход"
+          },
+          {
+            "type": "system",
+            "text": "——— Ход №2 ———"
+          },
+          {
+            "type": "opponent",
+            "text": "Противник Стив выставлен"
+          },
+          {
+            "type": "opponent",
+            "text": "Противник завершил(а) ход"
+          },
+          {
+            "type": "system",
+            "text": "——— Ход №3 ———"
+          },
+          {
+            "type": "player",
+            "text": "Вы Слайм наносит 4 урона по Герою"
+          },
+          {
+            "type": "player",
+            "text": "Вы Альфонс Элрик: (Провокация)"
+          },
+          {
+            "type": "player",
+            "text": "Вы завершил(а) ход"
+          },
+          {
+            "type": "system",
+            "text": "——— Ход №4 ———"
+          }
+        ],
+        "is_onboarding_tutorial": true,
+        "tutorial": {
+          "step_index": 8,
+          "step_id": "taunt_demo",
+          "message": "Враг атакует Альфонса. Вот так работает Провокация — она закрывает героя и ломает план врага.",
+          "hint": null,
+          "target": "board_card:39",
+          "allowed": {
+            "type": "auto_continue"
+          },
+          "is_auto_step": true,
+          "player_step": 8,
+          "player_steps_total": 10,
+          "display_step": 8,
+          "display_steps_total": 10,
+          "previous_message": "У Альфонса Провокация. Враг обязан сначала атаковать его.",
+          "final_step": 10,
+          "wrong_action_feedback": {
+            "generic": "Сейчас не туда. Следуй подсветке.",
+            "wrong_target": "Эту цель пока не трогаем. Нам нужен герой.",
+            "sleeping_unit": "Рано. Эта карта еще спит.",
+            "wrong_alphonse": "Сейчас нужен Альфонс. Он примет удар на себя.",
+            "tutorial_lock": "Этот бой учебный. Действуем по плану."
+          },
+          "midoria_asset": "/DesignAssets/MidoriaOnboardingGuide.png",
+          "auto_advance_delay_ms": 5600,
+          "attacker_instance_id": "338f11f7-d2b6-5750-8a8f-81d3847fe847",
+          "alphonse_instance_id": "73363cbc-78f9-57d2-be6d-a5f3fed6204a",
+          "hand_attacker_instance_id": null,
+          "hand_alphonse_instance_id": null
+        }
+      },
+      "onboarding": {
+        "status": "tutorial_battle",
+        "tutorial_step": 8
+      }
+    },
+    {
+      "match_id": "tutorial-12345",
+      "result": {
+        "success": true,
+        "tutorial_step": 9,
+        "after_message": "Враг атакует Альфонса. Вот так работает Провокация — она закрывает героя и ломает план врага.",
+        "scripted_event": "opponent_attack_taunt"
+      },
+      "state": {
+        "match_id": "tutorial-12345",
+        "turn": 5,
+        "current_player_id": 12345,
+        "is_my_turn": true,
+        "player_ids": [
+          12345,
+          9000000012345
+        ],
+        "viewer_id": 12345,
+        "match_status": "active",
+        "battle_started": true,
+        "ready_user_ids": [
+          12345,
+          9000000012345
+        ],
+        "waiting_for_user_ids": [],
+        "ready_count": 1,
+        "required_ready_count": 1,
+        "is_ended": false,
+        "game_over": false,
+        "winner_id": null,
+        "turn_time_remaining": 98.99998875008896,
+        "turn_duration": 99,
+        "turn_time_history": [
+          {
+            "turn": 2,
+            "player_id": 9000000012345,
+            "side": "opponent",
+            "elapsed_seconds": 0.0
+          },
+          {
+            "turn": 3,
+            "player_id": 12345,
+            "side": "player",
+            "elapsed_seconds": 0.0
+          },
+          {
+            "turn": 4,
+            "player_id": 9000000012345,
+            "side": "opponent",
+            "elapsed_seconds": 0.0
+          }
+        ],
+        "game_mode": "tutorial",
+        "ruleset": "classic",
+        "mode_config": {
+          "mode_id": "training",
+          "ruleset": "classic",
+          "label": "Training",
+          "available": true,
+          "classic": {
+            "turn_duration_seconds": 99,
+            "mana_per_turn": 1,
+            "hero_health_multiplier": 1.0,
+            "card_level_mode": "normal",
+            "bot_turn_delay_range": [
+              4.0,
+              6.0
+            ],
+            "bot_hard_turn_delay_range": [
+              1.5,
+              2.5
+            ],
+            "bot_action_gap_range": [
+              0.4,
+              0.8
+            ],
+            "bot_emergency_threshold_seconds": 5.0,
+            "spells_free": false,
+            "summon_ready_on_play": false,
+            "sudden_death_enabled": false,
+            "sudden_death_damage_start": 1,
+            "sudden_death_damage_step": 1,
+            "overdraw_to_discard": false,
+            "bots_allowed": true
+          },
+          "rewards": {
+            "enabled": false,
+            "trophies": false,
+            "coins": false,
+            "stars": false,
+            "win_counter": false
+          }
+        },
+        "sudden_death": {
+          "enabled": false
+        },
+        "player1_hp": 18,
+        "player2_hp": 4,
+        "player": {
+          "user_id": 12345,
+          "name": "Ты",
+          "avatar_url": null,
+          "title": "",
+          "rarity": "",
+          "extra_pass": null,
+          "nickname_glow_disabled": false,
+          "hide_player_id_public": false,
+          "background_url": null,
+          "is_bot": false,
+          "replacement_status": "active",
+          "mana": 4,
+          "max_mana": 4,
+          "mana_draw_count_this_turn": 0,
+          "trophies": 0,
+          "hero": {
+            "instance_id": "96fdb880-9f56-5215-8cb4-224fad8d7657",
+            "card_id": 1,
+            "name": "Искатель",
+            "description": "Начинающий герой, готовый к приключениям.",
+            "card_type": "hero",
+            "rarity": "start",
+            "level": 1,
+            "mana": 0,
+            "mana_cost": 0,
+            "attack": 0,
+            "atk": 0,
+            "hp": 18,
+            "hp_current": 18,
+            "max_hp": 18,
+            "mechanics": [],
+            "is_ready": false,
+            "can_attack": false,
+            "is_asleep": true,
+            "is_frozen": false,
+            "mechanics_desc": "",
+            "owner_id": null,
+            "image": "/DesignAssets/Cards/1.png"
+          },
+          "hand": [],
+          "hand_count": 0,
+          "deck_count": 0,
+          "board": [
+            {
+              "instance_id": "338f11f7-d2b6-5750-8a8f-81d3847fe847",
+              "card_id": 37,
+              "name": "Слайм",
+              "description": "Слабый монстр. Хорош для начала приключения.",
+              "card_type": "warrior",
+              "rarity": "start",
+              "level": 1,
+              "mana": 1,
+              "mana_cost": 1,
+              "attack": 4,
+              "atk": 4,
+              "hp": 2,
+              "hp_current": 2,
+              "max_hp": 2,
+              "mechanics": [],
+              "is_ready": true,
+              "can_attack": true,
+              "is_asleep": false,
+              "is_frozen": false,
+              "mechanics_desc": "",
+              "owner_id": 12345,
+              "image": "/DesignAssets/Cards/37.png"
+            }
+          ]
+        },
+        "opponent": {
+          "user_id": 9000000012345,
+          "name": "Кто-то злой",
+          "avatar_url": null,
+          "title": "",
+          "rarity": "",
+          "extra_pass": null,
+          "nickname_glow_disabled": false,
+          "hide_player_id_public": false,
+          "background_url": null,
+          "is_bot": true,
+          "replacement_status": "active",
+          "mana": 5,
+          "max_mana": 5,
+          "mana_draw_count_this_turn": 0,
+          "trophies": 0,
+          "hero": {
+            "instance_id": "36c8c281-0b4a-5b8a-a88b-e6208106eaf1",
+            "card_id": 1,
+            "name": "Искатель",
+            "description": "Начинающий герой, готовый к приключениям.",
+            "card_type": "hero",
+            "rarity": "start",
+            "level": 1,
+            "mana": 0,
+            "mana_cost": 0,
+            "attack": 0,
+            "atk": 0,
+            "hp": 4,
+            "hp_current": 4,
+            "max_hp": 8,
+            "mechanics": [],
+            "is_ready": false,
+            "can_attack": false,
+            "is_asleep": true,
+            "is_frozen": false,
+            "mechanics_desc": "",
+            "owner_id": null,
+            "image": "/DesignAssets/Cards/1.png"
+          },
+          "hand": [],
+          "hand_count": 0,
+          "deck_count": 0,
+          "board": [
+            {
+              "instance_id": "beed14d6-530b-5909-9572-4b76f47fb615",
+              "card_id": 40,
+              "name": "Стив",
+              "description": "Мастер выживания. Надежный квадратный боец.",
+              "card_type": "warrior",
+              "rarity": "start",
+              "level": 1,
+              "mana": 3,
+              "mana_cost": 3,
+              "attack": 3,
+              "atk": 3,
+              "hp": 2,
+              "hp_current": 2,
+              "max_hp": 3,
+              "mechanics": [],
+              "is_ready": false,
+              "can_attack": false,
+              "is_asleep": true,
+              "is_frozen": false,
+              "mechanics_desc": "",
+              "owner_id": 9000000012345,
+              "image": "/DesignAssets/Cards/40.png"
+            }
+          ]
+        },
+        "legal_actions": [
+          {
+            "type": "attack",
+            "attacker_id": "338f11f7-d2b6-5750-8a8f-81d3847fe847",
+            "target_id": null,
+            "target_is_hero": true
+          }
+        ],
+        "action_history": [
+          {
+            "type": "player",
+            "text": "Вы Слайм выставлен"
+          },
+          {
+            "type": "player",
+            "text": "Вы завершил(а) ход"
+          },
+          {
+            "type": "system",
+            "text": "——— Ход №2 ———"
+          },
+          {
+            "type": "opponent",
+            "text": "Противник Стив выставлен"
+          },
+          {
+            "type": "opponent",
+            "text": "Противник завершил(а) ход"
+          },
+          {
+            "type": "system",
+            "text": "——— Ход №3 ———"
+          },
+          {
+            "type": "player",
+            "text": "Вы Слайм наносит 4 урона по Герою"
+          },
+          {
+            "type": "player",
+            "text": "Вы Альфонс Элрик: (Провокация)"
+          },
+          {
+            "type": "player",
+            "text": "Вы завершил(а) ход"
+          },
+          {
+            "type": "system",
+            "text": "——— Ход №4 ———"
+          },
+          {
+            "type": "opponent",
+            "text": "Противник Стив атакует Альфонс Элрик и наносит 3 урона"
+          },
+          {
+            "type": "opponent",
+            "text": "Противник завершил(а) ход"
+          },
+          {
+            "type": "system",
+            "text": "——— Ход №5 ———"
+          }
+        ],
+        "is_onboarding_tutorial": true,
+        "tutorial": {
+          "step_index": 9,
+          "step_id": "lethal",
+          "message": "Теперь путь открыт. У героя врага мало HP. Добивай.",
+          "hint": "Атакуй героя врага",
+          "target": "opponent_hero",
+          "allowed": {
+            "type": "attack",
+            "attacker_card_id": 37,
+            "target_is_hero": true
+          },
+          "is_auto_step": false,
+          "player_step": 9,
+          "player_steps_total": 10,
+          "display_step": 9,
+          "display_steps_total": 10,
+          "previous_message": "Враг атакует Альфонса. Вот так работает Провокация — она закрывает героя и ломает план врага.",
+          "final_step": 10,
+          "wrong_action_feedback": {
+            "generic": "Сейчас не туда. Следуй подсветке.",
+            "wrong_target": "Эту цель пока не трогаем. Нам нужен герой.",
+            "sleeping_unit": "Рано. Эта карта еще спит.",
+            "wrong_alphonse": "Сейчас нужен Альфонс. Он примет удар на себя.",
+            "tutorial_lock": "Этот бой учебный. Действуем по плану."
+          },
+          "midoria_asset": "/DesignAssets/MidoriaOnboardingGuide.png",
+          "attacker_instance_id": "338f11f7-d2b6-5750-8a8f-81d3847fe847",
+          "alphonse_instance_id": null,
+          "hand_attacker_instance_id": null,
+          "hand_alphonse_instance_id": null
+        }
+      },
+      "onboarding": {
+        "status": "tutorial_battle",
+        "tutorial_step": 9
+      }
+    },
+    {
+      "match_id": "tutorial-12345",
+      "result": {
+        "success": true,
+        "tutorial_step": 10,
+        "after_message": null,
+        "game_over": true,
+        "winner_id": 12345
+      },
+      "state": {
+        "match_id": "tutorial-12345",
+        "turn": 5,
+        "current_player_id": 12345,
+        "is_my_turn": true,
+        "player_ids": [
+          12345,
+          9000000012345
+        ],
+        "viewer_id": 12345,
+        "match_status": "active",
+        "battle_started": true,
+        "ready_user_ids": [
+          12345,
+          9000000012345
+        ],
+        "waiting_for_user_ids": [],
+        "ready_count": 1,
+        "required_ready_count": 1,
+        "is_ended": true,
+        "game_over": true,
+        "winner_id": 12345,
+        "turn_time_remaining": 98.99971866700798,
+        "turn_duration": 99,
+        "turn_time_history": [
+          {
+            "turn": 2,
+            "player_id": 9000000012345,
+            "side": "opponent",
+            "elapsed_seconds": 0.0
+          },
+          {
+            "turn": 3,
+            "player_id": 12345,
+            "side": "player",
+            "elapsed_seconds": 0.0
+          },
+          {
+            "turn": 4,
+            "player_id": 9000000012345,
+            "side": "opponent",
+            "elapsed_seconds": 0.0
+          }
+        ],
+        "game_mode": "tutorial",
+        "ruleset": "classic",
+        "mode_config": {
+          "mode_id": "training",
+          "ruleset": "classic",
+          "label": "Training",
+          "available": true,
+          "classic": {
+            "turn_duration_seconds": 99,
+            "mana_per_turn": 1,
+            "hero_health_multiplier": 1.0,
+            "card_level_mode": "normal",
+            "bot_turn_delay_range": [
+              4.0,
+              6.0
+            ],
+            "bot_hard_turn_delay_range": [
+              1.5,
+              2.5
+            ],
+            "bot_action_gap_range": [
+              0.4,
+              0.8
+            ],
+            "bot_emergency_threshold_seconds": 5.0,
+            "spells_free": false,
+            "summon_ready_on_play": false,
+            "sudden_death_enabled": false,
+            "sudden_death_damage_start": 1,
+            "sudden_death_damage_step": 1,
+            "overdraw_to_discard": false,
+            "bots_allowed": true
+          },
+          "rewards": {
+            "enabled": false,
+            "trophies": false,
+            "coins": false,
+            "stars": false,
+            "win_counter": false
+          }
+        },
+        "sudden_death": {
+          "enabled": false
+        },
+        "player1_hp": 18,
+        "player2_hp": 0,
+        "player": {
+          "user_id": 12345,
+          "name": "Ты",
+          "avatar_url": null,
+          "title": "",
+          "rarity": "",
+          "extra_pass": null,
+          "nickname_glow_disabled": false,
+          "hide_player_id_public": false,
+          "background_url": null,
+          "is_bot": false,
+          "replacement_status": "active",
+          "mana": 4,
+          "max_mana": 4,
+          "mana_draw_count_this_turn": 0,
+          "trophies": 0,
+          "hero": {
+            "instance_id": "96fdb880-9f56-5215-8cb4-224fad8d7657",
+            "card_id": 1,
+            "name": "Искатель",
+            "description": "Начинающий герой, готовый к приключениям.",
+            "card_type": "hero",
+            "rarity": "start",
+            "level": 1,
+            "mana": 0,
+            "mana_cost": 0,
+            "attack": 0,
+            "atk": 0,
+            "hp": 18,
+            "hp_current": 18,
+            "max_hp": 18,
+            "mechanics": [],
+            "is_ready": false,
+            "can_attack": false,
+            "is_asleep": true,
+            "is_frozen": false,
+            "mechanics_desc": "",
+            "owner_id": null,
+            "image": "/DesignAssets/Cards/1.png"
+          },
+          "hand": [],
+          "hand_count": 0,
+          "deck_count": 0,
+          "board": [
+            {
+              "instance_id": "338f11f7-d2b6-5750-8a8f-81d3847fe847",
+              "card_id": 37,
+              "name": "Слайм",
+              "description": "Слабый монстр. Хорош для начала приключения.",
+              "card_type": "warrior",
+              "rarity": "start",
+              "level": 1,
+              "mana": 1,
+              "mana_cost": 1,
+              "attack": 4,
+              "atk": 4,
+              "hp": 2,
+              "hp_current": 2,
+              "max_hp": 2,
+              "mechanics": [],
+              "is_ready": false,
+              "can_attack": false,
+              "is_asleep": true,
+              "is_frozen": false,
+              "mechanics_desc": "",
+              "owner_id": 12345,
+              "image": "/DesignAssets/Cards/37.png"
+            }
+          ]
+        },
+        "opponent": {
+          "user_id": 9000000012345,
+          "name": "Кто-то злой",
+          "avatar_url": null,
+          "title": "",
+          "rarity": "",
+          "extra_pass": null,
+          "nickname_glow_disabled": false,
+          "hide_player_id_public": false,
+          "background_url": null,
+          "is_bot": true,
+          "replacement_status": "active",
+          "mana": 5,
+          "max_mana": 5,
+          "mana_draw_count_this_turn": 0,
+          "trophies": 0,
+          "hero": {
+            "instance_id": "36c8c281-0b4a-5b8a-a88b-e6208106eaf1",
+            "card_id": 1,
+            "name": "Искатель",
+            "description": "Начинающий герой, готовый к приключениям.",
+            "card_type": "hero",
+            "rarity": "start",
+            "level": 1,
+            "mana": 0,
+            "mana_cost": 0,
+            "attack": 0,
+            "atk": 0,
+            "hp": 0,
+            "hp_current": 0,
+            "max_hp": 8,
+            "mechanics": [],
+            "is_ready": false,
+            "can_attack": false,
+            "is_asleep": true,
+            "is_frozen": false,
+            "mechanics_desc": "",
+            "owner_id": null,
+            "image": "/DesignAssets/Cards/1.png"
+          },
+          "hand": [],
+          "hand_count": 0,
+          "deck_count": 0,
+          "board": [
+            {
+              "instance_id": "beed14d6-530b-5909-9572-4b76f47fb615",
+              "card_id": 40,
+              "name": "Стив",
+              "description": "Мастер выживания. Надежный квадратный боец.",
+              "card_type": "warrior",
+              "rarity": "start",
+              "level": 1,
+              "mana": 3,
+              "mana_cost": 3,
+              "attack": 3,
+              "atk": 3,
+              "hp": 2,
+              "hp_current": 2,
+              "max_hp": 3,
+              "mechanics": [],
+              "is_ready": false,
+              "can_attack": false,
+              "is_asleep": true,
+              "is_frozen": false,
+              "mechanics_desc": "",
+              "owner_id": 9000000012345,
+              "image": "/DesignAssets/Cards/40.png"
+            }
+          ]
+        },
+        "legal_actions": [],
+        "action_history": [
+          {
+            "type": "player",
+            "text": "Вы Слайм выставлен"
+          },
+          {
+            "type": "player",
+            "text": "Вы завершил(а) ход"
+          },
+          {
+            "type": "system",
+            "text": "——— Ход №2 ———"
+          },
+          {
+            "type": "opponent",
+            "text": "Противник Стив выставлен"
+          },
+          {
+            "type": "opponent",
+            "text": "Противник завершил(а) ход"
+          },
+          {
+            "type": "system",
+            "text": "——— Ход №3 ———"
+          },
+          {
+            "type": "player",
+            "text": "Вы Слайм наносит 4 урона по Герою"
+          },
+          {
+            "type": "player",
+            "text": "Вы Альфонс Элрик: (Провокация)"
+          },
+          {
+            "type": "player",
+            "text": "Вы завершил(а) ход"
+          },
+          {
+            "type": "system",
+            "text": "——— Ход №4 ———"
+          },
+          {
+            "type": "opponent",
+            "text": "Противник Стив атакует Альфонс Элрик и наносит 3 урона"
+          },
+          {
+            "type": "opponent",
+            "text": "Противник завершил(а) ход"
+          },
+          {
+            "type": "system",
+            "text": "——— Ход №5 ———"
+          },
+          {
+            "type": "player",
+            "text": "Вы Слайм наносит 4 урона по Герою"
+          }
+        ],
+        "is_onboarding_tutorial": true,
+        "tutorial": {
+          "step_index": 10,
+          "step_id": "victory",
+          "message": "Готово. Победа — это 0 HP у героя врага. Теперь покажу, где собирать отряд и искать бои.",
+          "hint": "В меню",
+          "target": null,
+          "allowed": {
+            "type": "complete"
+          },
+          "is_auto_step": false,
+          "player_step": 10,
+          "player_steps_total": 10,
+          "display_step": 10,
+          "display_steps_total": 10,
+          "previous_message": "Теперь путь открыт. У героя врага мало HP. Добивай.",
+          "final_step": 10,
+          "wrong_action_feedback": {
+            "generic": "Сейчас не туда. Следуй подсветке.",
+            "wrong_target": "Эту цель пока не трогаем. Нам нужен герой.",
+            "sleeping_unit": "Рано. Эта карта еще спит.",
+            "wrong_alphonse": "Сейчас нужен Альфонс. Он примет удар на себя.",
+            "tutorial_lock": "Этот бой учебный. Действуем по плану."
+          },
+          "midoria_asset": "/DesignAssets/MidoriaOnboardingGuide.png",
+          "attacker_instance_id": "338f11f7-d2b6-5750-8a8f-81d3847fe847",
+          "alphonse_instance_id": null,
+          "hand_attacker_instance_id": null,
+          "hand_alphonse_instance_id": null
+        }
+      },
+      "onboarding": {
+        "status": "tutorial_battle",
+        "tutorial_step": 10
+      }
+    },
+    {
+      "match_id": "tutorial-12345",
+      "result": {
+        "success": true,
+        "tutorial_step": 10,
+        "game_over": true,
+        "winner_id": 12345
+      },
+      "redirect_url": "/?onboarding_menu=1",
+      "onboarding": {
+        "status": "menu_tour",
+        "tutorial_step": 10
+      }
+    }
+  ]
+}

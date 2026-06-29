@@ -2492,7 +2492,10 @@ function getOnboardingAllowedAction() {
 
 function getOnboardingCoachPlacement(tutorial) {
   const allowed = tutorial?.allowed || {};
-  if (allowed.type === 'end_turn') return 'top';
+  // play_card/end_turn steps act on the BOTTOM of the board (hand + own board),
+  // so the Midoria bubble rides on TOP to avoid covering the cards the player
+  // must tap. Attack/continue beats stay at the bottom (target is up top).
+  if (allowed.type === 'end_turn' || allowed.type === 'play_card') return 'top';
   return 'bottom';
 }
 
@@ -2622,6 +2625,17 @@ function getOnboardingSpotlightElement() {
     if (interactionMode.type !== 'ATTACK') {
       return document.querySelector(getOnboardingBoardSelector(allowed.attacker_card_id));
     }
+    // choose_target step: opponent also offers a minion target (a board unit the
+    // engine marked .targetable-enemy). The spotlight's dark overlay (box-shadow
+    // spread 9999px) covers everything outside the spotlight rect, so a minion on
+    // #opponent-board-zone — which sits OUTSIDE .opponent-panel-root — would be
+    // blacked out and read as "unavailable". Spotlight .arena-zone-top instead:
+    // it wraps BOTH the hero panel and the opponent board, so the minion is lit.
+    // The yellow target pulse is then applied to the actual tap targets (hero +
+    // each minion) by getOnboardingPulseTargets, not to the zone itself.
+    if (document.querySelector('#opponent-board-zone .board-unit-card.targetable-enemy')) {
+      return document.querySelector('.arena-zone-top');
+    }
     return document.querySelector('.opponent-panel-root') || document.getElementById('opponent-hp-block');
   }
 
@@ -2644,9 +2658,18 @@ function getOnboardingAllowedClickSelectors() {
     return selectedCard ? ['#player-board-zone .board-slot'] : [getOnboardingHandSelector(allowed.card_id)];
   }
   if (allowed.type === 'attack') {
-    return interactionMode.type === 'ATTACK'
-      ? ['.opponent-panel-root', '#opponent-hp-block']
-      : [getOnboardingBoardSelector(allowed.attacker_card_id)];
+    if (interactionMode.type === 'ATTACK') {
+      const sel = ['.opponent-panel-root', '#opponent-hp-block'];
+      // Allow tapping any opponent minion the engine already marked as a valid attack
+      // target (targetable-enemy). Lets a "choose your target" tutorial step offer a
+      // wrong minion to tap: the server returns tutorial_wrong_action with a custom
+      // redirect message and the player retries by tapping the hero.
+      if (document.querySelector('#opponent-board-zone .board-unit-card.targetable-enemy')) {
+        sel.push('#opponent-board-zone .board-unit-card.targetable-enemy');
+      }
+      return sel;
+    }
+    return [getOnboardingBoardSelector(allowed.attacker_card_id)];
   }
   if (allowed.type === 'end_turn') return ['#end-turn-button'];
   if (allowed.type === 'complete') return ['.arena-onboarding-victory-action'];
@@ -2662,6 +2685,22 @@ function targetMatchesOnboardingSelectors(target, selectors) {
       return false;
     }
   });
+}
+
+function getOnboardingPulseTargets(spotlightEl) {
+  // Элементы, на которые вешается жёлтый target-pulse (glow + подъём над оверлеем).
+  // По умолчанию пульсация идёт на сам подсвеченный элемент. Но на шаге choose_target
+  // подсветка охватывает всю зону .arena-zone-top (герой + доска), чтобы миньон не
+  // был затемнён оверлеем — там пульс должен отмечать реальные цели тапа: героя и
+  // каждого .targetable-enemy миньона, а не контейнер зоны.
+  if (spotlightEl && spotlightEl.classList.contains('arena-zone-top')
+      && document.querySelector('#opponent-board-zone .board-unit-card.targetable-enemy')) {
+    const targets = [document.querySelector('.opponent-panel-root')];
+    document.querySelectorAll('#opponent-board-zone .board-unit-card.targetable-enemy')
+      .forEach(m => targets.push(m));
+    return targets.filter(Boolean);
+  }
+  return spotlightEl ? [spotlightEl] : [];
 }
 
 function positionOnboardingSpotlight() {
@@ -2690,7 +2729,7 @@ function positionOnboardingSpotlight() {
   spotlight.style.setProperty('--spotlight-top', Math.max(8, rect.top - 8) + 'px');
   spotlight.style.setProperty('--spotlight-width', (rect.width + 16) + 'px');
   spotlight.style.setProperty('--spotlight-height', (rect.height + 16) + 'px');
-  target.classList.add('arena-onboarding-target-pulse');
+  getOnboardingPulseTargets(target).forEach(el => el.classList.add('arena-onboarding-target-pulse'));
 }
 
 function setOnboardingLayerActive(active) {
@@ -2864,7 +2903,12 @@ function renderOnboardingTutorialLayer() {
     status.className = 'arena-onboarding-status';
     status.textContent = 'Ход противника...';
     bubble.appendChild(status);
-  } else if (stepIndex === 0 || stepIndex >= finalStep) {
+  } else if (stepIndex === 0 || stepIndex >= finalStep || (tutorial.allowed && tutorial.allowed.type === 'continue')) {
+    // "Понятно" on the opening beat (step0) AND on any mid-flow `continue` beat
+    // (e.g. an explanatory Midoria note on the player's turn) so the player can
+    // read at their own pace and ack to proceed. The final/victory step renders
+    // its own modal with a "В меню" button (early return above), so the finalStep
+    // branch here is just a defensive fallback.
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'arena-onboarding-action';
@@ -3555,7 +3599,11 @@ function initSocketIO() {
     const timerText = document.getElementById('turn-timer-text');
     if (timerText) {
       const state = data.state || data.state_p1 || currentState || {};
-      timerText.textContent = String(Math.ceil(state.turn_duration || getClassicModeParams(state).turn_duration_seconds || 25));
+      if (isOnboardingTutorialState(state)) {
+        timerText.textContent = '∞';
+      } else {
+        timerText.textContent = String(Math.ceil(state.turn_duration || getClassicModeParams(state).turn_duration_seconds || 25));
+      }
     }
     
     handleStateChanged(data);
@@ -5074,6 +5122,16 @@ function updateTurnTimer(state) {
   if (timerInterval) {
     clearInterval(timerInterval);
     timerInterval = null;
+  }
+
+  // Онбординг-туториал: ход без ограничения по времени. Показываем знак
+  // бесконечности вместо обратного отсчёта 99→98→… (никакого interval'а,
+  // без warning/critical — реальный таймер в обычных боях не трогаем).
+  if (isOnboardingTutorialState(state)) {
+    timerText.textContent = '∞';
+    timerContainer.classList.remove('timer-warning', 'timer-critical');
+    if (activeBattleModal === 'timer') renderTurnTimerModal(state);
+    return;
   }
   
   const turnDuration = state.turn_duration || 25;
@@ -7687,6 +7745,18 @@ function openTurnTimerModal() {
 
 function renderTurnTimerModal(state) {
   const turnDuration = Number(state.turn_duration || getClassicModeParams(state).turn_duration_seconds || 25);
+  // Онбординг: ход без ограничения времени — в модалке тоже бесконечность.
+  if (isOnboardingTutorialState(state)) {
+    const isMyTurn = !!state.is_my_turn;
+    setText('turn-timer-modal-meta', 'Ход ' + (state.turn || currentTurnCount || 0));
+    setText('turn-timer-modal-remaining', '∞');
+    setText('turn-timer-modal-owner', isMyTurn ? 'Ваш ход' : 'Ход противника');
+    setText('turn-timer-modal-summary', 'Обучение — без ограничения времени');
+    const ring = document.getElementById('turn-timer-ring');
+    if (ring) ring.style.setProperty('--timer-progress', '0deg');
+    renderTurnTimerHistory(state.turn_time_history || []);
+    return;
+  }
   const remaining = Math.max(0, Number(state.turn_time_remaining ?? turnDuration));
   const elapsed = Math.max(0, turnDuration - remaining);
   const progress = turnDuration > 0 ? Math.min(360, Math.max(0, (elapsed / turnDuration) * 360)) : 0;

@@ -73,9 +73,12 @@ class CardsCatalog:
     ) -> CardInstance:
         """Построить CardInstance из сценарной spec карты.
 
-        spec: ``{card_id, level, hp_override?, attack_override?,
-        mechanics_override?, is_ready?, is_frozen?}``. ``instance_id`` —
-        опциональный стабильный UUID (для детерминизма реплеев).
+        spec: ``{card_id, level, hp_override?, max_hp_override?,
+        attack_override?, mechanics_override?, is_ready?, is_frozen?}``.
+        ``instance_id`` — опциональный стабильный UUID (для детерминизма
+        реплеев). ``max_hp_override`` отдельным полем — нужен, чтобы
+        hero-карты с урезанным HP (напр. 8/8 вместо 8/35 в онбординг-сцене)
+        показывали корректную полоску HP в orchestra preview/export.
         """
         card_id = int(spec["card_id"])
         level = int(spec.get("level", 1) or 1)
@@ -90,6 +93,8 @@ class CardsCatalog:
             card.attack = int(spec["attack_override"])
         if spec.get("hp_override") is not None:
             card.hp = int(spec["hp_override"])
+        if spec.get("max_hp_override") is not None:
+            card.max_hp = int(spec["max_hp_override"])
         if spec.get("is_ready") is not None:
             card.is_ready = bool(spec["is_ready"])
         if spec.get("is_frozen") is not None:
