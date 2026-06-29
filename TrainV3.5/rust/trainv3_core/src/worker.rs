@@ -160,6 +160,12 @@ pub struct BatchTensorOutput {
     pub selected_local_indices: Vec<i32>,
     pub rewards: Vec<f32>,
     pub terminated: Vec<bool>,
+    /// Per-env truncation flag (WD-2): true when the post-step
+    /// `turn_number > max_turns`, mirroring
+    /// `ai/train_v2/classic_rl_env.py::ClassicRLEnv.step`'s `truncated`.
+    /// Independent of `terminated` (which is `status != "ongoing"`),
+    /// matching Python. Exposed via FFI for GAE bootstrap decisions.
+    pub truncated: Vec<bool>,
     pub reset_flags: Vec<bool>,
     pub terminal_observation_v1: Vec<f32>,
     pub terminal_observation_v5: Vec<f32>,
@@ -675,6 +681,7 @@ impl BatchedRolloutWorker {
             out.mana_draw_legal.push(snapshot.mana_draw_legal);
             out.rewards.push(0.0);
             out.terminated.push(state.status != "ongoing");
+            out.truncated.push(false);
             out.push_reset_flag(false);
             out.push_empty_terminal_observation();
             out.push_episode_stats(self.episode_returns[idx], self.episode_lengths[idx]);
@@ -804,6 +811,7 @@ impl BatchedRolloutWorker {
             out.mana_draw_legal.push(snapshot.mana_draw_legal);
             out.rewards.push(step.reward);
             out.terminated.push(terminated);
+            out.truncated.push(step.truncated);
             out.push_reset_flag(auto_reset && terminated);
             out.push_episode_stats(episode_return, episode_length);
         }
@@ -884,6 +892,7 @@ impl BatchedRolloutWorker {
 
             out.rewards.push(step.reward);
             out.terminated.push(terminated);
+            out.truncated.push(step.truncated);
             out.push_reset_flag(auto_reset && terminated);
             out.push_episode_stats(episode_return, episode_length);
         }
@@ -1078,6 +1087,7 @@ impl BatchTensorOutput {
             selected_local_indices: Vec::with_capacity(env_count),
             rewards: Vec::with_capacity(env_count),
             terminated: Vec::with_capacity(env_count),
+            truncated: Vec::with_capacity(env_count),
             reset_flags: Vec::with_capacity(diagnostic_capacity),
             terminal_observation_v1: Vec::with_capacity(terminal_v1_capacity),
             terminal_observation_v5: Vec::with_capacity(terminal_v5_capacity),
@@ -1269,7 +1279,43 @@ mod tests {
         ActionFeatureOutput, ActionMaskOutput, BatchTensorOutput, DiagnosticOutput,
         ObservationOutput, TerminalObservationOutput,
     };
+    use crate::kernel::{KernelCard, KernelConfig, KernelPlayer, KernelState};
     use crate::ACTION_FEATURE_DIM_V1;
+
+    fn card(id: i32, cost: i32, atk: i32, hp: i32) -> KernelCard {
+        KernelCard {
+            card_id: id,
+            card_type: "warrior".to_string(),
+            mana_cost: cost,
+            attack: atk,
+            hp,
+            max_hp: hp,
+            ..Default::default()
+        }
+    }
+
+    fn player_with(deck: Vec<KernelCard>) -> KernelPlayer {
+        KernelPlayer {
+            user_id: 1,
+            mana: 10,
+            max_mana: 10,
+            hero: KernelCard {
+                card_id: 0,
+                card_type: "hero".to_string(),
+                mana_cost: 0,
+                attack: 0,
+                hp: 30,
+                max_hp: 30,
+                ..Default::default()
+            },
+            hand: Vec::new(),
+            board: Vec::new(),
+            deck,
+            graveyard: Vec::new(),
+            trophies: 0,
+            mana_draw_count_this_turn: 0,
+        }
+    }
 
     #[test]
     fn push_action_tensors_records_selected_local_during_legal_encoding() {
@@ -1308,5 +1354,52 @@ mod tests {
             output.legal_action_features[2 * ACTION_FEATURE_DIM_V1],
             10.0
         );
+    }
+
+    #[test]
+    fn worker_step_threads_truncated_flag_into_batch_output() {
+        // Phase 7 (WD-2): the batched rollout worker must surface the
+        // per-step `truncated` flag (turn_number > max_turns) into
+        // `BatchTensorOutput.truncated`, independent of `terminated`. With
+        // max_turns=4 and a pre-step turn_number of 4, an end_turn (action_id
+        // 0) advances to turn 5 → truncated=true, terminated=false (status
+        // still "ongoing"). The worker steps a single-env batch and the
+        // output's truncated vec must reflect this.
+        use super::BatchedRolloutWorker;
+        use crate::kernel::{action_type_for_id, RolloutKernel};
+        use crate::worker::WorkerRng;
+        use crate::kernel::DrawRng;
+
+        let mut cfg = KernelConfig::default();
+        cfg.max_turns = 4;
+        let mut p1 = player_with(Vec::new());
+        p1.user_id = 1;
+        let mut p2 = player_with(vec![card(12, 1, 1, 1)]);
+        p2.user_id = 2;
+        let state = KernelState {
+            current_turn_owner_id: 1,
+            turn_number: 4,
+            status: "ongoing".to_string(),
+            p1,
+            p2,
+            ..Default::default()
+        };
+        // Build the worker from a one-env snapshot of the state. The kernel
+        // is only used to confirm the action_id is a legal end_turn.
+        let kernel = RolloutKernel::new(cfg);
+        let mask = kernel.legal_action_ids(&state, 1);
+        let &end_turn_id = mask
+            .iter()
+            .find(|&&id| action_type_for_id(id) == "end_turn")
+            .expect("end_turn is legal");
+        let mut worker = BatchedRolloutWorker::new(cfg, vec![state]);
+        // encode_all seeds the truncated vec with false (no step taken yet).
+        let initial = worker.encode_all();
+        assert_eq!(initial.truncated, vec![false]);
+        let mut det_rng = WorkerRng::Deterministic;
+        // Step the batch with the end_turn action.
+        let out = worker.step(&[end_turn_id]).expect("step applies");
+        assert_eq!(out.terminated, vec![false], "status still ongoing");
+        assert_eq!(out.truncated, vec![true], "turn 5 > max_turns 4 → truncated");
     }
 }

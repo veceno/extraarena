@@ -18,6 +18,7 @@ import numpy as np
 from core.converter import deck_from_card_ids
 from core.engine import ArenaEnvironment
 from core.state import GameState, GameStatus
+from infrastructure.match_modes import ClassicParams
 
 from core.classic_setup import create_classic_game_state
 
@@ -99,6 +100,7 @@ class ClassicRLEnv:
         verify_mask: bool = True,
         placement_mode: str = "full",
         include_legal_actions_in_info: bool = True,
+        classic_params: Optional[ClassicParams] = None,
     ):
         if cards_data is None:
             self._cards_data = _load_cards_db()
@@ -109,6 +111,7 @@ class ClassicRLEnv:
         self._base_seed = seed
         self._max_turns = max_turns
         self._mana_per_turn = mana_per_turn
+        self._classic_params = classic_params
         self._verify_mask = verify_mask
         self._placement_mode = placement_mode
         self._include_legal_actions_in_info = include_legal_actions_in_info
@@ -176,7 +179,12 @@ class ClassicRLEnv:
             starting_player_id=starting_player_id,
             rng=state_rng,
         )
-        self._env = ArenaEnvironment(game_state, mana_per_turn=self._mana_per_turn, rng=state_rng)
+        self._env = ArenaEnvironment(
+            game_state,
+            mana_per_turn=self._mana_per_turn,
+            rng=state_rng,
+            classic_params=self._classic_params,
+        )
         self._steps = 0
         self._turns = 1
         self._p1_reward = 0.0

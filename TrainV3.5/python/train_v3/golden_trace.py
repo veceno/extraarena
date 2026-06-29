@@ -80,6 +80,13 @@ def _state_payload(env: ClassicRLEnv) -> dict[str, Any]:
         "status": st.status.value,
         "p1": _player_payload(st.p1),
         "p2": _player_payload(st.p2),
+        "sudden_death_turns_by_player": {
+            int(k): int(v) for k, v in st.sudden_death_turns_by_player.items()
+        },
+        "sudden_death_last_applied_turn_by_player": {
+            int(k): int(v)
+            for k, v in st.sudden_death_last_applied_turn_by_player.items()
+        },
     }
 
 
@@ -299,6 +306,10 @@ def build_golden_trace(
     mana_draw_flags: list[bool] | None = None,
     mana_per_turn: int = 1,
     post_reset_setup: "callable | None" = None,
+    sudden_death_enabled: bool = False,
+    sudden_death_damage_start: int = 1,
+    sudden_death_damage_step: int = 1,
+    max_turns: int = 80,
 ) -> dict[str, Any]:
     """Build a deterministic TrainV3 parity trace from Python TrainV2."""
     if choose not in {"first", "last"}:
@@ -312,12 +323,24 @@ def build_golden_trace(
     assist_mode = assist_mode or AssistModeV5()
     history_events: list[dict[str, Any]] = []
 
+    classic_params = None
+    if sudden_death_enabled:
+        from infrastructure.match_modes import ClassicParams
+
+        classic_params = ClassicParams(
+            sudden_death_enabled=True,
+            sudden_death_damage_start=sudden_death_damage_start,
+            sudden_death_damage_step=sudden_death_damage_step,
+            mana_per_turn=mana_per_turn,
+        )
     env = ClassicRLEnv(
         seed=seed,
         verify_mask=verify_mask,
         placement_mode=placement_mode,
         include_legal_actions_in_info=True,
         mana_per_turn=mana_per_turn,
+        max_turns=max_turns,
+        classic_params=classic_params,
     )
     if p1_levels is None and p1_level is not None:
         p1_levels = _all_card_levels(env, p1_level)
@@ -364,6 +387,10 @@ def build_golden_trace(
             "overdraw_to_discard": bool(
                 getattr(env._env.classic_params, "overdraw_to_discard", False)
             ),
+            "sudden_death_enabled": bool(sudden_death_enabled),
+            "sudden_death_damage_start": int(sudden_death_damage_start),
+            "sudden_death_damage_step": int(sudden_death_damage_step),
+            "max_turns": int(env._max_turns),
         },
         "initial": _snapshot_hashes(
             env,
@@ -550,6 +577,29 @@ def _main() -> None:
         default=1,
         help="Mana gained per turn (default 1); raise to enable mana_draw scenarios",
     )
+    parser.add_argument(
+        "--sudden-death-enabled",
+        action="store_true",
+        help="Enable the sudden-death modifier (hero takes escalating damage each own turn)",
+    )
+    parser.add_argument(
+        "--sudden-death-damage-start",
+        type=int,
+        default=1,
+        help="Sudden-death base damage on a player's first tick (default 1)",
+    )
+    parser.add_argument(
+        "--sudden-death-damage-step",
+        type=int,
+        default=1,
+        help="Sudden-death per-tick damage escalation step (default 1)",
+    )
+    parser.add_argument(
+        "--max-turns",
+        type=int,
+        default=80,
+        help="Truncation turn limit: truncated when turn_number > max_turns (default 80)",
+    )
     args = parser.parse_args()
     info_mode = InfoModeV5(
         adaptive_strength=args.adaptive_strength,
@@ -580,6 +630,10 @@ def _main() -> None:
                 action_ids=_parse_int_list(args.action_ids),
                 mana_draw_flags=_parse_mana_draw_steps(args.mana_draw_steps, args.steps),
                 mana_per_turn=args.mana_per_turn,
+                sudden_death_enabled=args.sudden_death_enabled,
+                sudden_death_damage_start=args.sudden_death_damage_start,
+                sudden_death_damage_step=args.sudden_death_damage_step,
+                max_turns=args.max_turns,
             ),
             indent=2,
             ensure_ascii=False,

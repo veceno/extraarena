@@ -36,6 +36,7 @@ pub struct FfiWorker {
     action_features_f16: Vec<u16>,
     legal_action_features_f16: Vec<u16>,
     terminated_u8: Vec<u8>,
+    truncated_u8: Vec<u8>,
     reset_flags_u8: Vec<u8>,
     terminal_observation_valid_u8: Vec<u8>,
     mana_draw_legal_u8: Vec<u8>,
@@ -547,6 +548,7 @@ impl FfiWorker {
             Vec::new()
         };
         let terminated_u8 = terminated_to_u8(&last.terminated);
+        let truncated_u8 = terminated_to_u8(&last.truncated);
         let reset_flags_u8 = terminated_to_u8(&last.reset_flags);
         let terminal_observation_valid_u8 = terminated_to_u8(&last.terminal_observation_valid);
         let mana_draw_legal_u8 = terminated_to_u8(&last.mana_draw_legal);
@@ -557,6 +559,7 @@ impl FfiWorker {
             action_features_f16,
             legal_action_features_f16,
             terminated_u8,
+            truncated_u8,
             reset_flags_u8,
             terminal_observation_valid_u8,
             mana_draw_legal_u8,
@@ -569,6 +572,7 @@ impl FfiWorker {
             self.legal_action_features_f16 = f32_to_f16_bits(&output.legal_action_features);
         }
         self.terminated_u8 = terminated_to_u8(&output.terminated);
+        self.truncated_u8 = terminated_to_u8(&output.truncated);
         self.reset_flags_u8 = terminated_to_u8(&output.reset_flags);
         self.terminal_observation_valid_u8 = terminated_to_u8(&output.terminal_observation_valid);
         self.mana_draw_legal_u8 = terminated_to_u8(&output.mana_draw_legal);
@@ -1538,6 +1542,25 @@ pub unsafe extern "C" fn trainv3_worker_terminated_ptr(worker: *const FfiWorker)
 pub unsafe extern "C" fn trainv3_worker_terminated_len(worker: *const FfiWorker) -> usize {
     worker_ref(worker)
         .map(|w| w.terminated_u8.len())
+        .unwrap_or(0)
+}
+
+/// Per-env truncation flag (WD-2): each byte is 0/1, 1 means the post-step
+/// `turn_number > max_turns` (mirroring
+/// `ai/train_v2/classic_rl_env.py::ClassicRLEnv.step`'s `truncated`).
+/// Length == env_count. Independent of `terminated`; both may be 1 if the
+/// game ended on the same step that crossed the turn limit.
+#[no_mangle]
+pub unsafe extern "C" fn trainv3_worker_truncated_ptr(worker: *const FfiWorker) -> *const u8 {
+    worker_ref(worker)
+        .map(|w| w.truncated_u8.as_ptr())
+        .unwrap_or(ptr::null())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn trainv3_worker_truncated_len(worker: *const FfiWorker) -> usize {
+    worker_ref(worker)
+        .map(|w| w.truncated_u8.len())
         .unwrap_or(0)
 }
 

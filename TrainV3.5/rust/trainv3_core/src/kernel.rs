@@ -2,7 +2,7 @@ use rand::seq::SliceRandom;
 use rand::{Rng, RngCore};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 
 use crate::action_codec::{
     decode_action_id, CandidateAction, ATTACK_BASE, NUM_ATTACK_TARGETS, NUM_BOARD, NUM_HAND,
@@ -244,6 +244,36 @@ pub struct GoldenTraceConfig {
     pub mana_per_turn: i32,
     #[serde(default)]
     pub overdraw_to_discard: bool,
+    /// Sudden-death modifier (WD-1): when true, the active player's hero takes
+    /// escalating damage at the start of each of their turns. Mirrors
+    /// `infrastructure/match_modes.py::ClassicParams.sudden_death_enabled`.
+    /// Default false — `ClassicRLEnv` does not pass `classic_params`, so the
+    /// classic training env never enables sudden-death.
+    #[serde(default)]
+    pub sudden_death_enabled: bool,
+    /// Sudden-death base damage applied on a player's first sudden-death tick.
+    /// Mirrors `ClassicParams.sudden_death_damage_start` (default 1).
+    #[serde(default = "default_sudden_death_damage_start")]
+    pub sudden_death_damage_start: i32,
+    /// Sudden-death per-tick damage escalation step. Mirrors
+    /// `ClassicParams.sudden_death_damage_step` (default 1).
+    #[serde(default = "default_sudden_death_damage_step")]
+    pub sudden_death_damage_step: i32,
+    /// Truncation turn limit (WD-2): the episode is truncated when
+    /// `turn_number > max_turns`. Mirrors
+    /// `ai/train_v2/classic_rl_env.py::ClassicRLEnv._max_turns` (default 80).
+    #[serde(default = "default_max_turns")]
+    pub max_turns: i32,
+}
+
+fn default_sudden_death_damage_start() -> i32 {
+    1
+}
+fn default_sudden_death_damage_step() -> i32 {
+    1
+}
+fn default_max_turns() -> i32 {
+    80
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -310,16 +340,31 @@ pub struct GoldenStep {
     pub choice_rolls: Vec<i32>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct KernelState {
     pub current_turn_owner_id: i32,
     pub turn_number: i32,
     pub status: String,
     pub p1: KernelPlayer,
     pub p2: KernelPlayer,
+    /// Sudden-death per-player escalating damage counter — mirrors
+    /// `core/state.py::GameState.sudden_death_turns_by_player`. Maps
+    /// `user_id` → number of times sudden-death has been applied to that
+    /// player. Empty when sudden-death is disabled (the default). The damage
+    /// applied at a player's turn-Nth sudden-death tick is
+    /// `sudden_death_damage_start + (N-1)*sudden_death_damage_step`
+    /// (`core/engine.py::_apply_start_turn_mode_effects`).
+    #[serde(default)]
+    pub sudden_death_turns_by_player: BTreeMap<i32, i32>,
+    /// Mirrors `core/state.py::GameState.sudden_death_last_applied_turn_by_player`.
+    /// Maps `user_id` → the `turn_number` at which sudden-death was last
+    /// applied to that player (guards against double-application within the
+    /// same turn). Empty when sudden-death is disabled.
+    #[serde(default)]
+    pub sudden_death_last_applied_turn_by_player: BTreeMap<i32, i32>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct KernelPlayer {
     pub user_id: i32,
     pub mana: i32,
@@ -415,6 +460,12 @@ pub struct KernelConfig {
     pub mana_per_turn: i32,
     pub v5_weighted_reward: bool,
     pub overdraw_to_discard: bool,
+    /// Sudden-death modifier (WD-1). Default false.
+    pub sudden_death_enabled: bool,
+    pub sudden_death_damage_start: i32,
+    pub sudden_death_damage_step: i32,
+    /// Truncation turn limit (WD-2). Default 80.
+    pub max_turns: i32,
     pub seed: u64,
 }
 
@@ -428,6 +479,10 @@ impl Default for KernelConfig {
             mana_per_turn: 1,
             v5_weighted_reward: false,
             overdraw_to_discard: false,
+            sudden_death_enabled: false,
+            sudden_death_damage_start: 1,
+            sudden_death_damage_step: 1,
+            max_turns: 80,
             seed: 0,
         }
     }
@@ -460,6 +515,10 @@ impl KernelConfig {
             mana_per_turn: config.mana_per_turn.max(1),
             v5_weighted_reward: config.v5_weighted_reward,
             overdraw_to_discard: config.overdraw_to_discard,
+            sudden_death_enabled: config.sudden_death_enabled,
+            sudden_death_damage_start: config.sudden_death_damage_start,
+            sudden_death_damage_step: config.sudden_death_damage_step,
+            max_turns: config.max_turns,
             seed: config.seed.max(0) as u64,
         }
     }
@@ -498,6 +557,11 @@ pub struct KernelStepOutput {
     pub state: KernelState,
     pub reward: f32,
     pub terminated: bool,
+    /// Truncation flag (WD-2): true when `state.turn_number > max_turns`,
+    /// mirroring `ai/train_v2/classic_rl_env.py::ClassicRLEnv.step`
+    /// (`truncated = st.turn_number > self._max_turns`). Independent of
+    /// `terminated` (which is `status != "ongoing"`), matching Python.
+    pub truncated: bool,
     pub reward_components_v5: RewardComponentsV5,
 }
 
@@ -601,10 +665,12 @@ impl RolloutKernel {
                 base_reward
             };
             let terminated = next.status != "ongoing";
+            let truncated = next.turn_number > self.config.max_turns;
             return Ok(KernelStepOutput {
                 reward_components_v5,
                 reward,
                 terminated,
+                truncated,
                 state: next,
             });
         }
@@ -622,6 +688,9 @@ impl RolloutKernel {
                 player_id,
                 self.config.mana_per_turn,
                 overdraw_to_discard,
+                self.config.sudden_death_enabled,
+                self.config.sudden_death_damage_start,
+                self.config.sudden_death_damage_step,
                 draw_rng,
             )?,
             Some(CandidateAction::PlayCard {
@@ -655,11 +724,13 @@ impl RolloutKernel {
             base_reward
         };
         let terminated = next.status != "ongoing";
+        let truncated = next.turn_number > self.config.max_turns;
 
         Ok(KernelStepOutput {
             reward_components_v5,
             reward,
             terminated,
+            truncated,
             state: next,
         })
     }
@@ -958,6 +1029,9 @@ fn apply_end_turn(
     player_id: i32,
     mana_per_turn: i32,
     overdraw_to_discard: bool,
+    sudden_death_enabled: bool,
+    sudden_death_damage_start: i32,
+    sudden_death_damage_step: i32,
     draw_rng: &mut DrawRng,
 ) -> Result<(), String> {
     let next_player_id = {
@@ -966,6 +1040,42 @@ fn apply_end_turn(
     };
     state.current_turn_owner_id = next_player_id;
     state.turn_number += 1;
+
+    // Sudden-death (WD-1): mirrors core/engine.py::_apply_start_turn_mode_effects
+    // invoked at the start of the active player's turn right after the
+    // turn_number increment + owner switch. The active player's hero takes
+    // escalating damage: damage = damage_start + (turn_count-1)*damage_step,
+    // applied via DIRECT hp subtraction (not apply_damage — bypasses
+    // armor/reflect, exactly like Python `player.hero.hp -= damage`). The
+    // per-player counter escalates each of the player's own turns. If the
+    // hero dies, check_game_over flips status and we return early WITHOUT
+    // restoring mana / readying the board / drawing (matching Python's
+    // `if self.state.status != GameStatus.ONGOING: return`).
+    if sudden_death_enabled && state.status == "ongoing" {
+        let last_applied = state
+            .sudden_death_last_applied_turn_by_player
+            .get(&next_player_id)
+            .copied();
+        if last_applied != Some(state.turn_number) {
+            let turn_count =
+                state.sudden_death_turns_by_player.get(&next_player_id).copied().unwrap_or(0) + 1;
+            state
+                .sudden_death_turns_by_player
+                .insert(next_player_id, turn_count);
+            state
+                .sudden_death_last_applied_turn_by_player
+                .insert(next_player_id, state.turn_number);
+            let damage = sudden_death_damage_start + (turn_count - 1) * sudden_death_damage_step;
+            if damage > 0 {
+                let opponent = state.player_mut(next_player_id)?;
+                opponent.hero.hp -= damage;
+                check_game_over(state);
+            }
+        }
+        if state.status != "ongoing" {
+            return Ok(());
+        }
+    }
 
     let opponent = state.player_mut(next_player_id)?;
     opponent.max_mana = (opponent.max_mana + mana_per_turn).min(10);
@@ -3208,6 +3318,7 @@ mod draw_tests {
             status: "ongoing".to_string(),
             p1: player_with(Vec::new(), vec![card_with_mechanics(20, 3, 1, 2, vec!["consume_ally"])]),
             p2: player_with(Vec::new(), Vec::new()),
+            ..Default::default()
         };
         state.p1.user_id = 1;
         state.p2.user_id = 2;
@@ -3292,6 +3403,7 @@ mod draw_tests {
             status: "ongoing".to_string(),
             p1: player_with(Vec::new(), vec![card_with_mechanics(47, 7, 4, 5, vec!["aoe_silence"])]),
             p2: player_with(Vec::new(), Vec::new()),
+            ..Default::default()
         };
         state.p1.user_id = 1;
         state.p2.user_id = 2;
@@ -3327,6 +3439,7 @@ mod draw_tests {
             status: "ongoing".to_string(),
             p1: player_with(Vec::new(), vec![card_with_mechanics(47, 7, 4, 5, vec!["aoe_silence"])]),
             p2: player_with(Vec::new(), Vec::new()),
+            ..Default::default()
         };
         state.p1.user_id = 1;
         state.p2.user_id = 2;
@@ -3362,6 +3475,7 @@ mod draw_tests {
             status: "ongoing".to_string(),
             p1: player_with(Vec::new(), vec![card_with_mechanics(48, 7, 2, 4, vec!["team_wide_shield"])]),
             p2: player_with(Vec::new(), Vec::new()),
+            ..Default::default()
         };
         state.p1.user_id = 1;
         state.p2.user_id = 2;
@@ -3396,6 +3510,7 @@ mod draw_tests {
             status: "ongoing".to_string(),
             p1: player_with(Vec::new(), vec![card_with_mechanics(48, 7, 2, 4, vec!["team_wide_shield"])]),
             p2: player_with(Vec::new(), Vec::new()),
+            ..Default::default()
         };
         state.p1.user_id = 1;
         state.p2.user_id = 2;
@@ -3428,6 +3543,7 @@ mod draw_tests {
             status: "ongoing".to_string(),
             p1: player_with(Vec::new(), vec![card_with_mechanics(52, 2, 1, 2, vec!["target_ally_max_hp_plus_universal_1"])]),
             p2: player_with(Vec::new(), Vec::new()),
+            ..Default::default()
         };
         state.p1.user_id = 1;
         state.p2.user_id = 2;
@@ -3455,6 +3571,7 @@ mod draw_tests {
             status: "ongoing".to_string(),
             p1: player_with(Vec::new(), vec![card_with_mechanics(52, 2, 1, 2, vec!["target_ally_max_hp_plus_universal_1"])]),
             p2: player_with(Vec::new(), Vec::new()),
+            ..Default::default()
         };
         state.p1.user_id = 1;
         state.p2.user_id = 2;
@@ -3481,6 +3598,7 @@ mod draw_tests {
             status: "ongoing".to_string(),
             p1: player_with(Vec::new(), Vec::new()),
             p2: player_with(Vec::new(), vec![card_with_mechanics(52, 2, 1, 2, vec!["target_ally_max_hp_plus_universal_1"])]),
+            ..Default::default()
         };
         state.p1.user_id = 1;
         state.p2.user_id = 2;
@@ -3509,6 +3627,7 @@ mod draw_tests {
             status: "ongoing".to_string(),
             p1: player_with(Vec::new(), vec![card_with_mechanics(52, 2, 1, 2, vec!["target_ally_max_hp_plus_universal_1"])]),
             p2: player_with(Vec::new(), Vec::new()),
+            ..Default::default()
         };
         state.p1.user_id = 1;
         state.p2.user_id = 2;
@@ -3573,6 +3692,7 @@ mod draw_tests {
             status: "ongoing".to_string(),
             p1,
             p2,
+            ..Default::default()
         }
     }
 
@@ -3721,6 +3841,7 @@ mod draw_tests {
             status: "ongoing".to_string(),
             p1: player_with(Vec::new(), vec![card_with_mechanics(19, 4, 3, 4, vec!["battlecry_freeze"])]),
             p2: player_with(Vec::new(), Vec::new()),
+            ..Default::default()
         };
         state.p1.user_id = 1;
         state.p2.user_id = 2;
@@ -3751,6 +3872,7 @@ mod draw_tests {
             status: "ongoing".to_string(),
             p1: player_with(Vec::new(), vec![card_with_mechanics(19, 4, 3, 4, vec!["battlecry_freeze"])]),
             p2: player_with(Vec::new(), Vec::new()),
+            ..Default::default()
         };
         state.p1.user_id = 1;
         state.p2.user_id = 2;
@@ -3780,6 +3902,7 @@ mod draw_tests {
             status: "ongoing".to_string(),
             p1: player_with(Vec::new(), vec![card_with_mechanics(22, 8, 6, 6, vec!["aoe_freeze"])]),
             p2: player_with(Vec::new(), Vec::new()),
+            ..Default::default()
         };
         state.p1.user_id = 1;
         state.p2.user_id = 2;
@@ -3817,6 +3940,7 @@ mod draw_tests {
             status: "ongoing".to_string(),
             p1: player_with(Vec::new(), Vec::new()),
             p2: player_with(Vec::new(), Vec::new()),
+            ..Default::default()
         };
         state.p1.user_id = 1;
         state.p2.user_id = 2;
@@ -3960,6 +4084,7 @@ mod draw_tests {
             status: "ongoing".to_string(),
             p1: player_with(Vec::new(), vec![card_with_mechanics(999, 2, 2, 1, vec!["battlecry_damage_1_random"])]),
             p2: player_with(Vec::new(), Vec::new()),
+            ..Default::default()
         };
         state.p1.user_id = 1;
         state.p2.user_id = 2;
@@ -3997,6 +4122,7 @@ mod draw_tests {
             status: "ongoing".to_string(),
             p1: player_with(Vec::new(), vec![card_with_mechanics(999, 2, 2, 1, vec!["battlecry_damage_1_random"])]),
             p2: player_with(Vec::new(), Vec::new()),
+            ..Default::default()
         };
         state.p1.user_id = 1;
         state.p2.user_id = 2;
@@ -4027,6 +4153,7 @@ mod draw_tests {
             status: "ongoing".to_string(),
             p1: player_with(Vec::new(), Vec::new()),
             p2: player_with(Vec::new(), Vec::new()),
+            ..Default::default()
         };
         state.p1.user_id = 1;
         state.p2.user_id = 2;
@@ -4060,6 +4187,7 @@ mod draw_tests {
             status: "ongoing".to_string(),
             p1: player_with(Vec::new(), Vec::new()),
             p2: player_with(Vec::new(), Vec::new()),
+            ..Default::default()
         };
         state.p1.user_id = 1;
         state.p2.user_id = 2;
@@ -4081,6 +4209,7 @@ mod draw_tests {
             status: "ongoing".to_string(),
             p1: player_with(Vec::new(), Vec::new()),
             p2: player_with(Vec::new(), Vec::new()),
+            ..Default::default()
         };
         state.p1.user_id = 1;
         state.p2.user_id = 2;
@@ -4093,5 +4222,205 @@ mod draw_tests {
             !out.state.p2.board[0].mechanics.iter().any(|m| m == "shield"),
             "plain unit does not gain shield"
         );
+    }
+
+    // ---- Phase 7: sudden-death (WD-1) + max_turns truncation (WD-2) ----
+
+    fn sudden_death_config() -> KernelConfig {
+        let mut cfg = KernelConfig::default();
+        cfg.sudden_death_enabled = true;
+        cfg.sudden_death_damage_start = 1;
+        cfg.sudden_death_damage_step = 1;
+        cfg
+    }
+
+    #[test]
+    fn sudden_death_applies_escalating_damage_to_active_player_at_end_turn() {
+        // damage = damage_start + (turn_count-1)*damage_step, per-player
+        // escalating, applied to the NEW active player at the start of their
+        // turn (right after turn_number increment + owner switch). Direct hp
+        // subtraction (no apply_damage). With start=1, step=1:
+        //   end_turn#1 (p1 ends): turn 2, p2 tick#1 → 1 dmg.  p2: 30→29.
+        //   end_turn#2 (p2 ends): turn 3, p1 tick#1 → 1 dmg.  p1: 30→29.
+        //   end_turn#3 (p1 ends): turn 4, p2 tick#2 → 2 dmg.  p2: 29→27.
+        let mut state = KernelState {
+            current_turn_owner_id: 1,
+            turn_number: 1,
+            status: "ongoing".to_string(),
+            p1: player_with(Vec::new(), Vec::new()),
+            p2: player_with(Vec::new(), Vec::new()),
+            ..Default::default()
+        };
+        state.p1.user_id = 1;
+        state.p2.user_id = 2;
+        // Give each player a deck so the end-turn draw does not error out.
+        state.p1.deck = vec![card(11, 1, 1, 1)];
+        state.p2.deck = vec![card(12, 1, 1, 1)];
+        let kernel = RolloutKernel::new(sudden_death_config());
+        let mut det_rng = crate::worker::WorkerRng::Deterministic;
+        let mut draw_rng = DrawRng::live(&mut det_rng);
+
+        // end_turn#1: p1 ends → p2's turn.
+        let out = kernel
+            .apply_action(&state, 1, 0, false, &mut draw_rng)
+            .expect("end turn 1");
+        assert_eq!(out.state.turn_number, 2);
+        assert_eq!(out.state.current_turn_owner_id, 2);
+        assert_eq!(out.state.p1.hero.hp, 30, "p1 untouched on p2's turn");
+        assert_eq!(out.state.p2.hero.hp, 29, "p2 takes 1 (first tick)");
+        assert_eq!(out.state.sudden_death_turns_by_player.get(&2), Some(&1));
+        assert_eq!(out.state.sudden_death_last_applied_turn_by_player.get(&2), Some(&2));
+
+        // end_turn#2: p2 ends → p1's turn.
+        let out2 = kernel
+            .apply_action(&out.state, 2, 0, false, &mut draw_rng)
+            .expect("end turn 2");
+        assert_eq!(out2.state.turn_number, 3);
+        assert_eq!(out2.state.p1.hero.hp, 29, "p1 takes 1 (first tick)");
+        assert_eq!(out2.state.p2.hero.hp, 29, "p2 unchanged on p1's turn");
+        assert_eq!(out2.state.sudden_death_turns_by_player.get(&1), Some(&1));
+
+        // end_turn#3: p1 ends → p2's turn. p2's SECOND tick → 2 damage.
+        let out3 = kernel
+            .apply_action(&out2.state, 1, 0, false, &mut draw_rng)
+            .expect("end turn 3");
+        assert_eq!(out3.state.turn_number, 4);
+        assert_eq!(out3.state.p2.hero.hp, 27, "p2 takes 2 (second tick, escalation)");
+        assert_eq!(out3.state.sudden_death_turns_by_player.get(&2), Some(&2));
+        assert_eq!(out3.state.sudden_death_last_applied_turn_by_player.get(&2), Some(&4));
+    }
+
+    #[test]
+    fn sudden_death_kills_hero_and_skips_mana_board_draw() {
+        // When sudden-death damage drops the hero to <=0, check_game_over
+        // flips status and apply_end_turn returns early WITHOUT restoring
+        // mana, readying the board, or drawing (mirrors Python's
+        // `if self.state.status != GameStatus.ONGOING: return`).
+        let mut state = KernelState {
+            current_turn_owner_id: 1,
+            turn_number: 1,
+            status: "ongoing".to_string(),
+            p1: player_with(Vec::new(), Vec::new()),
+            p2: player_with(Vec::new(), Vec::new()),
+            ..Default::default()
+        };
+        state.p1.user_id = 1;
+        state.p2.user_id = 2;
+        // p2 hero at 1 HP — a single tick (1 dmg) kills it. p2 mana 0/0 so a
+        // normal end_turn would restore mana to 1; on death it must stay 0.
+        state.p2.hero.hp = 1;
+        state.p2.mana = 0;
+        state.p2.max_mana = 0;
+        state.p2.deck = vec![card(12, 1, 1, 1)];
+        // p2 has a frozen unit that would be thawed+readied on a normal turn
+        // start — on death it must remain frozen/asleep.
+        let mut frozen_unit = card_with_mechanics(27, 1, 1, 1, vec![]);
+        frozen_unit.is_frozen = true;
+        frozen_unit.is_ready = false;
+        state.p2.board = vec![frozen_unit];
+
+        let kernel = RolloutKernel::new(sudden_death_config());
+        let mut det_rng = crate::worker::WorkerRng::Deterministic;
+        let mut draw_rng = DrawRng::live(&mut det_rng);
+        let out = kernel
+            .apply_action(&state, 1, 0, false, &mut draw_rng)
+            .expect("end turn");
+
+        assert_eq!(out.state.status, "p1_win", "p2 hero died → p1 wins");
+        assert_eq!(out.state.p2.hero.hp, 0, "p2 hero dropped to 0");
+        assert!(out.terminated, "terminated flag set on death");
+        assert!(!out.truncated, "no truncation on death");
+        // Early-return guards: mana NOT restored, board NOT readied, NO draw.
+        assert_eq!(out.state.p2.mana, 0, "mana not restored after sudden-death death");
+        assert_eq!(out.state.p2.max_mana, 0, "max_mana not incremented after death");
+        assert!(out.state.p2.board[0].is_frozen, "frozen unit not thawed after death");
+        assert!(!out.state.p2.board[0].is_ready, "unit not readied after death");
+        assert_eq!(out.state.p2.deck.len(), 1, "no draw after sudden-death death");
+    }
+
+    #[test]
+    fn sudden_death_disabled_by_default_is_no_op() {
+        // Default KernelConfig has sudden_death_enabled=false → end_turn must
+        // NOT touch hero hp or the sudden-death counters (matches Python
+        // ClassicRLEnv which never passes classic_params).
+        let mut state = KernelState {
+            current_turn_owner_id: 1,
+            turn_number: 1,
+            status: "ongoing".to_string(),
+            p1: player_with(Vec::new(), Vec::new()),
+            p2: player_with(Vec::new(), Vec::new()),
+            ..Default::default()
+        };
+        state.p1.user_id = 1;
+        state.p2.user_id = 2;
+        state.p2.deck = vec![card(12, 1, 1, 1)];
+        let kernel = RolloutKernel::new(KernelConfig::default());
+        let mut det_rng = crate::worker::WorkerRng::Deterministic;
+        let mut draw_rng = DrawRng::live(&mut det_rng);
+        let out = kernel
+            .apply_action(&state, 1, 0, false, &mut draw_rng)
+            .expect("end turn");
+        assert_eq!(out.state.p1.hero.hp, 30);
+        assert_eq!(out.state.p2.hero.hp, 30);
+        assert!(out.state.sudden_death_turns_by_player.is_empty());
+        assert!(out.state.sudden_death_last_applied_turn_by_player.is_empty());
+    }
+
+    #[test]
+    fn max_turns_truncation_flags_truncated_when_turn_exceeds_limit() {
+        // truncated = turn_number > max_turns (strictly greater-than, matching
+        // Python `st.turn_number > self._max_turns`). Independent of
+        // terminated (status != ongoing). With max_turns=4 and turn_number=4
+        // pre-step, an end_turn → turn 5 > 4 → truncated=true, terminated=false.
+        let mut cfg = KernelConfig::default();
+        cfg.max_turns = 4;
+        let mut state = KernelState {
+            current_turn_owner_id: 1,
+            turn_number: 4,
+            status: "ongoing".to_string(),
+            p1: player_with(Vec::new(), Vec::new()),
+            p2: player_with(Vec::new(), Vec::new()),
+            ..Default::default()
+        };
+        state.p1.user_id = 1;
+        state.p2.user_id = 2;
+        state.p2.deck = vec![card(12, 1, 1, 1)];
+        let kernel = RolloutKernel::new(cfg);
+        let mut det_rng = crate::worker::WorkerRng::Deterministic;
+        let mut draw_rng = DrawRng::live(&mut det_rng);
+        let out = kernel
+            .apply_action(&state, 1, 0, false, &mut draw_rng)
+            .expect("end turn");
+        assert_eq!(out.state.turn_number, 5);
+        assert!(!out.terminated, "game still ongoing → not terminated");
+        assert!(out.truncated, "turn 5 > max_turns 4 → truncated");
+    }
+
+    #[test]
+    fn max_turns_truncation_boundary_not_triggered_at_exact_limit() {
+        // At turn_number == max_turns (not yet exceeded), an end_turn to
+        // turn_number == max_turns must NOT truncate. With max_turns=4 and
+        // pre-turn 3, end_turn → turn 4 == max_turns → truncated=false.
+        let mut cfg = KernelConfig::default();
+        cfg.max_turns = 4;
+        let mut state = KernelState {
+            current_turn_owner_id: 1,
+            turn_number: 3,
+            status: "ongoing".to_string(),
+            p1: player_with(Vec::new(), Vec::new()),
+            p2: player_with(Vec::new(), Vec::new()),
+            ..Default::default()
+        };
+        state.p1.user_id = 1;
+        state.p2.user_id = 2;
+        state.p2.deck = vec![card(12, 1, 1, 1)];
+        let kernel = RolloutKernel::new(cfg);
+        let mut det_rng = crate::worker::WorkerRng::Deterministic;
+        let mut draw_rng = DrawRng::live(&mut det_rng);
+        let out = kernel
+            .apply_action(&state, 1, 0, false, &mut draw_rng)
+            .expect("end turn");
+        assert_eq!(out.state.turn_number, 4);
+        assert!(!out.truncated, "turn 4 == max_turns 4 → not truncated (strict >)");
     }
 }

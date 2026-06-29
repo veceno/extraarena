@@ -336,6 +336,76 @@ fn rust_kernel_apply_action_matches_shield_refresh_python_transitions() {
 }
 
 #[test]
+fn rust_kernel_apply_action_matches_sudden_death_python_transitions() {
+    // Phase 7 (WD-1): sudden-death modifier. The env enables
+    // `sudden_death_enabled` with damage_start=1, damage_step=1. The active
+    // player's hero takes escalating damage at the start of each of their
+    // turns: damage = 1 + (turn_count-1)*1, applied via DIRECT hp subtraction
+    // (bypasses armor/reflect — mirrors core/engine.py
+    // `_apply_start_turn_mode_effects` line 837 `player.hero.hp -= damage`).
+    // The init-time tick (p1 @ turn 1) is baked into the recorded initial
+    // state (p1 hp 45→44). The 8 end_turn steps then apply: p2@2(1), p1@3(2),
+    // p2@4(2), p1@5(3), p2@6(3), p1@7(4), p2@8(4), p1@9(5) → final p1=30,
+    // p2=35. The fixture records `sudden_death_turns_by_player`={1:5,2:4} and
+    // `sudden_death_last_applied_turn_by_player`={1:9,2:8}; Rust's
+    // `KernelState` serializes these fields so the state-transition matcher
+    // verifies the per-player escalating counter, not just the hp deltas.
+    // Multi-card deck; recorded-outcome RNG. State-transition only.
+    let raw = include_str!("fixtures/golden_trace_sudden_death.json");
+    let trace: GoldenTrace = serde_json::from_str(raw).expect("fixture parses");
+    assert_trace_state_transitions_match(&trace);
+}
+
+#[test]
+fn rust_kernel_apply_action_matches_truncation_python_transitions() {
+    // Phase 7 (WD-2): max_turns truncation. The env config sets max_turns=4.
+    // Python `ClassicRLEnv.step` returns `truncated = st.turn_number >
+    // self._max_turns` (strictly greater-than). The 4 end_turn steps advance
+    // turn_number 1→2→3→4→5; step 3 crosses the boundary (turn 5 > 4) →
+    // truncated=True, terminated=False (status still "ongoing"). This test
+    // asserts BOTH post-state JSON equality AND that Rust's `apply_action`
+    // returns `truncated` matching the fixture's recorded `truncated` flag at
+    // every step (the generic state-transition matcher only compares state
+    // JSON, so the truncated flag is checked explicitly here). No
+    // sudden-death. Multi-card deck; recorded-outcome RNG. State-transition
+    // + truncated-flag parity.
+    let raw = include_str!("fixtures/golden_trace_truncation.json");
+    let trace: GoldenTrace = serde_json::from_str(raw).expect("fixture parses");
+    let kernel = RolloutKernel::new(KernelConfig::from_trace_config(&trace.env_config));
+    for step in &trace.steps {
+        let mut draw_rng = DrawRng::recorded(
+            step.draw_picks.clone(),
+            step.reshuffle_orders.clone(),
+            step.randint_rolls.clone(),
+            step.choice_rolls.clone(),
+        );
+        let actual = kernel
+            .apply_action(
+                &step.pre.state,
+                step.acting_player_id,
+                step.action_id,
+                step.mana_draw_taken,
+                &mut draw_rng,
+            )
+            .expect("scripted action applies");
+        let actual_json = serde_json::to_string(&actual.state).expect("serialize actual state");
+        let expected_json =
+            serde_json::to_string(&step.post.state).expect("serialize expected state");
+        assert_eq!(actual_json, expected_json, "step {} post-state JSON mismatch", step.t);
+        assert_eq!(
+            actual.truncated, step.truncated,
+            "step {} truncated flag mismatch",
+            step.t
+        );
+        assert_eq!(
+            actual.terminated, step.terminated,
+            "step {} terminated flag mismatch",
+            step.t
+        );
+    }
+}
+
+#[test]
 fn batched_rollout_worker_matches_python_trace_with_internal_history() {
     let raw = include_str!("fixtures/golden_trace_scripted_basic.json");
     let trace: GoldenTrace = serde_json::from_str(raw).expect("fixture parses");
