@@ -6,6 +6,7 @@ ARENA_HTML = Path("webapp/arena.html")
 ARENA_JS = Path("webapp/arena.js")
 ARENA_CSS = Path("webapp/arena-styles.css")
 SERVER = Path("web/server.py")
+ONBOARDING = Path("onboarding_tutorial.py")
 
 
 def test_main_onboarding_gate_uses_approved_midoria_copy_and_actions():
@@ -32,9 +33,18 @@ def test_menu_tour_highlights_only_required_sections_and_finishes_to_newbie_path
 
     assert "data-onboarding-target={i===2?'arena':i===1?'collection':undefined}" in source
     assert "data-onboarding-target={t.key === 'decks' ? 'decks' : undefined}" in source
-    assert "Арена — сюда за боями. Хочешь прогресс — возвращайся сюда." in server
-    assert "Коллекция — здесь все твои карты." in server
-    assert "Колоды — здесь собирается твой отряд." in server
+    assert "data-onboarding-target=\"cases\"" in source
+    assert "data-onboarding-target=\"wins_to_case\"" in source
+    assert "Арена — место боёв. У тебя уже есть готовая стартовая колода" in server
+    assert "Коллекция — все твои карты." in server
+    assert "Колода — твой план на бой." in server
+    # Expanded informational tour: reward / wins-to-case / cases / chat / final.
+    assert "9 стартовых карт" in server
+    assert "сколько побед осталось до кейса" in server
+    assert "Кейсы дают новые карты и ресурсы" in server
+    assert "https://t.me/extraarena_chat" in ONBOARDING.read_text(encoding="utf-8")
+    assert "ONBOARDING_CHAT_URL" in server
+    assert "Маршрут простой" in server
     assert "Открыть Путь новичка" in source
     assert "/api/onboarding/complete" in source
     assert "setCollectionTabIntent('decks')" in source

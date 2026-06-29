@@ -116,7 +116,7 @@ class _TutorialRouteDB:
             "current_step": "welcome",
             "tutorial_step": 0,
             "tutorial_match_id": None,
-            "menu_step": "arena",
+            "menu_step": "reward",
             "newbie_path_progress": {},
             "completed": False,
             **(initial_state or {}),
@@ -556,7 +556,7 @@ async def test_tutorial_final_complete_endpoint_moves_to_menu_tour(monkeypatch):
         assert body["redirect_url"] == "/?onboarding_menu=1"
         assert "state" not in body
         assert db.state["status"] == "menu_tour"
-        assert db.state["menu_step"] == "arena"
+        assert db.state["menu_step"] == "reward"
         handoff_events_after_first_complete = [
             event for event in db.events
             if event[1] in {"tutorial_battle_completed", "menu_tour_started"}

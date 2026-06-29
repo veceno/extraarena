@@ -37,6 +37,7 @@ from battle_engine import BattleEngine, BattleEventEmitter
 from core.state import ReplacementStatus
 from onboarding_tutorial import (
     NEWBIE_PATH_TASKS,
+    ONBOARDING_CHAT_URL,
     ONBOARDING_MIDORIA_ASSET,
     ONBOARDING_MENU_STEPS,
     ONBOARDING_STATUS_COMPLETED,
@@ -1030,30 +1031,62 @@ def _build_onboarding_payload(
         "current_step": state.get("current_step") or status,
         "tutorial_step": int(state.get("tutorial_step") or 0),
         "tutorial_match_id": state.get("tutorial_match_id"),
-        "menu_step": state.get("menu_step") or "arena",
+        "menu_step": state.get("menu_step") or "reward",
         "completed": bool(state.get("completed") or status == ONBOARDING_STATUS_COMPLETED),
         "need_registration": bool(state.get("need_registration")),
         "midoria_asset": ONBOARDING_MIDORIA_ASSET,
         "menu_steps": [
             {
+                "id": "reward",
+                "target": None,
+                "kind": "cinematic",
+                "text": "Отличный старт. За учебный бой ты получаешь 9 стартовых карт.\nЯ уже собрала из них первую колоду, чтобы ты мог сразу сыграть настоящий бой.",
+                "button": "Давай дальше",
+                "deck_preview": True,
+            },
+            {
                 "id": "arena",
                 "target": "arena",
-                "text": "Арена — сюда за боями. Хочешь прогресс — возвращайся сюда.",
+                "text": "Арена — место боёв. У тебя уже есть готовая стартовая колода, так что можно сразу идти в обычный бой.",
+                "button": "Дальше",
+            },
+            {
+                "id": "wins_to_case",
+                "target": "wins_to_case",
+                "text": "Здесь видно, сколько побед осталось до кейса. Выиграл бой — число уменьшилось. Дошёл до нуля — забирай кейс.",
+                "button": "Дальше",
+            },
+            {
+                "id": "cases",
+                "target": "cases",
+                "text": "Кейсы дают новые карты и ресурсы. Открыл кейс → усилил коллекцию → обновил колоду → вернулся на арену.",
                 "button": "Дальше",
             },
             {
                 "id": "collection",
                 "target": "collection",
-                "text": "Коллекция — здесь все твои карты. Нажимай на карту, чтобы увидеть, что она умеет.",
+                "text": "Коллекция — все твои карты. Смотри на ману, атаку, HP и механику. Не гонись только за редкостью: важна роль карты в колоде.",
                 "button": "Дальше",
             },
             {
                 "id": "decks",
                 "target": "decks",
-                "text": "Колоды — здесь собирается твой отряд. Сильные карты сами себя не выберут.",
+                "text": "Колода — твой план на бой. Первую я уже собрала, но после новых карт ты сможешь менять её под себя.",
                 "button": "Дальше",
             },
+            {
+                "id": "chat",
+                "target": None,
+                "kind": "cinematic",
+                "text": "Хочешь быстрее разобраться, спросить про карты или найти соперников? Вступай в игровой чат ExtraArena.",
+                "button": "Вступить в чат",
+                "url": ONBOARDING_CHAT_URL,
+            },
         ],
+        "menu_final_text": (
+            "Маршрут простой: у тебя уже есть стартовая колода. "
+            "Сыграй бой → приблизься к кейсу → открой новые карты → улучи колоду → возвращайся на арену."
+        ),
         "newbie_path": _build_newbie_path_payload(
             state.get("newbie_path_progress") or {},
             include_telegram_channel_task=include_telegram_channel_task,
@@ -1149,7 +1182,7 @@ async def _handle_onboarding_tutorial_action(
                         current_step=ONBOARDING_STATUS_MENU_TOUR,
                         tutorial_step=TUTORIAL_FINAL_STEP,
                         tutorial_match_id=str(match_id),
-                        menu_step="arena",
+                        menu_step="reward",
                     )
                     await db_inst.track_onboarding_event(
                         int(user_id),
@@ -20305,7 +20338,7 @@ def create_web_app(
         if step_id not in ONBOARDING_MENU_STEPS:
             return web.json_response({"error": "invalid_menu_step"}, status=400)
         state = await db.get_onboarding_state(user_id)
-        expected_step = str(state.get("menu_step") or "arena")
+        expected_step = str(state.get("menu_step") or "reward")
         if state.get("status") != ONBOARDING_STATUS_MENU_TOUR or int(state.get("tutorial_step") or 0) < TUTORIAL_FINAL_STEP:
             return web.json_response({"error": "menu_tour_not_ready", "onboarding": _onboarding_payload_for_request(request, user_id, state)}, status=409)
         if expected_step == "done":

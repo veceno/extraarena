@@ -56,7 +56,16 @@ ONBOARDING_STATUSES = {
     ONBOARDING_STATUS_COMPLETED,
 }
 
-ONBOARDING_MENU_STEPS = ("arena", "collection", "decks")
+ONBOARDING_MENU_STEPS = (
+    "reward",        # 9 стартовых карт + собранная стартовая колода (mini-превью)
+    "arena",         # Арена — место боёв
+    "wins_to_case",  # счётчик побед до кейса
+    "cases",         # Кейсы дают новые карты
+    "collection",    # Коллекция — все карты
+    "decks",         # Колоды — план на бой
+    "chat",          # игровой чат (CTA → t.me/extraarena_chat)
+)
+ONBOARDING_CHAT_URL = "https://t.me/extraarena_chat"
 ONBOARDING_MIDORIA_ASSET = "/DesignAssets/MidoriaOnboardingGuide.png"
 
 NEWBIE_PATH_TASKS = [
