@@ -5,6 +5,7 @@
 
 pub mod action_codec;
 pub mod card_shape;
+pub mod card_shape_v5;
 pub mod env;
 pub mod exploit;
 pub mod ffi;
