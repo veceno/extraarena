@@ -9,11 +9,12 @@ use crate::action_codec::{
     NUM_PLAY_POS, NUM_PLAY_TARGETS, PLAY_BASE, PLAY_STRIDE,
 };
 use crate::card_shape::{encode_card_shape, MECHANICS_LIST};
+use crate::card_shape_v5::{encode_card_shape_v5, CARD_SHAPE_DIM_V5};
 use crate::state::{CardShapeInput, CardType};
 use crate::v5::{
     AssistModeV5, InfoModeV5, ENEMY_DECK_SLOTS, ENEMY_HAND_SLOTS, HISTORY_DIM, HISTORY_EVENTS,
-    HISTORY_EVENT_DIM, OBS_DIM_V5, OWN_DECK_SLOTS, OWN_HAND_SLOTS, PRIVATE_CARD_SLOT_DIM,
-    PRIVATE_INFO_DIM, V5_GLOBAL_DIM,
+    HISTORY_EVENT_DIM, HISTORY_EVENT_SOURCE_OFFSET, OBS_DIM_V5, OWN_DECK_SLOTS, OWN_HAND_SLOTS,
+    PRIVATE_CARD_SLOT_DIM, PRIVATE_INFO_DIM, V5_GLOBAL_DIM,
 };
 use crate::{ACTION_FEATURE_DIM_V1, CARD_SHAPE_DIM, MAX_CANDIDATE_ACTIONS, OBS_DIM_V1};
 
@@ -2487,8 +2488,8 @@ fn encode_zone_v5(
             if let Some(card) = cards.get(slot) {
                 out[base] = 1.0;
                 out[base + 1] = norm(card.card_id as f32, CARD_ID_NORMALIZER);
-                let shape = card.shape(None, None, None);
-                out[base + 2..base + 2 + CARD_SHAPE_DIM].copy_from_slice(&shape);
+                let shape = card.shape_v5(None, None, None);
+                out[base + 2..base + 2 + CARD_SHAPE_DIM_V5].copy_from_slice(&shape);
             }
         }
     }
@@ -2520,12 +2521,14 @@ fn encode_one_history_event_v5(out: &mut [f32], player_id: i32, event: &KernelHi
     out[11] = norm(event.turn_number as f32, 50.0);
     out[12] = signed_norm(event.board_power_delta, 200.0);
     if let Some(card) = &event.source_card {
-        let shape = card.shape(None, None, None);
-        out[16..16 + CARD_SHAPE_DIM].copy_from_slice(&shape);
+        let shape = card.shape_v5(None, None, None);
+        out[HISTORY_EVENT_SOURCE_OFFSET..HISTORY_EVENT_SOURCE_OFFSET + CARD_SHAPE_DIM_V5]
+            .copy_from_slice(&shape);
     }
     if let Some(card) = &event.target_card {
-        let shape = card.shape(None, None, None);
-        out[80..80 + CARD_SHAPE_DIM].copy_from_slice(&shape);
+        let shape = card.shape_v5(None, None, None);
+        let tgt_off = HISTORY_EVENT_SOURCE_OFFSET + CARD_SHAPE_DIM_V5;
+        out[tgt_off..tgt_off + CARD_SHAPE_DIM_V5].copy_from_slice(&shape);
     }
 }
 
@@ -2789,6 +2792,34 @@ impl KernelCard {
             mechanics: &mechanics,
         };
         encode_card_shape(Some(&input), board_pos, hand_pos, effective_attack)
+    }
+
+    /// V5 73-dim card shape (frozen-classic [0:64) + V5-only [64:73) extensions).
+    /// Used by the V5 private-info zones and history events.  The frozen action
+    /// codec continues to use `shape()` (64-dim) — this method is V5-only.
+    fn shape_v5(
+        &self,
+        board_pos: Option<usize>,
+        hand_pos: Option<usize>,
+        effective_attack: Option<i32>,
+    ) -> [f32; CARD_SHAPE_DIM_V5] {
+        let mechanics: Vec<&str> = self.mechanics.iter().map(String::as_str).collect();
+        let input = CardShapeInput {
+            card_type: match self.card_type.as_str() {
+                "hero" => CardType::Hero,
+                "potion" => CardType::Potion,
+                _ => CardType::Warrior,
+            },
+            mana_cost: self.mana_cost,
+            attack: self.attack,
+            hp: self.hp,
+            max_hp: self.max_hp,
+            is_ready: self.is_ready,
+            is_frozen: self.is_frozen,
+            level: self.level,
+            mechanics: &mechanics,
+        };
+        encode_card_shape_v5(Some(&input), board_pos, hand_pos, effective_attack)
     }
 }
 

@@ -26,8 +26,8 @@
     ],
     "mask_sha256_f32_le": "46f125412a34a515cc1d8bb1dc1e14901bd6b24087fd92659141aeaed1d4e70a",
     "obs_sha256_f32_le": "d4b1bb5ca9111cc8fa03a937f28f118255d67d3a0eb167b1d66f6ed5292a990f",
-    "obs_v5_dim": 6480,
-    "obs_v5_sha256_f32_le": "09855c53bfb4015b1495a69f7614a03dc3483a172fa61e751f1fc2243fb415fc",
+    "obs_v5_dim": 7128,
+    "obs_v5_sha256_f32_le": "22f22626293574eb19589aec543ebbee7bea322d4c66d1e5106ffd6c9ba03546",
     "state": {
       "current_turn_owner_id": 1,
       "p1": {
@@ -306,8 +306,8 @@
         ],
         "mask_sha256_f32_le": "69ba8d7d0d3cac51fbe340c31cde59ea84f03bca452faf27ab3a56855622f432",
         "obs_sha256_f32_le": "c63a0ea6fd1f349aaa5f5032074a16add638bc167faa8cc3150f02fdfb8ac95c",
-        "obs_v5_dim": 6480,
-        "obs_v5_sha256_f32_le": "19bb13825e962a6948342f4dfd9aa0f358a866950e85b11a3295480a3e1dd810",
+        "obs_v5_dim": 7128,
+        "obs_v5_sha256_f32_le": "ed99c5e20e57dc0b7ea710aead1c2e96ee1d04d03190d1044aca1ccef5ad99f1",
         "state": {
           "current_turn_owner_id": 1,
           "p1": {
@@ -564,8 +564,8 @@
         ],
         "mask_sha256_f32_le": "46f125412a34a515cc1d8bb1dc1e14901bd6b24087fd92659141aeaed1d4e70a",
         "obs_sha256_f32_le": "d4b1bb5ca9111cc8fa03a937f28f118255d67d3a0eb167b1d66f6ed5292a990f",
-        "obs_v5_dim": 6480,
-        "obs_v5_sha256_f32_le": "09855c53bfb4015b1495a69f7614a03dc3483a172fa61e751f1fc2243fb415fc",
+        "obs_v5_dim": 7128,
+        "obs_v5_sha256_f32_le": "22f22626293574eb19589aec543ebbee7bea322d4c66d1e5106ffd6c9ba03546",
         "state": {
           "current_turn_owner_id": 1,
           "p1": {
@@ -871,8 +871,8 @@
         ],
         "mask_sha256_f32_le": "46f125412a34a515cc1d8bb1dc1e14901bd6b24087fd92659141aeaed1d4e70a",
         "obs_sha256_f32_le": "321136f1ebf023da7e981353ea10c96c5e5eb61e409941acb165a50bcf93f993",
-        "obs_v5_dim": 6480,
-        "obs_v5_sha256_f32_le": "5df754c8cdfd4ac3ff508fb7cdd8646a7d37c9a83fb7e6977370f1875f4b59ca",
+        "obs_v5_dim": 7128,
+        "obs_v5_sha256_f32_le": "5c987c640fee2c251af8c890889ddba082bce2cb6628b94e098680465cd9367c",
         "state": {
           "current_turn_owner_id": 2,
           "p1": {
@@ -1139,8 +1139,8 @@
         ],
         "mask_sha256_f32_le": "69ba8d7d0d3cac51fbe340c31cde59ea84f03bca452faf27ab3a56855622f432",
         "obs_sha256_f32_le": "c63a0ea6fd1f349aaa5f5032074a16add638bc167faa8cc3150f02fdfb8ac95c",
-        "obs_v5_dim": 6480,
-        "obs_v5_sha256_f32_le": "19bb13825e962a6948342f4dfd9aa0f358a866950e85b11a3295480a3e1dd810",
+        "obs_v5_dim": 7128,
+        "obs_v5_sha256_f32_le": "ed99c5e20e57dc0b7ea710aead1c2e96ee1d04d03190d1044aca1ccef5ad99f1",
         "state": {
           "current_turn_owner_id": 1,
           "p1": {
@@ -1456,8 +1456,8 @@
         ],
         "mask_sha256_f32_le": "69ba8d7d0d3cac51fbe340c31cde59ea84f03bca452faf27ab3a56855622f432",
         "obs_sha256_f32_le": "1af34d75e441d5a81d644b04dd38c1d028c22207ebc847efe4832ca94a91ce31",
-        "obs_v5_dim": 6480,
-        "obs_v5_sha256_f32_le": "787cf56807d7c8d2e3837d9c5f42dc25a5d8e017f73eb83f0311872dfc0d04a9",
+        "obs_v5_dim": 7128,
+        "obs_v5_sha256_f32_le": "ce72d42a46b67cfd74cee7b21a5578b2c85142b26a5c53a4715c9137de127b73",
         "state": {
           "current_turn_owner_id": 2,
           "p1": {
@@ -1738,8 +1738,8 @@
         ],
         "mask_sha256_f32_le": "46f125412a34a515cc1d8bb1dc1e14901bd6b24087fd92659141aeaed1d4e70a",
         "obs_sha256_f32_le": "321136f1ebf023da7e981353ea10c96c5e5eb61e409941acb165a50bcf93f993",
-        "obs_v5_dim": 6480,
-        "obs_v5_sha256_f32_le": "5df754c8cdfd4ac3ff508fb7cdd8646a7d37c9a83fb7e6977370f1875f4b59ca",
+        "obs_v5_dim": 7128,
+        "obs_v5_sha256_f32_le": "5c987c640fee2c251af8c890889ddba082bce2cb6628b94e098680465cd9367c",
         "state": {
           "current_turn_owner_id": 2,
           "p1": {
@@ -2070,8 +2070,8 @@
         ],
         "mask_sha256_f32_le": "491561d400153511d2ae5338bc168bde434f5f06685e35c4521a244398cf4fe3",
         "obs_sha256_f32_le": "0f46ba49ac46960cee2bc01fdbb25245d4dc341be487bda5efb8c70f27caeb1a",
-        "obs_v5_dim": 6480,
-        "obs_v5_sha256_f32_le": "ec269226d87705c3aabf947e352077b39b1f96cafdec834c03f32765e5216049",
+        "obs_v5_dim": 7128,
+        "obs_v5_sha256_f32_le": "2be6d96521722c89618066efec1b53a7f86204b51d63c86d9bd83b35b82788b9",
         "state": {
           "current_turn_owner_id": 1,
           "p1": {
@@ -2361,8 +2361,8 @@
         ],
         "mask_sha256_f32_le": "69ba8d7d0d3cac51fbe340c31cde59ea84f03bca452faf27ab3a56855622f432",
         "obs_sha256_f32_le": "1af34d75e441d5a81d644b04dd38c1d028c22207ebc847efe4832ca94a91ce31",
-        "obs_v5_dim": 6480,
-        "obs_v5_sha256_f32_le": "787cf56807d7c8d2e3837d9c5f42dc25a5d8e017f73eb83f0311872dfc0d04a9",
+        "obs_v5_dim": 7128,
+        "obs_v5_sha256_f32_le": "ce72d42a46b67cfd74cee7b21a5578b2c85142b26a5c53a4715c9137de127b73",
         "state": {
           "current_turn_owner_id": 2,
           "p1": {
@@ -2703,8 +2703,8 @@
         ],
         "mask_sha256_f32_le": "638da352384edc09cb1c83b3ae96e9e7b0ef01ecd9c65a398df32576d945c8c6",
         "obs_sha256_f32_le": "15ccdabff5087b62600de8b0252781557d9eba32395f429dfa023f6852836c82",
-        "obs_v5_dim": 6480,
-        "obs_v5_sha256_f32_le": "897f22f0f54f02f67b76b2ccffedd421e7c860e7b66460b1cb1e8c2c99f078ec",
+        "obs_v5_dim": 7128,
+        "obs_v5_sha256_f32_le": "9766117f8f190a0b285a4552e388cb79027f0f7dab8f96fdb5c10e83103cc009",
         "state": {
           "current_turn_owner_id": 1,
           "p1": {
@@ -3009,8 +3009,8 @@
         ],
         "mask_sha256_f32_le": "491561d400153511d2ae5338bc168bde434f5f06685e35c4521a244398cf4fe3",
         "obs_sha256_f32_le": "0f46ba49ac46960cee2bc01fdbb25245d4dc341be487bda5efb8c70f27caeb1a",
-        "obs_v5_dim": 6480,
-        "obs_v5_sha256_f32_le": "ec269226d87705c3aabf947e352077b39b1f96cafdec834c03f32765e5216049",
+        "obs_v5_dim": 7128,
+        "obs_v5_sha256_f32_le": "2be6d96521722c89618066efec1b53a7f86204b51d63c86d9bd83b35b82788b9",
         "state": {
           "current_turn_owner_id": 1,
           "p1": {

@@ -25,8 +25,8 @@
     ],
     "mask_sha256_f32_le": "9ee352bc0366ba926549d02e3762bb0256f2acf12db4de6fea26f4373c99c4b0",
     "obs_sha256_f32_le": "17c83ed97ddf8dbed6e8e8f6b796598297147859ceae2b9595169057e5aff37b",
-    "obs_v5_dim": 6480,
-    "obs_v5_sha256_f32_le": "ffab0cf02ab4a201f4647ed0aeac01b9d4eaeea4913c8e4d89dce3761472d202",
+    "obs_v5_dim": 7128,
+    "obs_v5_sha256_f32_le": "095e9989d468d5fa5c9497e09b234f3252657dde00730f65747e0b87b9b8d39f",
     "state": {
       "current_turn_owner_id": 1,
       "p1": {
@@ -334,8 +334,8 @@
         ],
         "mask_sha256_f32_le": "9ee352bc0366ba926549d02e3762bb0256f2acf12db4de6fea26f4373c99c4b0",
         "obs_sha256_f32_le": "8ee99c675a6493b53f9cc4cfdafa7d7ecb1b0b7210c78843e74e1136bda797cf",
-        "obs_v5_dim": 6480,
-        "obs_v5_sha256_f32_le": "41b98321a2f78329d2c39c2afec2724abb9e10007f9875cf3f448540f5feb563",
+        "obs_v5_dim": 7128,
+        "obs_v5_sha256_f32_le": "64195ac20c987f337542e53c8d731d3b339525b54cef5f654b0144ba8e8c23a4",
         "state": {
           "current_turn_owner_id": 2,
           "p1": {
@@ -618,8 +618,8 @@
         ],
         "mask_sha256_f32_le": "9ee352bc0366ba926549d02e3762bb0256f2acf12db4de6fea26f4373c99c4b0",
         "obs_sha256_f32_le": "17c83ed97ddf8dbed6e8e8f6b796598297147859ceae2b9595169057e5aff37b",
-        "obs_v5_dim": 6480,
-        "obs_v5_sha256_f32_le": "ffab0cf02ab4a201f4647ed0aeac01b9d4eaeea4913c8e4d89dce3761472d202",
+        "obs_v5_dim": 7128,
+        "obs_v5_sha256_f32_le": "095e9989d468d5fa5c9497e09b234f3252657dde00730f65747e0b87b9b8d39f",
         "state": {
           "current_turn_owner_id": 1,
           "p1": {
@@ -954,8 +954,8 @@
         ],
         "mask_sha256_f32_le": "5148e44e425f27597c59fe5e6414dc8d95f941e39a2e4af5158fc739a0eef578",
         "obs_sha256_f32_le": "9ae6bcab4c858984e70f0588594ce18c35923bd590c137a051ddc5abf52e78a6",
-        "obs_v5_dim": 6480,
-        "obs_v5_sha256_f32_le": "e5916d0d73b76f7a0d006aaaebae1f6baaf61e27e3ea2442805c3384bc7df355",
+        "obs_v5_dim": 7128,
+        "obs_v5_sha256_f32_le": "1f02f45e78b6b09b1d4a9ac7d277384fc2a4f16383fa60d84fea4b03849811ab",
         "state": {
           "current_turn_owner_id": 1,
           "p1": {
@@ -1250,8 +1250,8 @@
         ],
         "mask_sha256_f32_le": "9ee352bc0366ba926549d02e3762bb0256f2acf12db4de6fea26f4373c99c4b0",
         "obs_sha256_f32_le": "8ee99c675a6493b53f9cc4cfdafa7d7ecb1b0b7210c78843e74e1136bda797cf",
-        "obs_v5_dim": 6480,
-        "obs_v5_sha256_f32_le": "41b98321a2f78329d2c39c2afec2724abb9e10007f9875cf3f448540f5feb563",
+        "obs_v5_dim": 7128,
+        "obs_v5_sha256_f32_le": "64195ac20c987f337542e53c8d731d3b339525b54cef5f654b0144ba8e8c23a4",
         "state": {
           "current_turn_owner_id": 2,
           "p1": {
@@ -1597,8 +1597,8 @@
         ],
         "mask_sha256_f32_le": "5148e44e425f27597c59fe5e6414dc8d95f941e39a2e4af5158fc739a0eef578",
         "obs_sha256_f32_le": "1a02f34c3f77081e47966aed325f12a9e1182f25ff7556c7cac0781036d5f901",
-        "obs_v5_dim": 6480,
-        "obs_v5_sha256_f32_le": "6e841dd9f3344d66a1f3f024beff8af1643f6c336eca73fc6081c9b5c002eb1e",
+        "obs_v5_dim": 7128,
+        "obs_v5_sha256_f32_le": "d941a8a6c5517cca1ced852395807f8f7921b26a63fa4420cc2358c71acfa105",
         "state": {
           "current_turn_owner_id": 2,
           "p1": {
@@ -1892,8 +1892,8 @@
         ],
         "mask_sha256_f32_le": "5148e44e425f27597c59fe5e6414dc8d95f941e39a2e4af5158fc739a0eef578",
         "obs_sha256_f32_le": "9ae6bcab4c858984e70f0588594ce18c35923bd590c137a051ddc5abf52e78a6",
-        "obs_v5_dim": 6480,
-        "obs_v5_sha256_f32_le": "e5916d0d73b76f7a0d006aaaebae1f6baaf61e27e3ea2442805c3384bc7df355",
+        "obs_v5_dim": 7128,
+        "obs_v5_sha256_f32_le": "1f02f45e78b6b09b1d4a9ac7d277384fc2a4f16383fa60d84fea4b03849811ab",
         "state": {
           "current_turn_owner_id": 1,
           "p1": {

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .contracts import AssistModeV5, InfoModeV5
+from .contracts import AssistModeV5, InfoModeV5, OBS_V5_DIM
 from .golden_trace import build_golden_trace
 from .v5_artifacts import TRACE_POOL_SCHEMA, TracePoolEntry, TracePoolManifest, manifest_to_dict
 
@@ -439,8 +439,8 @@ def _validate_v5_trace_files(
         initial = trace.get("initial")
         if not isinstance(initial, dict):
             raise ValueError(f"{trace_path}: initial must be present")
-        if int(initial.get("obs_v5_dim", -1)) != 6480:
-            raise ValueError(f"{trace_path}: initial obs_v5_dim must be exactly 6480")
+        if int(initial.get("obs_v5_dim", -1)) != OBS_V5_DIM:
+            raise ValueError(f"{trace_path}: initial obs_v5_dim must be exactly {OBS_V5_DIM}")
         entry = entries_by_path.get(trace_path.resolve())
         if entry is not None:
             _validate_trace_entry_matches_trace(trace_path, entry, trace)

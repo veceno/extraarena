@@ -1,20 +1,24 @@
-use crate::{ACTION_FEATURE_DIM_V1, CARD_SHAPE_DIM, MAX_CANDIDATE_ACTIONS, OBS_DIM_V1};
+use crate::{ACTION_FEATURE_DIM_V1, MAX_CANDIDATE_ACTIONS, OBS_DIM_V1};
+use crate::card_shape_v5::CARD_SHAPE_DIM_V5;
 
 pub const OWN_HAND_SLOTS: usize = 4;
 pub const OWN_DECK_SLOTS: usize = 12;
 pub const ENEMY_HAND_SLOTS: usize = 4;
 pub const ENEMY_DECK_SLOTS: usize = 12;
 
-pub const PRIVATE_CARD_SLOT_DIM: usize = 1 + 1 + CARD_SHAPE_DIM;
+// Per-card private-info slot = [occupied_flag, card_id_norm, card_shape_v5(73)].
+pub const PRIVATE_CARD_SLOT_DIM: usize = 1 + 1 + CARD_SHAPE_DIM_V5; // 75
 pub const PRIVATE_CARD_SLOTS: usize =
-    OWN_HAND_SLOTS + OWN_DECK_SLOTS + ENEMY_HAND_SLOTS + ENEMY_DECK_SLOTS;
-pub const PRIVATE_INFO_DIM: usize = PRIVATE_CARD_SLOTS * PRIVATE_CARD_SLOT_DIM;
+    OWN_HAND_SLOTS + OWN_DECK_SLOTS + ENEMY_HAND_SLOTS + ENEMY_DECK_SLOTS; // 32
+pub const PRIVATE_INFO_DIM: usize = PRIVATE_CARD_SLOTS * PRIVATE_CARD_SLOT_DIM; // 2400
 
 pub const V5_GLOBAL_DIM: usize = 32;
 pub const HISTORY_EVENTS: usize = 20;
-pub const HISTORY_EVENT_DIM: usize = 144;
-pub const HISTORY_DIM: usize = HISTORY_EVENTS * HISTORY_EVENT_DIM;
-pub const OBS_DIM_V5: usize = OBS_DIM_V1 + V5_GLOBAL_DIM + PRIVATE_INFO_DIM + HISTORY_DIM;
+// History event = [13 metadata + 3 padding][source_card_v5][target_card_v5].
+pub const HISTORY_EVENT_SOURCE_OFFSET: usize = 16;
+pub const HISTORY_EVENT_DIM: usize = HISTORY_EVENT_SOURCE_OFFSET + CARD_SHAPE_DIM_V5 * 2; // 162
+pub const HISTORY_DIM: usize = HISTORY_EVENTS * HISTORY_EVENT_DIM; // 3240
+pub const OBS_DIM_V5: usize = OBS_DIM_V1 + V5_GLOBAL_DIM + PRIVATE_INFO_DIM + HISTORY_DIM; // 7128
 
 #[derive(Debug, Clone, Copy)]
 pub struct InfoModeV5 {
@@ -197,15 +201,22 @@ impl Default for V5TensorShapes {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::CARD_SHAPE_DIM;
 
     #[test]
     fn v5_dimension_contract_is_stable() {
-        assert_eq!(PRIVATE_CARD_SLOT_DIM, 66);
-        assert_eq!(PRIVATE_INFO_DIM, 2112);
-        assert_eq!(HISTORY_DIM, 2880);
-        assert_eq!(OBS_DIM_V5, 6480);
+        // Dim-73 cascade: CARD_SHAPE_DIM_V5=73 → PRIVATE_CARD_SLOT_DIM=75,
+        // PRIVATE_INFO_DIM=2400, HISTORY_EVENT_DIM=162, HISTORY_DIM=3240,
+        // OBS_DIM_V5=7128.  All derived from CARD_SHAPE_DIM_V5 (named offsets).
+        assert_eq!(CARD_SHAPE_DIM, 64); // frozen classic stays 64
+        assert_eq!(CARD_SHAPE_DIM_V5, 73);
+        assert_eq!(PRIVATE_CARD_SLOT_DIM, 75);
+        assert_eq!(PRIVATE_INFO_DIM, 2400);
+        assert_eq!(HISTORY_EVENT_DIM, 162);
+        assert_eq!(HISTORY_DIM, 3240);
+        assert_eq!(OBS_DIM_V5, 7128);
         let shapes = V5TensorShapes::default();
-        assert_eq!(shapes.observation_dim, 6480);
+        assert_eq!(shapes.observation_dim, 7128);
         assert_eq!(shapes.action_count, 601);
         assert_eq!(shapes.action_feature_dim, 171);
     }

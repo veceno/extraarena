@@ -437,8 +437,8 @@
     "legal_ids": [
       0
     ],
-    "obs_v5_sha256_f32_le": "356d8d87dc3f195dede36e999d2180b0829420b5f1f3afb9cae6946d218f62ec",
-    "obs_v5_dim": 6480
+    "obs_v5_sha256_f32_le": "7e156ddde928c1cccb9e8c8eba797634b00a4f58b04e34c89e470b07831d0326",
+    "obs_v5_dim": 7128
   },
   "steps": [
     {
@@ -859,8 +859,8 @@
         "legal_ids": [
           0
         ],
-        "obs_v5_sha256_f32_le": "356d8d87dc3f195dede36e999d2180b0829420b5f1f3afb9cae6946d218f62ec",
-        "obs_v5_dim": 6480
+        "obs_v5_sha256_f32_le": "7e156ddde928c1cccb9e8c8eba797634b00a4f58b04e34c89e470b07831d0326",
+        "obs_v5_dim": 7128
       },
       "base_reward": 0.0,
       "reward": 0.0,
@@ -1318,8 +1318,8 @@
           273,
           409
         ],
-        "obs_v5_sha256_f32_le": "e5f9e56406eeef13715cd47b410ca6760ae4c264ac2585f5d5bfd2f6e40a2e81",
-        "obs_v5_dim": 6480
+        "obs_v5_sha256_f32_le": "31087b4e287a5f717bb75bfaf6c521db9b5c422a56e12523a93acc76e04b889b",
+        "obs_v5_dim": 7128
       }
     },
     {
@@ -1756,8 +1756,8 @@
           273,
           409
         ],
-        "obs_v5_sha256_f32_le": "e5f9e56406eeef13715cd47b410ca6760ae4c264ac2585f5d5bfd2f6e40a2e81",
-        "obs_v5_dim": 6480
+        "obs_v5_sha256_f32_le": "31087b4e287a5f717bb75bfaf6c521db9b5c422a56e12523a93acc76e04b889b",
+        "obs_v5_dim": 7128
       },
       "base_reward": 0.0,
       "reward": 0.0,
@@ -2225,8 +2225,8 @@
           273,
           409
         ],
-        "obs_v5_sha256_f32_le": "6d1199ad32f206f44ddbc1ff0c46ba95de8b134dd8a4268119d85dd19e1535b7",
-        "obs_v5_dim": 6480
+        "obs_v5_sha256_f32_le": "2669a7ae64ab85e5a4ca12b01186a20f3290bb59494414b86fab22702cec8a2c",
+        "obs_v5_dim": 7128
       }
     },
     {
@@ -2674,8 +2674,8 @@
           273,
           409
         ],
-        "obs_v5_sha256_f32_le": "6d1199ad32f206f44ddbc1ff0c46ba95de8b134dd8a4268119d85dd19e1535b7",
-        "obs_v5_dim": 6480
+        "obs_v5_sha256_f32_le": "2669a7ae64ab85e5a4ca12b01186a20f3290bb59494414b86fab22702cec8a2c",
+        "obs_v5_dim": 7128
       },
       "base_reward": 0.02,
       "reward": 0.05375000089406967,
@@ -3149,8 +3149,8 @@
         "legal_ids": [
           0
         ],
-        "obs_v5_sha256_f32_le": "8142d572900f1279d97871480bf2bb0f439c003fb2f40fe3895023088b67090f",
-        "obs_v5_dim": 6480
+        "obs_v5_sha256_f32_le": "b24ecb6adbca6c4cd30c714c4a534c48a2ac210d957496b89abd1907f6ccb0d0",
+        "obs_v5_dim": 7128
       }
     },
     {
@@ -3606,8 +3606,8 @@
         "legal_ids": [
           0
         ],
-        "obs_v5_sha256_f32_le": "8142d572900f1279d97871480bf2bb0f439c003fb2f40fe3895023088b67090f",
-        "obs_v5_dim": 6480
+        "obs_v5_sha256_f32_le": "b24ecb6adbca6c4cd30c714c4a534c48a2ac210d957496b89abd1907f6ccb0d0",
+        "obs_v5_dim": 7128
       },
       "base_reward": 0.0,
       "reward": 0.0,
@@ -4098,8 +4098,8 @@
           273,
           409
         ],
-        "obs_v5_sha256_f32_le": "5c89995734875b13825c1a579a973abfc27eb7dc3b0aee02d044a7af5b718f33",
-        "obs_v5_dim": 6480
+        "obs_v5_sha256_f32_le": "63dabc66adaac013deb7119d82b48207fc92a3724b1ea7247b94e83cd14fc3f2",
+        "obs_v5_dim": 7128
       }
     },
     {
@@ -4570,8 +4570,8 @@
           273,
           409
         ],
-        "obs_v5_sha256_f32_le": "5c89995734875b13825c1a579a973abfc27eb7dc3b0aee02d044a7af5b718f33",
-        "obs_v5_dim": 6480
+        "obs_v5_sha256_f32_le": "63dabc66adaac013deb7119d82b48207fc92a3724b1ea7247b94e83cd14fc3f2",
+        "obs_v5_dim": 7128
       },
       "base_reward": 0.02,
       "reward": 0.02419999986886978,
@@ -5070,8 +5070,8 @@
         "legal_ids": [
           0
         ],
-        "obs_v5_sha256_f32_le": "073f6bc9c25c59fdf8666c06908640fc647ea4e57911c7be58cd6f2d29e20a78",
-        "obs_v5_dim": 6480
+        "obs_v5_sha256_f32_le": "858dd90e1c22168ea59965e0a2a85920059ae5e9401c2d98ba81bba5f1af0088",
+        "obs_v5_dim": 7128
       }
     },
     {
@@ -5550,8 +5550,8 @@
         "legal_ids": [
           0
         ],
-        "obs_v5_sha256_f32_le": "073f6bc9c25c59fdf8666c06908640fc647ea4e57911c7be58cd6f2d29e20a78",
-        "obs_v5_dim": 6480
+        "obs_v5_sha256_f32_le": "858dd90e1c22168ea59965e0a2a85920059ae5e9401c2d98ba81bba5f1af0088",
+        "obs_v5_dim": 7128
       },
       "base_reward": 0.0,
       "reward": -0.01080000028014183,
@@ -6068,8 +6068,8 @@
           545,
           552
         ],
-        "obs_v5_sha256_f32_le": "7c6a39e20c0a848a9351d8cb8ae30b7b0759f5a84048301a8a1f7b67ddfb69f3",
-        "obs_v5_dim": 6480
+        "obs_v5_sha256_f32_le": "f9909049c28875135a0de5ccc119b97e94307cc843b651a95b9deddf02537cc9",
+        "obs_v5_dim": 7128
       }
     },
     {
@@ -6565,8 +6565,8 @@
           545,
           552
         ],
-        "obs_v5_sha256_f32_le": "7c6a39e20c0a848a9351d8cb8ae30b7b0759f5a84048301a8a1f7b67ddfb69f3",
-        "obs_v5_dim": 6480
+        "obs_v5_sha256_f32_le": "f9909049c28875135a0de5ccc119b97e94307cc843b651a95b9deddf02537cc9",
+        "obs_v5_dim": 7128
       },
       "base_reward": 0.0,
       "reward": 0.0,
@@ -7093,8 +7093,8 @@
           545,
           552
         ],
-        "obs_v5_sha256_f32_le": "365627f3f89d651d07ceb1f9e576478ab5d99328929e023a332b2f44f93fefcd",
-        "obs_v5_dim": 6480
+        "obs_v5_sha256_f32_le": "2408954c77f953e80d1096c05f8c79c222ca4c034fbe53e34da0f462cb8d8acc",
+        "obs_v5_dim": 7128
       }
     },
     {
@@ -7601,8 +7601,8 @@
           545,
           552
         ],
-        "obs_v5_sha256_f32_le": "365627f3f89d651d07ceb1f9e576478ab5d99328929e023a332b2f44f93fefcd",
-        "obs_v5_dim": 6480
+        "obs_v5_sha256_f32_le": "2408954c77f953e80d1096c05f8c79c222ca4c034fbe53e34da0f462cb8d8acc",
+        "obs_v5_dim": 7128
       },
       "base_reward": 0.009999999999999998,
       "reward": 0.008500000461935997,
@@ -8136,8 +8136,8 @@
           273,
           409
         ],
-        "obs_v5_sha256_f32_le": "0863e203dadfda91cbe13971cdf5bf1db2f67e3823ea0262439647ae6e7fe1ef",
-        "obs_v5_dim": 6480
+        "obs_v5_sha256_f32_le": "6146a428029ae47a23442cb6cd9e20d833ddbdfaa2561e95296ccc08ed4a0811",
+        "obs_v5_dim": 7128
       }
     }
   ]

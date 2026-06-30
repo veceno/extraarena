@@ -27,6 +27,7 @@ use trainv3_core::worker::{
     ObservationOutput, TerminalObservationOutput, WorkerRng,
 };
 use trainv3_core::OBS_DIM_V1;
+use trainv3_core::v5::OBS_DIM_V5;
 
 #[test]
 fn rust_kernel_matches_python_initial_golden_snapshot() {
@@ -507,13 +508,13 @@ fn batched_rollout_worker_matches_python_trace_with_internal_history() {
     assert_snapshot_slice_matches(
         &initial.observation_v5,
         0,
-        6480,
+        OBS_DIM_V5,
         &trace.initial.obs_v5_sha256_f32_le,
     );
     assert_snapshot_slice_matches(
         &initial.observation_v5,
         1,
-        6480,
+        OBS_DIM_V5,
         &trace.initial.obs_v5_sha256_f32_le,
     );
 
@@ -547,13 +548,13 @@ fn batched_rollout_worker_matches_python_trace_with_internal_history() {
         assert_snapshot_slice_matches(
             &out.observation_v5,
             0,
-            6480,
+            OBS_DIM_V5,
             &step.post.obs_v5_sha256_f32_le,
         );
         assert_snapshot_slice_matches(
             &out.observation_v5,
             1,
-            6480,
+            OBS_DIM_V5,
             &step.post.obs_v5_sha256_f32_le,
         );
         assert_snapshot_slice_matches(
@@ -605,7 +606,7 @@ fn trace_pool_slots_keep_their_seeded_v5_info_modes() {
     .expect("compatible trace pool constructs");
 
     let hidden_flag = OBS_DIM_V1 + 3;
-    let visible_flag = 6480 + OBS_DIM_V1 + 3;
+    let visible_flag = OBS_DIM_V5 + OBS_DIM_V1 + 3;
     let initial = worker.encode_all();
     assert_eq!(initial.observation_v5[hidden_flag], 0.0);
     assert_eq!(initial.observation_v5[visible_flag], 1.0);
@@ -656,7 +657,7 @@ fn trace_pool_slots_keep_their_seeded_v5_assist_modes() {
     .expect("compatible trace pool constructs");
 
     let first = OBS_DIM_V1;
-    let second = 6480 + OBS_DIM_V1;
+    let second = OBS_DIM_V5 + OBS_DIM_V1;
     let initial = worker.encode_all();
     assert_eq!(initial.observation_v5[first + 9], 0.0);
     assert_eq!(initial.observation_v5[second + 9], 1.0);
@@ -759,16 +760,16 @@ fn batched_rollout_worker_resets_selected_envs_only() {
     worker.reset_indices(&[0, 2]).expect("selected envs reset");
     let reset = worker.encode_all();
     assert_eq!(
-        hash_slice(&reset.observation_v5, 0, 6480),
-        hash_slice(&initial.observation_v5, 0, 6480)
+        hash_slice(&reset.observation_v5, 0, OBS_DIM_V5),
+        hash_slice(&initial.observation_v5, 0, OBS_DIM_V5)
     );
     assert_ne!(
-        hash_slice(&reset.observation_v5, 1, 6480),
-        hash_slice(&initial.observation_v5, 1, 6480)
+        hash_slice(&reset.observation_v5, 1, OBS_DIM_V5),
+        hash_slice(&initial.observation_v5, 1, OBS_DIM_V5)
     );
     assert_eq!(
-        hash_slice(&reset.observation_v5, 2, 6480),
-        hash_slice(&initial.observation_v5, 2, 6480)
+        hash_slice(&reset.observation_v5, 2, OBS_DIM_V5),
+        hash_slice(&initial.observation_v5, 2, OBS_DIM_V5)
     );
     assert!(worker.reset_indices(&[3]).is_err());
 }
@@ -799,30 +800,30 @@ fn batched_rollout_worker_auto_resets_terminated_envs_after_step() {
     assert!((out.episode_returns[0] - terminal_expected.rewards[0]).abs() < 1e-6);
     assert!((out.episode_returns[1] - trace.steps[0].reward).abs() < 1e-6);
     assert_eq!(
-        hash_slice(&out.observation_v5, 0, 6480),
-        hash_slice(&initial.observation_v5, 0, 6480)
+        hash_slice(&out.observation_v5, 0, OBS_DIM_V5),
+        hash_slice(&initial.observation_v5, 0, OBS_DIM_V5)
     );
     assert_eq!(
-        hash_slice(&out.terminal_observation_v5, 0, 6480),
-        hash_slice(&terminal_expected.observation_v5, 0, 6480)
+        hash_slice(&out.terminal_observation_v5, 0, OBS_DIM_V5),
+        hash_slice(&terminal_expected.observation_v5, 0, OBS_DIM_V5)
     );
     assert_ne!(
-        hash_slice(&out.terminal_observation_v5, 0, 6480),
-        hash_slice(&out.observation_v5, 0, 6480)
+        hash_slice(&out.terminal_observation_v5, 0, OBS_DIM_V5),
+        hash_slice(&out.observation_v5, 0, OBS_DIM_V5)
     );
     assert_eq!(
-        hash_slice(&out.terminal_observation_v5, 1, 6480),
-        hash_zeroes(6480)
+        hash_slice(&out.terminal_observation_v5, 1, OBS_DIM_V5),
+        hash_zeroes(OBS_DIM_V5)
     );
     assert_ne!(
-        hash_slice(&out.observation_v5, 1, 6480),
-        hash_slice(&initial.observation_v5, 1, 6480)
+        hash_slice(&out.observation_v5, 1, OBS_DIM_V5),
+        hash_slice(&initial.observation_v5, 1, OBS_DIM_V5)
     );
 
     let encoded = worker.encode_all();
     assert_eq!(
-        hash_slice(&encoded.observation_v5, 0, 6480),
-        hash_slice(&initial.observation_v5, 0, 6480)
+        hash_slice(&encoded.observation_v5, 0, OBS_DIM_V5),
+        hash_slice(&initial.observation_v5, 0, OBS_DIM_V5)
     );
     assert_eq!(encoded.episode_lengths, vec![0, 1]);
     assert!((encoded.episode_returns[0] - 0.0).abs() < 1e-6);
@@ -843,9 +844,9 @@ fn ffi_worker_exposes_batched_tensor_buffers() {
             trainv3_worker_observation_v5_ptr(worker),
             trainv3_worker_observation_v5_len(worker),
         );
-        assert_eq!(obs_v5.len(), 2 * 6480);
-        assert_snapshot_slice_matches(&obs_v5, 0, 6480, &trace.initial.obs_v5_sha256_f32_le);
-        assert_snapshot_slice_matches(&obs_v5, 1, 6480, &trace.initial.obs_v5_sha256_f32_le);
+        assert_eq!(obs_v5.len(), 2 * OBS_DIM_V5);
+        assert_snapshot_slice_matches(&obs_v5, 0, OBS_DIM_V5, &trace.initial.obs_v5_sha256_f32_le);
+        assert_snapshot_slice_matches(&obs_v5, 1, OBS_DIM_V5, &trace.initial.obs_v5_sha256_f32_le);
     }
 
     let actions = [trace.steps[0].action_id, trace.steps[0].action_id];
@@ -877,10 +878,10 @@ fn ffi_worker_exposes_batched_tensor_buffers() {
             trainv3_worker_observation_v5_ptr(worker),
             trainv3_worker_observation_v5_len(worker),
         );
-        let reset_env0_hash = hash_slice(&reset_obs_v5, 0, 6480);
-        let reset_env1_hash = hash_slice(&reset_obs_v5, 1, 6480);
-        assert_snapshot_slice_matches(&reset_obs_v5, 0, 6480, &trace.initial.obs_v5_sha256_f32_le);
-        assert_snapshot_slice_matches(&reset_obs_v5, 1, 6480, &trace.initial.obs_v5_sha256_f32_le);
+        let reset_env0_hash = hash_slice(&reset_obs_v5, 0, OBS_DIM_V5);
+        let reset_env1_hash = hash_slice(&reset_obs_v5, 1, OBS_DIM_V5);
+        assert_snapshot_slice_matches(&reset_obs_v5, 0, OBS_DIM_V5, &trace.initial.obs_v5_sha256_f32_le);
+        assert_snapshot_slice_matches(&reset_obs_v5, 1, OBS_DIM_V5, &trace.initial.obs_v5_sha256_f32_le);
 
         let mixed_actions = [trace.steps[0].action_id, 0];
         assert_eq!(
@@ -896,8 +897,8 @@ fn ffi_worker_exposes_batched_tensor_buffers() {
             trainv3_worker_observation_v5_ptr(worker),
             trainv3_worker_observation_v5_len(worker),
         );
-        assert_ne!(hash_slice(&selected_reset_obs_v5, 0, 6480), reset_env0_hash);
-        assert_eq!(hash_slice(&selected_reset_obs_v5, 1, 6480), reset_env1_hash);
+        assert_ne!(hash_slice(&selected_reset_obs_v5, 0, OBS_DIM_V5), reset_env0_hash);
+        assert_eq!(hash_slice(&selected_reset_obs_v5, 1, OBS_DIM_V5), reset_env1_hash);
         let invalid_indices = [2_usize];
         assert_eq!(
             trainv3_worker_reset_indices(worker, invalid_indices.as_ptr(), invalid_indices.len()),
@@ -946,12 +947,12 @@ fn ffi_worker_seeds_env_slots_from_trace_json_pool() {
             trainv3_worker_observation_v5_ptr(worker),
             trainv3_worker_observation_v5_len(worker),
         );
-        assert_eq!(obs_v5.len(), 4 * 6480);
-        assert_snapshot_slice_matches(&obs_v5, 0, 6480, &trace_a.initial.obs_v5_sha256_f32_le);
-        assert_snapshot_slice_matches(&obs_v5, 1, 6480, &trace_b.initial.obs_v5_sha256_f32_le);
-        assert_snapshot_slice_matches(&obs_v5, 2, 6480, &trace_a.initial.obs_v5_sha256_f32_le);
-        assert_snapshot_slice_matches(&obs_v5, 3, 6480, &trace_b.initial.obs_v5_sha256_f32_le);
-        assert_ne!(hash_slice(&obs_v5, 0, 6480), hash_slice(&obs_v5, 1, 6480));
+        assert_eq!(obs_v5.len(), 4 * OBS_DIM_V5);
+        assert_snapshot_slice_matches(&obs_v5, 0, OBS_DIM_V5, &trace_a.initial.obs_v5_sha256_f32_le);
+        assert_snapshot_slice_matches(&obs_v5, 1, OBS_DIM_V5, &trace_b.initial.obs_v5_sha256_f32_le);
+        assert_snapshot_slice_matches(&obs_v5, 2, OBS_DIM_V5, &trace_a.initial.obs_v5_sha256_f32_le);
+        assert_snapshot_slice_matches(&obs_v5, 3, OBS_DIM_V5, &trace_b.initial.obs_v5_sha256_f32_le);
+        assert_ne!(hash_slice(&obs_v5, 0, OBS_DIM_V5), hash_slice(&obs_v5, 1, OBS_DIM_V5));
         assert_eq!(trainv3_worker_action_features_len(worker), 0);
         trainv3_worker_free(worker);
     }
@@ -991,7 +992,7 @@ fn ffi_worker_rolls_out_action_tape_in_one_call() {
             trainv3_worker_rewards_ptr(worker),
             trainv3_worker_rewards_len(worker),
         );
-        assert_eq!(obs_v5.len(), trace.steps.len() * env_count * 6480);
+        assert_eq!(obs_v5.len(), trace.steps.len() * env_count * OBS_DIM_V5);
         assert_eq!(rewards.len(), trace.steps.len() * env_count);
         assert_eq!(trainv3_worker_action_features_len(worker), 0);
 
@@ -1001,7 +1002,7 @@ fn ffi_worker_rolls_out_action_tape_in_one_call() {
                 assert_snapshot_slice_matches(
                     obs_v5,
                     row_idx,
-                    6480,
+                    OBS_DIM_V5,
                     &step.post.obs_v5_sha256_f32_le,
                 );
                 assert!(
@@ -1043,7 +1044,7 @@ fn ffi_worker_rolls_out_broadcast_action_ids_in_one_call() {
             trainv3_worker_rewards_ptr(worker),
             trainv3_worker_rewards_len(worker),
         );
-        assert_eq!(obs_v5.len(), trace.steps.len() * env_count * 6480);
+        assert_eq!(obs_v5.len(), trace.steps.len() * env_count * OBS_DIM_V5);
         assert_eq!(rewards.len(), trace.steps.len() * env_count);
         assert_eq!(trainv3_worker_action_features_len(worker), 0);
 
@@ -1053,7 +1054,7 @@ fn ffi_worker_rolls_out_broadcast_action_ids_in_one_call() {
                 assert_snapshot_slice_matches(
                     obs_v5,
                     row_idx,
-                    6480,
+                    OBS_DIM_V5,
                     &step.post.obs_v5_sha256_f32_le,
                 );
                 assert!(
@@ -1109,7 +1110,7 @@ fn ffi_worker_rolls_out_pre_step_action_tape_for_ppo_batches() {
             trainv3_worker_rewards_ptr(worker),
             trainv3_worker_rewards_len(worker),
         );
-        assert_eq!(obs_v5.len(), trace.steps.len() * env_count * 6480);
+        assert_eq!(obs_v5.len(), trace.steps.len() * env_count * OBS_DIM_V5);
         assert_eq!(rewards.len(), trace.steps.len() * env_count);
         assert_eq!(trainv3_worker_observation_v1_len(worker), 0);
         assert_eq!(trainv3_worker_action_mask_len(worker), 0);
@@ -1121,7 +1122,7 @@ fn ffi_worker_rolls_out_pre_step_action_tape_for_ppo_batches() {
             assert_snapshot_slice_matches(
                 obs_v5,
                 env_idx,
-                6480,
+                OBS_DIM_V5,
                 &trace.initial.obs_v5_sha256_f32_le,
             );
         }
@@ -1139,7 +1140,7 @@ fn ffi_worker_rolls_out_pre_step_action_tape_for_ppo_batches() {
             assert_snapshot_slice_matches(
                 obs_v5,
                 row_idx,
-                6480,
+                OBS_DIM_V5,
                 &trace.steps[0].post.obs_v5_sha256_f32_le,
             );
         }
@@ -1190,7 +1191,7 @@ fn ffi_worker_rolls_out_broadcast_pre_step_action_ids_for_ppo_batches() {
             trainv3_worker_rewards_ptr(worker),
             trainv3_worker_rewards_len(worker),
         );
-        assert_eq!(obs_v5.len(), trace.steps.len() * env_count * 6480);
+        assert_eq!(obs_v5.len(), trace.steps.len() * env_count * OBS_DIM_V5);
         assert_eq!(rewards.len(), trace.steps.len() * env_count);
         assert_eq!(trainv3_worker_observation_v1_len(worker), 0);
         assert_eq!(trainv3_worker_action_mask_len(worker), 0);
@@ -1202,7 +1203,7 @@ fn ffi_worker_rolls_out_broadcast_pre_step_action_ids_for_ppo_batches() {
             assert_snapshot_slice_matches(
                 obs_v5,
                 env_idx,
-                6480,
+                OBS_DIM_V5,
                 &trace.initial.obs_v5_sha256_f32_le,
             );
         }
@@ -1220,7 +1221,7 @@ fn ffi_worker_rolls_out_broadcast_pre_step_action_ids_for_ppo_batches() {
             assert_snapshot_slice_matches(
                 obs_v5,
                 row_idx,
-                6480,
+                OBS_DIM_V5,
                 &trace.steps[0].post.obs_v5_sha256_f32_le,
             );
         }
@@ -1242,15 +1243,15 @@ fn ffi_worker_can_omit_standalone_v1_observation_output() {
     unsafe {
         assert_eq!(trainv3_worker_observation_v1_len(worker), 0);
         assert_eq!(trainv3_worker_terminal_observation_v1_len(worker), 0);
-        assert_eq!(trainv3_worker_observation_v5_len(worker), 2 * 6480);
+        assert_eq!(trainv3_worker_observation_v5_len(worker), 2 * OBS_DIM_V5);
         assert_eq!(trainv3_worker_action_features_len(worker), 0);
 
         let obs_v5 = std::slice::from_raw_parts(
             trainv3_worker_observation_v5_ptr(worker),
             trainv3_worker_observation_v5_len(worker),
         );
-        assert_snapshot_slice_matches(&obs_v5, 0, 6480, &trace.initial.obs_v5_sha256_f32_le);
-        assert_snapshot_slice_matches(&obs_v5, 1, 6480, &trace.initial.obs_v5_sha256_f32_le);
+        assert_snapshot_slice_matches(&obs_v5, 0, OBS_DIM_V5, &trace.initial.obs_v5_sha256_f32_le);
+        assert_snapshot_slice_matches(&obs_v5, 1, OBS_DIM_V5, &trace.initial.obs_v5_sha256_f32_le);
         trainv3_worker_free(worker);
     }
 }
@@ -1269,7 +1270,7 @@ fn ffi_worker_can_omit_dense_action_mask_output() {
         assert_eq!(trainv3_worker_action_mask_len(worker), 0);
         assert_eq!(trainv3_worker_action_features_len(worker), 0);
         assert_eq!(trainv3_worker_legal_action_counts_len(worker), 2);
-        assert_eq!(trainv3_worker_observation_v5_len(worker), 2 * 6480);
+        assert_eq!(trainv3_worker_observation_v5_len(worker), 2 * OBS_DIM_V5);
         trainv3_worker_free(worker);
     }
 }
@@ -1288,7 +1289,7 @@ fn ffi_worker_can_omit_terminal_observation_output() {
         assert_eq!(trainv3_worker_terminal_observation_v1_len(worker), 0);
         assert_eq!(trainv3_worker_terminal_observation_v5_len(worker), 0);
         assert_eq!(trainv3_worker_terminal_observation_valid_len(worker), 2);
-        assert_eq!(trainv3_worker_observation_v5_len(worker), 2 * 6480);
+        assert_eq!(trainv3_worker_observation_v5_len(worker), 2 * OBS_DIM_V5);
         trainv3_worker_free(worker);
     }
 }
@@ -1319,8 +1320,8 @@ fn pre_step_action_tape_preallocates_fixed_rollout_buffers() {
         .expect("pre-step action tape rollout succeeds");
 
     let rows = trace.steps.len() * env_count;
-    assert_eq!(out.observation_v5.len(), rows * 6480);
-    assert_eq!(out.observation_v5.capacity(), rows * 6480);
+    assert_eq!(out.observation_v5.len(), rows * OBS_DIM_V5);
+    assert_eq!(out.observation_v5.capacity(), rows * OBS_DIM_V5);
     assert_eq!(out.selected_local_indices.len(), rows);
     assert_eq!(out.selected_local_indices.capacity(), rows);
     assert_eq!(out.rewards.capacity(), rows);
@@ -1349,7 +1350,7 @@ fn ffi_worker_can_omit_reset_and_episode_diagnostic_output() {
         assert_eq!(trainv3_worker_terminal_observation_valid_len(worker), 0);
         assert_eq!(trainv3_worker_episode_returns_len(worker), 0);
         assert_eq!(trainv3_worker_episode_lengths_len(worker), 0);
-        assert_eq!(trainv3_worker_observation_v5_len(worker), 2 * 6480);
+        assert_eq!(trainv3_worker_observation_v5_len(worker), 2 * OBS_DIM_V5);
         assert_eq!(trainv3_worker_legal_action_counts_len(worker), 2);
     }
 
@@ -1388,13 +1389,13 @@ fn ffi_worker_cycles_trace_pool_snapshots_on_reset() {
         assert_snapshot_slice_matches(
             initial_obs_v5,
             0,
-            6480,
+            OBS_DIM_V5,
             &trace_a.initial.obs_v5_sha256_f32_le,
         );
         assert_snapshot_slice_matches(
             initial_obs_v5,
             1,
-            6480,
+            OBS_DIM_V5,
             &trace_b.initial.obs_v5_sha256_f32_le,
         );
 
@@ -1406,13 +1407,13 @@ fn ffi_worker_cycles_trace_pool_snapshots_on_reset() {
         assert_snapshot_slice_matches(
             reset_once_obs_v5,
             0,
-            6480,
+            OBS_DIM_V5,
             &trace_b.initial.obs_v5_sha256_f32_le,
         );
         assert_snapshot_slice_matches(
             reset_once_obs_v5,
             1,
-            6480,
+            OBS_DIM_V5,
             &trace_a.initial.obs_v5_sha256_f32_le,
         );
 
@@ -1424,13 +1425,13 @@ fn ffi_worker_cycles_trace_pool_snapshots_on_reset() {
         assert_snapshot_slice_matches(
             reset_twice_obs_v5,
             0,
-            6480,
+            OBS_DIM_V5,
             &trace_a.initial.obs_v5_sha256_f32_le,
         );
         assert_snapshot_slice_matches(
             reset_twice_obs_v5,
             1,
-            6480,
+            OBS_DIM_V5,
             &trace_b.initial.obs_v5_sha256_f32_le,
         );
         trainv3_worker_free(worker);

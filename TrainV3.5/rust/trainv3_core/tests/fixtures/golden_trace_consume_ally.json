@@ -437,8 +437,8 @@
       1,
       137
     ],
-    "obs_v5_sha256_f32_le": "2cc5d12dc9a6b859a4e31a3b7e5ea32349bd40edec9d85d69f958dd1ca33586c",
-    "obs_v5_dim": 6480
+    "obs_v5_sha256_f32_le": "1705e3545f5586e19c0ee4699f5afd3c4e7b3bc83b0039b5b03367b89136dd2a",
+    "obs_v5_dim": 7128
   },
   "steps": [
     {
@@ -855,8 +855,8 @@
           1,
           137
         ],
-        "obs_v5_sha256_f32_le": "2cc5d12dc9a6b859a4e31a3b7e5ea32349bd40edec9d85d69f958dd1ca33586c",
-        "obs_v5_dim": 6480
+        "obs_v5_sha256_f32_le": "1705e3545f5586e19c0ee4699f5afd3c4e7b3bc83b0039b5b03367b89136dd2a",
+        "obs_v5_dim": 7128
       },
       "base_reward": 0.005,
       "reward": 0.0052999998442828655,
@@ -1305,8 +1305,8 @@
         "legal_ids": [
           0
         ],
-        "obs_v5_sha256_f32_le": "9d6f1bd74db5da4eb75611aef6547bc303c182ba874d16236764d5808a20fb97",
-        "obs_v5_dim": 6480
+        "obs_v5_sha256_f32_le": "2e584142b04b7abcb2833e608b25185c48b970eb944515611fe2393a9e74b791",
+        "obs_v5_dim": 7128
       }
     },
     {
@@ -1734,8 +1734,8 @@
         "legal_ids": [
           0
         ],
-        "obs_v5_sha256_f32_le": "9d6f1bd74db5da4eb75611aef6547bc303c182ba874d16236764d5808a20fb97",
-        "obs_v5_dim": 6480
+        "obs_v5_sha256_f32_le": "2e584142b04b7abcb2833e608b25185c48b970eb944515611fe2393a9e74b791",
+        "obs_v5_dim": 7128
       },
       "base_reward": 0.0,
       "reward": 0.0,
@@ -2200,8 +2200,8 @@
           273,
           409
         ],
-        "obs_v5_sha256_f32_le": "8b04a57ab8198760b6d1c03d295d720a82808692654296a3da1027663165274a",
-        "obs_v5_dim": 6480
+        "obs_v5_sha256_f32_le": "a3a625feaa57aa3ca4d27f178e9674940878e02cdd6dfc6dfea35b757a53db3d",
+        "obs_v5_dim": 7128
       }
     },
     {
@@ -2644,8 +2644,8 @@
           273,
           409
         ],
-        "obs_v5_sha256_f32_le": "8b04a57ab8198760b6d1c03d295d720a82808692654296a3da1027663165274a",
-        "obs_v5_dim": 6480
+        "obs_v5_sha256_f32_le": "a3a625feaa57aa3ca4d27f178e9674940878e02cdd6dfc6dfea35b757a53db3d",
+        "obs_v5_dim": 7128
       },
       "base_reward": 0.0,
       "reward": -0.01080000028014183,
@@ -3120,8 +3120,8 @@
           299,
           552
         ],
-        "obs_v5_sha256_f32_le": "e5f3fb38ab4e8df769da487e4cbccd4d67c2ff57849e0526090b6d5c1dcf26e1",
-        "obs_v5_dim": 6480
+        "obs_v5_sha256_f32_le": "4e541e34bd7cc71fdfeb958eb36382a6a87c71727a74344a6af1fd89adcd875e",
+        "obs_v5_dim": 7128
       }
     },
     {
@@ -3575,8 +3575,8 @@
           299,
           552
         ],
-        "obs_v5_sha256_f32_le": "e5f3fb38ab4e8df769da487e4cbccd4d67c2ff57849e0526090b6d5c1dcf26e1",
-        "obs_v5_dim": 6480
+        "obs_v5_sha256_f32_le": "4e541e34bd7cc71fdfeb958eb36382a6a87c71727a74344a6af1fd89adcd875e",
+        "obs_v5_dim": 7128
       },
       "base_reward": 0.015,
       "reward": 0.016499999910593033,
@@ -4059,8 +4059,8 @@
           18,
           163
         ],
-        "obs_v5_sha256_f32_le": "43b0f451548bb9842bc71f92be6820fab1db254a1de847659281287cb0bb9fe0",
-        "obs_v5_dim": 6480
+        "obs_v5_sha256_f32_le": "33f0c25ee53ed8e197a5b9c86977e3469815bcc2f79ec92e5cf7539c0a325a28",
+        "obs_v5_dim": 7128
       }
     }
   ]

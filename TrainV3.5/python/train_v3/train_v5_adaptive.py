@@ -163,7 +163,6 @@ def create_v5_default_model_optimizer(
 
     model = create_v5_policy(
         policy_kind=policy_kind,
-        obs_dim=6480,
         hidden_dim=int(hidden_dim),
         action_hidden_dim=int(action_hidden_dim),
     )

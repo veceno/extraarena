@@ -6,14 +6,15 @@ from typing import Any
 import numpy as np
 
 from ai.train_v2.classic_actions_v1 import _get_me_enemy
-from ai.train_v2.classic_card_shape_v1 import CARD_SHAPE_DIM, encode_card_shape
 from ai.train_v2.classic_obs_v1 import encode_observation
+from ai.train_v2.v5_card_shape_v1 import CARD_SHAPE_DIM_V5, encode_card_shape_v5
 
 from .contracts import (
     AssistModeV5,
     ENEMY_DECK_SLOTS,
     ENEMY_HAND_SLOTS,
     HISTORY_EVENT_DIM,
+    HISTORY_EVENT_SOURCE_OFFSET,
     HISTORY_EVENTS,
     InfoModeV5,
     OBS_V1_DIM,
@@ -91,7 +92,7 @@ def _encode_zone(dst: np.ndarray, offset: int, cards, slots: int, *, known: bool
             card = cards[slot]
             dst[base] = 1.0
             dst[base + 1] = min(max(float(card.card_id), 0.0) / CARD_ID_NORMALIZER, 1.0)
-            dst[base + 2 : base + 2 + CARD_SHAPE_DIM] = encode_card_shape(card)
+            dst[base + 2 : base + 2 + CARD_SHAPE_DIM_V5] = encode_card_shape_v5(card)
     return offset + slots * PRIVATE_CARD_SLOT_DIM
 
 
@@ -122,10 +123,12 @@ def _encode_one_event(dst: np.ndarray, player_id: int, event: dict[str, Any]) ->
 
     source_card = event.get("source_card")
     target_card = event.get("target_card")
+    src_off = HISTORY_EVENT_SOURCE_OFFSET
+    tgt_off = HISTORY_EVENT_SOURCE_OFFSET + CARD_SHAPE_DIM_V5
     if source_card is not None:
-        dst[16 : 16 + CARD_SHAPE_DIM] = encode_card_shape(source_card)
+        dst[src_off : src_off + CARD_SHAPE_DIM_V5] = encode_card_shape_v5(source_card)
     if target_card is not None:
-        dst[80 : 80 + CARD_SHAPE_DIM] = encode_card_shape(target_card)
+        dst[tgt_off : tgt_off + CARD_SHAPE_DIM_V5] = encode_card_shape_v5(target_card)
 
 
 def _signed_norm(value: Any, divisor: float) -> float:

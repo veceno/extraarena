@@ -471,8 +471,8 @@
     "legal_ids": [
       0
     ],
-    "obs_v5_sha256_f32_le": "3c559525782e11e339a668294b63dfd5a3c1a9de6ba967d0adbaddcf0f728b13",
-    "obs_v5_dim": 6480
+    "obs_v5_sha256_f32_le": "be8af58f320468793b3e152ccfc7f82b2eafde879ee28494e3fefd3da0fc2caa",
+    "obs_v5_dim": 7128
   },
   "steps": [
     {
@@ -923,8 +923,8 @@
         "legal_ids": [
           0
         ],
-        "obs_v5_sha256_f32_le": "3c559525782e11e339a668294b63dfd5a3c1a9de6ba967d0adbaddcf0f728b13",
-        "obs_v5_dim": 6480
+        "obs_v5_sha256_f32_le": "be8af58f320468793b3e152ccfc7f82b2eafde879ee28494e3fefd3da0fc2caa",
+        "obs_v5_dim": 7128
       },
       "base_reward": 0.02,
       "reward": 0.02177777700126171,
@@ -1411,8 +1411,8 @@
         "legal_ids": [
           0
         ],
-        "obs_v5_sha256_f32_le": "a67515eb905efb326462a8bba74e806f6b9979542c0ca57f79ecc361c0ae95cf",
-        "obs_v5_dim": 6480
+        "obs_v5_sha256_f32_le": "b74f9d9573f6859f7bf479b955291d214b4bccebab551ead965fee298050ae9f",
+        "obs_v5_dim": 7128
       }
     },
     {
@@ -1877,8 +1877,8 @@
         "legal_ids": [
           0
         ],
-        "obs_v5_sha256_f32_le": "a67515eb905efb326462a8bba74e806f6b9979542c0ca57f79ecc361c0ae95cf",
-        "obs_v5_dim": 6480
+        "obs_v5_sha256_f32_le": "b74f9d9573f6859f7bf479b955291d214b4bccebab551ead965fee298050ae9f",
+        "obs_v5_dim": 7128
       },
       "base_reward": 0.04,
       "reward": 0.04355555400252342,
@@ -2376,8 +2376,8 @@
           0,
           17
         ],
-        "obs_v5_sha256_f32_le": "6104e06afa10352c44b0705bfb0811e0325ef355591ce3744883ee4a5e10d7cc",
-        "obs_v5_dim": 6480
+        "obs_v5_sha256_f32_le": "33f7d46c788f08f2a848dedd3dee978eb7dbe8cbcebd0acdb5a9a3b98bfba393",
+        "obs_v5_dim": 7128
       }
     },
     {
@@ -2854,8 +2854,8 @@
           0,
           17
         ],
-        "obs_v5_sha256_f32_le": "6104e06afa10352c44b0705bfb0811e0325ef355591ce3744883ee4a5e10d7cc",
-        "obs_v5_dim": 6480
+        "obs_v5_sha256_f32_le": "33f7d46c788f08f2a848dedd3dee978eb7dbe8cbcebd0acdb5a9a3b98bfba393",
+        "obs_v5_dim": 7128
       },
       "base_reward": 0.04,
       "reward": 0.04355555400252342,
@@ -3362,8 +3362,8 @@
           0,
           17
         ],
-        "obs_v5_sha256_f32_le": "2bbe91c6f649f5a13c0ef8603783e8361df80ea69002b7fd5a720d836b72d066",
-        "obs_v5_dim": 6480
+        "obs_v5_sha256_f32_le": "e599fa119c9ea04fc0ab1cceb0b8b8eba724ddf51c3f7e7a282f1da96a5fa77b",
+        "obs_v5_dim": 7128
       }
     },
     {
@@ -3851,8 +3851,8 @@
           0,
           17
         ],
-        "obs_v5_sha256_f32_le": "2bbe91c6f649f5a13c0ef8603783e8361df80ea69002b7fd5a720d836b72d066",
-        "obs_v5_dim": 6480
+        "obs_v5_sha256_f32_le": "e599fa119c9ea04fc0ab1cceb0b8b8eba724ddf51c3f7e7a282f1da96a5fa77b",
+        "obs_v5_dim": 7128
       },
       "base_reward": 0.06,
       "reward": 0.06533333659172058,
@@ -4373,8 +4373,8 @@
           273,
           409
         ],
-        "obs_v5_sha256_f32_le": "0d5f9fe41d79968fe6d2c3ca8d793a3934539e2ba191ddf2fe8061449363d347",
-        "obs_v5_dim": 6480
+        "obs_v5_sha256_f32_le": "6700b9edfaf5dc8fea3557cdd5da41ca98512d72fba6426151b8de30bcea8502",
+        "obs_v5_dim": 7128
       }
     },
     {
@@ -4876,8 +4876,8 @@
           273,
           409
         ],
-        "obs_v5_sha256_f32_le": "0d5f9fe41d79968fe6d2c3ca8d793a3934539e2ba191ddf2fe8061449363d347",
-        "obs_v5_dim": 6480
+        "obs_v5_sha256_f32_le": "6700b9edfaf5dc8fea3557cdd5da41ca98512d72fba6426151b8de30bcea8502",
+        "obs_v5_dim": 7128
       },
       "base_reward": 0.06,
       "reward": 0.06533333659172058,
@@ -5408,8 +5408,8 @@
           137,
           273
         ],
-        "obs_v5_sha256_f32_le": "10fa33a827538b2e904b510feb17c03f18541e098383071c4c8a8b26e82e84d9",
-        "obs_v5_dim": 6480
+        "obs_v5_sha256_f32_le": "d8e64d760f4f74a5ab964eb9d4b647714fe324f17e9a9378c5a0dd4c7dc8bc2a",
+        "obs_v5_dim": 7128
       }
     },
     {
@@ -5921,8 +5921,8 @@
           137,
           273
         ],
-        "obs_v5_sha256_f32_le": "10fa33a827538b2e904b510feb17c03f18541e098383071c4c8a8b26e82e84d9",
-        "obs_v5_dim": 6480
+        "obs_v5_sha256_f32_le": "d8e64d760f4f74a5ab964eb9d4b647714fe324f17e9a9378c5a0dd4c7dc8bc2a",
+        "obs_v5_dim": 7128
       },
       "base_reward": 0.08,
       "reward": 0.08711110800504684,
@@ -6465,8 +6465,8 @@
           273,
           409
         ],
-        "obs_v5_sha256_f32_le": "3859abd598438eb9cee736f124f10fd8b3318b409fe1ea05703124280cfbf8f8",
-        "obs_v5_dim": 6480
+        "obs_v5_sha256_f32_le": "496d55142cb18d5e26a5f341975ac226b336d23c4f6c88a64a4f5d9757e06a7d",
+        "obs_v5_dim": 7128
       }
     },
     {
@@ -6990,8 +6990,8 @@
           273,
           409
         ],
-        "obs_v5_sha256_f32_le": "3859abd598438eb9cee736f124f10fd8b3318b409fe1ea05703124280cfbf8f8",
-        "obs_v5_dim": 6480
+        "obs_v5_sha256_f32_le": "496d55142cb18d5e26a5f341975ac226b336d23c4f6c88a64a4f5d9757e06a7d",
+        "obs_v5_dim": 7128
       },
       "base_reward": 0.08,
       "reward": 0.08711110800504684,
@@ -7544,8 +7544,8 @@
           137,
           273
         ],
-        "obs_v5_sha256_f32_le": "577a09bab35649ed8226c36b982ae389ae0b11ae21b67bdedffdc21c6c657c10",
-        "obs_v5_dim": 6480
+        "obs_v5_sha256_f32_le": "3ddb3de802dc96a5872d17755cf085ac79ef1af7dbd2f5998e11c048d5940c76",
+        "obs_v5_dim": 7128
       }
     },
     {
@@ -8079,8 +8079,8 @@
           137,
           273
         ],
-        "obs_v5_sha256_f32_le": "577a09bab35649ed8226c36b982ae389ae0b11ae21b67bdedffdc21c6c657c10",
-        "obs_v5_dim": 6480
+        "obs_v5_sha256_f32_le": "3ddb3de802dc96a5872d17755cf085ac79ef1af7dbd2f5998e11c048d5940c76",
+        "obs_v5_dim": 7128
       },
       "base_reward": 0.1,
       "reward": 0.1088888868689537,
@@ -8645,8 +8645,8 @@
           273,
           409
         ],
-        "obs_v5_sha256_f32_le": "5ec772fa3adbc4f4eea053a2bd4a1870801da7e6cbe7b5214a91d6cb5f60524b",
-        "obs_v5_dim": 6480
+        "obs_v5_sha256_f32_le": "a9c2bbb4a1991e79cc94d69155cf9b7d35be36dab7100848075772cab9ff74bf",
+        "obs_v5_dim": 7128
       }
     }
   ]
