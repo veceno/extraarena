@@ -40,6 +40,16 @@ pub const GAME_BOARD_CAP: usize = 5;
 // N-th mana draw in a turn costs `MANA_DRAW_BASE * (count + 1)` (2, 4, 6, ...).
 const MANA_DRAW_BASE: i32 = 2;
 
+// Normalizer for the mana_draw_count_this_turn V5 global channel (spec §6.184).
+// Grounded in the ruleset: max_mana is capped at 10 (core/engine.py:695) and
+// each mana draw costs MANA_DRAW_BASE * (count + 1), so the mana pool holds
+// max_mana / MANA_DRAW_BASE = 10/2 = 5 base-cost units. The per-turn draw count
+// is normalized by 5 — count >= 5 clips to 1.0, covering the realistic 0..3
+// per-turn range with resolution. Mirrors Python
+// `obs_v5.MANA_DRAW_COUNT_NORMALIZER` and the classic `norm(v, div)` convention
+// so Python<->Rust stay byte-for-byte (both do f64 div -> min(1.0) -> f32 cast).
+const MANA_DRAW_COUNT_NORMALIZER: f32 = 5.0;
+
 /// Recorded-outcome RNG for draws (task #14, closes Phase-1 gap DW-7 for
 /// multi-card decks).
 ///
@@ -2408,6 +2418,7 @@ fn encode_observation_v5_from_v1(
     let mut out = vec![0.0_f32; OBS_DIM_V5];
     out[..OBS_DIM_V1].copy_from_slice(observation_v1);
     let global_base = OBS_DIM_V1;
+    let (me, _enemy) = state.players_for(player_id);
     out[global_base] = info_mode.clipped_strength();
     out[global_base + 1] = bool_f32(info_mode.own_hand_identity_known);
     out[global_base + 2] = bool_f32(info_mode.own_deck_known);
@@ -2423,6 +2434,13 @@ fn encode_observation_v5_from_v1(
     out[global_base + 12] = assist_mode.clipped_desirerer_strength();
     out[global_base + 13] = bool_f32(assist_mode.teacher_hint_available);
     out[global_base + 14] = assist_mode.clipped_profile_id() as f32 / 16.0;
+    // mana_draw_count_this_turn channel (spec §6.184): the count of player-
+    // initiated mana draws taken this turn (KernelPlayer.mana_draw_count_this_turn,
+    // mirroring core/state.py:144), reset to 0 at the start of each owner turn
+    // (kernel.rs apply_end_turn). Normalized by MANA_DRAW_COUNT_NORMALIZER and
+    // clipped to [0, 1] via `norm`; matches Python obs_v5._encode_globals_v5
+    // dst[15] byte-for-byte.
+    out[global_base + 15] = norm(me.mana_draw_count_this_turn as f32, MANA_DRAW_COUNT_NORMALIZER);
 
     let private_base = global_base + V5_GLOBAL_DIM;
     encode_private_info_v5(
@@ -3644,6 +3662,77 @@ mod draw_tests {
         assert!(apply_mana_draw(&mut p, false, &mut draw_rng).is_ok());
         assert_eq!(p.mana, 0);
         assert_eq!(p.mana_draw_count_this_turn, 3);
+    }
+
+    // ---- Block 0 component 2: V5 global mana_draw_count channel (spec §6.184) ----
+
+    fn v5_state_with_mana_draw_count(count: i32) -> KernelState {
+        let mut p1 = player_with(Vec::new(), Vec::new());
+        p1.mana_draw_count_this_turn = count;
+        let mut p2 = player_with(Vec::new(), Vec::new());
+        p2.user_id = 2;
+        KernelState {
+            current_turn_owner_id: 1,
+            turn_number: 1,
+            status: "ongoing".to_string(),
+            p1,
+            p2,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn v5_global_mana_draw_count_channel_at_offset_15() {
+        // spec §6.184: the mana_draw_count_this_turn global channel lives at
+        // global block offset 15 (OBS_DIM_V1 + 15) and is normalized by
+        // MANA_DRAW_COUNT_NORMALIZER (5.0), clipped to [0, 1]. Mirrors Python
+        // obs_v5._encode_globals_v5 dst[15] byte-for-byte.
+        let base = OBS_DIM_V1;
+        for (count, expected) in [
+            (0, 0.0_f32),
+            (1, 0.2),
+            (2, 0.4),
+            (3, 0.6),
+            (5, 1.0),
+            (7, 1.0), // clipped
+        ] {
+            let state = v5_state_with_mana_draw_count(count);
+            let out = encode_observation_v5(
+                &state,
+                1,
+                InfoModeV5::default(),
+                AssistModeV5::default(),
+                &[],
+            );
+            assert_eq!(out.len(), OBS_DIM_V5);
+            // The channel value must match min(count/5, 1.0) (f32).
+            assert_eq!(
+                out[base + 15],
+                expected,
+                "mana_draw_count_this_turn={} should encode to {} at global[15]",
+                count,
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn v5_global_mana_draw_count_channel_is_zero_for_default_state() {
+        // A freshly-built default player has mana_draw_count_this_turn == 0
+        // (kernel.rs KernelPlayer Default), so the channel is 0.0 — this is
+        // why the seed123 / e2e_oracle golden fixtures (count==0 everywhere)
+        // keep their obs_v5 hash unchanged after the channel was added.
+        let state = KernelState {
+            current_turn_owner_id: 1,
+            turn_number: 1,
+            status: "ongoing".to_string(),
+            p1: KernelPlayer::default(),
+            p2: KernelPlayer::default(),
+            ..Default::default()
+        };
+        let out =
+            encode_observation_v5(&state, 1, InfoModeV5::default(), AssistModeV5::default(), &[]);
+        assert_eq!(out[OBS_DIM_V1 + 15], 0.0);
     }
 
     // ---- Phase 3: rebirth (REBIRTH-1) ----

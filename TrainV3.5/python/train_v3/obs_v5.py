@@ -28,6 +28,17 @@ from .contracts import (
 
 CARD_ID_NORMALIZER = 1000.0
 
+# Normalizer for the mana_draw_count_this_turn global channel (spec §6.184).
+# Grounded in the ruleset: max_mana is capped at 10 (core/engine.py:695) and
+# each player-initiated mana draw costs MANA_DRAW_BASE * (count + 1) = 2*(count+1)
+# (core/engine.py:784), so the mana pool holds max_mana / MANA_DRAW_BASE = 10/2
+# = 5 base-cost units. The per-turn draw count is therefore normalized by 5 —
+# count >= 5 clips to 1.0, covering the realistic 0..3 per-turn range with
+# resolution. Mirrors the classic globals convention `_norm(v, div) =
+# min(v/div, 1.0)` (classic_obs_v1._encode_globals) and the Rust kernel
+# `norm(value, divisor)` (kernel.rs) so Python<->Rust stay byte-for-byte.
+MANA_DRAW_COUNT_NORMALIZER = 5.0
+
 
 def encode_observation_v5(
     state,
@@ -42,8 +53,11 @@ def encode_observation_v5(
     out = np.zeros(OBS_V5_DIM, dtype=np.float32)
     out[:OBS_V1_DIM] = encode_observation(state, player_id)
 
+    me, _ = _get_me_enemy(state, player_id)
     gbase = OBS_V1_DIM
-    _encode_globals_v5(out[gbase : gbase + V5_GLOBAL_DIM], info_mode, assist_mode, history_events)
+    _encode_globals_v5(
+        out[gbase : gbase + V5_GLOBAL_DIM], info_mode, assist_mode, history_events, me
+    )
 
     pbase = gbase + V5_GLOBAL_DIM
     _encode_private_info(out[pbase : pbase + PRIVATE_INFO_DIM], state, player_id, info_mode)
@@ -58,6 +72,7 @@ def _encode_globals_v5(
     info_mode: InfoModeV5,
     assist_mode: AssistModeV5,
     history_events,
+    me,
 ) -> None:
     dst[0] = info_mode.clipped_strength()
     dst[1] = float(info_mode.own_hand_identity_known)
@@ -74,6 +89,12 @@ def _encode_globals_v5(
     dst[12] = assist_mode.clipped_desirerer_strength()
     dst[13] = float(assist_mode.teacher_hint_available)
     dst[14] = assist_mode.clipped_profile_id() / 16.0
+    # mana_draw_count_this_turn channel (spec §6.184): the count of player-
+    # initiated mana draws taken this turn (core/state.py:144), reset to 0 at
+    # the start of each owner turn (core/engine.py:699). Normalized by
+    # MANA_DRAW_COUNT_NORMALIZER (5.0) and clipped to [0, 1]; matches the Rust
+    # kernel `norm(mana_draw_count_this_turn, MANA_DRAW_COUNT_NORMALIZER)`.
+    dst[15] = min(float(me.mana_draw_count_this_turn) / MANA_DRAW_COUNT_NORMALIZER, 1.0)
 
 
 def _encode_private_info(dst: np.ndarray, state, player_id: int, info_mode: InfoModeV5) -> None:
@@ -136,4 +157,8 @@ def _signed_norm(value: Any, divisor: float) -> float:
     return max(-1.0, min(1.0, raw))
 
 
-__all__ = ["CARD_ID_NORMALIZER", "encode_observation_v5"]
+__all__ = [
+    "CARD_ID_NORMALIZER",
+    "MANA_DRAW_COUNT_NORMALIZER",
+    "encode_observation_v5",
+]
