@@ -69,7 +69,11 @@ def benchmark_compact_legal_policy_inference(
 
     dense_start = time.perf_counter()
     for _ in range(iterations):
-        logits, values = model(obs, dense_features)
+        _out = model(obs, dense_features)
+        # V5 returns (logits, value, mana_draw_logit); baseline returns
+        # (logits, value). The dense benchmark scores the 601 candidates only,
+        # so drop any 3rd element. Indexing is robust to both arities.
+        logits, values = _out[0], _out[1]
         mx.eval(logits, values)
     dense_elapsed = time.perf_counter() - dense_start
 

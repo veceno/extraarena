@@ -76,6 +76,13 @@ class V5ActionConditionedPolicy(nn.Module):
         self.action_encoder = nn.Linear(action_feature_dim, action_hidden_dim)
         self.candidate_scorer = nn.Linear(hidden_dim + action_hidden_dim, 1)
         self.value_head = nn.Linear(hidden_dim, 1)
+        # Parallel binary mana_draw head (Block 0 component 3 / spec §0.89
+        # decision γ). This is NOT a 602nd candidate — MAX_CANDIDATE_ACTIONS=601
+        # stays frozen (classic_actions_v1.py:46); ManaDrawAction is
+        # core/actions.py:76, outside the 601 space. The head reads the same
+        # fused state_emb as value_head; its logit is gated by the legal mask
+        # from mana_draw_head_v5.mana_draw_legal_mask (illegal → -inf).
+        self.mana_draw_head = nn.Linear(hidden_dim, 1)
 
     def encode_state(self, obs):
         import mlx.core as mx
@@ -96,7 +103,23 @@ class V5ActionConditionedPolicy(nn.Module):
         ]
         return self.state_fuser(mx.concatenate(state_parts, axis=-1))
 
-    def __call__(self, obs, action_features):
+    def __call__(self, obs, action_features, mana_draw_legal=None):
+        """Forward pass.
+
+        Returns ``(candidate_logits, value, mana_draw_logit)``:
+          * ``candidate_logits`` — (batch, 601) over the FROZEN 601 candidate
+            space (untouched by the mana_draw head).
+          * ``value`` — (batch,) critic.
+          * ``mana_draw_logit`` — (batch,) parallel binary head (spec §0.89 γ).
+
+        ``mana_draw_legal`` (optional) gates the mana_draw head output. When
+        provided it is a bool or a (batch,) bool array: legal rows keep the raw
+        head logit, illegal rows are masked to ``-inf`` so the head can never
+        select an illegal mana_draw. When ``None`` the raw head logit is
+        returned and the caller applies ``mana_draw_head_v5.mana_draw_legal_mask``
+        externally. The 601 candidate path is never modified (no 602nd
+        candidate is added).
+        """
         import mlx.core as mx
 
         state_emb = self.encode_state(obs)
@@ -112,7 +135,21 @@ class V5ActionConditionedPolicy(nn.Module):
         joint = mx.reshape(joint, (batch * 601, self.hidden_dim + self.action_hidden_dim))
         logits = mx.reshape(self.candidate_scorer(joint), (batch, 601))
         value = self.value_head(state_emb).squeeze(-1)
-        return logits, value
+        # Parallel binary mana_draw head on the fused state_emb (same input as
+        # value_head). (batch, 1) → (batch,).
+        mana_draw_logit = self.mana_draw_head(state_emb).squeeze(-1)
+        if mana_draw_legal is not None:
+            # Gate the head: illegal → -inf (masked out of any selection).
+            # bool or (batch,) array; broadcast over the batch dim.
+            mask = mana_draw_legal
+            if isinstance(mask, bool):
+                mask = mx.array(mask)
+            else:
+                mask = mx.array(mask)
+            mana_draw_logit = mx.where(
+                mask, mana_draw_logit, mx.full(mana_draw_logit.shape, -mx.inf)
+            )
+        return logits, value, mana_draw_logit
 
 
 def create_v5_policy(

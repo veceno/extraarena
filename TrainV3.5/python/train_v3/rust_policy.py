@@ -757,7 +757,13 @@ def make_dense_argmax_policy(
 
         obs = observations if isinstance(observations, mx.array) else mx.array(observations)
         features = action_features if isinstance(action_features, mx.array) else mx.array(action_features)
-        logits, values = model(obs, features)
+        _out = model(obs, features)
+        # V5ActionConditionedPolicy returns (logits, value, mana_draw_logit);
+        # the baseline ActionConditionedPolicy returns (logits, value). This
+        # dense-argmax path selects over the 601 candidates only and ignores the
+        # parallel mana_draw head, so drop any 3rd element. Indexing (not tuple
+        # unpacking) is robust to both arities.
+        logits, values = _out[0], _out[1]
         logits_np = np.asarray(logits)
         values_np = np.asarray(values, dtype=np.float32)
         if selection_backend == "python":

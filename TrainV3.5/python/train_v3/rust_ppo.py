@@ -752,7 +752,11 @@ def evaluate_dense_rust_ppo_batch(
     obs = mx.array(flat["obs"])
     action_features = mx.array(flat["action_features"])
     mask = mx.array(flat["action_mask"])
-    logits, values = model(obs, action_features)
+    _out = model(obs, action_features)
+    # V5 returns (logits, value, mana_draw_logit); baseline returns (logits,
+    # value). This dense-PPO eval path scores the 601 candidates only, so drop
+    # any 3rd element. Indexing is robust to both arities.
+    logits, values = _out[0], _out[1]
     masked = mx.where(mask.astype(mx.bool_), logits, mx.array(-1.0e9, dtype=logits.dtype))
     probs = nn.softmax(masked, axis=-1)
 
