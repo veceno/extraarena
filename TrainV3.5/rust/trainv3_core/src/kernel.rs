@@ -1830,17 +1830,22 @@ fn encode_card_slots_v1(
     me: &KernelPlayer,
     enemy: &KernelPlayer,
 ) {
+    // 20-slot region: 2 heroes + 5 own board + 5 enemy board + 4 own hand
+    // + 4 zero padding (matches classic_obs_v1._encode_card_slots).
     write_shape(out, offset, Some(&me.hero), None, None, None);
     write_shape(out, offset, Some(&enemy.hero), None, None, None);
-    for i in 0..7 {
+    for i in 0..5 {
         write_shape(out, offset, me.board.get(i), Some(i), None, None);
     }
-    for i in 0..7 {
+    for i in 0..5 {
         write_shape(out, offset, enemy.board.get(i), Some(i), None, None);
     }
     for i in 0..4 {
         write_shape(out, offset, me.hand.get(i), None, Some(i), None);
     }
+    // `out` is zero-initialized by encode_observation_v1, so padding is just
+    // advancing the offset by 4 empty card-shape slots.
+    *offset += 4 * CARD_SHAPE_DIM;
 }
 
 fn write_shape(

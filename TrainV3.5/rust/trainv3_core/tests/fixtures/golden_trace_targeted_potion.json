@@ -321,9 +321,9 @@
           9
         ],
         "mask_sha256_f32_le": "598c7139205cda5fecb388a0f5f7d6b3e153fe7bf6ec4d200127f7bfb3a30dc4",
-        "obs_sha256_f32_le": "9976693898daf559b68e14a2579e9c3c3c80015fbb8c46676815f4ecbbd735e8",
+        "obs_sha256_f32_le": "372ec452b36991f78dc041044fad2ddca0fe92eacda165e344d9eda0318169d2",
         "obs_v5_dim": 6480,
-        "obs_v5_sha256_f32_le": "ae461195ec384b53b628d4b3e14b0f74af6c523513dc75f02278bdd1727b46ec",
+        "obs_v5_sha256_f32_le": "beec7857e9762826d5689ed4683811b0b56ef9295167949b2551e3327a0098fc",
         "state": {
           "current_turn_owner_id": 1,
           "p1": {
@@ -640,9 +640,9 @@
           9
         ],
         "mask_sha256_f32_le": "598c7139205cda5fecb388a0f5f7d6b3e153fe7bf6ec4d200127f7bfb3a30dc4",
-        "obs_sha256_f32_le": "9976693898daf559b68e14a2579e9c3c3c80015fbb8c46676815f4ecbbd735e8",
+        "obs_sha256_f32_le": "372ec452b36991f78dc041044fad2ddca0fe92eacda165e344d9eda0318169d2",
         "obs_v5_dim": 6480,
-        "obs_v5_sha256_f32_le": "ae461195ec384b53b628d4b3e14b0f74af6c523513dc75f02278bdd1727b46ec",
+        "obs_v5_sha256_f32_le": "beec7857e9762826d5689ed4683811b0b56ef9295167949b2551e3327a0098fc",
         "state": {
           "current_turn_owner_id": 1,
           "p1": {
