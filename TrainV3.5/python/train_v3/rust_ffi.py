@@ -1095,6 +1095,7 @@ class RustBatchWorker:
             raise ValueError(f"expected agent_codes shape ({self.env_count},), got {codes.shape}")
         rewards = np.empty((self.env_count,), dtype=np.float32)
         terminated_u8 = np.empty((self.env_count,), dtype=np.uint8)
+        truncated_u8 = np.empty((self.env_count,), dtype=np.uint8)
         reset_u8 = np.empty((self.env_count,), dtype=np.uint8)
         counts = np.empty((self.env_count,), dtype=np.uintp)
         rc = self._lib.trainv3_worker_advance_rule_until_actor(
@@ -1110,6 +1111,8 @@ class RustBatchWorker:
             ctypes.c_size_t(rewards.size),
             terminated_u8.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8)),
             ctypes.c_size_t(terminated_u8.size),
+            truncated_u8.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8)),
+            ctypes.c_size_t(truncated_u8.size),
             reset_u8.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8)),
             ctypes.c_size_t(reset_u8.size),
             counts.ctypes.data_as(ctypes.POINTER(ctypes.c_size_t)),
@@ -1122,6 +1125,7 @@ class RustBatchWorker:
         raw = self.arrays(copy=copy)
         raw["rule_learner_rewards"] = rewards
         raw["rule_terminated"] = _bool_view_from_u8(terminated_u8)
+        raw["rule_truncated"] = _bool_view_from_u8(truncated_u8)
         raw["rule_reset_flags"] = _bool_view_from_u8(reset_u8)
         raw["rule_action_counts"] = counts
         return raw
@@ -1820,6 +1824,8 @@ def _load_library(path: Path) -> ctypes.CDLL:
             ctypes.c_uint64,
             ctypes.c_uint8,
             ctypes.POINTER(ctypes.c_float),
+            ctypes.c_size_t,
+            ctypes.POINTER(ctypes.c_uint8),
             ctypes.c_size_t,
             ctypes.POINTER(ctypes.c_uint8),
             ctypes.c_size_t,

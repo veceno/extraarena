@@ -90,6 +90,38 @@ fn rust_kernel_apply_action_matches_extended_combat_python_transitions() {
 }
 
 #[test]
+fn rust_kernel_matches_python_e2e_oracle_multi_mechanic_with_attack() {
+    // True end-to-end Python-oracle fixture generated ENTIRELY from
+    // `golden_trace.build_golden_trace` with an EXPLICIT deck override
+    // (`--p1-deck-ids` / `--p2-deck-ids`), so re-simulation is legal and
+    // deterministic — unlike the legacy fixtures, whose state trajectory was
+    // frozen against the default deck pool (Phase 5 added card 51 and shifted
+    // the default-deck draw outcomes, so they can only be RE-ENCODED, never
+    // re-simulated).
+    //
+    // Scenario: multi-mechanic state with a minion attack + two ported
+    // mechanics. p1 plays Наофуми (card 30, `taunt`); p2 plays Крипер (card
+    // 34, `deathrattle_aoe_damage_2`); at step t6 p1 takes action_id 545 =
+    // _ATTACK_BASE(545) + att_idx(0)*_NUM_ATTACK_TARGETS(8) + tcode(0) → p1
+    // board[0] attacks p2 board[0], so att_pos = 0 (>= 0). This locks in the
+    // kernel-fix att_pos divisor (/6.0, mirroring
+    // ai/train_v2/classic_actions_v1.py:589) via the FULL matcher
+    // (assert_trace_transitions_match), which compares obs_v1 + obs_v5 +
+    // mask + action_features + reward byte-level — the modality closure.
+    //
+    // Single-card-type decks (p1 all 30, p2 all 34) make the end-of-turn draw
+    // deterministic across RNG modalities: the drawn CARD is always 30 / 34
+    // regardless of which deck index the weighted draw picks, and the deck
+    // zone is encoded in obs only as a SUMMARY (count + mean/max stats +
+    // mechanic tallies — classic_obs_v1._encode_one_zone), so the obs / mask
+    // / action_features are identical under both Python MT19937 and the
+    // `WorkerRng::Deterministic` zero-RNG this matcher uses.
+    let raw = include_str!("fixtures/golden_trace_e2e_oracle.json");
+    let trace: GoldenTrace = serde_json::from_str(raw).expect("fixture parses");
+    assert_trace_transitions_match(&trace);
+}
+
+#[test]
 fn rust_kernel_apply_action_matches_deathrattle_cleanup_current_python() {
     // Task #14 (DW-7): the deathrattle_cleanup fixture uses a MULTI-card deck
     // [37,27,28,41,40,42,29,38], so the Rust `WorkerRng::Deterministic`
@@ -188,6 +220,61 @@ fn rust_kernel_apply_action_matches_consume_ally_python_transitions() {
     let raw = include_str!("fixtures/golden_trace_consume_ally.json");
     let trace: GoldenTrace = serde_json::from_str(raw).expect("fixture parses");
     assert_trace_state_transitions_match(&trace);
+}
+
+#[test]
+fn rust_kernel_apply_action_matches_consume_ally_full_python_transitions() {
+    // CLN-3 full-board consume_ally parity: board.len()==5 + a consume_ally
+    // warrior (Канеки, card 20) in hand. The frozen codec mask
+    // (classic_actions_v1._mask_play_actions:228) does NOT exempt consume_ally,
+    // so the consume play is masked OUT at a full board (Rust's action_mask
+    // matches the frozen codec byte-for-byte — the prior incorrect exemption
+    // was reverted). The engine apply path (core/engine.py:1228 + kernel.rs
+    // apply_play_card board-full guard) STILL exempts consume_ally, so the
+    // play applies when FORCED. This test forces the action via
+    // apply_action_unchecked (mask-bypassing) and compares post-state JSON
+    // only (no mask comparison). The fixture is generated without monkey-
+    // patching the frozen codec: the consume play action_id is constructed
+    // directly and force-applied via the engine apply path in the generator.
+    let raw = include_str!("fixtures/golden_trace_consume_ally_full.json");
+    let trace: GoldenTrace = serde_json::from_str(raw).expect("fixture parses");
+    assert_trace_state_transitions_match_forced(&trace);
+}
+
+#[test]
+fn rust_kernel_apply_action_matches_mana_drain_python_transitions() {
+    // Phase 7 FIX 3 (mana_drain two-stage): card 12 Кража Маны
+    // (mana_drain_2) vs an opponent at mana=1. Immediate drain: opponent
+    // mana 1→0 (core/effects.py:540-580). Pending drain: 1 scheduled for the
+    // opponent's next turn via pending_mana_drain_by_player (core/state.py:183
+    // field). End-turn applies the pending: opponent mana 10→9
+    // (core/engine.py:700-703). The fixture's pre/post state payloads
+    // include pending_mana_drain_by_player so the cross-step scheduled drain
+    // is captured. State-transition only.
+    let raw = include_str!("fixtures/golden_trace_mana_drain.json");
+    let trace: GoldenTrace = serde_json::from_str(raw).expect("fixture parses");
+    assert_trace_state_transitions_match(&trace);
+}
+
+#[test]
+fn rust_kernel_apply_action_matches_cast_random_spell_python_transitions() {
+    // Phase 9 (CRS-1): card 26 Мидория (cast_random_spell, 5 mana 5/5). On play,
+    // the engine rolls random.randint(1,4) to pick one of 4 spells and applies
+    // it: 1) Texas Smash — 4+(level-1) damage to a random enemy minion
+    // (random.choice); 2) Recovery — 5+(level-1) heal to owner hero; 3) Black
+    // Whip — freeze_count = 2 if level>=5 else 1, freeze random.sample enemy
+    // minions (consume_shield blocks); 4) Full Cowl — 2+((level-1)/2) buff to
+    // the played card's attack/hp/max_hp. level is always 1 in the classic
+    // training env (deck_from_card_ids defaults level=1) → scaling is dmg=4,
+    // heal=5, freeze_count=1, buff=2. The fixture exercises all 4 spells across
+    // 9 casts (seed 400, 43 steps). The recorded-outcome RNG protocol threads
+    // randint_rolls (the 1..=4 spell pick), choice_rolls (spell 1 target) and
+    // sample_rolls (spell 3 freeze targets). All plays are mask-legal (no
+    // target required → no-target slot), so apply_action_unchecked (mask-
+    // bypassing but mask-legal here) applies cleanly. State-transition only.
+    let raw = include_str!("fixtures/golden_trace_cast_random_spell.json");
+    let trace: GoldenTrace = serde_json::from_str(raw).expect("fixture parses");
+    assert_trace_state_transitions_match_forced(&trace);
 }
 
 #[test]
@@ -1563,6 +1650,38 @@ fn assert_trace_state_transitions_match(trace: &GoldenTrace) {
         assert_eq!(
             actual_json, expected_json,
             "step {} post-state JSON mismatch",
+            step.t
+        );
+    }
+}
+
+/// Forced state-transition matcher: applies each step's action via
+/// `apply_action_unchecked` (mask-bypassing engine apply path) instead of the
+/// mask-checked `apply_action`. Used by the consume_ally_full parity test:
+/// the frozen codec mask masks the consume_ally play OUT at a full board (no
+/// exemption — Rust's action_mask matches the frozen codec byte-for-byte),
+/// but the engine apply path exempts consume_ally (core/engine.py:1228 +
+/// kernel.rs apply_play_card board-full guard), so the play applies when
+/// forced. Compares post-state JSON only (no mask comparison). Includes the
+/// `sample_rolls` recorded-outcome stream (Phase 9 cast_random_spell).
+fn assert_trace_state_transitions_match_forced(trace: &GoldenTrace) {
+    let kernel = RolloutKernel::new(KernelConfig::from_trace_config(&trace.env_config));
+    for step in &trace.steps {
+        let mut draw_rng = DrawRng::recorded_with_sample(
+            step.draw_picks.clone(),
+            step.reshuffle_orders.clone(),
+            step.randint_rolls.clone(),
+            step.choice_rolls.clone(),
+            step.sample_rolls.clone(),
+        );
+        let actual = kernel
+            .apply_action_unchecked(&step.pre.state, step.acting_player_id, step.action_id, &mut draw_rng)
+            .expect("forced scripted action applies");
+        let actual_json = serde_json::to_string(&actual.state).expect("serialize actual state");
+        let expected_json = serde_json::to_string(&step.post.state).expect("serialize expected state");
+        assert_eq!(
+            actual_json, expected_json,
+            "step {} post-state JSON mismatch (forced)",
             step.t
         );
     }

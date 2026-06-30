@@ -998,7 +998,7 @@
         "status": "ongoing"
       },
       "post": {
-        "action_features_sha256_f32_le": "bd9563667237d1501fc0f4b379a95b065dce4ee64262d28c725917777766a6ad",
+        "action_features_sha256_f32_le": "ffa569e5f6ee852315c16cb4198aff3372a07b3fd8ee7c7f84e31de2064f79f0",
         "history_events": [
           {
             "action_id": 1,
@@ -1650,7 +1650,7 @@
         "state_sha256": "9706ed9df549b63bd260c814f4af00a6075caf585fa2b8a5b9225bd3af539b29"
       },
       "pre": {
-        "action_features_sha256_f32_le": "bd9563667237d1501fc0f4b379a95b065dce4ee64262d28c725917777766a6ad",
+        "action_features_sha256_f32_le": "ffa569e5f6ee852315c16cb4198aff3372a07b3fd8ee7c7f84e31de2064f79f0",
         "history_events": [
           {
             "action_id": 1,
@@ -2362,7 +2362,7 @@
         "status": "ongoing"
       },
       "post": {
-        "action_features_sha256_f32_le": "bbfa5ea149a1d0b8ba8f7e15fdae4fb9a06e65a12329d31cbb6a673406817b6b",
+        "action_features_sha256_f32_le": "b28a5af783431572d64d4f700095d1e91b81883d1bbf8140e1ebd8eb99387d79",
         "history_events": [
           {
             "action_id": 1,
@@ -3116,7 +3116,7 @@
         "state_sha256": "d8bf173a794cc195cab8abd3ea8257e579becfd81ed4c695ebd68cb52a76cb5e"
       },
       "pre": {
-        "action_features_sha256_f32_le": "bbfa5ea149a1d0b8ba8f7e15fdae4fb9a06e65a12329d31cbb6a673406817b6b",
+        "action_features_sha256_f32_le": "b28a5af783431572d64d4f700095d1e91b81883d1bbf8140e1ebd8eb99387d79",
         "history_events": [
           {
             "action_id": 1,

@@ -79,6 +79,16 @@ pub enum DrawRng<'a> {
         /// `random.choice` so the streams stay aligned. Default empty for
         /// pre-Phase-6 fixtures.
         choice_rolls: VecDeque<i32>,
+        /// Per-step recorded `random.sample` outcomes (Phase 9: card26
+        /// `cast_random_spell` Blackwhip freeze-target pick). Each entry is the
+        /// list of 0-based indices into the Python `population` list
+        /// (`unfrozen_enemies = [u for u in opponent.board if not
+        /// u.is_frozen]`) that `random.sample(population, k)` returned, in
+        /// selection order. Popped in call order by `roll_sample`. Rust must
+        /// call `roll_sample` in exactly the same places Python calls
+        /// `random.sample` so the streams stay aligned. Default empty for
+        /// pre-Phase-9 fixtures (no `random.sample` mechanic exercised).
+        sample_rolls: VecDeque<Vec<i32>>,
     },
 }
 
@@ -91,6 +101,9 @@ impl<'a> DrawRng<'a> {
     }
 
     /// Build a `Recorded` DrawRng from a fixture step's recorded outcomes.
+    /// `sample_rolls` defaults empty (pre-Phase-9 fixtures never exercise
+    /// `random.sample`). Kept as a 4-arg constructor so existing unit tests
+    /// that don't touch `cast_random_spell` stay unchanged.
     pub fn recorded(
         picks: Vec<usize>,
         orders: Vec<Vec<i32>>,
@@ -102,6 +115,26 @@ impl<'a> DrawRng<'a> {
             orders: orders.into(),
             randint_rolls: randint_rolls.into(),
             choice_rolls: choice_rolls.into(),
+            sample_rolls: VecDeque::new(),
+        }
+    }
+
+    /// Build a `Recorded` DrawRng including the `random.sample` outcome
+    /// stream (Phase 9: card26 `cast_random_spell` Blackwhip). Use this for
+    /// fixtures that exercise `random.sample`; otherwise prefer `recorded`.
+    pub fn recorded_with_sample(
+        picks: Vec<usize>,
+        orders: Vec<Vec<i32>>,
+        randint_rolls: Vec<i32>,
+        choice_rolls: Vec<i32>,
+        sample_rolls: Vec<Vec<i32>>,
+    ) -> Self {
+        DrawRng::Recorded {
+            picks: picks.into(),
+            orders: orders.into(),
+            randint_rolls: randint_rolls.into(),
+            choice_rolls: choice_rolls.into(),
+            sample_rolls: sample_rolls.into(),
         }
     }
 
@@ -144,18 +177,39 @@ impl<'a> DrawRng<'a> {
 /// with a debug warning (keeps replay robust, mirrors the pick/order
 /// exhaustion contract). `Live`: `rng.gen_range(min..=max)`.
 fn roll_range(min: i32, max: i32, draw_rng: &mut DrawRng) -> i32 {
-    if min >= max {
-        return min;
-    }
+    // Python `random.randint(a, a)` (min>=max degenerate range, e.g. armor_X_X)
+    // STILL consumes the RNG stream — `golden_trace._recording_randint`
+    // appends unconditionally. To keep the recorded-outcome stream aligned
+    // across degenerate rolls, pop the recorded value BEFORE the min>=max
+    // early-return guard (Phase-4 latent: degenerate armor_X_X stream
+    // misalignment). Live mode mirrors Python's unconditional `randint` call
+    // by going through the gen_range path below only when min<max (a
+    // degenerate live range would panic in gen_range, so keep the guard for
+    // Live, but Recorded pops first).
     match draw_rng {
-        DrawRng::Recorded { randint_rolls, .. } => randint_rolls.pop_front().unwrap_or_else(|| {
-            eprintln!(
-                "[DrawRng] recorded randint stream exhausted; falling back to min={}"
-            , min
-            );
-            min
-        }),
-        DrawRng::Live(rng) => rng.gen_range(min..=max),
+        DrawRng::Recorded { randint_rolls, .. } => {
+            let rolled = randint_rolls.pop_front().unwrap_or_else(|| {
+                eprintln!(
+                    "[DrawRng] recorded randint stream exhausted; falling back to min={}",
+                    min
+                );
+                min
+            });
+            if min >= max {
+                // Degenerate range: Python still consumed the stream; Rust has
+                // now popped it. Return min (Python's randint(a,a)==a).
+                min
+            } else {
+                rolled.clamp(min, max)
+            }
+        }
+        DrawRng::Live(rng) => {
+            if min >= max {
+                min
+            } else {
+                rng.gen_range(min..=max)
+            }
+        }
     }
 }
 
@@ -175,9 +229,12 @@ fn roll_choice(n: usize, draw_rng: &mut DrawRng) -> usize {
     if n == 0 {
         return 0;
     }
-    if n == 1 {
-        return 0;
-    }
+    // For the Recorded path, Python's `random.choice([x])` still consumes RNG
+    // via `_randbelow(1) -> getrandbits(1)`, and golden_trace `_recording_choice`
+    // ALWAYS appends a choice_roll (idx 0). So we must pop `choice_rolls` even
+    // when `n == 1` to keep the stream in sync with Python. The popped value is
+    // discarded (clamped to 0). For the Live path, n==1 is a no-op short-circuit
+    // (no RNG consumed — `gen_range(0..1)` would be a no-op anyway).
     match draw_rng {
         DrawRng::Recorded { choice_rolls, .. } => {
             let raw = choice_rolls.pop_front().unwrap_or_else(|| {
@@ -186,10 +243,63 @@ fn roll_choice(n: usize, draw_rng: &mut DrawRng) -> usize {
                 );
                 0
             });
+            // Clamp guards against stale/out-of-range fixture entries.
             let idx = raw.clamp(0, (n - 1) as i32) as usize;
             idx
         }
-        DrawRng::Live(rng) => rng.gen_range(0..n),
+        DrawRng::Live(_rng) => {
+            if n == 1 {
+                return 0;
+            }
+            _rng.gen_range(0..n)
+        }
+    }
+}
+
+/// Mirror of Python `random.sample(population, k)` — returns the list of
+/// 0-based indices into a population of length `n` that `random.sample`
+/// selected, in selection order. Used by card26 `cast_random_spell` spell 3
+/// (Blackwhip): `targets_to_freeze = random.sample(unfrozen_enemies,
+/// min(freeze_count, len(unfrozen_enemies)))`. Rust must call this in the
+/// SAME code paths Python calls `random.sample` so the recorded-outcome
+/// stream (`DrawRng::Recorded.sample_rolls`) replays in call order.
+///
+/// `Recorded`: pop the next recorded index-list; if exhausted fall back to a
+/// deterministic prefix `[0, 1, ..., k-1]` (keeps replay robust, mirrors the
+/// pick/order/choice exhaustion contract). The popped indices are clamped to
+/// `[0, n)` so a stale fixture entry can't index out of bounds. `Live`: draw
+/// `k` distinct indices from `0..n` using the same `StdRng` the worker uses
+/// (matches Python's *distribution*, not its MT19937 stream —
+/// recorded-outcome fixtures pin byte-parity, live training just needs a
+/// valid sample).
+fn roll_sample(n: usize, k: usize, draw_rng: &mut DrawRng) -> Vec<usize> {
+    let k = k.min(n);
+    if k == 0 || n == 0 {
+        return Vec::new();
+    }
+    match draw_rng {
+        DrawRng::Recorded { sample_rolls, .. } => {
+            let indices = sample_rolls.pop_front().unwrap_or_else(|| {
+                eprintln!(
+                    "[DrawRng] recorded sample stream exhausted; falling back to prefix"
+                );
+                (0..k as i32).collect::<Vec<_>>()
+            });
+            indices
+                .into_iter()
+                .map(|i| (i.clamp(0, (n - 1) as i32)) as usize)
+                .take(k)
+                .collect()
+        }
+        DrawRng::Live(rng) => {
+            // Fisher-Yates partial shuffle on 0..n, take the first k.
+            let mut perm: Vec<usize> = (0..n).collect();
+            for i in 0..k {
+                let j = rng.gen_range(i..n);
+                perm.swap(i, j);
+            }
+            perm[..k].to_vec()
+        }
     }
 }
 
@@ -338,6 +448,14 @@ pub struct GoldenStep {
     /// fixtures (no `random.choice` mechanic exercised → no replay needed).
     #[serde(default)]
     pub choice_rolls: Vec<i32>,
+    /// Recorded-outcome RNG (Phase 9): every `random.sample` result during
+    /// this step, as the list of 0-based indices into the Python `population`
+    /// list (card26 `cast_random_spell` Blackwhip freeze-target pick:
+    /// `unfrozen_enemies = [u for u in opponent.board if not u.is_frozen]`).
+    /// Rust replay pops these in call order via `roll_sample`. Default empty
+    /// for pre-Phase-9 fixtures (no `random.sample` mechanic exercised).
+    #[serde(default)]
+    pub sample_rolls: Vec<Vec<i32>>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -362,6 +480,16 @@ pub struct KernelState {
     /// same turn). Empty when sudden-death is disabled.
     #[serde(default)]
     pub sudden_death_last_applied_turn_by_player: BTreeMap<i32, i32>,
+    /// Mirrors `core/state.py:183::GameState.pending_mana_drain_by_player`.
+    /// Maps opponent `user_id` → mana scheduled to be drained at the START of
+    /// that opponent's next turn (after their mana is restored to max_mana).
+    /// Two-stage mana_drain (core/effects.py:540-580 schedules the pending
+    /// overflow during play; core/engine.py:700-703 pops & applies it inside
+    /// `_handle_end_turn` after `opponent.mana = opponent.max_mana`). BTreeMap
+    /// for deterministic iteration/serialization. Empty by default; old
+    /// fixtures have no such field so `#[serde(default)]` keeps them parsing.
+    #[serde(default)]
+    pub pending_mana_drain_by_player: BTreeMap<i32, i32>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -680,6 +808,45 @@ impl RolloutKernel {
             return Err("illegal_action".to_string());
         }
 
+        self.apply_decoded(state, player_id, action_id, draw_rng)
+    }
+
+    /// Force-apply a (possibly mask-illegal) action via the engine apply path,
+    /// BYPASSING the 601 action_mask legality check. Test-only — used by the
+    /// consume_ally_full state-transition parity test: the frozen codec mask
+    /// (classic_actions_v1._mask_play_actions) masks the consume_ally play OUT
+    /// at a full board (no exemption), but core/engine.py:1228 + the Rust
+    /// apply_play_card board-full guard DO exempt consume_ally, so the play
+    /// succeeds when forced. `mana_draw_flag` MUST be false (the unchecked
+    /// path is for forced 601-action plays, never the parallel mana_draw head).
+    pub fn apply_action_unchecked(
+        &self,
+        state: &KernelState,
+        player_id: i32,
+        action_id: usize,
+        draw_rng: &mut DrawRng,
+    ) -> Result<KernelStepOutput, String> {
+        if state.status != "ongoing" {
+            return Err("game_over".to_string());
+        }
+        if state.current_turn_owner_id != player_id {
+            return Err("not_your_turn".to_string());
+        }
+        self.apply_decoded(state, player_id, action_id, draw_rng)
+    }
+
+    /// Post-decode apply body shared by `apply_action` (mask-checked) and
+    /// `apply_action_unchecked` (mask-bypassed). Decodes `action_id`, applies
+    /// it via the engine apply path (apply_end_turn / apply_play_card /
+    /// apply_attack), runs cleanup_dead_units + check_game_over, and computes
+    /// the reward + v5 components.
+    fn apply_decoded(
+        &self,
+        state: &KernelState,
+        player_id: i32,
+        action_id: usize,
+        draw_rng: &mut DrawRng,
+    ) -> Result<KernelStepOutput, String> {
         let mut next = state.clone();
         let overdraw_to_discard = self.config.overdraw_to_discard;
         match decode_action_id(action_id) {
@@ -774,6 +941,16 @@ fn mask_play_actions(mask: &mut [f32], me: &KernelPlayer, enemy: &KernelPlayer) 
             continue;
         }
         let is_warrior = card.is_warrior();
+        // MASK guard: mirrors the frozen codec
+        // `classic_actions_v1._mask_play_actions` (line ~228):
+        //   `if is_warrior and len(me.board) >= _NUM_BOARD: continue`
+        // — NO consume_ally exemption. The frozen mask masks the consume_ally
+        // play OUT at a full board (the model never sees it), even though the
+        // APPLY path (apply_play_card below) and core/engine.py:1228 DO exempt
+        // consume_ally (the consumed ally is removed before the new card is
+        // placed, so net board size stays 5). Rust's action_mask must match the
+        // frozen codec byte-for-byte; the apply path mirrors engine.py:1228.
+        // Phase-2: CLN-3 mask parity (reverted the prior incorrect exemption).
         if is_warrior && me.board.len() >= GAME_BOARD_CAP {
             continue;
         }
@@ -1077,12 +1254,29 @@ fn apply_end_turn(
         }
     }
 
+    // Mana-drain pending pop (mirrors core/engine.py:700-703, inside
+    // `_handle_end_turn`): after `opponent.mana = opponent.max_mana` the
+    // scheduled drain (recorded by mana_drain_X during the owner's play,
+    // core/effects.py:540-580) is applied. Popped BEFORE the opponent mutable
+    // borrow so the disjoint `state.pending_mana_drain_by_player` field borrow
+    // does not conflict with `state.player_mut`.
+    let pending_mana_drain = state
+        .pending_mana_drain_by_player
+        .remove(&next_player_id)
+        .unwrap_or(0);
+
     let opponent = state.player_mut(next_player_id)?;
     opponent.max_mana = (opponent.max_mana + mana_per_turn).min(10);
     opponent.mana = opponent.max_mana;
     // mana_draw_count_this_turn resets at the start of each player's turn
     // (mirrors core/engine.py _handle_end_turn).
     opponent.mana_draw_count_this_turn = 0;
+    // Apply the popped pending mana drain now (after restore), mirroring
+    // core/engine.py:701-703: `opponent.mana = max(0, opponent.mana -
+    // pending_mana_drain)`.
+    if pending_mana_drain > 0 {
+        opponent.mana = (opponent.mana - pending_mana_drain).max(0);
+    }
 
     for unit in &mut opponent.board {
         if unit.is_frozen {
@@ -1118,7 +1312,18 @@ fn apply_play_card(
     overdraw_to_discard: bool,
     draw_rng: &mut DrawRng,
 ) -> Result<(), String> {
-    let (player, opponent) = state.players_for_mut(player_id)?;
+    // Inline field access (instead of `state.players_for_mut`) so the
+    // disjoint `state.pending_mana_drain_by_player` field can be mutably
+    // borrowed simultaneously and threaded into `apply_play_effects` for the
+    // mana_drain branch (mirrors core/effects.py:540-580). NLL tracks the p1/p2
+    // and pending_mana_drain_by_player field borrows as disjoint.
+    let (player, opponent) = if state.p1.user_id == player_id {
+        (&mut state.p1, &mut state.p2)
+    } else if state.p2.user_id == player_id {
+        (&mut state.p2, &mut state.p1)
+    } else {
+        return Err("unknown_player".to_string());
+    };
     if hand_index >= player.hand.len() {
         return Err("invalid_hand_index".to_string());
     }
@@ -1174,6 +1379,7 @@ fn apply_play_card(
             overdraw_to_discard,
             draw_rng,
             Some(position),
+            &mut state.pending_mana_drain_by_player,
         );
     } else if card.is_potion() {
         let card_id = card.card_id;
@@ -1187,6 +1393,7 @@ fn apply_play_card(
             overdraw_to_discard,
             draw_rng,
             None,
+            &mut state.pending_mana_drain_by_player,
         );
         player.graveyard.push(card);
     }
@@ -1288,18 +1495,21 @@ fn apply_attack(
     // attacked board target (core/engine.py `_apply_attack_cleave`). Hits
     // only living neighbours (hp > 0). Uses apply_damage so armor/shield/
     // reflect on the neighbour are respected. Performed AFTER the damage
-    // exchange, before cleanup.
+    // exchange, before cleanup. NO `> 0` guard: Python engine.py:~1054
+    // calls `apply_damage(neighbor, damage, attacker)` unconditionally for
+    // living neighbours (consuming their shield even at 0 dmg). The
+    // living-neighbour check lives inside `apply_attack_cleave`, matching
+    // Python's `if neighbor.hp > 0` filter. (Phase-5 latent: cleave_0
+    // parity — no card uses cleave_0 today but the code must match.)
     if let Some(cleave_damage) = cleave_damage {
-        if cleave_damage > 0 {
-            apply_attack_cleave(
-                opponent,
-                target_code,
-                cleave_damage,
-                player,
-                attacker_index,
-                draw_rng,
-            );
-        }
+        apply_attack_cleave(
+            opponent,
+            target_code,
+            cleave_damage,
+            player,
+            attacker_index,
+            draw_rng,
+        );
     }
     player.board[attacker_index].is_ready = false;
     if has_lifesteal && damage_dealt_to_target > 0 {
@@ -1381,7 +1591,15 @@ fn apply_play_effects(
     // core/effects.py `effect_team_wide_shield`:
     // `u.instance_id != card.instance_id`). `None` for potions (card goes to
     // graveyard, never on board) — team_wide_shield is warrior-only anyway.
+    // Also used by TAMHP Full-mode post-insertion index resolution.
     self_board_index: Option<usize>,
+    // Pending-mana-drain map (`state.pending_mana_drain_by_player`). Passed
+    // through so the mana_drain_X branch can schedule the overflow portion of
+    // the drain into the opponent's next turn, mirroring
+    // core/effects.py:540-580. The caller (apply_play_card) is responsible
+    // for making the disjoint field borrow work (inline field access instead
+    // of `players_for_mut`).
+    pending_mana_drain_by_player: &mut BTreeMap<i32, i32>,
 ) {
     for mechanic in mechanics {
         if mechanic.starts_with("deathrattle_") {
@@ -1529,7 +1747,7 @@ fn apply_play_effects(
             // hp_bonus` / `owner.hero.max_hp += hp_bonus`. target_code 9..=15
             // → owner.board[0..6]; target_code 16 → owner.hero. Universal
             // allows hero; the non-universal variant below forbids hero.
-            apply_max_hp_plus(owner, target_code, amount, true);
+            apply_max_hp_plus(owner, target_code, amount, true, self_board_index);
         } else if let Some(rest) = mechanic.strip_prefix("target_ally_max_hp_plus_") {
             // TAMHP non-universal variant (`target_ally_max_hp_plus_N`,
             // allow_hero=False). The universal branch above handles the
@@ -1538,9 +1756,219 @@ fn apply_play_effects(
             // is a pure integer (skip `universal_...` which was already
             // consumed above — defensive double-check).
             if let Some(amount) = parse_i32_prefix(rest) {
-                apply_max_hp_plus(owner, target_code, amount, false);
+                apply_max_hp_plus(owner, target_code, amount, false, self_board_index);
+            }
+        } else if let Some(amount) = mechanic.strip_prefix("mana_drain_").and_then(parse_i32_prefix)
+        {
+            // Mana-drain (card 12 Кража Маны, `mana_drain_X`). Two-stage, mirrors
+            // core/effects.py:540-580 `make_drain_handler`:
+            //   1. Immediate drain: `current_drained = min(opponent.mana, amount)`;
+            //      `opponent.mana -= current_drained`.
+            //   2. Schedule the overflow into the opponent's NEXT turn:
+            //      `existing_pending = pending.get(opponent.user_id, 0)`;
+            //      `future_pool = max(0, opponent.max_mana - existing_pending)`;
+            //      `future_drained = min(amount - current_drained, future_pool)`;
+            //      if > 0, `pending[opponent.user_id] = existing_pending +
+            //      future_drained`.
+            //   3. Owner receives the TOTAL drained:
+            //      `owner.mana = min(owner.max_mana, owner.mana + current_drained
+            //      + future_drained)`.
+            // The pending half is applied in `apply_end_turn` after
+            // `opponent.mana = opponent.max_mana` (core/engine.py:700-703).
+            let current_drained = opponent.mana.min(amount);
+            opponent.mana -= current_drained;
+            let opponent_user_id = opponent.user_id;
+            let existing_pending = pending_mana_drain_by_player
+                .get(&opponent_user_id)
+                .copied()
+                .unwrap_or(0);
+            let future_pool = (opponent.max_mana - existing_pending).max(0);
+            let future_drained = (amount - current_drained).min(future_pool).max(0);
+            if future_drained > 0 {
+                pending_mana_drain_by_player
+                    .insert(opponent_user_id, existing_pending + future_drained);
+            }
+            let drained = current_drained + future_drained;
+            owner.mana = (owner.mana + drained).min(owner.max_mana);
+        } else if let Some(amount) = mechanic
+            .split("aoe_damage_")
+            .nth(1)
+            .and_then(|rest| rest.split('_').next())
+            .and_then(parse_i32_prefix)
+        {
+            // AOE damage (card 10 potion "Импульс Бездны" `aoe_damage_2`, plus
+            // the `battlecry_aoe_damage_X` / `spell_aoe_damage_X` variants).
+            // Mirrors core/effects.py `_register_aoe_damage_effects` +
+            // `effect_battlecry_aoe_damage_*` / `effect_spell_aoe_damage_2`:
+            // `for unit in opponent.board: apply_damage(unit, dmg)` — ALL
+            // enemy minions, NOT the enemy hero. Uses apply_damage (goes
+            // through shield/armor/reflect modifiers, attacker=None so no
+            // reflect). `deathrattle_aoe_damage_X` is skipped at the top of
+            // the loop. No target needed (mask: no-target slot).
+            for target in opponent.board.iter_mut() {
+                apply_damage(target, amount, None, draw_rng);
+            }
+        } else if let Some(heal_amount) = mechanic
+            .strip_prefix("battlecry_heal_target_")
+            .or_else(|| mechanic.strip_prefix("spell_heal_target_"))
+            .or_else(|| mechanic.strip_prefix("heal_target_"))
+            .and_then(parse_i32_prefix)
+        {
+            // heal_target_X / battlecry_heal_target_X / spell_heal_target_X
+            // (card 36 Юни `battlecry_heal_target_3`, card 35 Фрирер
+            // `battlecry_heal_target_5`). Mirrors core/effects.py
+            // `_register_battlecry_heal_target_effects` + the dynamic regex
+            // at effects.py:1441-1461: heal the targeted FRIENDLY unit (by
+            // instance_id) or the owner hero. apply_heal clamps to max_hp.
+            // target_code 9..=15 → friendly board (post-insertion index via
+            // self_board_index, same indexing as TAMHP); 16 → own hero.
+            apply_heal_to_play_target(owner, target_code, heal_amount, self_board_index);
+        } else if mechanic == "delete_target" {
+            // delete_target (card 13 potion "Черная Дыра"). Mirrors
+            // core/effects.py `effect_delete_target`: find the enemy unit by
+            // instance_id; if consume_shield(unit) → shield BLOCKS the delete
+            // AND is consumed (return, no remove); else remove from
+            // opponent.board → push to opponent.graveyard, NO deathrattle
+            // fires (remove, not kill). Targets enemy minions ONLY
+            // (target_code 1..=7); hero target (8) is a no-op (Python loops
+            // opponent.board, not hero).
+            if matches!(target_code, 1..=7) {
+                let idx = target_code - 1;
+                if idx < opponent.board.len() {
+                    if consume_shield(&mut opponent.board[idx]) {
+                        // shield consumed, delete blocked
+                    } else {
+                        let unit = opponent.board.remove(idx);
+                        opponent.graveyard.push(unit);
+                    }
+                }
+            }
+        } else if mechanic == "choose_shield_damage" {
+            // choose_shield_damage (card 21 warrior "Геральт"). Mirrors
+            // core/effects.py `effect_choose_shield_damage`: if target_id →
+            // apply 3 damage to the enemy unit (or enemy hero); else (no
+            // target) → grant `shield` to the PLAYED CARD itself (the warrior
+            // on board). The mask exposes both the no-target slot (base+0)
+            // and enemy target slots (1..=8). target_code 0 → shield branch.
+            if target_code == 0 {
+                if let Some(pos) = self_board_index {
+                    if let Some(card) = owner.board.get_mut(pos) {
+                        if !card.has_mechanic("shield") {
+                            card.mechanics.push("shield".to_string());
+                        }
+                    }
+                }
+            } else {
+                match target_code {
+                    1..=7 => {
+                        if let Some(target) = opponent.board.get_mut(target_code - 1) {
+                            apply_damage(target, 3, None, draw_rng);
+                        }
+                    }
+                    8 => {
+                        apply_damage(&mut opponent.hero, 3, None, draw_rng);
+                    }
+                    _ => {}
+                }
+            }
+        } else if mechanic == "cast_random_spell" {
+            // cast_random_spell (card 26 warrior "Мидория"). Mirrors
+            // core/effects.py `effect_cast_random_spell` (effects.py:838-951).
+            // RNG protocol: spell_choice = random.randint(1,4) →
+            // randint_rolls; spell 1 target = random.choice(opponent.board +
+            // [hero]) → choice_rolls; spell 3 freeze targets =
+            // random.sample(unfrozen_enemies, k) → sample_rolls. Scaling uses
+            // card.level (level=1 in the classic training env → dmg=4,
+            // heal=5, freeze_count=1, buff=2); mirrored for any level.
+            let level = match self_board_index {
+                Some(pos) => owner.board.get(pos).map(|c| c.level).unwrap_or(1),
+                None => 1,
+            };
+            let spell_choice = roll_range(1, 4, draw_rng);
+            if spell_choice == 1 {
+                // Texas Smash: dmg = 4 + (level-1) to a random enemy target
+                // (opponent.board + [opponent.hero]).
+                let dmg = 4 + (level - 1);
+                let n = opponent.board.len() + 1;
+                let idx = roll_choice(n, draw_rng);
+                if idx < opponent.board.len() {
+                    let target = &mut opponent.board[idx];
+                    apply_damage(target, dmg, None, draw_rng);
+                } else {
+                    apply_damage(&mut opponent.hero, dmg, None, draw_rng);
+                }
+            } else if spell_choice == 2 {
+                // Recovery: heal owner hero by 5 + (level-1) (clamped to max_hp).
+                let heal = 5 + (level - 1);
+                owner.hero.hp = (owner.hero.hp + heal).min(owner.hero.max_hp);
+            } else if spell_choice == 3 {
+                // Blackwhip: freeze up to freeze_count random unfrozen enemies.
+                // `freeze_count = 2 if level >= 5 else 1`.
+                let freeze_count = if level >= 5 { 2 } else { 1 };
+                let unfrozen_indices: Vec<usize> = opponent
+                    .board
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, u)| if !u.is_frozen { Some(i) } else { None })
+                    .collect();
+                let k = freeze_count.min(unfrozen_indices.len());
+                let selected = roll_sample(unfrozen_indices.len(), k, draw_rng);
+                for sel in selected {
+                    let board_idx = unfrozen_indices[sel];
+                    if consume_shield(&mut opponent.board[board_idx]) {
+                        continue;
+                    }
+                    if !opponent.board[board_idx].is_frozen {
+                        opponent.board[board_idx].is_frozen = true;
+                    }
+                }
+            } else {
+                // spell_choice == 4: Full Cowl — buff the played card itself.
+                // `buff = 2 + ((level-1)//2)` to attack/hp/max_hp.
+                let buff = 2 + (level - 1) / 2;
+                if let Some(pos) = self_board_index {
+                    if let Some(card) = owner.board.get_mut(pos) {
+                        card.attack += buff;
+                        card.hp += buff;
+                        card.max_hp += buff;
+                    }
+                }
             }
         }
+    }
+}
+
+/// Apply `heal_target_X` / `battlecry_heal_target_X` / `spell_heal_target_X`
+/// to the play target (card 36 Юни, card 35 Фрирер). Mirrors core/effects.py
+/// `_register_battlecry_heal_target_effects` + the dynamic regex at
+/// effects.py:1441-1461: `apply_heal(unit, heal)` which clamps
+/// `hp = min(max_hp, hp + heal)`. target_code 9..=15 → friendly board minion,
+/// 16 → own hero. Uses the SAME Full-mode post-insertion indexing as
+/// `apply_max_hp_plus` (the target is resolved to a PRE-insertion board
+/// index at decode time; when the new warrior is inserted at `pos <=
+/// pre_index` the target shifts right by 1). `self_board_index=None` for
+/// potions → no shift.
+fn apply_heal_to_play_target(
+    owner: &mut KernelPlayer,
+    target_code: usize,
+    amount: i32,
+    self_board_index: Option<usize>,
+) {
+    match target_code {
+        9..=15 => {
+            let pre_index = target_code - 9;
+            let post_index = match self_board_index {
+                Some(pos) if pos <= pre_index => pre_index + 1,
+                _ => pre_index,
+            };
+            if let Some(target) = owner.board.get_mut(post_index) {
+                target.hp = (target.hp + amount).min(target.max_hp);
+            }
+        }
+        16 => {
+            owner.hero.hp = (owner.hero.hp + amount).min(owner.hero.max_hp);
+        }
+        _ => {}
     }
 }
 
@@ -1548,15 +1976,35 @@ fn apply_play_effects(
 /// `max_hp` by `amount` directly (no hp change, no heal_card clamp). When
 /// `allow_hero` is false, target_code 16 (own hero) is ignored — matching the
 /// non-universal variant in core/effects.py (`allow_hero=False`).
+///
+/// Full-mode post-insertion indexing (Phase-5 latent: TAMHP Full-mode
+/// indexing). The play target is resolved to a PRE-insertion board index
+/// (`target_code - 9`) at decode time — Python resolves it to a stable
+/// `instance_id` (classic_actions_v1.py:84,122-123) and searches by
+/// `instance_id` post-effect (core/effects.py:1126-1133). Rust KernelCard has
+/// no instance_id, so we instead compute the POST-insertion index from the
+/// PRE-insertion index and the insert position (`self_board_index`): when the
+/// new warrior is inserted at `pos <= pre_index`, every board card at
+/// `pre_index` shifts right by 1, so the post-insertion index is
+/// `pre_index + 1`; otherwise the target stays at `pre_index`. `consume_ally`
+/// consumes its target BEFORE insert (separate path) so it does not shift the
+/// TAMHP target. Default append_only places at `board.len()` (pos > pre_index
+/// always) so it is unaffected; Full mode is now correct.
 fn apply_max_hp_plus(
     owner: &mut KernelPlayer,
     target_code: usize,
     amount: i32,
     allow_hero: bool,
+    self_board_index: Option<usize>,
 ) {
     match target_code {
         9..=15 => {
-            if let Some(target) = owner.board.get_mut(target_code - 9) {
+            let pre_index = target_code - 9;
+            let post_index = match self_board_index {
+                Some(pos) if pos <= pre_index => pre_index + 1,
+                _ => pre_index,
+            };
+            if let Some(target) = owner.board.get_mut(post_index) {
                 target.max_hp += amount;
             }
         }
@@ -1708,7 +2156,11 @@ fn encode_one_action(out: &mut [f32], me: &KernelPlayer, enemy: &KernelPlayer, a
         .map(|p| ((p as f64 + 1.0) / 5.0) as f32)
         .unwrap_or(0.0);
     out[141] = attacker_pos
-        .map(|p| ((p as f64 + 1.0) / 8.0) as f32)
+        // Mirrors ai/train_v2/classic_actions_v1.py:589
+        // `(att_pos + 1) / (_NUM_BOARD + 1)` where _NUM_BOARD=5 (line 50)
+        // → divisor 6.0. This is the GAME-RULE board cap+1 (GAME_BOARD_CAP=5),
+        // NOT the codec NUM_BOARD(7)+1=8. Phase-2: gap AC-FFI-1 (att_pos divisor).
+        .map(|p| ((p as f64 + 1.0) / (GAME_BOARD_CAP as f64 + 1.0)) as f32)
         .unwrap_or(0.0);
 }
 
@@ -2829,17 +3281,20 @@ fn apply_deathrattle_effects(
 }
 
 fn check_game_over(state: &mut KernelState) {
+    // Mirrors core/engine.py:932-941 `_check_game_over`: only the three death
+    // branches assign status; there is NO else-branch. An already-terminal
+    // state (draw/p1_win/p2_win) is left UNCHANGED when nobody is newly dead,
+    // so Rust never resurrects a terminal state. (Phase-5 latent: status
+    // overwrite — removed the unconditional `else { ongoing }`.)
     let p1_dead = state.p1.hero.hp <= 0;
     let p2_dead = state.p2.hero.hp <= 0;
-    state.status = if p1_dead && p2_dead {
-        "draw".to_string()
+    if p1_dead && p2_dead {
+        state.status = "draw".to_string();
     } else if p1_dead {
-        "p2_win".to_string()
+        state.status = "p2_win".to_string();
     } else if p2_dead {
-        "p1_win".to_string()
-    } else {
-        "ongoing".to_string()
-    };
+        state.status = "p1_win".to_string();
+    }
 }
 
 fn board_power(board: &[KernelCard]) -> f32 {
@@ -4427,5 +4882,166 @@ mod draw_tests {
             .expect("end turn");
         assert_eq!(out.state.turn_number, 4);
         assert!(!out.truncated, "turn 4 == max_turns 4 → not truncated (strict >)");
+    }
+
+    // ---- Phase 7 fixes (FIX 2 / FIX 4 / FIX 7) ----
+
+    #[test]
+    fn mask_masks_out_consume_ally_play_when_board_full() {
+        // CLN-3 full-board mask parity: board.len()==5 + a consume_ally
+        // warrior in hand → the frozen codec mask
+        // (classic_actions_v1._mask_play_actions:228) does NOT exempt
+        // consume_ally, so the consume play action (targeting friendly
+        // board[0], target_code=9) is masked OUT (bit == 0.0). Rust's
+        // action_mask must match the frozen codec byte-for-byte. The APPLY
+        // path (apply_play_card) and core/engine.py:1228 still EXEMPT
+        // consume_ally (the play is accepted if forced via apply_action),
+        // but the model mask never exposes it at a full board.
+        let mut state = KernelState {
+            current_turn_owner_id: 1,
+            turn_number: 1,
+            status: "ongoing".to_string(),
+            p1: player_with(Vec::new(), vec![card_with_mechanics(20, 3, 2, 2, vec!["consume_ally"])]),
+            p2: player_with(Vec::new(), Vec::new()),
+            ..Default::default()
+        };
+        state.p1.user_id = 1;
+        state.p2.user_id = 2;
+        state.p1.mana = 10;
+        state.p1.max_mana = 10;
+        // Fill the board to the GAME_BOARD_CAP (5).
+        state.p1.board = vec![
+            card_with_mechanics(27, 1, 2, 1, vec![]),
+            card_with_mechanics(27, 1, 2, 1, vec![]),
+            card_with_mechanics(27, 1, 2, 1, vec![]),
+            card_with_mechanics(27, 1, 2, 1, vec![]),
+            card_with_mechanics(27, 1, 2, 1, vec![]),
+        ];
+        assert_eq!(state.p1.board.len(), GAME_BOARD_CAP);
+        let mask = build_action_mask(&state, 1, PlacementMode::AppendOnly);
+        // The consume_ally play action (hand=0, target_code=9) must be
+        // masked OUT — the frozen codec masks consume_ally at a full board.
+        let consume_action_id = (0..mask.len())
+            .filter(|&i| mask[i] == 1.0)
+            .find(|&i| matches!(
+                decode_action_id(i),
+                Some(CandidateAction::PlayCard { hand_index: 0, target_code: 9, .. })
+            ));
+        assert!(
+            consume_action_id.is_none(),
+            "consume_ally play action must be masked OUT at full board (frozen codec parity); legal={:?}",
+            legal_action_ids(&mask)
+        );
+        // Sanity: NO play action for hand=0 is exposed at all (the board-full
+        // guard skips the consume_ally card entirely in the mask loop).
+        let any_hand0_play = (0..mask.len())
+            .filter(|&i| mask[i] == 1.0)
+            .any(|i| matches!(
+                decode_action_id(i),
+                Some(CandidateAction::PlayCard { hand_index: 0, .. })
+            ));
+        assert!(
+            !any_hand0_play,
+            "no play action for the consume_ally card should be exposed at full board; legal={:?}",
+            legal_action_ids(&mask)
+        );
+    }
+
+    #[test]
+    fn roll_range_degenerate_range_consumes_recorded_stream() {
+        // FIX 4: Python `random.randint(a, a)` (min>=max degenerate range,
+        // e.g. armor_X_X) still consumes the RNG stream. Rust's `roll_range`
+        // must pop the recorded value BEFORE the min>=max early-return so the
+        // recorded stream stays aligned across degenerate rolls.
+        let mut draw_rng = DrawRng::recorded(vec![], vec![], vec![42, 99], vec![]);
+        // Degenerate range 5..=5: Python randint(5,5)==5 but still consumes.
+        let v = roll_range(5, 5, &mut draw_rng);
+        assert_eq!(v, 5, "degenerate range returns min");
+        // The stream must have been consumed (one entry popped).
+        match &draw_rng {
+            DrawRng::Recorded { randint_rolls, .. } => {
+                assert_eq!(
+                    randint_rolls.len(),
+                    1,
+                    "degenerate roll_range must pop exactly one recorded entry (FIX 4)"
+                );
+                assert_eq!(randint_rolls.front(), Some(&99));
+            }
+            _ => panic!("expected Recorded DrawRng"),
+        }
+        // A subsequent non-degenerate roll consumes the next entry.
+        let v2 = roll_range(0, 100, &mut draw_rng);
+        assert_eq!(v2, 99, "next recorded entry consumed");
+    }
+
+    #[test]
+    fn tamhp_full_mode_buffs_pre_insertion_target_not_played_card() {
+        // FIX 7 (TAMHP Full-mode post-insertion indexing): when a TAMHP
+        // warrior is played in Full placement mode at position <= the
+        // target's pre-insertion index, the post-insertion index shifts
+        // right by 1. The buff must land on the INTENDED target (the
+        // pre-insertion friendly minion), NOT the just-played card. Python
+        // resolves the target to a stable instance_id at decode time
+        // (classic_actions_v1.py:84,122-123) and searches by instance_id
+        // (effects.py:1126-1133); Rust has no instance_id, so it computes
+        // the post-insertion index from the insert position.
+        //
+        // Setup: board = [A(27, 2/1), B(27, 2/1)], hand = [card52 Криста
+        // (1/2, target_ally_max_hp_plus_universal_1)], mana=10. Play card52
+        // targeting A (target_code=9 → pre_index 0) at position 0 (Full
+        // mode). After insert: board = [card52, A, B]. A is now at index 1
+        // (shifted). The buff (+1 max_hp) must hit A (board[1], max_hp 1→2),
+        // NOT card52 (board[0], max_hp stays 2).
+        let mut state = KernelState {
+            current_turn_owner_id: 1,
+            turn_number: 1,
+            status: "ongoing".to_string(),
+            p1: player_with(
+                Vec::new(),
+                vec![card_with_mechanics(52, 2, 1, 2, vec!["target_ally_max_hp_plus_universal_1"])],
+            ),
+            p2: player_with(Vec::new(), Vec::new()),
+            ..Default::default()
+        };
+        state.p1.user_id = 1;
+        state.p2.user_id = 2;
+        state.p1.mana = 10;
+        state.p1.max_mana = 10;
+        state.p1.board = vec![
+            card_with_mechanics(27, 1, 2, 1, vec![]), // A (target)
+            card_with_mechanics(27, 1, 2, 1, vec![]), // B
+        ];
+        // Full placement mode: position 0 is legal. apply_action re-checks
+        // the mask with the kernel's configured placement_mode, so the
+        // kernel MUST be configured for Full mode (default is AppendOnly,
+        // which only allows position == board.len()).
+        let mut config = KernelConfig::default();
+        config.placement_mode = PlacementMode::Full;
+        let kernel = RolloutKernel::new(config);
+        // Full placement mode: position 0 is legal. Find the PlayCard action
+        // with hand_index=0, position=0, target_code=9 (friendly board[0]=A).
+        let mask = build_action_mask(&state, 1, PlacementMode::Full);
+        let action_id = (0..mask.len())
+            .filter(|&i| mask[i] == 1.0)
+            .find(|&i| matches!(
+                decode_action_id(i),
+                Some(CandidateAction::PlayCard { hand_index: 0, board_position: 0, target_code: 9 })
+            ))
+            .expect("TAMHP play@pos0 target=A is legal in Full mode");
+        let mut rng = crate::worker::WorkerRng::Deterministic;
+        let mut draw_rng = DrawRng::live(&mut rng);
+        let out = kernel.apply_action(&state, 1, action_id, false, &mut draw_rng);
+        assert!(out.is_ok(), "TAMHP play applies: {:?}", out.err());
+        let new = out.unwrap().state;
+        assert_eq!(new.p1.board.len(), 3, "played card inserted");
+        // board[0] = the just-played card52 (max_hp UNCHANGED at 2).
+        assert_eq!(new.p1.board[0].card_id, 52, "board[0] is the played card52");
+        assert_eq!(new.p1.board[0].max_hp, 2, "played card52 max_hp NOT buffed");
+        // board[1] = A (the intended target, shifted from pre_index 0).
+        assert_eq!(new.p1.board[1].card_id, 27, "board[1] is A (target, shifted)");
+        assert_eq!(new.p1.board[1].max_hp, 2, "A max_hp buffed 1→2 (FIX 7: post-insertion index)");
+        // board[2] = B (unchanged).
+        assert_eq!(new.p1.board[2].card_id, 27);
+        assert_eq!(new.p1.board[2].max_hp, 1, "B unchanged");
     }
 }

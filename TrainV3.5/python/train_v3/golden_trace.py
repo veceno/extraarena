@@ -14,7 +14,9 @@ import numpy as np
 
 import core.engine as _core_engine
 from ai.train_v2.classic_rl_env import ClassicRLEnv
+from ai.train_v2.classic_actions_v1 import decode_action
 from core.actions import ManaDrawAction
+from core.state import GameStatus
 
 from .contracts import AssistModeV5, HISTORY_EVENTS, InfoModeV5
 from .obs_v5 import encode_observation_v5
@@ -86,6 +88,14 @@ def _state_payload(env: ClassicRLEnv) -> dict[str, Any]:
         "sudden_death_last_applied_turn_by_player": {
             int(k): int(v)
             for k, v in st.sudden_death_last_applied_turn_by_player.items()
+        },
+        # pending_mana_drain_by_player (core/state.py:183) — two-stage mana_drain
+        # scheduled amount per opponent user_id, applied at the opponent's next
+        # turn start (core/engine.py:700-703). Included so the Rust
+        # state-transition matcher can replay the pending drain ACROSS steps
+        # (the pending field is internal state that crosses step boundaries).
+        "pending_mana_drain_by_player": {
+            int(k): int(v) for k, v in st.pending_mana_drain_by_player.items()
         },
     }
 
@@ -208,6 +218,7 @@ class _DrawRecorder:
         self.orders: list[list[int]] = []
         self.randint_rolls: list[int] = []
         self.choice_rolls: list[int] = []
+        self.sample_rolls: list[list[int]] = []
 
     def install(self, env: ClassicRLEnv) -> callable:
         """Install the recording instrumentation on `env`.
@@ -275,13 +286,78 @@ class _DrawRecorder:
 
         _random_module.choice = _recording_choice
 
+        # Phase 9: record module-level `random.sample` outcomes (card26
+        # `cast_random_spell` Blackwhip freeze-target pick). `core/effects.py`
+        # calls `random.sample(population, k)` (module-level). We record the
+        # 0-based indices of the chosen elements within the input population,
+        # in selection order (matched by identity via `id()` so duplicate-
+        # valued cards with unique instance_ids still resolve correctly). Rust
+        # mirrors the exact call sites with `roll_sample`.
+        original_sample = _random_module.sample
+
+        def _recording_sample(population, k):
+            result = original_sample(population, k)
+            pop_list = list(population)
+            result_ids = [id(x) for x in result]
+            indices: list[int] = []
+            for rid in result_ids:
+                idx = next(
+                    (i for i, x in enumerate(pop_list) if id(x) == rid),
+                    0,
+                )
+                indices.append(int(idx))
+            recorder.sample_rolls.append(indices)
+            return result
+
+        _random_module.sample = _recording_sample
+
         def _restore() -> None:
             _core_engine._weighted_choice_idx = original_wci
             env._env._rng = original_rng
             _random_module.randint = original_randint
             _random_module.choice = original_choice
+            _random_module.sample = original_sample
 
         return _restore
+
+
+def _forced_engine_step(env: ClassicRLEnv, player_id: int, action_id: int):
+    """Force-apply a (possibly mask-illegal) `action_id` via the engine apply
+    path (`env._env.step`), bypassing the TrainV2 action_mask legality check.
+
+    Used by `build_golden_trace` for `force_steps`: the consume_ally play at a
+    full board is masked OUT by the frozen `classic_actions_v1` mask (no
+    consume_ally exemption), but `core/engine.py:1228` exempts consume_ally in
+    the apply path, so the play succeeds when forced. Mirrors the
+    `step_core_action` reward/snapshot/terminate logic but decodes the
+    TrainV2 `action_id` to a production `BaseAction` first.
+    """
+    st = env._env.state
+    if st.status != GameStatus.ONGOING:
+        return env.observe(), 0.0, True, False, env._make_info(
+            action_id=action_id, success=False, error="game_over", invalid=True,
+            acting_player_id=player_id,
+        )
+    action = decode_action(st, player_id, action_id)
+    if action is None:
+        raise ValueError(f"forced action_id {action_id} did not decode for player {player_id}")
+    pre_snapshot = env._snapshot(player_id)
+    success, error = env._env.step(player_id, action)
+    if not success:
+        raise ValueError(f"forced action_id {action_id} failed: {error}")
+    env._steps += 1
+    post_snapshot = env._snapshot(player_id)
+    reward = env._compute_reward(player_id, pre_snapshot, post_snapshot, success)
+    env._add_reward(player_id, reward)
+    terminated = st.status != GameStatus.ONGOING
+    truncated = st.turn_number > env._max_turns
+    if env._cache is not None:
+        env._cache.set_state(env._env.state, env.current_player_id())
+    info = env._make_info(
+        action_id=action_id, success=True, error="",
+        acting_reward=reward, acting_player_id=player_id, action=action,
+    )
+    return env.observe(), reward, terminated, truncated, info
 
 
 def build_golden_trace(
@@ -304,6 +380,7 @@ def build_golden_trace(
     p2_levels: dict[int, int] | None = None,
     action_ids: list[int] | None = None,
     mana_draw_flags: list[bool] | None = None,
+    force_steps: set[int] | None = None,
     mana_per_turn: int = 1,
     post_reset_setup: "callable | None" = None,
     sudden_death_enabled: bool = False,
@@ -420,6 +497,7 @@ def build_golden_trace(
             orders_before = len(recorder.orders)
             randint_before = len(recorder.randint_rolls)
             choice_before = len(recorder.choice_rolls)
+            sample_before = len(recorder.sample_rolls)
             pre = _snapshot_hashes(
                 env,
                 include_preview=include_preview,
@@ -429,9 +507,10 @@ def build_golden_trace(
                 history_events=history_events,
             )
             legal_ids = pre["legal_ids"]
+            forced = bool(force_steps is not None and t in force_steps)
             if action_ids is not None and t < len(action_ids):
                 action_id = int(action_ids[t])
-                if action_id not in legal_ids:
+                if (not forced) and (action_id not in legal_ids):
                     raise ValueError(f"action_id {action_id} at step {t} is not legal; legal_ids={legal_ids}")
             else:
                 action_id = legal_ids[0] if choose == "first" else legal_ids[-1]
@@ -454,6 +533,16 @@ def build_golden_trace(
             reward_pre = reward_snapshot_v5(env._env.state, acting_player_id)
             if mana_draw_taken:
                 _, reward, terminated, truncated, info = env.step_core_action(ManaDrawAction())
+            elif forced:
+                # Force-apply a (possibly mask-illegal) action_id via the
+                # engine apply path (env._env.step), bypassing the TrainV2
+                # action_mask check. Used for consume_ally at a full board:
+                # the frozen classic_actions_v1 mask masks the consume play
+                # OUT (no exemption), but core/engine.py:1228 exempts
+                # consume_ally in the apply path, so the play succeeds.
+                _, reward, terminated, truncated, info = _forced_engine_step(
+                    env, acting_player_id, action_id
+                )
             else:
                 _, reward, terminated, truncated, info = env.step(action_id)
             reward_post = reward_snapshot_v5(env._env.state, acting_player_id)
@@ -486,6 +575,10 @@ def build_golden_trace(
             ]
             randint_rolls = [int(r) for r in recorder.randint_rolls[randint_before:]]
             choice_rolls = [int(i) for i in recorder.choice_rolls[choice_before:]]
+            sample_rolls = [
+                [int(i) for i in idxs]
+                for idxs in recorder.sample_rolls[sample_before:]
+            ]
             trace["steps"].append(
                 {
                     "t": t,
@@ -510,6 +603,7 @@ def build_golden_trace(
                     "reshuffle_orders": reshuffle_orders,
                     "randint_rolls": randint_rolls,
                     "choice_rolls": choice_rolls,
+                    "sample_rolls": sample_rolls,
                     "post": post,
                 }
             )

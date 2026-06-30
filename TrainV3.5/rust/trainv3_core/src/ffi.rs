@@ -1111,6 +1111,8 @@ pub unsafe extern "C" fn trainv3_worker_advance_rule_until_actor(
     learner_rewards_len: usize,
     terminated_ptr: *mut u8,
     terminated_len: usize,
+    truncated_ptr: *mut u8,
+    truncated_len: usize,
     reset_flags_ptr: *mut u8,
     reset_flags_len: usize,
     action_counts_ptr: *mut usize,
@@ -1138,6 +1140,13 @@ pub unsafe extern "C" fn trainv3_worker_advance_rule_until_actor(
     {
         return -3;
     }
+    // `truncated_ptr` may be NULL to preserve the legacy call signature for
+    // callers that have not yet been updated (it is then ignored, matching the
+    // nullable-output convention used by `trainv3_worker_step`'s optional
+    // tensors). When non-NULL it must be `env_count` long.
+    if !truncated_ptr.is_null() && truncated_len != env_count {
+        return -3;
+    }
     let auto_reset = match auto_reset {
         0 => false,
         1 => true,
@@ -1149,6 +1158,11 @@ pub unsafe extern "C" fn trainv3_worker_advance_rule_until_actor(
     let learner_rewards =
         unsafe { slice::from_raw_parts_mut(learner_rewards_ptr, learner_rewards_len) };
     let terminated = unsafe { slice::from_raw_parts_mut(terminated_ptr, terminated_len) };
+    let truncated = if truncated_ptr.is_null() {
+        None
+    } else {
+        Some(unsafe { slice::from_raw_parts_mut(truncated_ptr, truncated_len) })
+    };
     let reset_flags = unsafe { slice::from_raw_parts_mut(reset_flags_ptr, reset_flags_len) };
     let action_counts = unsafe { slice::from_raw_parts_mut(action_counts_ptr, action_counts_len) };
 
@@ -1164,12 +1178,30 @@ pub unsafe extern "C" fn trainv3_worker_advance_rule_until_actor(
             for (idx, value) in output.terminated.iter().copied().enumerate() {
                 terminated[idx] = u8::from(value);
             }
+            if let Some(truncated_out) = truncated {
+                for (idx, value) in output.truncated.iter().copied().enumerate() {
+                    truncated_out[idx] = u8::from(value);
+                }
+            }
             for (idx, value) in output.reset_flags.iter().copied().enumerate() {
                 reset_flags[idx] = u8::from(value);
             }
             action_counts.copy_from_slice(&output.action_counts);
-            let output = worker.worker.encode_all();
-            worker.set_last(output);
+            // `encode_all` seeds `BatchTensorOutput.truncated` with `false` for
+            // every env (worker.rs:684) because it has no step result to read,
+            // so `set_last` would clobber `truncated_u8` to all-false. The
+            // advance path's truncation lives in `RuleAdvanceOutput.truncated`
+            // (collected from `step.truncated` in the loop, mirroring the
+            // learner-step path at worker.rs:814). Capture it BEFORE
+            // `encode_all`/`set_last` and restore it AFTER, so
+            // `trainv3_worker_truncated_ptr` reports the advance result's
+            // truncation rather than `encode_all`'s placeholder. This mirrors
+            // the learner-step path (worker.rs:814 +
+            // `trainv3_worker_truncated_ptr`).
+            let advance_truncated_u8 = terminated_to_u8(&output.truncated);
+            let encoded = worker.worker.encode_all();
+            worker.set_last(encoded);
+            worker.truncated_u8 = advance_truncated_u8;
             0
         }
         Err(_) => -5,

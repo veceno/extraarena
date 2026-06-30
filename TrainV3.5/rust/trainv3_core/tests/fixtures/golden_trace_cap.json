@@ -23,7 +23,11 @@
     "level_handicap": {},
     "v5_weighted_reward": true,
     "mana_per_turn": 10,
-    "overdraw_to_discard": false
+    "overdraw_to_discard": false,
+    "sudden_death_enabled": false,
+    "sudden_death_damage_start": 1,
+    "sudden_death_damage_step": 1,
+    "max_turns": 80
   },
   "initial": {
     "state": {
@@ -412,10 +416,12 @@
         ],
         "graveyard": [],
         "mana_draw_count_this_turn": 0
-      }
+      },
+      "sudden_death_turns_by_player": {},
+      "sudden_death_last_applied_turn_by_player": {}
     },
     "history_events": [],
-    "state_sha256": "e977fe85b5d1e7f15e44b97c0daa33ebdfdc2836abfec7e359e48c005de8c77b",
+    "state_sha256": "0fb45b581fa963eb721904e94158ea14ddb3066eb5161ff010ad9f83614d6992",
     "obs_sha256_f32_le": "2ad65ce083a6a4b2e2ac026711739f9c3265b8e2e00a5cd61d7edc19e3a8f279",
     "mask_sha256_f32_le": "5148e44e425f27597c59fe5e6414dc8d95f941e39a2e4af5158fc739a0eef578",
     "action_features_sha256_f32_le": "9f9d030f6cc986a0a472c81f637b531529e0146e70e7750c26d7168a0b7a6bc0",
@@ -822,10 +828,12 @@
             ],
             "graveyard": [],
             "mana_draw_count_this_turn": 0
-          }
+          },
+          "sudden_death_turns_by_player": {},
+          "sudden_death_last_applied_turn_by_player": {}
         },
         "history_events": [],
-        "state_sha256": "e977fe85b5d1e7f15e44b97c0daa33ebdfdc2836abfec7e359e48c005de8c77b",
+        "state_sha256": "0fb45b581fa963eb721904e94158ea14ddb3066eb5161ff010ad9f83614d6992",
         "obs_sha256_f32_le": "2ad65ce083a6a4b2e2ac026711739f9c3265b8e2e00a5cd61d7edc19e3a8f279",
         "mask_sha256_f32_le": "5148e44e425f27597c59fe5e6414dc8d95f941e39a2e4af5158fc739a0eef578",
         "action_features_sha256_f32_le": "9f9d030f6cc986a0a472c81f637b531529e0146e70e7750c26d7168a0b7a6bc0",
@@ -864,6 +872,8 @@
         4
       ],
       "reshuffle_orders": [],
+      "randint_rolls": [],
+      "choice_rolls": [],
       "post": {
         "state": {
           "current_turn_owner_id": 1,
@@ -1252,7 +1262,9 @@
             ],
             "graveyard": [],
             "mana_draw_count_this_turn": 0
-          }
+          },
+          "sudden_death_turns_by_player": {},
+          "sudden_death_last_applied_turn_by_player": {}
         },
         "history_events": [
           {
@@ -1267,7 +1279,7 @@
             "turn_number": 1
           }
         ],
-        "state_sha256": "e257a17e5336cbdc6867e3fb5c3085352a3aa315216f0025110dca833c90e9ec",
+        "state_sha256": "7907e2672a82f818f48332f91b9cff9e198cededc7339fef8a328baac9a6e5a6",
         "obs_sha256_f32_le": "2c8301d85eb4deca64e8b006cfe04375f4c269feeaf9c5ca61f7bf87060834b6",
         "mask_sha256_f32_le": "69ba8d7d0d3cac51fbe340c31cde59ea84f03bca452faf27ab3a56855622f432",
         "action_features_sha256_f32_le": "473443887784c677649e88ef69275ddf48fdef6e42ff2b8f7a9304a57716c469",
@@ -1672,7 +1684,9 @@
             ],
             "graveyard": [],
             "mana_draw_count_this_turn": 0
-          }
+          },
+          "sudden_death_turns_by_player": {},
+          "sudden_death_last_applied_turn_by_player": {}
         },
         "history_events": [
           {
@@ -1687,7 +1701,7 @@
             "turn_number": 1
           }
         ],
-        "state_sha256": "e257a17e5336cbdc6867e3fb5c3085352a3aa315216f0025110dca833c90e9ec",
+        "state_sha256": "7907e2672a82f818f48332f91b9cff9e198cededc7339fef8a328baac9a6e5a6",
         "obs_sha256_f32_le": "2c8301d85eb4deca64e8b006cfe04375f4c269feeaf9c5ca61f7bf87060834b6",
         "mask_sha256_f32_le": "69ba8d7d0d3cac51fbe340c31cde59ea84f03bca452faf27ab3a56855622f432",
         "action_features_sha256_f32_le": "473443887784c677649e88ef69275ddf48fdef6e42ff2b8f7a9304a57716c469",
@@ -1724,6 +1738,8 @@
         0
       ],
       "reshuffle_orders": [],
+      "randint_rolls": [],
+      "choice_rolls": [],
       "post": {
         "state": {
           "current_turn_owner_id": 2,
@@ -2112,7 +2128,9 @@
             ],
             "graveyard": [],
             "mana_draw_count_this_turn": 0
-          }
+          },
+          "sudden_death_turns_by_player": {},
+          "sudden_death_last_applied_turn_by_player": {}
         },
         "history_events": [
           {
@@ -2138,7 +2156,7 @@
             "turn_number": 2
           }
         ],
-        "state_sha256": "78518885d8ce0069f44a764242dc1f1cddc5fee2d7bf81ccb91ce5abc36463db",
+        "state_sha256": "b44853c2dec1fd9fa722f2d19f79e00a4ffc6ac812ae41ee53a239d7ca98191f",
         "obs_sha256_f32_le": "477c2e7ac56d9d37e98097d8e258a1a7e5e7b6e26cca56f366d38c7a6085579d",
         "mask_sha256_f32_le": "e566cfffba8f941a488c615bd43106c2ed869deb34d5a56839a7707fd3384265",
         "action_features_sha256_f32_le": "bedd6cec40262dcbc82d3bd0d2db96f72a27a87b267bb67a37c7ebd974f45014",
@@ -2547,7 +2565,9 @@
             ],
             "graveyard": [],
             "mana_draw_count_this_turn": 0
-          }
+          },
+          "sudden_death_turns_by_player": {},
+          "sudden_death_last_applied_turn_by_player": {}
         },
         "history_events": [
           {
@@ -2573,7 +2593,7 @@
             "turn_number": 2
           }
         ],
-        "state_sha256": "78518885d8ce0069f44a764242dc1f1cddc5fee2d7bf81ccb91ce5abc36463db",
+        "state_sha256": "b44853c2dec1fd9fa722f2d19f79e00a4ffc6ac812ae41ee53a239d7ca98191f",
         "obs_sha256_f32_le": "477c2e7ac56d9d37e98097d8e258a1a7e5e7b6e26cca56f366d38c7a6085579d",
         "mask_sha256_f32_le": "e566cfffba8f941a488c615bd43106c2ed869deb34d5a56839a7707fd3384265",
         "action_features_sha256_f32_le": "bedd6cec40262dcbc82d3bd0d2db96f72a27a87b267bb67a37c7ebd974f45014",
@@ -2613,6 +2633,8 @@
         0
       ],
       "reshuffle_orders": [],
+      "randint_rolls": [],
+      "choice_rolls": [],
       "post": {
         "state": {
           "current_turn_owner_id": 2,
@@ -3002,7 +3024,9 @@
             ],
             "graveyard": [],
             "mana_draw_count_this_turn": 0
-          }
+          },
+          "sudden_death_turns_by_player": {},
+          "sudden_death_last_applied_turn_by_player": {}
         },
         "history_events": [
           {
@@ -3039,7 +3063,7 @@
             "turn_number": 2
           }
         ],
-        "state_sha256": "761eeeb4acfa1f629969d6daaa739b74bfb14f75377e8cba50542792f082bd0e",
+        "state_sha256": "fef736fc1990396517dfce2ad6e87232dc07b0deb81e2538b2a8995a16029144",
         "obs_sha256_f32_le": "f327a8b809627b734fc085927681078bccbabb3c9a14dcf20082bb09010cd92c",
         "mask_sha256_f32_le": "69ba8d7d0d3cac51fbe340c31cde59ea84f03bca452faf27ab3a56855622f432",
         "action_features_sha256_f32_le": "473443887784c677649e88ef69275ddf48fdef6e42ff2b8f7a9304a57716c469",
@@ -3445,7 +3469,9 @@
             ],
             "graveyard": [],
             "mana_draw_count_this_turn": 0
-          }
+          },
+          "sudden_death_turns_by_player": {},
+          "sudden_death_last_applied_turn_by_player": {}
         },
         "history_events": [
           {
@@ -3482,7 +3508,7 @@
             "turn_number": 2
           }
         ],
-        "state_sha256": "761eeeb4acfa1f629969d6daaa739b74bfb14f75377e8cba50542792f082bd0e",
+        "state_sha256": "fef736fc1990396517dfce2ad6e87232dc07b0deb81e2538b2a8995a16029144",
         "obs_sha256_f32_le": "f327a8b809627b734fc085927681078bccbabb3c9a14dcf20082bb09010cd92c",
         "mask_sha256_f32_le": "69ba8d7d0d3cac51fbe340c31cde59ea84f03bca452faf27ab3a56855622f432",
         "action_features_sha256_f32_le": "473443887784c677649e88ef69275ddf48fdef6e42ff2b8f7a9304a57716c469",
@@ -3519,6 +3545,8 @@
         3
       ],
       "reshuffle_orders": [],
+      "randint_rolls": [],
+      "choice_rolls": [],
       "post": {
         "state": {
           "current_turn_owner_id": 1,
@@ -3908,7 +3936,9 @@
             ],
             "graveyard": [],
             "mana_draw_count_this_turn": 0
-          }
+          },
+          "sudden_death_turns_by_player": {},
+          "sudden_death_last_applied_turn_by_player": {}
         },
         "history_events": [
           {
@@ -3956,7 +3986,7 @@
             "turn_number": 3
           }
         ],
-        "state_sha256": "f234cd8e09279768ea7d0973eda637d5ac38b73fa07b2eefe036dd78da80172c",
+        "state_sha256": "e052abbff5515476398234b8bfbab7c4a0e8ef76b99358b13689e7ac028bf45f",
         "obs_sha256_f32_le": "082b1f8b6c4834dd19ca540986816a39d74eb341b892185febbae1c0d7d22888",
         "mask_sha256_f32_le": "7fc2cf4f46eb93fbf4d2c0eddfa9e157abf93d25d85262a099e088299b43ab05",
         "action_features_sha256_f32_le": "2a1a131107606135d7dae40bc0b35cabc4b4f43c18f8192c5c2ee6fdd3aa25d8",
@@ -4367,7 +4397,9 @@
             ],
             "graveyard": [],
             "mana_draw_count_this_turn": 0
-          }
+          },
+          "sudden_death_turns_by_player": {},
+          "sudden_death_last_applied_turn_by_player": {}
         },
         "history_events": [
           {
@@ -4415,7 +4447,7 @@
             "turn_number": 3
           }
         ],
-        "state_sha256": "f234cd8e09279768ea7d0973eda637d5ac38b73fa07b2eefe036dd78da80172c",
+        "state_sha256": "e052abbff5515476398234b8bfbab7c4a0e8ef76b99358b13689e7ac028bf45f",
         "obs_sha256_f32_le": "082b1f8b6c4834dd19ca540986816a39d74eb341b892185febbae1c0d7d22888",
         "mask_sha256_f32_le": "7fc2cf4f46eb93fbf4d2c0eddfa9e157abf93d25d85262a099e088299b43ab05",
         "action_features_sha256_f32_le": "2a1a131107606135d7dae40bc0b35cabc4b4f43c18f8192c5c2ee6fdd3aa25d8",
@@ -4457,6 +4489,8 @@
         1
       ],
       "reshuffle_orders": [],
+      "randint_rolls": [],
+      "choice_rolls": [],
       "post": {
         "state": {
           "current_turn_owner_id": 2,
@@ -4846,7 +4880,9 @@
             ],
             "graveyard": [],
             "mana_draw_count_this_turn": 0
-          }
+          },
+          "sudden_death_turns_by_player": {},
+          "sudden_death_last_applied_turn_by_player": {}
         },
         "history_events": [
           {
@@ -4905,7 +4941,7 @@
             "turn_number": 4
           }
         ],
-        "state_sha256": "263d2d8d2342e5d9dd0fc757949751b62171cc9d9ad60b62e167aab154c3c53b",
+        "state_sha256": "2445fa5670fff3139ed7f4c142677ceda8940936cb32e32bac000bc979670ca1",
         "obs_sha256_f32_le": "ad3a1d2835232f1040aa560ca04d2a9c4841bc80f34056f112b1630af0b0501a",
         "mask_sha256_f32_le": "8988bcbdc7094b32ecee6a1613dc3808a5943a43984cf3a00c61bdbb64dce56d",
         "action_features_sha256_f32_le": "bb3de07142633f40c1441cde0304ce528e3b9ce93a0365f22701e72ccbf1f7cb",
@@ -5317,7 +5353,9 @@
             ],
             "graveyard": [],
             "mana_draw_count_this_turn": 0
-          }
+          },
+          "sudden_death_turns_by_player": {},
+          "sudden_death_last_applied_turn_by_player": {}
         },
         "history_events": [
           {
@@ -5376,7 +5414,7 @@
             "turn_number": 4
           }
         ],
-        "state_sha256": "263d2d8d2342e5d9dd0fc757949751b62171cc9d9ad60b62e167aab154c3c53b",
+        "state_sha256": "2445fa5670fff3139ed7f4c142677ceda8940936cb32e32bac000bc979670ca1",
         "obs_sha256_f32_le": "ad3a1d2835232f1040aa560ca04d2a9c4841bc80f34056f112b1630af0b0501a",
         "mask_sha256_f32_le": "8988bcbdc7094b32ecee6a1613dc3808a5943a43984cf3a00c61bdbb64dce56d",
         "action_features_sha256_f32_le": "bb3de07142633f40c1441cde0304ce528e3b9ce93a0365f22701e72ccbf1f7cb",
@@ -5418,6 +5456,8 @@
         1
       ],
       "reshuffle_orders": [],
+      "randint_rolls": [],
+      "choice_rolls": [],
       "post": {
         "state": {
           "current_turn_owner_id": 2,
@@ -5807,7 +5847,9 @@
             ],
             "graveyard": [],
             "mana_draw_count_this_turn": 0
-          }
+          },
+          "sudden_death_turns_by_player": {},
+          "sudden_death_last_applied_turn_by_player": {}
         },
         "history_events": [
           {
@@ -5877,7 +5919,7 @@
             "turn_number": 4
           }
         ],
-        "state_sha256": "4b9fcc544d20df389ca2f58b495d1a5e60d470e81e409f3e2e8e0863151dbf6b",
+        "state_sha256": "a520fd1f2d096e8b1dba764eefe2c47d0c7212731f34ff4641ed318206a84174",
         "obs_sha256_f32_le": "153d3d27ff1297b90271387a650b7d94050caee5f1839323b7d6a7189a62aa64",
         "mask_sha256_f32_le": "ea1c497f1d8559f291dc57ca3de8ee84e6d6fc8b54fe0596634545062cb12266",
         "action_features_sha256_f32_le": "87812f2b2f47cfc0d66072802b37dd4b3d08b0c186b42571cbf36b0ad8810ea8",

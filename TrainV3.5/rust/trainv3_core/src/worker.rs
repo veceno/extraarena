@@ -204,6 +204,15 @@ pub struct BatchedRolloutWorker {
 pub struct RuleAdvanceOutput {
     pub learner_rewards: Vec<f32>,
     pub terminated: Vec<bool>,
+    /// Per-env truncation flag (WD-2): true when the opponent's auto-advance
+    /// step crossed `turn_number > max_turns`, mirroring
+    /// `ai/train_v2/rollout_worker.py::_auto_play_until_learner`'s
+    /// accumulated `truncated` (rollout_worker.py:~255). Independent of
+    /// `terminated`; the caller resets on `terminated OR truncated`
+    /// (rollout_worker.py:~375) BEFORE the learner acts. Populated from
+    /// `step.truncated` in the advance loop, mirroring how `terminated` is
+    /// collected.
+    pub truncated: Vec<bool>,
     pub reset_flags: Vec<bool>,
     pub action_counts: Vec<usize>,
 }
@@ -513,10 +522,20 @@ impl BatchedRolloutWorker {
 
         let mut learner_rewards = vec![0.0_f32; self.states.len()];
         let mut terminated = vec![false; self.states.len()];
+        let mut truncated = vec![false; self.states.len()];
         let mut reset_flags = vec![false; self.states.len()];
         let mut action_counts = vec![0_usize; self.states.len()];
 
         for idx in 0..self.states.len() {
+            // Mirrors `ai/train_v2/rollout_worker.py::_auto_play_until_learner`
+            // (rollout_worker.py:~243): the loop runs while the episode is
+            // ongoing AND it is not the learner's turn. Truncation
+            // (`turn_number > max_turns`) is independent of `terminated`
+            // (kernel.rs:560-564) — when the opponent's step crosses
+            // `max_turns`, `step.truncated` becomes true and we stop the
+            // auto-advance so the caller can reset BEFORE the learner acts
+            // (rollout_worker.py:~375), matching Python's
+            // `while not terminated and not truncated`.
             while self.states[idx].status == "ongoing"
                 && self.states[idx].current_turn_owner_id != learner_actor_ids[idx]
             {
@@ -550,6 +569,7 @@ impl BatchedRolloutWorker {
                 );
 
                 let step_terminated = step.terminated;
+                let step_truncated = step.truncated;
                 self.states[idx] = step.state;
                 self.episode_returns[idx] += step.reward;
                 self.episode_lengths[idx] += 1;
@@ -569,12 +589,25 @@ impl BatchedRolloutWorker {
                     }
                     break;
                 }
+                // Truncation is independent of termination (kernel.rs:560-564):
+                // `turn_number > max_turns` does NOT flip `status`. We must NOT
+                // auto-reset on truncation — `step_into` only resets on
+                // `terminated` (worker.rs:797) and Python's
+                // `_auto_play_until_learner` reports truncated without resetting
+                // (the caller resets on the next "reset" cmd). Mirror that: set
+                // the flag and stop the loop so the learner does not act in a
+                // truncated state.
+                if step_truncated {
+                    truncated[idx] = true;
+                    break;
+                }
             }
         }
 
         Ok(RuleAdvanceOutput {
             learner_rewards,
             terminated,
+            truncated,
             reset_flags,
             action_counts,
         })
@@ -1401,5 +1434,56 @@ mod tests {
         let out = worker.step(&[end_turn_id]).expect("step applies");
         assert_eq!(out.terminated, vec![false], "status still ongoing");
         assert_eq!(out.truncated, vec![true], "turn 5 > max_turns 4 → truncated");
+    }
+
+    #[test]
+    fn advance_rule_until_actor_propagates_truncated_when_opponent_crosses_max_turns() {
+        // Phase 7 follow-up: the opponent-auto-advance path must surface
+        // `truncated` (turn_number > max_turns) just like the learner-step
+        // path (worker.rs:814). With max_turns=4 and the opponent to act at
+        // turn_number=4, the opponent's only legal action is end_turn
+        // (empty hand + empty board → 601-mask is just action_id 0). end_turn
+        // advances turn_number to 5 > 4 → step.truncated=true, terminated=false
+        // (status still "ongoing"). `RuleAdvanceOutput.truncated` must reflect
+        // this so the caller resets on terminated-or-truncated BEFORE the
+        // learner acts (mirrors rollout_worker.py:~375). Previously the advance
+        // path had no `truncated` field and `encode_all` (worker.rs:684) seeded
+        // all-false, hiding the truncation for one step.
+        use super::BatchedRolloutWorker;
+
+        let mut cfg = KernelConfig::default();
+        cfg.max_turns = 4;
+        let mut p1 = player_with(vec![card(12, 1, 1, 1)]);
+        p1.user_id = 1;
+        let mut p2 = player_with(vec![card(12, 1, 1, 1)]);
+        p2.user_id = 2;
+        // Empty hand + board for both → the only legal 601-candidate action
+        // for the turn owner is end_turn (action_id 0); mana_draw is a separate
+        // head not exercised by advance_rule_until_actor (mana_draw_flag=false).
+        p1.hand = Vec::new();
+        p1.board = Vec::new();
+        p2.hand = Vec::new();
+        p2.board = Vec::new();
+        let state = KernelState {
+            current_turn_owner_id: 2,
+            turn_number: 4,
+            status: "ongoing".to_string(),
+            p1,
+            p2,
+            ..Default::default()
+        };
+        let mut worker = BatchedRolloutWorker::new(cfg, vec![state]);
+        worker.use_deterministic_rng();
+        // learner is player 1; opponent (player 2) acts first.
+        let out = worker
+            .advance_rule_until_actor(&[1], &[0], 64, 0, false)
+            .expect("advance applies");
+        assert_eq!(out.terminated, vec![false], "status still ongoing after end_turn");
+        assert_eq!(
+            out.truncated, vec![true],
+            "opponent end_turn → turn 5 > max_turns 4 → truncated must propagate"
+        );
+        assert_eq!(out.action_counts, vec![1], "exactly one opponent action");
+        assert_eq!(out.reset_flags, vec![false], "no auto-reset (auto_reset=false)");
     }
 }
