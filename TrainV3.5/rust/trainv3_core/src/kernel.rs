@@ -2055,9 +2055,13 @@ fn apply_random_battlecry_damage(
     amount: i32,
     draw_rng: &mut DrawRng,
 ) {
-    if amount <= 0 {
-        return;
-    }
+    // NO `amount <= 0` early-return: mirrors Python `_apply_random_battlecry_damage`
+    // (core/effects.py:67-83), which always builds `targets = opponent.board +
+    // [opponent.hero]`, calls `random.choice` (consuming the choice_rolls RNG
+    // stream), and `apply_damage(target, amount)` (which calls consume_shield on
+    // a shielded target even at amount=0). No catalog card produces amount=0
+    // (regex `battlecry_damage_(\d+)_random` requires \d+), so this is a latent
+    // forward-compat parity fix, not a behavior change for current cards.
     let n = opponent.board.len() + 1; // +1 for hero
     let idx = roll_choice(n, draw_rng);
     if idx < opponent.board.len() {

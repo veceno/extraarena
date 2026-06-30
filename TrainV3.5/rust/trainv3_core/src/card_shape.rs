@@ -172,12 +172,27 @@ fn number_after_damage_marker(value: &str) -> Option<i32> {
 }
 
 fn number_after_prefix(value: &str, prefixes: &[&str], index: usize) -> Option<i32> {
+    // Mirror Python's regex semantics (e.g. classic_card_shape_v1.py
+    // `^battlecry_heal_(?:hero_|target_)?(\d+)`): the optional marker between
+    // the family prefix and the digit must NOT cause a parse miss. The previous
+    // `return` on the FIRST strip-matching prefix meant `battlecry_heal_hero_2`
+    // matched `battlecry_heal_` first (rest="hero_2", nth(0)="hero" -> parse fail)
+    // and returned None WITHOUT trying the more-specific `battlecry_heal_hero_`
+    // prefix — yielding scalar 0.0 where Python yields 0.2. Iterate ALL prefixes
+    // and keep the best parse so a generic prefix that strip-matches but yields
+    // a non-integer token falls through to the specific prefix. For well-formed
+    // mechanics exactly one prefix yields a valid int, so `max` == that value.
+    let mut best: Option<i32> = None;
     for prefix in prefixes {
         if let Some(rest) = value.strip_prefix(prefix) {
-            return rest.split('_').nth(index)?.parse::<i32>().ok();
+            if let Some(tok) = rest.split('_').nth(index) {
+                if let Ok(v) = tok.parse::<i32>() {
+                    best = Some(best.map_or(v, |b| b.max(v)));
+                }
+            }
         }
     }
-    None
+    best
 }
 
 #[cfg(test)]
@@ -206,5 +221,44 @@ mod tests {
         assert_eq!(out[14], 1.0);
         assert_eq!(out[47], 0.5);
         assert_eq!(out[57], 0.2);
+    }
+
+    #[test]
+    fn battlecry_heal_scalar_matches_python_regex_semantics() {
+        // Regression for the `number_after_prefix` bug: the optional
+        // (hero_|target_) marker must NOT cause a parse miss. Python
+        // classic_card_shape_v1.py uses `^battlecry_heal_(?:hero_|target_)?(\d+)`
+        // and takes max over mechanics — scalar[4] (offset 51) = 0.2/0.5/0.3
+        // for these mechanics. Before the fix, Rust strip-matched the generic
+        // `battlecry_heal_` prefix first, got token "hero"/"target" (not an
+        // i32), returned None, and never tried `battlecry_heal_hero_`/`_target_`
+        // — yielding 0.0 (a byte-divergence in the frozen-classic obs mirror,
+        // affecting real cards 14/35/36, hidden because no golden fixture put
+        // them in a compared obs slot).
+        fn scalar4(mechanics: &[&str]) -> f32 {
+            let card = CardShapeInput {
+                card_type: CardType::Warrior,
+                mana_cost: 1,
+                attack: 1,
+                hp: 1,
+                max_hp: 1,
+                is_ready: false,
+                is_frozen: false,
+                level: 1,
+                mechanics,
+            };
+            encode_card_shape(Some(&card), None, None, None)[51]
+        }
+        assert_eq!(scalar4(&["battlecry_heal_hero_2"]), 0.2);
+        assert_eq!(scalar4(&["battlecry_heal_target_5"]), 0.5);
+        assert_eq!(scalar4(&["battlecry_heal_target_3"]), 0.3);
+        assert_eq!(scalar4(&["battlecry_heal_5"]), 0.5);
+        // max across mechanics mirrors Python's best_val accumulation.
+        assert_eq!(
+            scalar4(&["battlecry_heal_hero_2", "battlecry_heal_target_5"]),
+            0.5
+        );
+        // sanity: a non-heal mechanic contributes 0.0 to scalar[4].
+        assert_eq!(scalar4(&["damage_5"]), 0.0);
     }
 }
