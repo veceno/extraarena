@@ -266,7 +266,7 @@ def test_manifest_roundtrip():
     # Config round-trips.
     assert reloaded.target_non_anchor_count == 4
     assert reloaded.best_ever_strict_threshold == pytest.approx(0.5)
-    assert reloaded.frozen_non_self_share == pytest.approx(0.75)
+    assert reloaded.frozen_non_self_share == pytest.approx(0.95)
     assert reloaded.prevalence_pool_target == 6
 
     # Seed anchor round-trips (paths + metadata intact).
@@ -343,8 +343,8 @@ def test_pool_grows_self_snapshot_prevalence():
     """D-B5 hybrid (``BLOCK_B_PLAN.md:247-249`` + §2 DECISIONS CONFIRMED): the mix
     weight available to self-snapshots is a function of pool size — prevalence rises
     monotonically as the pool fills. V4-orig spectrum weights stay frozen."""
-    pool = SnapshotPool(frozen_non_self_share=0.75, prevalence_pool_target=6)
-    residual = 1.0 - 0.75  # 0.25 headroom for self-snapshots
+    pool = SnapshotPool(frozen_non_self_share=0.95, prevalence_pool_target=6)
+    residual = 1.0 - 0.95  # 0.05 headroom for self-snapshots (spec-literal)
 
     # Empty pool → prevalence 0 (no snapshots to populate the share).
     assert pool.self_snapshot_prevalence_weight() == pytest.approx(0.0)
@@ -369,10 +369,10 @@ def test_pool_grows_self_snapshot_prevalence():
     # The frozen non-self share is UNCHANGED by pool growth (V4-orig 0.40/0.20/0.15
     # frozen per D-B5). The collapse monitor that TRIGGERS reweighting lives in
     # B3/B4 — B1 only exposes the pool-size-driven weight.
-    assert pool.frozen_non_self_share == pytest.approx(0.75)
+    assert pool.frozen_non_self_share == pytest.approx(0.95)
 
     # Non-anchor count drives prevalence (anchors do NOT inflate it — a pool with
     # only a seed anchor and no rolling snapshots has prevalence 0).
-    only_seed = SnapshotPool(frozen_non_self_share=0.75, prevalence_pool_target=6)
+    only_seed = SnapshotPool(frozen_non_self_share=0.95, prevalence_pool_target=6)
     only_seed.set_seed_anchor(_entry(0, 0.55, "seed.npz"))
     assert only_seed.self_snapshot_prevalence_weight() == pytest.approx(0.0)

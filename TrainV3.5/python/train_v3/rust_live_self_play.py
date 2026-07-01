@@ -130,7 +130,7 @@ from .rust_collector import RustTransitionBatch, _LegalActionTapeBuilder
 # --- Dispatch split (grounded in worker.rs:1252-1304) -------------------------
 #: Canonical opponent name -> Rust ``select_rule_action_for_state`` integer code
 #: (``worker.rs:1285``; ``exploit_agent_kind_from_code`` ``worker.rs:1252``).
-#: These are the 6 RULE-AGENT identities — pure Rust heuristic, NO policy forward pass.
+#: These are the 7 RULE-AGENT identities — pure Rust heuristic, NO policy forward pass.
 RULE_AGENT_CODES: dict[str, int] = {
     "random": 0,           # select_deterministic_legal_random_action (worker.rs:1265)
     "face_rush": 1,        # ExploitAgentKind::FaceRush (worker.rs:1254)
@@ -139,8 +139,12 @@ RULE_AGENT_CODES: dict[str, int] = {
     "stall": 4,            # ExploitAgentKind::Stall (worker.rs:1257)
     "anti_draw_greed": 6,  # ExploitAgentKind::AntiDrawGreed (worker.rs:1259)
     # Available Rust rule codes NOT in the A3 spec mix (documented for completeness;
-    # ``BLOCK_A_PLAN.md:401`` legacy phase26 mix used these but the A3 spec mix does not):
-    # "punish_empty_board": 5,       # ExploitAgentKind::PunishEmptyBoard (worker.rs:1258)
+    # ``BLOCK_A_PLAN.md:401`` legacy phase26 mix used these but the A3 spec mix does not).
+    # Block B (D-B10) ENABLES ``punish_empty_board`` (code 5) — additive uncomment,
+    # zero Rust change (``worker.rs:1258 ExploitAgentKind::PunishEmptyBoard`` already
+    # exists; ``BLOCK_B_PLAN.md:336-346`` + §10). ``anti_hand_leak_overfit`` (code 7)
+    # is NOT in the spec mix — remains excluded.
+    "punish_empty_board": 5,       # ExploitAgentKind::PunishEmptyBoard (worker.rs:1258)
     # "anti_hand_leak_overfit": 7,    # ExploitAgentKind::AntiHandLeakOverfit (worker.rs:1260)
 }
 
@@ -149,8 +153,9 @@ RULE_AGENT_CODES: dict[str, int] = {
 #: ``ai/train_v2/rollout_worker.py:211-230``.
 POLICY_OPPONENT_KINDS: frozenset[str] = frozenset({"end_turn", "greedy_face", "self", "v4max"})
 
-#: All 10 Phase-A graduated identities (the union; matches
-#: ``ppo_phaseA_config.PHASE_A_OPPONENT_MIX_SPEC`` via the alias layer).
+#: All 11 Phase-A graduated identities (the union; 7 rule-agent + 4 policy;
+#: ``punish_empty_board`` enabled by Block-B D-B10 additive uncomment). Matches
+#: ``ppo_phaseA_config.PHASE_A_OPPONENT_MIX_SPEC`` via the alias layer.
 PHASE_A_IDENTITIES: tuple[str, ...] = tuple(RULE_AGENT_CODES.keys()) + (
     "end_turn",
     "greedy_face",
@@ -166,7 +171,7 @@ POLICY_DISPATCH = "policy"
 def resolve_opponent_dispatch(identity: str) -> tuple[str, int | None]:
     """Return the dispatch path for a canonical opponent identity.
 
-    ``(RULE_DISPATCH, code)`` for the 6 rule-agent identities (Rust
+    ``(RULE_DISPATCH, code)`` for the 7 rule-agent identities (Rust
     ``select_rule_action_for_state`` codes 0-7, ``worker.rs:1285``);
     ``(POLICY_DISPATCH, None)`` for the 4 policy-opponent identities (Python loop,
     ``rollout_worker.py:211-230``). Raises ``ValueError`` on an unknown identity.

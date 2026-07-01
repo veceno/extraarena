@@ -157,11 +157,12 @@ class SnapshotPool:
     # ``a_gate.py:657`` uses ``h2h > thresh``). The best-ever anchor replaces only when
     # a new candidate's H2H-vs-best STRICTLY exceeds the current best-ever's H2H.
     best_ever_strict_threshold: float = 0.5
-    #: Frozen non-self-snapshot share (D-B5 hybrid: V4-orig 0.40+0.20+0.15 = 0.75 is
-    # the frozen non-self weight; the self-snapshot share is the RESIDUAL grown as the
-    # pool fills — ``BLOCK_B_PLAN.md:142/154``). The collapse monitor itself lives in
-    # B3/B4; B1 only exposes the prevalence weight.
-    frozen_non_self_share: float = 0.75
+    #: Frozen non-self-snapshot share (D-B5 hybrid, spec-literal: V4-orig
+    # 0.40+0.20+0.15 = 0.75 + exploit 0.05*3 = 0.15 + tail 0.03+0.01+0.01 = 0.05 ->
+    # frozen non-self TOTAL = 0.95; the self-snapshot share is the RESIDUAL 0.05 grown
+    # as the pool fills — ``BLOCK_B_PLAN.md:142/154`` + §2 DECISIONS CONFIRMED D-B5).
+    # The collapse monitor itself lives in B3/B4; B1 only exposes the prevalence weight.
+    frozen_non_self_share: float = 0.95
     #: The pool target used to scale prevalence (D-B4 ~6 non-anchors; prevalence grows
     # from 0 to the full residual as the pool fills this many non-anchors).
     prevalence_pool_target: int = 6
@@ -418,8 +419,9 @@ class SnapshotPool:
         """D-B5 hybrid (``BLOCK_B_PLAN.md:142/154`` + ``BLOCK_B_PLAN.md:247-249``):
         the self-snapshot mix-weight available to the pool, grown as the pool fills.
 
-        The frozen NON-self share (V4-orig 0.40+0.20+0.15 = 0.75 per D-B5) is
-        ``self.frozen_non_self_share``; the self-snapshot share is the RESIDUAL
+        The frozen NON-self share (spec-literal: V4-orig 0.75 + exploit 0.15 +
+        tail 0.05 = 0.95 per D-B5) is ``self.frozen_non_self_share``; the
+        self-snapshot share is the RESIDUAL
         ``1 - frozen_non_self_share`` scaled by ``min(non_anchor_count /
         prevalence_pool_target, 1.0)``. The prevalence is MONOTONE-INCREASING in the
         non-anchor pool size (0 when the pool is empty, the full residual when the pool
@@ -463,7 +465,7 @@ class SnapshotPool:
             best_ever_strict_threshold=float(
                 manifest.get("best_ever_strict_threshold", 0.5)
             ),
-            frozen_non_self_share=float(manifest.get("frozen_non_self_share", 0.75)),
+            frozen_non_self_share=float(manifest.get("frozen_non_self_share", 0.95)),
             prevalence_pool_target=int(manifest.get("prevalence_pool_target", 6)),
         )
         seed_d = manifest.get("seed")

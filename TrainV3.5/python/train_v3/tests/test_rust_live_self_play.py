@@ -89,22 +89,32 @@ requires_rust_ffi = pytest.mark.skipif(
 # ===========================================================================
 class TestDispatchSplit:
     def test_ten_identities_present(self):
-        assert len(rls.PHASE_A_IDENTITIES) == 10
-        # Dispatch operates on canonical names (parse_v5_opponent_mix output form), not
-        # the display names in PHASE_A_OPPONENT_MIX_SPEC.
-        assert set(rls.PHASE_A_IDENTITIES) == set(CANONICAL_PHASE_A_IDENTITIES), (
-            f"PHASE_A_IDENTITIES (canonical) {set(rls.PHASE_A_IDENTITIES)} != "
-            f"canonical spec {set(CANONICAL_PHASE_A_IDENTITIES)}"
+        # The 10 Phase-A canonical identities (the A3 spec mix image under the alias
+        # map) are all present in PHASE_A_IDENTITIES. Block B (D-B10,
+        # ``BLOCK_B_PLAN.md:336-346``) ADDITIVELY enables ``punish_empty_board``
+        # (Rust code 5) in RULE_AGENT_CODES, so PHASE_A_IDENTITIES now has 11 members
+        # — the 10 Phase-A spec identities + punish_empty_board.
+        assert set(CANONICAL_PHASE_A_IDENTITIES) <= set(rls.PHASE_A_IDENTITIES), (
+            f"Phase-A canonical {set(CANONICAL_PHASE_A_IDENTITIES)} not a subset of "
+            f"PHASE_A_IDENTITIES {set(rls.PHASE_A_IDENTITIES)}"
         )
-        # And the canonical set is the 1:1 image of the 10 display names under the alias map.
+        # The Phase-A spec mix itself is unchanged — still 10 display names / 10
+        # canonical identities (the A3 alias image; punish_empty_board is NOT a
+        # Phase-A spec identity, it is a Block-B dispatch enable).
         assert len(CANONICAL_PHASE_A_IDENTITIES) == len(PHASE_A_OPPONENT_MIX_SPEC) == 10
+        # Block B (D-B10) enable: punish_empty_board is now dispatch-enabled (code 5).
+        assert "punish_empty_board" in rls.PHASE_A_IDENTITIES
+        assert len(rls.PHASE_A_IDENTITIES) == 11
 
     def test_six_rule_four_policy_split(self):
+        # Block B (D-B10) enables punish_empty_board (Rust code 5) -> 7 rule agents
+        # now dispatch via the Rust select_rule_action_for_state path.
         rule = [i for i in rls.PHASE_A_IDENTITIES if rls.is_rule_agent(i)]
         policy = [i for i in rls.PHASE_A_IDENTITIES if rls.is_policy_opponent(i)]
         assert sorted(rule) == sorted(
-            ["random", "face_rush", "board_control", "greedy_trade", "stall", "anti_draw_greed"]
-        ), "the 6 rule-agent identities (Rust select_rule_action_for_state codes 0-7)"
+            ["random", "face_rush", "board_control", "greedy_trade", "stall",
+             "anti_draw_greed", "punish_empty_board"]
+        ), "the 7 rule-agent identities (Rust codes 0-7; Block B enabled code 5)"
         assert sorted(policy) == sorted(["end_turn", "greedy_face", "self", "v4max"]), (
             "the 4 policy-opponent identities (Python loop, no Rust rule code)"
         )
@@ -119,6 +129,7 @@ class TestDispatchSplit:
             "greedy_trade": 3,
             "stall": 4,
             "anti_draw_greed": 6,
+            "punish_empty_board": 5,  # Block B (D-B10) enable, worker.rs:1258
         }
         for name, code in expected.items():
             kind, got = rls.resolve_opponent_dispatch(name)
@@ -134,11 +145,14 @@ class TestDispatchSplit:
             rls.resolve_opponent_dispatch("not_a_real_identity")
 
     def test_rule_code_table_matches_worker_rs_constants(self):
-        # The A3 spec mix rule codes are a strict subset of the Rust 0-7 table.
+        # The dispatch-enabled rule codes are a strict subset of the Rust 0-7 table.
         assert set(rls.RULE_AGENT_CODES.values()) <= {0, 1, 2, 3, 4, 5, 6, 7}
-        # Codes 5 (PunishEmptyBoard) and 7 (AntiHandLeakOverfit) exist in Rust but are
-        # NOT in the A3 spec mix (BLOCK_A_PLAN.md:401 — legacy phase26 used them; A3 does not).
-        assert 5 not in rls.RULE_AGENT_CODES.values()
+        # Block B (D-B10) ENABLES code 5 (PunishEmptyBoard, worker.rs:1258) — the
+        # Phase-A exclusion of code 5 is REVERSED by the additive uncomment of
+        # rust_live_self_play.py:143 (``BLOCK_B_PLAN.md:336-346`` + §10).
+        assert 5 in rls.RULE_AGENT_CODES.values()
+        assert rls.RULE_AGENT_CODES["punish_empty_board"] == 5
+        # Code 7 (AntiHandLeakOverfit) remains excluded (NOT in the spec mix).
         assert 7 not in rls.RULE_AGENT_CODES.values()
 
 
