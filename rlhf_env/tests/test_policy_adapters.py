@@ -62,10 +62,15 @@ def test_baseline_build_greedy_face():
 
 
 def test_v5_stub_raises_on_select():
-    p = default_registry().build({"name": "v5x", "kind": "v5", "path": "/x.onnx"})
-    assert p.kind == "v5"
+    # C1: the registry 'v5' slot now routes to the real V5RlhfAdapter, so the
+    # stub is exercised via its OWN constructor (the retained test double) —
+    # NOT via default_registry().build, which would build the real adapter and
+    # try to load the (nonexistent) ONNX. V5StubAdapter stays importable for
+    # tests that want stub behaviour.
+    stub = V5StubAdapter({"name": "v5x", "path": "/x.onnx"})
+    assert stub.kind == "v5"
     with pytest.raises(NotImplementedError):
-        p.select_action(_FakeEngine([1]), 1)
+        stub.select_action(_FakeEngine([1]), 1)
 
 
 def test_v5_stub_is_template_class():

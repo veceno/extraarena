@@ -191,6 +191,12 @@ def _factory_v5(spec: Dict[str, Any], registry: Optional[Any]) -> Any:
     return V5StubAdapter(spec)
 
 
+# C1: real V5 deploy adapter (overrides the stub slot below). The stub stays
+# importable/usable as a test double (V5StubAdapter) — only the registry slot
+# is repointed to the real factory.
+from rlhf_env.components.v5_rlhf_adapter import _factory_v5_real  # noqa: E402
+
+
 # ----------------------------------------------------------------------------
 # Built-in детекторы kind
 # ----------------------------------------------------------------------------
@@ -402,7 +408,7 @@ def _register_builtins(reg: AdapterRegistry) -> None:
     reg.register("legacy_onnx", _factory_legacy_onnx)
     reg.register("action_onnx", _factory_berserk)
     reg.register("v4", _factory_berserk)
-    reg.register("v5", _factory_v5)
+    reg.register("v5", _factory_v5_real)
     # layer-A fallback детектор — низший приоритет (добавлен первым, LIFO → последний).
     reg.register_detector(_layer_a_fallback_detector)
     # sidecar-детектор — выше layer-A fallback (LIFO): определяет V4/V3 по sidecar
