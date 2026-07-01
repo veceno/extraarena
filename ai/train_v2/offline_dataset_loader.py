@@ -156,7 +156,29 @@ class OfflineTransition:
             reconstructed ``pre_state`` for the actor (parity with the
             parallel binary head's legal predicate).
         meta: provenance dict ``{battle_id, seq, action_type, actor_user_id,
-            turn_number, status}``.
+            turn_number, status, decision_source}``.
+        action_native: the ENGINE-sourced action dict (``legal[legal_index]
+            .to_dict()`` from ``v5_trace.py:481`` — the engine's own
+            ``BaseAction``, INDEPENDENT of ``decode_action``). ``None`` for
+            terminal synthetic rows (surrender/draw/stalemate) and any
+            unfinalized row. Additive Block-A field: downstream BC
+            (``train_v3.bc_dataset``) resolves the V5 601-tcode by
+            value-matching ``decode_action(candidate).to_dict()`` against
+            this ENGINE oracle — a true source-vs-source check (codec vs
+            engine), NOT a self-referential codec-vs-codec check. Carrying
+            it here keeps a single source of truth (the loader reads the
+            row once; BC does not re-read ``actions.jsonl``).
+        pre_state_snapshot: the raw ``pre_state`` snapshot dict (v5_trace
+            ``_snapshot_state`` schema). Additive Block-A field: downstream
+            BC reconstructs the ``GameState`` via ``reconstruct_gamestate``
+            to build the append_only legal mask + resolve the 601-tcode +
+            rebuild append_only ``action_features`` (the loader's own
+            ``action_features`` uses ``placement_mode='full'``; BC requires
+            ``'append_only'`` to match the engine's legal-action emission,
+            ``core/engine.py:1260`` ``position=len(player.board)``). Carried
+            as the JSON-friendly snapshot (not the mutable ``GameState``) so
+            the transition stays serializable-ish and BC reconstruction is
+            spec-literal (``reconstruct_gamestate(snapshot)``).
     """
 
     obs: np.ndarray
@@ -167,6 +189,10 @@ class OfflineTransition:
     terminal: bool
     mana_draw_legal: bool
     meta: Dict[str, Any] = field(default_factory=dict)
+    # Additive Block-A fields (defaulted -> existing 6 offline-bridge tests
+    # untouched; they only read the legacy fields above).
+    action_native: Optional[Dict[str, Any]] = None
+    pre_state_snapshot: Optional[Dict[str, Any]] = None
 
 
 # ---------------------------------------------------------------------------
@@ -744,7 +770,20 @@ def iter_offline_transitions(
                     "actor_user_id": actor_user_id,
                     "turn_number": row.get("turn_number"),
                     "status": resolved_status,
+                    # Additive Block-A: decision_source carried in meta so BC
+                    # (train_v3.bc_dataset) can filter to decision_source=='human'
+                    # (verifier finding 4b) from the single loader source of
+                    # truth, without re-reading actions.jsonl. The raw row
+                    # carries it at v5_trace.py:496.
+                    "decision_source": row.get("decision_source"),
                 },
+                # Additive Block-A: ENGINE-sourced action dict (v5_trace.py:481
+                # ``legal[legal_index].to_dict()``) for 601-tcode resolution, and
+                # the raw pre_state snapshot for BC to reconstruct the GameState
+                # (append_only mask + tcode resolution). Both None-safe for
+                # terminal synthetic rows (surrender/draw/stalemate).
+                action_native=row.get("action_native"),
+                pre_state_snapshot=pre_snap,
             )
 
 
