@@ -153,6 +153,23 @@ RULE_AGENT_CODES: dict[str, int] = {
 #: ``ai/train_v2/rollout_worker.py:211-230``.
 POLICY_OPPONENT_KINDS: frozenset[str] = frozenset({"end_turn", "greedy_face", "self", "v4max"})
 
+#: Block-B policy-opponent identities (the V4-orig temperature spectrum, B2
+#: ``TempV4Opponent`` instances keyed by ``v4-orig-argmax`` / ``v4-orig-t07`` /
+#: ``v4-orig-t12``, ``v4_orig_temp_spectrum.py:118-126``). ADDITIVE over Phase A:
+#: these dispatch via the SAME Python policy-opponent loop as
+#: ``POLICY_OPPONENT_KINDS`` (``collect_rust_live_rollout`` :683-700 calls
+#: ``opponent_policies[identity].select(i, ctx)``), so they resolve to
+#: ``(POLICY_DISPATCH, None)``. This frozenset is SEPARATE from
+#: ``POLICY_OPPONENT_KINDS`` + ``PHASE_A_IDENTITIES`` — it does NOT change the 4-
+#: policy / 11-identity Phase-A counts (the dispatch extension in
+#: ``resolve_opponent_dispatch`` is an additive check AFTER the
+#: ``POLICY_OPPONENT_KINDS`` check, before the raise). Block B wires these via B8's
+#: ``opponent_policies`` (B2 ``TempV4Opponent``); NO Rust rule code (``worker.rs``
+#: unchanged — these are PYTHON policy opponents, NOT Rust rule codes).
+BLOCK_B_POLICY_OPPONENT_KINDS: frozenset[str] = frozenset(
+    {"v4-orig-argmax", "v4-orig-t07", "v4-orig-t12"}
+)
+
 #: All 11 Phase-A graduated identities (the union; 7 rule-agent + 4 policy;
 #: ``punish_empty_board`` enabled by Block-B D-B10 additive uncomment). Matches
 #: ``ppo_phaseA_config.PHASE_A_OPPONENT_MIX_SPEC`` via the alias layer.
@@ -183,6 +200,16 @@ def resolve_opponent_dispatch(identity: str) -> tuple[str, int | None]:
     if identity in RULE_AGENT_CODES:
         return (RULE_DISPATCH, int(RULE_AGENT_CODES[identity]))
     if identity in POLICY_OPPONENT_KINDS:
+        return (POLICY_DISPATCH, None)
+    # Block-B additive extension (B8, ``BLOCK_B_PLAN.md`` §3 B8): the V4-orig
+    # temperature spectrum (B2 ``TempV4Opponent``) dispatches via the SAME Python
+    # policy-opponent loop as ``POLICY_OPPONENT_KINDS`` (no Rust rule code). This
+    # check is AFTER the ``POLICY_OPPONENT_KINDS`` check + BEFORE the raise, so it
+    # does NOT change the 4-policy / 11-identity Phase-A counts
+    # (``test_six_rule_four_policy_split`` / ``test_ten_identities_present`` stay
+    # green). ``PHASE_A_IDENTITIES`` is NOT extended (the v4-orig-* are Block-B
+    # identities, not Phase-A graduated identities).
+    if identity in BLOCK_B_POLICY_OPPONENT_KINDS:
         return (POLICY_DISPATCH, None)
     raise ValueError(f"unknown Phase-A opponent identity: {identity!r}")
 
@@ -985,6 +1012,7 @@ def run_live_self_play_update(
     p1_score_rate: float = 0.5,
     p2_score_rate: float = 0.5,
     steps: int | None = None,
+    opponent_mix_parsed: list[tuple[str, float]] | None = None,
 ) -> dict[str, Any]:
     """Run ONE finite PPO update on a seeded live arena (THE MISSING ENTRY POINT).
 
@@ -1018,8 +1046,22 @@ def run_live_self_play_update(
     else:
         worker = _build_live_worker(config, seed=use_seed, env_count=env_count, library_path=library_path)
 
-    # 2. sample opponents + learner sides
-    mix = parse_v5_opponent_mix(config.opponent_mix)
+    # 2. sample opponents + learner sides. ``opponent_mix_parsed`` (Block-B
+    # additive, B8) lets the caller bypass ``parse_v5_opponent_mix`` and pass a
+    # pre-parsed mix DIRECTLY — required for the Block-B mix whose
+    # ``v4-orig-argmax`` / ``v4-orig-t07`` / ``v4-orig-t12`` identities are NOT in
+    # ``league_v5.V5_OPPONENT_KINDS`` (parse_v5_opponent_mix raises on them). The
+    # pre-parsed mix comes from B3 ``build_block_b_opponent_mix`` (after B4
+    # curriculum reweight + the D-B5 hybrid collapse monitor); identities are
+    # validated per-env by ``resolve_opponent_dispatch`` in
+    # ``collect_rust_live_rollout`` (:569-571 — the v4-orig-* resolve to
+    # ``(POLICY_DISPATCH, None)`` via the ``BLOCK_B_POLICY_OPPONENT_KINDS``
+    # extension). When ``opponent_mix_parsed`` is None (the Phase-A default) the
+    # existing ``parse_v5_opponent_mix(config.opponent_mix)`` path is unchanged.
+    if opponent_mix_parsed is not None:
+        mix = list(opponent_mix_parsed)
+    else:
+        mix = parse_v5_opponent_mix(config.opponent_mix)
     opp_identities = sample_opponent_identities(mix, env_count, rng=rng)
     learner_sides, oversampling_scheme = sample_learner_sides(
         env_count,
@@ -1078,6 +1120,7 @@ def run_live_self_play_update(
             "advantage_backend": config.advantage_backend,
             "entropy_coef": config.entropy_coef,
             "epochs": config.epochs,
+            "opponent_mix_parsed": opponent_mix_parsed is not None,
         }
 
         # 5. train (MLX-gated)
@@ -1128,6 +1171,7 @@ __all__ = [
     "PHASE_A_IDENTITIES",
     "POLICY_DISPATCH",
     "POLICY_OPPONENT_KINDS",
+    "BLOCK_B_POLICY_OPPONENT_KINDS",
     "PolicyOpponent",
     "RULE_AGENT_CODES",
     "RULE_DISPATCH",

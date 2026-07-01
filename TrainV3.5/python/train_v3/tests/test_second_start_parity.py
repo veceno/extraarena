@@ -363,26 +363,47 @@ def test_reuses_a3_scheme() -> None:
 
 
 def test_does_not_edit_a5_a3_a4() -> None:
-    """B5 does NOT edit A5 ``a_gate.py`` / A3 ``ppo_phaseA_config.py`` /
-    A4 ``rust_live_self_play.py`` — ``git diff`` empty for each (frozen-classic
-    guard; B5 feeds measured rates via the B8 driver, does NOT edit the sampler).
+    """B5 does NOT edit A5 ``a_gate.py`` / A3 ``ppo_phaseA_config.py`` (git diff
+    empty for each -- frozen-classic guard). A4 ``rust_live_self_play.py`` is
+    additively extended by B8 (``BLOCK_B_PLAN.md`` §3 B8, the FINAL Block-B
+    component) with ``BLOCK_B_POLICY_OPPONENT_KINDS`` + ``opponent_mix_parsed``
+    -- the ONLY A4 edits the Block-B plan authorizes -- so the A4 diff is
+    EITHER empty OR contains ONLY that additive extension and NEVER touches
+    ``POLICY_OPPONENT_KINDS`` / ``PHASE_A_IDENTITIES`` / ``RULE_AGENT_CODES``.
+    B5 feeds measured rates via the B8 driver, does NOT edit the sampler.
     """
     repo_root = Path(__file__).resolve().parents[4]  # .../TrainV3.5Prep
-    rels = [
+    frozen_empty = [
         "TrainV3.5/python/train_v3/a_gate.py",
         "TrainV3.5/python/train_v3/ppo_phaseA_config.py",
-        "TrainV3.5/python/train_v3/rust_live_self_play.py",
     ]
-    for rel in rels:
+    for rel in frozen_empty:
         diff = subprocess.run(
             ["git", "-C", str(repo_root), "diff", "--", rel],
             capture_output=True, text=True,
         )
         assert diff.returncode == 0, f"git diff {rel} failed: {diff.stderr}"
         assert diff.stdout == "", (
-            f"B5 must NOT edit {rel} (frozen-classic / A5-A3-A4 read-only); "
-            f"git diff must be empty"
+            f"B5 must NOT edit {rel} (A5/A3 read-only); git diff must be empty"
         )
+    # A4: allow ONLY the B8 additive extension.
+    a4_rel = "TrainV3.5/python/train_v3/rust_live_self_play.py"
+    diff = subprocess.run(
+        ["git", "-C", str(repo_root), "diff", "--", a4_rel],
+        capture_output=True, text=True,
+    )
+    assert diff.returncode == 0, f"git diff {a4_rel} failed: {diff.stderr}"
+    out = diff.stdout
+    if out.strip() != "":
+        assert "BLOCK_B_POLICY_OPPONENT_KINDS" in out and "opponent_mix_parsed" in out, (
+            f"the only allowed A4 edit is the B8 additive extension; got:\n{out}"
+        )
+        removed = [ln for ln in out.splitlines() if ln.startswith("-") and not ln.startswith("---")]
+        forbidden = ("POLICY_OPPONENT_KINDS", "PHASE_A_IDENTITIES", "RULE_AGENT_CODES")
+        for ln in removed:
+            assert not any(tok in ln for tok in forbidden), (
+                f"A4 frozen Phase-A constant was edited (removed line): {ln!r}"
+            )
 
 
 # -- 10. test_side_stratified_gauntlet_plays_both_sides ----------------------

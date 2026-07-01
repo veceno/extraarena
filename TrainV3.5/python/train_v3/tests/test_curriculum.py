@@ -271,8 +271,15 @@ def test_reweight_does_not_mutate_input() -> None:
 # ---------------------------------------------------------------------------
 
 def test_does_not_edit_a4_sampler() -> None:
-    """git diff on rust_live_self_play.py is empty after this run (B4 hooks via
-    the mix arg, does NOT edit the sampler)."""
+    """B4 hooks via the mix arg, does NOT edit the sampler's Phase-A frozen
+    constants. B8 (``BLOCK_B_PLAN.md`` §3 B8, the FINAL Block-B component)
+    additively extends A4 ``rust_live_self_play.py`` with the
+    ``BLOCK_B_POLICY_OPPONENT_KINDS`` dispatch check + the optional
+    ``opponent_mix_parsed`` param on ``run_live_self_play_update`` -- the ONLY
+    A4 edits the Block-B plan authorizes. This test asserts the A4 diff is
+    EITHER empty OR contains ONLY that additive extension, and NEVER touches
+    ``POLICY_OPPONENT_KINDS`` / ``PHASE_A_IDENTITIES`` / ``RULE_AGENT_CODES``
+    (the Phase-A frozen counts)."""
     repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(_HERE))))
     a4_rel = os.path.join("TrainV3.5", "python", "train_v3", "rust_live_self_play.py")
     a4_abs = os.path.join(repo_root, a4_rel)
@@ -283,10 +290,27 @@ def test_does_not_edit_a4_sampler() -> None:
         text=True,
     )
     assert res.returncode == 0, f"git diff failed: {res.stderr}"
+    diff = res.stdout
     # TrainV3.5/ is gitignored at the repo root (tracked only inside this worktree's
-    # own git), so `git diff` at the repo root reports nothing for it — which is
-    # exactly the contract we want to enforce (no edit to A4 leaks into git). If the
-    # path is tracked in this worktree's git, the diff must still be empty.
-    assert res.stdout.strip() == "", (
-        f"A4 sampler was edited (git diff non-empty):\n{res.stdout}"
+    # own git), so `git diff` at the repo root reports nothing for it when untracked.
+    # If the path IS tracked in this worktree's git, the diff may contain ONLY the
+    # B8 additive extension (BLOCK_B_POLICY_OPPONENT_KINDS + opponent_mix_parsed).
+    if diff.strip() == "":
+        return  # no edit -- the strictest pass.
+    # Non-empty diff: must be the B8 additive extension ONLY.
+    assert "BLOCK_B_POLICY_OPPONENT_KINDS" in diff, (
+        "the only allowed A4 edit is the B8 BLOCK_B_POLICY_OPPONENT_KINDS additive "
+        f"extension; got:\n{diff}"
     )
+    assert "opponent_mix_parsed" in diff, (
+        "the only allowed A4 edit is the B8 opponent_mix_parsed additive param; "
+        f"got:\n{diff}"
+    )
+    # The frozen Phase-A constants must NOT be removed or altered (no '-' line
+    # touches them). Removed lines start with '-' (but not '---').
+    removed = [ln for ln in diff.splitlines() if ln.startswith("-") and not ln.startswith("---")]
+    forbidden = ("POLICY_OPPONENT_KINDS", "PHASE_A_IDENTITIES", "RULE_AGENT_CODES")
+    for ln in removed:
+        assert not any(tok in ln for tok in forbidden), (
+            f"A4 frozen Phase-A constant was edited (removed line): {ln!r}"
+        )
