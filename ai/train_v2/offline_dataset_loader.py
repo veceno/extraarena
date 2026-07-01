@@ -172,10 +172,11 @@ class OfflineTransition:
             ``_snapshot_state`` schema). Additive Block-A field: downstream
             BC reconstructs the ``GameState`` via ``reconstruct_gamestate``
             to build the append_only legal mask + resolve the 601-tcode +
-            rebuild append_only ``action_features`` (the loader's own
-            ``action_features`` uses ``placement_mode='full'``; BC requires
-            ``'append_only'`` to match the engine's legal-action emission,
-            ``core/engine.py:1260`` ``position=len(player.board)``). Carried
+            (Block-C C0) the loader's own ``action_features`` now uses
+            ``placement_mode='append_only'`` to match the engine's
+            legal-action emission (``core/engine.py:1260``
+            ``position=len(player.board)``), so BC's append_only rebuild
+            and the loader's field agree on one engine-faithful source. Carried
             as the JSON-friendly snapshot (not the mutable ``GameState``) so
             the transition stays serializable-ish and BC reconstruction is
             spec-literal (``reconstruct_gamestate(snapshot)``).
@@ -741,9 +742,19 @@ def iter_offline_transitions(
             # mirroring get_legal_actions from state fields (no engine);
             # include_preview=False skips the deep-copy preview simulation
             # (preview channels = 0). No ArenaEnvironment wrap needed.
+            # placement_mode='append_only': only emit warrior PlayCard
+            # candidates at the engine's sole legal position
+            # ``position=len(player.board)`` (core/engine.py:1260). The 'full'
+            # default would over-include warriors at non-append positions the
+            # engine does NOT offer, breaking the consistency invariant
+            # (action_features nonzero rows vs get_legal_actions_raw count).
+            # Block-C C0 fix (D-C5): one engine-faithful source for ALL
+            # consumers (BC already rebuilds with 'append_only'; the new C3
+            # offline-replay path consumes the loader field directly).
             action_features = encode_action_features(
                 pre_gs, actor_user_id,
                 verify_mask=False, include_preview=False,
+                placement_mode='append_only',
             )
             mana_draw_legal = mana_draw_legal_mask(pre_gs, actor_user_id)
 
