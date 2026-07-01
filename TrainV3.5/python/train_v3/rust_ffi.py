@@ -1130,6 +1130,189 @@ class RustBatchWorker:
         raw["rule_action_counts"] = counts
         return raw
 
+    def truncated(self) -> np.ndarray:
+        """Per-env truncation flag (WD-2): ``turn_number > max_turns``.
+
+        Additive accessor — the underlying ``trainv3_worker_truncated_ptr/_len``
+        FFI exists and is populated every ``set_last``; ``arrays()`` simply omits
+        it. The A4 live-self-play trainer reads this to detect ``max_turns``
+        truncation on the LIVE path (kernel.rs:807 ``truncated = next.turn_number
+        > self.config.max_turns``).
+        """
+        if not hasattr(self._lib, "trainv3_worker_truncated_ptr"):
+            raise RuntimeError("loaded trainv3_core library does not expose truncated flag")
+        u8 = self._u8_array(
+            self._lib.trainv3_worker_truncated_ptr,
+            self._lib.trainv3_worker_truncated_len,
+            (self.env_count,),
+        )
+        return _bool_view_from_u8(u8)
+
+    def mana_draw_legal(self) -> np.ndarray:
+        """Per-env parallel mana_draw-head legality flag (Phase 2: MD-3).
+
+        Additive accessor — ``trainv3_worker_mana_draw_legal_ptr/_len`` FFI exists
+        (populated every ``set_last`` from ``BatchTensorOutput.mana_draw_legal``).
+        The A4 learner policy gates the mana_draw head by this flag and selects
+        via ``mana_draw_head_v5.select_includes_mana_draw``.
+        """
+        if not hasattr(self._lib, "trainv3_worker_mana_draw_legal_ptr"):
+            raise RuntimeError("loaded trainv3_core library does not expose mana_draw_legal flag")
+        u8 = self._u8_array(
+            self._lib.trainv3_worker_mana_draw_legal_ptr,
+            self._lib.trainv3_worker_mana_draw_legal_len,
+            (self.env_count,),
+        )
+        return _bool_view_from_u8(u8)
+
+    def step_mana_draw(
+        self,
+        action_ids,
+        mana_draw_flags,
+        *,
+        copy: bool = False,
+    ) -> dict[str, np.ndarray]:
+        """Step the batch with a parallel mana_draw flag per env (MD-FFI).
+
+        Composes the existing ``trainv3_worker_step_mana_draw`` FFI
+        (ffi.rs:1658) + ``BatchedRolloutWorker::step_with_mana_draw``
+        (worker.rs:739). ``mana_draw_flags[i]`` true -> env i applies a mana_draw
+        (standalone action that REPLACES the action_id decode, kernel.rs:788) —
+        ``action_ids[i]`` is then a placeholder. False -> behaves like ``step``.
+        """
+        if not hasattr(self._lib, "trainv3_worker_step_mana_draw"):
+            raise RuntimeError("loaded trainv3_core library does not expose mana_draw step")
+        actions = np.ascontiguousarray(action_ids, dtype=np.uintp)
+        if actions.shape != (self.env_count,):
+            raise ValueError(f"expected action_ids shape ({self.env_count},), got {actions.shape}")
+        flags = np.ascontiguousarray(
+            np.fromiter((1 if bool(f) else 0 for f in mana_draw_flags), dtype=np.uint8),
+        )
+        if flags.shape != (self.env_count,):
+            raise ValueError(f"expected mana_draw_flags shape ({self.env_count},), got {flags.shape}")
+        rc = self._lib.trainv3_worker_step_mana_draw(
+            self._nonnull_ptr(),
+            actions.ctypes.data_as(ctypes.POINTER(ctypes.c_size_t)),
+            ctypes.c_size_t(actions.size),
+            flags.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8)),
+            ctypes.c_size_t(flags.size),
+        )
+        if rc != 0:
+            raise RuntimeError(f"trainv3_worker_step_mana_draw failed: {rc}")
+        return self.arrays(copy=copy)
+
+    def hero_hp(self) -> np.ndarray:
+        """Per-env hero hp snapshot ``(env_count, 4)``: ``[p1_hp, p1_max_hp,
+        p2_hp, p2_max_hp]`` per env.
+
+        Additive accessor over the new ``trainv3_worker_hero_hp`` FFI
+        (mirrors ``current_actor_ids``). Reads the existing per-env
+        ``KernelState`` (worker.rs ``states: Vec<KernelState>``). The A4
+        live-self-play trainer feeds this to
+        ``ppo_phaseA_config.is_decisive_state`` for decisive-early-end (D-A6).
+        """
+        if not hasattr(self._lib, "trainv3_worker_hero_hp"):
+            raise RuntimeError("loaded trainv3_core library does not expose hero_hp accessor")
+        out = np.empty((self.env_count, 4), dtype=np.int32)
+        rc = self._lib.trainv3_worker_hero_hp(
+            self._nonnull_ptr(),
+            out.ctypes.data_as(ctypes.POINTER(ctypes.c_int32)),
+            ctypes.c_size_t(out.size),
+        )
+        if rc != 0:
+            raise RuntimeError(f"trainv3_worker_hero_hp failed: {rc}")
+        return out
+
+    @classmethod
+    def from_live(
+        cls,
+        *,
+        seed: int,
+        env_count: int,
+        max_turns: int = 120,
+        library_path: str | os.PathLike[str] | None = None,
+        info_mode: Any | None = None,
+        assist_mode: Any | None = None,
+        placement_mode: str = "append_only",
+        verify_mask: bool = False,
+        p1_deck_ids: list[int] | None = None,
+        p2_deck_ids: list[int] | None = None,
+        action_features_dtype: str = "float32",
+        action_features_mode: str = "legal_only",
+        observation_mode: str = "v5_only",
+        action_mask_mode: str = "legal_only",
+        terminal_observation_mode: str = "none",
+        diagnostic_mode: str = "none",
+    ) -> "RustBatchWorker":
+        """THE LIVE-SELF-PLAY CONSTRUCTOR (A4, D-A8 = build live).
+
+        Composes the EXISTING ``from_trace_file`` FFI
+        (``trainv3_worker_from_trace_json_with_options_v6``, ffi.rs:703) with an
+        init-only ``GoldenTrace`` JSON built by ``golden_trace.build_golden_trace``
+        (``steps=0`` -> no turn history, only the initial snapshot). The Rust
+        worker steps LIVE from ``trace.initial`` (``trace.steps`` is unused by
+        the worker, ffi.rs:744-754), so this yields a live arena — NOT a trace
+        replay.
+
+        ``max_turns`` is threaded into ``trace['env_config']['max_turns']`` BEFORE
+        the worker is constructed, so ``KernelConfig::from_trace_config``
+        (kernel.rs:660) reads the Phase-A value (NOT the serde default 80,
+        kernel.rs:624). This is the LIVE-constructor plumbing Fix #2
+        (``ppo_phaseA_config.LIVE_MAX_TURNS_THREADING_NOTE``).
+
+        Additive — does NOT modify ``from_trace_file``/``from_trace_files``
+        (frozen-classic guard: ``classic_rl_env.py`` untouched; ``rust_ffi.py``
+        is NOT frozen-classic).
+        """
+        from .golden_trace import build_golden_trace  # lazy: keeps rust_ffi import-light
+        from .contracts import InfoModeV5, AssistModeV5
+
+        im = info_mode if info_mode is not None else InfoModeV5(
+            enemy_hand_known=False, enemy_deck_known=False
+        )
+        am = assist_mode if assist_mode is not None else AssistModeV5()
+        trace = build_golden_trace(
+            seed=int(seed),
+            steps=0,
+            placement_mode=placement_mode,
+            verify_mask=verify_mask,
+            info_mode=im,
+            assist_mode=am,
+            choose="first",
+            p1_deck_ids=p1_deck_ids,
+            p2_deck_ids=p2_deck_ids,
+            max_turns=int(max_turns),
+        )
+        # Defensive: assert max_turns threading before the FFI build (the Rust
+        # worker reads trace.env_config.max_turns at kernel.rs:660).
+        if int(trace["env_config"].get("max_turns", 0)) != int(max_turns):
+            raise RuntimeError(
+                f"from_live max_turns threading failed: env_config.max_turns="
+                f"{trace['env_config'].get('max_turns')} != {max_turns}"
+            )
+        import json as _json
+        import tempfile as _tempfile
+        fd, path = _tempfile.mkstemp(suffix=".json", prefix="trainv3_live_")
+        try:
+            with os.fdopen(fd, "w") as fh:
+                _json.dump(trace, fh)
+            return cls.from_trace_file(
+                path,
+                env_count=env_count,
+                library_path=library_path,
+                action_features_dtype=action_features_dtype,
+                action_features_mode=action_features_mode,
+                observation_mode=observation_mode,
+                action_mask_mode=action_mask_mode,
+                terminal_observation_mode=terminal_observation_mode,
+                diagnostic_mode=diagnostic_mode,
+            )
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
     def rollout_action_tape(self, action_ids, *, auto_reset: bool = False, copy: bool = False) -> dict[str, np.ndarray]:
         actions = np.ascontiguousarray(action_ids, dtype=np.uintp)
         if actions.ndim == 1:
@@ -1796,6 +1979,15 @@ def _load_library(path: Path) -> ctypes.CDLL:
         ctypes.c_size_t,
     ]
     lib.trainv3_worker_step_auto_reset.restype = ctypes.c_int
+    if hasattr(lib, "trainv3_worker_step_mana_draw"):
+        lib.trainv3_worker_step_mana_draw.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_size_t),
+            ctypes.c_size_t,
+            ctypes.POINTER(ctypes.c_uint8),
+            ctypes.c_size_t,
+        ]
+        lib.trainv3_worker_step_mana_draw.restype = ctypes.c_int
     if hasattr(lib, "trainv3_worker_current_actor_ids"):
         lib.trainv3_worker_current_actor_ids.argtypes = [
             ctypes.c_void_p,
@@ -1803,6 +1995,13 @@ def _load_library(path: Path) -> ctypes.CDLL:
             ctypes.c_size_t,
         ]
         lib.trainv3_worker_current_actor_ids.restype = ctypes.c_int
+    if hasattr(lib, "trainv3_worker_hero_hp"):
+        lib.trainv3_worker_hero_hp.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.c_size_t,
+        ]
+        lib.trainv3_worker_hero_hp.restype = ctypes.c_int
     if hasattr(lib, "trainv3_worker_select_rule_actions"):
         lib.trainv3_worker_select_rule_actions.argtypes = [
             ctypes.c_void_p,
@@ -1875,6 +2074,8 @@ def _load_library(path: Path) -> ctypes.CDLL:
         "trainv3_worker_terminated_len",
         "trainv3_worker_reset_flags_len",
         "trainv3_worker_terminal_observation_valid_len",
+        "trainv3_worker_truncated_len",
+        "trainv3_worker_mana_draw_legal_len",
     ]:
         fn = getattr(lib, name)
         fn.argtypes = [ctypes.c_void_p]
@@ -1900,6 +2101,8 @@ def _load_library(path: Path) -> ctypes.CDLL:
         "trainv3_worker_terminated_ptr",
         "trainv3_worker_reset_flags_ptr",
         "trainv3_worker_terminal_observation_valid_ptr",
+        "trainv3_worker_truncated_ptr",
+        "trainv3_worker_mana_draw_legal_ptr",
     ]:
         fn = getattr(lib, name)
         fn.argtypes = [ctypes.c_void_p]

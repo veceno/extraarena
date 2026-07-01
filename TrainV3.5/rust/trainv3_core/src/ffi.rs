@@ -1068,6 +1068,32 @@ pub unsafe extern "C" fn trainv3_worker_current_actor_ids(
     0
 }
 
+/// Per-env hero hp snapshot for the A4 live-self-play decisive-early-end
+/// predicate (additive; mirrors `trainv3_worker_current_actor_ids`). Writes
+/// `env_count * 4` i32 values laid out `[p1_hp, p1_max_hp, p2_hp, p2_max_hp]`
+/// per env into `out_ptr`. Returns 0 on success, -1 null worker, -2 null out,
+/// -3 length mismatch (`out_len != env_count * 4`).
+#[no_mangle]
+pub unsafe extern "C" fn trainv3_worker_hero_hp(
+    worker: *const FfiWorker,
+    out_ptr: *mut i32,
+    out_len: usize,
+) -> i32 {
+    let Some(worker) = worker_ref(worker) else {
+        return -1;
+    };
+    if out_ptr.is_null() {
+        return -2;
+    }
+    if out_len != worker.worker.env_count() * 4 {
+        return -3;
+    }
+    let out = unsafe { slice::from_raw_parts_mut(out_ptr, out_len) };
+    let hero_hp = worker.worker.hero_hp();
+    out.copy_from_slice(&hero_hp);
+    0
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn trainv3_worker_select_rule_actions(
     worker: *const FfiWorker,

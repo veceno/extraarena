@@ -466,6 +466,22 @@ impl BatchedRolloutWorker {
             .collect()
     }
 
+    /// Per-env hero hp snapshot for the A4 live-self-play decisive-early-end
+    /// predicate (BLOCK_A_PLAN.md A4, ``ppo_phaseA_config.is_decisive_state``).
+    /// Returns a flat ``env_count * 4`` array laid out as
+    /// ``[p1_hp, p1_max_hp, p2_hp, p2_max_hp]`` per env. Read-only view of the
+    /// existing per-env ``KernelState`` — additive accessor, no behavior change.
+    pub fn hero_hp(&self) -> Vec<i32> {
+        let mut out = Vec::with_capacity(self.states.len() * 4);
+        for state in &self.states {
+            out.push(state.p1.hero.hp);
+            out.push(state.p1.hero.max_hp);
+            out.push(state.p2.hero.hp);
+            out.push(state.p2.hero.max_hp);
+        }
+        out
+    }
+
     pub fn select_rule_actions(&self, agent_codes: &[u32], salt: u64) -> Result<Vec<usize>, String> {
         if agent_codes.len() != self.states.len() {
             return Err(format!(
