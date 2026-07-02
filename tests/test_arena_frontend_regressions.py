@@ -861,16 +861,26 @@ def test_training_uses_canonical_v4_difficulty_tiers():
     assert "BOT_DIFFICULTY_ALIASES.get" in handler_block
     assert "BOT_DIFFICULTY_PROFILES" in handler_block
     assert "valid_difficulties = tuple(BOT_DIFFICULTY_PROFILES.keys())" in handler_block
+    # Non-top tiers stay V4 (train_v2_classic_v1, -v4- model path).
     for tier_key in (
         "tier_lite_0000",
         "tier_easy_0100",
         "tier_medium_1200",
-        "tier_hard_4500",
-        "tier_max_9000",
     ):
         profile = BOT_DIFFICULTY_PROFILES[tier_key]
         assert profile["format"] == "train_v2_classic_v1"
         assert "-v4-" in profile["model_path"]
+    # Top tiers (tier_hard_4500, tier_max_9000) are retargeted to V5
+    # (Block E1 ship -- extra-lr-v5-max, format v5, obs_dim 7128).
+    for tier_key in (
+        "tier_hard_4500",
+        "tier_max_9000",
+    ):
+        profile = BOT_DIFFICULTY_PROFILES[tier_key]
+        assert profile["format"] == "v5"
+        assert "-v5-" in profile["model_path"]
+        assert profile["obs_dim"] == 7128
+        assert profile["mana_draw_head"] is True
 
 
 def test_friendly_invite_uses_persistent_waiting_watcher():

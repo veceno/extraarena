@@ -35,6 +35,7 @@ from core.state import GameState
 logger = logging.getLogger(__name__)
 
 _TRAIN_V2_FORMAT = "train_v2_classic_v1"
+_V5_FORMAT = "v5"
 
 
 class BerserkInference:
@@ -184,6 +185,73 @@ class BerserkInference:
         include_preview = bool(profile.get("include_preview_features", False))
         return input_names, output_names, action_feature_dim, max_candidate_actions, include_preview
 
+    @classmethod
+    def _validate_v5_contract(
+        cls,
+        difficulty: str,
+        session: ort.InferenceSession,
+        profile: dict[str, Any],
+    ) -> tuple[list[str], list[str], int, int, bool]:
+        """Validate the V5 ONNX contract (3-output: logits + value + mana_draw_logit).
+
+        Mirrors ``_validate_train_v2_contract`` but asserts the V5 shape:
+        obs_dim==7128, action_feature_dim==171, max_candidate_actions==601,
+        inputs include observation+action_features, outputs include
+        logits+value+mana_draw_logit (the 3-tuple), and mana_draw_head is
+        truthy in the profile. Does NOT touch _validate_train_v2_contract (V4
+        stays byte-unchanged).
+        """
+        obs_dim = int(profile.get("obs_dim", 0))
+        action_feature_dim = int(profile.get("action_feature_dim", 0))
+        max_candidate_actions = int(profile.get("max_candidate_actions", 0))
+
+        if obs_dim != 7128:
+            raise ValueError(f"{difficulty}: v5 obs_dim must be 7128, got {obs_dim}")
+        if action_feature_dim != 171:
+            raise ValueError(f"{difficulty}: v5 action_feature_dim must be 171, got {action_feature_dim}")
+        if max_candidate_actions != 601:
+            raise ValueError(f"{difficulty}: v5 max_candidate_actions must be 601, got {max_candidate_actions}")
+
+        inputs = session.get_inputs()
+        outputs = session.get_outputs()
+        input_names = [i.name for i in inputs]
+        output_names = [o.name for o in outputs]
+        if "observation" not in input_names or "action_features" not in input_names:
+            raise ValueError(f"{difficulty}: v5 inputs must include observation/action_features, got {input_names}")
+        if "logits" not in output_names or "value" not in output_names or "mana_draw_logit" not in output_names:
+            raise ValueError(
+                f"{difficulty}: v5 outputs must include logits+value+mana_draw_logit (3-tuple), got {output_names}"
+            )
+
+        meta_by_name = {i.name: i for i in inputs}
+        obs_meta = meta_by_name["observation"]
+        af_meta = meta_by_name["action_features"]
+        obs_shape_dim = cls._shape_dim(obs_meta.shape, 1)
+        if obs_shape_dim is not None and obs_shape_dim != obs_dim:
+            raise ValueError(f"{difficulty}: v5 observation input shape {obs_meta.shape} != obs_dim {obs_dim}")
+        af_actions = cls._shape_dim(af_meta.shape, 1)
+        af_dim = cls._shape_dim(af_meta.shape, 2)
+        if af_actions is not None and af_actions != max_candidate_actions:
+            raise ValueError(
+                f"{difficulty}: v5 action_features candidate shape {af_meta.shape} != {max_candidate_actions}"
+            )
+        if af_dim is not None and af_dim != action_feature_dim:
+            raise ValueError(
+                f"{difficulty}: v5 action_features feature shape {af_meta.shape} != {action_feature_dim}"
+            )
+
+        output_by_name = {o.name: o for o in outputs}
+        logits_meta = output_by_name["logits"]
+        logits_actions = cls._shape_dim(logits_meta.shape, 1)
+        if logits_actions is not None and logits_actions != max_candidate_actions:
+            raise ValueError(f"{difficulty}: v5 logits output shape {logits_meta.shape} != {max_candidate_actions}")
+
+        if not profile.get("mana_draw_head"):
+            raise ValueError(f"{difficulty}: v5 mana_draw_head must be truthy in the profile")
+
+        include_preview = bool(profile.get("include_preview_features", False))
+        return input_names, output_names, action_feature_dim, max_candidate_actions, include_preview
+
     def __init__(
         self,
         profiles: Optional[Dict[str, Dict[str, Any]]] = None,
@@ -216,7 +284,7 @@ class BerserkInference:
                 merged_profile = dict(sidecar)
                 merged_profile.update(profile)
                 profile_format = merged_profile.get("format", None)
-                if profile_format != _TRAIN_V2_FORMAT:
+                if profile_format not in (_TRAIN_V2_FORMAT, _V5_FORMAT):
                     logger.warning(
                         "[BerserkInference] %s skipped: legacy/non-TrainV2 profile format=%s",
                         difficulty,
@@ -240,30 +308,62 @@ class BerserkInference:
                     )
                     session_cache[cache_key] = session
 
-                (
-                    input_names,
-                    output_names,
-                    af_dim,
-                    max_acts,
-                    include_preview,
-                ) = self._validate_train_v2_contract(difficulty, session, merged_profile)
+                if profile_format == _V5_FORMAT:
+                    # V5 branch -- validate the V5 3-output contract (logits +
+                    # value + mana_draw_logit) and store the session with
+                    # format="v5" + mana_draw_head. The V4 path
+                    # (_validate_train_v2_contract + the V4 session dict) is
+                    # byte-unchanged in the else branch below.
+                    (
+                        input_names,
+                        output_names,
+                        af_dim,
+                        max_acts,
+                        include_preview,
+                    ) = self._validate_v5_contract(difficulty, session, merged_profile)
 
-                self.sessions[difficulty] = {
-                    "session": session,
-                    "format": profile_format,
-                    "obs_dim": int(merged_profile["obs_dim"]),
-                    "action_feature_dim": af_dim,
-                    "max_candidate_actions": max_acts,
-                    "include_preview_features": include_preview,
-                    "temperature_range": temp_range,
-                    "selection": selection,
-                    "placement_mode": placement_mode,
-                    "verify_mask": verify_mask,
-                    "action_codec": action_codec,
-                    "observation_codec": observation_codec,
-                    "input_names": input_names,
-                    "output_names": output_names,
-                }
+                    self.sessions[difficulty] = {
+                        "session": session,
+                        "format": profile_format,
+                        "obs_dim": int(merged_profile["obs_dim"]),
+                        "action_feature_dim": af_dim,
+                        "max_candidate_actions": max_acts,
+                        "include_preview_features": include_preview,
+                        "temperature_range": temp_range,
+                        "selection": selection,
+                        "placement_mode": placement_mode,
+                        "verify_mask": verify_mask,
+                        "action_codec": action_codec,
+                        "observation_codec": observation_codec,
+                        "input_names": input_names,
+                        "output_names": output_names,
+                        "mana_draw_head": bool(merged_profile.get("mana_draw_head", True)),
+                    }
+                else:
+                    (
+                        input_names,
+                        output_names,
+                        af_dim,
+                        max_acts,
+                        include_preview,
+                    ) = self._validate_train_v2_contract(difficulty, session, merged_profile)
+
+                    self.sessions[difficulty] = {
+                        "session": session,
+                        "format": profile_format,
+                        "obs_dim": int(merged_profile["obs_dim"]),
+                        "action_feature_dim": af_dim,
+                        "max_candidate_actions": max_acts,
+                        "include_preview_features": include_preview,
+                        "temperature_range": temp_range,
+                        "selection": selection,
+                        "placement_mode": placement_mode,
+                        "verify_mask": verify_mask,
+                        "action_codec": action_codec,
+                        "observation_codec": observation_codec,
+                        "input_names": input_names,
+                        "output_names": output_names,
+                    }
 
                 input_meta = session.get_inputs()[0]
                 output_meta = session.get_outputs()[0]
@@ -321,6 +421,11 @@ class BerserkInference:
         # TrainV2 branch — stable action_id → index in legal_actions
         if profile.get("format") == "train_v2_classic_v1":
             return self._get_action_train_v2_classic(
+                game_state, player_id, legal_actions, difficulty, profile
+            )
+
+        if profile.get("format") == "v5":
+            return self._get_action_v5(
                 game_state, player_id, legal_actions, difficulty, profile
             )
 
@@ -519,6 +624,155 @@ class BerserkInference:
         )
 
         return idx
+
+    def _get_action_v5(
+        self,
+        game_state: GameState,
+        player_id: int,
+        legal_actions: List[BaseAction],
+        difficulty: str,
+        profile: dict,
+    ) -> int:
+        """V5 ONNX inference path -- 3-output contract + mana_draw head wiring.
+
+        Mirrors ``_get_action_train_v2_classic`` but V5-shaped: encodes the
+        7128-dim V5 observation, runs the 3-output ONNX (logits + value +
+        mana_draw_logit), applies the ONNX fallback guard (last-resort prod
+        safety -- raises RuntimeError on NaN/inf OR no-legal-candidate, NOT a
+        silent _legal_fallback), then wires the mana_draw parallel binary head.
+
+        mana_draw decision (SPEC :174 / spec §6.186): ``mana_draw`` is a
+        PARALLEL BINARY HEAD, NOT a 602nd candidate. When
+        ``select_includes_mana_draw(mana_draw_logit, best_candidate_logit,
+        mana_draw_legal)`` fires AND mana_draw is legal, the method returns the
+        index of the ``ManaDrawAction`` in ``legal_actions`` (the engine emits
+        it into the legal-action set at engine.py:1345-1347 when
+        ``player.mana >= mana_draw_cost``). When the head does NOT fire, the
+        method decodes the 601-best candidate and matches it against
+        ``legal_actions``.
+
+        Exception handling: any UNEXPECTED exception (encoder/decoder/match
+        failure) degrades to ``_legal_fallback`` (the V4 silent-fallback
+        behavior). The ONNX fallback guard ``RuntimeError`` is NOT swallowed
+        -- it MUST propagate out of ``_get_action_v5`` (a malformed V5 ONNX is
+        the last-resort prod safety, NOT a silent rule-based fallback).
+        """
+        if not legal_actions:
+            logger.warning("[BerserkInference] V5: нет доступных действий, возврат 0")
+            return 0
+
+        # Lazy-import the V5 encoder set + the V4 codec helpers + ManaDrawAction
+        # so prod does NOT pay the import cost when only V4 is loaded (mirrors
+        # the V4 lazy-import pattern). These import ONLY ai.train_v2.* (the
+        # vendored V5 live-path copies) + core.* -- ZERO train_v3 / rlhf_env
+        # imports on the live hot path.
+        from ai.train_v2.obs_v5 import encode_observation_v5
+        from ai.train_v2.mana_draw_head_v5 import mana_draw_legal_mask, select_includes_mana_draw
+        from ai.train_v2.classic_actions_v1 import (
+            build_action_mask,
+            encode_action_features,
+            decode_action,
+        )
+        from ai.train_v2.v5_inference_guard import _assert_v5_logits_finite_legal
+        from core.actions import ManaDrawAction
+
+        session = profile["session"]
+        obs_dim = int(profile.get("obs_dim", 7128))
+        max_candidate_actions = int(profile.get("max_candidate_actions", 601))
+        action_feature_dim = int(profile.get("action_feature_dim", 171))
+        placement_mode = profile.get("placement_mode", "append_only")
+        verify_mask = bool(profile.get("verify_mask", False))
+
+        try:
+            obs = encode_observation_v5(game_state, player_id).reshape(1, obs_dim).astype(np.float32)
+            mask = build_action_mask(
+                game_state,
+                player_id,
+                verify_mask=verify_mask,
+                placement_mode=placement_mode,
+            ).astype(np.float32)
+            af = encode_action_features(
+                game_state,
+                player_id,
+                include_preview=False,
+                verify_mask=verify_mask,
+                placement_mode=placement_mode,
+                mask=mask,
+            ).reshape(1, max_candidate_actions, action_feature_dim).astype(np.float32)
+
+            obs_name, af_name, output_names = self._resolve_train_v2_io_names(profile)
+            if output_names is None or "mana_draw_logit" not in output_names:
+                # V5 contract requires the 3-tuple; fall back to the explicit
+                # output list if _resolve_train_v2_io_names dropped mana_draw_logit
+                # (it only knows the V4 2-tuple logits+value).
+                obs_name = "observation" if not obs_name or "observation" not in (output_names or []) else obs_name
+                af_name = "action_features" if not af_name else af_name
+                output_names = ["logits", "value", "mana_draw_logit"]
+
+            outputs = session.run(output_names, {"observation": obs, "action_features": af})
+            logits = outputs[0][0]  # shape [601]
+            value = outputs[1]  # noqa: F841 -- V5 value head (unused for action selection)
+            mana_draw_logit = float(outputs[2][0][0])  # scalar
+
+            # ONNX FALLBACK GUARD (SPEC :174) -- last-resort prod safety.
+            # Raises RuntimeError on NaN/inf logits OR no-legal-candidate.
+            # This RuntimeError MUST propagate (NOT swallowed into _legal_fallback).
+            action_id = _assert_v5_logits_finite_legal(logits, mask)
+
+            # mana_draw decision (spec §6.186): mana_draw is a PARALLEL BINARY
+            # HEAD. When select_includes_mana_draw fires AND legal, return the
+            # ManaDrawAction index (the engine emits it into legal_actions at
+            # engine.py:1345-1347 when player.mana >= mana_draw_cost).
+            mana_draw_legal = mana_draw_legal_mask(game_state, player_id)
+            best_candidate_logit = float(logits[action_id])
+            if select_includes_mana_draw(mana_draw_logit, best_candidate_logit, mana_draw_legal):
+                for i, action in enumerate(legal_actions):
+                    if isinstance(action, ManaDrawAction):
+                        logger.debug(
+                            f"[BerserkInference] V5 player={player_id}, difficulty={difficulty}, "
+                            f"mana_draw_logit={mana_draw_logit:.3f} > best_candidate={best_candidate_logit:.3f} "
+                            f"-> mana_draw legal_idx={i}"
+                        )
+                        return i
+                # select_includes_mana_draw said legal but no ManaDrawAction in
+                # legal_actions -- engine/encoder mismatch; fall through to the
+                # 601-candidate decode (defensive).
+                logger.warning(
+                    "[BerserkInference] V5: select_includes_mana_draw fired but no "
+                    "ManaDrawAction in legal_actions; falling back to 601-candidate"
+                )
+
+            decoded = decode_action(game_state, player_id, action_id)
+            if decoded is None:
+                logger.warning(
+                    f"[BerserkInference] V5 action_id={action_id} decode_action returned None, fallback"
+                )
+                return _legal_fallback(legal_actions)
+
+            idx = self._find_matching_legal_action_index(decoded, legal_actions)
+            if idx is None:
+                logger.warning(
+                    f"[BerserkInference] V5 action_id={action_id} decoded={decoded.to_dict()} not found in legal_actions, fallback"
+                )
+                return _legal_fallback(legal_actions)
+
+            logger.debug(
+                f"[BerserkInference] V5 player={player_id}, difficulty={difficulty}, "
+                f"legal={len(legal_actions)}, v5_action={action_id} -> legal_idx={idx}, "
+                f"mana_draw_logit={mana_draw_logit:.3f}, mana_draw_legal={mana_draw_legal}"
+            )
+            return idx
+        except RuntimeError:
+            # The ONNX fallback guard RuntimeError MUST propagate -- a malformed
+            # V5 ONNX is the last-resort prod safety, NOT a silent _legal_fallback.
+            raise
+        except Exception as exc:
+            # Any OTHER unexpected exception (encoder/decoder/match failure)
+            # degrades to _legal_fallback (mirrors the V4 silent-fallback path).
+            logger.warning(
+                "[BerserkInference] V5 unexpected exception: %s, fallback", exc, exc_info=True
+            )
+            return _legal_fallback(legal_actions)
 
 def _legal_fallback(legal_actions: list) -> int:
     for i, action in enumerate(legal_actions):

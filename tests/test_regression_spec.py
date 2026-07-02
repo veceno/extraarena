@@ -461,15 +461,27 @@ def test_ai_profiles_temperature_table():
     assert "extra-lr-v4-micro" in profiles["easy"]["model_path"]
     assert "extra-lr-v4-lite" in profiles["tier_easy_plus_0300"]["model_path"]
     assert "extra-lr-v4-opti" in profiles["medium"]["model_path"]
-    assert "extra-lr-v4-max" in profiles["hard"]["model_path"]
-    assert "extra-lr-v4-max" in profiles["max"]["model_path"]
-    for difficulty in ("lite", "easy", "medium", "hard", "max"):
+    # Top tiers (hard/max aliases map to tier_hard_4500/tier_max_9000) are
+    # retargeted to the V5 model (Block E1 ship -- extra-lr-v5-max).
+    assert "extra-lr-v5-max" in profiles["hard"]["model_path"]
+    assert "extra-lr-v5-max" in profiles["max"]["model_path"]
+    # Non-top tiers (lite/easy/medium) stay V4 (train_v2_classic_v1, obs_dim 1456).
+    for difficulty in ("lite", "easy", "medium"):
         assert profiles[difficulty]["format"] == "train_v2_classic_v1"
         assert profiles[difficulty]["obs_dim"] == 1456
         assert profiles[difficulty]["action_feature_dim"] == 171
         assert profiles[difficulty]["max_candidate_actions"] == 601
         assert profiles[difficulty]["placement_mode"] == "append_only"
         assert profiles[difficulty]["verify_mask"] is False
+    # Top tiers (hard/max) are V5 (format v5, obs_dim 7128, mana_draw_head).
+    for difficulty in ("hard", "max"):
+        assert profiles[difficulty]["format"] == "v5"
+        assert profiles[difficulty]["obs_dim"] == 7128
+        assert profiles[difficulty]["action_feature_dim"] == 171
+        assert profiles[difficulty]["max_candidate_actions"] == 601
+        assert profiles[difficulty]["placement_mode"] == "append_only"
+        assert profiles[difficulty]["verify_mask"] is False
+        assert profiles[difficulty]["mana_draw_head"] is True
 
 
 # ============================================================================
