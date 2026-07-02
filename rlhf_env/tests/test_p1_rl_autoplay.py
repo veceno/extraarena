@@ -44,8 +44,18 @@ def test_p1_rl_autoplays_to_game_over(tmp_path):
     assert "rl" in sources, f"decision_source 'rl' missing: {sources}"
 
 
-def test_battle_tag_rl_vs_rl_when_p2_is_onnx_kind(tmp_path):
-    """p2 = v5 stub (onnx-kind) → battle_tag 'rl-vs-rl'. Без run_auto (stub raises)."""
+def test_battle_tag_rl_vs_rl_when_p2_is_onnx_kind(tmp_path, monkeypatch):
+    """p2 = v5 stub (onnx-kind) → battle_tag 'rl-vs-rl'. Без run_auto (stub raises).
+
+    C1: the registry 'v5' slot now builds the real V5RlhfAdapter, which loads a
+    real ONNX. This test needs the stub's raise-on-select behaviour, so it
+    temporarily swaps the 'v5' slot back to the retained stub factory
+    (``_factory_v5`` → ``V5StubAdapter``) for the duration of the build — the
+    stub stays importable as a test double. The path is intentionally nonexistent
+    (the stub never loads it)."""
+    from rlhf_env.components.policy_adapters import default_registry, _factory_v5
+    reg = default_registry()
+    monkeypatch.setitem(reg._factories, "v5", _factory_v5)
     mgr = make_manager(tmp_path)
     match, engine, runner = create_match(
         mgr, p1_actor_type="rl", p1_model="random",

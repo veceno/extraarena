@@ -43,9 +43,19 @@ def test_f1_natural_completion_releases_agent(tmp_path):
     assert hub.manager.agent_registry.claim("Mentalist") is True
 
 
-def test_f4_run_auto_turn_cap_on_broken_policies(tmp_path):
+def test_f4_run_auto_turn_cap_on_broken_policies(tmp_path, monkeypatch):
     """v5-vs-v5 (оба stub'а raise NotImplementedError → fallback end_turn) —
-    run_auto не виснет вечно, доходит до turn-cap и финализирует ничьей."""
+    run_auto не виснет вечно, доходит до turn-cap и финализирует ничьей.
+
+    C1: the registry 'v5' slot now builds the real V5RlhfAdapter (loads a real
+    ONNX). This test needs two BROKEN policies that raise NotImplementedError so
+    run_auto falls back to end_turn and hits the turn-cap — so it temporarily
+    swaps the 'v5' slot back to the retained stub factory (``_factory_v5`` →
+    ``V5StubAdapter``) for the duration of the build. The stub stays importable
+    as a test double; the swap is test-local."""
+    from rlhf_env.components.policy_adapters import default_registry, _factory_v5
+    reg = default_registry()
+    monkeypatch.setitem(reg._factories, "v5", _factory_v5)
     srv, hub, tmp = make_server(tmp_path)
     spec = {
         "p2_model": "v5p2", "p2_model_kind": "v5", "p2_model_path": _V5_ONNX,

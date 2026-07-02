@@ -1,0 +1,727 @@
+{
+  "env_config": {
+    "adaptive_strength": 1.0,
+    "draw_assist_enabled": false,
+    "draw_assist_strength": 0.0,
+    "enemy_deck_known": true,
+    "enemy_deck_order_known": false,
+    "enemy_hand_known": true,
+    "include_preview": false,
+    "include_v5": true,
+    "mana_per_turn": 1,
+    "own_deck_known": true,
+    "own_hand_identity_known": true,
+    "placement_mode": "append_only",
+    "seed": 123,
+    "v5_weighted_reward": true,
+    "verify_mask": false
+  },
+  "initial": {
+    "action_features_sha256_f32_le": "473443887784c677649e88ef69275ddf48fdef6e42ff2b8f7a9304a57716c469",
+    "history_events": [],
+    "legal_ids": [
+      0
+    ],
+    "mask_sha256_f32_le": "69ba8d7d0d3cac51fbe340c31cde59ea84f03bca452faf27ab3a56855622f432",
+    "obs_sha256_f32_le": "7f46c1eca407f5dcd5745e521c04b54a8c14e38efe94d2a614b42ba1c2a6f99d",
+    "obs_v5_dim": 7128,
+    "obs_v5_sha256_f32_le": "c1e881191beb14980651269fe3b64f47efacba666f689c0db6516d5daa03e7ff",
+    "state": {
+      "current_turn_owner_id": 1,
+      "p1": {
+        "board": [],
+        "deck": [
+          {
+            "attack": 0,
+            "card_id": 8,
+            "hp": 0,
+            "is_frozen": false,
+            "is_ready": false,
+            "level": 1,
+            "mana_cost": 1,
+            "max_hp": 0,
+            "mechanics": [
+              "damage_1"
+            ],
+            "type": "potion"
+          }
+        ],
+        "graveyard": [],
+        "hand": [],
+        "hero": {
+          "attack": 0,
+          "card_id": 1,
+          "hp": 35,
+          "is_frozen": false,
+          "is_ready": false,
+          "level": 1,
+          "mana_cost": 0,
+          "max_hp": 35,
+          "mechanics": [],
+          "type": "hero"
+        },
+        "mana": 1,
+        "max_mana": 1,
+        "user_id": 1
+      },
+      "p2": {
+        "board": [],
+        "deck": [],
+        "graveyard": [],
+        "hand": [],
+        "hero": {
+          "attack": 0,
+          "card_id": 1,
+          "hp": 35,
+          "is_frozen": false,
+          "is_ready": false,
+          "level": 1,
+          "mana_cost": 0,
+          "max_hp": 35,
+          "mechanics": [],
+          "type": "hero"
+        },
+        "mana": 0,
+        "max_mana": 0,
+        "user_id": 2
+      },
+      "status": "ongoing",
+      "turn_number": 1
+    },
+    "state_sha256": "dcd77f6bcf43a71d4d3f580718969a5501be64e6e8ed9e150de3c0c8a68aae73"
+  },
+  "schema": "trainv3-golden-trace-v1",
+  "steps": [
+    {
+      "acting_player_id": 1,
+      "action_id": 0,
+      "base_reward": 0.0,
+      "info": {
+        "current_player_id": 2,
+        "legal_actions": 1,
+        "p1_hp": 35,
+        "p2_hp": 35,
+        "status": "ongoing"
+      },
+      "post": {
+        "action_features_sha256_f32_le": "473443887784c677649e88ef69275ddf48fdef6e42ff2b8f7a9304a57716c469",
+        "history_events": [
+          {
+            "action_id": 0,
+            "action_type": "end_turn",
+            "actor_id": 1,
+            "board_power_delta": 0.0,
+            "enemy_board_count_delta": 0,
+            "enemy_hero_hp_delta": 0,
+            "my_board_count_delta": 0,
+            "own_hero_hp_delta": 0,
+            "turn_number": 2
+          }
+        ],
+        "legal_ids": [
+          0
+        ],
+        "mask_sha256_f32_le": "69ba8d7d0d3cac51fbe340c31cde59ea84f03bca452faf27ab3a56855622f432",
+        "obs_sha256_f32_le": "0e3493d77f4370aaeccff79bd577119c9fb861c3130b328f38f8274b305bbeea",
+        "obs_v5_dim": 7128,
+        "obs_v5_sha256_f32_le": "d703d4811d6459b977149737f4b46a8c13a35d419288b1667a8521c5cbb0f015",
+        "state": {
+          "current_turn_owner_id": 2,
+          "p1": {
+            "board": [],
+            "deck": [
+              {
+                "attack": 0,
+                "card_id": 8,
+                "hp": 0,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 1,
+                "max_hp": 0,
+                "mechanics": [
+                  "damage_1"
+                ],
+                "type": "potion"
+              }
+            ],
+            "graveyard": [],
+            "hand": [],
+            "hero": {
+              "attack": 0,
+              "card_id": 1,
+              "hp": 35,
+              "is_frozen": false,
+              "is_ready": false,
+              "level": 1,
+              "mana_cost": 0,
+              "max_hp": 35,
+              "mechanics": [],
+              "type": "hero"
+            },
+            "mana": 1,
+            "max_mana": 1,
+            "user_id": 1
+          },
+          "p2": {
+            "board": [],
+            "deck": [],
+            "graveyard": [],
+            "hand": [],
+            "hero": {
+              "attack": 0,
+              "card_id": 1,
+              "hp": 35,
+              "is_frozen": false,
+              "is_ready": false,
+              "level": 1,
+              "mana_cost": 0,
+              "max_hp": 35,
+              "mechanics": [],
+              "type": "hero"
+            },
+            "mana": 1,
+            "max_mana": 1,
+            "user_id": 2
+          },
+          "status": "ongoing",
+          "turn_number": 2
+        },
+        "state_sha256": "9ccd4b6d417a8290019628f727a804aeff0d5bf5175c34306958ec3d0d9d01b5"
+      },
+      "pre": {
+        "action_features_sha256_f32_le": "473443887784c677649e88ef69275ddf48fdef6e42ff2b8f7a9304a57716c469",
+        "history_events": [],
+        "legal_ids": [
+          0
+        ],
+        "mask_sha256_f32_le": "69ba8d7d0d3cac51fbe340c31cde59ea84f03bca452faf27ab3a56855622f432",
+        "obs_sha256_f32_le": "7f46c1eca407f5dcd5745e521c04b54a8c14e38efe94d2a614b42ba1c2a6f99d",
+        "obs_v5_dim": 7128,
+        "obs_v5_sha256_f32_le": "c1e881191beb14980651269fe3b64f47efacba666f689c0db6516d5daa03e7ff",
+        "state": {
+          "current_turn_owner_id": 1,
+          "p1": {
+            "board": [],
+            "deck": [
+              {
+                "attack": 0,
+                "card_id": 8,
+                "hp": 0,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 1,
+                "max_hp": 0,
+                "mechanics": [
+                  "damage_1"
+                ],
+                "type": "potion"
+              }
+            ],
+            "graveyard": [],
+            "hand": [],
+            "hero": {
+              "attack": 0,
+              "card_id": 1,
+              "hp": 35,
+              "is_frozen": false,
+              "is_ready": false,
+              "level": 1,
+              "mana_cost": 0,
+              "max_hp": 35,
+              "mechanics": [],
+              "type": "hero"
+            },
+            "mana": 1,
+            "max_mana": 1,
+            "user_id": 1
+          },
+          "p2": {
+            "board": [],
+            "deck": [],
+            "graveyard": [],
+            "hand": [],
+            "hero": {
+              "attack": 0,
+              "card_id": 1,
+              "hp": 35,
+              "is_frozen": false,
+              "is_ready": false,
+              "level": 1,
+              "mana_cost": 0,
+              "max_hp": 35,
+              "mechanics": [],
+              "type": "hero"
+            },
+            "mana": 0,
+            "max_mana": 0,
+            "user_id": 2
+          },
+          "status": "ongoing",
+          "turn_number": 1
+        },
+        "state_sha256": "dcd77f6bcf43a71d4d3f580718969a5501be64e6e8ed9e150de3c0c8a68aae73"
+      },
+      "reward": 0.0,
+      "reward_components_v5": {
+        "board_power_delta": 0.0,
+        "board_power_ratio": 0.0,
+        "board_under_0_7": false,
+        "enemy_board_count_delta": 0,
+        "enemy_board_power": 0.0,
+        "hp_potential_delta": 0.0,
+        "my_board_count_delta": 0,
+        "my_board_power": 0.0,
+        "own_board_wiped": false
+      },
+      "t": 0,
+      "terminated": false,
+      "truncated": false
+    },
+    {
+      "acting_player_id": 2,
+      "action_id": 0,
+      "base_reward": 0.0,
+      "info": {
+        "current_player_id": 1,
+        "legal_actions": 2,
+        "p1_hp": 35,
+        "p2_hp": 35,
+        "status": "ongoing"
+      },
+      "post": {
+        "action_features_sha256_f32_le": "25107751a24a6e959d2be6368d546ef83ea46254c31e83d58decae69fb25c3cd",
+        "history_events": [
+          {
+            "action_id": 0,
+            "action_type": "end_turn",
+            "actor_id": 1,
+            "board_power_delta": 0.0,
+            "enemy_board_count_delta": 0,
+            "enemy_hero_hp_delta": 0,
+            "my_board_count_delta": 0,
+            "own_hero_hp_delta": 0,
+            "turn_number": 2
+          },
+          {
+            "action_id": 0,
+            "action_type": "end_turn",
+            "actor_id": 2,
+            "board_power_delta": 0.0,
+            "enemy_board_count_delta": 0,
+            "enemy_hero_hp_delta": 0,
+            "my_board_count_delta": 0,
+            "own_hero_hp_delta": 0,
+            "turn_number": 3
+          }
+        ],
+        "legal_ids": [
+          0,
+          9
+        ],
+        "mask_sha256_f32_le": "598c7139205cda5fecb388a0f5f7d6b3e153fe7bf6ec4d200127f7bfb3a30dc4",
+        "obs_sha256_f32_le": "372ec452b36991f78dc041044fad2ddca0fe92eacda165e344d9eda0318169d2",
+        "obs_v5_dim": 7128,
+        "obs_v5_sha256_f32_le": "26d54b1a4046a00c51e5ddc186549c04993b4e5294b0ad7974fec7be04250f04",
+        "state": {
+          "current_turn_owner_id": 1,
+          "p1": {
+            "board": [],
+            "deck": [],
+            "graveyard": [],
+            "hand": [
+              {
+                "attack": 0,
+                "card_id": 8,
+                "hp": 0,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 1,
+                "max_hp": 0,
+                "mechanics": [
+                  "damage_1"
+                ],
+                "type": "potion"
+              }
+            ],
+            "hero": {
+              "attack": 0,
+              "card_id": 1,
+              "hp": 35,
+              "is_frozen": false,
+              "is_ready": false,
+              "level": 1,
+              "mana_cost": 0,
+              "max_hp": 35,
+              "mechanics": [],
+              "type": "hero"
+            },
+            "mana": 2,
+            "max_mana": 2,
+            "user_id": 1
+          },
+          "p2": {
+            "board": [],
+            "deck": [],
+            "graveyard": [],
+            "hand": [],
+            "hero": {
+              "attack": 0,
+              "card_id": 1,
+              "hp": 35,
+              "is_frozen": false,
+              "is_ready": false,
+              "level": 1,
+              "mana_cost": 0,
+              "max_hp": 35,
+              "mechanics": [],
+              "type": "hero"
+            },
+            "mana": 1,
+            "max_mana": 1,
+            "user_id": 2
+          },
+          "status": "ongoing",
+          "turn_number": 3
+        },
+        "state_sha256": "1468445ebc42209b190a42812600fa8a4aadc3ad7a0968093803626c92c2e903"
+      },
+      "pre": {
+        "action_features_sha256_f32_le": "473443887784c677649e88ef69275ddf48fdef6e42ff2b8f7a9304a57716c469",
+        "history_events": [
+          {
+            "action_id": 0,
+            "action_type": "end_turn",
+            "actor_id": 1,
+            "board_power_delta": 0.0,
+            "enemy_board_count_delta": 0,
+            "enemy_hero_hp_delta": 0,
+            "my_board_count_delta": 0,
+            "own_hero_hp_delta": 0,
+            "turn_number": 2
+          }
+        ],
+        "legal_ids": [
+          0
+        ],
+        "mask_sha256_f32_le": "69ba8d7d0d3cac51fbe340c31cde59ea84f03bca452faf27ab3a56855622f432",
+        "obs_sha256_f32_le": "0e3493d77f4370aaeccff79bd577119c9fb861c3130b328f38f8274b305bbeea",
+        "obs_v5_dim": 7128,
+        "obs_v5_sha256_f32_le": "d703d4811d6459b977149737f4b46a8c13a35d419288b1667a8521c5cbb0f015",
+        "state": {
+          "current_turn_owner_id": 2,
+          "p1": {
+            "board": [],
+            "deck": [
+              {
+                "attack": 0,
+                "card_id": 8,
+                "hp": 0,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 1,
+                "max_hp": 0,
+                "mechanics": [
+                  "damage_1"
+                ],
+                "type": "potion"
+              }
+            ],
+            "graveyard": [],
+            "hand": [],
+            "hero": {
+              "attack": 0,
+              "card_id": 1,
+              "hp": 35,
+              "is_frozen": false,
+              "is_ready": false,
+              "level": 1,
+              "mana_cost": 0,
+              "max_hp": 35,
+              "mechanics": [],
+              "type": "hero"
+            },
+            "mana": 1,
+            "max_mana": 1,
+            "user_id": 1
+          },
+          "p2": {
+            "board": [],
+            "deck": [],
+            "graveyard": [],
+            "hand": [],
+            "hero": {
+              "attack": 0,
+              "card_id": 1,
+              "hp": 35,
+              "is_frozen": false,
+              "is_ready": false,
+              "level": 1,
+              "mana_cost": 0,
+              "max_hp": 35,
+              "mechanics": [],
+              "type": "hero"
+            },
+            "mana": 1,
+            "max_mana": 1,
+            "user_id": 2
+          },
+          "status": "ongoing",
+          "turn_number": 2
+        },
+        "state_sha256": "9ccd4b6d417a8290019628f727a804aeff0d5bf5175c34306958ec3d0d9d01b5"
+      },
+      "reward": 0.0,
+      "reward_components_v5": {
+        "board_power_delta": 0.0,
+        "board_power_ratio": 0.0,
+        "board_under_0_7": false,
+        "enemy_board_count_delta": 0,
+        "enemy_board_power": 0.0,
+        "hp_potential_delta": 0.0,
+        "my_board_count_delta": 0,
+        "my_board_power": 0.0,
+        "own_board_wiped": false
+      },
+      "t": 1,
+      "terminated": false,
+      "truncated": false
+    },
+    {
+      "acting_player_id": 1,
+      "action_id": 9,
+      "base_reward": 0.025,
+      "info": {
+        "current_player_id": 1,
+        "legal_actions": 1,
+        "p1_hp": 35,
+        "p2_hp": 34,
+        "status": "ongoing"
+      },
+      "post": {
+        "action_features_sha256_f32_le": "473443887784c677649e88ef69275ddf48fdef6e42ff2b8f7a9304a57716c469",
+        "history_events": [
+          {
+            "action_id": 0,
+            "action_type": "end_turn",
+            "actor_id": 1,
+            "board_power_delta": 0.0,
+            "enemy_board_count_delta": 0,
+            "enemy_hero_hp_delta": 0,
+            "my_board_count_delta": 0,
+            "own_hero_hp_delta": 0,
+            "turn_number": 2
+          },
+          {
+            "action_id": 0,
+            "action_type": "end_turn",
+            "actor_id": 2,
+            "board_power_delta": 0.0,
+            "enemy_board_count_delta": 0,
+            "enemy_hero_hp_delta": 0,
+            "my_board_count_delta": 0,
+            "own_hero_hp_delta": 0,
+            "turn_number": 3
+          },
+          {
+            "action_id": 9,
+            "action_type": "play_card",
+            "actor_id": 1,
+            "board_power_delta": 0.0,
+            "enemy_board_count_delta": 0,
+            "enemy_hero_hp_delta": 1,
+            "my_board_count_delta": 0,
+            "own_hero_hp_delta": 0,
+            "turn_number": 3
+          }
+        ],
+        "legal_ids": [
+          0
+        ],
+        "mask_sha256_f32_le": "69ba8d7d0d3cac51fbe340c31cde59ea84f03bca452faf27ab3a56855622f432",
+        "obs_sha256_f32_le": "d971eebdd3e8fe55ae2adad000e742c1bb1605d28b12b77f4ec98b63bce1b3bc",
+        "obs_v5_dim": 7128,
+        "obs_v5_sha256_f32_le": "6c24c6493a80d09700c70e096f63885a769610aed4f9f207b629aa3e52ef2a59",
+        "state": {
+          "current_turn_owner_id": 1,
+          "p1": {
+            "board": [],
+            "deck": [],
+            "graveyard": [
+              {
+                "attack": 0,
+                "card_id": 8,
+                "hp": 0,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 1,
+                "max_hp": 0,
+                "mechanics": [
+                  "damage_1"
+                ],
+                "type": "potion"
+              }
+            ],
+            "hand": [],
+            "hero": {
+              "attack": 0,
+              "card_id": 1,
+              "hp": 35,
+              "is_frozen": false,
+              "is_ready": false,
+              "level": 1,
+              "mana_cost": 0,
+              "max_hp": 35,
+              "mechanics": [],
+              "type": "hero"
+            },
+            "mana": 1,
+            "max_mana": 2,
+            "user_id": 1
+          },
+          "p2": {
+            "board": [],
+            "deck": [],
+            "graveyard": [],
+            "hand": [],
+            "hero": {
+              "attack": 0,
+              "card_id": 1,
+              "hp": 34,
+              "is_frozen": false,
+              "is_ready": false,
+              "level": 1,
+              "mana_cost": 0,
+              "max_hp": 35,
+              "mechanics": [],
+              "type": "hero"
+            },
+            "mana": 1,
+            "max_mana": 1,
+            "user_id": 2
+          },
+          "status": "ongoing",
+          "turn_number": 3
+        },
+        "state_sha256": "896d0ae61783269bc7cd3a97b449d6c41574341e34270f2083ec56ea5068e930"
+      },
+      "pre": {
+        "action_features_sha256_f32_le": "25107751a24a6e959d2be6368d546ef83ea46254c31e83d58decae69fb25c3cd",
+        "history_events": [
+          {
+            "action_id": 0,
+            "action_type": "end_turn",
+            "actor_id": 1,
+            "board_power_delta": 0.0,
+            "enemy_board_count_delta": 0,
+            "enemy_hero_hp_delta": 0,
+            "my_board_count_delta": 0,
+            "own_hero_hp_delta": 0,
+            "turn_number": 2
+          },
+          {
+            "action_id": 0,
+            "action_type": "end_turn",
+            "actor_id": 2,
+            "board_power_delta": 0.0,
+            "enemy_board_count_delta": 0,
+            "enemy_hero_hp_delta": 0,
+            "my_board_count_delta": 0,
+            "own_hero_hp_delta": 0,
+            "turn_number": 3
+          }
+        ],
+        "legal_ids": [
+          0,
+          9
+        ],
+        "mask_sha256_f32_le": "598c7139205cda5fecb388a0f5f7d6b3e153fe7bf6ec4d200127f7bfb3a30dc4",
+        "obs_sha256_f32_le": "372ec452b36991f78dc041044fad2ddca0fe92eacda165e344d9eda0318169d2",
+        "obs_v5_dim": 7128,
+        "obs_v5_sha256_f32_le": "26d54b1a4046a00c51e5ddc186549c04993b4e5294b0ad7974fec7be04250f04",
+        "state": {
+          "current_turn_owner_id": 1,
+          "p1": {
+            "board": [],
+            "deck": [],
+            "graveyard": [],
+            "hand": [
+              {
+                "attack": 0,
+                "card_id": 8,
+                "hp": 0,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 1,
+                "max_hp": 0,
+                "mechanics": [
+                  "damage_1"
+                ],
+                "type": "potion"
+              }
+            ],
+            "hero": {
+              "attack": 0,
+              "card_id": 1,
+              "hp": 35,
+              "is_frozen": false,
+              "is_ready": false,
+              "level": 1,
+              "mana_cost": 0,
+              "max_hp": 35,
+              "mechanics": [],
+              "type": "hero"
+            },
+            "mana": 2,
+            "max_mana": 2,
+            "user_id": 1
+          },
+          "p2": {
+            "board": [],
+            "deck": [],
+            "graveyard": [],
+            "hand": [],
+            "hero": {
+              "attack": 0,
+              "card_id": 1,
+              "hp": 35,
+              "is_frozen": false,
+              "is_ready": false,
+              "level": 1,
+              "mana_cost": 0,
+              "max_hp": 35,
+              "mechanics": [],
+              "type": "hero"
+            },
+            "mana": 1,
+            "max_mana": 1,
+            "user_id": 2
+          },
+          "status": "ongoing",
+          "turn_number": 3
+        },
+        "state_sha256": "1468445ebc42209b190a42812600fa8a4aadc3ad7a0968093803626c92c2e903"
+      },
+      "reward": 0.027285713702440262,
+      "reward_components_v5": {
+        "board_power_delta": 0.0,
+        "board_power_ratio": 0.0,
+        "board_under_0_7": false,
+        "enemy_board_count_delta": 0,
+        "enemy_board_power": 0.0,
+        "hp_potential_delta": 0.02857142857142857,
+        "my_board_count_delta": 0,
+        "my_board_power": 0.0,
+        "own_board_wiped": false
+      },
+      "t": 2,
+      "terminated": false,
+      "truncated": false
+    }
+  ]
+}

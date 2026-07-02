@@ -1,0 +1,3278 @@
+{
+  "env_config": {
+    "adaptive_strength": 1.0,
+    "draw_assist_enabled": false,
+    "draw_assist_strength": 0.0,
+    "enemy_deck_known": true,
+    "enemy_deck_order_known": false,
+    "enemy_hand_known": true,
+    "include_preview": false,
+    "include_v5": true,
+    "mana_per_turn": 1,
+    "own_deck_known": true,
+    "own_hand_identity_known": true,
+    "placement_mode": "append_only",
+    "seed": 123,
+    "v5_weighted_reward": true,
+    "verify_mask": false
+  },
+  "initial": {
+    "action_features_sha256_f32_le": "2404b01cfee6256196dd77c53aec3e713240e5c64a477ced44ff67513c16990e",
+    "history_events": [],
+    "legal_ids": [
+      0,
+      1,
+      137
+    ],
+    "mask_sha256_f32_le": "46f125412a34a515cc1d8bb1dc1e14901bd6b24087fd92659141aeaed1d4e70a",
+    "obs_sha256_f32_le": "d4b1bb5ca9111cc8fa03a937f28f118255d67d3a0eb167b1d66f6ed5292a990f",
+    "obs_v5_dim": 7128,
+    "obs_v5_sha256_f32_le": "22f22626293574eb19589aec543ebbee7bea322d4c66d1e5106ffd6c9ba03546",
+    "state": {
+      "current_turn_owner_id": 1,
+      "p1": {
+        "board": [],
+        "deck": [
+          {
+            "attack": 4,
+            "card_id": 41,
+            "hp": 4,
+            "is_frozen": false,
+            "is_ready": false,
+            "level": 1,
+            "mana_cost": 4,
+            "max_hp": 4,
+            "mechanics": [],
+            "type": "warrior"
+          },
+          {
+            "attack": 3,
+            "card_id": 40,
+            "hp": 3,
+            "is_frozen": false,
+            "is_ready": false,
+            "level": 1,
+            "mana_cost": 3,
+            "max_hp": 3,
+            "mechanics": [],
+            "type": "warrior"
+          },
+          {
+            "attack": 6,
+            "card_id": 42,
+            "hp": 6,
+            "is_frozen": false,
+            "is_ready": false,
+            "level": 1,
+            "mana_cost": 6,
+            "max_hp": 6,
+            "mechanics": [],
+            "type": "warrior"
+          },
+          {
+            "attack": 3,
+            "card_id": 29,
+            "hp": 4,
+            "is_frozen": false,
+            "is_ready": false,
+            "level": 1,
+            "mana_cost": 3,
+            "max_hp": 4,
+            "mechanics": [],
+            "type": "warrior"
+          },
+          {
+            "attack": 4,
+            "card_id": 28,
+            "hp": 1,
+            "is_frozen": false,
+            "is_ready": false,
+            "level": 1,
+            "mana_cost": 2,
+            "max_hp": 1,
+            "mechanics": [],
+            "type": "warrior"
+          }
+        ],
+        "graveyard": [],
+        "hand": [
+          {
+            "attack": 1,
+            "card_id": 37,
+            "hp": 2,
+            "is_frozen": false,
+            "is_ready": false,
+            "level": 1,
+            "mana_cost": 1,
+            "max_hp": 2,
+            "mechanics": [],
+            "type": "warrior"
+          },
+          {
+            "attack": 2,
+            "card_id": 27,
+            "hp": 1,
+            "is_frozen": false,
+            "is_ready": false,
+            "level": 1,
+            "mana_cost": 1,
+            "max_hp": 1,
+            "mechanics": [],
+            "type": "warrior"
+          },
+          {
+            "attack": 2,
+            "card_id": 38,
+            "hp": 2,
+            "is_frozen": false,
+            "is_ready": false,
+            "level": 1,
+            "mana_cost": 2,
+            "max_hp": 2,
+            "mechanics": [],
+            "type": "warrior"
+          }
+        ],
+        "hero": {
+          "attack": 0,
+          "card_id": 1,
+          "hp": 35,
+          "is_frozen": false,
+          "is_ready": false,
+          "level": 1,
+          "mana_cost": 0,
+          "max_hp": 35,
+          "mechanics": [],
+          "type": "hero"
+        },
+        "mana": 1,
+        "max_mana": 1,
+        "user_id": 1
+      },
+      "p2": {
+        "board": [],
+        "deck": [
+          {
+            "attack": 4,
+            "card_id": 41,
+            "hp": 4,
+            "is_frozen": false,
+            "is_ready": false,
+            "level": 1,
+            "mana_cost": 4,
+            "max_hp": 4,
+            "mechanics": [],
+            "type": "warrior"
+          },
+          {
+            "attack": 3,
+            "card_id": 40,
+            "hp": 3,
+            "is_frozen": false,
+            "is_ready": false,
+            "level": 1,
+            "mana_cost": 3,
+            "max_hp": 3,
+            "mechanics": [],
+            "type": "warrior"
+          },
+          {
+            "attack": 4,
+            "card_id": 28,
+            "hp": 1,
+            "is_frozen": false,
+            "is_ready": false,
+            "level": 1,
+            "mana_cost": 2,
+            "max_hp": 1,
+            "mechanics": [],
+            "type": "warrior"
+          },
+          {
+            "attack": 3,
+            "card_id": 29,
+            "hp": 4,
+            "is_frozen": false,
+            "is_ready": false,
+            "level": 1,
+            "mana_cost": 3,
+            "max_hp": 4,
+            "mechanics": [],
+            "type": "warrior"
+          },
+          {
+            "attack": 6,
+            "card_id": 42,
+            "hp": 6,
+            "is_frozen": false,
+            "is_ready": false,
+            "level": 1,
+            "mana_cost": 6,
+            "max_hp": 6,
+            "mechanics": [],
+            "type": "warrior"
+          }
+        ],
+        "graveyard": [],
+        "hand": [
+          {
+            "attack": 1,
+            "card_id": 37,
+            "hp": 2,
+            "is_frozen": false,
+            "is_ready": false,
+            "level": 1,
+            "mana_cost": 1,
+            "max_hp": 2,
+            "mechanics": [],
+            "type": "warrior"
+          },
+          {
+            "attack": 2,
+            "card_id": 27,
+            "hp": 1,
+            "is_frozen": false,
+            "is_ready": false,
+            "level": 1,
+            "mana_cost": 1,
+            "max_hp": 1,
+            "mechanics": [],
+            "type": "warrior"
+          },
+          {
+            "attack": 2,
+            "card_id": 38,
+            "hp": 2,
+            "is_frozen": false,
+            "is_ready": false,
+            "level": 1,
+            "mana_cost": 2,
+            "max_hp": 2,
+            "mechanics": [],
+            "type": "warrior"
+          }
+        ],
+        "hero": {
+          "attack": 0,
+          "card_id": 1,
+          "hp": 35,
+          "is_frozen": false,
+          "is_ready": false,
+          "level": 1,
+          "mana_cost": 0,
+          "max_hp": 35,
+          "mechanics": [],
+          "type": "hero"
+        },
+        "mana": 0,
+        "max_mana": 0,
+        "user_id": 2
+      },
+      "status": "ongoing",
+      "turn_number": 1
+    },
+    "state_sha256": "9aacd356c273791e70a5046fc84e25098045e334257f30ddd66eaf0a63e8ff65"
+  },
+  "schema": "trainv3-golden-trace-v1",
+  "steps": [
+    {
+      "acting_player_id": 1,
+      "action_id": 1,
+      "base_reward": 0.005,
+      "info": {
+        "current_player_id": 1,
+        "legal_actions": 1,
+        "p1_hp": 35,
+        "p2_hp": 35,
+        "status": "ongoing"
+      },
+      "post": {
+        "action_features_sha256_f32_le": "473443887784c677649e88ef69275ddf48fdef6e42ff2b8f7a9304a57716c469",
+        "history_events": [
+          {
+            "action_id": 1,
+            "action_type": "play_card",
+            "actor_id": 1,
+            "board_power_delta": 2.0,
+            "enemy_board_count_delta": 0,
+            "enemy_hero_hp_delta": 0,
+            "my_board_count_delta": 1,
+            "own_hero_hp_delta": 0,
+            "turn_number": 1
+          }
+        ],
+        "legal_ids": [
+          0
+        ],
+        "mask_sha256_f32_le": "69ba8d7d0d3cac51fbe340c31cde59ea84f03bca452faf27ab3a56855622f432",
+        "obs_sha256_f32_le": "c63a0ea6fd1f349aaa5f5032074a16add638bc167faa8cc3150f02fdfb8ac95c",
+        "obs_v5_dim": 7128,
+        "obs_v5_sha256_f32_le": "ed99c5e20e57dc0b7ea710aead1c2e96ee1d04d03190d1044aca1ccef5ad99f1",
+        "state": {
+          "current_turn_owner_id": 1,
+          "p1": {
+            "board": [
+              {
+                "attack": 1,
+                "card_id": 37,
+                "hp": 2,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 1,
+                "max_hp": 2,
+                "mechanics": [],
+                "type": "warrior"
+              }
+            ],
+            "deck": [
+              {
+                "attack": 4,
+                "card_id": 41,
+                "hp": 4,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 4,
+                "max_hp": 4,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 3,
+                "card_id": 40,
+                "hp": 3,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 3,
+                "max_hp": 3,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 6,
+                "card_id": 42,
+                "hp": 6,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 6,
+                "max_hp": 6,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 3,
+                "card_id": 29,
+                "hp": 4,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 3,
+                "max_hp": 4,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 4,
+                "card_id": 28,
+                "hp": 1,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 2,
+                "max_hp": 1,
+                "mechanics": [],
+                "type": "warrior"
+              }
+            ],
+            "graveyard": [],
+            "hand": [
+              {
+                "attack": 2,
+                "card_id": 27,
+                "hp": 1,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 1,
+                "max_hp": 1,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 2,
+                "card_id": 38,
+                "hp": 2,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 2,
+                "max_hp": 2,
+                "mechanics": [],
+                "type": "warrior"
+              }
+            ],
+            "hero": {
+              "attack": 0,
+              "card_id": 1,
+              "hp": 35,
+              "is_frozen": false,
+              "is_ready": false,
+              "level": 1,
+              "mana_cost": 0,
+              "max_hp": 35,
+              "mechanics": [],
+              "type": "hero"
+            },
+            "mana": 0,
+            "max_mana": 1,
+            "user_id": 1
+          },
+          "p2": {
+            "board": [],
+            "deck": [
+              {
+                "attack": 4,
+                "card_id": 41,
+                "hp": 4,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 4,
+                "max_hp": 4,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 3,
+                "card_id": 40,
+                "hp": 3,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 3,
+                "max_hp": 3,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 4,
+                "card_id": 28,
+                "hp": 1,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 2,
+                "max_hp": 1,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 3,
+                "card_id": 29,
+                "hp": 4,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 3,
+                "max_hp": 4,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 6,
+                "card_id": 42,
+                "hp": 6,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 6,
+                "max_hp": 6,
+                "mechanics": [],
+                "type": "warrior"
+              }
+            ],
+            "graveyard": [],
+            "hand": [
+              {
+                "attack": 1,
+                "card_id": 37,
+                "hp": 2,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 1,
+                "max_hp": 2,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 2,
+                "card_id": 27,
+                "hp": 1,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 1,
+                "max_hp": 1,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 2,
+                "card_id": 38,
+                "hp": 2,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 2,
+                "max_hp": 2,
+                "mechanics": [],
+                "type": "warrior"
+              }
+            ],
+            "hero": {
+              "attack": 0,
+              "card_id": 1,
+              "hp": 35,
+              "is_frozen": false,
+              "is_ready": false,
+              "level": 1,
+              "mana_cost": 0,
+              "max_hp": 35,
+              "mechanics": [],
+              "type": "hero"
+            },
+            "mana": 0,
+            "max_mana": 0,
+            "user_id": 2
+          },
+          "status": "ongoing",
+          "turn_number": 1
+        },
+        "state_sha256": "dd4b05098e0128315801f6e95280bd398b8dfb9ec6793a83a241390cac4e8bad"
+      },
+      "pre": {
+        "action_features_sha256_f32_le": "2404b01cfee6256196dd77c53aec3e713240e5c64a477ced44ff67513c16990e",
+        "history_events": [],
+        "legal_ids": [
+          0,
+          1,
+          137
+        ],
+        "mask_sha256_f32_le": "46f125412a34a515cc1d8bb1dc1e14901bd6b24087fd92659141aeaed1d4e70a",
+        "obs_sha256_f32_le": "d4b1bb5ca9111cc8fa03a937f28f118255d67d3a0eb167b1d66f6ed5292a990f",
+        "obs_v5_dim": 7128,
+        "obs_v5_sha256_f32_le": "22f22626293574eb19589aec543ebbee7bea322d4c66d1e5106ffd6c9ba03546",
+        "state": {
+          "current_turn_owner_id": 1,
+          "p1": {
+            "board": [],
+            "deck": [
+              {
+                "attack": 4,
+                "card_id": 41,
+                "hp": 4,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 4,
+                "max_hp": 4,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 3,
+                "card_id": 40,
+                "hp": 3,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 3,
+                "max_hp": 3,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 6,
+                "card_id": 42,
+                "hp": 6,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 6,
+                "max_hp": 6,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 3,
+                "card_id": 29,
+                "hp": 4,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 3,
+                "max_hp": 4,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 4,
+                "card_id": 28,
+                "hp": 1,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 2,
+                "max_hp": 1,
+                "mechanics": [],
+                "type": "warrior"
+              }
+            ],
+            "graveyard": [],
+            "hand": [
+              {
+                "attack": 1,
+                "card_id": 37,
+                "hp": 2,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 1,
+                "max_hp": 2,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 2,
+                "card_id": 27,
+                "hp": 1,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 1,
+                "max_hp": 1,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 2,
+                "card_id": 38,
+                "hp": 2,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 2,
+                "max_hp": 2,
+                "mechanics": [],
+                "type": "warrior"
+              }
+            ],
+            "hero": {
+              "attack": 0,
+              "card_id": 1,
+              "hp": 35,
+              "is_frozen": false,
+              "is_ready": false,
+              "level": 1,
+              "mana_cost": 0,
+              "max_hp": 35,
+              "mechanics": [],
+              "type": "hero"
+            },
+            "mana": 1,
+            "max_mana": 1,
+            "user_id": 1
+          },
+          "p2": {
+            "board": [],
+            "deck": [
+              {
+                "attack": 4,
+                "card_id": 41,
+                "hp": 4,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 4,
+                "max_hp": 4,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 3,
+                "card_id": 40,
+                "hp": 3,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 3,
+                "max_hp": 3,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 4,
+                "card_id": 28,
+                "hp": 1,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 2,
+                "max_hp": 1,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 3,
+                "card_id": 29,
+                "hp": 4,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 3,
+                "max_hp": 4,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 6,
+                "card_id": 42,
+                "hp": 6,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 6,
+                "max_hp": 6,
+                "mechanics": [],
+                "type": "warrior"
+              }
+            ],
+            "graveyard": [],
+            "hand": [
+              {
+                "attack": 1,
+                "card_id": 37,
+                "hp": 2,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 1,
+                "max_hp": 2,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 2,
+                "card_id": 27,
+                "hp": 1,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 1,
+                "max_hp": 1,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 2,
+                "card_id": 38,
+                "hp": 2,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 2,
+                "max_hp": 2,
+                "mechanics": [],
+                "type": "warrior"
+              }
+            ],
+            "hero": {
+              "attack": 0,
+              "card_id": 1,
+              "hp": 35,
+              "is_frozen": false,
+              "is_ready": false,
+              "level": 1,
+              "mana_cost": 0,
+              "max_hp": 35,
+              "mechanics": [],
+              "type": "hero"
+            },
+            "mana": 0,
+            "max_mana": 0,
+            "user_id": 2
+          },
+          "status": "ongoing",
+          "turn_number": 1
+        },
+        "state_sha256": "9aacd356c273791e70a5046fc84e25098045e334257f30ddd66eaf0a63e8ff65"
+      },
+      "reward": 0.0052999998442828655,
+      "reward_components_v5": {
+        "board_power_delta": 2.0,
+        "board_power_ratio": 2.0,
+        "board_under_0_7": false,
+        "enemy_board_count_delta": 0,
+        "enemy_board_power": 0.0,
+        "hp_potential_delta": 0.0,
+        "my_board_count_delta": 1,
+        "my_board_power": 2.0,
+        "own_board_wiped": false
+      },
+      "t": 0,
+      "terminated": false,
+      "truncated": false
+    },
+    {
+      "acting_player_id": 1,
+      "action_id": 0,
+      "base_reward": 0.0,
+      "info": {
+        "current_player_id": 2,
+        "legal_actions": 3,
+        "p1_hp": 35,
+        "p2_hp": 35,
+        "status": "ongoing"
+      },
+      "post": {
+        "action_features_sha256_f32_le": "2404b01cfee6256196dd77c53aec3e713240e5c64a477ced44ff67513c16990e",
+        "history_events": [
+          {
+            "action_id": 1,
+            "action_type": "play_card",
+            "actor_id": 1,
+            "board_power_delta": 2.0,
+            "enemy_board_count_delta": 0,
+            "enemy_hero_hp_delta": 0,
+            "my_board_count_delta": 1,
+            "own_hero_hp_delta": 0,
+            "turn_number": 1
+          },
+          {
+            "action_id": 0,
+            "action_type": "end_turn",
+            "actor_id": 1,
+            "board_power_delta": 0.0,
+            "enemy_board_count_delta": 0,
+            "enemy_hero_hp_delta": 0,
+            "my_board_count_delta": 0,
+            "own_hero_hp_delta": 0,
+            "turn_number": 2
+          }
+        ],
+        "legal_ids": [
+          0,
+          1,
+          137
+        ],
+        "mask_sha256_f32_le": "46f125412a34a515cc1d8bb1dc1e14901bd6b24087fd92659141aeaed1d4e70a",
+        "obs_sha256_f32_le": "321136f1ebf023da7e981353ea10c96c5e5eb61e409941acb165a50bcf93f993",
+        "obs_v5_dim": 7128,
+        "obs_v5_sha256_f32_le": "5c987c640fee2c251af8c890889ddba082bce2cb6628b94e098680465cd9367c",
+        "state": {
+          "current_turn_owner_id": 2,
+          "p1": {
+            "board": [
+              {
+                "attack": 1,
+                "card_id": 37,
+                "hp": 2,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 1,
+                "max_hp": 2,
+                "mechanics": [],
+                "type": "warrior"
+              }
+            ],
+            "deck": [
+              {
+                "attack": 4,
+                "card_id": 41,
+                "hp": 4,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 4,
+                "max_hp": 4,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 3,
+                "card_id": 40,
+                "hp": 3,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 3,
+                "max_hp": 3,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 6,
+                "card_id": 42,
+                "hp": 6,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 6,
+                "max_hp": 6,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 3,
+                "card_id": 29,
+                "hp": 4,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 3,
+                "max_hp": 4,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 4,
+                "card_id": 28,
+                "hp": 1,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 2,
+                "max_hp": 1,
+                "mechanics": [],
+                "type": "warrior"
+              }
+            ],
+            "graveyard": [],
+            "hand": [
+              {
+                "attack": 2,
+                "card_id": 27,
+                "hp": 1,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 1,
+                "max_hp": 1,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 2,
+                "card_id": 38,
+                "hp": 2,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 2,
+                "max_hp": 2,
+                "mechanics": [],
+                "type": "warrior"
+              }
+            ],
+            "hero": {
+              "attack": 0,
+              "card_id": 1,
+              "hp": 35,
+              "is_frozen": false,
+              "is_ready": false,
+              "level": 1,
+              "mana_cost": 0,
+              "max_hp": 35,
+              "mechanics": [],
+              "type": "hero"
+            },
+            "mana": 0,
+            "max_mana": 1,
+            "user_id": 1
+          },
+          "p2": {
+            "board": [],
+            "deck": [
+              {
+                "attack": 3,
+                "card_id": 40,
+                "hp": 3,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 3,
+                "max_hp": 3,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 4,
+                "card_id": 28,
+                "hp": 1,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 2,
+                "max_hp": 1,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 3,
+                "card_id": 29,
+                "hp": 4,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 3,
+                "max_hp": 4,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 6,
+                "card_id": 42,
+                "hp": 6,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 6,
+                "max_hp": 6,
+                "mechanics": [],
+                "type": "warrior"
+              }
+            ],
+            "graveyard": [],
+            "hand": [
+              {
+                "attack": 1,
+                "card_id": 37,
+                "hp": 2,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 1,
+                "max_hp": 2,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 2,
+                "card_id": 27,
+                "hp": 1,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 1,
+                "max_hp": 1,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 2,
+                "card_id": 38,
+                "hp": 2,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 2,
+                "max_hp": 2,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 4,
+                "card_id": 41,
+                "hp": 4,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 4,
+                "max_hp": 4,
+                "mechanics": [],
+                "type": "warrior"
+              }
+            ],
+            "hero": {
+              "attack": 0,
+              "card_id": 1,
+              "hp": 35,
+              "is_frozen": false,
+              "is_ready": false,
+              "level": 1,
+              "mana_cost": 0,
+              "max_hp": 35,
+              "mechanics": [],
+              "type": "hero"
+            },
+            "mana": 1,
+            "max_mana": 1,
+            "user_id": 2
+          },
+          "status": "ongoing",
+          "turn_number": 2
+        },
+        "state_sha256": "5dc8f6389baf4e26890d78f7895544412636371f8843bfcdb41ba22cb1c3f2ce"
+      },
+      "pre": {
+        "action_features_sha256_f32_le": "473443887784c677649e88ef69275ddf48fdef6e42ff2b8f7a9304a57716c469",
+        "history_events": [
+          {
+            "action_id": 1,
+            "action_type": "play_card",
+            "actor_id": 1,
+            "board_power_delta": 2.0,
+            "enemy_board_count_delta": 0,
+            "enemy_hero_hp_delta": 0,
+            "my_board_count_delta": 1,
+            "own_hero_hp_delta": 0,
+            "turn_number": 1
+          }
+        ],
+        "legal_ids": [
+          0
+        ],
+        "mask_sha256_f32_le": "69ba8d7d0d3cac51fbe340c31cde59ea84f03bca452faf27ab3a56855622f432",
+        "obs_sha256_f32_le": "c63a0ea6fd1f349aaa5f5032074a16add638bc167faa8cc3150f02fdfb8ac95c",
+        "obs_v5_dim": 7128,
+        "obs_v5_sha256_f32_le": "ed99c5e20e57dc0b7ea710aead1c2e96ee1d04d03190d1044aca1ccef5ad99f1",
+        "state": {
+          "current_turn_owner_id": 1,
+          "p1": {
+            "board": [
+              {
+                "attack": 1,
+                "card_id": 37,
+                "hp": 2,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 1,
+                "max_hp": 2,
+                "mechanics": [],
+                "type": "warrior"
+              }
+            ],
+            "deck": [
+              {
+                "attack": 4,
+                "card_id": 41,
+                "hp": 4,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 4,
+                "max_hp": 4,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 3,
+                "card_id": 40,
+                "hp": 3,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 3,
+                "max_hp": 3,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 6,
+                "card_id": 42,
+                "hp": 6,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 6,
+                "max_hp": 6,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 3,
+                "card_id": 29,
+                "hp": 4,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 3,
+                "max_hp": 4,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 4,
+                "card_id": 28,
+                "hp": 1,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 2,
+                "max_hp": 1,
+                "mechanics": [],
+                "type": "warrior"
+              }
+            ],
+            "graveyard": [],
+            "hand": [
+              {
+                "attack": 2,
+                "card_id": 27,
+                "hp": 1,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 1,
+                "max_hp": 1,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 2,
+                "card_id": 38,
+                "hp": 2,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 2,
+                "max_hp": 2,
+                "mechanics": [],
+                "type": "warrior"
+              }
+            ],
+            "hero": {
+              "attack": 0,
+              "card_id": 1,
+              "hp": 35,
+              "is_frozen": false,
+              "is_ready": false,
+              "level": 1,
+              "mana_cost": 0,
+              "max_hp": 35,
+              "mechanics": [],
+              "type": "hero"
+            },
+            "mana": 0,
+            "max_mana": 1,
+            "user_id": 1
+          },
+          "p2": {
+            "board": [],
+            "deck": [
+              {
+                "attack": 4,
+                "card_id": 41,
+                "hp": 4,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 4,
+                "max_hp": 4,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 3,
+                "card_id": 40,
+                "hp": 3,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 3,
+                "max_hp": 3,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 4,
+                "card_id": 28,
+                "hp": 1,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 2,
+                "max_hp": 1,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 3,
+                "card_id": 29,
+                "hp": 4,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 3,
+                "max_hp": 4,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 6,
+                "card_id": 42,
+                "hp": 6,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 6,
+                "max_hp": 6,
+                "mechanics": [],
+                "type": "warrior"
+              }
+            ],
+            "graveyard": [],
+            "hand": [
+              {
+                "attack": 1,
+                "card_id": 37,
+                "hp": 2,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 1,
+                "max_hp": 2,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 2,
+                "card_id": 27,
+                "hp": 1,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 1,
+                "max_hp": 1,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 2,
+                "card_id": 38,
+                "hp": 2,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 2,
+                "max_hp": 2,
+                "mechanics": [],
+                "type": "warrior"
+              }
+            ],
+            "hero": {
+              "attack": 0,
+              "card_id": 1,
+              "hp": 35,
+              "is_frozen": false,
+              "is_ready": false,
+              "level": 1,
+              "mana_cost": 0,
+              "max_hp": 35,
+              "mechanics": [],
+              "type": "hero"
+            },
+            "mana": 0,
+            "max_mana": 0,
+            "user_id": 2
+          },
+          "status": "ongoing",
+          "turn_number": 1
+        },
+        "state_sha256": "dd4b05098e0128315801f6e95280bd398b8dfb9ec6793a83a241390cac4e8bad"
+      },
+      "reward": 0.0,
+      "reward_components_v5": {
+        "board_power_delta": 0.0,
+        "board_power_ratio": 2.0,
+        "board_under_0_7": false,
+        "enemy_board_count_delta": 0,
+        "enemy_board_power": 0.0,
+        "hp_potential_delta": 0.0,
+        "my_board_count_delta": 0,
+        "my_board_power": 2.0,
+        "own_board_wiped": false
+      },
+      "t": 1,
+      "terminated": false,
+      "truncated": false
+    },
+    {
+      "acting_player_id": 2,
+      "action_id": 1,
+      "base_reward": 0.005,
+      "info": {
+        "current_player_id": 2,
+        "legal_actions": 1,
+        "p1_hp": 35,
+        "p2_hp": 35,
+        "status": "ongoing"
+      },
+      "post": {
+        "action_features_sha256_f32_le": "473443887784c677649e88ef69275ddf48fdef6e42ff2b8f7a9304a57716c469",
+        "history_events": [
+          {
+            "action_id": 1,
+            "action_type": "play_card",
+            "actor_id": 1,
+            "board_power_delta": 2.0,
+            "enemy_board_count_delta": 0,
+            "enemy_hero_hp_delta": 0,
+            "my_board_count_delta": 1,
+            "own_hero_hp_delta": 0,
+            "turn_number": 1
+          },
+          {
+            "action_id": 0,
+            "action_type": "end_turn",
+            "actor_id": 1,
+            "board_power_delta": 0.0,
+            "enemy_board_count_delta": 0,
+            "enemy_hero_hp_delta": 0,
+            "my_board_count_delta": 0,
+            "own_hero_hp_delta": 0,
+            "turn_number": 2
+          },
+          {
+            "action_id": 1,
+            "action_type": "play_card",
+            "actor_id": 2,
+            "board_power_delta": 2.0,
+            "enemy_board_count_delta": 0,
+            "enemy_hero_hp_delta": 0,
+            "my_board_count_delta": 1,
+            "own_hero_hp_delta": 0,
+            "turn_number": 2
+          }
+        ],
+        "legal_ids": [
+          0
+        ],
+        "mask_sha256_f32_le": "69ba8d7d0d3cac51fbe340c31cde59ea84f03bca452faf27ab3a56855622f432",
+        "obs_sha256_f32_le": "1af34d75e441d5a81d644b04dd38c1d028c22207ebc847efe4832ca94a91ce31",
+        "obs_v5_dim": 7128,
+        "obs_v5_sha256_f32_le": "ce72d42a46b67cfd74cee7b21a5578b2c85142b26a5c53a4715c9137de127b73",
+        "state": {
+          "current_turn_owner_id": 2,
+          "p1": {
+            "board": [
+              {
+                "attack": 1,
+                "card_id": 37,
+                "hp": 2,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 1,
+                "max_hp": 2,
+                "mechanics": [],
+                "type": "warrior"
+              }
+            ],
+            "deck": [
+              {
+                "attack": 4,
+                "card_id": 41,
+                "hp": 4,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 4,
+                "max_hp": 4,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 3,
+                "card_id": 40,
+                "hp": 3,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 3,
+                "max_hp": 3,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 6,
+                "card_id": 42,
+                "hp": 6,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 6,
+                "max_hp": 6,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 3,
+                "card_id": 29,
+                "hp": 4,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 3,
+                "max_hp": 4,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 4,
+                "card_id": 28,
+                "hp": 1,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 2,
+                "max_hp": 1,
+                "mechanics": [],
+                "type": "warrior"
+              }
+            ],
+            "graveyard": [],
+            "hand": [
+              {
+                "attack": 2,
+                "card_id": 27,
+                "hp": 1,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 1,
+                "max_hp": 1,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 2,
+                "card_id": 38,
+                "hp": 2,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 2,
+                "max_hp": 2,
+                "mechanics": [],
+                "type": "warrior"
+              }
+            ],
+            "hero": {
+              "attack": 0,
+              "card_id": 1,
+              "hp": 35,
+              "is_frozen": false,
+              "is_ready": false,
+              "level": 1,
+              "mana_cost": 0,
+              "max_hp": 35,
+              "mechanics": [],
+              "type": "hero"
+            },
+            "mana": 0,
+            "max_mana": 1,
+            "user_id": 1
+          },
+          "p2": {
+            "board": [
+              {
+                "attack": 1,
+                "card_id": 37,
+                "hp": 2,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 1,
+                "max_hp": 2,
+                "mechanics": [],
+                "type": "warrior"
+              }
+            ],
+            "deck": [
+              {
+                "attack": 3,
+                "card_id": 40,
+                "hp": 3,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 3,
+                "max_hp": 3,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 4,
+                "card_id": 28,
+                "hp": 1,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 2,
+                "max_hp": 1,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 3,
+                "card_id": 29,
+                "hp": 4,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 3,
+                "max_hp": 4,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 6,
+                "card_id": 42,
+                "hp": 6,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 6,
+                "max_hp": 6,
+                "mechanics": [],
+                "type": "warrior"
+              }
+            ],
+            "graveyard": [],
+            "hand": [
+              {
+                "attack": 2,
+                "card_id": 27,
+                "hp": 1,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 1,
+                "max_hp": 1,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 2,
+                "card_id": 38,
+                "hp": 2,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 2,
+                "max_hp": 2,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 4,
+                "card_id": 41,
+                "hp": 4,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 4,
+                "max_hp": 4,
+                "mechanics": [],
+                "type": "warrior"
+              }
+            ],
+            "hero": {
+              "attack": 0,
+              "card_id": 1,
+              "hp": 35,
+              "is_frozen": false,
+              "is_ready": false,
+              "level": 1,
+              "mana_cost": 0,
+              "max_hp": 35,
+              "mechanics": [],
+              "type": "hero"
+            },
+            "mana": 0,
+            "max_mana": 1,
+            "user_id": 2
+          },
+          "status": "ongoing",
+          "turn_number": 2
+        },
+        "state_sha256": "e2c06ed346c4ed8cd001b520a5cbbc39bce63856e3e64c25f0c2bd6986f68c07"
+      },
+      "pre": {
+        "action_features_sha256_f32_le": "2404b01cfee6256196dd77c53aec3e713240e5c64a477ced44ff67513c16990e",
+        "history_events": [
+          {
+            "action_id": 1,
+            "action_type": "play_card",
+            "actor_id": 1,
+            "board_power_delta": 2.0,
+            "enemy_board_count_delta": 0,
+            "enemy_hero_hp_delta": 0,
+            "my_board_count_delta": 1,
+            "own_hero_hp_delta": 0,
+            "turn_number": 1
+          },
+          {
+            "action_id": 0,
+            "action_type": "end_turn",
+            "actor_id": 1,
+            "board_power_delta": 0.0,
+            "enemy_board_count_delta": 0,
+            "enemy_hero_hp_delta": 0,
+            "my_board_count_delta": 0,
+            "own_hero_hp_delta": 0,
+            "turn_number": 2
+          }
+        ],
+        "legal_ids": [
+          0,
+          1,
+          137
+        ],
+        "mask_sha256_f32_le": "46f125412a34a515cc1d8bb1dc1e14901bd6b24087fd92659141aeaed1d4e70a",
+        "obs_sha256_f32_le": "321136f1ebf023da7e981353ea10c96c5e5eb61e409941acb165a50bcf93f993",
+        "obs_v5_dim": 7128,
+        "obs_v5_sha256_f32_le": "5c987c640fee2c251af8c890889ddba082bce2cb6628b94e098680465cd9367c",
+        "state": {
+          "current_turn_owner_id": 2,
+          "p1": {
+            "board": [
+              {
+                "attack": 1,
+                "card_id": 37,
+                "hp": 2,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 1,
+                "max_hp": 2,
+                "mechanics": [],
+                "type": "warrior"
+              }
+            ],
+            "deck": [
+              {
+                "attack": 4,
+                "card_id": 41,
+                "hp": 4,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 4,
+                "max_hp": 4,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 3,
+                "card_id": 40,
+                "hp": 3,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 3,
+                "max_hp": 3,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 6,
+                "card_id": 42,
+                "hp": 6,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 6,
+                "max_hp": 6,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 3,
+                "card_id": 29,
+                "hp": 4,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 3,
+                "max_hp": 4,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 4,
+                "card_id": 28,
+                "hp": 1,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 2,
+                "max_hp": 1,
+                "mechanics": [],
+                "type": "warrior"
+              }
+            ],
+            "graveyard": [],
+            "hand": [
+              {
+                "attack": 2,
+                "card_id": 27,
+                "hp": 1,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 1,
+                "max_hp": 1,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 2,
+                "card_id": 38,
+                "hp": 2,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 2,
+                "max_hp": 2,
+                "mechanics": [],
+                "type": "warrior"
+              }
+            ],
+            "hero": {
+              "attack": 0,
+              "card_id": 1,
+              "hp": 35,
+              "is_frozen": false,
+              "is_ready": false,
+              "level": 1,
+              "mana_cost": 0,
+              "max_hp": 35,
+              "mechanics": [],
+              "type": "hero"
+            },
+            "mana": 0,
+            "max_mana": 1,
+            "user_id": 1
+          },
+          "p2": {
+            "board": [],
+            "deck": [
+              {
+                "attack": 3,
+                "card_id": 40,
+                "hp": 3,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 3,
+                "max_hp": 3,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 4,
+                "card_id": 28,
+                "hp": 1,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 2,
+                "max_hp": 1,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 3,
+                "card_id": 29,
+                "hp": 4,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 3,
+                "max_hp": 4,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 6,
+                "card_id": 42,
+                "hp": 6,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 6,
+                "max_hp": 6,
+                "mechanics": [],
+                "type": "warrior"
+              }
+            ],
+            "graveyard": [],
+            "hand": [
+              {
+                "attack": 1,
+                "card_id": 37,
+                "hp": 2,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 1,
+                "max_hp": 2,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 2,
+                "card_id": 27,
+                "hp": 1,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 1,
+                "max_hp": 1,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 2,
+                "card_id": 38,
+                "hp": 2,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 2,
+                "max_hp": 2,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 4,
+                "card_id": 41,
+                "hp": 4,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 4,
+                "max_hp": 4,
+                "mechanics": [],
+                "type": "warrior"
+              }
+            ],
+            "hero": {
+              "attack": 0,
+              "card_id": 1,
+              "hp": 35,
+              "is_frozen": false,
+              "is_ready": false,
+              "level": 1,
+              "mana_cost": 0,
+              "max_hp": 35,
+              "mechanics": [],
+              "type": "hero"
+            },
+            "mana": 1,
+            "max_mana": 1,
+            "user_id": 2
+          },
+          "status": "ongoing",
+          "turn_number": 2
+        },
+        "state_sha256": "5dc8f6389baf4e26890d78f7895544412636371f8843bfcdb41ba22cb1c3f2ce"
+      },
+      "reward": 0.0052999998442828655,
+      "reward_components_v5": {
+        "board_power_delta": 2.0,
+        "board_power_ratio": 1.0,
+        "board_under_0_7": false,
+        "enemy_board_count_delta": 0,
+        "enemy_board_power": 2.0,
+        "hp_potential_delta": 0.0,
+        "my_board_count_delta": 1,
+        "my_board_power": 2.0,
+        "own_board_wiped": false
+      },
+      "t": 2,
+      "terminated": false,
+      "truncated": false
+    },
+    {
+      "acting_player_id": 2,
+      "action_id": 0,
+      "base_reward": 0.0,
+      "info": {
+        "current_player_id": 1,
+        "legal_actions": 5,
+        "p1_hp": 35,
+        "p2_hp": 35,
+        "status": "ongoing"
+      },
+      "post": {
+        "action_features_sha256_f32_le": "1d3fa8ac451771abdc246269133d17dcc9d6d1a55c324616bb1735b67ebf4b1c",
+        "history_events": [
+          {
+            "action_id": 1,
+            "action_type": "play_card",
+            "actor_id": 1,
+            "board_power_delta": 2.0,
+            "enemy_board_count_delta": 0,
+            "enemy_hero_hp_delta": 0,
+            "my_board_count_delta": 1,
+            "own_hero_hp_delta": 0,
+            "turn_number": 1
+          },
+          {
+            "action_id": 0,
+            "action_type": "end_turn",
+            "actor_id": 1,
+            "board_power_delta": 0.0,
+            "enemy_board_count_delta": 0,
+            "enemy_hero_hp_delta": 0,
+            "my_board_count_delta": 0,
+            "own_hero_hp_delta": 0,
+            "turn_number": 2
+          },
+          {
+            "action_id": 1,
+            "action_type": "play_card",
+            "actor_id": 2,
+            "board_power_delta": 2.0,
+            "enemy_board_count_delta": 0,
+            "enemy_hero_hp_delta": 0,
+            "my_board_count_delta": 1,
+            "own_hero_hp_delta": 0,
+            "turn_number": 2
+          },
+          {
+            "action_id": 0,
+            "action_type": "end_turn",
+            "actor_id": 2,
+            "board_power_delta": 0.0,
+            "enemy_board_count_delta": 0,
+            "enemy_hero_hp_delta": 0,
+            "my_board_count_delta": 0,
+            "own_hero_hp_delta": 0,
+            "turn_number": 3
+          }
+        ],
+        "legal_ids": [
+          0,
+          18,
+          154,
+          545,
+          552
+        ],
+        "mask_sha256_f32_le": "491561d400153511d2ae5338bc168bde434f5f06685e35c4521a244398cf4fe3",
+        "obs_sha256_f32_le": "0f46ba49ac46960cee2bc01fdbb25245d4dc341be487bda5efb8c70f27caeb1a",
+        "obs_v5_dim": 7128,
+        "obs_v5_sha256_f32_le": "2be6d96521722c89618066efec1b53a7f86204b51d63c86d9bd83b35b82788b9",
+        "state": {
+          "current_turn_owner_id": 1,
+          "p1": {
+            "board": [
+              {
+                "attack": 1,
+                "card_id": 37,
+                "hp": 2,
+                "is_frozen": false,
+                "is_ready": true,
+                "level": 1,
+                "mana_cost": 1,
+                "max_hp": 2,
+                "mechanics": [],
+                "type": "warrior"
+              }
+            ],
+            "deck": [
+              {
+                "attack": 3,
+                "card_id": 40,
+                "hp": 3,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 3,
+                "max_hp": 3,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 6,
+                "card_id": 42,
+                "hp": 6,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 6,
+                "max_hp": 6,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 3,
+                "card_id": 29,
+                "hp": 4,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 3,
+                "max_hp": 4,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 4,
+                "card_id": 28,
+                "hp": 1,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 2,
+                "max_hp": 1,
+                "mechanics": [],
+                "type": "warrior"
+              }
+            ],
+            "graveyard": [],
+            "hand": [
+              {
+                "attack": 2,
+                "card_id": 27,
+                "hp": 1,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 1,
+                "max_hp": 1,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 2,
+                "card_id": 38,
+                "hp": 2,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 2,
+                "max_hp": 2,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 4,
+                "card_id": 41,
+                "hp": 4,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 4,
+                "max_hp": 4,
+                "mechanics": [],
+                "type": "warrior"
+              }
+            ],
+            "hero": {
+              "attack": 0,
+              "card_id": 1,
+              "hp": 35,
+              "is_frozen": false,
+              "is_ready": false,
+              "level": 1,
+              "mana_cost": 0,
+              "max_hp": 35,
+              "mechanics": [],
+              "type": "hero"
+            },
+            "mana": 2,
+            "max_mana": 2,
+            "user_id": 1
+          },
+          "p2": {
+            "board": [
+              {
+                "attack": 1,
+                "card_id": 37,
+                "hp": 2,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 1,
+                "max_hp": 2,
+                "mechanics": [],
+                "type": "warrior"
+              }
+            ],
+            "deck": [
+              {
+                "attack": 3,
+                "card_id": 40,
+                "hp": 3,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 3,
+                "max_hp": 3,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 4,
+                "card_id": 28,
+                "hp": 1,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 2,
+                "max_hp": 1,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 3,
+                "card_id": 29,
+                "hp": 4,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 3,
+                "max_hp": 4,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 6,
+                "card_id": 42,
+                "hp": 6,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 6,
+                "max_hp": 6,
+                "mechanics": [],
+                "type": "warrior"
+              }
+            ],
+            "graveyard": [],
+            "hand": [
+              {
+                "attack": 2,
+                "card_id": 27,
+                "hp": 1,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 1,
+                "max_hp": 1,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 2,
+                "card_id": 38,
+                "hp": 2,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 2,
+                "max_hp": 2,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 4,
+                "card_id": 41,
+                "hp": 4,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 4,
+                "max_hp": 4,
+                "mechanics": [],
+                "type": "warrior"
+              }
+            ],
+            "hero": {
+              "attack": 0,
+              "card_id": 1,
+              "hp": 35,
+              "is_frozen": false,
+              "is_ready": false,
+              "level": 1,
+              "mana_cost": 0,
+              "max_hp": 35,
+              "mechanics": [],
+              "type": "hero"
+            },
+            "mana": 0,
+            "max_mana": 1,
+            "user_id": 2
+          },
+          "status": "ongoing",
+          "turn_number": 3
+        },
+        "state_sha256": "c1fab79930595c7fb8ca252de2a5e5ab23aec828cbdc25f8ddd9845790ab44b9"
+      },
+      "pre": {
+        "action_features_sha256_f32_le": "473443887784c677649e88ef69275ddf48fdef6e42ff2b8f7a9304a57716c469",
+        "history_events": [
+          {
+            "action_id": 1,
+            "action_type": "play_card",
+            "actor_id": 1,
+            "board_power_delta": 2.0,
+            "enemy_board_count_delta": 0,
+            "enemy_hero_hp_delta": 0,
+            "my_board_count_delta": 1,
+            "own_hero_hp_delta": 0,
+            "turn_number": 1
+          },
+          {
+            "action_id": 0,
+            "action_type": "end_turn",
+            "actor_id": 1,
+            "board_power_delta": 0.0,
+            "enemy_board_count_delta": 0,
+            "enemy_hero_hp_delta": 0,
+            "my_board_count_delta": 0,
+            "own_hero_hp_delta": 0,
+            "turn_number": 2
+          },
+          {
+            "action_id": 1,
+            "action_type": "play_card",
+            "actor_id": 2,
+            "board_power_delta": 2.0,
+            "enemy_board_count_delta": 0,
+            "enemy_hero_hp_delta": 0,
+            "my_board_count_delta": 1,
+            "own_hero_hp_delta": 0,
+            "turn_number": 2
+          }
+        ],
+        "legal_ids": [
+          0
+        ],
+        "mask_sha256_f32_le": "69ba8d7d0d3cac51fbe340c31cde59ea84f03bca452faf27ab3a56855622f432",
+        "obs_sha256_f32_le": "1af34d75e441d5a81d644b04dd38c1d028c22207ebc847efe4832ca94a91ce31",
+        "obs_v5_dim": 7128,
+        "obs_v5_sha256_f32_le": "ce72d42a46b67cfd74cee7b21a5578b2c85142b26a5c53a4715c9137de127b73",
+        "state": {
+          "current_turn_owner_id": 2,
+          "p1": {
+            "board": [
+              {
+                "attack": 1,
+                "card_id": 37,
+                "hp": 2,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 1,
+                "max_hp": 2,
+                "mechanics": [],
+                "type": "warrior"
+              }
+            ],
+            "deck": [
+              {
+                "attack": 4,
+                "card_id": 41,
+                "hp": 4,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 4,
+                "max_hp": 4,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 3,
+                "card_id": 40,
+                "hp": 3,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 3,
+                "max_hp": 3,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 6,
+                "card_id": 42,
+                "hp": 6,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 6,
+                "max_hp": 6,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 3,
+                "card_id": 29,
+                "hp": 4,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 3,
+                "max_hp": 4,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 4,
+                "card_id": 28,
+                "hp": 1,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 2,
+                "max_hp": 1,
+                "mechanics": [],
+                "type": "warrior"
+              }
+            ],
+            "graveyard": [],
+            "hand": [
+              {
+                "attack": 2,
+                "card_id": 27,
+                "hp": 1,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 1,
+                "max_hp": 1,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 2,
+                "card_id": 38,
+                "hp": 2,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 2,
+                "max_hp": 2,
+                "mechanics": [],
+                "type": "warrior"
+              }
+            ],
+            "hero": {
+              "attack": 0,
+              "card_id": 1,
+              "hp": 35,
+              "is_frozen": false,
+              "is_ready": false,
+              "level": 1,
+              "mana_cost": 0,
+              "max_hp": 35,
+              "mechanics": [],
+              "type": "hero"
+            },
+            "mana": 0,
+            "max_mana": 1,
+            "user_id": 1
+          },
+          "p2": {
+            "board": [
+              {
+                "attack": 1,
+                "card_id": 37,
+                "hp": 2,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 1,
+                "max_hp": 2,
+                "mechanics": [],
+                "type": "warrior"
+              }
+            ],
+            "deck": [
+              {
+                "attack": 3,
+                "card_id": 40,
+                "hp": 3,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 3,
+                "max_hp": 3,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 4,
+                "card_id": 28,
+                "hp": 1,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 2,
+                "max_hp": 1,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 3,
+                "card_id": 29,
+                "hp": 4,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 3,
+                "max_hp": 4,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 6,
+                "card_id": 42,
+                "hp": 6,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 6,
+                "max_hp": 6,
+                "mechanics": [],
+                "type": "warrior"
+              }
+            ],
+            "graveyard": [],
+            "hand": [
+              {
+                "attack": 2,
+                "card_id": 27,
+                "hp": 1,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 1,
+                "max_hp": 1,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 2,
+                "card_id": 38,
+                "hp": 2,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 2,
+                "max_hp": 2,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 4,
+                "card_id": 41,
+                "hp": 4,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 4,
+                "max_hp": 4,
+                "mechanics": [],
+                "type": "warrior"
+              }
+            ],
+            "hero": {
+              "attack": 0,
+              "card_id": 1,
+              "hp": 35,
+              "is_frozen": false,
+              "is_ready": false,
+              "level": 1,
+              "mana_cost": 0,
+              "max_hp": 35,
+              "mechanics": [],
+              "type": "hero"
+            },
+            "mana": 0,
+            "max_mana": 1,
+            "user_id": 2
+          },
+          "status": "ongoing",
+          "turn_number": 2
+        },
+        "state_sha256": "e2c06ed346c4ed8cd001b520a5cbbc39bce63856e3e64c25f0c2bd6986f68c07"
+      },
+      "reward": 0.0,
+      "reward_components_v5": {
+        "board_power_delta": 0.0,
+        "board_power_ratio": 1.0,
+        "board_under_0_7": false,
+        "enemy_board_count_delta": 0,
+        "enemy_board_power": 2.0,
+        "hp_potential_delta": 0.0,
+        "my_board_count_delta": 0,
+        "my_board_power": 2.0,
+        "own_board_wiped": false
+      },
+      "t": 3,
+      "terminated": false,
+      "truncated": false
+    },
+    {
+      "acting_player_id": 1,
+      "action_id": 552,
+      "base_reward": 0.02,
+      "info": {
+        "current_player_id": 1,
+        "legal_actions": 3,
+        "p1_hp": 35,
+        "p2_hp": 34,
+        "status": "ongoing"
+      },
+      "post": {
+        "action_features_sha256_f32_le": "2ce411095301bf86ad4d42d7b5f9220b44dbf1046130887ad45a840a0a571de2",
+        "history_events": [
+          {
+            "action_id": 1,
+            "action_type": "play_card",
+            "actor_id": 1,
+            "board_power_delta": 2.0,
+            "enemy_board_count_delta": 0,
+            "enemy_hero_hp_delta": 0,
+            "my_board_count_delta": 1,
+            "own_hero_hp_delta": 0,
+            "turn_number": 1
+          },
+          {
+            "action_id": 0,
+            "action_type": "end_turn",
+            "actor_id": 1,
+            "board_power_delta": 0.0,
+            "enemy_board_count_delta": 0,
+            "enemy_hero_hp_delta": 0,
+            "my_board_count_delta": 0,
+            "own_hero_hp_delta": 0,
+            "turn_number": 2
+          },
+          {
+            "action_id": 1,
+            "action_type": "play_card",
+            "actor_id": 2,
+            "board_power_delta": 2.0,
+            "enemy_board_count_delta": 0,
+            "enemy_hero_hp_delta": 0,
+            "my_board_count_delta": 1,
+            "own_hero_hp_delta": 0,
+            "turn_number": 2
+          },
+          {
+            "action_id": 0,
+            "action_type": "end_turn",
+            "actor_id": 2,
+            "board_power_delta": 0.0,
+            "enemy_board_count_delta": 0,
+            "enemy_hero_hp_delta": 0,
+            "my_board_count_delta": 0,
+            "own_hero_hp_delta": 0,
+            "turn_number": 3
+          },
+          {
+            "action_id": 552,
+            "action_type": "attack",
+            "actor_id": 1,
+            "board_power_delta": 0.0,
+            "enemy_board_count_delta": 0,
+            "enemy_hero_hp_delta": 1,
+            "my_board_count_delta": 0,
+            "own_hero_hp_delta": 0,
+            "turn_number": 3
+          }
+        ],
+        "legal_ids": [
+          0,
+          18,
+          154
+        ],
+        "mask_sha256_f32_le": "638da352384edc09cb1c83b3ae96e9e7b0ef01ecd9c65a398df32576d945c8c6",
+        "obs_sha256_f32_le": "15ccdabff5087b62600de8b0252781557d9eba32395f429dfa023f6852836c82",
+        "obs_v5_dim": 7128,
+        "obs_v5_sha256_f32_le": "9766117f8f190a0b285a4552e388cb79027f0f7dab8f96fdb5c10e83103cc009",
+        "state": {
+          "current_turn_owner_id": 1,
+          "p1": {
+            "board": [
+              {
+                "attack": 1,
+                "card_id": 37,
+                "hp": 2,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 1,
+                "max_hp": 2,
+                "mechanics": [],
+                "type": "warrior"
+              }
+            ],
+            "deck": [
+              {
+                "attack": 3,
+                "card_id": 40,
+                "hp": 3,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 3,
+                "max_hp": 3,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 6,
+                "card_id": 42,
+                "hp": 6,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 6,
+                "max_hp": 6,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 3,
+                "card_id": 29,
+                "hp": 4,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 3,
+                "max_hp": 4,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 4,
+                "card_id": 28,
+                "hp": 1,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 2,
+                "max_hp": 1,
+                "mechanics": [],
+                "type": "warrior"
+              }
+            ],
+            "graveyard": [],
+            "hand": [
+              {
+                "attack": 2,
+                "card_id": 27,
+                "hp": 1,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 1,
+                "max_hp": 1,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 2,
+                "card_id": 38,
+                "hp": 2,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 2,
+                "max_hp": 2,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 4,
+                "card_id": 41,
+                "hp": 4,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 4,
+                "max_hp": 4,
+                "mechanics": [],
+                "type": "warrior"
+              }
+            ],
+            "hero": {
+              "attack": 0,
+              "card_id": 1,
+              "hp": 35,
+              "is_frozen": false,
+              "is_ready": false,
+              "level": 1,
+              "mana_cost": 0,
+              "max_hp": 35,
+              "mechanics": [],
+              "type": "hero"
+            },
+            "mana": 2,
+            "max_mana": 2,
+            "user_id": 1
+          },
+          "p2": {
+            "board": [
+              {
+                "attack": 1,
+                "card_id": 37,
+                "hp": 2,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 1,
+                "max_hp": 2,
+                "mechanics": [],
+                "type": "warrior"
+              }
+            ],
+            "deck": [
+              {
+                "attack": 3,
+                "card_id": 40,
+                "hp": 3,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 3,
+                "max_hp": 3,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 4,
+                "card_id": 28,
+                "hp": 1,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 2,
+                "max_hp": 1,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 3,
+                "card_id": 29,
+                "hp": 4,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 3,
+                "max_hp": 4,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 6,
+                "card_id": 42,
+                "hp": 6,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 6,
+                "max_hp": 6,
+                "mechanics": [],
+                "type": "warrior"
+              }
+            ],
+            "graveyard": [],
+            "hand": [
+              {
+                "attack": 2,
+                "card_id": 27,
+                "hp": 1,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 1,
+                "max_hp": 1,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 2,
+                "card_id": 38,
+                "hp": 2,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 2,
+                "max_hp": 2,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 4,
+                "card_id": 41,
+                "hp": 4,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 4,
+                "max_hp": 4,
+                "mechanics": [],
+                "type": "warrior"
+              }
+            ],
+            "hero": {
+              "attack": 0,
+              "card_id": 1,
+              "hp": 34,
+              "is_frozen": false,
+              "is_ready": false,
+              "level": 1,
+              "mana_cost": 0,
+              "max_hp": 35,
+              "mechanics": [],
+              "type": "hero"
+            },
+            "mana": 0,
+            "max_mana": 1,
+            "user_id": 2
+          },
+          "status": "ongoing",
+          "turn_number": 3
+        },
+        "state_sha256": "d62b911d7148c4c6eab466a9fea10788ff30774df2bb5eb6106cd8752ae5017b"
+      },
+      "pre": {
+        "action_features_sha256_f32_le": "1d3fa8ac451771abdc246269133d17dcc9d6d1a55c324616bb1735b67ebf4b1c",
+        "history_events": [
+          {
+            "action_id": 1,
+            "action_type": "play_card",
+            "actor_id": 1,
+            "board_power_delta": 2.0,
+            "enemy_board_count_delta": 0,
+            "enemy_hero_hp_delta": 0,
+            "my_board_count_delta": 1,
+            "own_hero_hp_delta": 0,
+            "turn_number": 1
+          },
+          {
+            "action_id": 0,
+            "action_type": "end_turn",
+            "actor_id": 1,
+            "board_power_delta": 0.0,
+            "enemy_board_count_delta": 0,
+            "enemy_hero_hp_delta": 0,
+            "my_board_count_delta": 0,
+            "own_hero_hp_delta": 0,
+            "turn_number": 2
+          },
+          {
+            "action_id": 1,
+            "action_type": "play_card",
+            "actor_id": 2,
+            "board_power_delta": 2.0,
+            "enemy_board_count_delta": 0,
+            "enemy_hero_hp_delta": 0,
+            "my_board_count_delta": 1,
+            "own_hero_hp_delta": 0,
+            "turn_number": 2
+          },
+          {
+            "action_id": 0,
+            "action_type": "end_turn",
+            "actor_id": 2,
+            "board_power_delta": 0.0,
+            "enemy_board_count_delta": 0,
+            "enemy_hero_hp_delta": 0,
+            "my_board_count_delta": 0,
+            "own_hero_hp_delta": 0,
+            "turn_number": 3
+          }
+        ],
+        "legal_ids": [
+          0,
+          18,
+          154,
+          545,
+          552
+        ],
+        "mask_sha256_f32_le": "491561d400153511d2ae5338bc168bde434f5f06685e35c4521a244398cf4fe3",
+        "obs_sha256_f32_le": "0f46ba49ac46960cee2bc01fdbb25245d4dc341be487bda5efb8c70f27caeb1a",
+        "obs_v5_dim": 7128,
+        "obs_v5_sha256_f32_le": "2be6d96521722c89618066efec1b53a7f86204b51d63c86d9bd83b35b82788b9",
+        "state": {
+          "current_turn_owner_id": 1,
+          "p1": {
+            "board": [
+              {
+                "attack": 1,
+                "card_id": 37,
+                "hp": 2,
+                "is_frozen": false,
+                "is_ready": true,
+                "level": 1,
+                "mana_cost": 1,
+                "max_hp": 2,
+                "mechanics": [],
+                "type": "warrior"
+              }
+            ],
+            "deck": [
+              {
+                "attack": 3,
+                "card_id": 40,
+                "hp": 3,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 3,
+                "max_hp": 3,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 6,
+                "card_id": 42,
+                "hp": 6,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 6,
+                "max_hp": 6,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 3,
+                "card_id": 29,
+                "hp": 4,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 3,
+                "max_hp": 4,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 4,
+                "card_id": 28,
+                "hp": 1,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 2,
+                "max_hp": 1,
+                "mechanics": [],
+                "type": "warrior"
+              }
+            ],
+            "graveyard": [],
+            "hand": [
+              {
+                "attack": 2,
+                "card_id": 27,
+                "hp": 1,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 1,
+                "max_hp": 1,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 2,
+                "card_id": 38,
+                "hp": 2,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 2,
+                "max_hp": 2,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 4,
+                "card_id": 41,
+                "hp": 4,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 4,
+                "max_hp": 4,
+                "mechanics": [],
+                "type": "warrior"
+              }
+            ],
+            "hero": {
+              "attack": 0,
+              "card_id": 1,
+              "hp": 35,
+              "is_frozen": false,
+              "is_ready": false,
+              "level": 1,
+              "mana_cost": 0,
+              "max_hp": 35,
+              "mechanics": [],
+              "type": "hero"
+            },
+            "mana": 2,
+            "max_mana": 2,
+            "user_id": 1
+          },
+          "p2": {
+            "board": [
+              {
+                "attack": 1,
+                "card_id": 37,
+                "hp": 2,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 1,
+                "max_hp": 2,
+                "mechanics": [],
+                "type": "warrior"
+              }
+            ],
+            "deck": [
+              {
+                "attack": 3,
+                "card_id": 40,
+                "hp": 3,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 3,
+                "max_hp": 3,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 4,
+                "card_id": 28,
+                "hp": 1,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 2,
+                "max_hp": 1,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 3,
+                "card_id": 29,
+                "hp": 4,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 3,
+                "max_hp": 4,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 6,
+                "card_id": 42,
+                "hp": 6,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 6,
+                "max_hp": 6,
+                "mechanics": [],
+                "type": "warrior"
+              }
+            ],
+            "graveyard": [],
+            "hand": [
+              {
+                "attack": 2,
+                "card_id": 27,
+                "hp": 1,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 1,
+                "max_hp": 1,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 2,
+                "card_id": 38,
+                "hp": 2,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 2,
+                "max_hp": 2,
+                "mechanics": [],
+                "type": "warrior"
+              },
+              {
+                "attack": 4,
+                "card_id": 41,
+                "hp": 4,
+                "is_frozen": false,
+                "is_ready": false,
+                "level": 1,
+                "mana_cost": 4,
+                "max_hp": 4,
+                "mechanics": [],
+                "type": "warrior"
+              }
+            ],
+            "hero": {
+              "attack": 0,
+              "card_id": 1,
+              "hp": 35,
+              "is_frozen": false,
+              "is_ready": false,
+              "level": 1,
+              "mana_cost": 0,
+              "max_hp": 35,
+              "mechanics": [],
+              "type": "hero"
+            },
+            "mana": 0,
+            "max_mana": 1,
+            "user_id": 2
+          },
+          "status": "ongoing",
+          "turn_number": 3
+        },
+        "state_sha256": "c1fab79930595c7fb8ca252de2a5e5ab23aec828cbdc25f8ddd9845790ab44b9"
+      },
+      "reward": 0.022285714745521545,
+      "reward_components_v5": {
+        "board_power_delta": 0.0,
+        "board_power_ratio": 1.0,
+        "board_under_0_7": false,
+        "enemy_board_count_delta": 0,
+        "enemy_board_power": 2.0,
+        "hp_potential_delta": 0.02857142857142857,
+        "my_board_count_delta": 0,
+        "my_board_power": 2.0,
+        "own_board_wiped": false
+      },
+      "t": 4,
+      "terminated": false,
+      "truncated": false
+    }
+  ]
+}
