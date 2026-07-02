@@ -7,7 +7,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "TrainV3" / "python"))
+sys.path.insert(0, str(ROOT / "TrainV3.5" / "python"))
 
 from train_v3.phase9_broad_runner import run_phase9_broad_training
 

@@ -14,7 +14,7 @@ import mlx.optimizers as optim
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "TrainV3" / "python"))
+sys.path.insert(0, str(ROOT / "TrainV3.5" / "python"))
 
 from train_v3.league_v5 import V5LeagueConfig
 from train_v3.rust_trainer import RustPPOTrainingConfig, train_rust_ppo_trace_files
@@ -25,7 +25,7 @@ from train_v3.v5_policy import create_v5_policy
 
 DEFAULT_RESUME = (
     ROOT
-    / "TrainV3"
+    / "TrainV3.5"
     / "runs"
     / "phase1_noassist_refresh_after_assist_20260604_184324"
     / "checkpoints"
@@ -56,9 +56,9 @@ def main() -> int:
     private_info_rate = _env_float("PHASE2_PRIVATE_INFO_RATE", 0.35)
     draw_assist_rate = _env_float("PHASE2_DRAW_ASSIST_RATE", 0.30)
     draw_assist_min_strength = _env_float("PHASE2_DRAW_ASSIST_MIN_STRENGTH", 0.75)
-    out_root = Path(os.environ.get("PHASE2_OUT_ROOT", ROOT / "TrainV3" / "runs")).resolve()
+    out_root = Path(os.environ.get("PHASE2_OUT_ROOT", ROOT / "TrainV3.5" / "runs")).resolve()
     library_path = Path(
-        os.environ.get("TRAINV3_CORE_LIB", ROOT / "TrainV3" / "target" / "release" / "libtrainv3_core.dylib")
+        os.environ.get("TRAINV3_CORE_LIB", ROOT / "TrainV3.5" / "target" / "release" / "libtrainv3_core.dylib")
     ).resolve()
 
     run_id = f"{run_name}_{time.strftime('%Y%m%d_%H%M%S')}"

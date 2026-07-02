@@ -20,7 +20,7 @@ import mlx.core as mx
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
-TRAINV3_PYTHON = ROOT / "TrainV3" / "python"
+TRAINV3_PYTHON = ROOT / "TrainV3.5" / "python"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 if str(TRAINV3_PYTHON) not in sys.path:

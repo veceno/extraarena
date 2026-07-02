@@ -10,14 +10,14 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "TrainV3" / "python"))
+sys.path.insert(0, str(ROOT / "TrainV3.5" / "python"))
 
 from train_v3.opponents_v5 import prepare_phase9_broad_opponent_environment
 
 
 def main(argv: list[str] | None = None) -> dict[str, object]:
     parser = argparse.ArgumentParser(description="Prepare TrainV3 V5 Phase 9 broad opponent lanes.")
-    parser.add_argument("--output-dir", type=Path, default=ROOT / "TrainV3" / "runs")
+    parser.add_argument("--output-dir", type=Path, default=ROOT / "TrainV3.5" / "runs")
     parser.add_argument("--run-name", default="phase9_broad_opponent_environment")
     parser.add_argument("--no-probes", action="store_true")
     args = parser.parse_args(argv)

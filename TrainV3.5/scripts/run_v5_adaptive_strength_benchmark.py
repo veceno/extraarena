@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
-TRAINV3_PYTHON = ROOT / "TrainV3" / "python"
+TRAINV3_PYTHON = ROOT / "TrainV3.5" / "python"
 SCRIPT_DIR = Path(__file__).resolve().parent
 for path in (ROOT, TRAINV3_PYTHON, SCRIPT_DIR):
     if str(path) not in sys.path:
@@ -28,7 +28,7 @@ from train_v3.league_v5 import compare_adaptive_strength_monotonicity  # noqa: E
 
 PHASE10_V5_CHECKPOINT = (
     ROOT
-    / "TrainV3"
+    / "TrainV3.5"
     / "runs"
     / "phase10_v4max_distill_round2_from_15020_20260609_1324"
     / "extra_lr_v5_phase10_v4max_distill_61571_states.npz"
@@ -176,7 +176,7 @@ def run_adaptive_strength_benchmark(args: argparse.Namespace) -> dict[str, Any]:
     output_dir = args.output_dir
     if output_dir is None:
         stamp = time.strftime("%Y%m%d_%H%M%S")
-        output_dir = ROOT / "TrainV3" / "runs" / f"adaptive_strength_benchmark_{stamp}"
+        output_dir = ROOT / "TrainV3.5" / "runs" / f"adaptive_strength_benchmark_{stamp}"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     preset = _preset_kwargs(args.search_preset)

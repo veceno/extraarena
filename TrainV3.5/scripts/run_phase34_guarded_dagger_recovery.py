@@ -19,8 +19,8 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[2]
-TRAINV3_PYTHON = ROOT / "TrainV3" / "python"
-TRAINV3_SCRIPTS = ROOT / "TrainV3" / "scripts"
+TRAINV3_PYTHON = ROOT / "TrainV3.5" / "python"
+TRAINV3_SCRIPTS = ROOT / "TrainV3.5" / "scripts"
 for path in (ROOT, TRAINV3_PYTHON, TRAINV3_SCRIPTS):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
@@ -362,7 +362,7 @@ def _phase33_incremental_guard_config(config: Phase34Config) -> GuardConfig:
         source_checkpoint=config.source_checkpoint,
         output_dir=config.output_dir,
         trace_manifest=DEFAULT_TRACE_MANIFEST,
-        core_library=ROOT / "TrainV3" / "target" / "release" / "libtrainv3_core.dylib",
+        core_library=ROOT / "TrainV3.5" / "target" / "release" / "libtrainv3_core.dylib",
         chunks=1,
         updates_per_chunk=1,
         env_count=1,
@@ -455,7 +455,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     stamp = time.strftime("%Y%m%d_%H%M%S")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-checkpoint", type=Path, default=DEFAULT_SOURCE_CHECKPOINT)
-    parser.add_argument("--output-dir", type=Path, default=ROOT / "TrainV3" / "runs" / f"phase34_guarded_dagger_recovery_{stamp}")
+    parser.add_argument("--output-dir", type=Path, default=ROOT / "TrainV3.5" / "runs" / f"phase34_guarded_dagger_recovery_{stamp}")
     parser.add_argument("--rounds", type=int, default=1)
     parser.add_argument("--candidates", default=",".join(DEFAULT_CANDIDATES))
     parser.add_argument("--seed", type=int, default=34001)

@@ -11,7 +11,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "TrainV3" / "python"))
+sys.path.insert(0, str(ROOT / "TrainV3.5" / "python"))
 
 from train_v3.aux_models import (
     AssemblerCandidate,
@@ -32,7 +32,7 @@ from train_v3.v5_artifacts import read_manifest_json
 
 DEFAULT_SOURCE_RUN = (
     ROOT
-    / "TrainV3"
+    / "TrainV3.5"
     / "runs"
     / "phase4_mixed_assist_private_refresh_after_handicap_20260606_145409"
 )
@@ -42,7 +42,7 @@ def main() -> int:
     run_name = _env_str("PHASE5_RUN_NAME", "phase5_aux_models_from_phase4")
     source_run = _env_path("PHASE5_SOURCE_RUN", DEFAULT_SOURCE_RUN)
     max_traces = _env_int("PHASE5_MAX_TRACES", 0)
-    out_root = Path(os.environ.get("PHASE5_OUT_ROOT", ROOT / "TrainV3" / "runs")).resolve()
+    out_root = Path(os.environ.get("PHASE5_OUT_ROOT", ROOT / "TrainV3.5" / "runs")).resolve()
 
     source_manifest_path = source_run / "trace_manifest.json"
     source_summary_path = source_run / "run_summary.json"

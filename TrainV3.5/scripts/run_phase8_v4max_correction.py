@@ -19,7 +19,7 @@ import mlx.optimizers as optim
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "TrainV3" / "python"))
+sys.path.insert(0, str(ROOT / "TrainV3.5" / "python"))
 
 from ai.train_v2.classic_rl_env import ClassicRLEnv
 from train_v3.aux_models import AssemblerCandidate, DeckMatchupEvaluator, load_assembler_dataset
@@ -32,7 +32,7 @@ from train_v3.v5_policy import create_v5_policy
 
 DEFAULT_RESUME = (
     ROOT
-    / "TrainV3"
+    / "TrainV3.5"
     / "runs"
     / "phase4_mixed_assist_private_refresh_after_handicap_20260606_145409"
     / "checkpoints"
@@ -40,7 +40,7 @@ DEFAULT_RESUME = (
 )
 DEFAULT_ASSEMBLER_DATASET = (
     ROOT
-    / "TrainV3"
+    / "TrainV3.5"
     / "runs"
     / "phase5_aux_models_from_phase4_20260606_231349"
     / "aux"
@@ -66,9 +66,9 @@ def main() -> int:
     resume_checkpoint = _env_path("PHASE8_RESUME_CHECKPOINT", DEFAULT_RESUME)
     assembler_dataset = _env_path("PHASE8_ASSEMBLER_DATASET", DEFAULT_ASSEMBLER_DATASET)
     target_v4max_score = _env_float("PHASE8_TARGET_V4MAX_SCORE", 0.75)
-    out_root = Path(os.environ.get("PHASE8_OUT_ROOT", ROOT / "TrainV3" / "runs")).resolve()
+    out_root = Path(os.environ.get("PHASE8_OUT_ROOT", ROOT / "TrainV3.5" / "runs")).resolve()
     library_path = Path(
-        os.environ.get("TRAINV3_CORE_LIB", ROOT / "TrainV3" / "target" / "release" / "libtrainv3_core.dylib")
+        os.environ.get("TRAINV3_CORE_LIB", ROOT / "TrainV3.5" / "target" / "release" / "libtrainv3_core.dylib")
     ).resolve()
 
     run_id = f"{run_name}_{time.strftime('%Y%m%d_%H%M%S')}"

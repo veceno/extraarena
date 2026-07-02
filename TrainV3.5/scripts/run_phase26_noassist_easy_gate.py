@@ -21,7 +21,7 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "TrainV3" / "python"))
+sys.path.insert(0, str(ROOT / "TrainV3.5" / "python"))
 
 from train_v3.rust_collector import RustLegalActionFeatures, RustTransitionBatch
 from train_v3.rust_policy import make_padded_legal_argmax_policy
@@ -93,9 +93,9 @@ def main() -> int:
     if resume_optimizer_policy not in {"restore", "force_lr", "reset"}:
         raise ValueError("PHASE26_RESUME_OPTIMIZER_POLICY must be restore, force_lr, or reset")
     reuse_trace_manifest_path = _env_path("PHASE26_TRACE_MANIFEST_PATH")
-    out_root = Path(os.environ.get("PHASE26_OUT_ROOT", ROOT / "TrainV3" / "runs")).resolve()
+    out_root = Path(os.environ.get("PHASE26_OUT_ROOT", ROOT / "TrainV3.5" / "runs")).resolve()
     library_path = Path(
-        os.environ.get("TRAINV3_CORE_LIB", ROOT / "TrainV3" / "target" / "release" / "libtrainv3_core.dylib")
+        os.environ.get("TRAINV3_CORE_LIB", ROOT / "TrainV3.5" / "target" / "release" / "libtrainv3_core.dylib")
     ).resolve()
 
     run_id = f"{run_name}_{time.strftime('%Y%m%d_%H%M%S')}"

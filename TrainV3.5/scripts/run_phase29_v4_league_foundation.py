@@ -18,8 +18,8 @@ from typing import Any
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
-TRAINV3_PYTHON = ROOT / "TrainV3" / "python"
-TRAINV3_SCRIPTS = ROOT / "TrainV3" / "scripts"
+TRAINV3_PYTHON = ROOT / "TrainV3.5" / "python"
+TRAINV3_SCRIPTS = ROOT / "TrainV3.5" / "scripts"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 if str(TRAINV3_PYTHON) not in sys.path:
@@ -41,7 +41,7 @@ from train_v3.v5_policy import create_v5_policy  # noqa: E402
 
 DEFAULT_SOURCE_CHECKPOINT = (
     ROOT
-    / "TrainV3"
+    / "TrainV3.5"
     / "runs"
     / "phase26_u0020_balanced_antidraw_repair_20260611_133450"
     / "checkpoints"
@@ -412,7 +412,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     stamp = time.strftime("%Y%m%d_%H%M%S")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-checkpoint", type=Path, default=DEFAULT_SOURCE_CHECKPOINT)
-    parser.add_argument("--output-dir", type=Path, default=ROOT / "TrainV3" / "runs" / f"phase29_v4_league_foundation_{stamp}")
+    parser.add_argument("--output-dir", type=Path, default=ROOT / "TrainV3.5" / "runs" / f"phase29_v4_league_foundation_{stamp}")
     parser.add_argument("--total-games", type=int, default=128)
     parser.add_argument("--v4-league", default="")
     parser.add_argument("--collection-mode", choices=["v5_on_policy", "v4_selfplay", "v5_rollout_search"], default="v5_on_policy")

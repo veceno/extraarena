@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_LATEST = ROOT / "TrainV3" / "runs" / "latest_phase1_foundation_run.txt"
+DEFAULT_LATEST = ROOT / "TrainV3.5" / "runs" / "latest_phase1_foundation_run.txt"
 
 
 def main(argv: list[str]) -> int:
@@ -54,7 +54,7 @@ def _resolve_run_dir(raw: str | None) -> Path:
         return Path(raw).expanduser().resolve()
     if DEFAULT_LATEST.exists():
         return Path(DEFAULT_LATEST.read_text(encoding="utf-8").strip()).resolve()
-    candidates = sorted((ROOT / "TrainV3" / "runs").glob("phase1_foundation_noassist_*"))
+    candidates = sorted((ROOT / "TrainV3.5" / "runs").glob("phase1_foundation_noassist_*"))
     if not candidates:
         raise SystemExit("no Phase 1 run found; pass run_dir explicitly")
     return candidates[-1].resolve()

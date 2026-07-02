@@ -12,7 +12,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "TrainV3" / "python"))
+sys.path.insert(0, str(ROOT / "TrainV3.5" / "python"))
 
 from train_v3.llm_teacher import OpenAICompatibleTeacherConfig, OpenAICompatibleTeacherClient
 from train_v3.trace_factory_v5 import load_v5_trace_pool_manifest, resolve_v5_trace_paths
@@ -21,17 +21,17 @@ from train_v3.v5_artifacts import read_manifest_json
 
 DEFAULT_SOURCE_RUN = (
     ROOT
-    / "TrainV3"
+    / "TrainV3.5"
     / "runs"
     / "phase6_noassist_entropy_recovery_20260607_112603"
 )
 DEFAULT_AUX_RUN = (
     ROOT
-    / "TrainV3"
+    / "TrainV3.5"
     / "runs"
     / "phase5_aux_models_from_phase4_20260606_231349"
 )
-DEFAULT_ACCEPTANCE_RUN = ROOT / "TrainV3" / "runs" / "acceptance_v5_20260607_124618"
+DEFAULT_ACCEPTANCE_RUN = ROOT / "TrainV3.5" / "runs" / "acceptance_v5_20260607_124618"
 
 
 def main() -> int:
@@ -42,7 +42,7 @@ def main() -> int:
     max_states = _env_int("PHASE7_MAX_STATES", 256)
     max_traces = _env_int("PHASE7_MAX_TRACES", 0)
     call_teacher = _env_bool("PHASE7_CALL_TEACHER", False)
-    out_root = Path(os.environ.get("PHASE7_OUT_ROOT", ROOT / "TrainV3" / "runs")).resolve()
+    out_root = Path(os.environ.get("PHASE7_OUT_ROOT", ROOT / "TrainV3.5" / "runs")).resolve()
 
     teacher_config = OpenAICompatibleTeacherConfig(
         base_url=_env_str("PHASE7_TEACHER_BASE_URL", "https://api.deepseek.com"),

@@ -20,7 +20,7 @@ import mlx.optimizers as optim
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "TrainV3" / "python"))
+sys.path.insert(0, str(ROOT / "TrainV3.5" / "python"))
 
 from train_v3.league_v5 import V5LeagueConfig
 from train_v3.rust_trainer import RustPPOTrainingConfig, train_rust_ppo_trace_files
@@ -66,9 +66,9 @@ def main() -> int:
     ppo_minibatch_plan = _env_str("PHASE25_PPO_MINIBATCH_PLAN", "contiguous")
     log_selected_trace_paths = _env_bool("PHASE25_LOG_SELECTED_TRACE_PATHS", False)
     resume_checkpoint = _env_path("PHASE25_RESUME_CHECKPOINT")
-    out_root = Path(os.environ.get("PHASE25_OUT_ROOT", ROOT / "TrainV3" / "runs")).resolve()
+    out_root = Path(os.environ.get("PHASE25_OUT_ROOT", ROOT / "TrainV3.5" / "runs")).resolve()
     library_path = Path(
-        os.environ.get("TRAINV3_CORE_LIB", ROOT / "TrainV3" / "target" / "release" / "libtrainv3_core.dylib")
+        os.environ.get("TRAINV3_CORE_LIB", ROOT / "TrainV3.5" / "target" / "release" / "libtrainv3_core.dylib")
     ).resolve()
 
     run_id = f"{run_name}_{time.strftime('%Y%m%d_%H%M%S')}"

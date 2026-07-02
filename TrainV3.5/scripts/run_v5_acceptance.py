@@ -13,15 +13,15 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "TrainV3" / "python"))
+sys.path.insert(0, str(ROOT / "TrainV3.5" / "python"))
 
 from train_v3.gauntlet_v5 import V5GauntletConfig, build_default_exploit_gauntlet
 from train_v3.league_v5 import compare_adaptive_strength_monotonicity
 
 
-DEFAULT_CANDIDATE_RUN = ROOT / "TrainV3" / "runs" / "phase1_noassist_refresh_after_assist_20260604_184324"
-DEFAULT_ASSIST_RUN = ROOT / "TrainV3" / "runs" / "phase1_private_assist_no_teacher_20260604_124056"
-DEFAULT_PRIVATE_RUN = ROOT / "TrainV3" / "runs" / "phase1_privateinfo_noassist_20260604_095509"
+DEFAULT_CANDIDATE_RUN = ROOT / "TrainV3.5" / "runs" / "phase1_noassist_refresh_after_assist_20260604_184324"
+DEFAULT_ASSIST_RUN = ROOT / "TrainV3.5" / "runs" / "phase1_private_assist_no_teacher_20260604_124056"
+DEFAULT_PRIVATE_RUN = ROOT / "TrainV3.5" / "runs" / "phase1_privateinfo_noassist_20260604_095509"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -29,7 +29,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--candidate-run", type=Path, default=DEFAULT_CANDIDATE_RUN)
     parser.add_argument("--assist-run", type=Path, default=DEFAULT_ASSIST_RUN)
     parser.add_argument("--private-run", type=Path, default=DEFAULT_PRIVATE_RUN)
-    parser.add_argument("--output-root", type=Path, default=ROOT / "TrainV3" / "runs")
+    parser.add_argument("--output-root", type=Path, default=ROOT / "TrainV3.5" / "runs")
     parser.add_argument("--min-e2e-tps", type=float, default=12_000.0)
     parser.add_argument("--min-collect-tps", type=float, default=14_000.0)
     parser.add_argument("--min-entropy", type=float, default=0.70)

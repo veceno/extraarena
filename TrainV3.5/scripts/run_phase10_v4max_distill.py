@@ -21,8 +21,8 @@ from typing import Any
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
-TRAINV3_PYTHON = ROOT / "TrainV3" / "python"
-TRAINV3_SCRIPTS = ROOT / "TrainV3" / "scripts"
+TRAINV3_PYTHON = ROOT / "TrainV3.5" / "python"
+TRAINV3_SCRIPTS = ROOT / "TrainV3.5" / "scripts"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 if str(TRAINV3_PYTHON) not in sys.path:
@@ -52,7 +52,7 @@ from train_v3.v5_policy import create_v5_policy  # noqa: E402
 DEFAULT_V4_MAX = ROOT / "ai" / "models" / "extra-lr-v4-max.onnx"
 DEFAULT_SOURCE_CHECKPOINT = (
     ROOT
-    / "TrainV3"
+    / "TrainV3.5"
     / "runs"
     / "phase9_broad_opponent_blend_5k_bucketed_contiguous_20260608_185729"
     / "checkpoints"
@@ -1234,7 +1234,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run offline V4-max teacher distillation for V5")
     parser.add_argument("--source-checkpoint", type=Path, default=DEFAULT_SOURCE_CHECKPOINT)
     parser.add_argument("--v4-model", type=Path, default=DEFAULT_V4_MAX)
-    parser.add_argument("--output-dir", type=Path, default=ROOT / "TrainV3" / "runs" / f"phase10_v4max_distill_{stamp}")
+    parser.add_argument("--output-dir", type=Path, default=ROOT / "TrainV3.5" / "runs" / f"phase10_v4max_distill_{stamp}")
     parser.add_argument("--games", type=int, default=256)
     parser.add_argument("--max-steps", type=int, default=120)
     parser.add_argument("--seed", type=int, default=20301000)

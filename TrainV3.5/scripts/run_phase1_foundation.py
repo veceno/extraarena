@@ -13,7 +13,7 @@ import mlx.optimizers as optim
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "TrainV3" / "python"))
+sys.path.insert(0, str(ROOT / "TrainV3.5" / "python"))
 
 from train_v3.league_v5 import V5LeagueConfig
 from train_v3.rust_trainer import RustPPOTrainingConfig, train_rust_ppo_trace_files
@@ -46,9 +46,9 @@ def main() -> int:
     desirerer_enabled = _env_bool("PHASE1_DESIRERER_ENABLED", False)
     desirerer_strength = _env_float("PHASE1_DESIRERER_STRENGTH", 0.0)
     assist_profile_id = _env_int("PHASE1_ASSIST_PROFILE_ID", 0)
-    out_root = Path(os.environ.get("PHASE1_OUT_ROOT", ROOT / "TrainV3" / "runs")).resolve()
+    out_root = Path(os.environ.get("PHASE1_OUT_ROOT", ROOT / "TrainV3.5" / "runs")).resolve()
     library_path = Path(
-        os.environ.get("TRAINV3_CORE_LIB", ROOT / "TrainV3" / "target" / "release" / "libtrainv3_core.dylib")
+        os.environ.get("TRAINV3_CORE_LIB", ROOT / "TrainV3.5" / "target" / "release" / "libtrainv3_core.dylib")
     ).resolve()
 
     run_id = f"{run_name}_{time.strftime('%Y%m%d_%H%M%S')}"

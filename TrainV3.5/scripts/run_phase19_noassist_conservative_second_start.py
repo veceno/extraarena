@@ -20,8 +20,8 @@ from typing import Any
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
-TRAINV3_PYTHON = ROOT / "TrainV3" / "python"
-TRAINV3_SCRIPTS = ROOT / "TrainV3" / "scripts"
+TRAINV3_PYTHON = ROOT / "TrainV3.5" / "python"
+TRAINV3_SCRIPTS = ROOT / "TrainV3.5" / "scripts"
 for path in (ROOT, TRAINV3_PYTHON, TRAINV3_SCRIPTS):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
@@ -54,7 +54,7 @@ from train_v3.v5_policy import create_v5_policy  # noqa: E402
 
 DEFAULT_BASE_CHECKPOINT = (
     ROOT
-    / "TrainV3"
+    / "TrainV3.5"
     / "runs"
     / "phase10_v4max_distill_round2_from_15020_20260609_1324"
     / "extra_lr_v5_phase10_v4max_distill_61571_states.npz"
@@ -657,7 +657,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run no-assist conservative second-start V5 hardening")
     parser.add_argument("--base-checkpoint", type=Path, default=DEFAULT_BASE_CHECKPOINT)
     parser.add_argument("--v4-model", type=Path, default=DEFAULT_V4_MAX)
-    parser.add_argument("--output-dir", type=Path, default=ROOT / "TrainV3" / "runs" / f"phase19_noassist_conservative_{stamp}")
+    parser.add_argument("--output-dir", type=Path, default=ROOT / "TrainV3.5" / "runs" / f"phase19_noassist_conservative_{stamp}")
     parser.add_argument("--games", type=int, default=128)
     parser.add_argument("--anchor-games", type=int, default=32)
     parser.add_argument("--max-steps", type=int, default=180)

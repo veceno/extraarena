@@ -23,8 +23,8 @@ import numpy as np
 
 
 ROOT = Path(__file__).resolve().parents[2]
-TRAINV3_PYTHON = ROOT / "TrainV3" / "python"
-TRAINV3_SCRIPTS = ROOT / "TrainV3" / "scripts"
+TRAINV3_PYTHON = ROOT / "TrainV3.5" / "python"
+TRAINV3_SCRIPTS = ROOT / "TrainV3.5" / "scripts"
 for path in (ROOT, TRAINV3_PYTHON, TRAINV3_SCRIPTS):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
@@ -56,7 +56,7 @@ from train_v3.v5_policy import create_v5_policy  # noqa: E402
 
 DEFAULT_BASE_CHECKPOINT = (
     ROOT
-    / "TrainV3"
+    / "TrainV3.5"
     / "runs"
     / "phase34c_pairwise_paired_accept_20260611_202032"
     / "best_checkpoint.npz"
@@ -588,7 +588,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     stamp = time.strftime("%Y%m%d_%H%M%S")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-checkpoint", type=Path, default=DEFAULT_BASE_CHECKPOINT)
-    parser.add_argument("--output-dir", type=Path, default=ROOT / "TrainV3" / "runs" / f"phase37_lane_pairwise_{stamp}")
+    parser.add_argument("--output-dir", type=Path, default=ROOT / "TrainV3.5" / "runs" / f"phase37_lane_pairwise_{stamp}")
     parser.add_argument("--lanes", default=",".join(DEFAULT_TARGET_LANES))
     parser.add_argument("--games-per-lane", type=int, default=24)
     parser.add_argument("--anchor-games", type=int, default=48)

@@ -26,7 +26,7 @@ from typing import Any
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
-TRAINV3_PYTHON = ROOT / "TrainV3" / "python"
+TRAINV3_PYTHON = ROOT / "TrainV3.5" / "python"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 if str(TRAINV3_PYTHON) not in sys.path:
@@ -420,7 +420,7 @@ class CodexCliPolicy:
 
 def run_showmatches(config: argparse.Namespace) -> dict[str, Any]:
     _validate_v4max(config.v4_model)
-    run_dir = config.output_dir or ROOT / "TrainV3" / "runs" / f"frontier_llm_showmatch_{time.strftime('%Y%m%d_%H%M%S')}"
+    run_dir = config.output_dir or ROOT / "TrainV3.5" / "runs" / f"frontier_llm_showmatch_{time.strftime('%Y%m%d_%H%M%S')}"
     run_dir.mkdir(parents=True, exist_ok=True)
 
     guide = config.guide.read_text(encoding="utf-8")

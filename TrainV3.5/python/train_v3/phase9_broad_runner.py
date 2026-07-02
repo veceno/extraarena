@@ -153,15 +153,15 @@ def run_phase9_broad_training(root: str | Path | None = None) -> dict[str, Any]:
     policy_bucket_min_rows = _env_int("PHASE9_POLICY_BUCKET_MIN_ROWS", 2048)
     ppo_minibatch_plan = _env_str("PHASE9_PPO_MINIBATCH_PLAN", "contiguous")
     log_selected_trace_paths = _env_bool("PHASE9_LOG_SELECTED_TRACE_PATHS", False)
-    out_root = Path(os.environ.get("PHASE9_OUT_ROOT", root_path / "TrainV3" / "runs")).resolve()
+    out_root = Path(os.environ.get("PHASE9_OUT_ROOT", root_path / "TrainV3.5" / "runs")).resolve()
     reuse_trace_manifest_path = _env_path("PHASE9_TRACE_MANIFEST_PATH", None)
     library_path = Path(
-        os.environ.get("TRAINV3_CORE_LIB", root_path / "TrainV3" / "target" / "release" / "libtrainv3_core.dylib")
+        os.environ.get("TRAINV3_CORE_LIB", root_path / "TrainV3.5" / "target" / "release" / "libtrainv3_core.dylib")
     ).resolve()
     resume_checkpoint = _env_path(
         "PHASE9_RESUME_CHECKPOINT",
         root_path
-        / "TrainV3"
+        / "TrainV3.5"
         / "runs"
         / "phase4_mixed_assist_private_refresh_after_handicap_20260606_145409"
         / "checkpoints"
@@ -448,7 +448,7 @@ def _phase9_environment_path(root: Path) -> Path:
     explicit = os.environ.get("PHASE9_OPPONENT_ENVIRONMENT")
     if explicit and explicit.strip():
         return Path(explicit).expanduser().resolve()
-    latest = root / "TrainV3" / "runs" / "latest_phase9_opponent_environment.txt"
+    latest = root / "TrainV3.5" / "runs" / "latest_phase9_opponent_environment.txt"
     run_dir = Path(latest.read_text(encoding="utf-8").strip()).resolve()
     return run_dir / "phase9_opponent_environment.json"
 
@@ -466,7 +466,7 @@ def _run_rust_exploit_gauntlet(
         "cargo",
         "run",
         "--manifest-path",
-        str(root / "TrainV3" / "Cargo.toml"),
+        str(root / "TrainV3.5" / "Cargo.toml"),
         "--quiet",
         "--bin",
         "trainv3_kernel",
@@ -497,7 +497,7 @@ def _run_v4max_smoke(
     out_dir = run_dir / "v4max_smoke"
     cmd = [
         sys.executable,
-        str(root / "TrainV3" / "scripts" / "run_v5_vs_v4max_benchmark.py"),
+        str(root / "TrainV3.5" / "scripts" / "run_v5_vs_v4max_benchmark.py"),
         "--games",
         str(int(games)),
         "--seed",

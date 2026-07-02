@@ -20,8 +20,8 @@ from typing import Any
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
-TRAINV3_PYTHON = ROOT / "TrainV3" / "python"
-TRAINV3_SCRIPTS = ROOT / "TrainV3" / "scripts"
+TRAINV3_PYTHON = ROOT / "TrainV3.5" / "python"
+TRAINV3_SCRIPTS = ROOT / "TrainV3.5" / "scripts"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 if str(TRAINV3_PYTHON) not in sys.path:
@@ -53,7 +53,7 @@ from train_v3.v5_policy import create_v5_policy  # noqa: E402
 
 DEFAULT_SOURCE_CHECKPOINT = (
     ROOT
-    / "TrainV3"
+    / "TrainV3.5"
     / "runs"
     / "phase10_v4max_distill_round2_from_15020_20260609_1324"
     / "extra_lr_v5_phase10_v4max_distill_61571_states.npz"
@@ -995,7 +995,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--source-checkpoint", type=Path, default=DEFAULT_SOURCE_CHECKPOINT)
     parser.add_argument("--v4-model", type=Path, default=DEFAULT_V4_MAX)
     parser.add_argument("--assembler-dataset", type=Path, default=DEFAULT_ASSEMBLER_DATASET)
-    parser.add_argument("--output-dir", type=Path, default=ROOT / "TrainV3" / "runs" / f"phase12_v4max_start_bias_pg_{stamp}")
+    parser.add_argument("--output-dir", type=Path, default=ROOT / "TrainV3.5" / "runs" / f"phase12_v4max_start_bias_pg_{stamp}")
     parser.add_argument("--games", type=int, default=1024)
     parser.add_argument("--max-steps", type=int, default=120)
     parser.add_argument("--seed", type=int, default=20261250)

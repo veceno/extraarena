@@ -16,10 +16,10 @@ from urllib.parse import parse_qs, urlparse
 
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_LATEST_FILE = ROOT / "TrainV3" / "runs" / "latest_trainv3_training_run.txt"
+DEFAULT_LATEST_FILE = ROOT / "TrainV3.5" / "runs" / "latest_trainv3_training_run.txt"
 FALLBACK_LATEST_FILES = (
-    ROOT / "TrainV3" / "runs" / "latest_phase26_noassist_easy_gate_run.txt",
-    ROOT / "TrainV3" / "runs" / "latest_phase25_clean_noassist_run.txt",
+    ROOT / "TrainV3.5" / "runs" / "latest_phase26_noassist_easy_gate_run.txt",
+    ROOT / "TrainV3.5" / "runs" / "latest_phase25_clean_noassist_run.txt",
 )
 METRICS_TAIL_BYTES = 768 * 1024
 PROCESS_PATTERNS = (

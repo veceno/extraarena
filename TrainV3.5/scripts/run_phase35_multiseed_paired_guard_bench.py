@@ -18,8 +18,8 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[2]
-TRAINV3_PYTHON = ROOT / "TrainV3" / "python"
-TRAINV3_SCRIPTS = ROOT / "TrainV3" / "scripts"
+TRAINV3_PYTHON = ROOT / "TrainV3.5" / "python"
+TRAINV3_SCRIPTS = ROOT / "TrainV3.5" / "scripts"
 for path in (ROOT, TRAINV3_PYTHON, TRAINV3_SCRIPTS):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
@@ -36,14 +36,14 @@ from run_phase33_guarded_noassist_v4_phase2 import (  # noqa: E402
 
 DEFAULT_BASE_CHECKPOINT = (
     ROOT
-    / "TrainV3"
+    / "TrainV3.5"
     / "runs"
     / "phase29_v4_league_validation_20260611_192030"
     / "extra_lr_v5_phase29_v4_league_11047_states.npz"
 )
 DEFAULT_CANDIDATE_CHECKPOINT = (
     ROOT
-    / "TrainV3"
+    / "TrainV3.5"
     / "runs"
     / "phase34c_pairwise_paired_accept_20260611_202032"
     / "best_checkpoint.npz"
@@ -248,7 +248,7 @@ def _guard_config(config: Phase35Config) -> GuardConfig:
         source_checkpoint=config.base_checkpoint,
         output_dir=config.output_dir,
         trace_manifest=DEFAULT_TRACE_MANIFEST,
-        core_library=ROOT / "TrainV3" / "target" / "release" / "libtrainv3_core.dylib",
+        core_library=ROOT / "TrainV3.5" / "target" / "release" / "libtrainv3_core.dylib",
         chunks=1,
         updates_per_chunk=1,
         env_count=1,
@@ -313,7 +313,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-checkpoint", type=Path, default=DEFAULT_BASE_CHECKPOINT)
     parser.add_argument("--candidate-checkpoint", type=Path, default=DEFAULT_CANDIDATE_CHECKPOINT)
-    parser.add_argument("--output-dir", type=Path, default=ROOT / "TrainV3" / "runs" / f"phase35_multiseed_bench_{stamp}")
+    parser.add_argument("--output-dir", type=Path, default=ROOT / "TrainV3.5" / "runs" / f"phase35_multiseed_bench_{stamp}")
     parser.add_argument("--seeds", default=",".join(str(seed) for seed in DEFAULT_SEEDS))
     parser.add_argument("--h2h-games", type=int, default=16)
     parser.add_argument("--min-mean-composite-delta", type=float, default=0.003)

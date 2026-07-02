@@ -13,8 +13,8 @@ from typing import Any
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
-TRAINV3_PYTHON = ROOT / "TrainV3" / "python"
-TRAINV3_SCRIPTS = ROOT / "TrainV3" / "scripts"
+TRAINV3_PYTHON = ROOT / "TrainV3.5" / "python"
+TRAINV3_SCRIPTS = ROOT / "TrainV3.5" / "scripts"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 if str(TRAINV3_PYTHON) not in sys.path:
@@ -436,7 +436,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=ROOT / "TrainV3" / "runs" / f"phase15_second_start_contrastive_recovery_{stamp}",
+        default=ROOT / "TrainV3.5" / "runs" / f"phase15_second_start_contrastive_recovery_{stamp}",
     )
     parser.add_argument("--games", type=int, default=512)
     parser.add_argument("--max-steps", type=int, default=240)

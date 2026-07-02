@@ -25,14 +25,14 @@ PYTHON = Path(sys.executable).resolve()
 
 DEFAULT_SOURCE_CHECKPOINT = (
     ROOT
-    / "TrainV3"
+    / "TrainV3.5"
     / "runs"
     / "phase29_v4_league_validation_20260611_192030"
     / "extra_lr_v5_phase29_v4_league_11047_states.npz"
 )
 DEFAULT_TRACE_MANIFEST = (
     ROOT
-    / "TrainV3"
+    / "TrainV3.5"
     / "runs"
     / "phase26_noassist_easy_gate_main_20260610_151832"
     / "trace_manifest.json"
@@ -278,7 +278,7 @@ def run_training_chunk(config: GuardConfig, *, chunk_dir: Path, resume_checkpoin
         }
     )
     log_path = chunk_dir / "phase26_chunk.log"
-    command = [str(PYTHON), str(ROOT / "TrainV3" / "scripts" / "run_phase26_noassist_easy_gate.py")]
+    command = [str(PYTHON), str(ROOT / "TrainV3.5" / "scripts" / "run_phase26_noassist_easy_gate.py")]
     with log_path.open("w", encoding="utf-8") as log:
         completed = subprocess.run(
             command,
@@ -318,7 +318,7 @@ def run_guarded_evaluation(
         _run_command(
             [
                 str(PYTHON),
-                str(ROOT / "TrainV3" / "scripts" / "run_phase1_runtime_acceptance_bench.py"),
+                str(ROOT / "TrainV3.5" / "scripts" / "run_phase1_runtime_acceptance_bench.py"),
                 "--checkpoint",
                 str(checkpoint),
                 "--output",
@@ -339,7 +339,7 @@ def run_guarded_evaluation(
             _run_command(
                 [
                     str(PYTHON),
-                    str(ROOT / "TrainV3" / "scripts" / "run_v5_vs_v4max_benchmark.py"),
+                    str(ROOT / "TrainV3.5" / "scripts" / "run_v5_vs_v4max_benchmark.py"),
                     "--v4-model",
                     str(model_path),
                     "--v5-checkpoint",
@@ -553,9 +553,9 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     stamp = time.strftime("%Y%m%d_%H%M%S")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-checkpoint", type=Path, default=DEFAULT_SOURCE_CHECKPOINT)
-    parser.add_argument("--output-dir", type=Path, default=ROOT / "TrainV3" / "runs" / f"phase33_guarded_noassist_v4_{stamp}")
+    parser.add_argument("--output-dir", type=Path, default=ROOT / "TrainV3.5" / "runs" / f"phase33_guarded_noassist_v4_{stamp}")
     parser.add_argument("--trace-manifest", type=Path, default=DEFAULT_TRACE_MANIFEST)
-    parser.add_argument("--core-library", type=Path, default=ROOT / "TrainV3" / "target" / "release" / "libtrainv3_core.dylib")
+    parser.add_argument("--core-library", type=Path, default=ROOT / "TrainV3.5" / "target" / "release" / "libtrainv3_core.dylib")
     parser.add_argument("--chunks", type=int, default=6)
     parser.add_argument("--updates-per-chunk", type=int, default=5)
     parser.add_argument("--env-count", type=int, default=8192)
