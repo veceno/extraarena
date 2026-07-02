@@ -20,7 +20,7 @@ from typing import Any, Iterable
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
-TRAINV3_PYTHON = ROOT / "TrainV3" / "python"
+TRAINV3_PYTHON = ROOT / "TrainV3.5" / "python"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 if str(TRAINV3_PYTHON) not in sys.path:
@@ -43,7 +43,7 @@ from train_v3.v5_policy import create_v5_policy  # noqa: E402
 DEFAULT_V4_MAX = ROOT / "ai" / "models" / "extra-lr-v4-max.onnx"
 DEFAULT_V5_CHECKPOINT = (
     ROOT
-    / "TrainV3"
+    / "TrainV3.5"
     / "runs"
     / "phase6_noassist_entropy_recovery_20260607_112603"
     / "checkpoints"
@@ -51,7 +51,7 @@ DEFAULT_V5_CHECKPOINT = (
 )
 DEFAULT_ASSEMBLER_DATASET = (
     ROOT
-    / "TrainV3"
+    / "TrainV3.5"
     / "runs"
     / "phase5_aux_models_from_phase4_20260606_231349"
     / "aux"
@@ -1097,7 +1097,7 @@ def main(argv: list[str] | None = None) -> None:
     output_dir = args.output_dir
     if output_dir is None:
         stamp = time.strftime("%Y%m%d_%H%M%S")
-        output_dir = ROOT / "TrainV3" / "runs" / f"v5_s1_assist_vs_v4max_{stamp}"
+        output_dir = ROOT / "TrainV3.5" / "runs" / f"v5_s1_assist_vs_v4max_{stamp}"
     no_bonuses = bool(args.no_bonuses)
     result = run_benchmark(
         BenchmarkConfig(
