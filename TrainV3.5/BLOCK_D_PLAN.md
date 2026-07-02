@@ -46,6 +46,8 @@
 
 > **Why D-D1 is THE user decision (do not resolve as an implementer choice):** the mix shape is the single knob that decides whether Block D fulfills its spec purpose ("settle post-C, prevent overfit to the last replay batch") or degenerates into a Block-B re-run from the post-C checkpoint. A frozen-field-heavy mix (B3 verbatim) keeps the post-C policy grinding against V4-orig it already beats (per C3's progression) — no consolidation, possible overfit to the frozen field. A self/peer-heavy mix makes the post-C policy settle against its own strong peers — the actual consolidation. The spec pins no weights and names this a "consolidation," so the high-level shape is genuinely the user's call; the exact numbers are implementer defaults under the chosen shape.
 
+> **DECISIONS-CONFIRMED (2026-07-02, AskUserQuestion):** **D-D1 = Consolidation ~0.50** (self+v5_snapshot 0.50, V4-orig 0.30, exploit 0.15, tail 0.05 — explicit group shares, D1 `self_share_target=0.50`). **D-D2 = Fresh pool seeded from post-C** (new `SnapshotPool`, `set_seed_anchor(post-C)` + post-B peers as rolling non-anchors). **D-D3 = Fixed short schedule** (run small `n_updates`, B6-promote at `snapshot_cadence`, exit→E1 at schedule end carrying `pool.best_ever.path`; NO plateau early-exit). **D-D4 = Off / no per-lane-loss reweight** (no-op curriculum `cap=0.0`; mix shape fixed by D-D1). All four = the recommended defaults. Execution D1→D2→D3 proceeds with these frozen.
+
 ---
 
 ## 3. Components (dependency-ordered, synthetic-testable)
