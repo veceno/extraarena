@@ -75,19 +75,32 @@ class MLXV5LearnerPolicy:
             mask_invalid_logits=True,
             library_path=self.library_path,
         )
-        _mx_eval(scores.padded_logits, scores.values)
+        if scores.mana_draw_logits is None:
+            raise ValueError("V5 learner requires a mana_draw_head for live self-play")
+        _mx_eval(scores.padded_logits, scores.values, scores.mana_draw_logits)
         logits = np.asarray(scores.padded_logits, dtype=np.float32)
         values = np.asarray(scores.values, dtype=np.float32)
-        actions, log_probs, selected_local = _sample_from_padded(
+        mana_draw_logits = np.asarray(scores.mana_draw_logits, dtype=np.float32)
+        actions, log_probs, selected_local, mana_draw_flags = _select_from_joint_padded(
             logits=logits,
             counts=counts,
             ids=ids,
+            mana_draw_logits=mana_draw_logits,
+            mana_draw_legal=np.asarray(ctx.mana_draw_legal, dtype=np.bool_)[envs],
             rng=self.rng,
         )
-        mana_draw_flags = np.zeros(actions.shape[0], dtype=np.bool_)
         return actions, values, log_probs, selected_local, mana_draw_flags
 
     def argmax_select(self, ctx: OpponentCtx) -> int:
+        action, _mana_draw = self.argmax_select_with_mana(ctx)
+        return action
+
+    def argmax_select_with_mana(self, ctx: OpponentCtx) -> tuple[int, bool]:
+        """Return the deterministic best action from the joint legal action space.
+
+        ``mana_draw`` remains a parallel FFI flag, but for policy selection and
+        PPO it is a first-class legal option competing with the 601 candidates.
+        """
         if ctx.legal_action_features is None:
             raise ValueError("V5 learner requires legal_action_features for opponent argmax")
         counts = np.asarray([int(ctx.legal_action_counts)], dtype=np.uintp)
@@ -106,13 +119,18 @@ class MLXV5LearnerPolicy:
             mask_invalid_logits=True,
             library_path=self.library_path,
         )
-        _mx_eval(scores.padded_logits, scores.values)
-        actions, _log_probs, _selected_local = _select_argmax_from_padded(
+        if scores.mana_draw_logits is None:
+            raise ValueError("V5 learner requires a mana_draw_head for live inference")
+        _mx_eval(scores.padded_logits, scores.values, scores.mana_draw_logits)
+        actions, _log_probs, _selected_local, mana_draw = _select_from_joint_padded(
             logits=np.asarray(scores.padded_logits, dtype=np.float32),
             counts=counts,
             ids=ids,
+            mana_draw_logits=np.asarray(scores.mana_draw_logits, dtype=np.float32),
+            mana_draw_legal=np.asarray([bool(ctx.mana_draw_legal)], dtype=np.bool_),
+            rng=None,
         )
-        return int(actions[0])
+        return int(actions[0]), bool(mana_draw[0])
 
 
 def _compact_legal_subset(
@@ -152,58 +170,56 @@ def _compact_legal_subset(
     )
 
 
-def _select_argmax_from_padded(
+def _select_from_joint_padded(
     *,
     logits: np.ndarray,
     counts: np.ndarray,
     ids: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    mana_draw_logits: np.ndarray,
+    mana_draw_legal: np.ndarray,
+    rng: np.random.Generator | None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Select from legal candidates plus legal mana-draw as ONE distribution.
+
+    The Rust core keeps ``mana_draw`` outside the frozen 601-action codec, so
+    the action id remains a legal candidate placeholder when mana-draw wins.
+    Its log-probability is nevertheless the joint categorical probability used
+    by the PPO update, keeping rollout and gradient semantics identical.
+    """
     actions = np.empty(counts.shape[0], dtype=np.uintp)
     log_probs = np.empty(counts.shape[0], dtype=np.float32)
     selected_local = np.empty(counts.shape[0], dtype=np.int32)
-    offset = 0
-    for row, count_raw in enumerate(np.asarray(counts, dtype=np.intp).tolist()):
-        count = int(count_raw)
-        local_logits = np.asarray(logits[row, :count], dtype=np.float32)
-        local_ids = np.asarray(ids[offset : offset + count], dtype=np.uintp)
-        chosen = int(np.argmax(local_logits))
-        shifted = local_logits - float(np.max(local_logits))
-        denom = float(np.exp(shifted).sum())
-        actions[row] = int(local_ids[chosen])
-        selected_local[row] = chosen
-        log_probs[row] = float(shifted[chosen] - np.log(max(denom, 1.0e-12)))
-        offset += count
-    return actions, log_probs, selected_local
-
-
-def _sample_from_padded(
-    *,
-    logits: np.ndarray,
-    counts: np.ndarray,
-    ids: np.ndarray,
-    rng: np.random.Generator,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    actions = np.empty(counts.shape[0], dtype=np.uintp)
-    log_probs = np.empty(counts.shape[0], dtype=np.float32)
-    selected_local = np.empty(counts.shape[0], dtype=np.int32)
+    mana_draw_flags = np.zeros(counts.shape[0], dtype=np.bool_)
+    md_logits = np.asarray(mana_draw_logits, dtype=np.float64).reshape((-1,))
+    md_legal = np.asarray(mana_draw_legal, dtype=np.bool_).reshape((-1,))
+    if md_logits.shape != (counts.shape[0],) or md_legal.shape != (counts.shape[0],):
+        raise ValueError("mana-draw logits and legality must have one value per policy row")
     offset = 0
     for row, count_raw in enumerate(np.asarray(counts, dtype=np.intp).tolist()):
         count = int(count_raw)
         local_logits = np.asarray(logits[row, :count], dtype=np.float64)
         local_ids = np.asarray(ids[offset : offset + count], dtype=np.uintp)
-        shifted = local_logits - float(np.max(local_logits))
-        probs = np.exp(shifted)
-        probs_sum = float(probs.sum())
-        if not np.isfinite(probs_sum) or probs_sum <= 0.0:
-            probs = np.full(count, 1.0 / float(count), dtype=np.float64)
+        if count <= 0:
+            raise ValueError(f"row {row} has no legal candidate actions")
+        option_logits = local_logits
+        if bool(md_legal[row]):
+            option_logits = np.concatenate([local_logits, np.asarray([md_logits[row]])])
+        shifted = option_logits - float(np.max(option_logits))
+        denom = float(np.exp(shifted).sum())
+        if not np.isfinite(denom) or denom <= 0.0:
+            probs = np.full(option_logits.shape[0], 1.0 / float(option_logits.shape[0]), dtype=np.float64)
         else:
-            probs = probs / probs_sum
-        chosen = int(rng.choice(count, p=probs))
-        actions[row] = int(local_ids[chosen])
-        selected_local[row] = chosen
+            probs = np.exp(shifted) / denom
+        chosen = int(np.argmax(probs)) if rng is None else int(rng.choice(probs.shape[0], p=probs))
+        # The candidate id is ignored by step_mana_draw when this is true, but
+        # retain a valid candidate index for the compact legal-action tape.
+        candidate_local = int(np.argmax(local_logits)) if chosen == count else chosen
+        actions[row] = int(local_ids[candidate_local])
+        selected_local[row] = candidate_local
+        mana_draw_flags[row] = bool(md_legal[row] and chosen == count)
         log_probs[row] = float(np.log(max(float(probs[chosen]), 1.0e-12)))
         offset += count
-    return actions, log_probs, selected_local
+    return actions, log_probs, selected_local, mana_draw_flags
 
 
 def run(config: argparse.Namespace) -> dict[str, Any]:
@@ -273,14 +289,14 @@ def run(config: argparse.Namespace) -> dict[str, Any]:
         "schema": "extra_lr_v5_phaseA_random_bootstrap_run_v1",
         "run_name": str(config.run_name),
         "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        "target_random_score": PHASE_A_RANDOM_BOOTSTRAP_TARGET_RANDOM_SCORE,
+        "target_random_score": float(config.target_random_score),
         "source": source,
         "config": _jsonable(config_snapshot),
         "phase_config": _jsonable(asdict(phase_config)),
         "opponent_mix_override": custom_opponent_mix,
         "obs_dim": OBS_V5_DIM,
         "action_feature_dim": ACTION_FEATURE_DIM,
-        "mana_draw_policy": "disabled_for_bootstrap_ppo_head_training",
+        "mana_draw_policy": "joint_legal_categorical_ppo",
     }
     (output_dir / "run_meta.json").write_text(
         json.dumps(run_meta, indent=2, sort_keys=True) + "\n",
@@ -342,14 +358,29 @@ def run(config: argparse.Namespace) -> dict[str, Any]:
         total_states=total_states,
         partial=False,
     )
+    random_gate = _evaluate_random_field_gate(
+        learner,
+        config=phase_config,
+        library_path=config.library_path,
+        games=int(config.random_gate_games),
+        seed=int(config.seed) + 90_000_000,
+        max_steps=int(config.random_gate_max_steps),
+    )
+    gate_passed = (
+        float(random_gate["score_rate"]) >= float(config.target_random_score)
+        and int(random_gate["invalid_actions"]) == 0
+        and int(random_gate["mana_draw_count"]) > 0
+    )
     summary = {
-        "status": "ok",
+        "status": "ok" if gate_passed else "random_gate_failed",
         "checkpoint_path": str(final_path),
         "last_periodic_checkpoint": str(last_checkpoint) if last_checkpoint is not None else None,
         "updates": int(config.updates),
         "states": int(total_states),
-        "target_random_score": PHASE_A_RANDOM_BOOTSTRAP_TARGET_RANDOM_SCORE,
+        "target_random_score": float(config.target_random_score),
         "progress_path": str(progress_path),
+        "random_gate": random_gate,
+        "random_gate_passed": gate_passed,
     }
     (output_dir / "summary.json").write_text(
         json.dumps(_jsonable(summary), indent=2, sort_keys=True) + "\n",
@@ -357,6 +388,118 @@ def run(config: argparse.Namespace) -> dict[str, Any]:
     )
     print("PHASEA_RANDOM_BOOTSTRAP_RESULT", json.dumps(_jsonable(summary), sort_keys=True), flush=True)
     return summary
+
+
+def _evaluate_random_field_gate(
+    learner: MLXV5LearnerPolicy,
+    *,
+    config: Any,
+    library_path: Path | None,
+    games: int,
+    seed: int,
+    max_steps: int,
+) -> dict[str, Any]:
+    """Side-stratified real-engine acceptance check against legal_random.
+
+    This deliberately does not reuse PPO telemetry: it asks the deterministic
+    deployed policy to play actual Rust ArenaEnv games and records every legal
+    mana-draw decision, invalid candidate guard, and outcome.
+    """
+    from train_v3.rust_ffi import RustBatchWorker
+
+    if games <= 0:
+        raise ValueError("random gate games must be positive")
+    wins = draws = losses = invalid_actions = 0
+    mana_draw_count = eligible_turns = 0
+    for game_idx in range(games):
+        for candidate_actor in (1, 2):
+            worker = RustBatchWorker.from_live(
+                seed=int(seed) + game_idx * 2 + candidate_actor,
+                env_count=1,
+                max_turns=int(config.max_turns),
+                library_path=library_path,
+                action_features_dtype=config.action_features_dtype,
+                action_features_mode=config.action_features_mode,
+                observation_mode=config.observation_mode,
+                action_mask_mode=config.action_mask_mode,
+                terminal_observation_mode=config.terminal_observation_mode,
+                diagnostic_mode="none",
+            )
+            try:
+                outcome = "draw"
+                for _step in range(max(1, max_steps)):
+                    arrays = worker.arrays(copy=True)
+                    actor = int(worker.current_actor_ids()[0])
+                    counts = np.asarray(arrays["legal_action_counts"], dtype=np.intp)
+                    offsets = np.asarray(arrays["legal_action_offsets"], dtype=np.intp)
+                    legal_ids = np.asarray(arrays["legal_action_ids"], dtype=np.uintp)
+                    legal_features = arrays.get("legal_action_features")
+                    mana_legal = bool(worker.mana_draw_legal()[0])
+                    mana_draw = False
+                    if actor == candidate_actor:
+                        eligible_turns += int(mana_legal)
+                        start = int(offsets[0])
+                        end = start + int(counts[0])
+                        ctx = OpponentCtx(
+                            env_idx=0,
+                            actor_id=actor,
+                            observation_v5=np.asarray(arrays["observation_v5"], dtype=np.float32)[0],
+                            legal_action_ids=legal_ids[start:end],
+                            legal_action_features=(
+                                None
+                                if legal_features is None
+                                else np.asarray(legal_features, dtype=np.float32)[start:end]
+                            ),
+                            legal_action_counts=int(counts[0]),
+                            mana_draw_legal=mana_legal,
+                        )
+                        action_id, mana_draw = learner.argmax_select_with_mana(ctx)
+                        if not mana_draw and int(action_id) not in set(int(v) for v in legal_ids[start:end]):
+                            invalid_actions += 1
+                            action_id = int(legal_ids[start])
+                        mana_draw_count += int(mana_draw)
+                    else:
+                        action_id = int(
+                            worker.select_rule_actions(np.asarray([0], dtype=np.uint32))[0]
+                        )
+                    out = worker.step_mana_draw(
+                        np.asarray([action_id], dtype=np.uintp),
+                        np.asarray([mana_draw], dtype=np.bool_),
+                        copy=True,
+                    )
+                    if bool(np.asarray(out["terminated"], dtype=np.bool_)[0]) or bool(worker.truncated()[0]):
+                        hp = np.asarray(worker.hero_hp(), dtype=np.int32)[0]
+                        if bool(worker.truncated()[0]) or (int(hp[0]) <= 0 and int(hp[2]) <= 0):
+                            outcome = "draw"
+                        elif (candidate_actor == 1 and int(hp[2]) <= 0) or (
+                            candidate_actor == 2 and int(hp[0]) <= 0
+                        ):
+                            outcome = "win"
+                        else:
+                            outcome = "loss"
+                        break
+                if outcome == "win":
+                    wins += 1
+                elif outcome == "loss":
+                    losses += 1
+                else:
+                    draws += 1
+            finally:
+                worker.close()
+    total = wins + draws + losses
+    return {
+        "games": total,
+        "wins": wins,
+        "draws": draws,
+        "losses": losses,
+        "score_rate": (wins + 0.5 * draws) / max(total, 1),
+        "invalid_actions": invalid_actions,
+        "mana_draw_count": mana_draw_count,
+        "mana_draw_eligible": eligible_turns,
+        "mana_draw_rate": mana_draw_count / max(eligible_turns, 1),
+        "seed": int(seed),
+        "both_sides": True,
+    }
 
 
 def _save_checkpoint(
@@ -461,6 +604,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument("--target-random-score", type=float, default=PHASE_A_RANDOM_BOOTSTRAP_TARGET_RANDOM_SCORE)
+    parser.add_argument(
+        "--random-gate-games",
+        type=int,
+        default=64,
+        help="Games per side for the post-run field acceptance against legal_random.",
+    )
+    parser.add_argument("--random-gate-max-steps", type=int, default=240)
     parser.add_argument("--library-path", type=Path, default=_default_library_path())
     parser.add_argument("--resume-checkpoint", type=Path, default=None)
     parser.add_argument("--v4-max-npz", type=Path, default=None)
@@ -487,8 +637,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--minibatch-size must be positive")
     if float(args.learning_rate) <= 0.0:
         parser.error("--learning-rate must be positive")
-    if float(args.target_random_score) != PHASE_A_RANDOM_BOOTSTRAP_TARGET_RANDOM_SCORE:
-        parser.error("--target-random-score is currently fixed at 0.98 for Phase A bootstrap")
+    if not 0.0 < float(args.target_random_score) <= 1.0:
+        parser.error("--target-random-score must be in (0, 1]")
+    if int(args.random_gate_games) <= 0 or int(args.random_gate_max_steps) <= 0:
+        parser.error("random gate games and max steps must be positive")
     if args.opponent_mix:
         try:
             parse_v5_opponent_mix(str(args.opponent_mix))
@@ -506,8 +658,8 @@ def _default_library_path() -> Path | None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    run(parse_args(argv))
-    return 0
+    summary = run(parse_args(argv))
+    return 0 if bool(summary.get("random_gate_passed", False)) else 2
 
 
 if __name__ == "__main__":

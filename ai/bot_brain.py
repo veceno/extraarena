@@ -684,7 +684,11 @@ class BerserkInference:
         verify_mask = bool(profile.get("verify_mask", False))
 
         try:
-            obs = encode_observation_v5(game_state, player_id).reshape(1, obs_dim).astype(np.float32)
+            obs = encode_observation_v5(
+                game_state,
+                player_id,
+                history_events=list(getattr(game_state, "v5_history_events", ())),
+            ).reshape(1, obs_dim).astype(np.float32)
             mask = build_action_mask(
                 game_state,
                 player_id,

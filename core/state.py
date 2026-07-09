@@ -14,6 +14,7 @@ from uuid import UUID, uuid4
 # лимиту в 100 записей, который раньше держался через `list[-100:]`
 # (realloc O(n) на каждом append). deque(maxlen=N) делает это за O(1).
 ACTION_HISTORY_MAXLEN = 100
+V5_HISTORY_EVENTS = 20
 
 
 # Фиксированный список всех механик для ML observation (34 механики)
@@ -176,6 +177,12 @@ class GameState:
     # `append`, индексацию `[-1]`, `[-100:]`, `len()`, итерацию и `list()`.
     action_history: Deque[tuple[str, str]] = field(
         default_factory=lambda: deque(maxlen=ACTION_HISTORY_MAXLEN)
+    )
+    # Structured, model-facing action window. Unlike the UI action_history it
+    # carries actor, deltas and pre-action card snapshots, so V5 inference sees
+    # the same last-20-action contract as Rust training.
+    v5_history_events: Deque[Dict] = field(
+        default_factory=lambda: deque(maxlen=V5_HISTORY_EVENTS)
     )
     status: GameStatus = GameStatus.ONGOING
     sudden_death_turns_by_player: Dict[int, int] = field(default_factory=dict)

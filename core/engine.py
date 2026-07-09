@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import copy
 import logging
 import random
 import re
@@ -350,6 +351,8 @@ class ArenaEnvironment:
             )
             return False, str(e)
 
+        v5_history_pre = self._capture_v5_history_pre(player, opponent, action)
+
         # Обработка действий
         action_description: Optional[Tuple[str, str]] = None
         
@@ -413,8 +416,86 @@ class ArenaEnvironment:
             # Если это был EndTurn, добавляем разделитель
             if isinstance(action, EndTurnAction):
                 self.state.action_history.append(turn_separator)
+        self.state.v5_history_events.append(
+            self._build_v5_history_event(v5_history_pre, player, opponent, action)
+        )
 
         return True, ""
+
+    @staticmethod
+    def _history_board_power(player: PlayerState) -> float:
+        return float(sum(max(int(card.attack), 0) for card in player.board))
+
+    def _capture_v5_history_pre(
+        self,
+        player: PlayerState,
+        opponent: PlayerState,
+        action: BaseAction,
+    ) -> Dict:
+        """Capture the rich pre-action fields the V5 temporal encoder needs.
+
+        UI ``action_history`` deliberately stores only text. Keeping this compact
+        ring buffer at the actual engine application boundary makes production
+        V5 observation history match the Rust trainer's last-20-action view.
+        """
+        source_card = None
+        target_card = None
+        if isinstance(action, PlayCardAction) and 0 <= action.hand_index < len(player.hand):
+            source_card = copy.deepcopy(player.hand[action.hand_index])
+            if action.target_id:
+                target_card = self._find_unit_by_id(player.board, action.target_id)
+                if target_card is None:
+                    target_card = self._find_unit_by_id(opponent.board, action.target_id)
+        elif isinstance(action, AttackAction):
+            source_card = self._find_unit_by_id(player.board, action.attacker_id)
+            if action.target_is_hero:
+                target_card = opponent.hero
+            elif action.target_id:
+                target_card = self._find_unit_by_id(opponent.board, action.target_id)
+        return {
+            "actor_id": int(player.user_id),
+            "turn_number": int(self.state.turn_number),
+            "own_hero_hp": int(player.hero.hp),
+            "enemy_hero_hp": int(opponent.hero.hp),
+            "my_board_count": len(player.board),
+            "enemy_board_count": len(opponent.board),
+            "board_power_delta_base": self._history_board_power(player) - self._history_board_power(opponent),
+            "source_card": None if source_card is None else copy.deepcopy(source_card),
+            "target_card": None if target_card is None else copy.deepcopy(target_card),
+        }
+
+    def _build_v5_history_event(
+        self,
+        pre: Dict,
+        player: PlayerState,
+        opponent: PlayerState,
+        action: BaseAction,
+    ) -> Dict:
+        if isinstance(action, PlayCardAction):
+            action_type = "play_card"
+        elif isinstance(action, AttackAction):
+            action_type = "attack"
+        elif isinstance(action, ManaDrawAction):
+            action_type = "mana_draw"
+        else:
+            action_type = "end_turn"
+        post_board_delta = self._history_board_power(player) - self._history_board_power(opponent)
+        return {
+            "actor_id": int(pre["actor_id"]),
+            # The production object action does not retain frozen codec id; the
+            # type/card/delta fields are the stable temporal signal. Mana draw
+            # is explicitly distinguished by metadata slot 13 in obs_v5.
+            "action_id": 0,
+            "action_type": action_type,
+            "enemy_hero_hp_delta": int(pre["enemy_hero_hp"]) - int(opponent.hero.hp),
+            "own_hero_hp_delta": int(pre["own_hero_hp"]) - int(player.hero.hp),
+            "my_board_count_delta": len(player.board) - int(pre["my_board_count"]),
+            "enemy_board_count_delta": len(opponent.board) - int(pre["enemy_board_count"]),
+            "board_power_delta": post_board_delta - float(pre["board_power_delta_base"]),
+            "turn_number": int(pre["turn_number"]),
+            "source_card": pre["source_card"],
+            "target_card": pre["target_card"],
+        }
 
     def _handle_play_card(
         self, player: PlayerState, opponent: PlayerState, action: PlayCardAction

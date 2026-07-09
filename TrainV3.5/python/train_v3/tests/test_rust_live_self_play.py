@@ -471,6 +471,44 @@ class TestLearnerPerspectiveReward:
         )
 
 
+class TestManaDrawExecution:
+    def test_legal_mana_draw_reaches_worker_and_rollout(self):
+        class AlwaysManaDrawLearner:
+            def select(self, ctx):
+                envs = np.asarray(ctx.env_indices, dtype=np.intp)
+                counts = np.asarray(ctx.legal_action_counts, dtype=np.intp)
+                offsets = np.asarray(ctx.legal_action_offsets, dtype=np.intp)
+                ids = np.asarray(ctx.legal_action_ids, dtype=np.uintp)
+                actions = np.asarray(
+                    [ids[int(offsets[env])] for env in envs], dtype=np.uintp
+                )
+                return (
+                    actions,
+                    np.zeros(len(envs), dtype=np.float32),
+                    np.zeros(len(envs), dtype=np.float32),
+                    np.zeros(len(envs), dtype=np.int32),
+                    np.asarray(ctx.mana_draw_legal, dtype=np.bool_)[envs],
+                )
+
+        worker = FakeWorker([[
+            _FakeWorkerScriptEntry(actor=1, mana_draw_legal=True),
+            _FakeWorkerScriptEntry(actor=1, mana_draw_legal=False),
+        ]])
+        rollout = rls.collect_rust_live_rollout(
+            worker,
+            AlwaysManaDrawLearner(),
+            {},
+            learner_actor_ids=np.array([1], dtype=np.int32),
+            opponent_identities=["random"],
+            config=_tiny_config(env_count=1),
+            steps=2,
+        )
+        assert bool(rollout.mana_draw_legal[0, 0]) is True
+        assert bool(rollout.mana_draw_taken[0, 0]) is True
+        assert any(bool(flags[0]) for _actions, flags in worker.step_mana_draw_calls)
+        assert bool(rollout.mana_draw_taken[1, 0]) is False
+
+
 class TestDecisiveEarlyEnd:
     """test_decisive_state_early_end — a decisive win-margin state terminates early."""
 

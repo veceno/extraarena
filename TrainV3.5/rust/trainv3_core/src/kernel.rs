@@ -2551,6 +2551,10 @@ fn encode_one_history_event_v5(out: &mut [f32], player_id: i32, event: &KernelHi
     out[10] = signed_norm(event.enemy_board_count_delta as f32, 7.0);
     out[11] = norm(event.turn_number as f32, 50.0);
     out[12] = signed_norm(event.board_power_delta, 200.0);
+    // Mana draw is a legal parallel action outside the frozen 601 candidate
+    // ids. Reserve metadata slot 13 so it cannot be confused with its ignored
+    // candidate-id placeholder.
+    out[13] = bool_f32(event.action_type == "mana_draw");
     if let Some(card) = &event.source_card {
         let shape = card.shape_v5(None, None, None);
         out[HISTORY_EVENT_SOURCE_OFFSET..HISTORY_EVENT_SOURCE_OFFSET + CARD_SHAPE_DIM_V5]
@@ -2611,22 +2615,46 @@ pub fn build_history_event_v5(
     action_type: String,
 ) -> KernelHistoryEvent {
     let turn_number = post.turn_number;
-    let pre = RewardSnapshotV5::from_state(pre, player_id);
-    let post = RewardSnapshotV5::from_state(post, player_id);
-    let pre_board_delta = pre.my_board_power - pre.enemy_board_power;
-    let post_board_delta = post.my_board_power - post.enemy_board_power;
+    let (source_card, target_card) = if action_type == "mana_draw" {
+        (None, None)
+    } else {
+        history_cards_for_action(pre, player_id, action_id)
+    };
+    let pre_snapshot = RewardSnapshotV5::from_state(pre, player_id);
+    let post_snapshot = RewardSnapshotV5::from_state(post, player_id);
+    let pre_board_delta = pre_snapshot.my_board_power - pre_snapshot.enemy_board_power;
+    let post_board_delta = post_snapshot.my_board_power - post_snapshot.enemy_board_power;
     KernelHistoryEvent {
         actor_id: player_id,
         action_id,
         action_type,
-        enemy_hero_hp_delta: pre.enemy_hero_hp - post.enemy_hero_hp,
-        own_hero_hp_delta: pre.my_hero_hp - post.my_hero_hp,
-        my_board_count_delta: post.my_board_count - pre.my_board_count,
-        enemy_board_count_delta: post.enemy_board_count - pre.enemy_board_count,
+        enemy_hero_hp_delta: pre_snapshot.enemy_hero_hp - post_snapshot.enemy_hero_hp,
+        own_hero_hp_delta: pre_snapshot.my_hero_hp - post_snapshot.my_hero_hp,
+        my_board_count_delta: post_snapshot.my_board_count - pre_snapshot.my_board_count,
+        enemy_board_count_delta: post_snapshot.enemy_board_count - pre_snapshot.enemy_board_count,
         board_power_delta: post_board_delta - pre_board_delta,
         turn_number,
-        source_card: None,
-        target_card: None,
+        source_card,
+        target_card,
+    }
+}
+
+fn history_cards_for_action(
+    state: &KernelState,
+    player_id: i32,
+    action_id: usize,
+) -> (Option<KernelCard>, Option<KernelCard>) {
+    let (me, enemy) = state.players_for(player_id);
+    match decode_action_id(action_id) {
+        Some(CandidateAction::PlayCard { hand_index, target_code, .. }) => (
+            me.hand.get(hand_index).cloned(),
+            resolve_target_card(me, enemy, target_code, false).0.cloned(),
+        ),
+        Some(CandidateAction::Attack { attacker_index, target_code }) => (
+            me.board.get(attacker_index).cloned(),
+            resolve_target_card(me, enemy, target_code, true).0.cloned(),
+        ),
+        _ => (None, None),
     }
 }
 
@@ -3769,6 +3797,54 @@ mod draw_tests {
         );
         assert_eq!(p1[OBS_DIM_V1 + 16], 1.0);
         assert_eq!(p2[OBS_DIM_V1 + 16], 0.0);
+    }
+
+    #[test]
+    fn v5_history_keeps_last_twenty_and_marks_mana_draw() {
+        let state = v5_state_with_mana_draw_count(0);
+        let events: Vec<KernelHistoryEvent> = (0..25)
+            .map(|turn| KernelHistoryEvent {
+                actor_id: 1,
+                action_id: if turn == 24 { MAX_CANDIDATE_ACTIONS } else { 0 },
+                action_type: if turn == 24 { "mana_draw" } else { "end_turn" }.to_string(),
+                enemy_hero_hp_delta: 0,
+                own_hero_hp_delta: 0,
+                my_board_count_delta: 0,
+                enemy_board_count_delta: 0,
+                board_power_delta: 0.0,
+                turn_number: turn,
+                source_card: None,
+                target_card: None,
+            })
+            .collect();
+        let out = encode_observation_v5(
+            &state,
+            1,
+            InfoModeV5::default(),
+            AssistModeV5::default(),
+            &events,
+        );
+        let history_base = OBS_DIM_V1 + V5_GLOBAL_DIM + PRIVATE_INFO_DIM;
+        // 25 supplied events -> the first retained slot is turn 5, not turn 0.
+        assert_eq!(out[history_base], 1.0);
+        assert_eq!(out[history_base + 11], 5.0 / 50.0);
+        let last = history_base + (HISTORY_EVENTS - 1) * HISTORY_EVENT_DIM;
+        assert_eq!(out[last + 13], 1.0, "mana_draw reserved metadata bit");
+    }
+
+    #[test]
+    fn v5_history_captures_pre_action_source_card() {
+        let state = KernelState {
+            current_turn_owner_id: 1,
+            turn_number: 1,
+            status: "ongoing".to_string(),
+            p1: player_with(Vec::new(), vec![card(37, 2, 3, 4)]),
+            p2: player_with(Vec::new(), Vec::new()),
+            ..Default::default()
+        };
+        let (source, target) = history_cards_for_action(&state, 1, PLAY_BASE);
+        assert_eq!(source.expect("play source").card_id, 37);
+        assert!(target.is_none());
     }
 
     // ---- Phase 3: rebirth (REBIRTH-1) ----

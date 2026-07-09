@@ -496,8 +496,11 @@ class BlockBLeagueDriver:
                 self.mana_draw_baseline
                 if self.mana_draw_baseline is not None
                 else ManaDrawBaseline(
-                    mana_draw_count=1, eligible_turns=2, rate=0.5,
-                    hand_cap=4, mana_draw_base=2, valid=True,
+                    # Never fabricate a successful Q4 reference. An
+                    # unmeasured baseline makes the mana-draw gate fail until
+                    # the operational runner supplies field evidence.
+                    mana_draw_count=0, eligible_turns=0, rate=0.0,
+                    hand_cap=4, mana_draw_base=2, valid=False,
                 )
             ),
             p1_p2_gap=measured["p1_p2_gap"],

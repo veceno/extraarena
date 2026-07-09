@@ -28,6 +28,10 @@ class PaddedLegalActionScores:
     padded_logits: Any
     legal_mask: Any
     values: Any
+    # The legal mana-draw action lives outside the 601 candidate action space.
+    # Keep its raw logit beside the padded candidate logits so live PPO can form
+    # one categorical distribution over *all* legal actions.
+    mana_draw_logits: Any | None = None
     profile: dict[str, float] | None = None
 
 
@@ -137,6 +141,7 @@ def score_padded_legal_actions(
             padded_logits=scores.padded_logits,
             legal_mask=scores.legal_mask,
             values=scores.values,
+            mana_draw_logits=scores.mana_draw_logits,
             profile=profile,
         )
     return scores
@@ -268,14 +273,20 @@ def score_padded_legal_action_inputs(
     if mask_invalid_logits:
         padded_logits = mx.where(legal_mask, padded_logits, mx.array(-1e9, dtype=padded_logits.dtype))
     values = model.value_head(state_emb).squeeze(-1)
+    mana_draw_head = getattr(model, "mana_draw_head", None)
+    mana_draw_logits = None if mana_draw_head is None else mana_draw_head(state_emb).squeeze(-1)
     profile = None
     if profile_policy:
-        mx.eval(padded_logits, values)
+        if mana_draw_logits is None:
+            mx.eval(padded_logits, values)
+        else:
+            mx.eval(padded_logits, values, mana_draw_logits)
         profile = {"policy_model_seconds": time.perf_counter() - model_start}
     return PaddedLegalActionScores(
         padded_logits=padded_logits,
         legal_mask=legal_mask,
         values=values,
+        mana_draw_logits=mana_draw_logits,
         profile=profile,
     )
 

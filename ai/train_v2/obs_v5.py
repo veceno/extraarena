@@ -165,6 +165,9 @@ def _encode_one_event(dst: np.ndarray, player_id: int, event: dict[str, Any]) ->
     dst[10] = _signed_norm(event.get("enemy_board_count_delta", 0.0), 7.0)
     dst[11] = min(max(float(event.get("turn_number", 0) or 0), 0.0) / 50.0, 1.0)
     dst[12] = _signed_norm(event.get("board_power_delta", 0.0), 200.0)
+    # Reserved metadata slot: mana_draw is outside the frozen 601 candidate
+    # codec and must remain distinguishable from an arbitrary placeholder id.
+    dst[13] = float(action_type == "mana_draw")
 
     source_card = event.get("source_card")
     target_card = event.get("target_card")

@@ -42,6 +42,11 @@ class RustPPOBatch:
     advantages: np.ndarray
     returns: np.ndarray
     selected_local_indices: np.ndarray | None = None
+    # Parallel action channel outside the frozen 601-candidate codec. When
+    # present, PPO evaluates one joint categorical distribution over legal
+    # candidate actions plus legal mana_draw.
+    mana_draw_legal: np.ndarray | None = None
+    mana_draw_taken: np.ndarray | None = None
 
     def flatten(self) -> dict[str, np.ndarray | None]:
         steps, env_count = self.actions.shape
@@ -73,6 +78,16 @@ class RustPPOBatch:
                 None
                 if self.selected_local_indices is None
                 else self.selected_local_indices.reshape((steps * env_count,))
+            ),
+            "mana_draw_legal": (
+                None
+                if self.mana_draw_legal is None
+                else self.mana_draw_legal.reshape((steps * env_count,))
+            ),
+            "mana_draw_taken": (
+                None
+                if self.mana_draw_taken is None
+                else self.mana_draw_taken.reshape((steps * env_count,))
             ),
         }
 
@@ -479,6 +494,8 @@ def prepare_rust_ppo_batch(
     advantage_backend: str = "python",
     selected_local_backend: str = "python",
     prepare_backend: str = "separate",
+    mana_draw_legal: np.ndarray | None = None,
+    mana_draw_taken: np.ndarray | None = None,
     library_path: str | Path | None = None,
 ) -> RustPPOBatch:
     """Compute GAE/returns for a Rust vectorized rollout batch."""
@@ -500,6 +517,15 @@ def prepare_rust_ppo_batch(
         raise ValueError("truncated must match rewards shape")
 
     steps, env_count = rewards.shape
+    if (mana_draw_legal is None) != (mana_draw_taken is None):
+        raise ValueError("mana_draw_legal and mana_draw_taken must be provided together")
+    if mana_draw_legal is not None:
+        mana_draw_legal = np.asarray(mana_draw_legal, dtype=np.bool_)
+        mana_draw_taken = np.asarray(mana_draw_taken, dtype=np.bool_)
+        if mana_draw_legal.shape != rewards.shape or mana_draw_taken.shape != rewards.shape:
+            raise ValueError("mana-draw arrays must match rollout (steps, env_count) shape")
+        if np.any(mana_draw_taken & ~mana_draw_legal):
+            raise ValueError("mana_draw_taken requires mana_draw_legal")
     if prepare_backend not in {"separate", "rust_fused"}:
         raise ValueError("prepare_backend must be separate or rust_fused")
     if advantage_backend not in {"python", "rust"}:
@@ -603,6 +629,8 @@ def prepare_rust_ppo_batch(
         advantages=advantages.astype(np.float32, copy=False),
         returns=returns.astype(np.float32, copy=False),
         selected_local_indices=selected_local_indices.astype(np.int32, copy=False),
+        mana_draw_legal=mana_draw_legal,
+        mana_draw_taken=mana_draw_taken,
     )
 
 
@@ -685,8 +713,37 @@ def evaluate_rust_ppo_batch(
             flat["obs"],
             padded_legal_action_cache,
         )
-    probs = nn.softmax(scores.padded_logits, axis=-1)
-    selected = mx.array(selected_local, dtype=mx.int32)
+    mana_draw_legal = flat["mana_draw_legal"]
+    mana_draw_taken = flat["mana_draw_taken"]
+    if (mana_draw_legal is None) != (mana_draw_taken is None):
+        raise ValueError("mana-draw rollout fields must be present together")
+    if mana_draw_legal is None:
+        joint_logits = scores.padded_logits
+        selected_for_joint = selected_local
+    else:
+        md_legal_np = np.asarray(mana_draw_legal, dtype=np.bool_)
+        md_taken_np = np.asarray(mana_draw_taken, dtype=np.bool_)
+        if scores.mana_draw_logits is None:
+            if bool(np.any(md_taken_np)):
+                raise ValueError("mana-draw transition requires model.mana_draw_head")
+            joint_logits = scores.padded_logits
+            selected_for_joint = selected_local
+        else:
+            md_logit = mx.expand_dims(scores.mana_draw_logits, axis=-1)
+            md_legal = mx.array(md_legal_np.reshape((-1, 1)))
+            md_logit = mx.where(
+                md_legal,
+                md_logit,
+                mx.array(-1.0e9, dtype=scores.padded_logits.dtype),
+            )
+            joint_logits = mx.concatenate([scores.padded_logits, md_logit], axis=-1)
+            selected_for_joint = np.where(
+                md_taken_np,
+                int(scores.padded_logits.shape[1]),
+                selected_local,
+            )
+    probs = nn.softmax(joint_logits, axis=-1)
+    selected = mx.array(selected_for_joint, dtype=mx.int32)
     action_probs = _gather_selected_action_probs(probs, selected)
     new_log_probs = mx.log(action_probs + 1.0e-10)
 
@@ -1022,6 +1079,8 @@ def _take_flat_rows(
         advantages=selected_scalars("advantages").astype(batch.advantages.dtype, copy=False),
         returns=selected_scalars("returns").astype(batch.returns.dtype, copy=False),
         selected_local_indices=selected_local,
+        mana_draw_legal=selected_optional_scalars("mana_draw_legal"),
+        mana_draw_taken=selected_optional_scalars("mana_draw_taken"),
     )
 
 
@@ -1112,6 +1171,8 @@ def _take_flat_row_range(
         advantages=selected_scalars("advantages").astype(batch.advantages.dtype, copy=False),
         returns=selected_scalars("returns").astype(batch.returns.dtype, copy=False),
         selected_local_indices=selected_local,
+        mana_draw_legal=selected_optional_scalars("mana_draw_legal"),
+        mana_draw_taken=selected_optional_scalars("mana_draw_taken"),
     )
 
 

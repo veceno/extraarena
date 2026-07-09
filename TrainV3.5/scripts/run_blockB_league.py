@@ -148,6 +148,7 @@ class LiveBlockBGameRunner:
                 legal_ids = np.asarray(arrays["legal_action_ids"], dtype=np.uintp)
                 legal_features = arrays.get("legal_action_features")
                 md_legal = bool(worker.mana_draw_legal()[0])
+                mana_draw = False
                 if actor == candidate_actor:
                     eligible_turns += int(md_legal)
                     ctx = OpponentCtx(
@@ -165,12 +166,13 @@ class LiveBlockBGameRunner:
                         legal_action_counts=int(counts[0]),
                         mana_draw_legal=md_legal,
                     )
-                    action_id = int(self.learner.argmax_select(ctx))
+                    action_id, mana_draw = self.learner.argmax_select_with_mana(ctx)
+                    mana_draw_count += int(mana_draw)
                 else:
                     action_id = int(self._opponent_action(identity, worker, arrays, actor))
                 out = worker.step_mana_draw(
                     np.asarray([action_id], dtype=np.uintp),
-                    np.asarray([False], dtype=np.bool_),
+                    np.asarray([mana_draw], dtype=np.bool_),
                     copy=True,
                 )
                 terminated = bool(np.asarray(out["terminated"], dtype=np.bool_)[0])
@@ -362,6 +364,37 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         library_path=args.library_path,
         max_steps=int(args.eval_max_steps),
     )
+    if args.mana_draw_baseline_count is None:
+        # The old CLI fabricated a successful 1/2 baseline. Measure the actual
+        # source checkpoint instead, so the collapse monitor and promotion gate
+        # have auditable field evidence.
+        reference = [
+            game_runner.play(
+                "random",
+                seed=int(args.seed) * 10_000 + game_idx,
+                candidate_side="p1" if game_idx % 2 == 0 else "p2",
+            ).game
+            for game_idx in range(8)
+        ]
+        baseline_count = sum(int(game.mana_draw_count) for game in reference)
+        baseline_eligible = sum(int(game.eligible_turns) for game in reference)
+        if baseline_eligible <= 0:
+            raise RuntimeError("field mana-draw baseline has no eligible learner turns")
+    else:
+        baseline_count = int(args.mana_draw_baseline_count)
+        baseline_eligible = int(args.mana_draw_baseline_eligible)
+    mana_draw_baseline = ManaDrawBaseline(
+        mana_draw_count=baseline_count,
+        eligible_turns=baseline_eligible,
+        rate=float(baseline_count) / float(baseline_eligible),
+        hand_cap=4,
+        mana_draw_base=2,
+        valid=True,
+    )
+    run_meta["mana_draw_baseline"] = _jsonable(asdict(mana_draw_baseline))
+    (out_dir / "run_meta.json").write_text(
+        json.dumps(run_meta, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     driver = BlockBLeagueDriver(
         config,
         pool=pool,
@@ -371,14 +404,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         curriculum=curriculum,
         parity=parity,
         seed=int(args.seed),
-        mana_draw_baseline=ManaDrawBaseline(
-            mana_draw_count=int(args.mana_draw_baseline_count),
-            eligible_turns=int(args.mana_draw_baseline_eligible),
-            rate=float(args.mana_draw_baseline_count) / float(args.mana_draw_baseline_eligible),
-            hand_cap=4,
-            mana_draw_base=2,
-            valid=True,
-        ),
+        mana_draw_baseline=mana_draw_baseline,
         snapshot_cadence=int(args.checkpoint_every),
         checkpoint_namer=checkpoint_namer,
         games_per_opponent_per_side=int(args.games_per_opponent_per_side),
@@ -636,8 +662,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--eval-max-steps", type=int, default=240)
     parser.add_argument("--games-per-opponent-per-side", type=int, default=1)
     parser.add_argument("--games-per-opponent-gauntlet", type=int, default=1)
-    parser.add_argument("--mana-draw-baseline-count", type=int, default=1)
-    parser.add_argument("--mana-draw-baseline-eligible", type=int, default=2)
+    parser.add_argument(
+        "--mana-draw-baseline-count",
+        type=int,
+        default=None,
+        help="Measured reference baseline count; omit to measure the source checkpoint in the field runner.",
+    )
+    parser.add_argument(
+        "--mana-draw-baseline-eligible",
+        type=int,
+        default=None,
+        help="Measured reference eligible turns; required together with --mana-draw-baseline-count.",
+    )
     parser.add_argument(
         "--side-sampling-policy",
         choices=["adaptive_oversample", "strict_balanced", "start_second"],
@@ -661,11 +697,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     for name in ("updates", "env_count", "steps_per_update", "epochs", "minibatch_size", "checkpoint_every"):
         if int(getattr(args, name)) <= 0:
             parser.error(f"--{name.replace('_', '-')} must be positive")
-    for name in ("eval_max_steps", "games_per_opponent_per_side", "games_per_opponent_gauntlet", "mana_draw_baseline_eligible"):
+    for name in ("eval_max_steps", "games_per_opponent_per_side", "games_per_opponent_gauntlet"):
         if int(getattr(args, name)) <= 0:
             parser.error(f"--{name.replace('_', '-')} must be positive")
-    if int(args.mana_draw_baseline_count) < 0:
+    if (args.mana_draw_baseline_count is None) != (args.mana_draw_baseline_eligible is None):
+        parser.error("mana-draw baseline count and eligible turns must be provided together")
+    if args.mana_draw_baseline_eligible is not None and int(args.mana_draw_baseline_eligible) <= 0:
+        parser.error("--mana-draw-baseline-eligible must be positive")
+    if args.mana_draw_baseline_count is not None and int(args.mana_draw_baseline_count) < 0:
         parser.error("--mana-draw-baseline-count must be non-negative")
+    if (
+        args.mana_draw_baseline_count is not None
+        and int(args.mana_draw_baseline_count) > int(args.mana_draw_baseline_eligible)
+    ):
+        parser.error("mana-draw baseline count cannot exceed eligible turns")
     if float(args.learning_rate) <= 0.0:
         parser.error("--learning-rate must be positive")
     if int(args.lr_warmup_updates) < 0:

@@ -5,7 +5,7 @@ use crate::kernel::{
     KernelConfig, KernelHistoryEvent, KernelState, RolloutKernel,
 };
 use crate::v5::OBS_DIM_V5;
-use crate::{ACTION_FEATURE_DIM_V1, OBS_DIM_V1};
+use crate::{ACTION_FEATURE_DIM_V1, MAX_CANDIDATE_ACTIONS, OBS_DIM_V1};
 
 use rand::{RngCore, SeedableRng};
 use rand_chacha::ChaChaRng;
@@ -813,7 +813,7 @@ impl BatchedRolloutWorker {
                 &self.states[idx],
                 &step.state,
                 actor_id,
-                action_id,
+                if mana_draw_flag { MAX_CANDIDATE_ACTIONS } else { action_id },
                 action_type,
             );
 

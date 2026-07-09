@@ -84,16 +84,13 @@ SECOND-START OVERSAMPLING (D-A10): ``second_start_oversampling_scheme``
 (``ppo_phaseA_config.py:258``) biases the learner starting side (p1/p2) to balance the
 under-represented side (``design.md:112,120``).
 
-MANA_DRAW: the learner policy's 601-candidate head + parallel mana_draw head are combined
-at SELECTION via ``mana_draw_head_v5.select_includes_mana_draw``
-(``mana_draw_head_v5.py:116``), gated by ``mana_draw_legal``. ``step_mana_draw`` applies
-the mana_draw when the flag is set (action_id placeholder ignored, ``kernel.rs:788``). The
-PPO path trains ONLY the 601-candidate head + value (``rust_ppo.py:756`` drops the
-mana_draw_logit — "scores the 601 candidates only"); the mana_draw head is trained via BC
-(A2, ``bc_train``). A4 COLLECTS ``mana_draw_legal`` + ``mana_draw_taken`` alongside the
-``RustTransitionBatch`` for the mana_draw head (BC + future mana_draw PPO); the recorded
-``actions``/``log_probs`` are the best 601 candidate the learner scored (the 601-head
-training target), regardless of whether mana_draw was actually taken.
+MANA_DRAW: the learner policy's 601-candidate head and parallel mana_draw head form one
+joint categorical distribution over the currently legal choices. ``step_mana_draw`` applies
+the separate flag (its candidate action id placeholder is ignored by the kernel), while PPO
+uses that same joint log-probability to train both heads.
+
+This is compatible with the existing Block-B ``BLOCK_B_POLICY_OPPONENT_KINDS`` dispatch
+extension and its ``opponent_mix_parsed`` handoff; neither changes the frozen Phase-A mix.
 
 CONSUMES A3 ``PhaseAPPOConfig``: ``max_turns``, ``opponent_mix``, ``learner_only_reward``,
 ``second_start_oversampling``, ``decisive_early_end``, ``decisive_win_margin_threshold``,
@@ -396,12 +393,10 @@ class LearnerCtxBatch:
 class LearnerPolicy(Protocol):
     """Learner policy protocol. ``select(ctx)`` returns per-learner-env arrays:
 
-    ``(actions, values, log_probs, selected_local_indices, mana_draw_flags)`` where
-    ``actions`` are 601-candidate action_ids (the best candidate the learner scored — the
-    601-head training target, recorded regardless of mana_draw), ``mana_draw_flags`` is
-    whether the learner takes mana_draw this step (gated by ``mana_draw_legal`` +
-    ``select_includes_mana_draw``; when True the trainer steps via ``step_mana_draw`` and
-    the action_id is a kernel-ignored placeholder).
+    ``(actions, values, joint_log_probs, selected_local_indices, mana_draw_flags)`` where
+    ``mana_draw`` is a separate Rust flag but competes with the legal candidates in the
+    same policy distribution. When it is selected, ``actions`` holds a valid ignored
+    candidate placeholder for the compact tape.
     """
 
     def select(self, ctx: LearnerCtxBatch) -> tuple[
@@ -446,8 +441,7 @@ class ArgmaxRandomLearner:
 class LiveRolloutBatch:
     """Result of ``collect_rust_live_rollout``: a ``RustTransitionBatch`` (the PPO
     handoff, same format as ``collect_rust_vec_rollout``) PLUS the A4-specific
-    mana_draw channels (collected for the mana_draw head; the PPO path trains only the
-    601-candidate head + value, ``rust_ppo.py:756``) + dispatch metadata.
+    mana_draw channels used by joint PPO + dispatch metadata.
     """
 
     transitions: RustTransitionBatch
@@ -1199,6 +1193,8 @@ def run_live_self_play_update(
             advantage_backend=config.advantage_backend,
             selected_local_backend=config.selected_local_backend,
             prepare_backend=config.prepare_backend,
+            mana_draw_legal=rollout.mana_draw_legal,
+            mana_draw_taken=rollout.mana_draw_taken,
             library_path=library_path,
         )
         prepare_seconds = time.perf_counter() - t1
@@ -1225,6 +1221,13 @@ def run_live_self_play_update(
             "entropy_coef": config.entropy_coef,
             "epochs": config.epochs,
             "opponent_mix_parsed": opponent_mix_parsed is not None,
+            "mana_draw_eligible": int(np.count_nonzero(rollout.mana_draw_legal)),
+            "mana_draw_taken": int(np.count_nonzero(rollout.mana_draw_taken)),
+            "mana_draw_rate": (
+                0.0
+                if not bool(np.any(rollout.mana_draw_legal))
+                else float(np.mean(rollout.mana_draw_taken[rollout.mana_draw_legal]))
+            ),
         }
 
         # 5. train (MLX-gated)
