@@ -842,6 +842,26 @@ def collect_rust_live_rollout(
                     "mana_draw": bool(mana_draw_flags[i]),
                 })
 
+        # ``mana_draw_legal`` is a parallel FFI cache, whereas ``arrays`` is
+        # refreshed by a few reset/terminal paths inside this collector. Encode
+        # once immediately before committing the batched step and treat that
+        # newly materialized mask as the authority. This prevents a stale
+        # positive bit from turning an otherwise-valid rollout into a rejected
+        # Rust action after an in-batch episode reset. This is orthogonal to
+        # the existing BLOCK_B_POLICY_OPPONENT_KINDS/opponent_mix_parsed
+        # dispatch extension and does not change Phase-A sampling constants.
+        worker.encode(copy=False)
+        authoritative_mana_legal = np.asarray(worker.mana_draw_legal(), dtype=np.bool_)
+        if authoritative_mana_legal.shape != (env_count,):
+            raise ValueError("mana_draw_legal shape changed before batched step")
+        stale_mana_draw = mana_draw_flags & ~authoritative_mana_legal
+        if bool(np.any(stale_mana_draw)):
+            for i in np.flatnonzero(stale_mana_draw).tolist():
+                row = last_learner_row[int(i)]
+                if row is not None and row < target_steps:
+                    mana_draw_taken_buf[int(row), int(i)] = False
+            mana_draw_flags[stale_mana_draw] = False
+
         # --- step the batch ----------------------------------------------------
         out = worker.step_mana_draw(action_ids, mana_draw_flags, copy=True)
         out_rewards = np.asarray(out["rewards"], dtype=np.float32)

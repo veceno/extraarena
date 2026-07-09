@@ -803,7 +803,11 @@ impl BatchedRolloutWorker {
                 action_id,
                 mana_draw_flag,
                 &mut draw_rng,
-            )?;
+            ).map_err(|err| {
+                format!(
+                    "env {idx} action_id={action_id} mana_draw={mana_draw_flag} actor={actor_id}: {err}"
+                )
+            })?;
             let action_type = if mana_draw_flag {
                 "mana_draw".to_string()
             } else {

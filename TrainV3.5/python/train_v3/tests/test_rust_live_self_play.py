@@ -249,6 +249,9 @@ class FakeWorker:
     def arrays(self, *, copy: bool = False) -> dict[str, np.ndarray]:
         return _make_arrays(self.env_count, self._current_entries())
 
+    def encode(self, *, copy: bool = False) -> dict[str, np.ndarray]:
+        return self.arrays(copy=copy)
+
     def current_actor_ids(self) -> np.ndarray:
         return np.array([e.actor for e in self._current_entries()], dtype=np.int32)
 
