@@ -198,6 +198,19 @@ def test_random_bootstrap_mix_is_teacher_free_and_random_heavy():
     assert cfg.curriculum_metadata["target_random_score"] == pytest.approx(0.98)
 
 
+def test_random_bootstrap_config_accepts_validated_custom_mix():
+    cfg = build_phase_a_random_bootstrap_config(
+        opponent_mix="random:1.0",
+        opponent_mix_spec={"random": 1.0},
+        curriculum_metadata={"opponent_mix_override": "random:1.0"},
+    )
+
+    assert cfg.opponent_mix == "random:1.0"
+    assert cfg.opponent_mix_spec == {"random": 1.0}
+    assert cfg.curriculum_metadata["phase_a_profile"] == "random_bootstrap"
+    assert cfg.curriculum_metadata["opponent_mix_override"] == "random:1.0"
+
+
 def test_max_turns_and_decisive_early_end():
     cfg = PhaseAPPOConfig()
     # Fix #2: max_turns == 120 (>= 120 per design.md:106)

@@ -498,10 +498,22 @@ def build_phase_a_random_bootstrap_config(**overrides: Any) -> PhaseAPPOConfig:
         "target_random_score",
         PHASE_A_RANDOM_BOOTSTRAP_TARGET_RANDOM_SCORE,
     )
+    opponent_mix = overrides.pop(
+        "opponent_mix",
+        build_phase_a_random_bootstrap_opponent_mix_string(),
+    )
+    opponent_mix_spec = overrides.pop(
+        "opponent_mix_spec",
+        dict(PHASE_A_RANDOM_BOOTSTRAP_OPPONENT_MIX_SPEC),
+    )
+    opponent_mix_aliases = overrides.pop(
+        "opponent_mix_aliases",
+        dict(PHASE_A_OPPONENT_NAME_ALIASES),
+    )
     return PhaseAPPOConfig(
-        opponent_mix=build_phase_a_random_bootstrap_opponent_mix_string(),
-        opponent_mix_spec=dict(PHASE_A_RANDOM_BOOTSTRAP_OPPONENT_MIX_SPEC),
-        opponent_mix_aliases=dict(PHASE_A_OPPONENT_NAME_ALIASES),
+        opponent_mix=opponent_mix,
+        opponent_mix_spec=opponent_mix_spec,
+        opponent_mix_aliases=opponent_mix_aliases,
         curriculum_metadata=metadata,
         **overrides,
     )

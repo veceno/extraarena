@@ -31,6 +31,7 @@ from train_v3.ppo_phaseA_config import (  # noqa: E402
     PHASE_A_RANDOM_BOOTSTRAP_TARGET_RANDOM_SCORE,
     build_phase_a_random_bootstrap_config,
 )
+from train_v3.league_v5 import parse_v5_opponent_mix  # noqa: E402
 from train_v3.rust_live_self_play import LearnerCtxBatch, OpponentCtx, run_live_self_play_update  # noqa: E402
 from train_v3.rust_policy import score_padded_legal_actions  # noqa: E402
 from train_v3.v5_policy import create_v5_policy  # noqa: E402
@@ -233,6 +234,22 @@ def run(config: argparse.Namespace) -> dict[str, Any]:
 
     progress_path = output_dir / "progress.jsonl"
     config_snapshot = vars(config).copy()
+    custom_opponent_mix = str(config.opponent_mix) if config.opponent_mix else None
+    custom_opponent_mix_parsed = (
+        parse_v5_opponent_mix(custom_opponent_mix) if custom_opponent_mix else None
+    )
+    curriculum_metadata: dict[str, Any] = {}
+    phase_overrides: dict[str, Any] = {}
+    if custom_opponent_mix is not None:
+        curriculum_metadata["opponent_mix_override"] = custom_opponent_mix
+        curriculum_metadata["opponent_mix_override_parsed"] = [
+            [name, weight] for name, weight in custom_opponent_mix_parsed or []
+        ]
+        phase_overrides["opponent_mix"] = custom_opponent_mix
+        phase_overrides["opponent_mix_spec"] = {
+            name: weight for name, weight in custom_opponent_mix_parsed or []
+        }
+
     phase_config = build_phase_a_random_bootstrap_config(
         run_name=str(config.run_name),
         env_count=int(config.env_count),
@@ -244,6 +261,8 @@ def run(config: argparse.Namespace) -> dict[str, Any]:
         metrics_path=str(progress_path),
         legal_row_pack_backend="python",
         seed=int(config.seed),
+        curriculum_metadata=curriculum_metadata,
+        **phase_overrides,
     )
     learner = MLXV5LearnerPolicy(
         model,
@@ -258,6 +277,7 @@ def run(config: argparse.Namespace) -> dict[str, Any]:
         "source": source,
         "config": _jsonable(config_snapshot),
         "phase_config": _jsonable(asdict(phase_config)),
+        "opponent_mix_override": custom_opponent_mix,
         "obs_dim": OBS_V5_DIM,
         "action_feature_dim": ACTION_FEATURE_DIM,
         "mana_draw_policy": "disabled_for_bootstrap_ppo_head_training",
@@ -431,6 +451,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--learning-rate", type=float, default=3e-4)
     parser.add_argument("--checkpoint-every", type=int, default=10)
     parser.add_argument("--seed", type=int, default=350500)
+    parser.add_argument(
+        "--opponent-mix",
+        default=None,
+        help=(
+            "Optional canonical Phase-A opponent mix override, e.g. "
+            "'random:1.0' for a pure random-focus continuation. Defaults to the "
+            "random-heavy bootstrap mix."
+        ),
+    )
     parser.add_argument("--target-random-score", type=float, default=PHASE_A_RANDOM_BOOTSTRAP_TARGET_RANDOM_SCORE)
     parser.add_argument("--library-path", type=Path, default=_default_library_path())
     parser.add_argument("--resume-checkpoint", type=Path, default=None)
@@ -460,6 +489,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--learning-rate must be positive")
     if float(args.target_random_score) != PHASE_A_RANDOM_BOOTSTRAP_TARGET_RANDOM_SCORE:
         parser.error("--target-random-score is currently fixed at 0.98 for Phase A bootstrap")
+    if args.opponent_mix:
+        try:
+            parse_v5_opponent_mix(str(args.opponent_mix))
+        except ValueError as exc:
+            parser.error(f"--opponent-mix is invalid: {exc}")
     return args
 
 
