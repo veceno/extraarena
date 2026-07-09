@@ -1720,7 +1720,10 @@ pub unsafe extern "C" fn trainv3_worker_step_mana_draw(
             worker.set_last(output);
             0
         }
-        Err(_) => -3,
+        Err(err) => {
+            eprintln!("trainv3_worker_step_mana_draw failed: {err}");
+            -3
+        }
     }
 }
 

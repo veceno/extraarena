@@ -441,7 +441,7 @@ class ArenaEnvironment:
         source_card = None
         target_card = None
         if isinstance(action, PlayCardAction) and 0 <= action.hand_index < len(player.hand):
-            source_card = copy.deepcopy(player.hand[action.hand_index])
+            source_card = self._snapshot_history_card(player.hand[action.hand_index])
             if action.target_id:
                 target_card = self._find_unit_by_id(player.board, action.target_id)
                 if target_card is None:
@@ -460,9 +460,21 @@ class ArenaEnvironment:
             "my_board_count": len(player.board),
             "enemy_board_count": len(opponent.board),
             "board_power_delta_base": self._history_board_power(player) - self._history_board_power(opponent),
-            "source_card": None if source_card is None else copy.deepcopy(source_card),
-            "target_card": None if target_card is None else copy.deepcopy(target_card),
+            "source_card": None if source_card is None else self._snapshot_history_card(source_card),
+            "target_card": None if target_card is None else self._snapshot_history_card(target_card),
         }
+
+    @staticmethod
+    def _snapshot_history_card(card: CardInstance) -> CardInstance:
+        """Cheap immutable-enough snapshot for the V5 history encoder.
+
+        The encoder only reads scalar fields and mechanics; copying that list is
+        sufficient and avoids deep-copying an entire game object on every turn.
+        """
+        snapshot = copy.copy(card)
+        snapshot.mechanics = list(card.mechanics)
+        snapshot.base_mechanics = None if card.base_mechanics is None else list(card.base_mechanics)
+        return snapshot
 
     def _build_v5_history_event(
         self,
@@ -1420,9 +1432,12 @@ class ArenaEnvironment:
         # 3. Всегда можно завершить ход
         actions.append(EndTurnAction())
 
-        # 4. Добор карт за ману — доступен, пока рука не заполнена и маны
-        # хватает на следующую ступень стоимости (MANA_DRAW_BASE * (count+1)).
-        if len(player.hand) < HAND_CAP:
+        # 4. Добор карт за ману — доступен только когда действие действительно
+        # исполнимо: рука не заполнена, есть мана и есть карта в deck/graveyard.
+        # Раньше здесь выдавался ManaDrawAction при пустых deck+graveyard, хотя
+        # step() неизбежно возвращал no_cards_to_draw; это делало V5 policy
+        # выбирать формально legal, но фактически неисполняемое действие.
+        if len(player.hand) < HAND_CAP and (player.deck or player.graveyard):
             mana_draw_cost = MANA_DRAW_BASE * (player.mana_draw_count_this_turn + 1)
             if player.mana >= mana_draw_cost:
                 actions.append(ManaDrawAction())

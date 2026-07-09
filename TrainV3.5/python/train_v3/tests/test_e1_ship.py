@@ -109,6 +109,7 @@ def _player(
         max_mana=max(mana, 10),
         mana_draw_count_this_turn=mana_draw_count_this_turn,
         hand=[_card(100 + i) for i in range(hand_size)],
+        deck=[_card(500 + user_id)],
     )
 
 

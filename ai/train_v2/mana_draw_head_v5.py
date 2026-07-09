@@ -91,7 +91,8 @@ def mana_draw_legal_mask(state: GameState, player_id: int) -> bool:
         (engine.py:1344 + hand_full guard :781-782).
       * ``player.mana < MANA_DRAW_BASE * (mana_draw_count_this_turn + 1)``
         → False (engine.py:1345-1346 + insufficient_mana guard :785-786).
-      * otherwise → True (engine.py:1347 emits ManaDrawAction).
+      * deck or graveyard must contain a drawable card; otherwise the engine
+        does not emit a non-executable ManaDrawAction.
     """
     # engine.py:1206-1207 — game over → get_legal_actions returns [].
     if state.status != GameStatus.ONGOING:
@@ -108,6 +109,8 @@ def mana_draw_legal_mask(state: GameState, player_id: int) -> bool:
         return False
     # engine.py:1345-1346 + _handle_mana_draw insufficient_mana guard (:785-786).
     if player.mana < mana_draw_cost(player.mana_draw_count_this_turn):
+        return False
+    if not player.deck and not player.graveyard:
         return False
     # engine.py:1347 — ManaDrawAction emitted.
     return True

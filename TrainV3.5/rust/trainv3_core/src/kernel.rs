@@ -1169,10 +1169,13 @@ fn apply_placement_mode(mask: &mut [f32], me: &KernelPlayer, placement_mode: Pla
 }
 
 /// Whether mana_draw is a legal action for `player` this turn — mirrors
-/// `core/engine.py` legal-actions generation (hand not full AND mana covers
-/// the next cost step `MANA_DRAW_BASE * (count + 1)`). Phase 2: MD-3.
+/// `core/engine.py` legal-actions generation (hand not full, mana covers the
+/// next cost step, and deck/graveyard has a drawable card). Phase 2: MD-3.
 pub fn mana_draw_legal_for(player: &KernelPlayer) -> bool {
     if player.hand.len() >= HAND_CAP {
+        return false;
+    }
+    if player.deck.is_empty() && player.graveyard.is_empty() {
         return false;
     }
     let cost = MANA_DRAW_BASE * (player.mana_draw_count_this_turn + 1);
