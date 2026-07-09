@@ -762,6 +762,22 @@ class TestRealFFISmoke:
             f"steps_to_truncate(6)={s6} (expected more turns for larger max_turns)"
         )
 
+    def test_live_constructor_accepts_large_gate_seed(self):
+        # Block-B side-stratified gates derive seeds as run_seed * 1_000_003.
+        # Keep that deterministic route inside the Rust live-constructor range.
+        from train_v3.rust_ffi import RustBatchWorker
+
+        worker = RustBatchWorker.from_live(
+            seed=719_014 * 1_000_003,
+            env_count=1,
+            max_turns=120,
+            diagnostic_mode="none",
+        )
+        try:
+            assert worker.current_actor_ids().shape == (1,)
+        finally:
+            worker.close()
+
     def test_live_constructor_diversifies_slots_and_resets(self):
         # Regression guard for V5 league collapse: live self-play must not train on
         # one cloned GoldenTrace per whole update. Slots should start from different

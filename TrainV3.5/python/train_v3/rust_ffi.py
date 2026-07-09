@@ -1283,8 +1283,16 @@ class RustBatchWorker:
 
         paths: list[str] = []
         try:
+            # The Rust trace-pool constructor accepts the seed through a
+            # platform-sized integer path. League gates derive seeds by
+            # multiplying the run seed, so constrain every live trace to the
+            # stable positive range before serializing it. This keeps the
+            # deterministic per-env spacing while avoiding an opaque FFI
+            # construction failure for large gate/tournament seeds.
+            seed_modulus = (2**31) - 1
+            base_seed = int(seed) % seed_modulus
             for idx in range(int(env_count)):
-                trace_seed = int(seed) + idx * 9973
+                trace_seed = (base_seed + idx * 9973) % seed_modulus
                 starting_player_id = 1 if idx % 2 == 0 else 2
                 trace = build_golden_trace(
                     seed=trace_seed,

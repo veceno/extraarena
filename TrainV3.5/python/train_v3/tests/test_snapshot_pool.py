@@ -266,7 +266,9 @@ def test_manifest_roundtrip():
     # Config round-trips.
     assert reloaded.target_non_anchor_count == 4
     assert reloaded.best_ever_strict_threshold == pytest.approx(0.5)
-    assert reloaded.frozen_non_self_share == pytest.approx(0.95)
+    # The audited Block-B composition reserves 25% for self snapshots: V4-orig
+    # is pressure, not the dominant frozen distribution.
+    assert reloaded.frozen_non_self_share == pytest.approx(0.75)
     assert reloaded.prevalence_pool_target == 6
 
     # Seed anchor round-trips (paths + metadata intact).

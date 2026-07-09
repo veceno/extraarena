@@ -545,7 +545,7 @@ def _compact_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
 def _console_row(row: dict[str, Any]) -> dict[str, Any]:
     metrics = row.get("update_metrics") or {}
     return {
-        "update": row.get("update"),
+        "update": row.get("update_number"),
         "entropy": metrics.get("entropy"),
         "loss": metrics.get("loss"),
         "approx_kl": metrics.get("approx_kl"),
