@@ -292,6 +292,8 @@ class BlockBLeagueDriver:
       model / optimizer: optional MLX model + optimizer for the PPO step
         (MLX-gated; None -> A4 stops after ``prepare_rust_ppo_batch``, the
         worktree skip-gate path).
+      learning_rate_for_update: optional callable ``(update_number) -> lr`` applied
+        to ``optimizer.learning_rate`` before the live PPO update and recorded in metrics.
       steps_per_update: learner transitions per env per update (passed to A4
         ``steps``; overrides ``config.steps_per_update`` when not None).
     """
@@ -321,9 +323,11 @@ class BlockBLeagueDriver:
         games_per_opponent_gauntlet: int = 1,
         model: Any = None,
         optimizer: Any = None,
+        learning_rate_for_update: Callable[[int], float] | None = None,
         steps_per_update: int | None = None,
         below_target_exits: bool = DEFAULT_BELOW_TARGET_EXITS,
         min_gain: float = DEFAULT_MIN_GAIN,
+        opponent_mix_override: list[tuple[str, float]] | None = None,
     ) -> None:
         self.config = config
         self.pool = pool
@@ -349,9 +353,13 @@ class BlockBLeagueDriver:
         self.games_per_opponent_gauntlet = int(games_per_opponent_gauntlet)
         self.model = model
         self.optimizer = optimizer
+        self.learning_rate_for_update = learning_rate_for_update
         self.steps_per_update = steps_per_update
         self.below_target_exits = bool(below_target_exits)
         self.min_gain = float(min_gain)
+        self.opponent_mix_override = (
+            None if opponent_mix_override is None else _normalize_mix(opponent_mix_override)
+        )
 
         # Live state.
         self._aggregate_history: list[float] = []
@@ -417,7 +425,10 @@ class BlockBLeagueDriver:
         """
         md_rate = self._learner_mana_draw_rate()
         boost = self._collapse_boost_for(md_rate)
-        mix = build_block_b_opponent_mix(self.pool, **collapse_reweight_boost(boost))
+        if self.opponent_mix_override is None:
+            mix = build_block_b_opponent_mix(self.pool, **collapse_reweight_boost(boost))
+        else:
+            mix = _boost_self_share(self.opponent_mix_override, boost)
         # B4 curriculum reweight toward lanes the learner is losing to.
         reweighted = self.curriculum.reweight(mix, cap=0.25)
         # Merge the self-snapshot split into the dispatchable ``self`` identity.
@@ -570,6 +581,14 @@ class BlockBLeagueDriver:
             p1_rate = float(self.parity.p1_score_rate())
             p2_rate = float(self.parity.p2_score_rate())
 
+            learning_rate: float | None = None
+            if self.learning_rate_for_update is not None:
+                learning_rate = float(self.learning_rate_for_update(update_number))
+                if learning_rate <= 0.0:
+                    raise ValueError("learning_rate_for_update must return a positive value")
+                if self.optimizer is not None:
+                    setattr(self.optimizer, "learning_rate", learning_rate)
+
             # (e) A4 live update (Option 1: opponent_mix_parsed bypasses
             # parse_v5_opponent_mix so v4-orig-* pass through).
             metrics = run_live_self_play_update(
@@ -595,6 +614,8 @@ class BlockBLeagueDriver:
             slim_metrics["mix_used"] = list(mix)
             slim_metrics["p1_score_rate"] = p1_rate
             slim_metrics["p2_score_rate"] = p2_rate
+            if learning_rate is not None:
+                slim_metrics["learning_rate"] = learning_rate
             slim_metrics["update_number"] = update_number
             manifest.update_metrics.append(slim_metrics)
             manifest.n_updates_run = update_number
@@ -698,3 +719,22 @@ def _merge_self_snapshot_split(
             order.append(target)
         merged[target] += float(weight)
     return [(name, merged[name]) for name in order]
+
+
+def _normalize_mix(mix: list[tuple[str, float]]) -> list[tuple[str, float]]:
+    rows = [(str(name), float(weight)) for name, weight in mix if float(weight) > 0.0]
+    total = sum(weight for _name, weight in rows)
+    if total <= 0.0:
+        raise ValueError("opponent_mix_override must contain at least one positive weight")
+    return [(name, weight / total) for name, weight in rows]
+
+
+def _boost_self_share(mix: list[tuple[str, float]], boost: float) -> list[tuple[str, float]]:
+    boost = float(boost)
+    if boost <= 0.0:
+        raise ValueError("collapse boost must be positive")
+    rows: list[tuple[str, float]] = []
+    for name, weight in mix:
+        factor = boost if name in {"self", "v5_snapshot"} else 1.0
+        rows.append((name, float(weight) * factor))
+    return _normalize_mix(rows)

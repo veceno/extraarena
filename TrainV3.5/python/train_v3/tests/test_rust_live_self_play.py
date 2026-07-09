@@ -4,7 +4,8 @@ Verifies the missing live-self-play entry point:
   * dispatch split (verifier finding 2a blocker): 6 rule-agent identities via the Rust
     ``select_rule_action_for_state`` codes 0-7 (worker.rs:1285) + 4 policy-opponent
     identities via the Python loop (rollout_worker.py:211-230);
-  * learner-only reward (fix #1): opponent-actor steps record ZERO reward;
+  * learner-perspective reward (fix #1): opponent-actor response rewards are folded
+    into the previous learner row with the learner sign;
   * max_turns threading (fix #2): ``from_live(max_turns=120)`` threads into
     ``KernelConfig`` (kernel.rs:660) — NOT the serde default 80 (kernel.rs:624);
   * decisive-state early-end (D-A6);
@@ -26,6 +27,7 @@ Run:
 """
 from __future__ import annotations
 
+import hashlib
 import os
 from typing import Any
 
@@ -316,9 +318,9 @@ def _script_alternating(learner_actor: int, *, opponent_actor: int, n_learner: i
                         terminal_at: int | None = None) -> list[_FakeWorkerScriptEntry]:
     """Build a per-env script that alternates opponent/learner turns. Each learner turn
     yields one learner transition; ``n_learner`` learner turns are produced. Opponent
-    turns carry ``reward_opponent`` (must be ZEROED by learner-only attribution) and
-    learner turns carry ``reward_learner`` (kept). If ``terminal_at`` is set, the
-    learner turn at that 1-based learner-turn index is marked terminated."""
+    turns carry ``reward_opponent`` (folded into the previous learner transition with
+    learner sign) and learner turns carry ``reward_learner`` (kept). If ``terminal_at``
+    is set, the learner turn at that 1-based learner-turn index is marked terminated."""
     out: list[_FakeWorkerScriptEntry] = []
     li = 0
     # pattern: opponent, learner, opponent, learner, ... (start at opponent so the first
@@ -409,12 +411,19 @@ class TestCompositionDispatch:
             assert 999 in stepped, f"{identity}: policy sentinel 999 never stepped; got {stepped}"
 
 
-class TestLearnerOnlyReward:
-    """test_opponent_steps_zero_reward — opponent-actor steps record ZERO reward
-    (learner-only, fix #1; regression guard for run_phase26:490)."""
+class TestLearnerPerspectiveReward:
+    """Opponent-actor response rewards are assigned to the previous learner row.
 
-    def test_opponent_steps_zeroed_in_collected_tape(self):
-        # Single env; opponent turns carry reward 5.0 (must be zeroed), learner turns 1.0 (kept).
+    This preserves TrainV2 / rule-only macro-step semantics: a good opponent response is
+    bad for the learner, so the acting-player opponent reward is subtracted from the
+    latest learner transition instead of disappearing.
+    """
+
+    def test_opponent_response_reward_is_folded_into_previous_learner_row(self):
+        # Single env; opponent turns carry reward 5.0 and learner turns 1.0.
+        # The first opponent turn happens before any learner decision. It must be
+        # carried into the first learner row rather than dropped; subsequent opponent
+        # responses attach to the previous learner row.
         learner_actor = 1
         script = _script_alternating(
             learner_actor, opponent_actor=2, n_learner=4,
@@ -429,15 +438,27 @@ class TestLearnerOnlyReward:
             config=config, steps=4,
         )
         rewards = np.asarray(rollout.transitions.rewards, dtype=np.float32).reshape(-1)
-        # Every recorded transition is a LEARNER step (opponent steps are not recorded).
-        # Learner rewards were 1.0 each -> the tape must contain only 1.0 values (the 5.0
-        # opponent-step rewards were dropped/zeroed by learner-only attribution).
         assert rewards.size > 0, "no learner transitions collected"
-        assert np.all(rewards == 1.0), (
-            f"opponent reward leaked into learner tape: {rewards} (expected all 1.0)"
+        assert rewards.tolist() == [-9.0, -4.0, -4.0, 1.0], (
+            f"opponent response reward was not folded into learner rows: {rewards}"
         )
-        # No recorded reward equals the opponent reward 5.0.
-        assert not np.any(rewards == 5.0), f"opponent reward 5.0 leaked: {rewards}"
+
+    def test_second_mover_reward_bonus_applies_when_learner_did_not_start(self):
+        learner_actor = 1
+        script = _script_alternating(
+            learner_actor, opponent_actor=2, n_learner=2,
+            reward_learner=1.0, reward_opponent=5.0,
+        )
+        worker = FakeWorker([script])
+        config = _tiny_config(second_mover_reward_bonus=0.25)
+        rollout = rls.collect_rust_live_rollout(
+            worker, _FakeLearner(), {"end_turn": _EndTurnPolicy()},
+            learner_actor_ids=np.array([learner_actor], dtype=np.int32),
+            opponent_identities=["end_turn"],
+            config=config, steps=2,
+        )
+        rewards = np.asarray(rollout.transitions.rewards, dtype=np.float32).reshape(-1)
+        assert rewards.tolist() == pytest.approx([-8.75, 1.25])
 
     def test_reward_attribution_directly(self):
         # The A3 helper the trainer uses: zero non-learner-actor steps.
@@ -472,7 +493,7 @@ class TestDecisiveEarlyEnd:
 
         assert _ids(Snap2(), threshold=0.6) is False  # |0.75-0.625|=0.125 < 0.6
 
-    def test_decisive_state_terminates_episode_early(self):
+    def test_decisive_state_truncates_episode_early(self):
         # Script: learner turn at index 1 (1st learner transition) leads to a decisive
         # hero_hp (40/40 vs 5/40) -> the episode must be terminated early + the env reset.
         learner_actor = 1
@@ -492,9 +513,11 @@ class TestDecisiveEarlyEnd:
             config=config, steps=2,
         )
         term = np.asarray(rollout.transitions.terminated, dtype=np.bool_).reshape(-1)
-        # The first learner transition (row 0) must be marked terminated (decisive early-end).
-        assert bool(term[0]) is True, (
-            f"decisive early-end did not terminate the learner transition: {term}"
+        trunc = np.asarray(rollout.transitions.truncated, dtype=np.bool_).reshape(-1)
+        # Decisive early-end is artificial truncation, not a real terminal death.
+        assert bool(term[0]) is False, f"decisive early-end must not set terminal: {term}"
+        assert bool(trunc[0]) is True, (
+            f"decisive early-end did not truncate the learner transition: {trunc}"
         )
         # The env must have been reset (reset_indices called) to start a new episode.
         assert len(worker.reset_indices_calls) >= 1, (
@@ -584,12 +607,14 @@ def _tiny_config(
     max_turns: int = PHASE_A_MAX_TURNS,
     env_count: int = 1,
     decisive_early_end: bool = False,
+    second_mover_reward_bonus: float = 0.0,
 ) -> PhaseAPPOConfig:
     return PhaseAPPOConfig(
         max_turns=int(max_turns),
         env_count=int(env_count),
         steps_per_update=4,
         decisive_early_end=bool(decisive_early_end),
+        turn_order_second_mover_reward_bonus=float(second_mover_reward_bonus),
         # Use a rule-only mix for composition tests by default (overridden per-test).
         opponent_mix=build_phase_a_opponent_mix_string(
             {"random": 0.5, "face_rush": 0.5},
@@ -736,6 +761,39 @@ class TestRealFFISmoke:
             f"max_turns not respected/threaded: steps_to_truncate(12)={s12} <= "
             f"steps_to_truncate(6)={s6} (expected more turns for larger max_turns)"
         )
+
+    def test_live_constructor_diversifies_slots_and_resets(self):
+        # Regression guard for V5 league collapse: live self-play must not train on
+        # one cloned GoldenTrace per whole update. Slots should start from different
+        # seed/deck states, and reset_indices should cycle to a different seed state.
+        from train_v3.rust_ffi import RustBatchWorker
+
+        def _row_hashes(rows: np.ndarray) -> set[str]:
+            return {
+                hashlib.sha256(np.ascontiguousarray(row).tobytes()).hexdigest()
+                for row in np.asarray(rows)
+            }
+
+        worker = RustBatchWorker.from_live(
+            seed=123456,
+            env_count=8,
+            max_turns=20,
+            action_features_mode="legal_only",
+            observation_mode="v5_only",
+            action_mask_mode="legal_only",
+            terminal_observation_mode="none",
+            diagnostic_mode="none",
+        )
+        try:
+            initial = worker.encode(copy=True)["observation_v5"]
+            worker.reset_indices(np.arange(8, dtype=np.uintp), copy=True)
+            after_reset = worker.encode(copy=True)["observation_v5"]
+        finally:
+            worker.close()
+
+        assert len(_row_hashes(initial)) > 1
+        assert len(_row_hashes(after_reset)) > 1
+        assert any(not np.array_equal(initial[idx], after_reset[idx]) for idx in range(8))
 
     def test_learner_only_reward_on_real_run(self):
         # On a real short run with a rule-opponent, opponent-actor step rewards must be

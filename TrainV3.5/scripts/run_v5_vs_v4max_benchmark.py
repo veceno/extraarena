@@ -29,6 +29,7 @@ if str(TRAINV3_PYTHON) not in sys.path:
 from ai.train_v2.classic_actions_v1 import decode_action  # noqa: E402
 from ai.train_v2.onnx_policy import OnnxActionPolicy  # noqa: E402
 from ai.train_v2.model_mlx import load_checkpoint  # noqa: E402
+from core.actions import ManaDrawAction  # noqa: E402
 from train_v3.aux_models import (  # noqa: E402
     AssemblerCandidate,
     DeckMatchupEvaluator,
@@ -37,6 +38,7 @@ from train_v3.aux_models import (  # noqa: E402
 )
 from train_v3.contracts import AssistModeV5, InfoModeV5  # noqa: E402
 from train_v3.env_v5 import TrainV3ClassicEnv, TrainV3EnvConfig  # noqa: E402
+from train_v3.mana_draw_head_v5 import mana_draw_legal_mask, select_includes_mana_draw  # noqa: E402
 from train_v3.v5_policy import create_v5_policy  # noqa: E402
 
 
@@ -102,6 +104,9 @@ class BenchmarkConfig:
     recovery_hp_deficit_threshold: int = 4
     recovery_board_power_ratio_threshold: float = 0.5
     recovery_empty_board_gate: bool = False
+    battle_log_path: Path | None = None
+    log_lost_only: bool = True
+    log_max_battles: int = 0
 
 
 class V5AdaptivePolicy:
@@ -135,22 +140,33 @@ class V5AdaptivePolicy:
         self.invalid_fallbacks = 0
         self.recovery_rerank_uses = 0
 
-    def select_action(self, env: TrainV3ClassicEnv, player_id: int, *, recovery_active: bool = False) -> int:
+    def select_action(self, env: TrainV3ClassicEnv, player_id: int, *, recovery_active: bool = False) -> Any:
         import mlx.core as mx
 
         obs = env.observe(player_id).astype(np.float32)
         mask = env.action_mask(player_id).astype(np.float32)
         action_features = env.action_features(player_id, include_preview=False).astype(np.float32)
-        logits, _value = self.model(mx.array(obs[None, :]), mx.array(action_features[None, :, :]))
-        mx.eval(logits)
+        md_legal = mana_draw_legal_mask(env.env._env.state, player_id)
+        output = self.model(
+            mx.array(obs[None, :]),
+            mx.array(action_features[None, :, :]),
+            mana_draw_legal=mx.array([md_legal]),
+        )
+        logits = output[0] if isinstance(output, tuple) else output
+        mana_draw_logit = output[2] if isinstance(output, tuple) and len(output) >= 3 else None
+        if mana_draw_logit is not None:
+            mx.eval(logits, mana_draw_logit)
+        else:
+            mx.eval(logits)
         logits_np = np.array(logits, dtype=np.float32)[0]
         base_masked = np.where(mask.astype(bool), logits_np, -1e9)
         base_action = int(np.argmax(base_masked))
         if recovery_active and self.recovery_model is not None and self.recovery_reranker_weight > 0.0:
-            recovery_logits, _recovery_value = self.recovery_model(
+            recovery_output = self.recovery_model(
                 mx.array(obs[None, :]),
                 mx.array(action_features[None, :, :]),
             )
+            recovery_logits = recovery_output[0] if isinstance(recovery_output, tuple) else recovery_output
             mx.eval(recovery_logits)
             logits_np = _combine_base_and_recovery_logits(
                 base_logits=logits_np,
@@ -166,6 +182,12 @@ class V5AdaptivePolicy:
             self.invalid_fallbacks += 1
             legal = np.flatnonzero(mask == 1.0)
             return int(legal[0]) if len(legal) else 0
+        if mana_draw_logit is not None and select_includes_mana_draw(
+            float(np.array(mana_draw_logit, dtype=np.float32).reshape(-1)[0]),
+            float(masked[action_id]),
+            bool(md_legal),
+        ):
+            return ManaDrawAction()
         return action_id
 
 
@@ -188,6 +210,7 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
     )
 
     games: list[dict[str, Any]] = []
+    logged_battles = 0
     seeds = list(range(config.seed, config.seed + config.games))
     for idx, seed in enumerate(seeds, start=1):
         for v5_player_id in (1, 2):
@@ -196,20 +219,23 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
                     f"[{idx}/{len(seeds)}] seed={seed} v5_as=p{v5_player_id} start=p{starting_player_id}",
                     flush=True,
                 )
-                games.append(
-                    _run_game(
-                        seed=seed,
-                        max_steps=config.max_steps,
-                        v5_player_id=v5_player_id,
-                        starting_player_id=starting_player_id,
-                        v5_policy=v5_policy,
-                        v4_policy=v4_policy,
-                        assembler=assembler,
-                        assembler_candidates=assembler_candidates,
-                        draw_controller=draw_controller,
-                        config=config,
-                    )
+                game = _run_game(
+                    seed=seed,
+                    max_steps=config.max_steps,
+                    v5_player_id=v5_player_id,
+                    starting_player_id=starting_player_id,
+                    v5_policy=v5_policy,
+                    v4_policy=v4_policy,
+                    assembler=assembler,
+                    assembler_candidates=assembler_candidates,
+                    draw_controller=draw_controller,
+                    config=config,
                 )
+                battle_log = game.pop("_battle_log", None)
+                games.append(game)
+                if _should_write_battle_log(config, game, logged_battles) and battle_log is not None:
+                    _append_battle_log(config.battle_log_path, battle_log)
+                    logged_battles += 1
 
     result = {
         "schema": "extra_lr_v5_vs_v4max_benchmark_v1",
@@ -295,6 +321,7 @@ def _run_game(
     draw_assist_ranked = 0
     search_rerank_uses = 0
     steps = 0
+    events: list[dict[str, Any]] = []
     for steps in range(1, max_steps + 1):
         current = env.current_player_id()
         if current == v5_player_id:
@@ -325,6 +352,18 @@ def _run_game(
             action_id = v4_policy.select_action(env.env, current)
             policy_name = "v4max"
 
+        if config.battle_log_path is not None:
+            events.append(
+                {
+                    "step": int(steps),
+                    "current_player_id": int(current),
+                    "policy": policy_name,
+                    "action_id": _action_id_for_log(action_id),
+                    "action": _action_to_json(env.env._env.state, current, action_id),
+                    "state_before": _state_snapshot(env.env._env.state),
+                }
+            )
+
         if _action_is_end_turn(env.env._env.state, current, action_id):
             next_player_id = 2 if current == 1 else 1
             if next_player_id == v5_player_id and bool(config.draw_assist_enabled):
@@ -337,7 +376,7 @@ def _run_game(
                 draw_assist_ranked += int(bool(assist_info["ranked_options"]))
                 draw_assist_uses += int(assist_info["selected_card_id"] is not None)
 
-        _obs, _reward, terminated, truncated, info = env.step(action_id)
+        _obs, _reward, terminated, truncated, info = _step_env_action(env, action_id)
         invalid += int(bool(info.get("invalid_action")))
         if terminated or truncated:
             break
@@ -345,7 +384,7 @@ def _run_game(
     state = env.env._env.state
     winner = env.env.winner_id()
     winner_name = "v5" if winner == v5_player_id else "v4max" if winner == v4_player_id else None
-    return {
+    game = {
         "seed": seed,
         "v5_player_id": v5_player_id,
         "v4_player_id": v4_player_id,
@@ -371,6 +410,13 @@ def _run_game(
         "search_rerank_uses": search_rerank_uses,
         "recovery_rerank_uses": int(v5_policy.recovery_rerank_uses),
     }
+    if config.battle_log_path is not None:
+        game["_battle_log"] = {
+            "summary": dict(game),
+            "events": events,
+            "final_state": _state_snapshot(state),
+        }
+    return game
 
 
 def _recovery_active_for_game(config: BenchmarkConfig, v5_player_id: int, starting_player_id: int) -> bool:
@@ -583,10 +629,11 @@ def _rank_v5_policy_action_scores(
     legal = np.flatnonzero(mask == 1.0)
     if legal.size == 0:
         return []
-    logits, _value = v5_policy.model(
+    output = v5_policy.model(
         mx.array(obs[None, :].astype(np.float32, copy=False)),
         mx.array(action_features[None, :, :].astype(np.float32, copy=False)),
     )
+    logits = output[0] if isinstance(output, tuple) else output
     mx.eval(logits)
     logits_np = np.asarray(logits, dtype=np.float32)[0]
     scores = logits_np[legal]
@@ -630,7 +677,7 @@ def _evaluate_second_start_candidate(
             action_id = v4_policy.select_action(sim.env, current)
         terminated, truncated = _step_search_sim(
             sim,
-            int(action_id),
+            action_id,
             v5_player_id=v5_player_id,
             draw_controller=draw_controller,
             draw_assist_strength=draw_strength,
@@ -642,14 +689,14 @@ def _evaluate_second_start_candidate(
 
 def _step_search_sim(
     env: TrainV3ClassicEnv,
-    action_id: int,
+    action_id: Any,
     *,
     v5_player_id: int,
     draw_controller: DrawAssistController,
     draw_assist_strength: float,
 ) -> tuple[bool, bool]:
     current = env.current_player_id()
-    if _action_is_end_turn(env.env._env.state, current, int(action_id)):
+    if _action_is_end_turn(env.env._env.state, current, action_id):
         next_player_id = 2 if current == 1 else 1
         if next_player_id == v5_player_id and float(draw_assist_strength) > 0.0:
             _apply_draw_assist_to_player(
@@ -658,7 +705,7 @@ def _step_search_sim(
                 controller=draw_controller,
                 strength=draw_assist_strength,
             )
-    _obs, _reward, terminated, truncated, _info = env.step(int(action_id))
+    _obs, _reward, terminated, truncated, _info = _step_env_action(env, action_id)
     return bool(terminated), bool(truncated)
 
 
@@ -869,6 +916,87 @@ def _apply_draw_assist_to_player(
     return result
 
 
+def _should_write_battle_log(config: BenchmarkConfig, game: dict[str, Any], logged_battles: int) -> bool:
+    if config.battle_log_path is None:
+        return False
+    if int(config.log_max_battles) > 0 and int(logged_battles) >= int(config.log_max_battles):
+        return False
+    if bool(config.log_lost_only) and bool(game.get("v5_win")):
+        return False
+    return True
+
+
+def _append_battle_log(path: Path | None, battle_log: dict[str, Any]) -> None:
+    if path is None:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(battle_log, ensure_ascii=False, sort_keys=True) + "\n")
+
+
+def _step_env_action(env: TrainV3ClassicEnv, action: Any):
+    if hasattr(action, "to_dict"):
+        return env.step_core_action(action)
+    return env.step(int(action))
+
+
+def _action_id_for_log(action: Any) -> int:
+    return -1 if hasattr(action, "to_dict") else int(action)
+
+
+def _action_to_json(state: Any, player_id: int, action_id: Any) -> dict[str, Any] | None:
+    if hasattr(action_id, "to_dict"):
+        data = action_id.to_dict()
+        return data if isinstance(data, dict) else {"repr": repr(data)}
+    action = decode_action(state, int(player_id), int(action_id))
+    if action is None:
+        return None
+    if hasattr(action, "to_dict"):
+        data = action.to_dict()
+        return data if isinstance(data, dict) else {"repr": repr(data)}
+    return {"repr": repr(action)}
+
+
+def _state_snapshot(state: Any) -> dict[str, Any]:
+    return {
+        "turn_number": int(getattr(state, "turn_number", 0) or 0),
+        "current_player_id": int(getattr(state, "current_player_id", 0) or 0),
+        "p1": _player_snapshot(getattr(state, "p1", None)),
+        "p2": _player_snapshot(getattr(state, "p2", None)),
+    }
+
+
+def _player_snapshot(player: Any) -> dict[str, Any]:
+    if player is None:
+        return {}
+    hero = getattr(player, "hero", None)
+    return {
+        "user_id": int(getattr(player, "user_id", 0) or 0),
+        "hero": {
+            "card_id": int(getattr(hero, "card_id", 0) or 0),
+            "hp": int(getattr(hero, "hp", 0) or 0),
+        },
+        "mana": int(getattr(player, "mana", 0) or 0),
+        "max_mana": int(getattr(player, "max_mana", 0) or 0),
+        "hand_ids": [int(getattr(card, "card_id", 0) or 0) for card in list(getattr(player, "hand", []) or [])],
+        "deck_count": len(list(getattr(player, "deck", []) or [])),
+        "board": [_card_snapshot(card) for card in list(getattr(player, "board", []) or [])],
+        "graveyard_ids": [
+            int(getattr(card, "card_id", 0) or 0)
+            for card in list(getattr(player, "graveyard", []) or [])
+        ],
+    }
+
+
+def _card_snapshot(card: Any) -> dict[str, Any]:
+    return {
+        "card_id": int(getattr(card, "card_id", 0) or 0),
+        "attack": int(getattr(card, "attack", 0) or 0),
+        "hp": int(getattr(card, "hp", 0) or 0),
+        "cost": int(getattr(card, "cost", 0) or 0),
+    }
+
+
 def _board_power_ratio(state, player_id: int) -> float:
     player = state.p1 if state.p1.user_id == player_id else state.p2
     enemy = state.p2 if state.p1.user_id == player_id else state.p1
@@ -877,7 +1005,9 @@ def _board_power_ratio(state, player_id: int) -> float:
     return float(own + 1.0) / float(opp + 1.0)
 
 
-def _action_is_end_turn(state, player_id: int, action_id: int) -> bool:
+def _action_is_end_turn(state, player_id: int, action_id: Any) -> bool:
+    if hasattr(action_id, "to_dict"):
+        return str(action_id.to_dict().get("type")) == "end_turn"
     action = decode_action(state, player_id, int(action_id))
     if action is None:
         return False
@@ -1089,6 +1219,14 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--recovery-hp-deficit-threshold", type=int, default=4)
     parser.add_argument("--recovery-board-power-ratio-threshold", type=float, default=0.5)
     parser.add_argument("--recovery-empty-board-gate", action="store_true")
+    parser.add_argument(
+        "--log-battles",
+        action="store_true",
+        help="Write per-step battle logs to battle_logs.jsonl in the output dir.",
+    )
+    parser.add_argument("--battle-log-path", type=Path, default=None)
+    parser.add_argument("--log-all-battles", action="store_true")
+    parser.add_argument("--log-max-battles", type=int, default=0)
     return parser.parse_args(argv)
 
 
@@ -1099,6 +1237,9 @@ def main(argv: list[str] | None = None) -> None:
         stamp = time.strftime("%Y%m%d_%H%M%S")
         output_dir = ROOT / "TrainV3.5" / "runs" / f"v5_s1_assist_vs_v4max_{stamp}"
     no_bonuses = bool(args.no_bonuses)
+    battle_log_path = args.battle_log_path
+    if battle_log_path is None and bool(args.log_battles):
+        battle_log_path = output_dir / "battle_logs.jsonl"
     result = run_benchmark(
         BenchmarkConfig(
             v4_model_path=args.v4_model,
@@ -1140,6 +1281,9 @@ def main(argv: list[str] | None = None) -> None:
             recovery_hp_deficit_threshold=int(args.recovery_hp_deficit_threshold),
             recovery_board_power_ratio_threshold=float(args.recovery_board_power_ratio_threshold),
             recovery_empty_board_gate=bool(args.recovery_empty_board_gate),
+            battle_log_path=battle_log_path,
+            log_lost_only=not bool(args.log_all_battles),
+            log_max_battles=int(args.log_max_battles),
         )
     )
     summary = result["summary"]

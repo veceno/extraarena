@@ -22,6 +22,7 @@ from .reward_v5 import (
 @dataclass
 class TrainV3EnvConfig:
     seed: int = 42
+    max_turns: int = 120
     verify_mask: bool = False
     placement_mode: str = "append_only"
     include_legal_actions_in_info: bool = False
@@ -42,6 +43,7 @@ class TrainV3ClassicEnv:
         self.config = config or TrainV3EnvConfig()
         self.env = ClassicRLEnv(
             seed=self.config.seed,
+            max_turns=int(self.config.max_turns),
             verify_mask=self.config.verify_mask,
             placement_mode=self.config.placement_mode,
             include_legal_actions_in_info=self.config.include_legal_actions_in_info,
@@ -94,6 +96,30 @@ class TrainV3ClassicEnv:
         info["train_v3_reward_components"] = components
         return self.observe(), weighted_reward, terminated, truncated, info
 
+    def step_core_action(self, action):
+        actor_id = self.env.current_player_id()
+        st = self.env._env.state
+        reward_pre = reward_snapshot_v5(st, actor_id)
+        event = self._build_core_event(actor_id, action)
+        _obs, reward, terminated, truncated, info = self.env.step_core_action(action)
+        reward_post = reward_snapshot_v5(self.env._env.state, actor_id)
+        components = compute_reward_components_v5(reward_pre, reward_post)
+        event.update(compute_history_outcome_deltas_v5(reward_pre, reward_post))
+        event["turn_number"] = info["turn_number"]
+        self.history_events.append(event)
+        self.history_events[:] = self.history_events[-self.config.history_limit :]
+        weighted_reward = compute_weighted_reward_v5(
+            reward,
+            components,
+            info_mode=self.config.info_mode,
+            weights=self.config.reward_weights,
+        )
+        info = dict(info)
+        info["train_v3_base_reward"] = float(reward)
+        info["train_v3_reward_shaping"] = float(weighted_reward - float(reward))
+        info["train_v3_reward_components"] = components
+        return self.observe(), weighted_reward, terminated, truncated, info
+
     def current_player_id(self) -> int:
         return self.env.current_player_id()
 
@@ -122,6 +148,16 @@ class TrainV3ClassicEnv:
             "action_type": action_type,
             "source_card": source_card,
             "target_card": target_card,
+        }
+
+    def _build_core_event(self, actor_id: int, action) -> dict[str, Any]:
+        payload = action.to_dict()
+        return {
+            "actor_id": actor_id,
+            "action_id": -1,
+            "action_type": str(payload.get("type", "unknown")),
+            "source_card": None,
+            "target_card": None,
         }
 
 

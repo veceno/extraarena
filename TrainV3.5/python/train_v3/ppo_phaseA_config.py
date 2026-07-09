@@ -93,6 +93,20 @@ PHASE_A_OPPONENT_MIX_SPEC: dict[str, float] = {
     "v4-orig-argmax": 0.15,
 }
 
+#: Current Phase-A bootstrap profile (2026-07-05): direct Rust ArenaEnv PPO against
+#: random-heavy rule opponents. This replaces the attempted LLM/V4Max
+#: semi-synthetic distillation lane for the FIRST phase only. Later Block-B league,
+#: Block-C human-vs-preV5, and repair lanes keep their own opponent mixes.
+PHASE_A_RANDOM_BOOTSTRAP_TARGET_RANDOM_SCORE = 0.98
+PHASE_A_RANDOM_BOOTSTRAP_OPPONENT_MIX_SPEC: dict[str, float] = {
+    "legal_random": 0.70,
+    "end_turn": 0.05,
+    "greedy_face": 0.10,
+    "face_rush": 0.05,
+    "board_control": 0.05,
+    "greedy_trade": 0.05,
+}
+
 #: Display name -> canonical name accepted by ``league_v5.parse_v5_opponent_mix``
 #: (``V5_OPPONENT_KINDS``, ``league_v5.py:12-21`` + ``gauntlet_v5.EXPLOIT_AGENT_KINDS``,
 #: ``gauntlet_v5.py:8-16``). The display names in ``design.md:111`` (legal_random /
@@ -132,6 +146,23 @@ def build_phase_a_opponent_mix_string(
     spec = spec if spec is not None else PHASE_A_OPPONENT_MIX_SPEC
     aliases = aliases if aliases is not None else PHASE_A_OPPONENT_NAME_ALIASES
     return ",".join(f"{aliases[name]}:{weight}" for name, weight in spec.items())
+
+
+def build_phase_a_random_bootstrap_opponent_mix_string(
+    spec: dict[str, float] | None = None,
+    aliases: dict[str, str] | None = None,
+) -> str:
+    """Build the current Phase-A random-bootstrap opponent mix.
+
+    This is intentionally teacher-free: no LLM, no V4Max, no previous-self snapshot.
+    The mix is random-heavy enough to optimize directly for the 98% vs-random target,
+    while keeping a small amount of simple deterministic pressure so the bootstrap
+    does not learn only to exploit one legal-random quirk.
+    """
+    return build_phase_a_opponent_mix_string(
+        spec if spec is not None else PHASE_A_RANDOM_BOOTSTRAP_OPPONENT_MIX_SPEC,
+        aliases if aliases is not None else PHASE_A_OPPONENT_NAME_ALIASES,
+    )
 
 
 def validate_phase_a_opponent_mix(
@@ -174,6 +205,17 @@ def validate_phase_a_opponent_mix(
     if abs(total - 1.0) > 1e-6:
         raise AssertionError(f"opponent_mix weights sum to {total}, expected 1.0")
     return parsed
+
+
+def validate_phase_a_random_bootstrap_opponent_mix(
+    spec: dict[str, float] | None = None,
+    aliases: dict[str, str] | None = None,
+) -> list[tuple[str, float]]:
+    """Validate the current Phase-A random-bootstrap mix."""
+    return validate_phase_a_opponent_mix(
+        spec if spec is not None else PHASE_A_RANDOM_BOOTSTRAP_OPPONENT_MIX_SPEC,
+        aliases if aliases is not None else PHASE_A_OPPONENT_NAME_ALIASES,
+    )
 
 
 def build_trace_env_config(
@@ -336,7 +378,8 @@ class PhaseAPPOConfig:
     clip_epsilon: float = 0.2
     value_coef: float = 0.5
     entropy_coef: float = PHASE_A_ENTROPY_COEF  # Fix #3 PINNED 0.01 (NOT 0.035 [phase26 override])
-    max_grad_norm: float | None = None
+    max_grad_norm: float | None = 0.5
+    target_kl: float | None = 0.03
     observation_key: str = "observation_v5"
     action_features_dtype: str = "float32"
     observation_mode: str = "v5_only"
@@ -380,6 +423,7 @@ class PhaseAPPOConfig:
     max_turns: int = PHASE_A_MAX_TURNS
     decisive_early_end: bool = True
     decisive_win_margin_threshold: float = PHASE_A_DECISIVE_WIN_MARGIN_THRESHOLD
+    turn_order_second_mover_reward_bonus: float = 0.0
     # Fix #5: graduated opponent_mix (design.md:111). Canonical-string form parseable
     # by league_v5.parse_v5_opponent_mix; validate via validate_phase_a_opponent_mix().
     # Runtime dispatch (rule-agent codes 0-7 vs policy-opponent path) is A4's job.
@@ -434,6 +478,35 @@ class PhaseAPPOConfig:
         return RustPPOTrainingConfig(**kwargs)
 
 
+def build_phase_a_random_bootstrap_config(**overrides: Any) -> PhaseAPPOConfig:
+    """Build the current Phase-A config: random-heavy Rust ArenaEnv PPO bootstrap.
+
+    Use this for the FIRST V5 ExtraLR phase instead of semi-synthetic
+    LLM/V4Max distillation. The returned config is still a normal
+    ``PhaseAPPOConfig`` so A4 live self-play, Block-B handoff, and tests can reuse
+    the existing machinery.
+    """
+    metadata = dict(overrides.pop("curriculum_metadata", {}) or {})
+    metadata.setdefault("phase_a_profile", "random_bootstrap")
+    metadata.setdefault("distillation", "disabled")
+    metadata.setdefault("teacher_source", "none")
+    metadata.setdefault(
+        "bootstrap_note",
+        "Rust ArenaEnv PPO against random-heavy rule opponents; no ExtraRLHF LLM/V4Max teacher data.",
+    )
+    metadata.setdefault(
+        "target_random_score",
+        PHASE_A_RANDOM_BOOTSTRAP_TARGET_RANDOM_SCORE,
+    )
+    return PhaseAPPOConfig(
+        opponent_mix=build_phase_a_random_bootstrap_opponent_mix_string(),
+        opponent_mix_spec=dict(PHASE_A_RANDOM_BOOTSTRAP_OPPONENT_MIX_SPEC),
+        opponent_mix_aliases=dict(PHASE_A_OPPONENT_NAME_ALIASES),
+        curriculum_metadata=metadata,
+        **overrides,
+    )
+
+
 __all__ = [
     "LIVE_MAX_TURNS_THREADING_NOTE",
     "PHASE_A_DECISIVE_WIN_MARGIN_THRESHOLD",
@@ -443,11 +516,16 @@ __all__ = [
     "PHASE_A_OPPONENT_MIX_SPEC",
     "PHASE_A_OPPONENT_NAME_ALIASES",
     "PHASE_A_P1_P2_GAP_THRESHOLD",
+    "PHASE_A_RANDOM_BOOTSTRAP_OPPONENT_MIX_SPEC",
+    "PHASE_A_RANDOM_BOOTSTRAP_TARGET_RANDOM_SCORE",
     "PhaseAPPOConfig",
     "build_phase_a_opponent_mix_string",
+    "build_phase_a_random_bootstrap_config",
+    "build_phase_a_random_bootstrap_opponent_mix_string",
     "build_trace_env_config",
     "is_decisive_state",
     "reward_attribution",
     "second_start_oversampling_scheme",
     "validate_phase_a_opponent_mix",
+    "validate_phase_a_random_bootstrap_opponent_mix",
 ]

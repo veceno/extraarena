@@ -2441,6 +2441,7 @@ fn encode_observation_v5_from_v1(
     // clipped to [0, 1] via `norm`; matches Python obs_v5._encode_globals_v5
     // dst[15] byte-for-byte.
     out[global_base + 15] = norm(me.mana_draw_count_this_turn as f32, MANA_DRAW_COUNT_NORMALIZER);
+    out[global_base + 16] = bool_f32(infer_starting_player_id(state) == player_id);
 
     let private_base = global_base + V5_GLOBAL_DIM;
     encode_private_info_v5(
@@ -2453,6 +2454,18 @@ fn encode_observation_v5_from_v1(
     debug_assert_eq!(out[history_base..].len(), HISTORY_DIM);
     encode_history_v5(&mut out[history_base..], player_id, history_events);
     out
+}
+
+fn infer_starting_player_id(state: &KernelState) -> i32 {
+    let current = state.current_turn_owner_id;
+    if state.turn_number % 2 != 0 {
+        return current;
+    }
+    if current == state.p1.user_id {
+        state.p2.user_id
+    } else {
+        state.p1.user_id
+    }
 }
 
 fn encode_private_info_v5(
@@ -3733,6 +3746,29 @@ mod draw_tests {
         let out =
             encode_observation_v5(&state, 1, InfoModeV5::default(), AssistModeV5::default(), &[]);
         assert_eq!(out[OBS_DIM_V1 + 15], 0.0);
+    }
+
+    #[test]
+    fn v5_global_am_first_player_channel_at_offset_16() {
+        let mut state = v5_state_with_mana_draw_count(0);
+        state.current_turn_owner_id = 2;
+        state.turn_number = 2;
+        let p1 = encode_observation_v5(
+            &state,
+            1,
+            InfoModeV5::default(),
+            AssistModeV5::default(),
+            &[],
+        );
+        let p2 = encode_observation_v5(
+            &state,
+            2,
+            InfoModeV5::default(),
+            AssistModeV5::default(),
+            &[],
+        );
+        assert_eq!(p1[OBS_DIM_V1 + 16], 1.0);
+        assert_eq!(p2[OBS_DIM_V1 + 16], 0.0);
     }
 
     // ---- Phase 3: rebirth (REBIRTH-1) ----

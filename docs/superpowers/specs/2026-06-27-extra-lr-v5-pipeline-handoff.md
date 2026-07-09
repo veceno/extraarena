@@ -13,6 +13,13 @@ Design spec **written + committed + self-reviewed**, **awaiting user review + op
 
 > **Project memory (cross-session recall):** this work is also recorded as a memory entry — `~/.claude/projects/-Users-laveqox-Documents-ExtraArenaRaS/memory/extra-lr-v5-pipeline.md` — indexed under the “RLHF training environment” section of that project’s `MEMORY.md`. Future sessions auto-load `MEMORY.md`, so the V5-Max pointer surfaces on resume even before this handoff is opened.
 
+**2026-07-05 override:** this handoff is historical for the initial design. Phase A's
+first bootstrap is now random-heavy Rust ArenaEnv PPO
+(`TrainV3.5/scripts/run_phaseA_random_bootstrap.py`, target 98%+ vs random), not
+semi-synthetic ExtraRLHF LLM/V4Max distillation, not V4Max warm-start by default,
+and not mandatory pilot→BC first.
+Later Block-B league and Block-C human-vs-preV5 remain in the pipeline.
+
 ---
 
 ## 2. Decision ledger (frozen — do not re-derive)
@@ -21,7 +28,7 @@ Design spec **written + committed + self-reviewed**, **awaiting user review + op
 |---|---|
 | D1 | RLHF data → **offline-bridge** (reconstruct `GameState` from `v5_trace.pre_state` → offline-PPO replay). |
 | D2 | **Hybrid stack**: Rust kernel (TrainV3) rollouts/self-play/league/acceptance; Python offline-bridge + replay consumer; rlhf_env (8090) for fresh human collection. |
-| D3 | Phase A seed = **fresh pilot → BC** (post-rebalance). Existing archive **dropped** (stale, no mana_draw). |
+| D3 | Phase A seed = **random-heavy Rust ArenaEnv PPO bootstrap**. The older pilot→BC idea is optional/deferred; semi-synthetic LLM/V4Max distillation is disabled for Phase A. |
 | γ | **Frozen v1 codec**: `classic_obs_v1`/`classic_actions_v1`/`classic_card_shape_v1` byte-frozen → V4-orig ONNX runs unchanged (pristine, zero adapter). V5 uses new `v5_card_shape_v1` + `encode_observation_v5` + **parallel `mana_draw` binary head** (not a 602nd candidate). V5 601-scorer + base-1456 path **warm-starts from V4-Max** (`update_1190.npz`). |
 | D6 | **V4’ fine-tune removed.** V4 frozen. Benchmark = best self-snapshot + human-QA (+ decisive H2H vs V4-orig as asymmetric legacy ref). |
 | D7 | **C1 archive replay dropped.** RLHF loop = C2 (collect) → C3 (replay). |
@@ -33,7 +40,7 @@ Design spec **written + committed + self-reviewed**, **awaiting user review + op
 | D13 | **Early-stop K=2** in the RLHF loop. |
 | — | V5-Lite **out of scope** (separate TrainV2-arch effort). |
 
-Pipeline: `Block -1 (freeze + Rust parity) → 0 (foundation) → A (pilot→BC→short redesign Phase A) → B (league) → C (C2→C3, early-stop K=2) → D (league-2) → E1 (tournament + ship)`.
+Pipeline: `Block -1 (freeze + Rust parity) → 0 (foundation) → A (random-heavy Rust PPO bootstrap) → B (league) → C (C2→C3, early-stop K=2) → D (league-2) → E1 (tournament + ship)`.
 
 ---
 

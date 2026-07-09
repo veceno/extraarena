@@ -48,7 +48,7 @@ Two DISTINCT gaps are closed here (do NOT conflate them, ``BLOCK_B_PLAN.md:326-3
 D-B5 HYBRID (CONFIRMED, user 2026-07-01 -- ``BLOCK_B_PLAN.md:151-154`` + §2): the
 spec (``design.md:118``) FREEZES absolute weights -- V4-orig 0.40+0.20+0.15 = 0.75,
 exploit 0.05*3 = 0.15, tail 0.03+0.01+0.01 = 0.05; FROZEN non-self TOTAL = 0.95.
-self-snapshot share = residual 1.0 - 0.95 = 0.05, GROWN as the pool fills
+    self-snapshot share = residual 1.0 - 0.75 = 0.25, GROWN as the pool fills
 (prevalence rises with pool size, B1 ``self_snapshot_prevalence_weight``), with a
 mana_draw-collapse monitor (B2 hook ``v4_orig_temp_spectrum.py:158-176``, B4 logic)
 that can BOOST self-snapshot above 0.05 (compressing frozen non-self
@@ -122,13 +122,15 @@ BLOCK_B_IDENTITIES: frozenset[str] = frozenset({
 # are the frozen spec-literal absolute weights (the within-group RATIOS are
 # load-bearing -- ``test_frozen_ratios_preserved``).
 # -----------------------------------------------------------------------------
-# V4-orig spectrum: argmax 0.40 / t07 0.20 / t12 0.15 (B2 ``V4_ORIG_TEMP_WEIGHTS``).
+# V4-orig spectrum: keep the B2 0.40:0.20:0.15 ratio, but reduce the frozen
+# absolute share from 0.75 to 0.55 so the blind V4 lane stays a pressure lane
+# rather than the dominant training distribution.
 BLOCK_B_V4_ORIG_WEIGHTS: dict[str, float] = {
-    "v4-orig-argmax": 0.40,
-    "v4-orig-t07": 0.20,
-    "v4-orig-t12": 0.15,
+    "v4-orig-argmax": 0.55 * (0.40 / 0.75),
+    "v4-orig-t07": 0.55 * (0.20 / 0.75),
+    "v4-orig-t12": 0.55 * (0.15 / 0.75),
 }
-BLOCK_B_V4_ORIG_TOTAL = 0.75  # 0.40 + 0.20 + 0.15
+BLOCK_B_V4_ORIG_TOTAL = sum(BLOCK_B_V4_ORIG_WEIGHTS.values())  # 0.55
 
 # Exploit-lanes continuous: stall / anti_draw_greed / punish_empty_board, 0.05 each.
 BLOCK_B_EXPLOIT_WEIGHTS: dict[str, float] = {
@@ -147,14 +149,15 @@ BLOCK_B_TAIL_WEIGHTS: dict[str, float] = {
 }
 BLOCK_B_TAIL_TOTAL = 0.05  # 0.03 + 0.01 + 0.01
 
-#: Frozen non-self TOTAL (V4-orig 0.75 + exploit 0.15 + tail 0.05). The self-snapshot
-#: share is the RESIDUAL ``1 - FROZEN_NON_SELF_TOTAL`` = 0.05, grown as the pool
-#: fills (B1 ``self_snapshot_prevalence_weight``, cap 0.05 spec-literal after the
-#: B1 fix). ``BLOCK_B_PLAN.md:349-352`` + §2 DECISIONS CONFIRMED D-B5.
-FROZEN_NON_SELF_TOTAL: float = 0.95
+#: Frozen non-self TOTAL (V4-orig 0.55 + exploit 0.15 + tail 0.05). The self-snapshot
+#: share is the RESIDUAL ``1 - FROZEN_NON_SELF_TOTAL`` = 0.25, grown as the pool
+#: fills (B1 ``self_snapshot_prevalence_weight``). This intentionally follows the
+#: Q5 mitigation from the design/handoff notes: keep the blind V4-orig lane modest
+#: and self-snapshot prevalence high.
+FROZEN_NON_SELF_TOTAL: float = 0.75
 
-#: The residual self-snapshot share when the pool is full (spec-literal cap).
-SELF_SNAPSHOT_SHARE_CAP: float = 1.0 - FROZEN_NON_SELF_TOTAL  # 0.05
+#: The residual self-snapshot share when the pool is full.
+SELF_SNAPSHOT_SHARE_CAP: float = 1.0 - FROZEN_NON_SELF_TOTAL  # 0.25
 
 #: Upper bound for the collapse-boosted self-snapshot share (the boost may compress
 #: frozen non-self but never to zero -- a 0.05 non-self floor is kept so the V4-orig
@@ -280,13 +283,13 @@ def build_block_b_opponent_mix(
 
     Composition:
       * ``self_snapshot_weight = pool.self_snapshot_prevalence_weight()`` (B1,
-        grown 0 -> 0.05 as the pool fills, cap 0.05 spec-literal). With
+        grown 0 -> 0.25 as the pool fills). With
         ``collapse_boost > 1.0`` (the mana_draw-collapse monitor, B4) the
-        self-snapshot share is RAISED above 0.05 (compressing frozen non-self
+        self-snapshot share is RAISED above 0.25 (compressing frozen non-self
         proportionally), capped at ``_MAX_SELF_SHARE`` (0.95 -- a 0.05 non-self
         floor is kept so the V4-orig + exploit + tail lanes always remain).
       * ``non_self_budget = 1 - self_snapshot_weight``, distributed in FROZEN
-        RATIOS: V4-orig ``0.75/0.95``, exploit ``0.15/0.95``, tail ``0.05/0.95`` of
+        RATIOS: V4-orig ``0.55/0.75``, exploit ``0.15/0.75``, tail ``0.05/0.75`` of
         ``non_self_budget``.
       * WITHIN V4-orig the 0.40 : 0.20 : 0.15 ratio is preserved; within exploit
         0.05 : 0.05 : 0.05 (equal); within tail 0.03 : 0.01 : 0.01.

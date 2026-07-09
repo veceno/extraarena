@@ -121,6 +121,7 @@ def train_rust_ppo_minibatch(
     value_coef: float = 0.5,
     entropy_coef: float = 0.01,
     max_grad_norm: float | None = None,
+    target_kl: float | None = None,
     shuffle: bool = True,
     seed: int | None = None,
     legal_row_pack_backend: str = "auto",
@@ -140,6 +141,7 @@ def train_rust_ppo_minibatch(
         value_coef=value_coef,
         entropy_coef=entropy_coef,
         max_grad_norm=max_grad_norm,
+        target_kl=target_kl,
         shuffle=shuffle,
         seed=seed,
         legal_row_pack_backend=legal_row_pack_backend,
@@ -160,6 +162,7 @@ def train_dense_rust_ppo_minibatch(
     value_coef: float = 0.5,
     entropy_coef: float = 0.01,
     max_grad_norm: float | None = None,
+    target_kl: float | None = None,
     shuffle: bool = True,
     seed: int | None = None,
     legal_row_pack_backend: str = "auto",
@@ -181,6 +184,7 @@ def train_dense_rust_ppo_minibatch(
         value_coef=value_coef,
         entropy_coef=entropy_coef,
         max_grad_norm=max_grad_norm,
+        target_kl=target_kl,
         shuffle=shuffle,
         seed=seed,
         legal_row_pack_backend=legal_row_pack_backend,
@@ -202,6 +206,7 @@ def _train_rust_ppo_minibatch_with_evaluator(
     value_coef: float,
     entropy_coef: float,
     max_grad_norm: float | None,
+    target_kl: float | None,
     shuffle: bool,
     seed: int | None,
     legal_row_pack_backend: str,
@@ -222,6 +227,8 @@ def _train_rust_ppo_minibatch_with_evaluator(
         raise ValueError("legal_row_pack_backend must be python, rust, or auto")
     if minibatch_plan not in {"contiguous", "legal_count_sorted"}:
         raise ValueError("minibatch_plan must be contiguous or legal_count_sorted")
+    if target_kl is not None and float(target_kl) <= 0.0:
+        raise ValueError("target_kl must be positive when provided")
 
     flat = batch.flatten()
     row_count = int(flat["actions"].shape[0])
@@ -319,7 +326,7 @@ def _train_rust_ppo_minibatch_with_evaluator(
     def apply_minibatch(
         mini: RustPPOBatch,
         padded_cache: PaddedLegalActionInputs | None = None,
-    ) -> None:
+    ) -> float:
         current_batch[0] = mini
         current_padded_cache[0] = padded_cache
         (loss_value, aux), grads = value_and_grad(model)
@@ -331,7 +338,10 @@ def _train_rust_ppo_minibatch_with_evaluator(
         metric_values["loss"].append(float(loss_value.item()))
         for name, value in aux.items():
             metric_values[name].append(float(value.item()))
+        return float(aux["approx_kl"].item())
 
+    early_stopped_by_kl = False
+    epochs_completed = 0
     for _epoch in range(epochs):
         if shuffle:
             if indices is None:
@@ -340,10 +350,19 @@ def _train_rust_ppo_minibatch_with_evaluator(
         if contiguous_plan is not None:
             if padded_cache_plan is None:
                 for mini in contiguous_plan.batches:
-                    apply_minibatch(mini)
+                    latest_kl = apply_minibatch(mini)
+                    if target_kl is not None and latest_kl > float(target_kl):
+                        early_stopped_by_kl = True
+                        break
             else:
                 for mini, padded_cache in zip(contiguous_plan.batches, padded_cache_plan, strict=True):
-                    apply_minibatch(mini, padded_cache)
+                    latest_kl = apply_minibatch(mini, padded_cache)
+                    if target_kl is not None and latest_kl > float(target_kl):
+                        early_stopped_by_kl = True
+                        break
+            epochs_completed += 1
+            if early_stopped_by_kl:
+                break
             continue
 
         if indices is None:
@@ -357,7 +376,13 @@ def _train_rust_ppo_minibatch_with_evaluator(
                 legal_row_pack_backend=legal_row_pack_backend,
                 library_path=library_path,
             )
-            apply_minibatch(current_batch[0])
+            latest_kl = apply_minibatch(current_batch[0])
+            if target_kl is not None and latest_kl > float(target_kl):
+                early_stopped_by_kl = True
+                break
+        epochs_completed += 1
+        if early_stopped_by_kl:
+            break
 
     current_batch[0] = None
     current_padded_cache[0] = None
@@ -385,6 +410,9 @@ def _train_rust_ppo_minibatch_with_evaluator(
         "updates": len(metric_values["loss"]),
         "rows": row_count,
         "epochs": epochs,
+        "epochs_completed": epochs_completed,
+        "target_kl": None if target_kl is None else float(target_kl),
+        "early_stopped_by_kl": early_stopped_by_kl,
         "minibatch_size": minibatch_size,
         "dense_action_features": batch.action_features is not None,
         "legal_row_pack_backend": legal_row_pack_backend,

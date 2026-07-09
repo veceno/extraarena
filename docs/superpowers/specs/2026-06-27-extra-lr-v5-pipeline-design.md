@@ -7,6 +7,22 @@
 
 ---
 
+## 2026-07-05 Phase-A update
+
+The first Phase-A seed path is updated: **do not use semi-synthetic ExtraRLHF
+LLM/V4Max distillation for Phase A**. The attempted `llm-vs-v4max` lane produced weak
+LLM play and burns model limits; V4-Max itself is also not a valid teacher for the new
+ruleset/mechanics. Current Phase A starts with direct **random-heavy Rust ArenaEnv PPO**
+using `train_v3.ppo_phaseA_config.build_phase_a_random_bootstrap_config()` and
+`TrainV3.5/scripts/run_phaseA_random_bootstrap.py`. Phase A fresh-random bootstrap
+does **not** V4-warm-start by default; the V4 warm-start loader remains an explicit
+diagnostic/legacy opt-in, not the first bootstrap path.
+
+Scope of this update is narrow: later **Block B league**, **Block C human-vs-preV5**,
+offline replay/repair, and final tournament gates remain in the pipeline.
+
+---
+
 ## 0. Context & root-cause recap
 
 Two training stacks coexist (must not be confused):
@@ -34,7 +50,7 @@ The user’s earlier “Phase A” proposal (95% random / 5% end_turn) replicate
 |---|---|
 | D1 | **RLHF data → offline-bridge.** Reconstruct `GameState` from `v5_trace.pre_state`; feed offline-PPO replay. No online-only assumption. |
 | D2 | **Hybrid stack.** Rust kernel (TrainV3) for rollouts / self-play / league / acceptance. Python layer for offline-bridge + offline-PPO replay consumer. `rlhf_env` (port 8090) for fresh human-vs-bot collection. |
-| D3 | **Phase A seed = fresh pilot → BC.** Existing archive is stale (pre-rebalance, no mana_draw) and **dropped** (D7). Seed V5 via a small fresh human pilot post-rebalance, then BC, then a short redesigned self-play Phase A. |
+| D3 | **Phase A seed = random-heavy Rust ArenaEnv PPO bootstrap.** The previous fresh-pilot/BC seed idea is not the current first-phase path; LLM/V4Max semi-synthetic distillation is disabled for Phase A. |
 | D4 | **V5-Lite out of scope.** |
 | D5 (superseded) | ~~Adapt V4 → V4’ (fine-tune) as the 70-80% benchmark.~~ Superseded by D6/γ. |
 | γ | **Frozen v1 codec.** `classic_obs_v1` (1456), `classic_actions_v1` (601), `classic_card_shape_v1` stay **byte-frozen** — V4-orig ONNX runs unchanged forever (pristine legacy, zero adapter). V5 uses a **new** `v5_card_shape_v1` + `encode_observation_v5` + a **parallel `mana_draw` binary head** (not a 602nd candidate). The V5 601-scorer + base-1456 path **warm-starts from V4-Max weights** (`update_1190.npz`). |
@@ -56,8 +72,8 @@ Block -1  Freeze ruleset (rebalance + 7 cards + mechanic changes + mana_draw)
           + Rust ArenaEnv parity with frozen ruleset  ← verify/port (prerequisite)
 Block 0   Foundation: v5_card_shape_v1 + encode_observation_v5 + mana_draw head
           + V4-warm-start loader + offline-bridge (+bugfixes in v5_* only; classic_* frozen)
-Block A   Pilot(deploy V4-orig/greedy vs people, ~1-3k) → BC-seed (warm-started from V4)
-          → short redesigned Phase-A self-play PPO (Rust ArenaEnv)
+Block A   Random-heavy Rust ArenaEnv PPO bootstrap (teacher-free, target 98%+ vs random)
+          → A-gate → hand off to league
 Block B   League (self-snapshots + V4-orig t-spectrum + exploit-lanes + tail) on Rust
           → external-bench promote → trend toward self-snapshot domination
 Block C   C2 (deploy best-vs-people → collect ~3-5k preV5-vs-human)
@@ -96,9 +112,16 @@ Block E1  Tournament (post-D / post-C3 / post-B) → pick best (Rust gauntlet + 
 - **human rows** (`decision_source='human'`) feed **offline-PPO replay (C3)**. (BC-seed in Block A uses the **fresh pilot**, not the archive — D7.)
 
 ### Block A — Seed
-- **A.pilot**: deploy a placeholder (V4-orig runs unchanged under the frozen codec — blind but playable — or `greedy_face`) against humans in rlhf_env, **post-rebalance**, collect **~1–3k** fresh human battles (with mana_draw + new cards). Human actions are the target; the placeholder’s identity doesn’t change that.
-- **A.BC**: behavior cloning on the fresh pilot (decoded to V5 action repr via the bridge) → V5-seed, warm-started from V4-Max then BC-fine-tuned. Genuine mana_draw + new-card coverage (pilot is post-rebalance).
-- **A.PPO (short, redesigned — fixes the 5 root causes):**
+- **A.random-bootstrap (current)**: train directly from fresh init in Rust ArenaEnv with
+  `TrainV3.5/scripts/run_phaseA_random_bootstrap.py`. Opponent mix:
+  `legal_random 0.70, end_turn 0.05, greedy_face 0.10, face_rush 0.05,
+  board_control 0.05, greedy_trade 0.05`. No LLM teacher, no V4Max teacher, no
+  V4Max warm-start by default, no previous-self snapshot in the first bootstrap.
+  Target: **98%+ vs random** before handing off to broader league pressure.
+- **A.pilot/A.BC (deferred/optional)**: human pilot and BC are not the default first
+  phase anymore. Human data belongs primarily to Block C (`human-vs-preV5`) once the
+  preV5 candidate exists.
+- **A.PPO fixes retained:**
 
 | Root cause | Fix |
 |---|---|
@@ -108,7 +131,10 @@ Block E1  Tournament (post-D / post-C3 / post-B) → pick best (Rust gauntlet + 
 | `epochs=1` | 4–10 |
 | 0.55 random majority | graduated mix (below), exploit-lanes present |
 
-  Graduated `opponent_mix` (tunable): `legal_random 0.10, end_turn 0.05, greedy_face 0.10, face_rush 0.10, board_control 0.10, greedy_trade 0.10, stall 0.10, anti_draw_greed 0.10, self_prev 0.10, v4-orig-argmax 0.15`.
+  The older graduated `opponent_mix` remains a later/harder A/B curriculum option:
+  `legal_random 0.10, end_turn 0.05, greedy_face 0.10, face_rush 0.10,
+  board_control 0.10, greedy_trade 0.10, stall 0.10, anti_draw_greed 0.10,
+  self_prev 0.10, v4-orig-argmax 0.15`.
 - Promotion by **external bench only** (Rust gauntlet, retargeted). Second-start oversampling (human-as-p2 episodes + targeted init).
 
 **A-gate (exit Phase A):** `no_assist ≥ 0.55`, `exploit_resistance ≥ 0.50`, `mana_draw usage ∈ [0.5×, 1.5×]` human baseline, external H2H (vs best self-snapshot) trending up ≥ N snapshots.

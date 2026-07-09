@@ -52,13 +52,18 @@ from train_v3.ppo_phaseA_config import (
     PHASE_A_OPPONENT_MIX_SPEC,
     PHASE_A_OPPONENT_NAME_ALIASES,
     PHASE_A_P1_P2_GAP_THRESHOLD,
+    PHASE_A_RANDOM_BOOTSTRAP_OPPONENT_MIX_SPEC,
+    PHASE_A_RANDOM_BOOTSTRAP_TARGET_RANDOM_SCORE,
     PhaseAPPOConfig,
     build_phase_a_opponent_mix_string,
+    build_phase_a_random_bootstrap_config,
+    build_phase_a_random_bootstrap_opponent_mix_string,
     build_trace_env_config,
     is_decisive_state,
     reward_attribution,
     second_start_oversampling_scheme,
     validate_phase_a_opponent_mix,
+    validate_phase_a_random_bootstrap_opponent_mix,
 )
 
 
@@ -159,6 +164,40 @@ def test_opponent_mix_parses_to_spec_weights():
         parse_v5_opponent_mix("v4-orig-argmax:0.5")  # display name -> rejected
 
 
+def test_random_bootstrap_mix_is_teacher_free_and_random_heavy():
+    parsed = validate_phase_a_random_bootstrap_opponent_mix()
+    parsed_dict = {name: weight for name, weight in parsed}
+
+    assert PHASE_A_RANDOM_BOOTSTRAP_TARGET_RANDOM_SCORE == pytest.approx(0.98)
+    assert PHASE_A_RANDOM_BOOTSTRAP_OPPONENT_MIX_SPEC == {
+        "legal_random": 0.70,
+        "end_turn": 0.05,
+        "greedy_face": 0.10,
+        "face_rush": 0.05,
+        "board_control": 0.05,
+        "greedy_trade": 0.05,
+    }
+    assert sum(PHASE_A_RANDOM_BOOTSTRAP_OPPONENT_MIX_SPEC.values()) == pytest.approx(1.0)
+    assert parsed_dict["random"] == pytest.approx(0.70)
+
+    # Phase-A bootstrap is direct ArenaEnv PPO, not teacher-data distillation.
+    assert "self_prev" not in PHASE_A_RANDOM_BOOTSTRAP_OPPONENT_MIX_SPEC
+    assert "v4-orig-argmax" not in PHASE_A_RANDOM_BOOTSTRAP_OPPONENT_MIX_SPEC
+    assert "llm_teacher" not in PHASE_A_RANDOM_BOOTSTRAP_OPPONENT_MIX_SPEC
+    bootstrap_mix = build_phase_a_random_bootstrap_opponent_mix_string()
+    assert "v4max" not in bootstrap_mix
+    assert "self" not in bootstrap_mix
+
+    cfg = build_phase_a_random_bootstrap_config(run_name="phaseA_random_bootstrap_test")
+    assert cfg.run_name == "phaseA_random_bootstrap_test"
+    assert cfg.opponent_mix == bootstrap_mix
+    assert cfg.opponent_mix_spec == PHASE_A_RANDOM_BOOTSTRAP_OPPONENT_MIX_SPEC
+    assert cfg.curriculum_metadata["phase_a_profile"] == "random_bootstrap"
+    assert cfg.curriculum_metadata["distillation"] == "disabled"
+    assert cfg.curriculum_metadata["teacher_source"] == "none"
+    assert cfg.curriculum_metadata["target_random_score"] == pytest.approx(0.98)
+
+
 def test_max_turns_and_decisive_early_end():
     cfg = PhaseAPPOConfig()
     # Fix #2: max_turns == 120 (>= 120 per design.md:106)
@@ -242,6 +281,8 @@ def test_entropy_and_epochs_pinned():
     # kwarg, and the defaults are the pinned values.
     assert PhaseAPPOConfig().entropy_coef == 0.01
     assert PhaseAPPOConfig().epochs == 6
+    assert PhaseAPPOConfig().max_grad_norm == pytest.approx(0.5)
+    assert PhaseAPPOConfig().target_kl == pytest.approx(0.03)
 
 
 def test_second_start_oversampling_scheme():

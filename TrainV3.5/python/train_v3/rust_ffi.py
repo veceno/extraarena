@@ -1005,6 +1005,13 @@ class RustBatchWorker:
             raise RuntimeError(f"trainv3_worker_reset failed: {rc}")
         return self.arrays(copy=copy)
 
+    def use_chacha_rng(self) -> None:
+        if not hasattr(self._lib, "trainv3_worker_use_chacha_rng"):
+            raise RuntimeError("loaded trainv3_core library does not support live ChaCha RNG")
+        rc = self._lib.trainv3_worker_use_chacha_rng(self._nonnull_ptr())
+        if rc != 0:
+            raise RuntimeError(f"trainv3_worker_use_chacha_rng failed: {rc}")
+
     def reset_indices(self, indices, *, copy: bool = False) -> dict[str, np.ndarray]:
         reset_indices = np.ascontiguousarray(indices, dtype=np.uintp)
         if reset_indices.ndim != 1:
@@ -1271,47 +1278,58 @@ class RustBatchWorker:
             enemy_hand_known=False, enemy_deck_known=False
         )
         am = assist_mode if assist_mode is not None else AssistModeV5()
-        trace = build_golden_trace(
-            seed=int(seed),
-            steps=0,
-            placement_mode=placement_mode,
-            verify_mask=verify_mask,
-            info_mode=im,
-            assist_mode=am,
-            choose="first",
-            p1_deck_ids=p1_deck_ids,
-            p2_deck_ids=p2_deck_ids,
-            max_turns=int(max_turns),
-        )
-        # Defensive: assert max_turns threading before the FFI build (the Rust
-        # worker reads trace.env_config.max_turns at kernel.rs:660).
-        if int(trace["env_config"].get("max_turns", 0)) != int(max_turns):
-            raise RuntimeError(
-                f"from_live max_turns threading failed: env_config.max_turns="
-                f"{trace['env_config'].get('max_turns')} != {max_turns}"
-            )
         import json as _json
         import tempfile as _tempfile
-        fd, path = _tempfile.mkstemp(suffix=".json", prefix="trainv3_live_")
+
+        paths: list[str] = []
         try:
-            with os.fdopen(fd, "w") as fh:
-                _json.dump(trace, fh)
-            return cls.from_trace_file(
-                path,
+            for idx in range(int(env_count)):
+                trace_seed = int(seed) + idx * 9973
+                starting_player_id = 1 if idx % 2 == 0 else 2
+                trace = build_golden_trace(
+                    seed=trace_seed,
+                    steps=0,
+                    placement_mode=placement_mode,
+                    verify_mask=verify_mask,
+                    info_mode=im,
+                    assist_mode=am,
+                    choose="first",
+                    p1_deck_ids=p1_deck_ids,
+                    p2_deck_ids=p2_deck_ids,
+                    max_turns=int(max_turns),
+                    starting_player_id=starting_player_id,
+                )
+                # Defensive: assert max_turns threading before the FFI build (the Rust
+                # worker reads trace.env_config.max_turns at kernel.rs:660).
+                if int(trace["env_config"].get("max_turns", 0)) != int(max_turns):
+                    raise RuntimeError(
+                        f"from_live max_turns threading failed: env_config.max_turns="
+                        f"{trace['env_config'].get('max_turns')} != {max_turns}"
+                    )
+                fd, path = _tempfile.mkstemp(suffix=".json", prefix="trainv3_live_")
+                paths.append(path)
+                with os.fdopen(fd, "w") as fh:
+                    _json.dump(trace, fh)
+            worker = cls.from_trace_files(
+                paths,
                 env_count=env_count,
                 library_path=library_path,
                 action_features_dtype=action_features_dtype,
                 action_features_mode=action_features_mode,
+                reset_pool_mode="cycle",
                 observation_mode=observation_mode,
                 action_mask_mode=action_mask_mode,
                 terminal_observation_mode=terminal_observation_mode,
                 diagnostic_mode=diagnostic_mode,
             )
+            worker.use_chacha_rng()
+            return worker
         finally:
-            try:
-                os.unlink(path)
-            except OSError:
-                pass
+            for path in paths:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
 
     def rollout_action_tape(self, action_ids, *, auto_reset: bool = False, copy: bool = False) -> dict[str, np.ndarray]:
         actions = np.ascontiguousarray(action_ids, dtype=np.uintp)
@@ -1965,6 +1983,9 @@ def _load_library(path: Path) -> ctypes.CDLL:
     lib.trainv3_worker_encode.restype = ctypes.c_int
     lib.trainv3_worker_reset.argtypes = [ctypes.c_void_p]
     lib.trainv3_worker_reset.restype = ctypes.c_int
+    if hasattr(lib, "trainv3_worker_use_chacha_rng"):
+        lib.trainv3_worker_use_chacha_rng.argtypes = [ctypes.c_void_p]
+        lib.trainv3_worker_use_chacha_rng.restype = ctypes.c_int
     lib.trainv3_worker_reset_indices.argtypes = [
         ctypes.c_void_p,
         ctypes.POINTER(ctypes.c_size_t),

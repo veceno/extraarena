@@ -24,6 +24,7 @@ from train_v3.block_b_opponent_mix import (  # noqa: E402
     BLOCK_B_IDENTITIES,
     BLOCK_B_TAIL_WEIGHTS,
     BLOCK_B_V4_ORIG_ALIASES,
+    BLOCK_B_V4_ORIG_TOTAL,
     BLOCK_B_V4_ORIG_WEIGHTS,
     FROZEN_NON_SELF_TOTAL,
     SELF_SNAPSHOT_SHARE_CAP,
@@ -139,7 +140,7 @@ def test_punish_empty_board_dispatches_code5():
 # =============================================================================
 def test_weights_account_to_one():
     """The Block-B mix accounts to 1.0 at every pool fill level (D-B5 hybrid):
-    self-snapshot residual + V4-orig 0.75/0.95 + exploit 0.15/0.95 + tail 0.05/0.95
+    self-snapshot residual + V4-orig 0.55/0.75 + exploit 0.15/0.75 + tail 0.05/0.75
     of the non-self budget."""
     for prevalence in (0.0, 0.01, 0.025, SELF_SNAPSHOT_SHARE_CAP):
         pool = _FakePool(prevalence)
@@ -150,7 +151,7 @@ def test_weights_account_to_one():
         )
 
     # Group totals: self-snapshot == prevalence; non-self == 1 - prevalence split
-    # across V4-orig / exploit / tail in the 0.75:0.15:0.05 of-0.95 ratio.
+    # across V4-orig / exploit / tail in the 0.55:0.15:0.05 of-0.75 ratio.
     pool = _FakePool(SELF_SNAPSHOT_SHARE_CAP)
     mix = dict(build_block_b_opponent_mix(pool))
     self_total = mix["self"] + mix["v5_snapshot"]
@@ -161,7 +162,7 @@ def test_weights_account_to_one():
     )
     tail_total = mix["greedy_face"] + mix["random"] + mix["end_turn"]
     non_self = 1.0 - SELF_SNAPSHOT_SHARE_CAP
-    assert v4_total == pytest.approx(non_self * (0.75 / FROZEN_NON_SELF_TOTAL))
+    assert v4_total == pytest.approx(non_self * (BLOCK_B_V4_ORIG_TOTAL / FROZEN_NON_SELF_TOTAL))
     assert exploit_total == pytest.approx(non_self * (0.15 / FROZEN_NON_SELF_TOTAL))
     assert tail_total == pytest.approx(non_self * (0.05 / FROZEN_NON_SELF_TOTAL))
 
@@ -173,16 +174,16 @@ def test_weights_account_to_one():
 def test_self_snapshot_prevalence_grows_with_pool():
     """D-B5 hybrid: a larger pool yields a larger self-snapshot share; the V4-orig
     within-group RATIOS (0.40:0.20:0.15) are unchanged at every pool size."""
-    small = _FakePool(0.01)
-    large = _FakePool(0.05)
+    small = _FakePool(0.05)
+    large = _FakePool(SELF_SNAPSHOT_SHARE_CAP)
     small_mix = dict(build_block_b_opponent_mix(small))
     large_mix = dict(build_block_b_opponent_mix(large))
 
     small_self = small_mix["self"] + small_mix["v5_snapshot"]
     large_self = large_mix["self"] + large_mix["v5_snapshot"]
     assert large_self > small_self
-    assert small_self == pytest.approx(0.01)
-    assert large_self == pytest.approx(0.05)
+    assert small_self == pytest.approx(0.05)
+    assert large_self == pytest.approx(SELF_SNAPSHOT_SHARE_CAP)
 
     # V4-orig within-group RATIOS unchanged at both pool sizes.
     for mix in (small_mix, large_mix):
@@ -256,29 +257,29 @@ def test_frozen_ratios_preserved():
         assert gf / rnd == pytest.approx(0.03 / 0.01)
         assert rnd == pytest.approx(et)
 
-        # The GROUP ratios are the frozen 0.75:0.15:0.05 of-0.95 at every pool size.
+        # The GROUP ratios are the frozen 0.55:0.15:0.05 of-0.75 at every pool size.
         v4_total = a + t07 + t12
         exploit_total = s + adg + peb
         tail_total = gf + rnd + et
         non_self = v4_total + exploit_total + tail_total
-        assert v4_total / non_self == pytest.approx(0.75 / FROZEN_NON_SELF_TOTAL)
+        assert v4_total / non_self == pytest.approx(BLOCK_B_V4_ORIG_TOTAL / FROZEN_NON_SELF_TOTAL)
         assert exploit_total / non_self == pytest.approx(0.15 / FROZEN_NON_SELF_TOTAL)
         assert tail_total / non_self == pytest.approx(0.05 / FROZEN_NON_SELF_TOTAL)
 
 
 # =============================================================================
 # 7. test_collapse_reweight_entry_point -- the boost function raises self-snapshot
-#    above 0.05 + compresses frozen non-self proportionally (D-B5 monitor hook).
+    #    above 0.25 + compresses frozen non-self proportionally (D-B5 monitor hook).
 # =============================================================================
 def test_collapse_reweight_entry_point():
     """``collapse_reweight_boost(factor)`` is the mana_draw-collapse monitor ENTRY
     POINT (B3 exposes it; B4 wires the monitor logic). A factor > 1.0 RAISES the
-    self-snapshot share above the 0.05 spec-literal cap (compressing frozen non-self
+    self-snapshot share above the 0.25 cap (compressing frozen non-self
     proportionally); the within-group frozen RATIOS are preserved; the mix still
     accounts to 1.0."""
-    pool = _FakePool(SELF_SNAPSHOT_SHARE_CAP)  # full pool -> base self-snapshot 0.05
+    pool = _FakePool(SELF_SNAPSHOT_SHARE_CAP)  # full pool -> base self-snapshot 0.25
 
-    # Baseline (no boost): self-snapshot == 0.05.
+    # Baseline (no boost): self-snapshot == 0.25.
     base_mix = dict(build_block_b_opponent_mix(pool))
     base_self = base_mix["self"] + base_mix["v5_snapshot"]
     assert base_self == pytest.approx(SELF_SNAPSHOT_SHARE_CAP)
@@ -287,15 +288,15 @@ def test_collapse_reweight_entry_point():
     cfg = collapse_reweight_boost(2.0)
     assert cfg == {"collapse_boost": 2.0}
 
-    # Boosted: self-snapshot RAISED above 0.05 (to 0.10), non-self compressed.
+    # Boosted: self-snapshot RAISED above 0.25 (to 0.50), non-self compressed.
     boosted_mix = dict(build_block_b_opponent_mix(pool, **cfg))
     boosted_self = boosted_mix["self"] + boosted_mix["v5_snapshot"]
     assert boosted_self > base_self
-    assert boosted_self == pytest.approx(0.10)  # 0.05 * 2.0, below the 0.95 cap
+    assert boosted_self == pytest.approx(0.50)  # 0.25 * 2.0, below the 0.95 cap
 
-    # Frozen non-self compressed proportionally (non_self = 0.90 vs base 0.95).
+    # Frozen non-self compressed proportionally (non_self = 0.50 vs base 0.75).
     non_self_boosted = 1.0 - boosted_self
-    assert non_self_boosted == pytest.approx(0.90)
+    assert non_self_boosted == pytest.approx(0.50)
 
     # Within-group frozen RATIOS preserved under the boost.
     a, t07, t12 = (
@@ -312,13 +313,13 @@ def test_collapse_reweight_entry_point():
     )
     assert s == pytest.approx(adg) and adg == pytest.approx(peb)
 
-    # The group ratios are STILL the frozen 0.75:0.15:0.05 of-0.95 of non-self.
+    # The group ratios are STILL the frozen 0.55:0.15:0.05 of-0.75 of non-self.
     v4_total = a + t07 + t12
     exploit_total = s + adg + peb
     tail_total = (
         boosted_mix["greedy_face"] + boosted_mix["random"] + boosted_mix["end_turn"]
     )
-    assert v4_total / non_self_boosted == pytest.approx(0.75 / FROZEN_NON_SELF_TOTAL)
+    assert v4_total / non_self_boosted == pytest.approx(BLOCK_B_V4_ORIG_TOTAL / FROZEN_NON_SELF_TOTAL)
     assert exploit_total / non_self_boosted == pytest.approx(
         0.15 / FROZEN_NON_SELF_TOTAL
     )
@@ -345,17 +346,16 @@ def test_collapse_reweight_entry_point():
 
 
 # =============================================================================
-# 8. test_b1_prevalence_cap_005 -- B1's prevalence now caps at 0.05 after the
-#    EDIT 1 fix (frozen_non_self_share 0.75 -> 0.95). Regression guard for the B1 fix.
+# 8. test_b1_prevalence_cap_025 -- B1's prevalence caps at 0.25 so self-snapshots
+#    can become a real Block-B training lane.
 # =============================================================================
-def test_b1_prevalence_cap_005():
-    """B1 ``SnapshotPool.self_snapshot_prevalence_weight`` caps at the spec-literal
-    residual 0.05 after the EDIT 1 fix (``frozen_non_self_share`` 0.75 -> 0.95).
+def test_b1_prevalence_cap_025():
+    """B1 ``SnapshotPool.self_snapshot_prevalence_weight`` caps at residual 0.25.
     The prevalence is 0 when the pool is empty, monotone-increasing as the pool
-    fills, and saturates at 0.05 at/above ``prevalence_pool_target``."""
-    # Default frozen_non_self_share is now 0.95 (EDIT 1).
+    fills, and saturates at 0.25 at/above ``prevalence_pool_target``."""
+    # Default frozen_non_self_share leaves a 0.25 self-snapshot residual.
     pool = SnapshotPool(prevalence_pool_target=6)
-    assert pool.frozen_non_self_share == pytest.approx(0.95)
+    assert pool.frozen_non_self_share == pytest.approx(0.75)
     assert pool.self_snapshot_prevalence_weight() == pytest.approx(0.0)
 
     weights = []
@@ -365,13 +365,12 @@ def test_b1_prevalence_cap_005():
 
     # Monotone non-decreasing.
     assert all(weights[i] <= weights[i + 1] + 1e-9 for i in range(len(weights) - 1))
-    # Saturates at the spec-literal cap 0.05 (NOT the pre-fix 0.25).
+    # Saturates at the self-snapshot cap.
     assert weights[5] == pytest.approx(SELF_SNAPSHOT_SHARE_CAP)  # u=6 -> 6 non-anchors
     assert weights[6] == pytest.approx(SELF_SNAPSHOT_SHARE_CAP)  # u=7 -> capped
-    # The pre-fix value 0.25 is GONE -- explicit regression guard.
-    assert weights[6] < 0.10
+    assert weights[6] == pytest.approx(0.25)
 
-    # B3 reads this prevalence: a full B1 pool feeds B3 a 0.05 self-snapshot share.
+    # B3 reads this prevalence: a full B1 pool feeds B3 a 0.25 self-snapshot share.
     mix = dict(build_block_b_opponent_mix(pool))
     self_total = mix["self"] + mix["v5_snapshot"]
     assert self_total == pytest.approx(SELF_SNAPSHOT_SHARE_CAP)

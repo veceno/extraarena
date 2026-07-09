@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Offline V4-max teacher distillation for Extra-LR V5 adaptive.
+"""DEPRECATED: offline V4-max teacher distillation for Extra-LR V5 adaptive.
+
+This is not the current Phase-A / Block-B training path. Phase A is now the
+teacher-free random bootstrap and Block B is live Rust league PPO. This script is
+kept only as a diagnostic / repair-lane opt-in because later experimental runners
+still import its dataset helpers.
 
 This phase is intentionally different from trace PPO: V4-max plays real games
 inside the Python battle oracle, and V5 is trained to imitate the teacher's
@@ -854,10 +859,11 @@ def _rank_v5_policy_actions(
     legal = np.flatnonzero(mask == 1.0)
     if legal.size == 0:
         return []
-    logits, _value = v5_policy.model(
+    model_output = v5_policy.model(
         mx.array(obs[None, :].astype(np.float32, copy=False)),
         mx.array(action_features[None, :, :].astype(np.float32, copy=False)),
     )
+    logits = model_output[0] if isinstance(model_output, tuple) else model_output
     mx.eval(logits)
     logits_np = np.asarray(logits, dtype=np.float32)[0]
     legal_scores = logits_np[legal]
@@ -999,7 +1005,8 @@ def compute_reference_log_probs(
         obs_b = mx.array(observations[start : start + int(batch_size)])
         features_b = mx.array(action_features[start : start + int(batch_size)])
         mask_b = mx.array(masks[start : start + int(batch_size)])
-        logits, _values = model(obs_b, features_b)
+        model_output = model(obs_b, features_b)
+        logits = model_output[0] if isinstance(model_output, tuple) else model_output
         masked = mx.where(mask_b.astype(mx.bool_), logits, mx.array(-1.0e9, dtype=mx.float32))
         log_probs = masked - mx.logsumexp(masked, axis=-1, keepdims=True)
         mx.eval(log_probs)
@@ -1048,7 +1055,8 @@ def train_teacher_cross_entropy(
             ref_log_probs_b = mx.array(reference_log_probs[idx]) if kl_enabled else None
 
             def loss_fn(model):
-                logits, _values = model(obs_b, features_b)
+                model_output = model(obs_b, features_b)
+                logits = model_output[0] if isinstance(model_output, tuple) else model_output
                 masked = mx.where(mask_b.astype(mx.bool_), logits, mx.array(-1.0e9, dtype=mx.float32))
                 log_probs = masked - mx.logsumexp(masked, axis=-1, keepdims=True)
                 picked = log_probs[mx.arange(actions_b.shape[0]), actions_b]

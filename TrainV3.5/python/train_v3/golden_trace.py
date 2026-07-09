@@ -77,6 +77,9 @@ def _player_payload(player) -> dict[str, Any]:
 def _state_payload(env: ClassicRLEnv) -> dict[str, Any]:
     st = env._env.state
     return {
+        "starting_player_id": int(
+            getattr(st, "starting_player_id", st.current_turn_owner_id)
+        ),
         "current_turn_owner_id": int(st.current_turn_owner_id),
         "turn_number": int(st.turn_number),
         "status": st.status.value,
@@ -387,6 +390,7 @@ def build_golden_trace(
     sudden_death_damage_start: int = 1,
     sudden_death_damage_step: int = 1,
     max_turns: int = 80,
+    starting_player_id: int | None = None,
 ) -> dict[str, Any]:
     """Build a deterministic TrainV3 parity trace from Python TrainV2."""
     if choose not in {"first", "last"}:
@@ -429,7 +433,9 @@ def build_golden_trace(
         p2_deck_ids=p2_deck_ids,
         p1_levels=p1_levels,
         p2_levels=p2_levels,
+        starting_player_id=starting_player_id,
     )
+    setattr(env._env.state, "starting_player_id", int(starting_player_id or env._env.state.current_turn_owner_id))
     # Optional post-reset state mutation hook (Phase 4: the armor_X_Y fixture
     # injects `armor_1_3` directly into the hero's mechanics, because
     # `core/converter._normalize_mechanic` collapses `armor_X_Y` → `armor_X`

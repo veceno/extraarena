@@ -61,16 +61,15 @@ no discrepancy): the 10 graduated identities
       ``v4max`` / ``v4-orig-argmax`` — the V4 ONNX argmax policy
       (``opponents_v5.py:23`` ``offline_v4max_teacher``; lazy — caller wires the ONNX fn).
 
-REWARD (fix #1, learner-only): ``reward_attribution``
-(``ppo_phaseA_config.py:228``) zeroes opponent-actor step rewards and keeps learner-actor
-step rewards. The Rust env's ``out.rewards[i]`` is the ACTING player's reward
+REWARD (fix #1, learner-perspective macro-step): ``reward_attribution``
+(``ppo_phaseA_config.py:228``) keeps learner-actor step rewards on the recorded learner
+rows. The Rust env's ``out.rewards[i]`` is the ACTING player's reward
 (``kernel.rs:799`` ``compute_trainv2_reward(state, next, player_id)`` for the acting
-``player_id``; ``worker.rs:861`` ``out.rewards.push(step.reward)``). Learner-actor steps
-keep their reward; opponent-actor steps are ZEROED (learner-only,
-``BLOCK_A_PLAN.md:420`` "ZERO for all opponent steps"). This is the trainer-side fix for
-the legacy ``run_phase26:490`` ``step_rewards = learner_rewards + opponent_rewards`` bug.
-``reward_v5.py`` is consumed READ-ONLY (frozen-classic guard) — it is ALREADY per-side
-(``reward_snapshot_v5`` takes ``player_id``, ``reward_v5.py:40``); the bug is trainer-side.
+``player_id``; ``worker.rs:861`` ``out.rewards.push(step.reward)``). Opponent-actor steps
+are not recorded as standalone rows, but their response reward is subtracted into the
+last learner row, mirroring ``worker.rs::advance_rule_until_actor`` and TrainV2's
+macro-step semantics. ``reward_v5.py`` is consumed READ-ONLY (frozen-classic guard) — it
+is ALREADY per-side (``reward_snapshot_v5`` takes ``player_id``, ``reward_v5.py:40``).
 
 max_turns (fix #2): ``from_live(max_turns=config.max_turns=120)`` threads into
 ``KernelConfig`` (``kernel.rs:660``). Verified: the worker truncates at
@@ -466,6 +465,8 @@ class LiveRolloutBatch:
     batch_steps: int
     #: Per-env episode count (number of resets + 1).
     episode_counts: np.ndarray
+    #: (env_count, obs_dim) post-rollout observations used for GAE tail bootstrap.
+    final_observations: np.ndarray
     #: Optional dispatch log (per-env per-batch-step source tag) when record_dispatch=True.
     dispatch_log: list[dict[str, Any]] | None = None
 
@@ -533,11 +534,28 @@ def sample_learner_sides(
     With no breach (``abs(p1-p2) <= gap_threshold``) the split is 50/50. On breach the
     under-represented (lower-score) side is oversampled. Returns ``(env_count,)`` int32.
     """
+    policy = str((oversampling or {}).get("policy", "oversample_under_represented_on_breach"))
+    if policy == "strict_balanced":
+        p1_count = int(env_count) // 2
+        p2_count = int(env_count) - p1_count
+        sides = np.asarray([1] * p1_count + [2] * p2_count, dtype=np.int32)
+        rng.shuffle(sides)
+        scheme = {
+            "p1_weight": float(p1_count / max(1, int(env_count))),
+            "p2_weight": float(p2_count / max(1, int(env_count))),
+            "gap": abs(float(p1_score_rate) - float(p2_score_rate)),
+            "breach": False,
+            "oversampled_side": None,
+            "policy": "strict_balanced",
+        }
+        return sides, scheme
+
     scheme = second_start_oversampling_scheme(
         float(p1_score_rate), float(p2_score_rate),
         gap_threshold=float((oversampling or {}).get("gap_threshold", 0.12)),
         base_weight=float((oversampling or {}).get("base_weight", 0.5)),
     )
+    scheme["policy"] = policy
     w1 = float(scheme["p1_weight"])
     w2 = float(scheme["p2_weight"])
     sides = rng.choice([1, 2], size=int(env_count), p=[w1, w2]).astype(np.int32)
@@ -566,7 +584,8 @@ def collect_rust_live_rollout(
       * rule-agent opponent turn -> ``select_rule_actions`` (Rust rule dispatcher);
       * policy opponent turn -> the Python opponent loop (``PolicyOpponent.select``).
     Only LEARNER-actor steps record a transition (the (s, a, r, terminal, mana_draw_legal)
-    tuple for PPO; opponent-actor steps record ZERO reward — fix #1 learner-only).
+    tuple for PPO). Opponent-actor response rewards are folded into the previous learner
+    transition from the learner perspective, matching the rule-only fast path.
     Episodes terminate on game-over (``terminated``), ``max_turns`` truncation
     (``truncated``), or decisive-early-end (D-A6); the env is then reset
     (``reset_indices``) to start the next episode until the env collects ``steps``
@@ -643,7 +662,11 @@ def collect_rust_live_rollout(
     # --- per-env collection state ----------------------------------------------
     learner_step_count = np.zeros(env_count, dtype=np.intp)
     last_learner_row: list[int | None] = [None] * env_count
+    pending_opener_reward = np.zeros(env_count, dtype=np.float32)
     episode_counts = np.ones(env_count, dtype=np.int64)
+    episode_starting_actor = np.asarray(worker.current_actor_ids(), dtype=np.int32).copy()
+    if episode_starting_actor.shape != (env_count,):
+        raise ValueError(f"current_actor_ids shape {episode_starting_actor.shape} != ({env_count},)")
 
     # ``current`` = the pre-step arrays (state at the start of each batch step).
     current = initial
@@ -693,6 +716,22 @@ def collect_rust_live_rollout(
                     rule_envs.append(i)
                 else:
                     policy_envs.append((i, opp_ids[i]))
+
+        # A full env may be sitting in a terminal/no-legal state while other envs
+        # still need learner transitions. Since it is no longer recorded, reset it
+        # before the service action below so the batched Rust step remains valid.
+        full_needing_reset = [i for i in full_envs if int(cur_counts[i]) <= 0]
+        if full_needing_reset:
+            worker.reset_indices(np.asarray(full_needing_reset, dtype=np.uintp))
+            reset_actors = np.asarray(worker.current_actor_ids(), dtype=np.int32)
+            for i in full_needing_reset:
+                episode_starting_actor[int(i)] = int(reset_actors[int(i)])
+            current = worker.arrays(copy=True)
+            cur_counts = np.asarray(current["legal_action_counts"], dtype=np.intp)
+            cur_offsets = np.asarray(current["legal_action_offsets"], dtype=np.intp)
+            cur_legal_ids = np.asarray(current["legal_action_ids"], dtype=np.uintp)
+            cur_legal_features = current["legal_action_features"]
+            cur_obs = np.asarray(current["observation_v5"], dtype=np.float32)
 
         # --- rule-agent actions (batched Rust dispatcher: select_rule_actions) ---
         if rule_envs:
@@ -756,7 +795,9 @@ def collect_rust_live_rollout(
                 # record the learner transition (s = current obs, a = best candidate).
                 observations[row, i] = cur_obs[i]
                 legal_action_counts[row, i] = cur_counts[i]
-                legal_action_offsets[row, i] = int(cur_offsets[i]) + int(legal_tape.size)
+                # Offsets are relative to the compact tape built for this rollout, not
+                # to the worker's current global legal-action tape.
+                legal_action_offsets[row, i] = int(legal_tape.size)
                 legal_tape.append(
                     cur_legal_ids[int(cur_offsets[i]):int(cur_offsets[i]) + int(cur_counts[i])],
                     (
@@ -779,7 +820,15 @@ def collect_rust_live_rollout(
                 last_learner_row[i] = row
                 learner_step_count[i] = int(row) + 1
 
-        # full envs keep a placeholder action (not recorded).
+        # Full envs are no longer recorded, but the Rust batch step still needs a
+        # legal action for every env while the remaining envs catch up.
+        for i in full_envs:
+            count = int(cur_counts[i])
+            offset = int(cur_offsets[i])
+            if count <= 0:
+                raise ValueError(f"full env {i} has no legal actions")
+            action_ids[i] = int(cur_legal_ids[offset])
+
         # --- dispatch log (test hook) -------------------------------------------
         if dispatch_log is not None:
             for i in range(env_count):
@@ -816,14 +865,18 @@ def collect_rust_live_rollout(
             row = last_learner_row[i]
             if row is None or row >= target_steps:
                 continue
-            rewards[row, i] = float(attributed[i])
+            reward_i = float(attributed[i]) + float(pending_opener_reward[i])
+            if int(learner_actor[i]) != int(episode_starting_actor[i]):
+                reward_i += float(config.turn_order_second_mover_reward_bonus)
+            rewards[row, i] = reward_i
+            pending_opener_reward[i] = 0.0
             term_i = bool(out_terminated[i])
             trunc_i = bool(out_truncated[i])
             # decisive-early-end (D-A6): a decisive win-margin terminates the episode.
             if config.decisive_early_end:
                 snap = _hero_hp_snapshot(hero_hp, i, int(learner_actor[i]))
                 if is_decisive_state(snap, threshold=config.decisive_win_margin_threshold):
-                    term_i = True
+                    trunc_i = True
             if term_i or trunc_i:
                 terminated[row, i] = bool(term_i)
                 truncated[row, i] = bool(trunc_i)
@@ -831,14 +884,22 @@ def collect_rust_live_rollout(
                 # reset env i for the next episode (if not yet full).
                 if int(learner_step_count[i]) < target_steps:
                     worker.reset_indices(np.asarray([i], dtype=np.uintp))
+                    episode_starting_actor[i] = int(np.asarray(worker.current_actor_ids(), dtype=np.int32)[i])
                     episode_counts[i] = int(episode_counts[i]) + 1
 
-        # Opponent-actor envs: ZERO reward (no transition recorded). If the episode
-        # ended on an opponent step, mark the LAST learner transition (if any in this
-        # episode) terminal/truncated, then reset.
+        # Opponent-actor envs: no standalone transition is recorded. Fold the opponent
+        # response reward into the previous learner transition from the learner's
+        # perspective (the Rust rule-only fast path does the same as
+        # `learner_rewards[idx] -= step.reward`). If the episode ended on an opponent
+        # step, mark that same last learner transition terminal/truncated, then reset.
         for i in range(env_count):
             if i in learner_envs or int(learner_step_count[i]) >= target_steps:
                 continue
+            row = last_learner_row[i]
+            if row is not None and row < target_steps:
+                rewards[row, i] += -float(out_rewards[i])
+            elif int(learner_step_count[i]) == 0:
+                pending_opener_reward[i] += -float(out_rewards[i])
             if not (bool(out_terminated[i]) or bool(out_truncated[i])):
                 # still check decisive-early-end on opponent steps.
                 if config.decisive_early_end:
@@ -847,19 +908,19 @@ def collect_rust_live_rollout(
                         continue
                 else:
                     continue
-            row = last_learner_row[i]
             if row is not None and row < target_steps:
                 term_i = bool(out_terminated[i])
                 trunc_i = bool(out_truncated[i])
                 if config.decisive_early_end:
                     snap = _hero_hp_snapshot(hero_hp, i, int(learner_actor[i]))
                     if is_decisive_state(snap, threshold=config.decisive_win_margin_threshold):
-                        term_i = True
+                        trunc_i = True
                 if term_i or trunc_i:
                     terminated[row, i] = bool(term_i) or bool(terminated[row, i])
                     truncated[row, i] = bool(trunc_i) or bool(truncated[row, i])
                     last_learner_row[i] = None
                     worker.reset_indices(np.asarray([i], dtype=np.uintp))
+                    episode_starting_actor[i] = int(np.asarray(worker.current_actor_ids(), dtype=np.int32)[i])
                     episode_counts[i] = int(episode_counts[i]) + 1
 
         # advance: the next iteration reads the post-step + post-reset state.
@@ -877,6 +938,7 @@ def collect_rust_live_rollout(
         max_collected = target_steps
 
     legal_ids_tape, legal_features_tape = legal_tape.finish()
+    final_observations = np.asarray(current["observation_v5"], dtype=np.float32).copy()
 
     transitions = RustTransitionBatch(
         observations=observations[:max_collected],
@@ -914,8 +976,24 @@ def collect_rust_live_rollout(
         learner_step_counts=learner_step_count,
         batch_steps=int(batch_step),
         episode_counts=episode_counts,
+        final_observations=final_observations,
         dispatch_log=dispatch_log,
     )
+
+
+def _estimate_bootstrap_values(model: Any, final_observations: np.ndarray) -> np.ndarray | None:
+    if model is None:
+        return None
+    encode_state = getattr(model, "encode_state", None)
+    value_head = getattr(model, "value_head", None)
+    if not callable(encode_state) or value_head is None:
+        return None
+    import mlx.core as mx
+
+    obs = mx.array(np.asarray(final_observations, dtype=np.float32))
+    values = value_head(encode_state(obs)).squeeze(-1)
+    mx.eval(values)
+    return np.asarray(values, dtype=np.float32).reshape(-1)
 
 
 def fast_forward_rule_opponent_turns(
@@ -1063,13 +1141,32 @@ def run_live_self_play_update(
     else:
         mix = parse_v5_opponent_mix(config.opponent_mix)
     opp_identities = sample_opponent_identities(mix, env_count, rng=rng)
-    learner_sides, oversampling_scheme = sample_learner_sides(
-        env_count,
-        p1_score_rate=p1_score_rate,
-        p2_score_rate=p2_score_rate,
-        oversampling=config.second_start_oversampling,
-        rng=rng,
-    )
+    side_policy = str((config.second_start_oversampling or {}).get("policy", "oversample_under_represented_on_breach"))
+    if side_policy == "start_second":
+        starting_actors = np.asarray(worker.current_actor_ids(), dtype=np.int32)
+        if starting_actors.shape != (env_count,):
+            raise ValueError(f"current_actor_ids shape {starting_actors.shape} != ({env_count},)")
+        learner_sides = np.where(starting_actors == 1, 2, 1).astype(np.int32)
+        oversampling_scheme = {
+            "p1_weight": float(np.mean(learner_sides == 1)),
+            "p2_weight": float(np.mean(learner_sides == 2)),
+            "gap": abs(float(p1_score_rate) - float(p2_score_rate)),
+            "breach": False,
+            "oversampled_side": None,
+            "policy": "start_second",
+            "starting_actor_counts": {
+                "1": int(np.sum(starting_actors == 1)),
+                "2": int(np.sum(starting_actors == 2)),
+            },
+        }
+    else:
+        learner_sides, oversampling_scheme = sample_learner_sides(
+            env_count,
+            p1_score_rate=p1_score_rate,
+            p2_score_rate=p2_score_rate,
+            oversampling=config.second_start_oversampling,
+            rng=rng,
+        )
     if opponent_policies is None:
         # default factory needs a learner-argmax selector for 'self'; use the provided
         # learner policy's argmax if it exposes one, else require explicit wiring.
@@ -1093,10 +1190,12 @@ def run_live_self_play_update(
 
         # 4. prepare PPO batch (GAE/returns) — needs values + log_probs (recorded).
         t1 = time.perf_counter()
+        bootstrap_values = _estimate_bootstrap_values(model, rollout.final_observations)
         ppo_batch = prepare_rust_ppo_batch(
             rollout.transitions,
             gamma=config.gamma,
             gae_lambda=config.gae_lambda,
+            bootstrap_values=bootstrap_values,
             advantage_backend=config.advantage_backend,
             selected_local_backend=config.selected_local_backend,
             prepare_backend=config.prepare_backend,
@@ -1117,6 +1216,11 @@ def run_live_self_play_update(
             "oversampling_scheme": oversampling_scheme,
             "collect_seconds": collect_seconds,
             "prepare_seconds": prepare_seconds,
+            "bootstrap_values_used": bootstrap_values is not None,
+            "bootstrap_value_mean": (
+                None if bootstrap_values is None else float(np.asarray(bootstrap_values, dtype=np.float32).mean())
+            ),
+            "turn_order_second_mover_reward_bonus": float(config.turn_order_second_mover_reward_bonus),
             "advantage_backend": config.advantage_backend,
             "entropy_coef": config.entropy_coef,
             "epochs": config.epochs,
@@ -1139,6 +1243,7 @@ def run_live_self_play_update(
                 value_coef=config.value_coef,
                 entropy_coef=config.entropy_coef,
                 max_grad_norm=config.max_grad_norm,
+                target_kl=config.target_kl,
                 shuffle=False,
                 seed=None if config.seed is None else config.seed + 1,
                 legal_row_pack_backend=config.legal_row_pack_backend,

@@ -122,6 +122,7 @@ def _fake_opponent_policies_factory():
     policies["self"] = _EndTurnPolicy()
     # greedy_face + v4max -> simple fakes (cover the dispatch identities B3 may
     # emit via the tail; not in the default B3 mix but kept for completeness).
+    policies["end_turn"] = _EndTurnPolicy()
     policies["greedy_face"] = _EndTurnPolicy()
     policies["v4max"] = _EndTurnPolicy()
     return policies

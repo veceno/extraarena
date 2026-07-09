@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""No-assist conservative second-start hardening for V5.
+"""DEPRECATED for current Phase-A / Block-B: no-assist second-start hardening for V5.
+
+This is not part of the active random-bootstrap -> Block-B live league path. It is
+kept as a diagnostic / repair-lane opt-in because later recovery runners import its
+pairwise dataset helpers.
 
 Phase18 showed that direct CE imitation of rollout-search labels can destroy
 real play. Phase19 keeps this update conservative: it only applies pairwise
@@ -516,12 +520,15 @@ def train_conservative_pairwise_kl(
             anchor_features_b = mx.array(anchor_action_features[anchor_idx])
             anchor_mask_b = mx.array(anchor_masks[anchor_idx])
 
-            ref_logits, _ref_values = reference_model(obs_b, features_b)
-            ref_anchor_logits, _ref_anchor_values = reference_model(anchor_obs_b, anchor_features_b)
+            ref_output = reference_model(obs_b, features_b)
+            ref_logits = ref_output[0] if isinstance(ref_output, tuple) else ref_output
+            ref_anchor_output = reference_model(anchor_obs_b, anchor_features_b)
+            ref_anchor_logits = ref_anchor_output[0] if isinstance(ref_anchor_output, tuple) else ref_anchor_output
             mx.eval(ref_logits, ref_anchor_logits)
 
             def loss_fn(m):
-                logits, _values = m(obs_b, features_b)
+                model_output = m(obs_b, features_b)
+                logits = model_output[0] if isinstance(model_output, tuple) else model_output
                 masked = mx.where(mask_b.astype(mx.bool_), logits, mx.array(-1.0e9, dtype=mx.float32))
                 row = mx.arange(pos_b.shape[0])
                 pos_logits = masked[row, pos_b]
@@ -530,7 +537,8 @@ def train_conservative_pairwise_kl(
                 pair_loss = mx.mean(mx.maximum(mx.array(0.0, dtype=mx.float32), mx.array(float(ranking_margin)) - diff))
                 policy_kl = _masked_ref_kl(ref_logits, logits, mask_b)
 
-                anchor_logits, _anchor_values = m(anchor_obs_b, anchor_features_b)
+                anchor_output = m(anchor_obs_b, anchor_features_b)
+                anchor_logits = anchor_output[0] if isinstance(anchor_output, tuple) else anchor_output
                 anchor_kl = _masked_ref_kl(ref_anchor_logits, anchor_logits, anchor_mask_b)
                 loss = (
                     mx.array(float(pairwise_coef), dtype=mx.float32) * pair_loss

@@ -976,6 +976,15 @@ pub unsafe extern "C" fn trainv3_worker_reset(worker: *mut FfiWorker) -> i32 {
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn trainv3_worker_use_chacha_rng(worker: *mut FfiWorker) -> i32 {
+    let Some(worker) = worker_mut(worker) else {
+        return -1;
+    };
+    worker.worker.use_chacha_rng();
+    0
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn trainv3_worker_reset_indices(
     worker: *mut FfiWorker,
     indices_ptr: *const usize,
