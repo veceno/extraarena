@@ -315,7 +315,7 @@ class TestGoldenTraceByteParity:
 
 
 # ============================================================================
-# Selection helper (spec §6.186)
+# Selection helper (factorized Bernoulli gate)
 # ============================================================================
 class TestSelectIncludesManaDraw:
     def test_illegal_never_selected_even_if_logit_higher(self):
@@ -323,17 +323,14 @@ class TestSelectIncludesManaDraw:
         logit (the engine never emits the action, so it can never be taken)."""
         assert select_includes_mana_draw(9.0, 1.0, False) is False
 
-    def test_legal_and_higher_logit_selected(self):
-        assert select_includes_mana_draw(2.0, 1.0, True) is True
+    def test_legal_positive_gate_selected(self):
+        assert select_includes_mana_draw(0.1, 99.0, True) is True
 
-    def test_legal_and_lower_logit_not_selected(self):
-        assert select_includes_mana_draw(1.0, 2.0, True) is False
+    def test_legal_negative_gate_not_selected(self):
+        assert select_includes_mana_draw(-0.1, -99.0, True) is False
 
-    def test_tie_favors_candidate(self):
-        """mana_draw logit == best candidate logit → NOT selected (the 601 path
-        is the default action space; ties deterministically favor the
-        candidate)."""
-        assert select_includes_mana_draw(1.0, 1.0, True) is False
+    def test_zero_gate_ties_to_no_draw(self):
+        assert select_includes_mana_draw(0.0, -999.0, True) is False
 
     def test_legal_mask_dominates_all_logit_combos(self):
         """For any logit pair, illegal → False (mask wins)."""

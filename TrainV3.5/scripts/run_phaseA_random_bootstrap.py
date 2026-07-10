@@ -96,10 +96,10 @@ class MLXV5LearnerPolicy:
         return action
 
     def argmax_select_with_mana(self, ctx: OpponentCtx) -> tuple[int, bool]:
-        """Return the deterministic best action from the joint legal action space.
+        """Return the deterministic action from the factorized legal policy.
 
-        ``mana_draw`` remains a parallel FFI flag, but for policy selection and
-        PPO it is a first-class legal option competing with the 601 candidates.
+        The legal mana-draw gate is decided at probability 0.5; otherwise the
+        best action is selected from the conditional 601-candidate policy.
         """
         if ctx.legal_action_features is None:
             raise ValueError("V5 learner requires legal_action_features for opponent argmax")
@@ -179,12 +179,18 @@ def _select_from_joint_padded(
     mana_draw_legal: np.ndarray,
     rng: np.random.Generator | None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Select from legal candidates plus legal mana-draw as ONE distribution.
+    """Sample the factorized V5 action policy.
 
-    The Rust core keeps ``mana_draw`` outside the frozen 601-action codec, so
-    the action id remains a legal candidate placeholder when mana-draw wins.
-    Its log-probability is nevertheless the joint categorical probability used
-    by the PPO update, keeping rollout and gradient semantics identical.
+    ``mana_draw`` is a binary decision (draw now, or continue with a normal
+    card action), while the 601 logits define a conditional distribution over
+    normal actions. Treating the raw binary-head logit as a 602nd flat option
+    was an architectural mismatch: argmax compared one draw option to each
+    individual card, while sampling compared it with all card mass combined.
+
+    The factorization is ``P(draw)=sigmoid(gate)`` and
+    ``P(card_i)=(1-P(draw))*softmax(card_logits)[i]``. The FFI still receives
+    a valid candidate placeholder when draw wins; its returned log-probability
+    nevertheless matches the factorized PPO evaluator exactly.
     """
     actions = np.empty(counts.shape[0], dtype=np.uintp)
     log_probs = np.empty(counts.shape[0], dtype=np.float32)
@@ -201,23 +207,44 @@ def _select_from_joint_padded(
         local_ids = np.asarray(ids[offset : offset + count], dtype=np.uintp)
         if count <= 0:
             raise ValueError(f"row {row} has no legal candidate actions")
-        option_logits = local_logits
-        if bool(md_legal[row]):
-            option_logits = np.concatenate([local_logits, np.asarray([md_logits[row]])])
-        shifted = option_logits - float(np.max(option_logits))
+        shifted = local_logits - float(np.max(local_logits))
         denom = float(np.exp(shifted).sum())
         if not np.isfinite(denom) or denom <= 0.0:
-            probs = np.full(option_logits.shape[0], 1.0 / float(option_logits.shape[0]), dtype=np.float64)
+            candidate_probs = np.full(count, 1.0 / float(count), dtype=np.float64)
         else:
-            probs = np.exp(shifted) / denom
-        chosen = int(np.argmax(probs)) if rng is None else int(rng.choice(probs.shape[0], p=probs))
+            candidate_probs = np.exp(shifted) / denom
+        legal_draw = bool(md_legal[row])
+        if legal_draw:
+            gate_logit = float(np.clip(md_logits[row], -60.0, 60.0))
+            draw_probability = 1.0 / (1.0 + np.exp(-gate_logit))
+        else:
+            draw_probability = 0.0
+        draw = legal_draw and (
+            bool(md_logits[row] > 0.0)
+            if rng is None
+            else bool(rng.random() < draw_probability)
+        )
         # The candidate id is ignored by step_mana_draw when this is true, but
         # retain a valid candidate index for the compact legal-action tape.
-        candidate_local = int(np.argmax(local_logits)) if chosen == count else chosen
+        candidate_local = (
+            int(np.argmax(local_logits))
+            if draw
+            else (
+                int(np.argmax(candidate_probs))
+                if rng is None
+                else int(rng.choice(count, p=candidate_probs))
+            )
+        )
         actions[row] = int(local_ids[candidate_local])
         selected_local[row] = candidate_local
-        mana_draw_flags[row] = bool(md_legal[row] and chosen == count)
-        log_probs[row] = float(np.log(max(float(probs[chosen]), 1.0e-12)))
+        mana_draw_flags[row] = draw
+        if draw:
+            log_probs[row] = float(np.log(max(draw_probability, 1.0e-12)))
+        else:
+            log_probs[row] = float(
+                np.log(max(1.0 - draw_probability, 1.0e-12))
+                + np.log(max(float(candidate_probs[candidate_local]), 1.0e-12))
+            )
         offset += count
     return actions, log_probs, selected_local, mana_draw_flags
 
@@ -296,7 +323,7 @@ def run(config: argparse.Namespace) -> dict[str, Any]:
         "opponent_mix_override": custom_opponent_mix,
         "obs_dim": OBS_V5_DIM,
         "action_feature_dim": ACTION_FEATURE_DIM,
-        "mana_draw_policy": "joint_legal_categorical_ppo",
+        "mana_draw_policy": "binary_gate_then_candidate_conditional_ppo",
     }
     (output_dir / "run_meta.json").write_text(
         json.dumps(run_meta, indent=2, sort_keys=True) + "\n",

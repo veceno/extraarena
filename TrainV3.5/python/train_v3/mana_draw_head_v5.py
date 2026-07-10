@@ -123,14 +123,15 @@ def select_includes_mana_draw(
 ) -> bool:
     """Selection helper: whether the policy takes the mana_draw action this step.
 
-    Spec §6.186 — "selection combines 601-candidate-best vs mana_draw logit
-    correctly". ``mana_draw`` is taken iff it is LEGAL and its logit STRICTLY
-    exceeds the best 601-candidate logit. Ties favor the candidate (the 601 path
-    is the default action space — deterministic). When ``mana_draw_legal`` is
-    False the result is False regardless of the logit: the legal mask DOMINATES
-    the head output (an illegal action is never selectable, mirroring the
-    engine which never emits it).
+    The parallel head is a Bernoulli gate, trained as ``P(draw)=sigmoid(logit)``.
+    It must not be numerically compared to an individual candidate logit.
+    Deterministic inference chooses draw exactly when its probability exceeds
+    one half (raw logit > 0). ``best_candidate_logit`` remains in the public
+    signature for existing ONNX callers, but is intentionally not used by the
+    factorized decision rule. When ``mana_draw_legal`` is False the legal mask
+    dominates the head output.
     """
     if not mana_draw_legal:
         return False
-    return float(mana_draw_logit) > float(best_candidate_logit)
+    del best_candidate_logit
+    return float(mana_draw_logit) > 0.0

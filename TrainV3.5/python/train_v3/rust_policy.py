@@ -29,8 +29,7 @@ class PaddedLegalActionScores:
     legal_mask: Any
     values: Any
     # The legal mana-draw action lives outside the 601 candidate action space.
-    # Keep its raw logit beside the padded candidate logits so live PPO can form
-    # one categorical distribution over *all* legal actions.
+    # Keep its raw Bernoulli-gate logit beside the conditional candidate logits.
     mana_draw_logits: Any | None = None
     profile: dict[str, float] | None = None
 

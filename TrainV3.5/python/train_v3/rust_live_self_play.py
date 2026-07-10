@@ -84,10 +84,10 @@ SECOND-START OVERSAMPLING (D-A10): ``second_start_oversampling_scheme``
 (``ppo_phaseA_config.py:258``) biases the learner starting side (p1/p2) to balance the
 under-represented side (``design.md:112,120``).
 
-MANA_DRAW: the learner policy's 601-candidate head and parallel mana_draw head form one
-joint categorical distribution over the currently legal choices. ``step_mana_draw`` applies
-the separate flag (its candidate action id placeholder is ignored by the kernel), while PPO
-uses that same joint log-probability to train both heads.
+MANA_DRAW: the learner policy first evaluates a binary mana-draw gate, then (when it does
+not draw) samples from the 601-candidate conditional distribution. ``step_mana_draw``
+applies the separate flag (its candidate action id placeholder is ignored by the kernel),
+while PPO uses the matching factorized log-probability to train both heads.
 
 This is compatible with the existing Block-B ``BLOCK_B_POLICY_OPPONENT_KINDS`` dispatch
 extension and its ``opponent_mix_parsed`` handoff; neither changes the frozen Phase-A mix.
@@ -393,10 +393,10 @@ class LearnerCtxBatch:
 class LearnerPolicy(Protocol):
     """Learner policy protocol. ``select(ctx)`` returns per-learner-env arrays:
 
-    ``(actions, values, joint_log_probs, selected_local_indices, mana_draw_flags)`` where
-    ``mana_draw`` is a separate Rust flag but competes with the legal candidates in the
-    same policy distribution. When it is selected, ``actions`` holds a valid ignored
-    candidate placeholder for the compact tape.
+    ``(actions, values, log_probs, selected_local_indices, mana_draw_flags)`` where
+    ``mana_draw`` is a separate Rust flag governed by a binary policy gate; normal
+    actions use the conditional legal-candidate distribution. When draw is selected,
+    ``actions`` holds a valid ignored candidate placeholder for the compact tape.
     """
 
     def select(self, ctx: LearnerCtxBatch) -> tuple[

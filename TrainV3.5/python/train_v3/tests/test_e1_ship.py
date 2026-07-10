@@ -618,9 +618,8 @@ class TestGetActionV5:
         brain.sessions = {"v5-test": _v5_profile_dict(session)}
         return brain
 
-    def test_get_action_v5_takes_mana_draw_when_legal_and_logit_higher(self):
-        """mana_draw_logit=5.0 (high) + a clear best 601 candidate at 1.0,
-        on a state where mana_draw is legal -> returns the ManaDrawAction index."""
+    def test_get_action_v5_takes_mana_draw_when_legal_and_gate_positive(self):
+        """A positive mana-draw gate on a legal state returns ManaDrawAction."""
         # mana_draw is legal when hand < HAND_CAP(4) and mana >= cost(2).
         # hand_size=2 < 4, mana=10 >= 2 -> legal.
         st, legal = _state_with_legal_actions(me_hand_size=2, me_mana=10, me_count=0)
@@ -662,8 +661,7 @@ class TestGetActionV5:
         assert not isinstance(legal[idx], ManaDrawAction)
 
     def test_get_action_v5_skips_mana_draw_when_logit_lower(self):
-        """mana_draw legal but mana_draw_logit=0.1 < best_candidate_logit=1.0
-        -> returns a 601-candidate (NOT the mana_draw)."""
+        """A negative mana-draw gate returns a 601-candidate, even when legal."""
         st, legal = _state_with_legal_actions(me_hand_size=2, me_mana=10, me_count=0)
         assert any(isinstance(a, ManaDrawAction) for a in legal)
 
@@ -672,12 +670,12 @@ class TestGetActionV5:
             logits[0] = 1.0  # best 601 candidate at 1.0
             return logits
 
-        # mana_draw_logit=0.1 < 1.0 -> select_includes_mana_draw returns False
-        session = FakeV5Session(logits_fn=logits_fn, mana_draw_logit=0.1)
+        # sigmoid(-0.1) < 0.5 -> select_includes_mana_draw returns False.
+        session = FakeV5Session(logits_fn=logits_fn, mana_draw_logit=-0.1)
         brain = self._brain_with_v5_session(session)
         idx = brain._get_action_v5(st, 1, legal, "v5-test", brain.sessions["v5-test"])
         assert 0 <= idx < len(legal)
-        # should NOT be the mana_draw (logit lower)
+        # should NOT be the mana_draw (negative gate)
         assert not isinstance(legal[idx], ManaDrawAction)
 
     def test_get_action_v5_fallback_guard_nan_raises(self):

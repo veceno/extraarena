@@ -641,15 +641,11 @@ class BerserkInference:
         safety -- raises RuntimeError on NaN/inf OR no-legal-candidate, NOT a
         silent _legal_fallback), then wires the mana_draw parallel binary head.
 
-        mana_draw decision (SPEC :174 / spec §6.186): ``mana_draw`` is a
-        PARALLEL BINARY HEAD, NOT a 602nd candidate. When
-        ``select_includes_mana_draw(mana_draw_logit, best_candidate_logit,
-        mana_draw_legal)`` fires AND mana_draw is legal, the method returns the
-        index of the ``ManaDrawAction`` in ``legal_actions`` (the engine emits
-        it into the legal-action set at engine.py:1345-1347 when
-        ``player.mana >= mana_draw_cost``). When the head does NOT fire, the
-        method decodes the 601-best candidate and matches it against
-        ``legal_actions``.
+        mana_draw decision: ``mana_draw`` is a PARALLEL BINARY GATE, NOT a
+        602nd candidate. When its legal-gated sigmoid probability exceeds 0.5,
+        the method returns the ``ManaDrawAction`` index in ``legal_actions``.
+        Otherwise it decodes the conditional 601-best candidate and matches it
+        against ``legal_actions``.
 
         Exception handling: any UNEXPECTED exception (encoder/decoder/match
         failure) degrades to ``_legal_fallback`` (the V4 silent-fallback
@@ -723,19 +719,18 @@ class BerserkInference:
             # This RuntimeError MUST propagate (NOT swallowed into _legal_fallback).
             action_id = _assert_v5_logits_finite_legal(logits, mask)
 
-            # mana_draw decision (spec §6.186): mana_draw is a PARALLEL BINARY
-            # HEAD. When select_includes_mana_draw fires AND legal, return the
-            # ManaDrawAction index (the engine emits it into legal_actions at
-            # engine.py:1345-1347 when player.mana >= mana_draw_cost).
+            # Factorized decision: mana_draw is a legal-gated binary policy,
+            # not a scalar to compare with an individual card logit.
             mana_draw_legal = mana_draw_legal_mask(game_state, player_id)
-            best_candidate_logit = float(logits[action_id])
-            if select_includes_mana_draw(mana_draw_logit, best_candidate_logit, mana_draw_legal):
+            candidate_placeholder_logit = float(logits[action_id])
+            if select_includes_mana_draw(
+                mana_draw_logit, candidate_placeholder_logit, mana_draw_legal
+            ):
                 for i, action in enumerate(legal_actions):
                     if isinstance(action, ManaDrawAction):
                         logger.debug(
                             f"[BerserkInference] V5 player={player_id}, difficulty={difficulty}, "
-                            f"mana_draw_logit={mana_draw_logit:.3f} > best_candidate={best_candidate_logit:.3f} "
-                            f"-> mana_draw legal_idx={i}"
+                            f"mana_draw_gate={mana_draw_logit:.3f} > 0 -> mana_draw legal_idx={i}"
                         )
                         return i
                 # select_includes_mana_draw said legal but no ManaDrawAction in

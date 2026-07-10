@@ -43,8 +43,8 @@ class RustPPOBatch:
     returns: np.ndarray
     selected_local_indices: np.ndarray | None = None
     # Parallel action channel outside the frozen 601-candidate codec. When
-    # present, PPO evaluates one joint categorical distribution over legal
-    # candidate actions plus legal mana_draw.
+    # present, PPO evaluates a binary mana-draw gate followed by the
+    # conditional candidate-action distribution.
     mana_draw_legal: np.ndarray | None = None
     mana_draw_taken: np.ndarray | None = None
 
@@ -717,35 +717,52 @@ def evaluate_rust_ppo_batch(
     mana_draw_taken = flat["mana_draw_taken"]
     if (mana_draw_legal is None) != (mana_draw_taken is None):
         raise ValueError("mana-draw rollout fields must be present together")
+    candidate_probs = nn.softmax(scores.padded_logits, axis=-1)
+    selected = mx.array(selected_local, dtype=mx.int32)
+    selected_candidate_probs = _gather_selected_action_probs(candidate_probs, selected)
+    candidate_log_probs = mx.log(selected_candidate_probs + 1.0e-10)
+    candidate_entropy = -mx.sum(
+        candidate_probs * mx.log(candidate_probs + 1.0e-10), axis=-1
+    )
     if mana_draw_legal is None:
-        joint_logits = scores.padded_logits
-        selected_for_joint = selected_local
+        new_log_probs = candidate_log_probs
+        entropy_per_row = candidate_entropy
     else:
         md_legal_np = np.asarray(mana_draw_legal, dtype=np.bool_)
         md_taken_np = np.asarray(mana_draw_taken, dtype=np.bool_)
         if scores.mana_draw_logits is None:
             if bool(np.any(md_taken_np)):
                 raise ValueError("mana-draw transition requires model.mana_draw_head")
-            joint_logits = scores.padded_logits
-            selected_for_joint = selected_local
+            new_log_probs = candidate_log_probs
+            entropy_per_row = candidate_entropy
         else:
-            md_logit = mx.expand_dims(scores.mana_draw_logits, axis=-1)
-            md_legal = mx.array(md_legal_np.reshape((-1, 1)))
-            md_logit = mx.where(
+            # Factorized policy: P(draw)=sigmoid(gate), and P(card_i) is the
+            # conditional candidate softmax.  Appending the gate to the card
+            # vector makes deterministic argmax compare a draw option to each
+            # individual card while sampling compares it to their aggregate.
+            md_legal = mx.array(md_legal_np)
+            md_taken = mx.array(md_taken_np)
+            raw_draw_probability = mx.sigmoid(scores.mana_draw_logits)
+            draw_probability = mx.where(
                 md_legal,
-                md_logit,
-                mx.array(-1.0e9, dtype=scores.padded_logits.dtype),
+                raw_draw_probability,
+                mx.zeros_like(raw_draw_probability),
             )
-            joint_logits = mx.concatenate([scores.padded_logits, md_logit], axis=-1)
-            selected_for_joint = np.where(
-                md_taken_np,
-                int(scores.padded_logits.shape[1]),
-                selected_local,
+            draw_log_prob = mx.log(draw_probability + 1.0e-10)
+            no_draw_probability = 1.0 - draw_probability
+            no_draw_log_prob = mx.log(no_draw_probability + 1.0e-10)
+            gate_log_probs = mx.where(md_taken, draw_log_prob, no_draw_log_prob)
+            new_log_probs = gate_log_probs + mx.where(
+                md_taken,
+                mx.zeros_like(candidate_log_probs),
+                candidate_log_probs,
             )
-    probs = nn.softmax(joint_logits, axis=-1)
-    selected = mx.array(selected_for_joint, dtype=mx.int32)
-    action_probs = _gather_selected_action_probs(probs, selected)
-    new_log_probs = mx.log(action_probs + 1.0e-10)
+            gate_entropy = -(
+                draw_probability * draw_log_prob
+                + no_draw_probability * no_draw_log_prob
+            )
+            # H(draw, card) = H(draw) + P(no draw) * H(card | no draw).
+            entropy_per_row = gate_entropy + no_draw_probability * candidate_entropy
 
     old_log_probs = mx.array(flat["old_log_probs"])
     advantages = mx.array(flat["advantages"])
@@ -756,7 +773,7 @@ def evaluate_rust_ppo_batch(
     surr2 = mx.clip(ratios, 1.0 - clip_epsilon, 1.0 + clip_epsilon) * advantages
     policy_loss = -mx.mean(mx.minimum(surr1, surr2))
     value_loss = value_coef * mx.mean((returns - scores.values) ** 2)
-    entropy = mx.mean(-mx.sum(probs * mx.log(probs + 1.0e-10), axis=-1))
+    entropy = mx.mean(entropy_per_row)
     clip_fraction = mx.mean(
         mx.where(
             ratios < 1.0 - clip_epsilon,
