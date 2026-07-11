@@ -131,7 +131,8 @@ class V5RlhfAdapter:
         if not legal:
             return 0
 
-        # 2. Live GameState (server-side bot has FULL state -> omniscient).
+        # 2. Live GameState.  V5 was trained/deployed with self-visible private
+        # information; server access must not silently turn that into omniscience.
         state = engine.state
 
         # Lazy imports: train_v3 encoders live only in TrainV3.5/python (added to
@@ -151,10 +152,8 @@ class V5RlhfAdapter:
             encode_action_features,
         )
 
-        # 3. D11 OMNISCIENT observation: enemy_hand_known=True + enemy_deck_known=True
-        #    EXPLICIT (InfoModeV5() default is SELF-VISIBLE, contracts.py:46-47 —
-        #    would VIOLATE D11). AssistModeV5() default = no assist channels.
-        info_mode = InfoModeV5(enemy_hand_known=True, enemy_deck_known=True)
+        # 3. Match the A/B and production visibility contract.
+        info_mode = InfoModeV5()
         assist_mode = AssistModeV5()
 
         # history_events: encode_observation_v5 expects list[dict[str, Any]] and
@@ -170,7 +169,7 @@ class V5RlhfAdapter:
         # ``state.action_history`` (core/state.py:177) — that is a Deque of
         # (log_type, text) UI-log tuples, a different field; filtering it to dicts
         # yields [] and silently drops the history channel (train/deploy mismatch).
-        raw_history = getattr(state, "history", None) or []
+        raw_history = getattr(state, "v5_history_events", None) or []
         history_events = [e for e in raw_history if isinstance(e, dict)]
 
         obs = encode_observation_v5(
@@ -198,8 +197,17 @@ class V5RlhfAdapter:
         )
 
         # 6. V5 3-tuple forward (logits, value, mana_draw_logit).
-        logits, _value, _mana_draw_logit = self._inference(obs, action_features)
+        logits, _value, mana_draw_logit = self._inference(obs, action_features)
         logits = np.asarray(logits, dtype=np.float32).reshape(-1)
+
+        # V5's draw decision is a separate binary gate, not candidate 602.
+        # Return the real engine ManaDrawAction index when legal and positive.
+        from core.actions import ManaDrawAction
+        draw_logit = float(np.asarray(mana_draw_logit, dtype=np.float32).reshape(-1)[0])
+        if draw_logit > 0.0:
+            for idx, action in enumerate(legal):
+                if isinstance(action, ManaDrawAction):
+                    return int(idx)
 
         # 7. argmax over legal-masked candidates -> candidate id -> legal index.
         masked = np.where(legal_mask.astype(bool), logits, -np.inf).astype(np.float32)

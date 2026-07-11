@@ -114,16 +114,8 @@ _TERMINAL_ACTION_TYPES = frozenset({"surrender", "draw", "stalemate"})
 
 
 def _omniscient_info_mode() -> InfoModeV5:
-    """D11: the trace is omniscient -- pass an omniscient InfoModeV5 so the
-    loader's obs/next_obs match the omniscient deploy encoder AND the
-    omniscient pre_state v5_trace records (design.md:46)."""
-    return InfoModeV5(
-        own_hand_identity_known=True,
-        own_deck_known=True,
-        enemy_hand_known=True,
-        enemy_deck_known=True,
-        enemy_deck_order_known=True,
-    )
+    """Compatibility name for the current self-visible A/B/prod contract."""
+    return InfoModeV5()
 
 
 # Policy signature: policy_fn(obs_batch, action_features_batch) ->
@@ -415,9 +407,10 @@ def build_offline_replay_batch(
     feats_all = np.stack(
         [r.action_features for g in games for r in g], axis=0
     ).astype(np.float32, copy=False)
-    logits_all, values_all, _mdl_all = policy_fn(obs_all, feats_all)
+    logits_all, values_all, mdl_all = policy_fn(obs_all, feats_all)
     logits_all = np.asarray(logits_all, dtype=np.float32)
     values_all = np.asarray(values_all, dtype=np.float32).reshape(-1)
+    draw_logits_all = np.asarray(mdl_all, dtype=np.float32).reshape(-1)
 
     # Masked softmax over the 601 candidates (mirror the dense evaluator,
     # rust_ppo.py:760-761). The mask is the per-row append_only legal mask
@@ -425,16 +418,22 @@ def build_offline_replay_batch(
     masks_all = _masks_from_rows(games)
     probs_all = _masked_softmax_probs(logits_all, masks_all)
 
-    # old_log_prob per row (D-C10): log(softmax(masked)[target_tcode] + 1e-10)
-    # for normal rows; 0.0 for mana_draw / terminal rows.
+    # Exact factorized online contract:
+    #   draw: log P(draw)
+    #   card: log(1-P(draw)) + log P(card | no draw)
     flat_rows = [r for g in games for r in g]
     old_log_probs_flat = np.zeros(len(flat_rows), dtype=np.float32)
     for i, r in enumerate(flat_rows):
-        if r.target_tcode is not None:
+        draw_p = 0.0
+        if r.mana_draw_legal:
+            draw_p = float(1.0 / (1.0 + np.exp(-np.clip(draw_logits_all[i], -60.0, 60.0))))
+        if r.is_mana_draw:
+            old_log_probs_flat[i] = float(np.log(draw_p + 1.0e-10))
+        elif r.target_tcode is not None:
             old_log_probs_flat[i] = float(
-                np.log(probs_all[i, r.target_tcode] + 1.0e-10)
+                np.log(1.0 - draw_p + 1.0e-10)
+                + np.log(probs_all[i, r.target_tcode] + 1.0e-10)
             )
-        # else 0.0 (mana_draw / terminal -- excluded from the PPO ratio)
 
     # bootstrap_values (Step 4): V(next_obs) of each game's FINAL real
     # transition, shape (num_games,). Run the current policy on each game's last

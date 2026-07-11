@@ -302,6 +302,8 @@ class SnapshotPool:
             if h2h_vs_best_score_rate is not None
             else candidate.h2h_vs_best
         )
+        if not bool(candidate.promotion_eligible):
+            return False
         if self._best_ever is None:
             # No prior best — the candidate becomes the inaugural best-ever (A5
             # first-snapshot case, ``a_gate.py:627``). This path is normally covered by

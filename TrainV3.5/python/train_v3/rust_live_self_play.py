@@ -568,6 +568,7 @@ def collect_rust_live_rollout(
     steps: int | None = None,
     rng: np.random.Generator | None = None,
     record_dispatch: bool = False,
+    reset_at_start: bool = True,
 ) -> LiveRolloutBatch:
     """Run LIVE self-play on the Rust ``ArenaEnv`` and collect learner transitions.
 
@@ -617,7 +618,16 @@ def collect_rust_live_rollout(
 
     # --- allocate buffers (target_steps, env_count) -----------------------------
     # Read the initial reset to size the observation + legal-action arrays.
-    initial = worker.reset(copy=True)
+    # A PPO rollout boundary is not an episode boundary.  Long-lived training
+    # sessions therefore continue from the worker's current arrays and use the
+    # bootstrapped value below; one-shot callers keep the historical reset.
+    initial = worker.reset(copy=True) if reset_at_start else worker.arrays(copy=True)
+    if not reset_at_start:
+        resident_done = np.asarray(initial.get("terminated", np.zeros(env_count)), dtype=np.bool_)
+        resident_done |= np.asarray(worker.truncated(), dtype=np.bool_)
+        if bool(np.any(resident_done)):
+            worker.reset_indices(np.flatnonzero(resident_done).astype(np.uintp, copy=False))
+            initial = worker.arrays(copy=True)
     obs_v5 = np.asarray(initial["observation_v5"], dtype=np.float32)
     if obs_v5.shape[0] != env_count:
         raise ValueError(
@@ -672,6 +682,29 @@ def collect_rust_live_rollout(
     dispatch_log: list[dict[str, Any]] | None = [] if record_dispatch else None
 
     while batch_step < max_batch_steps:
+        # FFI arrays are the final authority for resident episode state. In a
+        # batched service lane the step result can be consumed after that lane
+        # is already full; clear any completed resident before selecting the
+        # next action instead of relying only on the previous out_* snapshot.
+        resident_terminated = np.asarray(current.get("terminated", np.zeros(env_count)), dtype=np.bool_)
+        resident_truncated = np.asarray(worker.truncated(), dtype=np.bool_)
+        resident_done = resident_terminated | resident_truncated
+        if bool(np.any(resident_done)):
+            for i_raw in np.flatnonzero(resident_done).tolist():
+                i = int(i_raw)
+                row = last_learner_row[i]
+                if row is not None and row < target_steps:
+                    terminated[row, i] |= bool(resident_terminated[i])
+                    truncated[row, i] |= bool(resident_truncated[i])
+                    last_learner_row[i] = None
+            reset_idx = np.flatnonzero(resident_done).astype(np.uintp, copy=False)
+            worker.reset_indices(reset_idx)
+            reset_actors = np.asarray(worker.current_actor_ids(), dtype=np.int32)
+            for i_raw in reset_idx.tolist():
+                i = int(i_raw)
+                episode_starting_actor[i] = int(reset_actors[i])
+                episode_counts[i] = int(episode_counts[i]) + 1
+            current = worker.arrays(copy=True)
         if bool(np.all(learner_step_count >= target_steps)):
             break  # all envs collected target_steps learner transitions
 
@@ -757,7 +790,13 @@ def collect_rust_live_rollout(
                 legal_action_counts=int(cur_counts[i]),
                 mana_draw_legal=bool(md_legal[i]),
             )
-            action_ids[i] = int(opponent_policies[identity].select(i, ctx))
+            select_with_mana = getattr(opponent_policies[identity], "select_with_mana", None)
+            if callable(select_with_mana):
+                selected_action, selected_draw = select_with_mana(i, ctx)
+                action_ids[i] = int(selected_action)
+                mana_draw_flags[i] = bool(selected_draw) and bool(md_legal[i])
+            else:
+                action_ids[i] = int(opponent_policies[identity].select(i, ctx))
 
         # --- learner actions (learner policy + mana_draw head) -----------------
         if learner_envs:
@@ -856,11 +895,41 @@ def collect_rust_live_rollout(
             raise ValueError("mana_draw_legal shape changed before batched step")
         stale_mana_draw = mana_draw_flags & ~authoritative_mana_legal
         if bool(np.any(stale_mana_draw)):
-            for i in np.flatnonzero(stale_mana_draw).tolist():
-                row = last_learner_row[int(i)]
-                if row is not None and row < target_steps:
-                    mana_draw_taken_buf[int(row), int(i)] = False
-            mana_draw_flags[stale_mana_draw] = False
+            # The old implementation only flipped the draw flag.  Its stored
+            # log-probability was still log P(draw), while PPO evaluated the row
+            # as log(1-P(draw)) + log P(card), corrupting the importance ratio.
+            # Re-select from the authoritative no-draw state so action, selected
+            # index, value, flag and old log-prob remain one atomic sample.
+            stale_envs = np.flatnonzero(stale_mana_draw).astype(np.intp, copy=False)
+            retry_ctx = LearnerCtxBatch(
+                env_indices=stale_envs,
+                observation_v5=cur_obs,
+                legal_action_counts=cur_counts,
+                legal_action_offsets=cur_offsets,
+                legal_action_ids=cur_legal_ids,
+                legal_action_features=cur_legal_features,
+                mana_draw_legal=authoritative_mana_legal,
+            )
+            r_actions, r_values, r_log_probs, r_selected, r_draw = learner_policy.select(retry_ctx)
+            r_actions = np.asarray(r_actions, dtype=np.uintp)
+            r_values = np.asarray(r_values, dtype=np.float32)
+            r_log_probs = np.asarray(r_log_probs, dtype=np.float32)
+            r_selected = np.asarray(r_selected, dtype=np.int32)
+            r_draw = np.asarray(r_draw, dtype=np.bool_)
+            if bool(np.any(r_draw)):
+                raise RuntimeError("learner selected mana draw after authoritative legality was false")
+            for k, i_raw in enumerate(stale_envs.tolist()):
+                i = int(i_raw)
+                row = last_learner_row[i]
+                if row is None or row >= target_steps:
+                    continue
+                actions[row, i] = int(r_actions[k])
+                values[row, i] = float(r_values[k])
+                log_probs[row, i] = float(r_log_probs[k])
+                selected_local[row, i] = int(r_selected[k])
+                mana_draw_taken_buf[row, i] = False
+                action_ids[i] = int(r_actions[k])
+                mana_draw_flags[i] = False
 
         # --- step the batch ----------------------------------------------------
         out = worker.step_mana_draw(action_ids, mana_draw_flags, copy=True)
@@ -895,11 +964,13 @@ def collect_rust_live_rollout(
                 terminated[row, i] = bool(term_i)
                 truncated[row, i] = bool(trunc_i)
                 last_learner_row[i] = None  # episode closed
-                # reset env i for the next episode (if not yet full).
-                if int(learner_step_count[i]) < target_steps:
-                    worker.reset_indices(np.asarray([i], dtype=np.uintp))
-                    episode_starting_actor[i] = int(np.asarray(worker.current_actor_ids(), dtype=np.int32)[i])
-                    episode_counts[i] = int(episode_counts[i]) + 1
+                # Always materialize the next episode. If this was exactly the
+                # last row of the PPO segment, the next update will continue
+                # from that reset state; leaving game_over resident makes the
+                # persistent worker attempt an invalid action on update N+1.
+                worker.reset_indices(np.asarray([i], dtype=np.uintp))
+                episode_starting_actor[i] = int(np.asarray(worker.current_actor_ids(), dtype=np.int32)[i])
+                episode_counts[i] = int(episode_counts[i]) + 1
 
         # Opponent-actor envs: no standalone transition is recorded. Fold the opponent
         # response reward into the previous learner transition from the learner's
@@ -936,6 +1007,16 @@ def collect_rust_live_rollout(
                     worker.reset_indices(np.asarray([i], dtype=np.uintp))
                     episode_starting_actor[i] = int(np.asarray(worker.current_actor_ids(), dtype=np.int32)[i])
                     episode_counts[i] = int(episode_counts[i]) + 1
+
+        # Full lanes still execute harmless service actions while slower lanes
+        # finish their segment. A service action can end that episode; reset it
+        # even though no transition is recorded, otherwise game_over leaks into
+        # the next persistent update.
+        for i in full_envs:
+            if bool(out_terminated[i]) or bool(out_truncated[i]):
+                worker.reset_indices(np.asarray([i], dtype=np.uintp))
+                episode_starting_actor[i] = int(np.asarray(worker.current_actor_ids(), dtype=np.int32)[i])
+                episode_counts[i] = int(episode_counts[i]) + 1
 
         # advance: the next iteration reads the post-step + post-reset state.
         current = worker.arrays(copy=True)
@@ -1091,6 +1172,86 @@ def _build_live_worker(
     )
 
 
+@dataclass
+class LiveSelfPlaySession:
+    """Episode-continuous Rust arena state shared by consecutive PPO updates."""
+
+    worker: Any
+    learner_actor_ids: np.ndarray
+    opponent_identities: tuple[str, ...]
+    oversampling_scheme: dict[str, Any]
+    closed: bool = False
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        close = getattr(self.worker, "close", None)
+        if callable(close):
+            close()
+        self.closed = True
+
+
+def create_live_self_play_session(
+    config: PhaseAPPOConfig,
+    *,
+    seed: int,
+    library_path: str | Any | None = None,
+    worker_factory: Callable[[int], Any] | None = None,
+    p1_score_rate: float = 0.5,
+    p2_score_rate: float = 0.5,
+    opponent_mix_parsed: list[tuple[str, float]] | None = None,
+) -> LiveSelfPlaySession:
+    """Create a persistent rollout session and bind lane roles once.
+
+    Keeping roles fixed while an episode is in flight is essential: changing an
+    opponent or learner side at an arbitrary PPO boundary would splice two MDPs.
+    Callers may rotate the whole session at an explicit league boundary.
+    """
+    from .league_v5 import parse_v5_opponent_mix
+
+    env_count = int(config.env_count)
+    rng = np.random.default_rng(int(seed))
+    worker = (
+        worker_factory(env_count)
+        if worker_factory is not None
+        else _build_live_worker(config, seed=int(seed), env_count=env_count, library_path=library_path)
+    )
+    # Materialize one known initial episode before binding start-dependent sides.
+    worker.reset(copy=False)
+    mix = list(opponent_mix_parsed) if opponent_mix_parsed is not None else parse_v5_opponent_mix(config.opponent_mix)
+    opponents = sample_opponent_identities(mix, env_count, rng=rng)
+    side_policy = str((config.second_start_oversampling or {}).get("policy", "oversample_under_represented_on_breach"))
+    if side_policy == "start_second":
+        starting_actors = np.asarray(worker.current_actor_ids(), dtype=np.int32)
+        learner_sides = np.where(starting_actors == 1, 2, 1).astype(np.int32)
+        scheme = {
+            "p1_weight": float(np.mean(learner_sides == 1)),
+            "p2_weight": float(np.mean(learner_sides == 2)),
+            "gap": abs(float(p1_score_rate) - float(p2_score_rate)),
+            "breach": False,
+            "oversampled_side": None,
+            "policy": "start_second",
+            "starting_actor_counts": {
+                "1": int(np.sum(starting_actors == 1)),
+                "2": int(np.sum(starting_actors == 2)),
+            },
+        }
+    else:
+        learner_sides, scheme = sample_learner_sides(
+            env_count,
+            p1_score_rate=p1_score_rate,
+            p2_score_rate=p2_score_rate,
+            oversampling=config.second_start_oversampling,
+            rng=rng,
+        )
+    return LiveSelfPlaySession(
+        worker=worker,
+        learner_actor_ids=learner_sides,
+        opponent_identities=tuple(opponents),
+        oversampling_scheme=scheme,
+    )
+
+
 def run_live_self_play_update(
     config: PhaseAPPOConfig,
     learner_policy: LearnerPolicy,
@@ -1105,6 +1266,7 @@ def run_live_self_play_update(
     p2_score_rate: float = 0.5,
     steps: int | None = None,
     opponent_mix_parsed: list[tuple[str, float]] | None = None,
+    session: LiveSelfPlaySession | None = None,
 ) -> dict[str, Any]:
     """Run ONE finite PPO update on a seeded live arena (THE MISSING ENTRY POINT).
 
@@ -1132,11 +1294,19 @@ def run_live_self_play_update(
     use_seed = int(seed if seed is not None else (config.seed if config.seed is not None else 0))
     rng = np.random.default_rng(use_seed)
 
-    # 1. build worker
-    if worker_factory is not None:
-        worker = worker_factory(env_count)
+    # 1. build a one-shot worker, or continue an episode-continuous session.
+    owns_worker = session is None
+    if session is None:
+        if worker_factory is not None:
+            worker = worker_factory(env_count)
+        else:
+            worker = _build_live_worker(config, seed=use_seed, env_count=env_count, library_path=library_path)
     else:
-        worker = _build_live_worker(config, seed=use_seed, env_count=env_count, library_path=library_path)
+        if session.closed:
+            raise RuntimeError("live self-play session is closed")
+        worker = session.worker
+        if int(worker.env_count) != env_count:
+            raise ValueError("session worker env_count does not match config.env_count")
 
     # 2. sample opponents + learner sides. ``opponent_mix_parsed`` (Block-B
     # additive, B8) lets the caller bypass ``parse_v5_opponent_mix`` and pass a
@@ -1150,13 +1320,20 @@ def run_live_self_play_update(
     # ``(POLICY_DISPATCH, None)`` via the ``BLOCK_B_POLICY_OPPONENT_KINDS``
     # extension). When ``opponent_mix_parsed`` is None (the Phase-A default) the
     # existing ``parse_v5_opponent_mix(config.opponent_mix)`` path is unchanged.
-    if opponent_mix_parsed is not None:
+    if session is not None:
+        opp_identities = session.opponent_identities
+        learner_sides = np.asarray(session.learner_actor_ids, dtype=np.int32)
+        oversampling_scheme = dict(session.oversampling_scheme)
+    elif opponent_mix_parsed is not None:
         mix = list(opponent_mix_parsed)
+        opp_identities = sample_opponent_identities(mix, env_count, rng=rng)
     else:
         mix = parse_v5_opponent_mix(config.opponent_mix)
-    opp_identities = sample_opponent_identities(mix, env_count, rng=rng)
+        opp_identities = sample_opponent_identities(mix, env_count, rng=rng)
     side_policy = str((config.second_start_oversampling or {}).get("policy", "oversample_under_represented_on_breach"))
-    if side_policy == "start_second":
+    if session is not None:
+        pass
+    elif side_policy == "start_second":
         starting_actors = np.asarray(worker.current_actor_ids(), dtype=np.int32)
         if starting_actors.shape != (env_count,):
             raise ValueError(f"current_actor_ids shape {starting_actors.shape} != ({env_count},)")
@@ -1199,6 +1376,7 @@ def run_live_self_play_update(
             config=config,
             steps=steps,
             rng=rng,
+            reset_at_start=session is None,
         )
         collect_seconds = time.perf_counter() - t0
 
@@ -1243,6 +1421,12 @@ def run_live_self_play_update(
             "opponent_mix_parsed": opponent_mix_parsed is not None,
             "mana_draw_eligible": int(np.count_nonzero(rollout.mana_draw_legal)),
             "mana_draw_taken": int(np.count_nonzero(rollout.mana_draw_taken)),
+            "terminated_transitions": int(np.count_nonzero(rollout.transitions.terminated)),
+            "truncated_transitions": int(np.count_nonzero(rollout.transitions.truncated)),
+            "closed_episode_transitions": int(np.count_nonzero(
+                np.asarray(rollout.transitions.terminated, dtype=np.bool_)
+                | np.asarray(rollout.transitions.truncated, dtype=np.bool_)
+            )),
             "mana_draw_rate": (
                 0.0
                 if not bool(np.any(rollout.mana_draw_legal))
@@ -1283,9 +1467,10 @@ def run_live_self_play_update(
         metrics["ppo_batch"] = ppo_batch
         return metrics
     finally:
-        close = getattr(worker, "close", None)
-        if callable(close):
-            close()
+        if owns_worker:
+            close = getattr(worker, "close", None)
+            if callable(close):
+                close()
 
 
 __all__ = [
@@ -1293,6 +1478,7 @@ __all__ = [
     "GreedyFaceOpponent",
     "LearnerCtxBatch",
     "LearnerPolicy",
+    "LiveSelfPlaySession",
     "ArgmaxRandomLearner",
     "LiveRolloutBatch",
     "OpponentCtx",
@@ -1306,6 +1492,7 @@ __all__ = [
     "SelfPrevOpponent",
     "V4MaxOpponent",
     "collect_rust_live_rollout",
+    "create_live_self_play_session",
     "default_opponent_policies",
     "fast_forward_rule_opponent_turns",
     "is_policy_opponent",

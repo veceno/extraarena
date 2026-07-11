@@ -277,7 +277,7 @@ def test_awac_crr_loss_math():
     mask[1, 7] = 1.0
     mask[2, 0] = 1.0
     bf = dict(
-        old_log_probs=np.array([0.0, 0.0, 0.0], dtype=np.float32),
+        old_log_probs=np.array([0.0, 0.0, math.log(0.5)], dtype=np.float32),
         advantages=np.array([2.0, -1.0, 0.0], dtype=np.float32),
         returns=np.array([1.0, 0.5, 0.0], dtype=np.float32),
         actions=np.array([5, 7, 0], dtype=np.int64),
@@ -296,12 +296,12 @@ def test_awac_crr_loss_math():
     # Hand-computed.
     w0 = math.exp(2.0)
     w1 = math.exp(-1.0)
-    # ratio=1 -> surr1=surr2=A -> min=A. policy_loss = -(w0*2 + w1*(-1))/2
-    policy_loss = -(w0 * 2.0 + w1 * (-1.0)) / 2.0
+    # Draw rows are real factorized actions in the AWAC surrogate (A=0 here).
+    policy_loss = -(w0 * 2.0 + w1 * (-1.0)) / 3.0
     # value_loss = 0.5 * (1^2 + 0.5^2 + 0^2)/3
     value_loss = 0.5 * (1.0 + 0.25 + 0.0) / 3.0
     # entropy ~ 0 (single legal action -> -log(1+1e-10) per row ~ 0)
-    entropy = 0.0
+    entropy = math.log(2.0) / 3.0
     # mana_draw BCE: only row2 legal, md_p=0.5, is_mana_draw=1 -> -log(0.5)
     mana_draw_bce = -math.log(0.5)
     expected_total = (
@@ -313,7 +313,7 @@ def test_awac_crr_loss_math():
     assert m["mana_draw_bce"] == pytest.approx(mana_draw_bce, abs=1e-6)
     assert m["entropy"] == pytest.approx(entropy, abs=1e-4)
     assert total == pytest.approx(expected_total, abs=1e-5)
-    assert m["valid_policy_rows"] == 2.0
+    assert m["valid_policy_rows"] == 3.0
     assert m["valid_value_rows"] == 3.0
     assert m["mana_draw_legal_rows"] == 1.0
     assert m["mean_ratio"] == pytest.approx(1.0, abs=1e-6)
@@ -535,7 +535,7 @@ def test_evaluator_retains_mana_draw_logit_mlx():
 # (6) valid_policy_mask exclusions.
 # ---------------------------------------------------------------------------
 
-def test_valid_policy_mask_exclusions():
+def test_valid_policy_mask_includes_draw_excludes_padding():
     # 3 rows: row0 normal valid, row1 mana_draw (tcode=-1), row2 padded.
     # Perturbing row1/row2 new_log_prob (via old_log_prob shift on ratio) must
     # NOT change policy_loss.
@@ -564,13 +564,16 @@ def test_valid_policy_mask_exclusions():
         )
 
     bf_a = make_bf(0.0, 0.0)
-    bf_b = make_bf(-5.0, -5.0)  # perturb row1 (mana_draw) + row2 (padded)
+    bf_b = make_bf(0.0, -5.0)  # perturb only padded row
     _, m_a = awac_crr_loss((logits, values, md), bf_a)
     _, m_b = awac_crr_loss((logits, values, md), bf_b)
     assert m_a["policy_loss"] == pytest.approx(m_b["policy_loss"], abs=1e-7), (
-        "mana_draw + padded rows must NOT contribute to policy_loss"
+        "padded rows must not contribute to policy_loss"
     )
-    assert m_a["valid_policy_rows"] == 1.0  # only row0
+    bf_c = make_bf(-5.0, 0.0)
+    _, m_c = awac_crr_loss((logits, values, md), bf_c)
+    assert m_c["policy_loss"] != pytest.approx(m_a["policy_loss"], abs=1e-7)
+    assert m_a["valid_policy_rows"] == 2.0  # normal row + mana draw
 
 
 # ---------------------------------------------------------------------------

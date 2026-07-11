@@ -390,10 +390,9 @@ class MatchRunner:
                     idx = len(legal) - 1
                 idx = max(0, min(idx, len(legal) - 1))
                 chosen = legal[idx]
-                # Guard: V4/v4-orig боты слепы к mana_draw (нет 602-го кандидата),
-                # но defense-in-depth — если политика всё же выбрала ManaDrawAction,
-                # заменяем на end_turn (см. V5 spec D11: bots filter mana_draw).
-                if isinstance(chosen, ManaDrawAction):
+                # Legacy V4 policies are mana-draw blind. V5 has an explicit
+                # factorized draw gate and must be allowed to use the action.
+                if isinstance(chosen, ManaDrawAction) and getattr(bot_policy, "kind", "") != "v5":
                     chosen = next((a for a in legal if isinstance(a, EndTurnAction)), legal[-1])
                     idx = legal.index(chosen)
                 action_json = chosen.to_dict()

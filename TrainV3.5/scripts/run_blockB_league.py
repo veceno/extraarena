@@ -69,27 +69,32 @@ class DynamicSelfSnapshotOpponent:
         self.pool = pool
         self.live_policy = live_policy
         self.rng = rng or np.random.default_rng()
-        self._loaded_path: str | None = None
-        self._loaded_policy: MLXV5LearnerPolicy | None = None
+        self._loaded_policies: dict[str, MLXV5LearnerPolicy] = {}
+        self._pinned_path_by_env: dict[int, str | None] = {}
 
     def select(self, env_idx: int, ctx: OpponentCtx) -> int:
-        policy = self._snapshot_policy()
-        if policy is None:
-            return int(self.live_policy.argmax_select(ctx))
-        return int(policy.argmax_select(ctx))
+        action, _draw = self.select_with_mana(env_idx, ctx)
+        return int(action)
 
-    def _snapshot_policy(self) -> MLXV5LearnerPolicy | None:
-        entry = self._selected_entry()
-        if entry is None:
+    def select_with_mana(self, env_idx: int, ctx: OpponentCtx) -> tuple[int, bool]:
+        policy = self._snapshot_policy(env_idx)
+        if policy is None:
+            return self.live_policy.argmax_select_with_mana(ctx)
+        return policy.argmax_select_with_mana(ctx)
+
+    def _snapshot_policy(self, env_idx: int) -> MLXV5LearnerPolicy | None:
+        if int(env_idx) not in self._pinned_path_by_env:
+            entry = self._selected_entry()
+            self._pinned_path_by_env[int(env_idx)] = None if entry is None else str(entry.path)
+        path = self._pinned_path_by_env[int(env_idx)]
+        if path is None:
             return None
-        path = str(entry.path)
-        if self._loaded_path == path and self._loaded_policy is not None:
-            return self._loaded_policy
+        if path in self._loaded_policies:
+            return self._loaded_policies[path]
         model = create_v5_policy(policy_kind="v5_split_encoder", hidden_dim=256, action_hidden_dim=128)
         load_checkpoint(path, model)
-        self._loaded_path = path
-        self._loaded_policy = MLXV5LearnerPolicy(model)
-        return self._loaded_policy
+        self._loaded_policies[path] = MLXV5LearnerPolicy(model)
+        return self._loaded_policies[path]
 
     def _selected_entry(self) -> SnapshotEntry | None:
         rolling = list(self.pool.rolling)
@@ -169,7 +174,7 @@ class LiveBlockBGameRunner:
                     action_id, mana_draw = self.learner.argmax_select_with_mana(ctx)
                     mana_draw_count += int(mana_draw)
                 else:
-                    action_id = int(self._opponent_action(identity, worker, arrays, actor))
+                    action_id, mana_draw = self._opponent_action(identity, worker, arrays, actor)
                 out = worker.step_mana_draw(
                     np.asarray([action_id], dtype=np.uintp),
                     np.asarray([mana_draw], dtype=np.bool_),
@@ -202,10 +207,10 @@ class LiveBlockBGameRunner:
         finally:
             worker.close()
 
-    def _opponent_action(self, identity: str, worker: Any, arrays: dict[str, Any], actor: int) -> int:
+    def _opponent_action(self, identity: str, worker: Any, arrays: dict[str, Any], actor: int) -> tuple[int, bool]:
         kind, code = resolve_opponent_dispatch(identity)
         if kind == RULE_DISPATCH:
-            return int(worker.select_rule_actions(np.asarray([int(code)], dtype=np.uint32))[0])
+            return int(worker.select_rule_actions(np.asarray([int(code)], dtype=np.uint32))[0]), False
         policy = self.opponent_policies[identity]
         counts = np.asarray(arrays["legal_action_counts"], dtype=np.intp)
         offsets = np.asarray(arrays["legal_action_offsets"], dtype=np.intp)
@@ -226,7 +231,11 @@ class LiveBlockBGameRunner:
             legal_action_counts=int(counts[0]),
             mana_draw_legal=bool(worker.mana_draw_legal()[0]),
         )
-        return int(policy.select(0, ctx))
+        select_with_mana = getattr(policy, "select_with_mana", None)
+        if callable(select_with_mana):
+            action, draw = select_with_mana(0, ctx)
+            return int(action), bool(draw) and bool(ctx.mana_draw_legal)
+        return int(policy.select(0, ctx)), False
 
 
 class V4TempOnnxOpponent:
@@ -319,12 +328,23 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 "policy": "start_second",
             },
         )
+    config = replace(config, decisive_early_end=False)
     learner = MLXV5LearnerPolicy(
         model,
         library_path=args.library_path,
         rng=np.random.default_rng(int(args.seed) + 31),
     )
     pool = SnapshotPool(target_non_anchor_count=int(args.pool_size))
+    # The accepted post-A policy is the immutable league anchor. Without this,
+    # the first (possibly failing) B snapshot silently replaces the baseline.
+    pool.set_seed_anchor(SnapshotEntry(
+        update_number=0,
+        h2h_vs_best=0.5,
+        path=str(args.source_checkpoint.resolve()),
+        p1_p2_gap=0.0,
+        promotion_eligible=True,
+        role="seed_anchor",
+    ))
     curriculum = CurriculumReweighter(window_n=int(args.curriculum_window))
     parity = SecondStartParityLoop(window_n=int(args.parity_window))
     opponent_policies = _build_opponent_policies(args, pool=pool, learner=learner)
@@ -406,6 +426,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         seed=int(args.seed),
         mana_draw_baseline=mana_draw_baseline,
         snapshot_cadence=int(args.checkpoint_every),
+        # This operational command promises the requested long run. Plateau is
+        # telemetry for the later C handoff, not permission to stop B early.
+        k_snap=int(args.updates) // int(args.checkpoint_every) + 1,
         checkpoint_namer=checkpoint_namer,
         games_per_opponent_per_side=int(args.games_per_opponent_per_side),
         games_per_opponent_gauntlet=int(args.games_per_opponent_gauntlet),
@@ -432,10 +455,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     final_checkpoint = _save_checkpoint(
         model=model,
         optimizer=optimizer,
-        path=out_dir / f"extra_lr_v5_blockB_league_final_update_{int(args.updates):05d}.npz",
+        path=out_dir / f"extra_lr_v5_blockB_league_final_update_{int(driver_manifest.n_updates_run):05d}.npz",
         run_meta=run_meta,
         update_rows=update_rows,
-        update=int(args.updates),
+        update=int(driver_manifest.n_updates_run),
         partial=False,
     )
     best_checkpoint = Path(pool.best_ever.path) if pool.best_ever is not None else final_checkpoint

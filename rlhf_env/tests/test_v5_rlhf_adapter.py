@@ -160,9 +160,8 @@ def test_select_action_empty_legal_returns_zero(tmp_path):
 # 3. D11 omniscient InfoModeV5 explicit
 # ----------------------------------------------------------------------------
 
-def test_d11_omniscient_info_mode_explicit(tmp_path, monkeypatch):
-    """select_action must build the obs with InfoModeV5(enemy_hand_known=True,
-    enemy_deck_known=True) — NOT the SELF-VISIBLE default."""
+def test_v5_uses_training_self_visible_info_mode(tmp_path, monkeypatch):
+    """C2 inference must use the same private-information contract as A/B."""
     from train_v3.contracts import OBS_V5_DIM
     import train_v3.obs_v5 as obs_v5_mod
 
@@ -186,8 +185,8 @@ def test_d11_omniscient_info_mode_explicit(tmp_path, monkeypatch):
 
     im = captured["info_mode"]
     assert im is not None
-    assert im.enemy_hand_known is True, "D11: enemy_hand_known must be True"
-    assert im.enemy_deck_known is True, "D11: enemy_deck_known must be True"
+    assert im.enemy_hand_known is False
+    assert im.enemy_deck_known is False
     # Sanity: the default InfoModeV5() has both False — verify we did NOT pass
     # a default by checking the values are genuinely True.
     from train_v3.contracts import InfoModeV5
@@ -195,7 +194,7 @@ def test_d11_omniscient_info_mode_explicit(tmp_path, monkeypatch):
     assert InfoModeV5().enemy_deck_known is False
 
 
-def test_history_events_reads_state_history_not_action_history(tmp_path, monkeypatch):
+def test_history_events_reads_structured_v5_tape(tmp_path, monkeypatch):
     """select_action must feed encode_observation_v5 the V5-format history from
     ``state.history`` (List[Dict], core/state.py:165, populated by engine.py:405
     via action.to_dict()) — NOT ``state.action_history`` (Deque[tuple], the UI
@@ -227,7 +226,8 @@ def test_history_events_reads_state_history_not_action_history(tmp_path, monkeyp
         "my_board_count_delta": 1.0, "enemy_board_count_delta": 0.0,
         "turn_number": 1, "board_power_delta": 3.0,
     }
-    arena.state.history.append(dict(hist_event))
+    arena.state.history.append({"type": "play_card"})
+    arena.state.v5_history_events.append(dict(hist_event))
     arena.state.action_history.append(("play_card", "p1 plays card 7"))
 
     adapter = V5RlhfAdapter({"name": "v5-test", "inference": _fake_inference()})
@@ -237,7 +237,7 @@ def test_history_events_reads_state_history_not_action_history(tmp_path, monkeyp
     # Read state.history (List[Dict]) — the V5-format field — not action_history
     # tuples (which would filter to []) and not a hardcoded [].
     assert he == [hist_event], (
-        "adapter must pass list(state.history) dicts to encode_observation_v5; "
+        "adapter must pass list(state.v5_history_events) to encode_observation_v5; "
         f"got {he!r} (reading action_history or hardcoding [] would drop the channel)"
     )
     assert len(he) == 1 and isinstance(he[0], dict)

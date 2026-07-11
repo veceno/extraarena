@@ -123,6 +123,7 @@ from .rust_live_self_play import (
     BLOCK_B_POLICY_OPPONENT_KINDS,
     PolicyOpponent,
     run_live_self_play_update,
+    create_live_self_play_session,
 )
 from .second_start_parity import (
     BlockBGameResult,
@@ -366,6 +367,7 @@ class BlockBLeagueDriver:
         self._h2h_history: list[float] = []
         self._last_rollout: Any = None
         self._opponent_policies: dict[str, PolicyOpponent] | None = None
+        self._rollout_session: Any = None
 
     # ---- helpers ------------------------------------------------------------
     def _ensure_opponent_policies(self) -> dict[str, PolicyOpponent]:
@@ -519,13 +521,13 @@ class BlockBLeagueDriver:
             role="rolling",
         )
         # Seed anchor on the FIRST snapshot (immutable after first set).
-        if self.pool.seed_anchor is None:
+        if self.pool.seed_anchor is None and gate_result.passed:
             self.pool.set_seed_anchor(entry)
-        else:
+        elif self.pool.seed_anchor is not None:
             self.pool.add_snapshot(entry)
 
         # B1 best-ever update (strict H2H improvement only).
-        promoted_best = self.pool.maybe_update_best_ever(
+        promoted_best = bool(gate_result.passed) and self.pool.maybe_update_best_ever(
             entry, h2h_vs_best_score_rate=float(measured["h2h_rate"])
         )
 
@@ -594,6 +596,15 @@ class BlockBLeagueDriver:
 
             # (e) A4 live update (Option 1: opponent_mix_parsed bypasses
             # parse_v5_opponent_mix so v4-orig-* pass through).
+            if self._rollout_session is None:
+                self._rollout_session = create_live_self_play_session(
+                    self.config,
+                    seed=int(self.seed) + update_number,
+                    worker_factory=self.worker_factory,
+                    p1_score_rate=p1_rate,
+                    p2_score_rate=p2_rate,
+                    opponent_mix_parsed=mix,
+                )
             metrics = run_live_self_play_update(
                 self.config,
                 self.learner_policy,
@@ -606,6 +617,7 @@ class BlockBLeagueDriver:
                 p2_score_rate=p2_rate,
                 steps=self.steps_per_update,
                 opponent_mix_parsed=mix,
+                session=self._rollout_session,
             )
             rollout = metrics.get("rollout")
             self._last_rollout = rollout
@@ -630,6 +642,11 @@ class BlockBLeagueDriver:
 
             # (g) snapshot cadence -> B1 pool-add + B6 gate + B7 plateau.
             if update_number % self.snapshot_cadence == 0:
+                # Rotate only at an explicit league boundary. This lets the new
+                # curriculum/snapshot mix bind cleanly without changing an
+                # opponent halfway through a battle.
+                self._rollout_session.close()
+                self._rollout_session = None
                 snap_record = self._snapshot_step(
                     update_number, snapshot_seed=int(self.seed) + update_number
                 )
@@ -654,6 +671,9 @@ class BlockBLeagueDriver:
         manifest.h2h_history = list(self._h2h_history)
         if self.pool.best_ever is not None:
             manifest.best_ever_path = self.pool.best_ever.path
+        if self._rollout_session is not None:
+            self._rollout_session.close()
+            self._rollout_session = None
         return manifest
 
 

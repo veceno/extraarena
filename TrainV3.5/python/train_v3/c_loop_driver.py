@@ -443,12 +443,12 @@ class CLoopDriver:
             role="rolling",
         )
         # Seed anchor on the FIRST snapshot (immutable after first set).
-        if self.snapshot_pool.seed_anchor is None:
+        if gate_result.passed and self.snapshot_pool.seed_anchor is None:
             self.snapshot_pool.set_seed_anchor(entry)
-        else:
+        elif self.snapshot_pool.seed_anchor is not None:
             self.snapshot_pool.add_snapshot(entry)
         # B1 best-ever update (strict H2H improvement; D-C8 B1 best-ever argmax).
-        promoted_best_ever = self.snapshot_pool.maybe_update_best_ever(
+        promoted_best_ever = bool(gate_result.passed) and self.snapshot_pool.maybe_update_best_ever(
             entry, h2h_vs_best_score_rate=h2h_rate,
         )
 

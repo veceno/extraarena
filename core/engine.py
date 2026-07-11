@@ -424,7 +424,36 @@ class ArenaEnvironment:
 
     @staticmethod
     def _history_board_power(player: PlayerState) -> float:
-        return float(sum(max(int(card.attack), 0) for card in player.board))
+        # Match Rust RewardSnapshotV5: surviving attack times surviving HP.
+        return float(sum(max(int(card.attack), 0) * max(int(card.hp), 0) for card in player.board))
+
+    @staticmethod
+    def _v5_history_action_id(player: PlayerState, opponent: PlayerState, action: BaseAction) -> int:
+        """Canonical classic_actions_v1 id for the applied object action."""
+        if isinstance(action, EndTurnAction) or isinstance(action, ManaDrawAction):
+            return 0
+        if isinstance(action, PlayCardAction):
+            position = int(action.position or 0)
+            target_id = str(action.target_id) if action.target_id is not None else None
+            if target_id is None:
+                target_code = 0
+            elif target_id == str(opponent.hero.instance_id):
+                target_code = 8
+            elif target_id == str(player.hero.instance_id):
+                target_code = 16
+            else:
+                target_code = next((i + 1 for i, c in enumerate(opponent.board) if str(c.instance_id) == target_id), None)
+                if target_code is None:
+                    target_code = next((i + 9 for i, c in enumerate(player.board) if str(c.instance_id) == target_id), 0)
+            return 1 + int(action.hand_index) * (8 * 17) + position * 17 + int(target_code)
+        if isinstance(action, AttackAction):
+            attacker_idx = next((i for i, c in enumerate(player.board) if str(c.instance_id) == str(action.attacker_id)), 0)
+            if action.target_is_hero:
+                target_code = 7
+            else:
+                target_code = next((i for i, c in enumerate(opponent.board) if str(c.instance_id) == str(action.target_id)), 0)
+            return 545 + attacker_idx * 8 + int(target_code)
+        return 0
 
     def _capture_v5_history_pre(
         self,
@@ -446,6 +475,10 @@ class ArenaEnvironment:
                 target_card = self._find_unit_by_id(player.board, action.target_id)
                 if target_card is None:
                     target_card = self._find_unit_by_id(opponent.board, action.target_id)
+                if target_card is None and str(action.target_id) == str(player.hero.instance_id):
+                    target_card = player.hero
+                if target_card is None and str(action.target_id) == str(opponent.hero.instance_id):
+                    target_card = opponent.hero
         elif isinstance(action, AttackAction):
             source_card = self._find_unit_by_id(player.board, action.attacker_id)
             if action.target_is_hero:
@@ -462,6 +495,7 @@ class ArenaEnvironment:
             "board_power_delta_base": self._history_board_power(player) - self._history_board_power(opponent),
             "source_card": None if source_card is None else self._snapshot_history_card(source_card),
             "target_card": None if target_card is None else self._snapshot_history_card(target_card),
+            "action_id": self._v5_history_action_id(player, opponent, action),
         }
 
     @staticmethod
@@ -497,14 +531,14 @@ class ArenaEnvironment:
             # The production object action does not retain frozen codec id; the
             # type/card/delta fields are the stable temporal signal. Mana draw
             # is explicitly distinguished by metadata slot 13 in obs_v5.
-            "action_id": 0,
+            "action_id": int(pre["action_id"]),
             "action_type": action_type,
             "enemy_hero_hp_delta": int(pre["enemy_hero_hp"]) - int(opponent.hero.hp),
             "own_hero_hp_delta": int(pre["own_hero_hp"]) - int(player.hero.hp),
             "my_board_count_delta": len(player.board) - int(pre["my_board_count"]),
             "enemy_board_count_delta": len(opponent.board) - int(pre["enemy_board_count"]),
             "board_power_delta": post_board_delta - float(pre["board_power_delta_base"]),
-            "turn_number": int(pre["turn_number"]),
+            "turn_number": int(self.state.turn_number),
             "source_card": pre["source_card"],
             "target_card": pre["target_card"],
         }

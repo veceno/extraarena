@@ -311,6 +311,10 @@ class V5TraceRecorder:
         except Exception:  # noqa: BLE001
             history = []
         try:
+            v5_history_events = [self._snapshot_v5_history_event(event) for event in getattr(st, "v5_history_events", ())]
+        except Exception:  # noqa: BLE001
+            v5_history_events = []
+        try:
             pending_feedback = list(getattr(st, "pending_card_feedback_events", []) or [])
         except Exception:  # noqa: BLE001
             pending_feedback = []
@@ -322,9 +326,18 @@ class V5TraceRecorder:
             "p2": self._snapshot_player(st.p2),
             "action_history": action_history,
             "history": history,
+            "v5_history_events": v5_history_events,
             "pending_card_feedback_events": pending_feedback,
             "visibility": VISIBILITY,
         }
+
+    def _snapshot_v5_history_event(self, event: Dict[str, Any]) -> Dict[str, Any]:
+        out = dict(event)
+        for key in ("source_card", "target_card"):
+            card = out.get(key)
+            if card is not None and not isinstance(card, dict):
+                out[key] = self._snapshot_card(card)
+        return out
 
     def _reward_snapshot(self, state, player_id: int) -> Dict[str, Any]:
         me = state.p1 if state.p1.user_id == player_id else state.p2

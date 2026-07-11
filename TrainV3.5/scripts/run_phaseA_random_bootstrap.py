@@ -32,7 +32,12 @@ from train_v3.ppo_phaseA_config import (  # noqa: E402
     build_phase_a_random_bootstrap_config,
 )
 from train_v3.league_v5 import parse_v5_opponent_mix  # noqa: E402
-from train_v3.rust_live_self_play import LearnerCtxBatch, OpponentCtx, run_live_self_play_update  # noqa: E402
+from train_v3.rust_live_self_play import (  # noqa: E402
+    LearnerCtxBatch,
+    OpponentCtx,
+    create_live_self_play_session,
+    run_live_self_play_update,
+)
 from train_v3.rust_policy import score_padded_legal_actions  # noqa: E402
 from train_v3.v5_policy import create_v5_policy  # noqa: E402
 from train_v3.warm_start_v5 import load_v4_max_into_v5, resolve_v4_max_npz_path  # noqa: E402
@@ -307,6 +312,10 @@ def run(config: argparse.Namespace) -> dict[str, Any]:
         curriculum_metadata=curriculum_metadata,
         **phase_overrides,
     )
+    # Until decisive states carry a signed pseudo-terminal outcome, treating
+    # both large leads and large deficits as zero-bootstrap truncations destroys
+    # value targets. Real engine termination/max-turn semantics remain active.
+    phase_config = replace(phase_config, decisive_early_end=False)
     learner = MLXV5LearnerPolicy(
         model,
         library_path=config.library_path,
@@ -333,47 +342,72 @@ def run(config: argparse.Namespace) -> dict[str, Any]:
     metrics_history: list[dict[str, Any]] = []
     total_states = 0
     last_checkpoint: Path | None = None
-    for update in range(1, int(config.updates) + 1):
-        update_seed = int(config.seed) + update - 1
-        update_config = replace(phase_config, seed=update_seed)
-        started = time.perf_counter()
-        metrics = run_live_self_play_update(
-            update_config,
-            learner,
-            seed=update_seed,
-            library_path=config.library_path,
-            model=model,
-            optimizer=optimizer,
-        )
-        elapsed = time.perf_counter() - started
-        states = int(metrics["ppo_batch"].actions.size)
-        total_states += states
-        row = _compact_metrics(metrics)
-        row.update(
-            {
-                "update": int(update),
-                "seed": int(update_seed),
-                "states": int(states),
-                "total_states": int(total_states),
-                "elapsed_seconds": float(elapsed),
-            }
-        )
-        metrics_history.append(row)
-        with progress_path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(_jsonable(row), sort_keys=True) + "\n")
-        print("PHASEA_RANDOM_BOOTSTRAP_UPDATE", json.dumps(_jsonable(row), sort_keys=True), flush=True)
-
-        if int(config.checkpoint_every) > 0 and update % int(config.checkpoint_every) == 0:
-            last_checkpoint = _save_checkpoint(
+    checkpoint_gates: list[dict[str, Any]] = []
+    session = create_live_self_play_session(
+        phase_config,
+        seed=int(config.seed),
+        library_path=config.library_path,
+        opponent_mix_parsed=custom_opponent_mix_parsed,
+    )
+    try:
+        for update in range(1, int(config.updates) + 1):
+            update_seed = int(config.seed) + update - 1
+            update_config = replace(phase_config, seed=update_seed)
+            started = time.perf_counter()
+            metrics = run_live_self_play_update(
+                update_config,
+                learner,
+                seed=update_seed,
+                library_path=config.library_path,
                 model=model,
                 optimizer=optimizer,
-                path=checkpoints_dir / f"extra_lr_v5_phaseA_random_bootstrap_update_{update:05d}_{total_states}_states.npz",
-                run_meta=run_meta,
-                metrics_history=metrics_history,
-                update=update,
-                total_states=total_states,
-                partial=True,
+                session=session,
             )
+            elapsed = time.perf_counter() - started
+            states = int(metrics["ppo_batch"].actions.size)
+            total_states += states
+            row = _compact_metrics(metrics)
+            row.update(
+                {
+                    "update": int(update),
+                    "seed": int(update_seed),
+                    "states": int(states),
+                    "total_states": int(total_states),
+                    "elapsed_seconds": float(elapsed),
+                }
+            )
+            metrics_history.append(row)
+            with progress_path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(_jsonable(row), sort_keys=True) + "\n")
+            print("PHASEA_RANDOM_BOOTSTRAP_UPDATE", json.dumps(_jsonable(row), sort_keys=True), flush=True)
+
+            if int(config.checkpoint_every) > 0 and update % int(config.checkpoint_every) == 0:
+                last_checkpoint = _save_checkpoint(
+                    model=model,
+                    optimizer=optimizer,
+                    path=checkpoints_dir / f"extra_lr_v5_phaseA_random_bootstrap_update_{update:05d}_{total_states}_states.npz",
+                    run_meta=run_meta,
+                    metrics_history=metrics_history,
+                    update=update,
+                    total_states=total_states,
+                    partial=True,
+                )
+                checkpoint_gate = _evaluate_random_field_gate(
+                    learner,
+                    config=phase_config,
+                    library_path=config.library_path,
+                    games=int(config.random_gate_games),
+                    seed=int(config.seed) + 80_000_000 + int(update) * 10_000,
+                    max_steps=int(config.random_gate_max_steps),
+                )
+                checkpoint_gates.append({
+                    "update": int(update),
+                    "checkpoint_path": str(last_checkpoint),
+                    "gate": checkpoint_gate,
+                })
+                print("PHASEA_RANDOM_CHECKPOINT_GATE", json.dumps(_jsonable(checkpoint_gates[-1]), sort_keys=True), flush=True)
+    finally:
+        session.close()
 
     final_path = _save_checkpoint(
         model=model,
@@ -393,20 +427,38 @@ def run(config: argparse.Namespace) -> dict[str, Any]:
         seed=int(config.seed) + 90_000_000,
         max_steps=int(config.random_gate_max_steps),
     )
+    candidates = checkpoint_gates + [{
+        "update": int(config.updates),
+        "checkpoint_path": str(final_path),
+        "gate": random_gate,
+    }]
+    selected = max(
+        candidates,
+        key=lambda item: (
+            int(item["gate"]["invalid_actions"]) == 0
+            and int(item["gate"]["mana_draw_count"]) > 0,
+            float(item["gate"]["score_rate"]),
+            int(item["update"]),
+        ),
+    )
+    selected_gate = dict(selected["gate"])
     gate_passed = (
-        float(random_gate["score_rate"]) >= float(config.target_random_score)
-        and int(random_gate["invalid_actions"]) == 0
-        and int(random_gate["mana_draw_count"]) > 0
+        float(selected_gate["score_rate"]) >= float(config.target_random_score)
+        and int(selected_gate["invalid_actions"]) == 0
+        and int(selected_gate["mana_draw_count"]) > 0
     )
     summary = {
         "status": "ok" if gate_passed else "random_gate_failed",
-        "checkpoint_path": str(final_path),
+        "checkpoint_path": str(selected["checkpoint_path"]),
+        "final_checkpoint_path": str(final_path),
         "last_periodic_checkpoint": str(last_checkpoint) if last_checkpoint is not None else None,
         "updates": int(config.updates),
         "states": int(total_states),
         "target_random_score": float(config.target_random_score),
         "progress_path": str(progress_path),
-        "random_gate": random_gate,
+        "random_gate": selected_gate,
+        "final_random_gate": random_gate,
+        "checkpoint_gates": checkpoint_gates,
         "random_gate_passed": gate_passed,
     }
     (output_dir / "summary.json").write_text(

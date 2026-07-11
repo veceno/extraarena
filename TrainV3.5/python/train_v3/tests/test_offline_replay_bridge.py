@@ -354,9 +354,8 @@ def test_human_filter_excludes_bot_rows(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_omniscient_info_mode_passed(tmp_path):
-    """The bridge calls iter_offline_transitions with an omniscient InfoModeV5
-    (enemy_hand_known=True, enemy_deck_known=True). Spy on the loader call."""
+def test_training_visibility_info_mode_passed(tmp_path):
+    """The bridge matches the self-visible A/B and production contract."""
     _write_real_trace_bc(tmp_path, "b_omni", n_steps=20, seed=21, meta_status="p2_win")
 
     captured: dict[str, InfoModeV5] = {}
@@ -380,12 +379,8 @@ def test_omniscient_info_mode_passed(tmp_path):
     assert "info_mode" in captured, "bridge did not call iter_offline_transitions"
     im = captured["info_mode"]
     assert im is not None, "bridge passed info_mode=None to the loader"
-    assert im.enemy_hand_known is True, (
-        "D11: bridge must pass enemy_hand_known=True (omniscient)"
-    )
-    assert im.enemy_deck_known is True, (
-        "D11: bridge must pass enemy_deck_known=True (omniscient)"
-    )
+    assert im.enemy_hand_known is False
+    assert im.enemy_deck_known is False
 
 
 # ---------------------------------------------------------------------------
@@ -470,13 +465,13 @@ def test_old_log_prob_and_value_from_current_policy(tmp_path):
         ), f"step={step}: value must equal obs[0] for every row (D-C10)"
         tc = int(out.target_tcodes[step, 0])
         is_md = bool(out.is_mana_draw[step, 0])
-        if is_md or tc == -1:
-            # mana_draw / terminal: old_log_prob = 0.0 (no 601 action).
-            assert out.batch.log_probs[step, 0] == 0.0, (
-                f"step={step}: mana_draw/terminal old_log_prob must be 0.0"
-            )
+        if is_md:
+            assert out.batch.log_probs[step, 0] == pytest.approx(np.log(0.5), abs=1e-5)
+        elif tc == -1:
+            assert out.batch.log_probs[step, 0] == 0.0
         else:
-            expected = float(np.log(1.0 / count_legal + 1.0e-10))
+            gate = np.log(0.5) if bool(out.mana_draw_legal[step, 0]) else 0.0
+            expected = float(gate + np.log(1.0 / count_legal + 1.0e-10))
             assert out.batch.log_probs[step, 0] == pytest.approx(
                 expected, abs=1e-5
             ), (
@@ -787,7 +782,7 @@ def test_mana_draw_rows_carry_head_fields(tmp_path):
         "mana_draw was legal on this pre_state -> mana_draw_legal=True"
     )
     assert out.target_tcodes[0, 0] == -1, "mana_draw -> target_tcode=None (-1)"
-    assert out.batch.log_probs[0, 0] == 0.0, "mana_draw old_log_prob=0 (no 601 action)"
+    assert out.batch.log_probs[0, 0] == pytest.approx(np.log(0.5), abs=1e-6)
     # value STILL populated (GAE needs V(s_t) for every step, D-C10).
     assert out.batch.values[0, 0] == pytest.approx(
         float(out.batch.observations[0, 0, 0]), abs=1e-6

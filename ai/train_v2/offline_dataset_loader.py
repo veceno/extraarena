@@ -496,6 +496,8 @@ def compute_offline_reward(
     post: Dict[str, Any],
     accepted: Optional[bool],
     status: str,
+    *,
+    is_mana_draw: bool = False,
 ) -> float:
     """Mirror ``classic_rl_env._compute_reward`` (classic_rl_env.py:383-421)
     EXACTLY.
@@ -574,7 +576,9 @@ def compute_offline_reward(
         reward -= 0.02 * own_killed
 
     mana_spent = _coerce_int(pre.get("my_mana")) - _coerce_int(post.get("my_mana"))
-    if mana_spent > 0:
+    # Mana draw spends mana but does not deserve the generic card-play spend
+    # bonus. Keep C replay reward byte-aligned with the fixed Rust online path.
+    if mana_spent > 0 and not is_mana_draw:
         reward += min(0.02, 0.005 * mana_spent)
 
     return reward
@@ -729,6 +733,7 @@ def iter_offline_transitions(
             reward = compute_offline_reward(
                 actor_user_id, pre_view, post_view,
                 row.get("accepted"), resolved_status,
+                is_mana_draw=str(row.get("action_type", "")) == "mana_draw",
             )
 
             # Reconstruct pre_state -> obs + action_features + mana_draw mask.
@@ -736,7 +741,7 @@ def iter_offline_transitions(
             obs = encode_observation_v5(
                 pre_gs, actor_user_id,
                 info_mode=info_mode, assist_mode=assist_mode,
-                history_events=pre_snap.get("history") or [],
+                history_events=pre_snap.get("v5_history_events") or [],
             )
             # action_features: (601,171). verify_mask=False builds the mask by
             # mirroring get_legal_actions from state fields (no engine);
@@ -763,7 +768,7 @@ def iter_offline_transitions(
             next_obs = encode_observation_v5(
                 post_gs, actor_user_id,
                 info_mode=info_mode, assist_mode=assist_mode,
-                history_events=post_snap.get("history") or [],
+                history_events=post_snap.get("v5_history_events") or [],
             )
 
             yield OfflineTransition(
