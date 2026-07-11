@@ -40,16 +40,14 @@ pub const GAME_BOARD_CAP: usize = 5;
 // N-th mana draw in a turn costs `MANA_DRAW_BASE * (count + 1)` (2, 4, 6, ...).
 const MANA_DRAW_BASE: i32 = 2;
 
-// A normal card action receives a small positive dense signal for mana spent
-// (see `compute_trainv2_reward`), because spending mana normally creates an
-// immediate board/attack opportunity. Mana-draw spends the same resource but
-// has no immediate board effect; leaving it on that generic reward turns draw
-// into a free positive-reward no-op and PPO collapses into repeated draws.
-// Charge an equal opportunity cost plus cancellation of that generic spend
-// bonus: first draw (cost 2) is -0.01 net, second (cost 4) is -0.02 net, etc.
-// Long-horizon advantage can still overcome this when a draw is strategically
-// useful, but indiscriminate draw spam no longer wins the dense reward.
-const MANA_DRAW_OPPORTUNITY_COST_PER_MANA: f32 = 0.01;
+// `compute_trainv2_reward` contains a generic dense bonus for mana spent.
+// That bonus is useful for normal card actions because spending mana has an
+// immediate board/attack meaning. A mana draw already pays its opportunity
+// cost in the game state, however: it consumes mana and can prevent a card
+// play. It must receive neither the generic spend bonus nor a hand-tuned
+// extra penalty. Otherwise PPO learns the reward designer's preferred draw
+// frequency instead of learning whether the resulting card improves the
+// eventual game outcome.
 
 // Normalizer for the mana_draw_count_this_turn V5 global channel (spec §6.184).
 // Grounded in the ruleset: max_mana is capped at 10 (core/engine.py:695) and
@@ -801,7 +799,6 @@ impl RolloutKernel {
             if !mana_draw_legal_for(actor) {
                 return Err("illegal_action".to_string());
             }
-            let mana_draw_cost = MANA_DRAW_BASE * (actor.mana_draw_count_this_turn + 1);
             let mut next = state.clone();
             let overdraw_to_discard = self.config.overdraw_to_discard;
             let (player, _opponent) = next.players_for_mut(player_id)?;
@@ -810,13 +807,17 @@ impl RolloutKernel {
             check_game_over(&mut next);
             let base_reward = compute_trainv2_reward(state, &next, player_id);
             let reward_components_v5 = compute_reward_components_v5(state, &next, player_id);
-            let reward_before_draw_cost = if self.config.v5_weighted_reward {
+            let reward_before_draw_bonus_cancel = if self.config.v5_weighted_reward {
                 compute_weighted_reward_v5(base_reward, reward_components_v5, self.config.info_mode)
             } else {
                 base_reward
             };
-            let reward = reward_before_draw_cost
-                - MANA_DRAW_OPPORTUNITY_COST_PER_MANA * mana_draw_cost as f32;
+            // Remove only the generic mana-spend shaping already included in
+            // `base_reward`. Do not add a draw reward or a draw penalty here:
+            // the engine's mana deduction is the opportunity cost and the
+            // policy should learn the card's value from future returns.
+            let reward = reward_before_draw_bonus_cancel
+                - mana_spend_dense_bonus(state, &next, player_id);
             let terminated = next.status != "ongoing";
             let truncated = next.turn_number > self.config.max_turns;
             return Ok(KernelStepOutput {
@@ -2754,12 +2755,25 @@ pub fn compute_trainv2_reward(pre: &KernelState, post: &KernelState, actor_id: i
         reward -= 0.02 * own_killed as f32;
     }
 
-    let mana_spent = pre_me.mana - post_me.mana;
-    if mana_spent > 0 {
-        reward += (0.005 * mana_spent as f32).min(0.02);
-    }
+    reward += mana_spend_dense_bonus(pre, post, actor_id);
 
     reward
+}
+
+/// Positive dense shaping for mana spent by an ordinary action.
+///
+/// Mana draw explicitly cancels this term after calling
+/// [`compute_trainv2_reward`]: its cost is already represented by the game
+/// state and must not become an additional reward-shaping target.
+fn mana_spend_dense_bonus(pre: &KernelState, post: &KernelState, actor_id: i32) -> f32 {
+    let (pre_me, _pre_enemy) = pre.players_for(actor_id);
+    let (post_me, _post_enemy) = post.players_for(actor_id);
+    let mana_spent = pre_me.mana - post_me.mana;
+    if mana_spent > 0 {
+        (0.005 * mana_spent as f32).min(0.02)
+    } else {
+        0.0
+    }
 }
 
 pub fn action_type_for_id(action_id: usize) -> &'static str {
@@ -3723,22 +3737,24 @@ mod draw_tests {
     }
 
     #[test]
-    fn mana_draw_reward_includes_resource_opportunity_cost() {
-        // `compute_trainv2_reward` alone awards +0.005 per mana spent. That is
-        // appropriate for card plays, but not for a draw that has no immediate
-        // board effect. The mana-draw branch must therefore be net-negative on
-        // a neutral state: +0.01 generic spend bonus -0.02 draw cost = -0.01.
-        let mut state = v5_state_with_mana_draw_count(0);
-        state.p1.mana = 5;
-        state.p1.hand = vec![card(20, 3, 1, 1)];
-        state.p1.deck = vec![card(99, 1, 1, 1)];
-        let kernel = RolloutKernel::new(KernelConfig::default());
-        let mut rng = crate::worker::WorkerRng::Deterministic;
-        let mut draw_rng = DrawRng::live(&mut rng);
-        let out = kernel
-            .apply_action(&state, 1, 0, true, &mut draw_rng)
-            .expect("legal mana draw");
-        assert!((out.reward + 0.01).abs() < 1.0e-6, "reward={}", out.reward);
+    fn mana_draw_reward_is_neutral_at_each_legal_cost() {
+        // A mana draw consumes real mana, so it already incurs an opportunity
+        // cost in the game state. It must not also receive either the generic
+        // +mana-spent bonus or an arbitrary draw-specific shaping penalty.
+        // Check costs 2, 4 and 6; the latter also exercises the spend-bonus cap.
+        for (draw_count, mana) in [(0, 5), (1, 6), (2, 8)] {
+            let mut state = v5_state_with_mana_draw_count(draw_count);
+            state.p1.mana = mana;
+            state.p1.hand = vec![card(20, 3, 1, 1)];
+            state.p1.deck = vec![card(99, 1, 1, 1)];
+            let kernel = RolloutKernel::new(KernelConfig::default());
+            let mut rng = crate::worker::WorkerRng::Deterministic;
+            let mut draw_rng = DrawRng::live(&mut rng);
+            let out = kernel
+                .apply_action(&state, 1, 0, true, &mut draw_rng)
+                .expect("legal mana draw");
+            assert!(out.reward.abs() < 1.0e-6, "count={draw_count}, reward={}", out.reward);
+        }
     }
 
     // ---- Block 0 component 2: V5 global mana_draw_count channel (spec §6.184) ----
