@@ -642,6 +642,21 @@ class TestSecondStartOversampling:
         n2 = int(np.sum(sides == 2))
         assert abs(n1 - n2) < 200, f"no-breach should be ~50/50, got p1={n1} p2={n2}"
 
+    def test_fixed_p2_weight_uses_exact_env_split(self):
+        sides, scheme = rls.sample_learner_sides(
+            128,
+            p1_score_rate=0.8,
+            p2_score_rate=0.2,
+            oversampling={"policy": "fixed_p2_weight", "p2_weight": 0.625},
+            rng=np.random.default_rng(7),
+        )
+        assert int(np.sum(sides == 1)) == 48
+        assert int(np.sum(sides == 2)) == 80
+        assert scheme["policy"] == "fixed_p2_weight"
+        assert scheme["p1_weight"] == 0.375
+        assert scheme["p2_weight"] == 0.625
+        assert scheme["oversampled_side"] == "p2"
+
 
 # --- helpers used by the composition tests -----------------------------------
 def _tiny_config(

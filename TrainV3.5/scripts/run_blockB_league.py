@@ -310,7 +310,15 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         legal_row_pack_backend="python",
         seed=int(args.seed),
     )
-    if str(args.side_sampling_policy) == "strict_balanced":
+    if args.p2_start_weight is not None:
+        config = replace(
+            config,
+            second_start_oversampling={
+                "policy": "fixed_p2_weight",
+                "p2_weight": float(args.p2_start_weight),
+            },
+        )
+    elif str(args.side_sampling_policy) == "strict_balanced":
         config = replace(
             config,
             second_start_oversampling={
@@ -703,6 +711,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="adaptive_oversample",
     )
     parser.add_argument(
+        "--p2-start-weight",
+        type=float,
+        default=None,
+        help=(
+            "Optional fixed learner p2 share in (0, 1). Overrides "
+            "--side-sampling-policy; 0.625 gives 80 p2 and 48 p1 envs "
+            "when --env-count is 128."
+        ),
+    )
+    parser.add_argument(
         "--opponent-mix",
         default=None,
         help=(
@@ -729,6 +747,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--mana-draw-baseline-eligible must be positive")
     if args.mana_draw_baseline_count is not None and int(args.mana_draw_baseline_count) < 0:
         parser.error("--mana-draw-baseline-count must be non-negative")
+    if args.p2_start_weight is not None and not 0.0 < float(args.p2_start_weight) < 1.0:
+        parser.error("--p2-start-weight must be between 0 and 1 (exclusive)")
     if (
         args.mana_draw_baseline_count is not None
         and int(args.mana_draw_baseline_count) > int(args.mana_draw_baseline_eligible)

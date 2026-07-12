@@ -544,6 +544,25 @@ def sample_learner_sides(
         }
         return sides, scheme
 
+    if policy == "fixed_p2_weight":
+        p2_weight = float((oversampling or {}).get("p2_weight", 0.5))
+        if not np.isfinite(p2_weight) or not 0.0 < p2_weight < 1.0:
+            raise ValueError("fixed_p2_weight requires 0 < p2_weight < 1")
+        p2_count = int(round(int(env_count) * p2_weight))
+        p2_count = min(max(p2_count, 0), int(env_count))
+        p1_count = int(env_count) - p2_count
+        sides = np.asarray([1] * p1_count + [2] * p2_count, dtype=np.int32)
+        rng.shuffle(sides)
+        scheme = {
+            "p1_weight": float(p1_count / max(1, int(env_count))),
+            "p2_weight": float(p2_count / max(1, int(env_count))),
+            "gap": abs(float(p1_score_rate) - float(p2_score_rate)),
+            "breach": False,
+            "oversampled_side": "p2" if p2_count > p1_count else None,
+            "policy": "fixed_p2_weight",
+        }
+        return sides, scheme
+
     scheme = second_start_oversampling_scheme(
         float(p1_score_rate), float(p2_score_rate),
         gap_threshold=float((oversampling or {}).get("gap_threshold", 0.12)),
