@@ -185,13 +185,13 @@ def test_v5_uses_training_self_visible_info_mode(tmp_path, monkeypatch):
 
     im = captured["info_mode"]
     assert im is not None
-    assert im.enemy_hand_known is False
-    assert im.enemy_deck_known is False
-    # Sanity: the default InfoModeV5() has both False — verify we did NOT pass
-    # a default by checking the values are genuinely True.
+    assert im.enemy_hand_known is True
+    assert im.enemy_deck_known is True
+    # The global default is also omniscient; keep an explicit adapter setting so
+    # an unrelated default change cannot silently create deploy/train drift.
     from train_v3.contracts import InfoModeV5
-    assert InfoModeV5().enemy_hand_known is False
-    assert InfoModeV5().enemy_deck_known is False
+    assert InfoModeV5().enemy_hand_known is True
+    assert InfoModeV5().enemy_deck_known is True
 
 
 def test_history_events_reads_structured_v5_tape(tmp_path, monkeypatch):

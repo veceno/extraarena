@@ -1275,7 +1275,8 @@ class RustBatchWorker:
         from .contracts import InfoModeV5, AssistModeV5
 
         im = info_mode if info_mode is not None else InfoModeV5(
-            enemy_hand_known=False, enemy_deck_known=False
+            enemy_hand_known=True,
+            enemy_deck_known=True,
         )
         am = assist_mode if assist_mode is not None else AssistModeV5()
         import json as _json

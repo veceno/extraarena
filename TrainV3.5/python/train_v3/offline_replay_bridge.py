@@ -114,8 +114,8 @@ _TERMINAL_ACTION_TYPES = frozenset({"surrender", "draw", "stalemate"})
 
 
 def _omniscient_info_mode() -> InfoModeV5:
-    """Compatibility name for the current self-visible A/B/prod contract."""
-    return InfoModeV5()
+    """One explicit A/B/C/production private-information contract."""
+    return InfoModeV5(enemy_hand_known=True, enemy_deck_known=True)
 
 
 # Policy signature: policy_fn(obs_batch, action_features_batch) ->

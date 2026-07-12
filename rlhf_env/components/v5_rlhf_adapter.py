@@ -131,8 +131,8 @@ class V5RlhfAdapter:
         if not legal:
             return 0
 
-        # 2. Live GameState.  V5 was trained/deployed with self-visible private
-        # information; server access must not silently turn that into omniscience.
+        # 2. Live GameState. V5's base contract deliberately includes both
+        # players' hand and deck; this is distinct from optional assist heads.
         state = engine.state
 
         # Lazy imports: train_v3 encoders live only in TrainV3.5/python (added to
@@ -152,8 +152,8 @@ class V5RlhfAdapter:
             encode_action_features,
         )
 
-        # 3. Match the A/B and production visibility contract.
-        info_mode = InfoModeV5()
+        # 3. Match the omniscient A/B/C/production visibility contract.
+        info_mode = InfoModeV5(enemy_hand_known=True, enemy_deck_known=True)
         assist_mode = AssistModeV5()
 
         # history_events: encode_observation_v5 expects list[dict[str, Any]] and

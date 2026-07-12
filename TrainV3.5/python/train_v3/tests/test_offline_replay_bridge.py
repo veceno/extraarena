@@ -355,7 +355,7 @@ def test_human_filter_excludes_bot_rows(tmp_path):
 
 
 def test_training_visibility_info_mode_passed(tmp_path):
-    """The bridge matches the self-visible A/B and production contract."""
+    """The bridge matches the omniscient A/B and production contract."""
     _write_real_trace_bc(tmp_path, "b_omni", n_steps=20, seed=21, meta_status="p2_win")
 
     captured: dict[str, InfoModeV5] = {}
@@ -379,8 +379,8 @@ def test_training_visibility_info_mode_passed(tmp_path):
     assert "info_mode" in captured, "bridge did not call iter_offline_transitions"
     im = captured["info_mode"]
     assert im is not None, "bridge passed info_mode=None to the loader"
-    assert im.enemy_hand_known is False
-    assert im.enemy_deck_known is False
+    assert im.enemy_hand_known is True
+    assert im.enemy_deck_known is True
 
 
 # ---------------------------------------------------------------------------

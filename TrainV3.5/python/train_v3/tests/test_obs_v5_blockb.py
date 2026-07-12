@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 from uuid import uuid4
 
+import numpy as np
 import pytest
 
 ROOT = Path(__file__).resolve().parents[4]
@@ -21,6 +22,7 @@ from train_v3.contracts import (  # noqa: E402
     OBS_V1_DIM,
     PRIVATE_INFO_DIM,
     V5_GLOBAL_DIM,
+    InfoModeV5,
 )
 from train_v3.env_v5 import TrainV3ClassicEnv, TrainV3EnvConfig  # noqa: E402
 from train_v3.obs_v5 import encode_observation_v5  # noqa: E402
@@ -58,6 +60,25 @@ def test_global_16_marks_first_starter_not_current_turn_owner() -> None:
 
     assert p1_obs[OBS_V1_DIM + 16] == pytest.approx(1.0)
     assert p2_obs[OBS_V1_DIM + 16] == pytest.approx(0.0)
+
+
+def test_default_v5_observation_contains_enemy_hand_and_deck() -> None:
+    """Enemy hand/deck are base V5 input, independent of AssistModeV5."""
+    p1 = _player(1)
+    p2 = _player(2)
+    p2.hand.append(CardInstance(card_id=37, name="enemy-hand", card_type=CardType.WARRIOR, mana_cost=2, attack=3, hp=4, max_hp=4))
+    p2.deck.append(CardInstance(card_id=38, name="enemy-deck", card_type=CardType.POTION, mana_cost=3))
+    state = GameState(p1=p1, p2=p2, current_turn_owner_id=1, status=GameStatus.ONGOING)
+
+    default_obs = encode_observation_v5(state, 1)
+    hidden_obs = encode_observation_v5(
+        state,
+        1,
+        info_mode=InfoModeV5(enemy_hand_known=False, enemy_deck_known=False),
+    )
+    assert default_obs[OBS_V1_DIM + 3] == pytest.approx(1.0)
+    assert default_obs[OBS_V1_DIM + 4] == pytest.approx(1.0)
+    assert not np.array_equal(default_obs, hidden_obs)
 
 
 def test_train_v3_env_threads_120_max_turns_to_python_eval_env() -> None:

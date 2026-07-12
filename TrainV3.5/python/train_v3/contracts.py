@@ -38,13 +38,18 @@ OBS_V5_DIM = OBS_V1_DIM + V5_GLOBAL_DIM + PRIVATE_INFO_DIM + HISTORY_DIM  # 1456
 
 @dataclass(frozen=True)
 class InfoModeV5:
-    """Information visibility flags for a V5 training observation."""
+    """Information visibility flags for a V5 training observation.
+
+    V5's base game contract is omniscient for both players' hand and deck.
+    This is model input, not an optional assistant channel; AssistModeV5 only
+    controls the separate assembler/desirerer/teacher features.
+    """
 
     adaptive_strength: float = 1.0
     own_hand_identity_known: bool = True
     own_deck_known: bool = True
-    enemy_hand_known: bool = False
-    enemy_deck_known: bool = False
+    enemy_hand_known: bool = True
+    enemy_deck_known: bool = True
     enemy_deck_order_known: bool = False
     draw_assist_enabled: bool = False
     draw_assist_strength: float = 0.0

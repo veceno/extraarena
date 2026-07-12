@@ -663,6 +663,7 @@ class BerserkInference:
         # vendored V5 live-path copies) + core.* -- ZERO train_v3 / rlhf_env
         # imports on the live hot path.
         from ai.train_v2.obs_v5 import encode_observation_v5
+        from ai.train_v2.v5_contracts import InfoModeV5
         from ai.train_v2.mana_draw_head_v5 import mana_draw_legal_mask, select_includes_mana_draw
         from ai.train_v2.classic_actions_v1 import (
             build_action_mask,
@@ -683,6 +684,7 @@ class BerserkInference:
             obs = encode_observation_v5(
                 game_state,
                 player_id,
+                info_mode=InfoModeV5(enemy_hand_known=True, enemy_deck_known=True),
                 history_events=list(getattr(game_state, "v5_history_events", ())),
             ).reshape(1, obs_dim).astype(np.float32)
             mask = build_action_mask(

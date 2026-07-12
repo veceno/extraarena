@@ -65,10 +65,6 @@ def sample_v5_episode_modes(config: V5LeagueConfig, *, seed: int, update: int) -
     strengths = tuple(config.adaptive_strengths) or (1.0,)
     strength = max(0.0, min(1.0, float(rng.choice(strengths))))
 
-    mixed_visibility = rng.random() < max(0.0, min(1.0, config.mixed_visibility_rate))
-    enemy_private_known = mixed_visibility and (
-        rng.random() < max(0.0, min(1.0, config.enemy_private_info_rate))
-    )
     draw_assist_enabled = (
         strength >= max(0.0, min(1.0, config.draw_assist_min_strength))
         and rng.random() < max(0.0, min(1.0, config.draw_assist_rate))
@@ -77,8 +73,10 @@ def sample_v5_episode_modes(config: V5LeagueConfig, *, seed: int, update: int) -
         adaptive_strength=strength,
         own_hand_identity_known=True,
         own_deck_known=True,
-        enemy_hand_known=enemy_private_known,
-        enemy_deck_known=enemy_private_known,
+        # Hand/deck visibility is a base V5 contract, never a curriculum or
+        # assist sample. Keep the legacy config fields for manifest parsing.
+        enemy_hand_known=True,
+        enemy_deck_known=True,
         enemy_deck_order_known=False,
         draw_assist_enabled=draw_assist_enabled,
         draw_assist_strength=strength if draw_assist_enabled else 0.0,

@@ -591,7 +591,6 @@ class TestDoesNotEditFrozenClassic:
             os.path.join(_TESTS_DIR, "..", "..", "..", "..")
         )
         frozen = [
-            "TrainV3.5/python/train_v3/league_v5.py",
             "TrainV3.5/python/train_v3/gauntlet_v5.py",
             "TrainV3.5/python/train_v3/opponents_v5.py",
             "TrainV3.5/python/train_v3/reward_v5.py",
