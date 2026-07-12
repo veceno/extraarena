@@ -18,6 +18,11 @@ from PIL import Image
 
 from infrastructure.config import DatabaseSettings, get_settings
 from infrastructure.database import Database
+from infrastructure.case_config import (
+    build_default_case_config,
+    merge_case_config_patch,
+    validate_case_config,
+)
 from web import mcp_admin_tools
 from web import server as web_server
 
@@ -218,6 +223,8 @@ class GatewayMCPDB:
             "disabled_card_ids": [],
         }
         self.runtime_config_updates = []
+        self.case_config = build_default_case_config()
+        self.case_config_updates = []
         self.created_shop_sets = []
         self.created_season_drafts = []
         self.updated_seasons = []
@@ -250,6 +257,20 @@ class GatewayMCPDB:
             if value is not None:
                 self.runtime_config[key] = value
         return dict(self.runtime_config)
+
+    async def get_case_config(self):
+        import copy as _copy
+        return _copy.deepcopy(self.case_config)
+
+    async def set_case_config(self, *, patch=None):
+        if not isinstance(patch, dict) or not patch:
+            raise ValueError("empty_case_config_patch")
+        current = self.case_config
+        merged = merge_case_config_patch(current, patch)
+        validate_case_config(merged)
+        self.case_config_updates.append(patch)
+        self.case_config = merged
+        return merged
 
     async def get_match_mode_overrides(self):
         return [{"mode_id": "classic", "enabled": True}]
@@ -778,6 +799,8 @@ def test_mcp_admin_full_extraadmin_coverage_is_registered():
         "admin.uploads.product_image.create",
         "admin.configs.summary.read",
         "admin.runtime.tps.read",
+        "admin.case_config.read",
+        "admin.case_config.patch",
     }
 
     assert required <= set(capability_by_id)
@@ -1077,6 +1100,226 @@ async def test_mcp_mutating_tool_requires_dry_run_confirmation_and_idempotency(m
         assert apply_payload["result"]["structuredContent"]["dry_run"] is False
         assert db.runtime_config_updates == [{"maintenance_mode": {"enabled": True}}]
         assert db.audit_calls[-1]["confirmation_id"] == "confirm-1"
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_mcp_case_config_read_returns_defaults_and_audits(monkeypatch):
+    client, db, admin_auth_token = await _gateway_client(monkeypatch)
+    try:
+        token = await _mcp_token(client, admin_auth_token)
+        response = await _mcp_call(
+            client,
+            token,
+            "tools/call",
+            {"name": "admin.case_config.read", "arguments": {}},
+        )
+        payload = await response.json()
+        structured = payload["result"]["structuredContent"]
+
+        assert response.status == 200
+        # limited base = 150 (фикс бага 0-частиц для limited)
+        assert structured["base_particles_by_rarity"]["limited"] == 150
+        assert db.audit_calls[-1]["tool_name"] == "admin.case_config.read"
+        assert db.audit_calls[-1]["status"] == "success"
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_mcp_case_config_patch_dry_run_confirmation_and_idempotency(monkeypatch):
+    client, db, admin_auth_token = await _gateway_client(monkeypatch)
+    patch = {"base_particles_by_rarity": {"limited": 777}}
+    try:
+        token = await _mcp_token(client, admin_auth_token)
+        no_dry_run = await _mcp_call(
+            client,
+            token,
+            "tools/call",
+            {
+                "name": "admin.case_config.patch",
+                "arguments": {
+                    "patch": patch,
+                    "dry_run": False,
+                    "idempotency_key": "case-patch-1",
+                    "reason": "limited base tuning",
+                },
+            },
+        )
+        no_dry_run_payload = await no_dry_run.json()
+
+        dry_run = await _mcp_call(
+            client,
+            token,
+            "tools/call",
+            {
+                "name": "admin.case_config.patch",
+                "arguments": {
+                    "patch": patch,
+                    "dry_run": True,
+                    "idempotency_key": "case-patch-1",
+                    "reason": "limited base tuning",
+                },
+            },
+        )
+        dry_run_payload = await dry_run.json()
+        confirmation_token = dry_run_payload["result"]["structuredContent"]["confirmation"]["confirmation_token"]
+        assert dry_run_payload["result"]["structuredContent"]["dry_run"] is True
+        # dry-run не пишет
+        assert db.case_config_updates == []
+
+        apply_response = await _mcp_call(
+            client,
+            token,
+            "tools/call",
+            {
+                "name": "admin.case_config.patch",
+                "arguments": {
+                    "patch": patch,
+                    "dry_run": False,
+                    "idempotency_key": "case-patch-1",
+                    "confirmation_token": confirmation_token,
+                    "reason": "limited base tuning",
+                },
+            },
+        )
+        apply_payload = await apply_response.json()
+
+        assert no_dry_run_payload["error"]["message"] == "confirmation_required"
+        assert apply_payload["result"]["structuredContent"]["dry_run"] is False
+        bpr = apply_payload["result"]["structuredContent"]["applied"]["base_particles_by_rarity"]
+        assert bpr["limited"] == 777
+        # КРИТИЧНО: остальные редкости сохранены (deep-merge), не обнулены
+        assert bpr["common"] == 2
+        assert bpr["divine"] == 100
+        assert db.case_config_updates == [patch]
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_mcp_case_config_patch_rejects_invalid_sum(monkeypatch):
+    client, _db, admin_auth_token = await _gateway_client(monkeypatch)
+    try:
+        token = await _mcp_token(client, admin_auth_token)
+        response = await _mcp_call(
+            client,
+            token,
+            "tools/call",
+            {
+                "name": "admin.case_config.patch",
+                "arguments": {
+                    "patch": {"tier_rarity_probabilities": {1: {"common": 0.1, "rare": 0.1}}},
+                    "dry_run": True,
+                    "idempotency_key": "case-bad-sum",
+                    "reason": "test",
+                },
+            },
+        )
+        payload = await response.json()
+        assert payload["error"]["message"] == "invalid_tier_rarity_sum"
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_mcp_case_config_patch_rejects_unknown_field(monkeypatch):
+    client, _db, admin_auth_token = await _gateway_client(monkeypatch)
+    try:
+        token = await _mcp_token(client, admin_auth_token)
+        response = await _mcp_call(
+            client,
+            token,
+            "tools/call",
+            {
+                "name": "admin.case_config.patch",
+                "arguments": {
+                    "patch": {"bogus_field": 1},
+                    "dry_run": True,
+                    "idempotency_key": "case-unknown",
+                    "reason": "test",
+                },
+            },
+        )
+        payload = await response.json()
+        # Schema (additionalProperties=False) rejects unknown patch keys first;
+        # adapter's unsupported_case_config_field is a secondary defense.
+        assert payload["error"]["message"] == "unexpected_argument"
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_mcp_case_config_patch_rejects_empty_patch(monkeypatch):
+    client, _db, admin_auth_token = await _gateway_client(monkeypatch)
+    try:
+        token = await _mcp_token(client, admin_auth_token)
+        response = await _mcp_call(
+            client,
+            token,
+            "tools/call",
+            {
+                "name": "admin.case_config.patch",
+                "arguments": {
+                    "patch": {},
+                    "dry_run": True,
+                    "idempotency_key": "case-empty",
+                    "reason": "test",
+                },
+            },
+        )
+        payload = await response.json()
+        assert payload["error"]["message"] == "empty_case_config_patch"
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_mcp_case_config_patch_partial_tier_preserves_others(monkeypatch):
+    """Partial tier_upgrade_chances патч сохраняет остальные тиры."""
+    client, db, admin_auth_token = await _gateway_client(monkeypatch)
+    patch = {"tier_upgrade_chances": {2: 0.5}}
+    try:
+        token = await _mcp_token(client, admin_auth_token)
+        dry_run = await _mcp_call(
+            client,
+            token,
+            "tools/call",
+            {
+                "name": "admin.case_config.patch",
+                "arguments": {
+                    "patch": patch,
+                    "dry_run": True,
+                    "idempotency_key": "case-tier",
+                    "reason": "tier tuning",
+                },
+            },
+        )
+        dry_run_payload = await dry_run.json()
+        confirmation_token = dry_run_payload["result"]["structuredContent"]["confirmation"]["confirmation_token"]
+        apply = await _mcp_call(
+            client,
+            token,
+            "tools/call",
+            {
+                "name": "admin.case_config.patch",
+                "arguments": {
+                    "patch": patch,
+                    "dry_run": False,
+                    "idempotency_key": "case-tier",
+                    "confirmation_token": confirmation_token,
+                    "reason": "tier tuning",
+                },
+            },
+        )
+        apply_payload = await apply.json()
+        tuc = apply_payload["result"]["structuredContent"]["applied"]["tier_upgrade_chances"]
+        # JSON round-trip stringifies int tier keys.
+        assert tuc["2"] == 0.5
+        assert tuc["1"] == 0.25  # дефолт сохранён (deep-merge)
+        assert tuc["3"] == 0.15
+        assert tuc["4"] == 0.10
     finally:
         await client.close()
 

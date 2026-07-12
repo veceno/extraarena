@@ -2497,6 +2497,30 @@
             </table></div>
           </div>
         </section>
+        <section class="panel-card" style="margin-top:16px">
+          <h3>Case roll configuration</h3>
+          <div style="color:var(--muted);font-size:12px;margin-bottom:10px">Live (no restart). Tier/rarity-keyed patches are deep-merged — untouched tiers/rarities are preserved. The limited-event toggle + probability below are applied immediately; everything else goes through the JSON patch box.</div>
+          <div class="form-grid three">
+            <div class="toggle"><span class="toggle-label">Limited cards event active</span><span class="switch" id="cfg-case-limited-switch" data-on="0"></span></div>
+            <div class="field"><label>Limited event probability (0..1)</label><input id="cfg-case-limited-prob" type="number" step="0.0001" min="0" max="1" value="0.0015"></div>
+            <div class="field" style="display:flex;align-items:flex-end"><button class="primary" type="button" id="btn-case-limited-save">Save limited-event</button></div>
+          </div>
+          <div class="form-grid three" style="margin-top:10px">
+            <div class="field"><label>Limited base particles</label><input id="cfg-case-limited-base" readonly value="—"></div>
+            <div class="field"><label>T5 jackpot particles</label><input id="cfg-case-jackpot" readonly value="—"></div>
+            <div class="field"><label>Status</label><input id="cfg-case-summary" readonly value="Loading..."></div>
+          </div>
+          <div class="table-shell" style="margin-top:12px">
+            <div class="table-head"><div><strong>JSON patch</strong><span>partial, e.g. {"base_particles_by_rarity":{"limited":150}} or {"tier_upgrade_chances":{"1":0.2}}</span></div></div>
+            <div style="padding:10px">
+              <textarea id="cfg-case-patch-json" rows="6" style="width:100%;font-family:monospace;font-size:12px;box-sizing:border-box" placeholder='{"base_particles_by_rarity":{"limited":150}}'></textarea>
+              <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
+                <button class="primary" type="button" id="btn-case-patch-apply">Apply JSON patch</button>
+                <span id="cfg-case-patch-status" style="font-size:12px;color:var(--muted)"></span>
+              </div>
+            </div>
+          </div>
+        </section>
         <section class="table-shell" style="margin-top:16px">
           <div class="table-head"><div><strong>Match modes</strong><span>DB overrides</span></div></div>
           <div class="table-scroll"><table>
@@ -4214,6 +4238,7 @@
       // CONFIGS ADMIN
       // ═══════════════════════════════════════════
       var runtimeConfig={maintenance_mode:{enabled:false},feature_availability:{},disabled_card_ids:[]},runtimeCards=[];
+      var caseConfig=null;
       var featureLabels={
         shop:'Menu: Магазин',
         collection:'Menu: Коллекция',
@@ -4233,6 +4258,13 @@
         var next=this.dataset.on!=='1';
         toggleMaintenance(next);
       });
+      $('#cfg-case-limited-switch').addEventListener('click',function(){
+        var next=this.dataset.on!=='1';
+        setSwitch(this,next);
+        toggleCaseLimitedEvent(next);
+      });
+      $('#btn-case-limited-save').addEventListener('click',saveCaseLimitedEvent);
+      $('#btn-case-patch-apply').addEventListener('click',applyCaseConfigJsonPatch);
 
       function renderRuntimeConfig(){
         var rc=runtimeConfig||{},fa=rc.feature_availability||{},disabled=(rc.disabled_card_ids||[]).map(Number);
@@ -4268,6 +4300,56 @@
         var saved=await api('POST','/api/admin/runtime-config',runtimeConfig);
         runtimeConfig=saved.data||runtimeConfig;
         renderRuntimeConfig();
+      }
+
+      function renderCaseConfig(){
+        var cc=caseConfig||{};
+        var bpb=(cc.base_particles_by_rarity)||{};
+        setSwitch($('#cfg-case-limited-switch'),!!cc.limited_event_active);
+        var prob=cc.limited_event_probability;
+        $('#cfg-case-limited-prob').value=(prob==null?'':prob);
+        $('#cfg-case-limited-base').value=bpb.limited!=null?bpb.limited:'—';
+        $('#cfg-case-jackpot').value=cc.t5_common_jackpot_particles!=null?cc.t5_common_jackpot_particles:'—';
+        $('#cfg-case-summary').value=(cc.limited_event_active?'Limited event ON':'Limited event OFF')+' · limited base: '+(bpb.limited!=null?bpb.limited:'—');
+      }
+
+      async function saveCaseConfigPatch(patch){
+        var saved=await api('POST','/api/admin/case-config',{patch:patch});
+        caseConfig=saved.data||caseConfig;
+        renderCaseConfig();
+        return caseConfig;
+      }
+
+      window.toggleCaseLimitedEvent=async function(enabled){
+        try{
+          await saveCaseConfigPatch({limited_event_active:!!enabled});
+          toast('Limited-event toggle updated','success');
+        }catch(e){toast('Case config: '+escHtml(e.message),'error');loadConfigs()}
+      };
+
+      async function saveCaseLimitedEvent(){
+        var probRaw=parseFloat($('#cfg-case-limited-prob').value);
+        if(isNaN(probRaw)||probRaw<0||probRaw>1){toast('Probability must be between 0 and 1','error');return}
+        var enabled=$('#cfg-case-limited-switch').dataset.on==='1';
+        try{
+          await saveCaseConfigPatch({limited_event_active:!!enabled,limited_event_probability:probRaw});
+          toast('Limited-event saved','success');
+        }catch(e){toast('Case config: '+escHtml(e.message),'error');loadConfigs()}
+      }
+
+      async function applyCaseConfigJsonPatch(){
+        var raw=$('#cfg-case-patch-json').value.trim();
+        if(!raw){toast('Patch is empty','error');return}
+        var patch;
+        try{patch=JSON.parse(raw)}catch(e){toast('Patch must be valid JSON','error');return}
+        if(typeof patch!=='object'||Array.isArray(patch)||!patch){toast('Patch must be a JSON object','error');return}
+        var st=$('#cfg-case-patch-status');
+        st.textContent='Applying...';st.style.color='var(--muted)';
+        try{
+          await saveCaseConfigPatch(patch);
+          st.textContent='Applied at '+new Date().toLocaleTimeString();st.style.color='var(--green)';
+          toast('Case config patch applied','success');
+        }catch(e){st.textContent=escHtml(e.message);st.style.color='var(--red)';toast('Case config: '+escHtml(e.message),'error')}
       }
 
       window.toggleMaintenance=async function(enabled){
@@ -4335,6 +4417,8 @@
           runtimeConfig=d.runtime_config||runtimeConfig;
           runtimeCards=d.cards||[];
           renderRuntimeConfig();
+          caseConfig=d.case_config||caseConfig;
+          renderCaseConfig();
           var modes=d.match_modes||[];
           if(modes.length){
             $('#cfg-modes-tbody').innerHTML=modes.map(function(m){

@@ -4,6 +4,8 @@ import re
 from dataclasses import asdict, dataclass
 from typing import Any, Literal, Mapping
 
+from infrastructure.case_config import RARITY_ORDER
+
 JsonSchema = dict[str, Any]
 
 TRACK_REWARD_TYPES = ("coins", "gems", "keys", "case", "card", "specific_card", "particles", "cosmetic", "guaranteed_card")
@@ -234,6 +236,29 @@ def _runtime_config_patch_schema() -> JsonSchema:
                 "items": _int_schema(minimum=1),
                 "uniqueItems": True,
             },
+        }
+    )
+
+
+def _case_config_patch_schema() -> JsonSchema:
+    """Partial-patch schema for case roll configuration (live, no restart).
+
+    Tier-keyed и rarity-keyed sub-dicts используют additional_properties=True
+    (динамические ключи тиров 1..5 / редкостей). Грубая JSON-schema — настоящая
+    валидация значений делается в _normalize_case_config_patch (mcp_admin_tools).
+    """
+    return _object_schema(
+        {
+            "tier_rarity_probabilities": _object_schema(additional_properties=True),
+            "tier_particles_multiplier": _object_schema(additional_properties=True),
+            "base_particles_by_rarity": _object_schema(additional_properties=True),
+            "tier_rewards_count": _object_schema(additional_properties=True),
+            "start_rarity_replacement": _object_schema(additional_properties=True),
+            "max_rarity_by_tier": _object_schema(additional_properties=True),
+            "t5_common_jackpot_particles": _int_schema(minimum=0),
+            "tier_upgrade_chances": _object_schema(additional_properties=True),
+            "limited_event_active": _boolean_schema(),
+            "limited_event_probability": _number_schema(minimum=0, maximum=1),
         }
     )
 
@@ -843,6 +868,40 @@ ADMIN_CAPABILITIES: tuple[AdminCapability, ...] = (
         dry_run_required=True,
         idempotency_required=True,
         adapter_function="adapter_patch_runtime_config",
+    ),
+    AdminCapability(
+        id="admin.case_config.read",
+        title="Read Case Config",
+        description="Read DB-backed case roll configuration (rarity weights, particle multipliers, limited-event toggle and probability, reward counts).",
+        input_schema=_object_schema(),
+        required_scope="admin:runtime:read",
+        read_only=True,
+        mutating=False,
+        safety_level="low",
+        audit_policy="metadata",
+        dry_run_required=False,
+        idempotency_required=False,
+        adapter_function="adapter_read_case_config",
+    ),
+    AdminCapability(
+        id="admin.case_config.patch",
+        title="Patch Case Config",
+        description="Apply a typed partial patch to case roll configuration (live, no restart). Unknown fields are rejected; tier/rarity-keyed sub-dicts are deep-merged so a partial patch preserves untouched tiers/rarities.",
+        input_schema=_object_schema(
+            {
+                "patch": _case_config_patch_schema(),
+                **_mutating_controls(),
+            },
+            required=("patch", "dry_run"),
+        ),
+        required_scope="admin:runtime:write",
+        read_only=False,
+        mutating=True,
+        safety_level="high",
+        audit_policy="request_and_result",
+        dry_run_required=True,
+        idempotency_required=True,
+        adapter_function="adapter_patch_case_config",
     ),
     AdminCapability(
         id="admin.players.note.create",

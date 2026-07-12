@@ -5,6 +5,8 @@
 должны быть конфигурируемыми, а не захардкоженными в коде.
 """
 
+import copy
+
 from dataclasses import dataclass
 from typing import Dict, List
 
@@ -168,7 +170,7 @@ BASE_PARTICLES_BY_RARITY = {
     "legendary": 20,  # было 80
     "mythic": 40,     # было 160
     "divine": 100,    # было 400
-    "limited": 0,     # Лимитированные не дают частицы при дубликатах
+    "limited": 150,   # Лимитированные дают частицы (выше divine): дубликаты конвертируются в частицы
 }
 
 # Множитель частиц от тира кейса
@@ -204,3 +206,279 @@ UNI_CARD_ID = 36
 # Флаг активности события для лимитированных карт
 LIMITED_EVENT_ACTIVE = False
 LIMITED_EVENT_PROBABILITY = 0.0015  # 0.15% при активном событии (между 0.1% и 0.2%)
+
+
+# ----------------------------------------------------------------------------
+# Конфигурация кейсов в реальном времени (game_settings row "case_config")
+# ----------------------------------------------------------------------------
+# Все константы выше остаются значениями по умолчанию. Администратор может
+# переопределять их в реальном времени (без рестарта сервера) через MCP
+# (admin.case_config.read / admin.case_config.patch) или через админ-панель
+# (/api/admin/case-config). Roll-функции case_system принимают необязательный
+# параметр case_config; при None используются LIVE module-global объекты
+# (важно для тестов, которые monkeypatch-ят эти словари на месте).
+
+# Ключ в таблице game_settings
+CASE_CONFIG_KEY = "case_config"
+
+# Категории полей конфигурации кейсов
+TIER_KEYED_FIELDS = {
+    "tier_rarity_probabilities",
+    "tier_particles_multiplier",
+    "tier_rewards_count",
+    "max_rarity_by_tier",
+    "tier_upgrade_chances",
+}
+RARITY_KEYED_FIELDS = {
+    "base_particles_by_rarity",
+    "start_rarity_replacement",
+}
+SCALAR_FIELDS = {
+    "t5_common_jackpot_particles",
+    "limited_event_active",
+    "limited_event_probability",
+}
+CASE_CONFIG_FIELDS = TIER_KEYED_FIELDS | RARITY_KEYED_FIELDS | SCALAR_FIELDS
+
+# Соответствие имён полей blob -> имена module-level констант (для build_default)
+_CASE_CONFIG_FIELD_TO_CONST = {
+    "tier_rarity_probabilities": "TIER_RARITY_PROBABILITIES",
+    "tier_particles_multiplier": "TIER_PARTICLES_MULTIPLIER",
+    "base_particles_by_rarity": "BASE_PARTICLES_BY_RARITY",
+    "tier_rewards_count": "TIER_REWARDS_COUNT",
+    "start_rarity_replacement": "START_RARITY_REPLACEMENT",
+    "max_rarity_by_tier": "MAX_RARITY_BY_TIER",
+    "t5_common_jackpot_particles": "T5_COMMON_JACKPOT_PARTICLES",
+    "tier_upgrade_chances": "TIER_UPGRADE_CHANCES",
+    "limited_event_active": "LIMITED_EVENT_ACTIVE",
+    "limited_event_probability": "LIMITED_EVENT_PROBABILITY",
+}
+
+
+def _coerce_tier_keys(value, default_keys):
+    """Привести строковые ключи тиров ('1'..'5') из JSONB к int, оставить только известные тиры.
+
+    default_keys — множество int-ключей тиров, разрешённых для данного поля
+    (берётся из дефолта: 1..5 для большинства, 1..4 для tier_upgrade_chances).
+    """
+    if not isinstance(value, dict):
+        return {}
+    result = {}
+    for k, v in value.items():
+        try:
+            ik = int(k)
+        except (TypeError, ValueError):
+            continue
+        if ik in default_keys:
+            result[ik] = v
+    return result
+
+
+def build_default_case_config() -> dict:
+    """Вернуть deepcopy конфигурации кейсов, построенный из текущих констант модуля.
+
+    Используется как значение по умолчанию для game_settings и как база для
+    merge/fill. Deepcopy гарантирует, что слияние патча не мутирует module-globals.
+    """
+    blob = {}
+    for field, const_name in _CASE_CONFIG_FIELD_TO_CONST.items():
+        # deepcopy: для вложенных dict нужна полная независимая копия,
+        # чтобы слияние патча не мутировало module-globals.
+        blob[field] = copy.deepcopy(globals()[const_name])
+    return blob
+
+
+def merge_case_config_patch(current: dict, patch: dict) -> dict:
+    """Структурный deep-merge патча в текущую конфигурацию (write-side).
+
+    - tier-keyed поля: merge по тирам — патч заменяет только указанные тиры,
+      остальные сохраняются (иначе partial-патч одного тира удалил бы остальные).
+    - rarity-keyed поля: merge по редкостям — патч заменяет только указанные
+      редкости (иначе {'base_particles_by_rarity':{'limited':150}} обнулил бы
+      common/rare/divine и вновь занулил бы частицы — ровно тот баг, что чиним).
+    - скаляры: прямая замена.
+    Не мутирует current; возвращает новый словарь.
+    """
+    result = dict(current)
+    for field, pval in patch.items():
+        if field not in CASE_CONFIG_FIELDS:
+            # Отвергаем неизвестные поля (MCP-путь делает это в нормализаторе;
+            # HTTP-путь /tests попадают сюда — единая точка отказа, ValueError→400).
+            raise ValueError("unsupported_case_config_field")
+        if field in TIER_KEYED_FIELDS:
+            if not isinstance(pval, dict):
+                raise ValueError(f"invalid_{field}")
+            cur = current.get(field) or {}
+            default_keys = set((cur.keys())) if cur else set()
+            coerced = _coerce_tier_keys(pval, default_keys)
+            result[field] = {**cur, **coerced}
+        elif field in RARITY_KEYED_FIELDS:
+            if not isinstance(pval, dict):
+                raise ValueError(f"invalid_{field}")
+            cur = current.get(field) or {}
+            result[field] = {**cur, **pval}
+        else:  # SCALAR_FIELDS
+            result[field] = pval
+    return result
+
+
+def fill_case_config_defaults(stored: dict) -> dict:
+    """Заполнить пропущенные ключи и тиры из значений по умолчанию (read-side deep-fill).
+
+    Коэрсит строковые ключи тиров из JSONB к int. Не затирает административные
+    правки: для tier-keyed полей отсутствующие тиры берутся из дефолта, для
+    rarity-keyed — отсутствующие редкости из дефолта.
+    """
+    defaults = build_default_case_config()
+    result = dict(defaults)
+    for field in CASE_CONFIG_FIELDS:
+        if field not in stored:
+            continue
+        sval = stored[field]
+        if field in TIER_KEYED_FIELDS:
+            default_keys = set(defaults[field].keys())
+            coerced = _coerce_tier_keys(sval, default_keys)
+            result[field] = {**defaults[field], **coerced}
+        elif field in RARITY_KEYED_FIELDS:
+            result[field] = {**defaults[field], **(sval or {})}
+        else:  # SCALAR_FIELDS
+            result[field] = sval
+    return result
+
+
+def resolve_case_config(case_config):
+    """Центральный резолвер конфигурации для roll-функций case_system.
+
+    - None => LIVE-ссылки на module-global объекты (НЕ копии). Это load-bearing
+      для тестов, которые делают monkeypatch.setitem(case_system.TIER_REWARDS_COUNT, ...).
+    - dict => fill_case_config_defaults (deep-fill + coerce tier keys).
+    """
+    if case_config is None:
+        # MUST be live references, not copies — tests monkeypatch these module dicts in place.
+        return {
+            "tier_rarity_probabilities": TIER_RARITY_PROBABILITIES,
+            "tier_particles_multiplier": TIER_PARTICLES_MULTIPLIER,
+            "base_particles_by_rarity": BASE_PARTICLES_BY_RARITY,
+            "tier_rewards_count": TIER_REWARDS_COUNT,
+            "start_rarity_replacement": START_RARITY_REPLACEMENT,
+            "max_rarity_by_tier": MAX_RARITY_BY_TIER,
+            "t5_common_jackpot_particles": T5_COMMON_JACKPOT_PARTICLES,
+            "tier_upgrade_chances": TIER_UPGRADE_CHANCES,
+            "limited_event_active": LIMITED_EVENT_ACTIVE,
+            "limited_event_probability": LIMITED_EVENT_PROBABILITY,
+        }
+    return fill_case_config_defaults(case_config)
+
+
+def validate_case_config(blob: dict) -> None:
+    """Структурная валидация полного blob'а конфигурации кейсов. Raises ValueError при ошибке.
+
+    Ожидает ПОЛНЫЙ blob (все поля) — merge/fill всегда дают полный набор.
+    """
+    if not isinstance(blob, dict):
+        raise ValueError("invalid_case_config_shape")
+
+    def _check_tier_keys(d, field, lo, hi):
+        if not isinstance(d, dict) or not d:
+            raise ValueError(f"invalid_{field}")
+        for k in d:
+            if not isinstance(k, int) or not (lo <= k <= hi):
+                raise ValueError(f"invalid_{field}")
+
+    # tier_rarity_probabilities (tiers 1..5)
+    trp = blob.get("tier_rarity_probabilities")
+    _check_tier_keys(trp, "tier_rarity_probabilities", 1, 5)
+    for tier, probs in trp.items():
+        if not isinstance(probs, dict) or not probs:
+            raise ValueError("invalid_tier_rarity_probabilities")
+        s = 0.0
+        for rarity, p in probs.items():
+            if rarity not in RARITY_ORDER:
+                raise ValueError("invalid_tier_rarity_rarity")
+            if not isinstance(p, (int, float)) or not (0 <= p <= 1):
+                raise ValueError("invalid_tier_rarity_prob_value")
+            s += p
+        if abs(s - 1.0) > 0.02:
+            raise ValueError("invalid_tier_rarity_sum")
+
+    # tier_particles_multiplier (tiers 1..5)
+    tpm = blob.get("tier_particles_multiplier")
+    _check_tier_keys(tpm, "tier_particles_multiplier", 1, 5)
+    for tier, m in tpm.items():
+        if not isinstance(m, (int, float)) or m < 0:
+            raise ValueError("invalid_tier_particles_multiplier")
+
+    # base_particles_by_rarity (rarity -> number >= 0)
+    bpb = blob.get("base_particles_by_rarity")
+    if not isinstance(bpb, dict) or not bpb:
+        raise ValueError("invalid_base_particles_by_rarity")
+    for rarity, v in bpb.items():
+        if rarity not in RARITY_ORDER:
+            raise ValueError("invalid_base_particles_rarity")
+        if not isinstance(v, (int, float)) or v < 0:
+            raise ValueError("invalid_base_particles_value")
+
+    # tier_rewards_count (tiers 1..5)
+    trc = blob.get("tier_rewards_count")
+    _check_tier_keys(trc, "tier_rewards_count", 1, 5)
+    for tier, cfg in trc.items():
+        if not isinstance(cfg, dict):
+            raise ValueError("invalid_tier_rewards_count")
+        coins = cfg.get("coins")
+        cards = cfg.get("cards")
+        if not (isinstance(coins, (list, tuple)) and len(coins) == 2
+                and isinstance(coins[0], int) and isinstance(coins[1], int)
+                and coins[0] <= coins[1]):
+            raise ValueError("invalid_tier_rewards_coins")
+        if not (isinstance(cards, (list, tuple)) and len(cards) == 2
+                and isinstance(cards[0], int) and isinstance(cards[1], int)
+                and cards[0] <= cards[1]):
+            raise ValueError("invalid_tier_rewards_cards")
+        if "gems_chance" in cfg:
+            gc = cfg["gems_chance"]
+            if not isinstance(gc, (int, float)) or not (0 <= gc <= 1):
+                raise ValueError("invalid_tier_rewards_gems_chance")
+        if "gems_amount" in cfg:
+            ga = cfg["gems_amount"]
+            if not (isinstance(ga, (list, tuple)) and len(ga) == 2
+                    and isinstance(ga[0], int) and isinstance(ga[1], int)
+                    and ga[0] <= ga[1]):
+                raise ValueError("invalid_tier_rewards_gems_amount")
+
+    # start_rarity_replacement (rarity -> float 0..1)
+    srr = blob.get("start_rarity_replacement")
+    if not isinstance(srr, dict):
+        raise ValueError("invalid_start_rarity_replacement")
+    for rarity, p in srr.items():
+        if rarity not in RARITY_ORDER:
+            raise ValueError("invalid_start_rarity_replacement_rarity")
+        if not isinstance(p, (int, float)) or not (0 <= p <= 1):
+            raise ValueError("invalid_start_rarity_replacement_value")
+
+    # max_rarity_by_tier (tiers 1..5 -> rarity)
+    mrb = blob.get("max_rarity_by_tier")
+    _check_tier_keys(mrb, "max_rarity_by_tier", 1, 5)
+    for tier, rarity in mrb.items():
+        if rarity not in RARITY_ORDER:
+            raise ValueError("invalid_max_rarity_by_tier")
+
+    # t5_common_jackpot_particles (int >= 0)
+    jc = blob.get("t5_common_jackpot_particles")
+    if not isinstance(jc, int) or jc < 0:
+        raise ValueError("invalid_t5_jackpot")
+
+    # tier_upgrade_chances (tiers 1..4 -> float 0..1)
+    tuc = blob.get("tier_upgrade_chances")
+    _check_tier_keys(tuc, "tier_upgrade_chances", 1, 4)
+    for tier, p in tuc.items():
+        if not isinstance(p, (int, float)) or not (0 <= p <= 1):
+            raise ValueError("invalid_tier_upgrade_chances")
+
+    # limited_event_active (bool)
+    if not isinstance(blob.get("limited_event_active"), bool):
+        raise ValueError("invalid_limited_event_active")
+
+    # limited_event_probability (float 0..1)
+    lep = blob.get("limited_event_probability")
+    if not isinstance(lep, (int, float)) or not (0 <= lep <= 1):
+        raise ValueError("invalid_limited_event_probability")
