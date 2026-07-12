@@ -85,7 +85,7 @@ impl Default for InfoModeV5 {
             own_deck_known: true,
             enemy_hand_known: true,
             enemy_deck_known: true,
-            enemy_deck_order_known: false,
+            enemy_deck_order_known: true,
             draw_assist_enabled: false,
             draw_assist_strength: 0.0,
         }

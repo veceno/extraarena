@@ -684,7 +684,11 @@ class BerserkInference:
             obs = encode_observation_v5(
                 game_state,
                 player_id,
-                info_mode=InfoModeV5(enemy_hand_known=True, enemy_deck_known=True),
+                info_mode=InfoModeV5(
+                    enemy_hand_known=True,
+                    enemy_deck_known=True,
+                    enemy_deck_order_known=True,
+                ),
                 history_events=list(getattr(game_state, "v5_history_events", ())),
             ).reshape(1, obs_dim).astype(np.float32)
             mask = build_action_mask(

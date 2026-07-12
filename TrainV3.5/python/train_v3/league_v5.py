@@ -77,7 +77,7 @@ def sample_v5_episode_modes(config: V5LeagueConfig, *, seed: int, update: int) -
         # assist sample. Keep the legacy config fields for manifest parsing.
         enemy_hand_known=True,
         enemy_deck_known=True,
-        enemy_deck_order_known=False,
+        enemy_deck_order_known=True,
         draw_assist_enabled=draw_assist_enabled,
         draw_assist_strength=strength if draw_assist_enabled else 0.0,
     )

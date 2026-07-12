@@ -78,6 +78,7 @@ def test_default_v5_observation_contains_enemy_hand_and_deck() -> None:
     )
     assert default_obs[OBS_V1_DIM + 3] == pytest.approx(1.0)
     assert default_obs[OBS_V1_DIM + 4] == pytest.approx(1.0)
+    assert default_obs[OBS_V1_DIM + 5] == pytest.approx(1.0)
     assert not np.array_equal(default_obs, hidden_obs)
 
 

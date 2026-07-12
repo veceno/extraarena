@@ -45,7 +45,7 @@ class InfoModeV5:
     own_deck_known: bool = True
     enemy_hand_known: bool = True
     enemy_deck_known: bool = True
-    enemy_deck_order_known: bool = False
+    enemy_deck_order_known: bool = True
     draw_assist_enabled: bool = False
     draw_assist_strength: float = 0.0
 
