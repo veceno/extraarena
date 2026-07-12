@@ -14,7 +14,12 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from infrastructure.database import SQUAD_SETTINGS_DEFAULTS
-from infrastructure.case_config import CASE_CONFIG_FIELDS, RARITY_ORDER
+from infrastructure.case_config import (
+    CASE_CONFIG_FIELDS,
+    RARITY_ORDER,
+    merge_case_config_patch,
+    validate_case_config,
+)
 from infrastructure.push_notifications import build_android_push_payload, send_android_broadcast
 from infrastructure.shop_config import GEM_PACKAGES
 from web.admin_capabilities import AdminCapability
@@ -743,16 +748,18 @@ def _normalize_case_config_patch(patch: Any) -> dict[str, Any]:
             if not isinstance(probs, dict) or not probs:
                 raise MCPToolInputError("invalid_tier_rarity_probabilities")
             vprobs: dict[str, float] = {}
-            s = 0.0
             for rarity, p in probs.items():
                 if rarity not in RARITY_ORDER:
                     raise MCPToolInputError("invalid_tier_rarity_rarity")
                 if not _is_number(p) or not (0 <= p <= 1):
                     raise MCPToolInputError("invalid_tier_rarity_prob_value")
                 vprobs[rarity] = float(p)
-                s += p
-            if abs(s - 1.0) > 0.02:
-                raise MCPToolInputError("invalid_tier_rarity_sum")
+            # NOTE: сумму тира НЕ валидируем здесь. Patch — partial: tier/rarity-keyed
+            # sub-dicts deep-merge (merge_case_config_patch), поэтому сумма патча
+            # (subset редкостей) не обязана быть 1.0. Финальная сумма каждого тира
+            # валидируется в validate_case_config на MERGED blob (dry-run preview +
+            # apply). Раньше тут была проверка суммы патча — она ошибочно reject-ила
+            # любой partial-tier patch (напр. {2:{common:0.644}} при текущем T2).
             validated[tier] = vprobs
         normalized["tier_rarity_probabilities"] = validated
 
@@ -1752,14 +1759,34 @@ async def adapter_read_case_config(app: Any, admin_user_id: int, args: dict[str,
 async def adapter_patch_case_config(app: Any, admin_user_id: int, args: dict[str, Any]) -> dict[str, Any]:
     """Применить partial-патч конфигурации кейсов со структурным deep-merge.
 
-    dry_run=True возвращает текущую конфигурацию + нормализованный патч без записи.
-    Применение идёт через Database.set_case_config (merge + validate + persist).
+    dry_run=True делает merge patch -> current и валидирует MERGED blob (faithful
+    preview apply): возвращает current, нормализованный patch и merged-результат
+    без записи. Невалидный merged blob (напр. нарушенная сумма тира после partial
+    патча) поднимает MCPToolInputError с типизированным кодом из validate_case_config.
+    Применение идёт через Database.set_case_config (merge + validate + persist);
+    ValueError из валидации оборачивается в MCPToolInputError, чтобы gateway вернул
+    типизированный -32602 (а не generic tool_execution_failed).
     """
     patch = _normalize_case_config_patch(args.get("patch"))
     if _bool_arg(args, "dry_run", False):
         current = await _call_db(app["db"], "get_case_config", default={})
-        return {"dry_run": True, "current": json_safe(current), "patch": json_safe(patch)}
-    applied = await _call_db(app["db"], "set_case_config", default={}, patch=patch)
+        merged = merge_case_config_patch(current, patch)
+        try:
+            validate_case_config(merged)
+        except ValueError as exc:
+            raise MCPToolInputError(str(exc) or "invalid_case_config") from exc
+        return {
+            "dry_run": True,
+            "current": json_safe(current),
+            "patch": json_safe(patch),
+            "merged": json_safe(merged),
+        }
+    try:
+        applied = await _call_db(app["db"], "set_case_config", default=None, patch=patch)
+    except ValueError as exc:
+        raise MCPToolInputError(str(exc) or "invalid_case_config") from exc
+    if applied is None:
+        raise MCPToolInputError("case_config_persist_failed")
     return {"dry_run": False, "applied": json_safe(applied), "patch": json_safe(patch)}
 
 

@@ -297,6 +297,13 @@ def merge_case_config_patch(current: dict, patch: dict) -> dict:
 
     - tier-keyed поля: merge по тирам — патч заменяет только указанные тиры,
       остальные сохраняются (иначе partial-патч одного тира удалил бы остальные).
+    - tier_rarity_probabilities (особый случай): дополнительно deep-merge по
+      редкостям ВНУТРИ каждого патчимого тира — патч {2:{common:0.7}} заменяет
+      только common в T2, сохраняя rare/superrare/epic. Иначе partial-патч одной
+      редкости заменил бы весь тир на {common:0.7} (сумма 0.7) и нарушил инвариант
+      суммы. Финальная сумма каждого тира всё равно валидируется в
+      validate_case_config (на merged blob) — админ должен перераспределить массу
+      так, чтобы сумма осталась 1.0.
     - rarity-keyed поля: merge по редкостям — патч заменяет только указанные
       редкости (иначе {'base_particles_by_rarity':{'limited':150}} обнулил бы
       common/rare/divine и вновь занулил бы частицы — ровно тот баг, что чиним).
@@ -315,7 +322,17 @@ def merge_case_config_patch(current: dict, patch: dict) -> dict:
             cur = current.get(field) or {}
             default_keys = set((cur.keys())) if cur else set()
             coerced = _coerce_tier_keys(pval, default_keys)
-            result[field] = {**cur, **coerced}
+            merged_tiers = {**cur, **coerced}
+            if field == "tier_rarity_probabilities":
+                # Deep-merge по редкостям внутри каждого патчимого тира: partial
+                # {tier:{rarity:v}} сохраняет остальные редкости тира. cur-тиры уже
+                # с int-ключами (build_default/fill_case_config_defaults coerce).
+                for tier, probs in coerced.items():
+                    if not isinstance(probs, dict):
+                        continue
+                    prev = cur.get(tier) if isinstance(cur.get(tier), dict) else {}
+                    merged_tiers[tier] = {**prev, **probs}
+            result[field] = merged_tiers
         elif field in RARITY_KEYED_FIELDS:
             if not isinstance(pval, dict):
                 raise ValueError(f"invalid_{field}")

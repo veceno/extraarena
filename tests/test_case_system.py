@@ -885,6 +885,27 @@ def test_merge_partial_tier_patch_preserves_other_tiers():
     assert tuc[4] == base["tier_upgrade_chances"][4]
 
 
+def test_merge_partial_tier_rarity_patch_preserves_other_rarities_in_tier():
+    """Partial tier_rarity_probabilities патч (одна редкость в одном тире) сохраняет
+    остальные редкости этого тира (per-rarity deep-merge), а не заменяет весь тир.
+
+    Раньше merge делал {**cur_tiers, **patch_tiers} на уровне тиров, поэтому
+    {2:{common:0.644}} заменил бы весь T2 на {common:0.644} (сумма 0.644) и нарушил
+    инвариант суммы. Теперь deep-merge по редкостям сохраняет rare/superrare/epic.
+    """
+    base = build_default_case_config()
+    merged = merge_case_config_patch(base, {"tier_rarity_probabilities": {2: {"common": 0.644}}})
+    t2 = merged["tier_rarity_probabilities"][2]
+    assert t2["common"] == 0.644
+    assert t2["rare"] == base["tier_rarity_probabilities"][2]["rare"]
+    assert t2["superrare"] == base["tier_rarity_probabilities"][2]["superrare"]
+    assert t2["epic"] == base["tier_rarity_probabilities"][2]["epic"]
+    # Сумма merged T2 валидна (no-op partial patch не нарушил инвариант).
+    assert abs(sum(t2.values()) - 1.0) < 1e-9
+    # Другие тиры не тронуты.
+    assert merged["tier_rarity_probabilities"][1] == base["tier_rarity_probabilities"][1]
+
+
 def test_fill_case_config_defaults_deep_fills_missing_tiers():
     """fill_case_config_defaults добавляет отсутствующие тиры из дефолта, не затирая правки."""
     stored = {
