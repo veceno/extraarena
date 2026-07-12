@@ -14,6 +14,12 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from infrastructure.database import SQUAD_SETTINGS_DEFAULTS
+from infrastructure.case_config import (
+    CASE_CONFIG_FIELDS,
+    RARITY_ORDER,
+    merge_case_config_patch,
+    validate_case_config,
+)
 from infrastructure.push_notifications import build_android_push_payload, send_android_broadcast
 from infrastructure.shop_config import GEM_PACKAGES
 from web.admin_capabilities import AdminCapability
@@ -694,6 +700,166 @@ def _normalize_runtime_patch(patch: Any) -> dict[str, Any]:
 
     if not normalized:
         raise MCPToolInputError("empty_runtime_config_patch")
+    return normalized
+
+
+def _normalize_case_config_patch(patch: Any) -> dict[str, Any]:
+    """Валидировать partial-патч конфигурации кейсов.
+
+    Коэрсит строковые ключи тиров к int, валидирует диапазоны/суммы, возвращает
+    нормализованный патч (int tier keys), готовый для merge_case_config_patch.
+    Поднимает MCPToolInputError с типизированным кодом при ошибке.
+    """
+    if not isinstance(patch, dict):
+        raise MCPToolInputError("patch_required")
+    unknown = set(patch) - CASE_CONFIG_FIELDS
+    if unknown:
+        raise MCPToolInputError("unsupported_case_config_field")
+    normalized: dict[str, Any] = {}
+
+    def _is_number(v: Any) -> bool:
+        return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+    def _tier_dict(value: Any, lo: int, hi: int, err: str) -> dict[int, Any]:
+        if not isinstance(value, dict) or not value:
+            raise MCPToolInputError(err)
+        out: dict[int, Any] = {}
+        for k, v in value.items():
+            try:
+                ik = int(k)
+            except (TypeError, ValueError):
+                raise MCPToolInputError(err)
+            if not (lo <= ik <= hi):
+                raise MCPToolInputError(err)
+            out[ik] = v
+        return out
+
+    def _int_pair(value: Any, err: str) -> list[int]:
+        if not (isinstance(value, (list, tuple)) and len(value) == 2
+                and all(isinstance(x, int) and not isinstance(x, bool) for x in value)
+                and value[0] <= value[1]):
+            raise MCPToolInputError(err)
+        return [int(value[0]), int(value[1])]
+
+    if "tier_rarity_probabilities" in patch:
+        trp = _tier_dict(patch["tier_rarity_probabilities"], 1, 5, "invalid_tier_rarity_probabilities")
+        validated: dict[int, Any] = {}
+        for tier, probs in trp.items():
+            if not isinstance(probs, dict) or not probs:
+                raise MCPToolInputError("invalid_tier_rarity_probabilities")
+            vprobs: dict[str, float] = {}
+            for rarity, p in probs.items():
+                if rarity not in RARITY_ORDER:
+                    raise MCPToolInputError("invalid_tier_rarity_rarity")
+                if not _is_number(p) or not (0 <= p <= 1):
+                    raise MCPToolInputError("invalid_tier_rarity_prob_value")
+                vprobs[rarity] = float(p)
+            # NOTE: сумму тира НЕ валидируем здесь. Patch — partial: tier/rarity-keyed
+            # sub-dicts deep-merge (merge_case_config_patch), поэтому сумма патча
+            # (subset редкостей) не обязана быть 1.0. Финальная сумма каждого тира
+            # валидируется в validate_case_config на MERGED blob (dry-run preview +
+            # apply). Раньше тут была проверка суммы патча — она ошибочно reject-ила
+            # любой partial-tier patch (напр. {2:{common:0.644}} при текущем T2).
+            validated[tier] = vprobs
+        normalized["tier_rarity_probabilities"] = validated
+
+    if "tier_particles_multiplier" in patch:
+        tpm = _tier_dict(patch["tier_particles_multiplier"], 1, 5, "invalid_tier_particles_multiplier")
+        validated = {}
+        for tier, m in tpm.items():
+            if not _is_number(m) or m < 0:
+                raise MCPToolInputError("invalid_tier_particles_multiplier")
+            validated[tier] = float(m)
+        normalized["tier_particles_multiplier"] = validated
+
+    if "base_particles_by_rarity" in patch:
+        bpb = patch["base_particles_by_rarity"]
+        if not isinstance(bpb, dict) or not bpb:
+            raise MCPToolInputError("invalid_base_particles_by_rarity")
+        validated = {}
+        for rarity, v in bpb.items():
+            if not isinstance(rarity, str):
+                raise MCPToolInputError("invalid_base_particles_by_rarity")
+            if rarity not in RARITY_ORDER:
+                raise MCPToolInputError("invalid_base_particles_rarity")
+            if not _is_number(v) or v < 0:
+                raise MCPToolInputError("invalid_base_particles_value")
+            validated[rarity] = v
+        normalized["base_particles_by_rarity"] = validated
+
+    if "tier_rewards_count" in patch:
+        trc = _tier_dict(patch["tier_rewards_count"], 1, 5, "invalid_tier_rewards_count")
+        validated = {}
+        for tier, cfg in trc.items():
+            if not isinstance(cfg, dict):
+                raise MCPToolInputError("invalid_tier_rewards_count")
+            vcfg: dict[str, Any] = {
+                "coins": _int_pair(cfg.get("coins"), "invalid_tier_rewards_coins"),
+                "cards": _int_pair(cfg.get("cards"), "invalid_tier_rewards_cards"),
+            }
+            if "gems_chance" in cfg:
+                gc = cfg["gems_chance"]
+                if not _is_number(gc) or not (0 <= gc <= 1):
+                    raise MCPToolInputError("invalid_tier_rewards_gems_chance")
+                vcfg["gems_chance"] = float(gc)
+            if "gems_amount" in cfg:
+                vcfg["gems_amount"] = _int_pair(cfg["gems_amount"], "invalid_tier_rewards_gems_amount")
+            validated[tier] = vcfg
+        normalized["tier_rewards_count"] = validated
+
+    if "start_rarity_replacement" in patch:
+        srr = patch["start_rarity_replacement"]
+        if not isinstance(srr, dict):
+            raise MCPToolInputError("invalid_start_rarity_replacement")
+        validated = {}
+        for rarity, p in srr.items():
+            if not isinstance(rarity, str):
+                raise MCPToolInputError("invalid_start_rarity_replacement")
+            if rarity not in RARITY_ORDER:
+                raise MCPToolInputError("invalid_start_rarity_replacement_rarity")
+            if not _is_number(p) or not (0 <= p <= 1):
+                raise MCPToolInputError("invalid_start_rarity_replacement_value")
+            validated[rarity] = float(p)
+        normalized["start_rarity_replacement"] = validated
+
+    if "max_rarity_by_tier" in patch:
+        mrb = _tier_dict(patch["max_rarity_by_tier"], 1, 5, "invalid_max_rarity_by_tier")
+        validated = {}
+        for tier, rarity in mrb.items():
+            if rarity not in RARITY_ORDER:
+                raise MCPToolInputError("invalid_max_rarity_by_tier")
+            validated[tier] = rarity
+        normalized["max_rarity_by_tier"] = validated
+
+    if "t5_common_jackpot_particles" in patch:
+        jc = patch["t5_common_jackpot_particles"]
+        if not isinstance(jc, int) or isinstance(jc, bool) or jc < 0:
+            raise MCPToolInputError("invalid_t5_jackpot")
+        normalized["t5_common_jackpot_particles"] = int(jc)
+
+    if "tier_upgrade_chances" in patch:
+        tuc = _tier_dict(patch["tier_upgrade_chances"], 1, 4, "invalid_tier_upgrade_chances")
+        validated = {}
+        for tier, p in tuc.items():
+            if not _is_number(p) or not (0 <= p <= 1):
+                raise MCPToolInputError("invalid_tier_upgrade_chances")
+            validated[tier] = float(p)
+        normalized["tier_upgrade_chances"] = validated
+
+    if "limited_event_active" in patch:
+        lea = patch["limited_event_active"]
+        if not isinstance(lea, bool):
+            raise MCPToolInputError("invalid_limited_event_active")
+        normalized["limited_event_active"] = lea
+
+    if "limited_event_probability" in patch:
+        lep = patch["limited_event_probability"]
+        if not _is_number(lep) or not (0 <= lep <= 1):
+            raise MCPToolInputError("invalid_limited_event_probability")
+        normalized["limited_event_probability"] = float(lep)
+
+    if not normalized:
+        raise MCPToolInputError("empty_case_config_patch")
     return normalized
 
 
@@ -1585,6 +1751,45 @@ async def adapter_patch_runtime_config(app: Any, admin_user_id: int, args: dict[
     return {"dry_run": False, "applied": json_safe(applied), "patch": patch}
 
 
+async def adapter_read_case_config(app: Any, admin_user_id: int, args: dict[str, Any]) -> dict[str, Any]:
+    """Читать live-конфигурацию кейсов (game_settings case_config) с заполнением дефолтов."""
+    return json_safe(await _call_db(app["db"], "get_case_config", default={}))
+
+
+async def adapter_patch_case_config(app: Any, admin_user_id: int, args: dict[str, Any]) -> dict[str, Any]:
+    """Применить partial-патч конфигурации кейсов со структурным deep-merge.
+
+    dry_run=True делает merge patch -> current и валидирует MERGED blob (faithful
+    preview apply): возвращает current, нормализованный patch и merged-результат
+    без записи. Невалидный merged blob (напр. нарушенная сумма тира после partial
+    патча) поднимает MCPToolInputError с типизированным кодом из validate_case_config.
+    Применение идёт через Database.set_case_config (merge + validate + persist);
+    ValueError из валидации оборачивается в MCPToolInputError, чтобы gateway вернул
+    типизированный -32602 (а не generic tool_execution_failed).
+    """
+    patch = _normalize_case_config_patch(args.get("patch"))
+    if _bool_arg(args, "dry_run", False):
+        current = await _call_db(app["db"], "get_case_config", default={})
+        merged = merge_case_config_patch(current, patch)
+        try:
+            validate_case_config(merged)
+        except ValueError as exc:
+            raise MCPToolInputError(str(exc) or "invalid_case_config") from exc
+        return {
+            "dry_run": True,
+            "current": json_safe(current),
+            "patch": json_safe(patch),
+            "merged": json_safe(merged),
+        }
+    try:
+        applied = await _call_db(app["db"], "set_case_config", default=None, patch=patch)
+    except ValueError as exc:
+        raise MCPToolInputError(str(exc) or "invalid_case_config") from exc
+    if applied is None:
+        raise MCPToolInputError("case_config_persist_failed")
+    return {"dry_run": False, "applied": json_safe(applied), "patch": json_safe(patch)}
+
+
 async def adapter_create_player_note(app: Any, admin_user_id: int, args: dict[str, Any]) -> dict[str, Any]:
     user_id = _int_arg(args, "user_id", 0, minimum=1)
     note = _str_arg(args, "note", "", max_length=2_000)
@@ -2464,6 +2669,8 @@ ADAPTERS = {
     "adapter_read_push_status": adapter_read_push_status,
     "adapter_read_analytics_overview": adapter_read_analytics_overview,
     "adapter_patch_runtime_config": adapter_patch_runtime_config,
+    "adapter_read_case_config": adapter_read_case_config,
+    "adapter_patch_case_config": adapter_patch_case_config,
     "adapter_create_player_note": adapter_create_player_note,
     "adapter_grant_player_resource": adapter_grant_player_resource,
     "adapter_read_admin_config_summary": adapter_read_admin_config_summary,

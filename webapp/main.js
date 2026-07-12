@@ -6811,7 +6811,9 @@ function renderCaseRewards(rewards) {
     }));
   });
   (rewards.particles || []).forEach(particle => {
-    const isJackpot = particle.rarity === "common" && particle.particles >= 500 && rewards.jackpot;
+    // rewards.jackpot — авторитетный серверный флаг (T5-common джекпот); сравнение с
+    // фиксированным числом частиц устарело после ребаланса 960a5e8e (джекпот 500 → 125).
+    const isJackpot = particle.rarity === "common" && rewards.jackpot;
     items.push(buildRewardItemHtml({
       icon: CASE_REWARD_ICONS.particles,
       title: `${particle.card_name || "Дубликат"}`,

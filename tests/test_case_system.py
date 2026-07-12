@@ -2,6 +2,15 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
 from infrastructure import case_system
+from infrastructure.case_config import (
+    build_default_case_config,
+    merge_case_config_patch,
+    fill_case_config_defaults,
+    resolve_case_config,
+    validate_case_config,
+    BASE_PARTICLES_BY_RARITY,
+    TIER_REWARDS_COUNT,
+)
 from infrastructure.config import get_settings
 from web import server as web_server
 
@@ -29,6 +38,11 @@ class _CaseRouteDB:
             "feature_availability": {},
             "disabled_card_ids": [],
         }
+
+    async def get_case_config(self):
+        # None → roll-функции используют live module-globals (degradation path).
+        # Тесты могут переопределить атрибут case_config_value чтобы вернуть dict.
+        return getattr(self, "case_config_value", None)
 
     async def get_match_mode_overrides(self):
         return []
@@ -131,6 +145,9 @@ class _OpenRewardCaseDB:
 
     async def get_default_case_id(self):
         return None
+
+    async def get_case_config(self):
+        return getattr(self, "case_config_value", None)
 
     async def get_user_cards(self, user_id):
         return []
@@ -759,5 +776,425 @@ async def test_user_case_claim_idempotent_returns_400_already_claimed(monkeypatc
         # Second claim is treated idempotent: returns 200 with the cached claim_response.
         # Coins NOT applied twice.
         assert db.coins == 50
+    finally:
+        await client.close()
+
+
+# ---------------------------------------------------------------------------
+# Real-time case_config: particle-drop bug fix + live-config threading
+# ---------------------------------------------------------------------------
+
+
+def test_limited_duplicate_drops_nonzero_particles():
+    """Регрессия: limited-дубликат должен давать частицы (base=150, выше divine).
+
+    Раньше base_particles_by_rarity['limited']==0 → дубликаты лимитированных
+    всегда давали 0 частиц. Теперь base=150, T1 множитель 1.30 → 195.
+    """
+    amount = case_system.calculate_particles_for_duplicate("limited", 1, False, None)
+    assert amount > 0
+    assert amount == 195  # int(150 * 1.30)
+
+
+def test_limited_duplicate_above_divine():
+    """Лимитированные частицы выше divine на том же тире (иерархия сохранена)."""
+    limited = case_system.calculate_particles_for_duplicate("limited", 5, False, None)
+    divine = case_system.calculate_particles_for_duplicate("divine", 5, False, None)
+    assert limited > divine
+
+
+def test_particles_floor_one_for_nonzero_base():
+    """Гарантия >=1 частицы при base>0 (защита от int()-усечения в ноль)."""
+    cc = merge_case_config_patch(
+        build_default_case_config(),
+        {"tier_particles_multiplier": {1: 0.001}},  # int(2 * 0.001) == 0 без пола
+    )
+    amount = case_system.calculate_particles_for_duplicate("common", 1, False, cc)
+    assert amount >= 1
+
+
+def test_explicit_zero_base_stays_zero():
+    """Явный ноль от администратора (base==0) сохраняется — никакой частицы."""
+    cc = merge_case_config_patch(
+        build_default_case_config(),
+        {"base_particles_by_rarity": {"common": 0}},
+    )
+    assert case_system.calculate_particles_for_duplicate("common", 1, False, cc) == 0
+
+
+def test_t5_common_jackpot_unchanged_by_floor():
+    """Джекпот T5-common не подпадает под пол>=1 — отдельная константа."""
+    cc = merge_case_config_patch(
+        build_default_case_config(),
+        {"t5_common_jackpot_particles": 0},
+    )
+    assert case_system.calculate_particles_for_duplicate("common", 5, True, cc) == 0
+    # Дефолтный джекпот 125 сохранён
+    assert case_system.calculate_particles_for_duplicate("common", 5, True, None) == 125
+
+
+def test_resolve_case_config_none_returns_live_refs():
+    """resolve_case_config(None) возвращает LIVE module-globals (не копии).
+
+    Load-bearing для тестов, которые monkeypatch-ят case_system.TIER_REWARDS_COUNT
+    на месте (см. test_t5_case_rewards_do_not_generate_removed_limited_shards).
+    """
+    cc = resolve_case_config(None)
+    assert cc["tier_rewards_count"] is case_system.TIER_REWARDS_COUNT
+    assert cc["base_particles_by_rarity"] is case_system.BASE_PARTICLES_BY_RARITY
+    assert cc["tier_upgrade_chances"] is case_system.TIER_UPGRADE_CHANCES
+
+
+def test_resolve_case_config_dict_merges_partial_and_coerces_tier_keys():
+    """resolve_case_config(dict) deep-fills дефолты и коэрсит строковые tier-ключи к int."""
+    partial = {"base_particles_by_rarity": {"limited": 777}, "tier_upgrade_chances": {"2": 0.9}}
+    cc = resolve_case_config(partial)
+    # limited патч применён, остальные редкости заполнены из дефолта
+    assert cc["base_particles_by_rarity"]["limited"] == 777
+    assert cc["base_particles_by_rarity"]["common"] == BASE_PARTICLES_BY_RARITY["common"]
+    # tier-ключ коэршен к int
+    assert set(cc["tier_upgrade_chances"].keys()) == {1, 2, 3, 4}
+    assert cc["tier_upgrade_chances"][2] == 0.9
+    assert cc["tier_upgrade_chances"][1] == case_system.TIER_UPGRADE_CHANCES[1]
+
+
+def test_merge_partial_rarity_patch_preserves_other_rarities():
+    """КРИТИЧНО: partial base_particles патч НЕ должен обнулять остальные редкости.
+
+    Это ровно тот баг, что чиним: shallow-merge {**cur, **patch} на уровне поля
+    заменил бы весь base_particles_by_rarity на {'limited': 150} и вновь занулил
+    бы common/rare/divine. Структурный per-rarity merge сохраняет остальные.
+    """
+    base = build_default_case_config()
+    merged = merge_case_config_patch(base, {"base_particles_by_rarity": {"limited": 150}})
+    bpr = merged["base_particles_by_rarity"]
+    assert bpr["limited"] == 150
+    assert bpr["common"] == base["base_particles_by_rarity"]["common"]
+    assert bpr["rare"] == base["base_particles_by_rarity"]["rare"]
+    assert bpr["divine"] == base["base_particles_by_rarity"]["divine"]
+
+
+def test_merge_partial_tier_patch_preserves_other_tiers():
+    """Partial tier-патч заменяет только указанные тиры."""
+    base = build_default_case_config()
+    merged = merge_case_config_patch(base, {"tier_upgrade_chances": {2: 0.5}})
+    tuc = merged["tier_upgrade_chances"]
+    assert tuc[2] == 0.5
+    assert tuc[1] == base["tier_upgrade_chances"][1]
+    assert tuc[3] == base["tier_upgrade_chances"][3]
+    assert tuc[4] == base["tier_upgrade_chances"][4]
+
+
+def test_merge_partial_tier_rarity_patch_preserves_other_rarities_in_tier():
+    """Partial tier_rarity_probabilities патч (одна редкость в одном тире) сохраняет
+    остальные редкости этого тира (per-rarity deep-merge), а не заменяет весь тир.
+
+    Раньше merge делал {**cur_tiers, **patch_tiers} на уровне тиров, поэтому
+    {2:{common:0.644}} заменил бы весь T2 на {common:0.644} (сумма 0.644) и нарушил
+    инвариант суммы. Теперь deep-merge по редкостям сохраняет rare/superrare/epic.
+    """
+    base = build_default_case_config()
+    merged = merge_case_config_patch(base, {"tier_rarity_probabilities": {2: {"common": 0.644}}})
+    t2 = merged["tier_rarity_probabilities"][2]
+    assert t2["common"] == 0.644
+    assert t2["rare"] == base["tier_rarity_probabilities"][2]["rare"]
+    assert t2["superrare"] == base["tier_rarity_probabilities"][2]["superrare"]
+    assert t2["epic"] == base["tier_rarity_probabilities"][2]["epic"]
+    # Сумма merged T2 валидна (no-op partial patch не нарушил инвариант).
+    assert abs(sum(t2.values()) - 1.0) < 1e-9
+    # Другие тиры не тронуты.
+    assert merged["tier_rarity_probabilities"][1] == base["tier_rarity_probabilities"][1]
+
+
+def test_fill_case_config_defaults_deep_fills_missing_tiers():
+    """fill_case_config_defaults добавляет отсутствующие тиры из дефолта, не затирая правки."""
+    stored = {
+        "base_particles_by_rarity": {"limited": 200},  # все остальные редкости отсутствуют
+        "tier_upgrade_chances": {"3": 0.4},  # только один тир
+    }
+    filled = fill_case_config_defaults(stored)
+    # limited правка сохранена
+    assert filled["base_particles_by_rarity"]["limited"] == 200
+    # остальные редкости заполнены из дефолта
+    assert filled["base_particles_by_rarity"]["common"] == BASE_PARTICLES_BY_RARITY["common"]
+    # отсутствующие тиры upgrade_chances заполнены из дефолта, строковый ключ коэршен
+    assert filled["tier_upgrade_chances"][3] == 0.4
+    assert filled["tier_upgrade_chances"][1] == case_system.TIER_UPGRADE_CHANCES[1]
+    assert all(isinstance(k, int) for k in filled["tier_upgrade_chances"])
+
+
+def test_validate_case_config_rejects_bad_tier_rarity_sum():
+    import pytest as _pytest
+
+    base = build_default_case_config()
+    bad = merge_case_config_patch(base, {"tier_rarity_probabilities": {1: {"common": 0.5, "rare": 0.2}}})
+    with _pytest.raises(ValueError):
+        validate_case_config(bad)
+
+
+def test_select_rarity_respects_live_limited_event(monkeypatch):
+    """select_rarity использует live limited_event_active из case_config."""
+    cc = build_default_case_config()
+    cc = merge_case_config_patch(cc, {"limited_event_active": True, "limited_event_probability": 0.5})
+    # tier 5 + active → limited получает 0.5 массы, остальные нормированы к 0.5.
+    # rand=0.99 → накопленный итог дойдёт до limited (после 0.5 суммы остальных).
+    monkeypatch.setattr(case_system.random, "random", lambda: 0.99)
+    rarity = case_system.select_rarity(5, "inactive", cc)
+    assert rarity == "limited"
+
+
+def test_select_rarity_ignores_limited_when_event_inactive():
+    """Без события limited не выпадает даже на T5."""
+    cc = build_default_case_config()  # limited_event_active=False по дефолту
+    for _ in range(50):
+        rarity = case_system.select_rarity(5, "inactive", cc)
+        assert rarity != "limited"
+
+
+def test_simulate_tap_results_threads_case_config():
+    """simulate_case_tap_results использует case_config['tier_upgrade_chances']."""
+    cc = build_default_case_config()
+    # тап 1 шанс = 0 → без апгрейда никогда
+    cc = merge_case_config_patch(cc, {"tier_upgrade_chances": {1: 0.0, 2: 0.0, 3: 0.0, 4: 0.0}})
+    taps = case_system.simulate_case_tap_results(1, "inactive", cc)
+    assert taps == [1, 1, 1, 1]
+
+
+def test_simulate_tap_results_none_path_uses_3arg_roll(monkeypatch):
+    """При case_config=None вызов roll_tier_upgrade остаётся 3-аргументным.
+
+    Сохраняет существующие 3-param test-fakes (см. test_simulate_case_tap_results_uses_server_rolls).
+    """
+    seen_args: list[tuple] = []
+
+    def fake_roll(current_tier, tap_number, extra_pass="inactive", case_config=None):
+        seen_args.append((current_tier, tap_number, extra_pass, case_config))
+        return current_tier
+
+    monkeypatch.setattr(case_system, "roll_tier_upgrade", fake_roll)
+    case_system.simulate_case_tap_results(2, "ultra", None)
+    # Все 4 вызова должны быть 3-аргументными по контракту (case_config не передаётся через else-ветку)
+    assert all(call[3] is None for call in seen_args)
+
+
+def test_simulate_tap_results_with_case_config_passes_4arg(monkeypatch):
+    """При case_config=dict вызов roll_tier_upgrade получает case_config 4-м аргументом."""
+    seen: list = []
+    cc = build_default_case_config()
+
+    def fake_roll(current_tier, tap_number, extra_pass="inactive", case_config=None):
+        seen.append(case_config)
+        return current_tier
+
+    monkeypatch.setattr(case_system, "roll_tier_upgrade", fake_roll)
+    case_system.simulate_case_tap_results(2, "ultra", cc)
+    assert all(c is cc for c in seen)
+
+
+@pytest.mark.asyncio
+async def test_generate_case_rewards_threads_case_config(monkeypatch):
+    """generate_case_rewards пробрасывает case_config в _generate_single_case_rewards."""
+    seen: dict = {}
+
+    async def fake_single(db, tier, user_id, user_card_ids, extra_pass="inactive", case_config=None):
+        seen["case_config"] = case_config
+        return {"coins": 0, "cards": [], "particles": [], "gems": 0, "jackpot": False}
+
+    monkeypatch.setattr(case_system, "_generate_single_case_rewards", fake_single)
+    cc = build_default_case_config()
+    await case_system.generate_case_rewards(object(), 3, 1, set(), "inactive", cc)
+    assert seen["case_config"] is cc
+
+
+@pytest.mark.asyncio
+async def test_process_case_opening_threads_case_config():
+    """process_case_opening пробрасывает case_config до generate_case_rewards."""
+    seen: dict = {}
+    db = _OpenRewardCaseDB()
+
+    async def fake_generate(db, tier, user_id, user_card_ids, extra_pass="inactive", case_config=None):
+        seen["case_config"] = case_config
+        return {"coins": 0, "cards": [], "particles": [], "gems": 0, "jackpot": False}
+
+    import infrastructure.case_system as _cs
+    orig = _cs.generate_case_rewards
+    _cs.generate_case_rewards = fake_generate
+    try:
+        cc = build_default_case_config()
+        await case_system.process_case_opening(db, 1001, 77, cc)
+        assert seen["case_config"] is cc
+    finally:
+        _cs.generate_case_rewards = orig
+
+
+def test_set_get_case_config_tier_key_type_stability():
+    """После merge + validate + fill int-ключи тиров сохраняются (no str leakage)."""
+    from infrastructure.case_config import _coerce_tier_keys
+
+    base = build_default_case_config()
+    merged = merge_case_config_patch(base, {"tier_particles_multiplier": {"3": 2.0}})
+    validate_case_config(merged)
+    refilled = fill_case_config_defaults(merged)
+    assert all(isinstance(k, int) for k in refilled["tier_particles_multiplier"])
+    assert refilled["tier_particles_multiplier"][3] == 2.0
+
+
+# ---------------------------------------------------------------------------
+# Review-driven coverage (M1, M2, M3, M4, M5, M7, N2) — adversarial review
+# подтвердил SHIP; эти тесты закрывают прод-код фиксы M1–M5 на уровне regressии.
+# ---------------------------------------------------------------------------
+
+
+def test_get_available_rarities_t5_includes_limited_when_event_active():
+    """M1: при активном limited-событии T5 действительно допускает 'limited'.
+
+    Без этого фикса select_card_by_rarity понижал свёрнутую 'limited' редкость до
+    'divine' — лимитированные карты никогда не выпадали (корневой баг).
+    """
+    cc = merge_case_config_patch(
+        build_default_case_config(),
+        {"limited_event_active": True, "limited_event_probability": 0.5},
+    )
+    available = case_system.get_available_rarities_for_tier(5, cc)
+    assert "limited" in available
+    assert available[-1] == "limited"
+
+
+def test_get_available_rarities_t5_excludes_limited_when_event_inactive():
+    """M1 (контроль): без события 'limited' нет в доступных редкостях T5."""
+    cc = build_default_case_config()  # limited_event_active=False
+    available = case_system.get_available_rarities_for_tier(5, cc)
+    assert "limited" not in available
+
+
+class _LimitedCardDB:
+    """DB-fake: get_cards_by_rarity возвращает limited-карту; прочее не нужно."""
+
+    async def get_uni_card(self):
+        return None
+
+    async def get_cards_by_rarity(self, rarity):
+        if rarity == "limited":
+            return [{"id": 26, "name": "Мидория", "rarity": "limited"}]
+        raise AssertionError(f"unexpected rarity lookup: {rarity}")
+
+
+@pytest.mark.asyncio
+async def test_select_card_by_rarity_returns_limited_card_when_event_active(monkeypatch):
+    """M1 end-to-end: limited-карта действительно выбирается на T5 при активном событии.
+
+    Фиксирует регрессию: до M1 select_card_by_rarity('limited',5) понижал до 'divine'
+    и вызывал get_cards_by_rarity('divine'). Теперь остаётся 'limited'.
+    """
+    cc = merge_case_config_patch(
+        build_default_case_config(),
+        {"limited_event_active": True, "limited_event_probability": 0.5},
+    )
+    monkeypatch.setattr(case_system.random, "choice", lambda seq: seq[0])
+    card = await case_system.select_card_by_rarity(_LimitedCardDB(), "limited", 5, cc)
+    assert card is not None
+    assert card["rarity"] == "limited"
+    assert card["id"] == 26
+
+
+@pytest.mark.asyncio
+async def test_select_card_by_rarity_downgrades_limited_when_event_inactive():
+    """M1 (контроль): без события 'limited' понижается до max-доступной (divine)."""
+    cc = build_default_case_config()  # limited_event_active=False
+
+    class _DivineFallbackDB:
+        async def get_uni_card(self):
+            return None
+
+        async def get_cards_by_rarity(self, rarity):
+            if rarity == "divine":
+                return [{"id": 99, "name": "Божественный", "rarity": "divine"}]
+            raise AssertionError(f"unexpected rarity lookup: {rarity}")
+
+    card = await case_system.select_card_by_rarity(_DivineFallbackDB(), "limited", 5, cc)
+    assert card["rarity"] == "divine"
+
+
+def test_merge_case_config_patch_rejects_unknown_field():
+    """M2: merge отвергает неизвестные поля (единая точка отказа → ValueError→400)."""
+    base = build_default_case_config()
+    with pytest.raises(ValueError):
+        merge_case_config_patch(base, {"totally_unknown_field": 1})
+
+
+def test_merge_case_config_patch_rejects_non_dict_tier_keyed_value():
+    """M4: tier-keyed поле должно быть dict — иначе ValueError."""
+    base = build_default_case_config()
+    with pytest.raises(ValueError):
+        merge_case_config_patch(base, {"tier_upgrade_chances": 0.5})
+
+
+def test_merge_case_config_patch_rejects_non_dict_rarity_keyed_value():
+    """M5: rarity-keyed поле должно быть dict — иначе ValueError."""
+    base = build_default_case_config()
+    with pytest.raises(ValueError):
+        merge_case_config_patch(base, {"base_particles_by_rarity": 150})
+
+
+def test_validate_case_config_rejects_unknown_rarity_in_base_particles():
+    """M3: validate_case_config отвергает неизвестную редкость в base_particles."""
+    base = build_default_case_config()
+    bad = dict(base)
+    bad_bpr = dict(base["base_particles_by_rarity"])
+    bad_bpr["mythic_plus"] = 50  # неизвестная редкость
+    bad["base_particles_by_rarity"] = bad_bpr
+    with pytest.raises(ValueError):
+        validate_case_config(bad)
+
+
+def test_validate_case_config_rejects_unknown_rarity_in_start_rarity_replacement():
+    """M3: validate_case_config отвергает неизвестную редкость в start_rarity_replacement."""
+    base = build_default_case_config()
+    bad = dict(base)
+    bad_srr = dict(base["start_rarity_replacement"])
+    bad_srr["mythic_plus"] = 0.1  # неизвестная редкость
+    bad["start_rarity_replacement"] = bad_srr
+    with pytest.raises(ValueError):
+        validate_case_config(bad)
+
+
+def test_validate_case_config_rejects_partial_tier_rewards_subdict():
+    """N2: tier_rewards_count требует coins+cards (частичный под-dict → ValueError)."""
+    base = build_default_case_config()
+    bad = dict(base)
+    bad_trc = {tier: dict(cfg) for tier, cfg in base["tier_rewards_count"].items()}
+    bad_trc[3] = {"coins": (240, 560)}  # нет 'cards'
+    bad["tier_rewards_count"] = bad_trc
+    with pytest.raises(ValueError):
+        validate_case_config(bad)
+
+
+@pytest.mark.asyncio
+async def test_case_config_threaded_to_roll_from_keys_http(monkeypatch):
+    """M7: HTTP /api/cases/roll-from-keys инжектит _case_config_safe(db) в simulate.
+
+    Без monkeypatch-инга roll-функций: ставим db.case_config_value с
+    tier_upgrade_chances=1.0 на всех тапах → каждый тап апгрейдит тир
+    детерминированно (random.random() < 1.0 всегда True) → final_tier == 5.
+    Это доказывает, что live-config из БД действительно доходит до roll-функций
+    на HTTP-пути (а не только через monkeypatch в unit-тестах).
+    """
+    monkeypatch.setenv("BOT_TOKEN", "bot-token")
+    monkeypatch.setenv("WEBAPP_HOST", "127.0.0.1")
+    get_settings.cache_clear()
+    monkeypatch.setattr(web_server, "CASE_KEY_ROLLS", {})
+    monkeypatch.setattr(web_server, "CASE_KEY_OPEN_RESULTS", {})
+    db = _CaseRouteDB()
+    db.case_config_value = {"tier_upgrade_chances": {1: 1.0, 2: 1.0, 3: 1.0, 4: 1.0}}
+    app = web_server.create_web_app(db, bot_token="bot-token", webapp_url="https://game.example")
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        resp = await client.post("/api/cases/roll-from-keys?user_id=1001")
+        body = await resp.json()
+        assert resp.status == 200
+        assert body["success"] is True
+        assert body["final_tier"] == 5
+        assert body["tap_results"] == [2, 3, 4, 5]
     finally:
         await client.close()

@@ -18,6 +18,11 @@ from PIL import Image
 
 from infrastructure.config import DatabaseSettings, get_settings
 from infrastructure.database import Database
+from infrastructure.case_config import (
+    build_default_case_config,
+    merge_case_config_patch,
+    validate_case_config,
+)
 from web import mcp_admin_tools
 from web import server as web_server
 
@@ -218,6 +223,8 @@ class GatewayMCPDB:
             "disabled_card_ids": [],
         }
         self.runtime_config_updates = []
+        self.case_config = build_default_case_config()
+        self.case_config_updates = []
         self.created_shop_sets = []
         self.created_season_drafts = []
         self.updated_seasons = []
@@ -250,6 +257,20 @@ class GatewayMCPDB:
             if value is not None:
                 self.runtime_config[key] = value
         return dict(self.runtime_config)
+
+    async def get_case_config(self):
+        import copy as _copy
+        return _copy.deepcopy(self.case_config)
+
+    async def set_case_config(self, *, patch=None):
+        if not isinstance(patch, dict) or not patch:
+            raise ValueError("empty_case_config_patch")
+        current = self.case_config
+        merged = merge_case_config_patch(current, patch)
+        validate_case_config(merged)
+        self.case_config_updates.append(patch)
+        self.case_config = merged
+        return merged
 
     async def get_match_mode_overrides(self):
         return [{"mode_id": "classic", "enabled": True}]
@@ -778,6 +799,8 @@ def test_mcp_admin_full_extraadmin_coverage_is_registered():
         "admin.uploads.product_image.create",
         "admin.configs.summary.read",
         "admin.runtime.tps.read",
+        "admin.case_config.read",
+        "admin.case_config.patch",
     }
 
     assert required <= set(capability_by_id)
@@ -1079,6 +1102,301 @@ async def test_mcp_mutating_tool_requires_dry_run_confirmation_and_idempotency(m
         assert db.audit_calls[-1]["confirmation_id"] == "confirm-1"
     finally:
         await client.close()
+
+
+@pytest.mark.asyncio
+async def test_mcp_case_config_read_returns_defaults_and_audits(monkeypatch):
+    client, db, admin_auth_token = await _gateway_client(monkeypatch)
+    try:
+        token = await _mcp_token(client, admin_auth_token)
+        response = await _mcp_call(
+            client,
+            token,
+            "tools/call",
+            {"name": "admin.case_config.read", "arguments": {}},
+        )
+        payload = await response.json()
+        structured = payload["result"]["structuredContent"]
+
+        assert response.status == 200
+        # limited base = 150 (фикс бага 0-частиц для limited)
+        assert structured["base_particles_by_rarity"]["limited"] == 150
+        assert db.audit_calls[-1]["tool_name"] == "admin.case_config.read"
+        assert db.audit_calls[-1]["status"] == "success"
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_mcp_case_config_patch_dry_run_confirmation_and_idempotency(monkeypatch):
+    client, db, admin_auth_token = await _gateway_client(monkeypatch)
+    patch = {"base_particles_by_rarity": {"limited": 777}}
+    try:
+        token = await _mcp_token(client, admin_auth_token)
+        no_dry_run = await _mcp_call(
+            client,
+            token,
+            "tools/call",
+            {
+                "name": "admin.case_config.patch",
+                "arguments": {
+                    "patch": patch,
+                    "dry_run": False,
+                    "idempotency_key": "case-patch-1",
+                    "reason": "limited base tuning",
+                },
+            },
+        )
+        no_dry_run_payload = await no_dry_run.json()
+
+        dry_run = await _mcp_call(
+            client,
+            token,
+            "tools/call",
+            {
+                "name": "admin.case_config.patch",
+                "arguments": {
+                    "patch": patch,
+                    "dry_run": True,
+                    "idempotency_key": "case-patch-1",
+                    "reason": "limited base tuning",
+                },
+            },
+        )
+        dry_run_payload = await dry_run.json()
+        confirmation_token = dry_run_payload["result"]["structuredContent"]["confirmation"]["confirmation_token"]
+        assert dry_run_payload["result"]["structuredContent"]["dry_run"] is True
+        # dry-run не пишет
+        assert db.case_config_updates == []
+
+        apply_response = await _mcp_call(
+            client,
+            token,
+            "tools/call",
+            {
+                "name": "admin.case_config.patch",
+                "arguments": {
+                    "patch": patch,
+                    "dry_run": False,
+                    "idempotency_key": "case-patch-1",
+                    "confirmation_token": confirmation_token,
+                    "reason": "limited base tuning",
+                },
+            },
+        )
+        apply_payload = await apply_response.json()
+
+        assert no_dry_run_payload["error"]["message"] == "confirmation_required"
+        assert apply_payload["result"]["structuredContent"]["dry_run"] is False
+        bpr = apply_payload["result"]["structuredContent"]["applied"]["base_particles_by_rarity"]
+        assert bpr["limited"] == 777
+        # КРИТИЧНО: остальные редкости сохранены (deep-merge), не обнулены
+        assert bpr["common"] == 2
+        assert bpr["divine"] == 100
+        assert db.case_config_updates == [patch]
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_mcp_case_config_patch_rejects_invalid_sum(monkeypatch):
+    client, _db, admin_auth_token = await _gateway_client(monkeypatch)
+    try:
+        token = await _mcp_token(client, admin_auth_token)
+        response = await _mcp_call(
+            client,
+            token,
+            "tools/call",
+            {
+                "name": "admin.case_config.patch",
+                "arguments": {
+                    "patch": {"tier_rarity_probabilities": {1: {"common": 0.1, "rare": 0.1}}},
+                    "dry_run": True,
+                    "idempotency_key": "case-bad-sum",
+                    "reason": "test",
+                },
+            },
+        )
+        payload = await response.json()
+        assert payload["error"]["message"] == "invalid_tier_rarity_sum"
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_mcp_case_config_patch_rejects_unknown_field(monkeypatch):
+    client, _db, admin_auth_token = await _gateway_client(monkeypatch)
+    try:
+        token = await _mcp_token(client, admin_auth_token)
+        response = await _mcp_call(
+            client,
+            token,
+            "tools/call",
+            {
+                "name": "admin.case_config.patch",
+                "arguments": {
+                    "patch": {"bogus_field": 1},
+                    "dry_run": True,
+                    "idempotency_key": "case-unknown",
+                    "reason": "test",
+                },
+            },
+        )
+        payload = await response.json()
+        # Schema (additionalProperties=False) rejects unknown patch keys first;
+        # adapter's unsupported_case_config_field is a secondary defense.
+        assert payload["error"]["message"] == "unexpected_argument"
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_mcp_case_config_patch_rejects_empty_patch(monkeypatch):
+    client, _db, admin_auth_token = await _gateway_client(monkeypatch)
+    try:
+        token = await _mcp_token(client, admin_auth_token)
+        response = await _mcp_call(
+            client,
+            token,
+            "tools/call",
+            {
+                "name": "admin.case_config.patch",
+                "arguments": {
+                    "patch": {},
+                    "dry_run": True,
+                    "idempotency_key": "case-empty",
+                    "reason": "test",
+                },
+            },
+        )
+        payload = await response.json()
+        assert payload["error"]["message"] == "empty_case_config_patch"
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_mcp_case_config_patch_partial_tier_preserves_others(monkeypatch):
+    """Partial tier_upgrade_chances патч сохраняет остальные тиры."""
+    client, db, admin_auth_token = await _gateway_client(monkeypatch)
+    patch = {"tier_upgrade_chances": {2: 0.5}}
+    try:
+        token = await _mcp_token(client, admin_auth_token)
+        dry_run = await _mcp_call(
+            client,
+            token,
+            "tools/call",
+            {
+                "name": "admin.case_config.patch",
+                "arguments": {
+                    "patch": patch,
+                    "dry_run": True,
+                    "idempotency_key": "case-tier",
+                    "reason": "tier tuning",
+                },
+            },
+        )
+        dry_run_payload = await dry_run.json()
+        confirmation_token = dry_run_payload["result"]["structuredContent"]["confirmation"]["confirmation_token"]
+        apply = await _mcp_call(
+            client,
+            token,
+            "tools/call",
+            {
+                "name": "admin.case_config.patch",
+                "arguments": {
+                    "patch": patch,
+                    "dry_run": False,
+                    "idempotency_key": "case-tier",
+                    "confirmation_token": confirmation_token,
+                    "reason": "tier tuning",
+                },
+            },
+        )
+        apply_payload = await apply.json()
+        tuc = apply_payload["result"]["structuredContent"]["applied"]["tier_upgrade_chances"]
+        # JSON round-trip stringifies int tier keys.
+        assert tuc["2"] == 0.5
+        assert tuc["1"] == 0.25  # дефолт сохранён (deep-merge)
+        assert tuc["3"] == 0.15
+        assert tuc["4"] == 0.10
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_mcp_case_config_patch_partial_tier_rarity_dry_run_returns_merged_preview(monkeypatch):
+    """Partial tier_rarity_probabilities патч (одна редкость в одном тире) НЕ
+    отвергается на dry-run — сумма валидируется на MERGED blob, а не на патче.
+
+    Регрессия: раньше _normalize_case_config_patch валидировал сумму самого патча
+    (subset редкостей), поэтому любой partial-tier patch (напр. {2:{common:0.644}}
+    при текущем T2) ошибочно reject-ился с invalid_tier_rarity_sum. Теперь dry_run
+    делает merge patch->current + validate_case_config(merged) и возвращает
+    merged-превью; partial патч с value==current (no-op) даёт валидную сумму 1.0.
+    """
+    client, db, admin_auth_token = await _gateway_client(monkeypatch)
+    # T2 default: common 0.644, rare 0.272, superrare 0.073, epic 0.011 (sum 1.0).
+    patch = {"tier_rarity_probabilities": {2: {"common": 0.644}}}
+    try:
+        token = await _mcp_token(client, admin_auth_token)
+        dry_run = await _mcp_call(
+            client,
+            token,
+            "tools/call",
+            {
+                "name": "admin.case_config.patch",
+                "arguments": {
+                    "patch": patch,
+                    "dry_run": True,
+                    "idempotency_key": "case-partial-tier-1",
+                    "reason": "partial tier rarity tuning",
+                },
+            },
+        )
+        dry_run_payload = await dry_run.json()
+        sc = dry_run_payload["result"]["structuredContent"]
+        assert sc["dry_run"] is True
+        # dry-run НЕ пишет.
+        assert db.case_config_updates == []
+        # merged-превью присутствует и сохраняет остальные редкости T2 (deep-merge).
+        merged_t2 = sc["merged"]["tier_rarity_probabilities"]["2"]
+        assert merged_t2["common"] == 0.644
+        assert merged_t2["rare"] == 0.272
+        assert merged_t2["superrare"] == 0.073
+        assert merged_t2["epic"] == 0.011
+        # Сумма merged T2 валидна (1.0) — partial no-op patch не нарушил инвариант.
+        assert abs(sum(merged_t2.values()) - 1.0) < 1e-9
+        # Другие тиры не тронуты.
+        assert "1" in sc["merged"]["tier_rarity_probabilities"]
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_mcp_case_config_patch_apply_invalid_sum_wraps_value_error(monkeypatch):
+    """Apply path: ValueError из Database.set_case_config (невалидный merged blob)
+    оборачивается в MCPToolInputError -> gateway вернёт типизированный -32602
+    (invalid_tier_rarity_sum), а не generic tool_execution_failed.
+
+    Defense-in-depth: в нормальном flow dry_run ловит невалидный merged blob первым,
+    но если конфиг изменился между dry_run и apply (race), apply-ветка должна всё
+    равно вернуть типизированную ошибку. Тестируем adapter напрямую.
+    """
+    class _RaisingDB:
+        async def get_case_config(self):
+            return build_default_case_config()
+
+        async def set_case_config(self, *, patch=None):
+            # Имитируем race: конфиг изменился, merged сумма невалидна.
+            raise ValueError("invalid_tier_rarity_sum")
+
+    app = {"db": _RaisingDB()}
+    with pytest.raises(mcp_admin_tools.MCPToolInputError, match="invalid_tier_rarity_sum"):
+        await mcp_admin_tools.adapter_patch_case_config(app, admin_user_id=101, args={
+            "patch": {"t5_common_jackpot_particles": 200},
+            "dry_run": False,
+        })
 
 
 @pytest.mark.asyncio
