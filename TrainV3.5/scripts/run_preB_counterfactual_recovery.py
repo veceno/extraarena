@@ -72,6 +72,7 @@ class PreBRecoveryConfig:
     anchor_draw_kl_coef: float = 4.0
     min_pairs: int = 24
     save_dataset: bool = True
+    dataset_path: Path | None = None
 
 
 class _V5Policy:
@@ -120,7 +121,11 @@ class _V5Policy:
 def run_preB_recovery(config: PreBRecoveryConfig) -> dict[str, Any]:
     _validate_config(config)
     config.output_dir.mkdir(parents=True, exist_ok=True)
-    dataset = collect_counterfactual_dataset(config)
+    dataset = (
+        load_counterfactual_dataset(config.dataset_path)
+        if config.dataset_path is not None
+        else collect_counterfactual_dataset(config)
+    )
     if int(dataset["summary"]["pairs"]) < int(config.min_pairs):
         raise RuntimeError(
             f"counterfactual pairs={dataset['summary']['pairs']} below min_pairs={config.min_pairs}"
@@ -692,6 +697,19 @@ def _save_dataset(path: Path, dataset: dict[str, Any]) -> None:
     )
 
 
+def load_counterfactual_dataset(path: Path) -> dict[str, Any]:
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(f"counterfactual dataset not found: {path}")
+    summary_path = path.with_suffix(".summary.json")
+    if not summary_path.exists():
+        raise FileNotFoundError(f"counterfactual dataset summary not found: {summary_path}")
+    loaded = np.load(path, allow_pickle=False)
+    dataset = {key: loaded[key] for key in loaded.files}
+    dataset["summary"] = json.loads(summary_path.read_text(encoding="utf-8"))
+    return dataset
+
+
 def _validate_config(config: PreBRecoveryConfig) -> None:
     if not config.base_checkpoint.exists():
         raise FileNotFoundError(f"base checkpoint not found: {config.base_checkpoint}")
@@ -742,6 +760,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--anchor-draw-kl-coef", type=float, default=4.0)
     parser.add_argument("--min-pairs", type=int, default=24)
     parser.add_argument("--no-save-dataset", action="store_true")
+    parser.add_argument(
+        "--dataset-path",
+        type=Path,
+        default=None,
+        help="Reuse an existing preB_counterfactual_dataset.npz instead of collecting games.",
+    )
     return parser.parse_args(argv)
 
 
@@ -771,6 +795,7 @@ def main(argv: list[str] | None = None) -> int:
         anchor_draw_kl_coef=args.anchor_draw_kl_coef,
         min_pairs=args.min_pairs,
         save_dataset=not args.no_save_dataset,
+        dataset_path=args.dataset_path.resolve() if args.dataset_path is not None else None,
     )
     result = run_preB_recovery(config)
     print("PREB_RESULT", json.dumps(result["summary"], sort_keys=True), flush=True)
