@@ -761,7 +761,9 @@ class TestV5SidecarCodecSync:
         export_v5_checkpoint_to_onnx(npz_path, onnx_path, opset=17)
 
         sidecar = json.loads(Path(onnx_path + ".json").read_text())
-        assert sidecar["state_action_interaction"] == "gated_bilinear_query_cap01_v1"
+        assert sidecar["state_action_interaction"] == (
+            "gated_bilinear_query_cap01_v1+gated_bilinear_key_cap2_v2"
+        )
         assert sidecar["card_shape_version"] == CARD_SHAPE_VERSION, (
             f"sidecar card_shape_version {sidecar['card_shape_version']!r} != "
             f"v5_card_shape_v1.CARD_SHAPE_VERSION {CARD_SHAPE_VERSION!r}"

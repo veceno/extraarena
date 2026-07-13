@@ -47,9 +47,10 @@ def test_interaction_is_zero_initialized_for_legacy_logit_parity():
         (batch * 601, model.hidden_dim + model.action_hidden_dim),
     )
     legacy = mx.reshape(model.candidate_scorer(joint), (batch, 601))
-    mx.eval(logits, legacy, model.state_action_gate.weight)
+    mx.eval(logits, legacy, model.state_action_gate.weight, model.state_action_gate_v2.weight)
 
     np.testing.assert_array_equal(np.asarray(model.state_action_gate.weight), 0.0)
+    np.testing.assert_array_equal(np.asarray(model.state_action_gate_v2.weight), 0.0)
     np.testing.assert_array_equal(np.asarray(logits), np.asarray(legacy))
 
 
@@ -93,8 +94,10 @@ def test_zero_initialized_interaction_receives_first_step_policy_gradient():
 
     _, gradients = nn.value_and_grad(model, policy_loss)(model, obs, features)
     gate_grad = gradients["state_action_gate"]["weight"]
-    mx.eval(gate_grad)
+    gate_v2_grad = gradients["state_action_gate_v2"]["weight"]
+    mx.eval(gate_grad, gate_v2_grad)
     assert float(mx.max(mx.abs(gate_grad)).item()) > 0.0
+    assert float(mx.max(mx.abs(gate_v2_grad)).item()) > 0.0
 
     # Once the scalar gate has opened, the query receives policy gradients.
     model.state_action_gate.weight = mx.ones_like(model.state_action_gate.weight) * 0.01
@@ -103,6 +106,14 @@ def test_zero_initialized_interaction_receives_first_step_policy_gradient():
     mx.eval(query_grad["weight"], query_grad["bias"])
     assert float(mx.max(mx.abs(query_grad["weight"])).item()) > 0.0
     assert float(mx.max(mx.abs(query_grad["bias"])).item()) > 0.0
+
+    model.state_action_gate_v2.weight = mx.ones_like(model.state_action_gate_v2.weight) * 0.01
+    _, gradients = nn.value_and_grad(model, policy_loss)(model, obs, features)
+    query_v2_grad = gradients["state_action_query_v2"]
+    key_v2_grad = gradients["state_action_key_v2"]
+    mx.eval(query_v2_grad["weight"], key_v2_grad["weight"])
+    assert float(mx.max(mx.abs(query_v2_grad["weight"])).item()) > 0.0
+    assert float(mx.max(mx.abs(key_v2_grad["weight"])).item()) > 0.0
 
 
 def test_pre_interaction_checkpoint_load_keeps_zero_residual(tmp_path):
@@ -116,7 +127,15 @@ def test_pre_interaction_checkpoint_load_keeps_zero_residual(tmp_path):
     legacy_weights = {
         key: value
         for key, value in flatten_params(source).items()
-        if not key.startswith(("state_action_query.", "state_action_gate."))
+        if not key.startswith(
+            (
+                "state_action_query.",
+                "state_action_gate.",
+                "state_action_query_v2.",
+                "state_action_key_v2.",
+                "state_action_gate_v2.",
+            )
+        )
     }
     checkpoint = tmp_path / "legacy_v5.npz"
     np.savez(checkpoint, **legacy_weights)
@@ -125,6 +144,7 @@ def test_pre_interaction_checkpoint_load_keeps_zero_residual(tmp_path):
     load_checkpoint(str(checkpoint), restored)
     flat = dict(nn.utils.tree_flatten(restored.trainable_parameters()))
     np.testing.assert_array_equal(np.asarray(flat["state_action_gate.weight"]), 0.0)
+    np.testing.assert_array_equal(np.asarray(flat["state_action_gate_v2.weight"]), 0.0)
 
     obs, features = _make_inputs(batch=1)
     logits, _, _ = restored(obs, features)
@@ -138,6 +158,21 @@ def test_pre_interaction_checkpoint_load_keeps_zero_residual(tmp_path):
     legacy_logits = mx.reshape(restored.candidate_scorer(joint), (1, 601))
     mx.eval(logits, legacy_logits)
     np.testing.assert_array_equal(np.asarray(logits), np.asarray(legacy_logits))
+
+
+def test_v2_interaction_has_room_to_move_hard_state_boundaries():
+    """V2 is bounded but not trapped under V1's 0.1 effective ceiling."""
+    mx.random.seed(16)
+    model = V5ActionConditionedPolicy(hidden_dim=32, action_hidden_dim=16)
+    model.state_action_gate_v2.weight = mx.ones_like(model.state_action_gate_v2.weight) * 1.0
+    obs, features = _make_inputs(batch=1)
+    logits_v2, _, _ = model(obs, features)
+    model.state_action_gate_v2.weight = mx.zeros_like(model.state_action_gate_v2.weight)
+    logits_zero, _, _ = model(obs, features)
+    centered_delta = _center(logits_v2) - _center(logits_zero)
+    mx.eval(centered_delta)
+    assert float(mx.max(mx.abs(centered_delta)).item()) > 0.0
+    assert model.state_action_v2_gate_cap >= 10.0 * model.state_action_gate_cap
 
 
 def test_compact_and_padded_scorers_include_interaction_residual():
