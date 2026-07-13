@@ -164,6 +164,9 @@ class TorchV5ActionConditionedPolicy(torch.nn.Module):
         # MAX_CANDIDATE_ACTIONS=601 stays frozen. Reads the same fused state_emb
         # as value_head; the legal mask is applied at inference time.
         self.mana_draw_head = torch.nn.Linear(hidden_dim, 1)
+        self.mana_draw_recovery_head = torch.nn.Linear(hidden_dim, 1)
+        torch.nn.init.zeros_(self.mana_draw_recovery_head.weight)
+        torch.nn.init.zeros_(self.mana_draw_recovery_head.bias)
 
     def encode_state(self, obs: torch.Tensor) -> torch.Tensor:
         # Split obs along the LAST dim EXACTLY as v5_policy.py:87-104.
@@ -225,6 +228,8 @@ class TorchV5ActionConditionedPolicy(torch.nn.Module):
             self.state_action_gate_v2.weight[0, 0]
         )
         interaction_logits_v2 = torch.sum(state_query_v2 * action_key_v2, dim=-1)
+        am_first_player = torch.clamp(observation[:, OBS_V1_DIM + 16], 0.0, 1.0)
+        interaction_logits_v2 = interaction_logits_v2 * (1.0 - am_first_player).unsqueeze(1)
         logits = legacy_logits
         logits = logits + interaction_logits * self.state_action_interaction_scale * interaction_gate
         logits = logits + interaction_logits_v2 * self.state_action_interaction_scale * interaction_gate_v2
@@ -235,6 +240,9 @@ class TorchV5ActionConditionedPolicy(torch.nn.Module):
         # mlx) before the parity compare.
         value = self.value_head(state_emb)
         mana_draw_logit = self.mana_draw_head(state_emb)
+        mana_draw_logit = mana_draw_logit + self.mana_draw_recovery_head(state_emb) * (
+            1.0 - am_first_player
+        ).unsqueeze(1)
         return logits, value, mana_draw_logit
 
 
@@ -264,6 +272,7 @@ V5_WEIGHT_MAP = [
     ("state_action_gate_v2", "state_action_gate_v2"),
     ("value_head", "value_head"),
     ("mana_draw_head", "mana_draw_head"),
+    ("mana_draw_recovery_head", "mana_draw_recovery_head"),
 ]
 
 

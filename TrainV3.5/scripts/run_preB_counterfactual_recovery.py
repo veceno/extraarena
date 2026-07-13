@@ -36,6 +36,7 @@ for path in (ROOT, TRAINV3_PYTHON):
 from ai.train_v2.classic_actions_v1 import decode_action  # noqa: E402
 from ai.train_v2.model_mlx import load_checkpoint, save_checkpoint  # noqa: E402
 from ai.train_v2.onnx_policy import OnnxActionPolicy  # noqa: E402
+from ai.train_v2.policies import GreedyFacePolicy  # noqa: E402
 from core.actions import ManaDrawAction  # noqa: E402
 from train_v3.contracts import AssistModeV5, InfoModeV5  # noqa: E402
 from train_v3.env_v5 import TrainV3ClassicEnv, TrainV3EnvConfig  # noqa: E402
@@ -71,6 +72,8 @@ class PreBRecoveryConfig:
     anchor_policy_kl_coef: float = 4.0
     anchor_draw_kl_coef: float = 4.0
     min_pairs: int = 24
+    greedy_face_fraction: float = 0.25
+    hard_negative_only: bool = True
     save_dataset: bool = True
     dataset_path: Path | None = None
 
@@ -158,6 +161,7 @@ def run_preB_recovery(config: PreBRecoveryConfig) -> dict[str, Any]:
 def collect_counterfactual_dataset(config: PreBRecoveryConfig) -> dict[str, Any]:
     v5 = _V5Policy(config.base_checkpoint)
     v4 = OnnxActionPolicy(str(config.v4_model), mode="argmax", seed=config.seed, verify_mask=False)
+    greedy_face = GreedyFacePolicy()
     rows: dict[str, list[Any]] = {
         "observations": [],
         "action_features": [],
@@ -190,6 +194,9 @@ def collect_counterfactual_dataset(config: PreBRecoveryConfig) -> dict[str, Any]
         "searched_states": 0,
         "candidate_evals": 0,
         "base_face_behind_states": 0,
+        "v4_max_games": 0,
+        "greedy_face_games": 0,
+        "hard_negative_rejections": 0,
     }
 
     for game_idx in range(int(config.games)):
@@ -197,7 +204,16 @@ def collect_counterfactual_dataset(config: PreBRecoveryConfig) -> dict[str, Any]
         v5_player_id = 1 if game_idx % 2 == 0 else 2
         starting_player_id = 2 if v5_player_id == 1 else 1
         env = _new_mirror_env(seed=seed, starting_player_id=starting_player_id)
-        v4.reset(seed * 13 + (3 - v5_player_id))
+        # Deterministic stratification guarantees the requested lane share even
+        # in short probes and keeps a resumed run reproducible by game index.
+        greedy_before = math.floor(game_idx * float(config.greedy_face_fraction))
+        greedy_after = math.floor((game_idx + 1) * float(config.greedy_face_fraction))
+        use_greedy = greedy_after > greedy_before
+        opponent: Any = greedy_face if use_greedy else v4
+        lane_name = "greedy_face" if use_greedy else "v4_max"
+        stats[f"{lane_name}_games"] += 1
+        if hasattr(opponent, "reset"):
+            opponent.reset(seed * 13 + (3 - v5_player_id))
         stats["games"] += 1
         for _step in range(int(config.max_steps)):
             current = env.current_player_id()
@@ -213,12 +229,16 @@ def collect_counterfactual_dataset(config: PreBRecoveryConfig) -> dict[str, Any]
                     stats["gated_states"] += 1
                     if reason & 8:
                         stats["base_face_behind_states"] += 1
+                    teacher_action = None
+                    if lane_name == "v4_max":
+                        teacher_action = int(v4.select_action(env.env, current))
                     candidates = recovery_candidates(
                         env=env,
                         player_id=current,
                         base_action=base_action,
                         ranked=v5.ranked_actions(obs, features, mask, config.search_candidates),
                         draw_legal=draw_legal,
+                        teacher_action=teacher_action,
                     )
                     scored: list[tuple[int, float]] = []
                     for candidate in candidates:
@@ -227,7 +247,7 @@ def collect_counterfactual_dataset(config: PreBRecoveryConfig) -> dict[str, Any]
                             candidate=candidate,
                             v5_player_id=v5_player_id,
                             v5=v5,
-                            v4=v4,
+                            opponent=opponent,
                             depth_plies=config.search_depth_plies,
                         )
                         if math.isfinite(score):
@@ -243,25 +263,38 @@ def collect_counterfactual_dataset(config: PreBRecoveryConfig) -> dict[str, Any]
                             and preferred != base_action
                             and preferred_score >= base_score + float(config.min_score_margin)
                         ):
-                            _append_pair(
-                                rows,
-                                obs=obs,
-                                features=features,
-                                mask=mask,
-                                draw_legal=draw_legal,
-                                preferred=preferred,
-                                base_action=base_action,
-                                margin=preferred_score - base_score,
-                                gate_reason=reason,
-                                seed=seed,
-                                state=env.env._env.state,
-                                player_id=current,
+                            preferred_kind = action_kind(
+                                env.env._env.state, current, preferred
                             )
-                            if len(rows["positive_actions"]) >= int(config.max_pairs):
-                                break
+                            base_kind = action_kind(
+                                env.env._env.state, current, base_action
+                            )
+                            hard_negative = (
+                                base_kind == "attack_face"
+                                and preferred_kind != "attack_face"
+                            ) or DRAW_ACTION in {preferred, base_action}
+                            if config.hard_negative_only and not hard_negative:
+                                stats["hard_negative_rejections"] += 1
+                            else:
+                                _append_pair(
+                                    rows,
+                                    obs=obs,
+                                    features=features,
+                                    mask=mask,
+                                    draw_legal=draw_legal,
+                                    preferred=preferred,
+                                    base_action=base_action,
+                                    margin=preferred_score - base_score,
+                                    gate_reason=reason,
+                                    seed=seed,
+                                    state=env.env._env.state,
+                                    player_id=current,
+                                )
+                                if len(rows["positive_actions"]) >= int(config.max_pairs):
+                                    break
                 action = base_action
             else:
-                action = int(v4.select_action(env.env, current))
+                action = int(opponent.select_action(env.env, current))
             terminated, truncated = _step_action(env, action)
             if terminated or truncated:
                 stats["terminal_games"] += 1
@@ -300,6 +333,8 @@ def collect_counterfactual_dataset(config: PreBRecoveryConfig) -> dict[str, Any]
         "mirror_decks": True,
         "v5_second_only": True,
         "reward_shaping_changed": False,
+        "greedy_face_fraction": float(config.greedy_face_fraction),
+        "hard_negative_only": bool(config.hard_negative_only),
     }
     return {
         **{key: _stack_dataset_values(key, value) for key, value in rows.items()},
@@ -337,10 +372,13 @@ def recovery_candidates(
     base_action: int,
     ranked: list[int],
     draw_legal: bool,
+    teacher_action: int | None = None,
 ) -> list[int]:
     mask = env.action_mask(player_id)
     state = env.env._env.state
     selected = {int(base_action)}
+    if teacher_action is not None and 0 <= int(teacher_action) < len(mask) and mask[int(teacher_action)] == 1.0:
+        selected.add(int(teacher_action))
     selected.update(int(action) for action in ranked if 0 <= int(action) < len(mask) and mask[int(action)] == 1.0)
     for action in np.flatnonzero(mask == 1.0):
         if action_kind(state, player_id, int(action)) == "attack_unit":
@@ -356,7 +394,7 @@ def evaluate_candidate(
     candidate: int,
     v5_player_id: int,
     v5: _V5Policy,
-    v4: OnnxActionPolicy,
+    opponent: Any,
     depth_plies: int,
 ) -> float:
     sim = copy.deepcopy(env)
@@ -367,7 +405,7 @@ def evaluate_candidate(
         if terminated or truncated:
             break
         current = sim.current_player_id()
-        action = v5.select(sim, current) if current == int(v5_player_id) else int(v4.select_action(sim.env, current))
+        action = v5.select(sim, current) if current == int(v5_player_id) else int(opponent.select_action(sim.env, current))
         terminated, truncated = _step_action(sim, int(action))
     return score_recovery_state(sim, v5_player_id)
 
@@ -411,7 +449,7 @@ def train_counterfactual_recovery(
         "state_action_query_v2.",
         "state_action_key_v2.",
         "state_action_gate_v2.",
-        "mana_draw_head.",
+        "mana_draw_recovery_head.",
     )
 
     for epoch in range(int(config.epochs)):
@@ -721,6 +759,8 @@ def _validate_config(config: PreBRecoveryConfig) -> None:
     for name in ("min_score_margin", "learning_rate", "ranking_margin", "action_pair_coef", "draw_bce_coef", "recovery_policy_kl_coef", "recovery_draw_kl_coef", "anchor_policy_kl_coef", "anchor_draw_kl_coef"):
         if float(getattr(config, name)) <= 0.0:
             raise ValueError(f"{name} must be positive")
+    if not 0.0 <= float(config.greedy_face_fraction) <= 1.0:
+        raise ValueError("greedy_face_fraction must be between 0 and 1")
 
 
 def _jsonable(value: Any) -> Any:
@@ -759,6 +799,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--anchor-policy-kl-coef", type=float, default=4.0)
     parser.add_argument("--anchor-draw-kl-coef", type=float, default=4.0)
     parser.add_argument("--min-pairs", type=int, default=24)
+    parser.add_argument("--greedy-face-fraction", type=float, default=0.25)
+    parser.add_argument(
+        "--include-all-counterfactuals",
+        action="store_true",
+        help="Keep generic action-order labels in addition to face/trade and draw hard negatives.",
+    )
     parser.add_argument("--no-save-dataset", action="store_true")
     parser.add_argument(
         "--dataset-path",
@@ -794,6 +840,8 @@ def main(argv: list[str] | None = None) -> int:
         anchor_policy_kl_coef=args.anchor_policy_kl_coef,
         anchor_draw_kl_coef=args.anchor_draw_kl_coef,
         min_pairs=args.min_pairs,
+        greedy_face_fraction=args.greedy_face_fraction,
+        hard_negative_only=not args.include_all_counterfactuals,
         save_dataset=not args.no_save_dataset,
         dataset_path=args.dataset_path.resolve() if args.dataset_path is not None else None,
     )

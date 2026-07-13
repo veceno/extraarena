@@ -117,6 +117,15 @@ class V5ActionConditionedPolicy(nn.Module):
         # fused state_emb as value_head; its logit is gated by the legal mask
         # from mana_draw_head_v5.mana_draw_legal_mask (illegal → -inf).
         self.mana_draw_head = nn.Linear(hidden_dim, 1)
+        # Pre-B recovery must not alter the accepted first-start draw policy.
+        # This zero-initialized residual is hard-gated by initiative below.
+        self.mana_draw_recovery_head = nn.Linear(hidden_dim, 1)
+        self.mana_draw_recovery_head.weight = mx.zeros_like(
+            self.mana_draw_recovery_head.weight
+        )
+        self.mana_draw_recovery_head.bias = mx.zeros_like(
+            self.mana_draw_recovery_head.bias
+        )
 
     def encode_state(self, obs):
         import mlx.core as mx
@@ -192,11 +201,22 @@ class V5ActionConditionedPolicy(nn.Module):
             mx.expand_dims(state_query_v2, axis=1) * action_key_v2,
             axis=-1,
         ) * self.state_action_interaction_scale * interaction_gate_v2
+        # V2 is the explicit second-start recovery lane.  The persistent
+        # am_first_player bit lives at V5 global offset 16; hard-gating here
+        # guarantees the accepted first-start policy is byte-for-behavior
+        # unchanged rather than merely KL-encouraged to stay close.
+        am_first_player = mx.clip(obs[:, OBS_V1_DIM + 16], 0.0, 1.0)
+        second_start_gate = mx.expand_dims(1.0 - am_first_player, axis=1)
+        interaction_logits_v2 = interaction_logits_v2 * second_start_gate
         logits = legacy_logits + interaction_logits + interaction_logits_v2
         value = self.value_head(state_emb).squeeze(-1)
         # Parallel binary mana_draw head on the fused state_emb (same input as
         # value_head). (batch, 1) → (batch,).
         mana_draw_logit = self.mana_draw_head(state_emb).squeeze(-1)
+        mana_draw_recovery = self.mana_draw_recovery_head(state_emb).squeeze(-1)
+        mana_draw_logit = mana_draw_logit + mana_draw_recovery * (
+            1.0 - am_first_player
+        )
         if mana_draw_legal is not None:
             # Gate the head: illegal → -inf (masked out of any selection).
             # bool or (batch,) array; broadcast over the batch dim.

@@ -7,6 +7,7 @@ from typing import Any
 
 import numpy as np
 
+from .contracts import OBS_V1_DIM
 from .rust_ffi import (
     compute_rust_compact_argmax_actions,
     compute_rust_dense_argmax_actions,
@@ -125,7 +126,9 @@ def score_compact_legal_actions(
         )
         legal_logits = legal_logits + mx.sum(
             query_rows_v2 * key_rows_v2, axis=-1
-        ) * interaction_scale * interaction_gate_v2
+        ) * interaction_scale * interaction_gate_v2 * (
+            1.0 - mx.clip(obs[:, OBS_V1_DIM + 16], 0.0, 1.0)
+        )[env_indices]
     values = model.value_head(state_emb).squeeze(-1)
     return CompactLegalActionScores(legal_logits=legal_logits, values=values)
 
@@ -334,12 +337,19 @@ def score_padded_legal_action_inputs(
         padded_logits = padded_logits + mx.sum(
             mx.expand_dims(query_v2, axis=1) * key_v2,
             axis=-1,
-        ) * interaction_scale * interaction_gate_v2
+        ) * interaction_scale * interaction_gate_v2 * mx.expand_dims(
+            1.0 - mx.clip(obs[:, OBS_V1_DIM + 16], 0.0, 1.0), axis=1
+        )
     if mask_invalid_logits:
         padded_logits = mx.where(legal_mask, padded_logits, mx.array(-1e9, dtype=padded_logits.dtype))
     values = model.value_head(state_emb).squeeze(-1)
     mana_draw_head = getattr(model, "mana_draw_head", None)
     mana_draw_logits = None if mana_draw_head is None else mana_draw_head(state_emb).squeeze(-1)
+    mana_draw_recovery_head = getattr(model, "mana_draw_recovery_head", None)
+    if mana_draw_logits is not None and mana_draw_recovery_head is not None:
+        mana_draw_logits = mana_draw_logits + mana_draw_recovery_head(state_emb).squeeze(-1) * (
+            1.0 - mx.clip(obs[:, OBS_V1_DIM + 16], 0.0, 1.0)
+        )
     profile = None
     if profile_policy:
         if mana_draw_logits is None:

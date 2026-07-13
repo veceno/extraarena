@@ -7,7 +7,7 @@ import pytest
 
 mx = pytest.importorskip("mlx.core")
 
-from train_v3.contracts import ACTION_FEATURE_DIM, OBS_V5_DIM  # noqa: E402
+from train_v3.contracts import ACTION_FEATURE_DIM, OBS_V1_DIM, OBS_V5_DIM  # noqa: E402
 from train_v3.rust_policy import (  # noqa: E402
     score_compact_legal_actions,
     score_padded_legal_actions,
@@ -173,6 +173,54 @@ def test_v2_interaction_has_room_to_move_hard_state_boundaries():
     mx.eval(centered_delta)
     assert float(mx.max(mx.abs(centered_delta)).item()) > 0.0
     assert model.state_action_v2_gate_cap >= 10.0 * model.state_action_gate_cap
+
+
+def test_v2_recovery_residual_is_hard_gated_to_second_start():
+    """The repair branch cannot trade away first-start strength."""
+    mx.random.seed(17)
+    model = V5ActionConditionedPolicy(hidden_dim=32, action_hidden_dim=16)
+    model.state_action_gate_v2.weight = mx.ones_like(model.state_action_gate_v2.weight)
+    obs, features = _make_inputs(batch=2)
+    obs_np = np.asarray(obs).copy()
+    obs_np[0, OBS_V1_DIM + 16] = 1.0  # first starter
+    obs_np[1, OBS_V1_DIM + 16] = 0.0  # second starter
+
+    logits_v2, _, _ = model(mx.array(obs_np), features)
+    model.state_action_gate_v2.weight = mx.zeros_like(model.state_action_gate_v2.weight)
+    logits_zero, _, _ = model(mx.array(obs_np), features)
+    centered_delta = np.asarray(_center(logits_v2) - _center(logits_zero))
+
+    np.testing.assert_allclose(centered_delta[0], 0.0, atol=1e-7, rtol=0.0)
+    assert float(np.max(np.abs(centered_delta[1]))) > 0.0
+
+
+def test_mana_draw_recovery_residual_is_hard_gated_to_second_start():
+    """Pre-B draw correction leaves the accepted first-start head exact."""
+    mx.random.seed(18)
+    model = V5ActionConditionedPolicy(hidden_dim=32, action_hidden_dim=16)
+    model.mana_draw_recovery_head.weight = mx.ones_like(
+        model.mana_draw_recovery_head.weight
+    )
+    model.mana_draw_recovery_head.bias = mx.ones_like(
+        model.mana_draw_recovery_head.bias
+    )
+    obs, features = _make_inputs(batch=2)
+    obs_np = np.asarray(obs).copy()
+    obs_np[0, OBS_V1_DIM + 16] = 1.0
+    obs_np[1, OBS_V1_DIM + 16] = 0.0
+
+    _, _, corrected = model(mx.array(obs_np), features)
+    model.mana_draw_recovery_head.weight = mx.zeros_like(
+        model.mana_draw_recovery_head.weight
+    )
+    model.mana_draw_recovery_head.bias = mx.zeros_like(
+        model.mana_draw_recovery_head.bias
+    )
+    _, _, baseline = model(mx.array(obs_np), features)
+    delta = np.asarray(corrected - baseline)
+
+    np.testing.assert_allclose(delta[0], 0.0, atol=1e-7, rtol=0.0)
+    assert abs(float(delta[1])) > 0.0
 
 
 def test_compact_and_padded_scorers_include_interaction_residual():
