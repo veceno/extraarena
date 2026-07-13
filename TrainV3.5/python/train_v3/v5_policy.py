@@ -16,6 +16,10 @@ from .contracts import (
 )
 
 
+STATE_ACTION_INTERACTION_KIND = "gated_bilinear_query_cap01_v1"
+STATE_ACTION_GATE_CAP = 0.1
+
+
 @dataclass(frozen=True)
 class V5PolicyShape:
     obs_dim: int = OBS_V5_DIM
@@ -75,6 +79,26 @@ class V5ActionConditionedPolicy(nn.Module):
         )
         self.action_encoder = nn.Linear(action_feature_dim, action_hidden_dim)
         self.candidate_scorer = nn.Linear(hidden_dim + action_hidden_dim, 1)
+        # The legacy linear scorer is additively separable:
+        #   w_s * state + w_a * action + b
+        # so its state term is identical for every candidate and cancels from
+        # the softmax/argmax. This branch adds a genuine state-action
+        # compatibility residual while its zero-initialized gate preserves
+        # legacy logits exactly at initialization and when loading a
+        # pre-interaction V5 checkpoint. Zero-initializing the whole query is
+        # intentionally avoided because it is unsafe with
+        # Adam: thousands of weights can move in lockstep and make the residual
+        # explode within a few dozen updates. Instead the query keeps its
+        # normal initialization and a single zero-initialized scalar gate opens
+        # the bounded compatibility residual gradually.
+        self.state_action_query = nn.Linear(hidden_dim, action_hidden_dim)
+        import mlx.core as mx
+
+        self.state_action_gate = nn.Linear(1, 1, bias=False)
+        self.state_action_gate.weight = mx.zeros_like(self.state_action_gate.weight)
+        self.state_action_interaction_kind = STATE_ACTION_INTERACTION_KIND
+        self.state_action_interaction_scale = float(action_hidden_dim) ** -0.5
+        self.state_action_gate_cap = STATE_ACTION_GATE_CAP
         self.value_head = nn.Linear(hidden_dim, 1)
         # Parallel binary mana_draw head (Block 0 component 3 / spec §0.89
         # decision γ). This is NOT a 602nd candidate — MAX_CANDIDATE_ACTIONS=601
@@ -133,7 +157,17 @@ class V5ActionConditionedPolicy(nn.Module):
 
         joint = mx.concatenate([state_bc, action_emb], axis=-1)
         joint = mx.reshape(joint, (batch * 601, self.hidden_dim + self.action_hidden_dim))
-        logits = mx.reshape(self.candidate_scorer(joint), (batch, 601))
+        legacy_logits = mx.reshape(self.candidate_scorer(joint), (batch, 601))
+        state_query = mx.tanh(self.state_action_query(state_emb))
+        bounded_action_emb = mx.tanh(action_emb)
+        interaction_gate = self.state_action_gate_cap * mx.tanh(
+            self.state_action_gate.weight[0, 0]
+        )
+        interaction_logits = mx.sum(
+            mx.expand_dims(state_query, axis=1) * bounded_action_emb,
+            axis=-1,
+        ) * self.state_action_interaction_scale * interaction_gate
+        logits = legacy_logits + interaction_logits
         value = self.value_head(state_emb).squeeze(-1)
         # Parallel binary mana_draw head on the fused state_emb (same input as
         # value_head). (batch, 1) → (batch,).
@@ -181,4 +215,10 @@ def create_v5_policy(
     raise ValueError("policy_kind must be v5_split_encoder or baseline_mlp")
 
 
-__all__ = ["V5ActionConditionedPolicy", "V5PolicyShape", "create_v5_policy"]
+__all__ = [
+    "STATE_ACTION_INTERACTION_KIND",
+    "STATE_ACTION_GATE_CAP",
+    "V5ActionConditionedPolicy",
+    "V5PolicyShape",
+    "create_v5_policy",
+]

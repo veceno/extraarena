@@ -555,6 +555,7 @@ def _save_checkpoint(
         "model_name": "extra-lr-v5-adaptive",
         "phase": "blockB_league",
         "policy_kind": "v5_split_encoder",
+        "state_action_interaction": "gated_bilinear_query_cap01_v1",
         "obs_dim": int(OBS_V5_DIM),
         "action_feature_dim": int(ACTION_FEATURE_DIM),
         "source_checkpoint": run_meta["source_checkpoint"],

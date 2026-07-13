@@ -107,6 +107,9 @@ def save_checkpoint(
     meta.setdefault("obs_dim", 1456)
     meta.setdefault("action_feature_dim", 171)
     meta.setdefault("max_candidate_actions", 601)
+    interaction_kind = getattr(model, "state_action_interaction_kind", None)
+    if interaction_kind is not None:
+        meta.setdefault("state_action_interaction", str(interaction_kind))
     meta.setdefault("created_at", time.strftime("%Y-%m-%dT%H:%M:%S"))
     meta_json = json.dumps(meta)
     np_dict["__meta__"] = np.frombuffer(meta_json.encode("utf-8"), dtype=np.uint8)

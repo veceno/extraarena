@@ -149,6 +149,11 @@ class TorchV5ActionConditionedPolicy(torch.nn.Module):
         )
         self.action_encoder = torch.nn.Linear(action_feature_dim, action_hidden_dim)
         self.candidate_scorer = torch.nn.Linear(hidden_dim + action_hidden_dim, 1)
+        self.state_action_query = torch.nn.Linear(hidden_dim, action_hidden_dim)
+        self.state_action_gate = torch.nn.Linear(1, 1, bias=False)
+        torch.nn.init.zeros_(self.state_action_gate.weight)
+        self.state_action_interaction_scale = float(action_hidden_dim) ** -0.5
+        self.state_action_gate_cap = 0.1
         self.value_head = torch.nn.Linear(hidden_dim, 1)
         # Parallel binary mana_draw head (spec section 0.89 gamma). NOT a 602nd candidate --
         # MAX_CANDIDATE_ACTIONS=601 stays frozen. Reads the same fused state_emb
@@ -202,7 +207,17 @@ class TorchV5ActionConditionedPolicy(torch.nn.Module):
         joint = torch.cat([state_bc, action_emb], dim=-1)
         joint_flat = joint.reshape(B * MAX_CANDIDATE_ACTIONS, -1)
         raw_logits = self.candidate_scorer(joint_flat)
-        logits = raw_logits.reshape(B, MAX_CANDIDATE_ACTIONS)
+        legacy_logits = raw_logits.reshape(B, MAX_CANDIDATE_ACTIONS)
+        state_query = torch.tanh(self.state_action_query(state_emb)).unsqueeze(1)
+        bounded_action_emb = torch.tanh(action_emb)
+        interaction_gate = self.state_action_gate_cap * torch.tanh(
+            self.state_action_gate.weight[0, 0]
+        )
+        interaction_logits = torch.sum(state_query * bounded_action_emb, dim=-1)
+        logits = (
+            legacy_logits
+            + interaction_logits * self.state_action_interaction_scale * interaction_gate
+        )
 
         # value and mana_draw_logit are PARALLEL scalar heads on state_emb.
         # Kept as [B, 1] (do NOT squeeze) so the ONNX output rank matches the
@@ -232,6 +247,8 @@ V5_WEIGHT_MAP = [
     ("state_fuser.layers.2", "state_fuser[2]"),
     ("action_encoder", "action_encoder"),
     ("candidate_scorer", "candidate_scorer"),
+    ("state_action_query", "state_action_query"),
+    ("state_action_gate", "state_action_gate"),
     ("value_head", "value_head"),
     ("mana_draw_head", "mana_draw_head"),
 ]
@@ -403,6 +420,7 @@ def export_v5_checkpoint_to_onnx(
         "inputs": ["observation", "action_features"],
         "outputs": ["logits", "value", "mana_draw_logit"],
         "mana_draw_head": True,
+        "state_action_interaction": "gated_bilinear_query_cap01_v1",
         "format": "v5",
         "card_shape_version": CARD_SHAPE_VERSION,
         "config": metadata.get("config", {}),

@@ -105,6 +105,9 @@ TRAINABLE_BC_PARAM_NAMES: frozenset[str] = frozenset(
     {
         "candidate_scorer.weight",
         "candidate_scorer.bias",
+        "state_action_query.weight",
+        "state_action_query.bias",
+        "state_action_gate.weight",
         "mana_draw_head.weight",
         "mana_draw_head.bias",
         "global_encoder.layers.0.weight",

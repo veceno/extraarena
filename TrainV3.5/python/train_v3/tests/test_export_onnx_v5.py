@@ -155,6 +155,17 @@ def _build_tiny_v5_npz_mlx(path: str) -> str:
 
     mx.random.seed(42)
     policy = V5ActionConditionedPolicy(hidden_dim=32, action_hidden_dim=16)
+    # Exercise the state-action interaction path in MLX -> Torch -> ONNX
+    # parity tests. The production initialization remains zero-compatible.
+    policy.state_action_query.weight = (
+        mx.ones_like(policy.state_action_query.weight) * 0.02
+    )
+    policy.state_action_query.bias = (
+        mx.ones_like(policy.state_action_query.bias) * -0.01
+    )
+    policy.state_action_gate.weight = (
+        mx.ones_like(policy.state_action_gate.weight) * 0.5
+    )
     mx.eval(policy.parameters())
     save_checkpoint(
         path,
@@ -750,6 +761,7 @@ class TestV5SidecarCodecSync:
         export_v5_checkpoint_to_onnx(npz_path, onnx_path, opset=17)
 
         sidecar = json.loads(Path(onnx_path + ".json").read_text())
+        assert sidecar["state_action_interaction"] == "gated_bilinear_query_cap01_v1"
         assert sidecar["card_shape_version"] == CARD_SHAPE_VERSION, (
             f"sidecar card_shape_version {sidecar['card_shape_version']!r} != "
             f"v5_card_shape_v1.CARD_SHAPE_VERSION {CARD_SHAPE_VERSION!r}"

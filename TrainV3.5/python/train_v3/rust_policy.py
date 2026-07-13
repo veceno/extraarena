@@ -94,6 +94,19 @@ def score_compact_legal_actions(
     action_emb = model.action_encoder(features)
     joint = mx.concatenate([state_rows, action_emb], axis=-1)
     legal_logits = model.candidate_scorer(joint).squeeze(-1)
+    state_action_query = getattr(model, "state_action_query", None)
+    state_action_gate = getattr(model, "state_action_gate", None)
+    if state_action_query is not None and state_action_gate is not None:
+        query_rows = mx.tanh(state_action_query(state_emb))[env_indices]
+        interaction_scale = float(
+            getattr(model, "state_action_interaction_scale", int(model.action_hidden_dim) ** -0.5)
+        )
+        interaction_gate = float(getattr(model, "state_action_gate_cap", 0.1)) * mx.tanh(
+            state_action_gate.weight[0, 0]
+        )
+        legal_logits = legal_logits + mx.sum(
+            query_rows * mx.tanh(action_emb), axis=-1
+        ) * interaction_scale * interaction_gate
     values = model.value_head(state_emb).squeeze(-1)
     return CompactLegalActionScores(legal_logits=legal_logits, values=values)
 
@@ -269,6 +282,20 @@ def score_padded_legal_action_inputs(
         joint = mx.reshape(joint, (batch_size * max_legal, model.hidden_dim + model.action_hidden_dim))
         raw_logits = model.candidate_scorer(joint)
         padded_logits = mx.reshape(raw_logits, (batch_size, max_legal))
+    state_action_query = getattr(model, "state_action_query", None)
+    state_action_gate = getattr(model, "state_action_gate", None)
+    if state_action_query is not None and state_action_gate is not None:
+        query = mx.tanh(state_action_query(state_emb))
+        interaction_scale = float(
+            getattr(model, "state_action_interaction_scale", int(model.action_hidden_dim) ** -0.5)
+        )
+        interaction_gate = float(getattr(model, "state_action_gate_cap", 0.1)) * mx.tanh(
+            state_action_gate.weight[0, 0]
+        )
+        padded_logits = padded_logits + mx.sum(
+            mx.expand_dims(query, axis=1) * mx.tanh(action_emb),
+            axis=-1,
+        ) * interaction_scale * interaction_gate
     if mask_invalid_logits:
         padded_logits = mx.where(legal_mask, padded_logits, mx.array(-1e9, dtype=padded_logits.dtype))
     values = model.value_head(state_emb).squeeze(-1)
