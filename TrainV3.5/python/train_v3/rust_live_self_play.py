@@ -476,6 +476,10 @@ class LiveRolloutBatch:
     batch_steps: int
     #: Per-env episode count (number of resets + 1).
     episode_counts: np.ndarray
+    #: Learner transitions collected from episodes where the learner moved first.
+    first_start_learner_steps: int
+    #: Learner transitions collected from episodes where the learner moved second.
+    second_start_learner_steps: int
     #: (env_count, obs_dim) post-rollout observations used for GAE tail bootstrap.
     final_observations: np.ndarray
     #: Optional dispatch log (per-env per-batch-step source tag) when record_dispatch=True.
@@ -538,7 +542,7 @@ def sample_learner_sides(
     p2_score_rate: float = 0.5,
     oversampling: dict[str, Any] | None = None,
     rng: np.random.Generator,
-) -> np.ndarray:
+) -> tuple[np.ndarray, dict[str, Any]]:
     """Sample the learner's actor id per env (1=p1, 2=p2), applying D-A10 second-start
     oversampling (``ppo_phaseA_config.second_start_oversampling_scheme``).
 
@@ -590,6 +594,60 @@ def sample_learner_sides(
     w2 = float(scheme["p2_weight"])
     sides = rng.choice([1, 2], size=int(env_count), p=[w1, w2]).astype(np.int32)
     return sides, scheme
+
+
+def sample_learner_sides_for_starts(
+    starting_actor_ids: np.ndarray,
+    *,
+    second_start_weight: float,
+    rng: np.random.Generator,
+    exact: bool,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """Bind learner actor ids to actual episode initiative, not seat labels.
+
+    ``learner != starting_actor`` means the learner moves second.  ``exact`` is
+    used for the initial env batch to produce an exact split; episode resets are
+    sampled independently so single-lane resets converge to the configured
+    fraction instead of rounding every reset to 0% or 100%.
+    """
+    starts = np.asarray(starting_actor_ids, dtype=np.int32)
+    if starts.ndim != 1 or bool(np.any((starts != 1) & (starts != 2))):
+        raise ValueError("starting_actor_ids must be a 1D array containing only 1 or 2")
+    weight = float(second_start_weight)
+    if not np.isfinite(weight) or not 0.0 <= weight <= 1.0:
+        raise ValueError("second_start_weight must be between 0 and 1")
+    if exact:
+        second_count = int(round(starts.size * weight))
+        second_mask = np.zeros(starts.size, dtype=np.bool_)
+        second_mask[:second_count] = True
+        rng.shuffle(second_mask)
+    else:
+        second_mask = rng.random(starts.size) < weight
+        second_count = int(np.count_nonzero(second_mask))
+    learner = np.where(second_mask, 3 - starts, starts).astype(np.int32)
+    first_count = int(starts.size) - second_count
+    return learner, {
+        "policy": "fixed_second_start_weight",
+        "second_start_weight": weight,
+        "first_start_count": first_count,
+        "second_start_count": second_count,
+        "first_start_fraction": float(first_count / max(1, starts.size)),
+        "second_start_fraction": float(second_count / max(1, starts.size)),
+    }
+
+
+def _configured_second_start_weight(config: PhaseAPPOConfig) -> float | None:
+    """Return the requested *initiative* sampling weight, if configured."""
+    oversampling = config.second_start_oversampling or {}
+    policy = str(oversampling.get("policy", "oversample_under_represented_on_breach"))
+    if policy == "start_second":
+        return 1.0
+    if policy == "fixed_second_start_weight":
+        weight = float(oversampling.get("second_start_weight", 0.5))
+        if not np.isfinite(weight) or not 0.0 <= weight <= 1.0:
+            raise ValueError("second_start_weight must be between 0 and 1")
+        return weight
+    return None
 
 
 # --- The live collector -------------------------------------------------------
@@ -657,12 +715,14 @@ def collect_rust_live_rollout(
     # A PPO rollout boundary is not an episode boundary.  Long-lived training
     # sessions therefore continue from the worker's current arrays and use the
     # bootstrapped value below; one-shot callers keep the historical reset.
+    initial_reset_idx = np.zeros(0, dtype=np.uintp)
     initial = worker.reset(copy=True) if reset_at_start else worker.arrays(copy=True)
     if not reset_at_start:
         resident_done = np.asarray(initial.get("terminated", np.zeros(env_count)), dtype=np.bool_)
         resident_done |= np.asarray(worker.truncated(), dtype=np.bool_)
         if bool(np.any(resident_done)):
-            worker.reset_indices(np.flatnonzero(resident_done).astype(np.uintp, copy=False))
+            initial_reset_idx = np.flatnonzero(resident_done).astype(np.uintp, copy=False)
+            worker.reset_indices(initial_reset_idx)
             initial = worker.arrays(copy=True)
     obs_v5 = np.asarray(initial["observation_v5"], dtype=np.float32)
     if obs_v5.shape[0] != env_count:
@@ -707,6 +767,32 @@ def collect_rust_live_rollout(
     episode_starting_actor = np.asarray(worker.current_actor_ids(), dtype=np.int32).copy()
     if episode_starting_actor.shape != (env_count,):
         raise ValueError(f"current_actor_ids shape {episode_starting_actor.shape} != ({env_count},)")
+    first_start_learner_steps = 0
+    second_start_learner_steps = 0
+    true_second_start_weight = _configured_second_start_weight(config)
+
+    def bind_reset_episodes(indices: np.ndarray, *, increment_episode_count: bool) -> None:
+        reset_idx = np.asarray(indices, dtype=np.uintp).reshape(-1)
+        if reset_idx.size == 0:
+            return
+        reset_actors = np.asarray(worker.current_actor_ids(), dtype=np.int32)
+        int_idx = reset_idx.astype(np.intp, copy=False)
+        episode_starting_actor[int_idx] = reset_actors[int_idx]
+        if true_second_start_weight is not None:
+            rebound, _scheme = sample_learner_sides_for_starts(
+                reset_actors[int_idx],
+                second_start_weight=true_second_start_weight,
+                rng=rng,
+                exact=False,
+            )
+            learner_actor[int_idx] = rebound
+        if increment_episode_count:
+            episode_counts[int_idx] += 1
+
+    # A persistent session can arrive with a completed resident episode.  If it
+    # was reset above, refresh the learner/start binding before collecting any
+    # transition from the new episode.
+    bind_reset_episodes(initial_reset_idx, increment_episode_count=True)
 
     # ``current`` = the pre-step arrays (state at the start of each batch step).
     current = initial
@@ -735,11 +821,7 @@ def collect_rust_live_rollout(
                     last_learner_row[i] = None
             reset_idx = np.flatnonzero(resident_done).astype(np.uintp, copy=False)
             worker.reset_indices(reset_idx)
-            reset_actors = np.asarray(worker.current_actor_ids(), dtype=np.int32)
-            for i_raw in reset_idx.tolist():
-                i = int(i_raw)
-                episode_starting_actor[i] = int(reset_actors[i])
-                episode_counts[i] = int(episode_counts[i]) + 1
+            bind_reset_episodes(reset_idx, increment_episode_count=True)
             current = worker.arrays(copy=True)
         if bool(np.all(learner_step_count >= target_steps)):
             break  # all envs collected target_steps learner transitions
@@ -785,10 +867,9 @@ def collect_rust_live_rollout(
         # before the service action below so the batched Rust step remains valid.
         full_needing_reset = [i for i in full_envs if int(cur_counts[i]) <= 0]
         if full_needing_reset:
-            worker.reset_indices(np.asarray(full_needing_reset, dtype=np.uintp))
-            reset_actors = np.asarray(worker.current_actor_ids(), dtype=np.int32)
-            for i in full_needing_reset:
-                episode_starting_actor[int(i)] = int(reset_actors[int(i)])
+            reset_idx = np.asarray(full_needing_reset, dtype=np.uintp)
+            worker.reset_indices(reset_idx)
+            bind_reset_episodes(reset_idx, increment_episode_count=False)
             current = worker.arrays(copy=True)
             cur_counts = np.asarray(current["legal_action_counts"], dtype=np.intp)
             cur_offsets = np.asarray(current["legal_action_offsets"], dtype=np.intp)
@@ -882,6 +963,10 @@ def collect_rust_live_rollout(
                 selected_local[row, i] = int(l_sel_local[k])
                 mana_draw_legal_buf[row, i] = bool(md_legal[i])
                 mana_draw_taken_buf[row, i] = bool(l_mana_draw[k])
+                if int(learner_actor[i]) == int(episode_starting_actor[i]):
+                    first_start_learner_steps += 1
+                else:
+                    second_start_learner_steps += 1
                 # step with the learner action + mana_draw flag (placeholder action_id
                 # when mana_draw taken — kernel ignores it, kernel.rs:788).
                 action_ids[i] = int(l_actions[k])
@@ -984,13 +1069,20 @@ def collect_rust_live_rollout(
             row = last_learner_row[i]
             if row is None or row >= target_steps:
                 continue
+            term_i = bool(out_terminated[i])
+            trunc_i = bool(out_truncated[i])
             reward_i = float(attributed[i]) + float(pending_opener_reward[i])
-            if int(learner_actor[i]) != int(episode_starting_actor[i]):
+            # A per-transition bonus rewards longer second-start episodes.  The
+            # intended signal is a small bonus only when the learner actually
+            # wins a terminal episode after moving second.
+            if (
+                term_i
+                and float(attributed[i]) > 0.0
+                and int(learner_actor[i]) != int(episode_starting_actor[i])
+            ):
                 reward_i += float(config.turn_order_second_mover_reward_bonus)
             rewards[row, i] = reward_i
             pending_opener_reward[i] = 0.0
-            term_i = bool(out_terminated[i])
-            trunc_i = bool(out_truncated[i])
             # decisive-early-end (D-A6): a decisive win-margin terminates the episode.
             if config.decisive_early_end:
                 snap = _hero_hp_snapshot(hero_hp, i, int(learner_actor[i]))
@@ -1004,9 +1096,9 @@ def collect_rust_live_rollout(
                 # last row of the PPO segment, the next update will continue
                 # from that reset state; leaving game_over resident makes the
                 # persistent worker attempt an invalid action on update N+1.
-                worker.reset_indices(np.asarray([i], dtype=np.uintp))
-                episode_starting_actor[i] = int(np.asarray(worker.current_actor_ids(), dtype=np.int32)[i])
-                episode_counts[i] = int(episode_counts[i]) + 1
+                reset_idx = np.asarray([i], dtype=np.uintp)
+                worker.reset_indices(reset_idx)
+                bind_reset_episodes(reset_idx, increment_episode_count=True)
 
         # Opponent-actor envs: no standalone transition is recorded. Fold the opponent
         # response reward into the previous learner transition from the learner's
@@ -1018,7 +1110,8 @@ def collect_rust_live_rollout(
                 continue
             row = last_learner_row[i]
             if row is not None and row < target_steps:
-                rewards[row, i] += -float(out_rewards[i])
+                folded_reward = -float(out_rewards[i])
+                rewards[row, i] += folded_reward
             elif int(learner_step_count[i]) == 0:
                 pending_opener_reward[i] += -float(out_rewards[i])
             if not (bool(out_terminated[i]) or bool(out_truncated[i])):
@@ -1037,12 +1130,18 @@ def collect_rust_live_rollout(
                     if is_decisive_state(snap, threshold=config.decisive_win_margin_threshold):
                         trunc_i = True
                 if term_i or trunc_i:
+                    if (
+                        term_i
+                        and folded_reward > 0.0
+                        and int(learner_actor[i]) != int(episode_starting_actor[i])
+                    ):
+                        rewards[row, i] += float(config.turn_order_second_mover_reward_bonus)
                     terminated[row, i] = bool(term_i) or bool(terminated[row, i])
                     truncated[row, i] = bool(trunc_i) or bool(truncated[row, i])
                     last_learner_row[i] = None
-                    worker.reset_indices(np.asarray([i], dtype=np.uintp))
-                    episode_starting_actor[i] = int(np.asarray(worker.current_actor_ids(), dtype=np.int32)[i])
-                    episode_counts[i] = int(episode_counts[i]) + 1
+                    reset_idx = np.asarray([i], dtype=np.uintp)
+                    worker.reset_indices(reset_idx)
+                    bind_reset_episodes(reset_idx, increment_episode_count=True)
 
         # Full lanes still execute harmless service actions while slower lanes
         # finish their segment. A service action can end that episode; reset it
@@ -1050,9 +1149,9 @@ def collect_rust_live_rollout(
         # the next persistent update.
         for i in full_envs:
             if bool(out_terminated[i]) or bool(out_truncated[i]):
-                worker.reset_indices(np.asarray([i], dtype=np.uintp))
-                episode_starting_actor[i] = int(np.asarray(worker.current_actor_ids(), dtype=np.int32)[i])
-                episode_counts[i] = int(episode_counts[i]) + 1
+                reset_idx = np.asarray([i], dtype=np.uintp)
+                worker.reset_indices(reset_idx)
+                bind_reset_episodes(reset_idx, increment_episode_count=True)
 
         # advance: the next iteration reads the post-step + post-reset state.
         current = worker.arrays(copy=True)
@@ -1107,6 +1206,8 @@ def collect_rust_live_rollout(
         learner_step_counts=learner_step_count,
         batch_steps=int(batch_step),
         episode_counts=episode_counts,
+        first_start_learner_steps=int(first_start_learner_steps),
+        second_start_learner_steps=int(second_start_learner_steps),
         final_observations=final_observations,
         dispatch_log=dispatch_log,
     )
@@ -1257,20 +1358,21 @@ def create_live_self_play_session(
     mix = list(opponent_mix_parsed) if opponent_mix_parsed is not None else parse_v5_opponent_mix(config.opponent_mix)
     opponents = sample_opponent_identities(mix, env_count, rng=rng)
     side_policy = str((config.second_start_oversampling or {}).get("policy", "oversample_under_represented_on_breach"))
-    if side_policy == "start_second":
+    second_start_weight = _configured_second_start_weight(config)
+    if second_start_weight is not None:
         starting_actors = np.asarray(worker.current_actor_ids(), dtype=np.int32)
-        learner_sides = np.where(starting_actors == 1, 2, 1).astype(np.int32)
-        scheme = {
-            "p1_weight": float(np.mean(learner_sides == 1)),
-            "p2_weight": float(np.mean(learner_sides == 2)),
-            "gap": abs(float(p1_score_rate) - float(p2_score_rate)),
-            "breach": False,
-            "oversampled_side": None,
-            "policy": "start_second",
-            "starting_actor_counts": {
-                "1": int(np.sum(starting_actors == 1)),
-                "2": int(np.sum(starting_actors == 2)),
-            },
+        learner_sides, scheme = sample_learner_sides_for_starts(
+            starting_actors,
+            second_start_weight=second_start_weight,
+            rng=rng,
+            exact=True,
+        )
+        scheme["policy"] = side_policy
+        scheme["p1_weight"] = float(np.mean(learner_sides == 1))
+        scheme["p2_weight"] = float(np.mean(learner_sides == 2))
+        scheme["starting_actor_counts"] = {
+            "1": int(np.sum(starting_actors == 1)),
+            "2": int(np.sum(starting_actors == 2)),
         }
     else:
         learner_sides, scheme = sample_learner_sides(
@@ -1356,6 +1458,7 @@ def run_live_self_play_update(
     # ``(POLICY_DISPATCH, None)`` via the ``BLOCK_B_POLICY_OPPONENT_KINDS``
     # extension). When ``opponent_mix_parsed`` is None (the Phase-A default) the
     # existing ``parse_v5_opponent_mix(config.opponent_mix)`` path is unchanged.
+    reset_at_start = session is None
     if session is not None:
         opp_identities = session.opponent_identities
         learner_sides = np.asarray(session.learner_actor_ids, dtype=np.int32)
@@ -1367,24 +1470,30 @@ def run_live_self_play_update(
         mix = parse_v5_opponent_mix(config.opponent_mix)
         opp_identities = sample_opponent_identities(mix, env_count, rng=rng)
     side_policy = str((config.second_start_oversampling or {}).get("policy", "oversample_under_represented_on_breach"))
+    second_start_weight = _configured_second_start_weight(config)
     if session is not None:
         pass
-    elif side_policy == "start_second":
+    elif second_start_weight is not None:
+        # Materialize the same episode whose starting actor we bind below.  The
+        # collector must not reset again or the Rust snapshot cycle can change
+        # initiative between sampling and the first transition.
+        worker.reset(copy=False)
+        reset_at_start = False
         starting_actors = np.asarray(worker.current_actor_ids(), dtype=np.int32)
         if starting_actors.shape != (env_count,):
             raise ValueError(f"current_actor_ids shape {starting_actors.shape} != ({env_count},)")
-        learner_sides = np.where(starting_actors == 1, 2, 1).astype(np.int32)
-        oversampling_scheme = {
-            "p1_weight": float(np.mean(learner_sides == 1)),
-            "p2_weight": float(np.mean(learner_sides == 2)),
-            "gap": abs(float(p1_score_rate) - float(p2_score_rate)),
-            "breach": False,
-            "oversampled_side": None,
-            "policy": "start_second",
-            "starting_actor_counts": {
-                "1": int(np.sum(starting_actors == 1)),
-                "2": int(np.sum(starting_actors == 2)),
-            },
+        learner_sides, oversampling_scheme = sample_learner_sides_for_starts(
+            starting_actors,
+            second_start_weight=second_start_weight,
+            rng=rng,
+            exact=True,
+        )
+        oversampling_scheme["policy"] = side_policy
+        oversampling_scheme["p1_weight"] = float(np.mean(learner_sides == 1))
+        oversampling_scheme["p2_weight"] = float(np.mean(learner_sides == 2))
+        oversampling_scheme["starting_actor_counts"] = {
+            "1": int(np.sum(starting_actors == 1)),
+            "2": int(np.sum(starting_actors == 2)),
         }
     else:
         learner_sides, oversampling_scheme = sample_learner_sides(
@@ -1412,7 +1521,7 @@ def run_live_self_play_update(
             config=config,
             steps=steps,
             rng=rng,
-            reset_at_start=session is None,
+            reset_at_start=reset_at_start,
         )
         collect_seconds = time.perf_counter() - t0
 
@@ -1441,6 +1550,12 @@ def run_live_self_play_update(
             "learner_step_counts": rollout.learner_step_counts.tolist(),
             "batch_steps": rollout.batch_steps,
             "episode_counts": rollout.episode_counts.tolist(),
+            "first_start_learner_steps": rollout.first_start_learner_steps,
+            "second_start_learner_steps": rollout.second_start_learner_steps,
+            "second_start_learner_fraction": (
+                float(rollout.second_start_learner_steps)
+                / float(max(1, rollout.first_start_learner_steps + rollout.second_start_learner_steps))
+            ),
             "opponent_identities": list(rollout.opponent_identities),
             "learner_actor_ids": rollout.learner_actor_ids.tolist(),
             "oversampling_scheme": oversampling_scheme,

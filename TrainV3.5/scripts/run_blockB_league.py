@@ -310,7 +310,15 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         legal_row_pack_backend="python",
         seed=int(args.seed),
     )
-    if args.p2_start_weight is not None:
+    if args.second_start_weight is not None:
+        config = replace(
+            config,
+            second_start_oversampling={
+                "policy": "fixed_second_start_weight",
+                "second_start_weight": float(args.second_start_weight),
+            },
+        )
+    elif args.p2_start_weight is not None:
         config = replace(
             config,
             second_start_oversampling={
@@ -685,7 +693,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--learning-rate", type=float, default=2e-4)
     parser.add_argument("--lr-warmup-updates", type=int, default=100)
     parser.add_argument("--lr-final-scale", type=float, default=0.1)
-    parser.add_argument("--second-mover-reward-bonus", type=float, default=0.02)
+    parser.add_argument(
+        "--second-mover-reward-bonus",
+        type=float,
+        default=0.0,
+        help="Terminal-win-only bonus for games where the learner moved second.",
+    )
     parser.add_argument("--checkpoint-every", type=int, default=250)
     parser.add_argument("--seed", type=int, default=410500)
     parser.add_argument("--pool-size", type=int, default=6)
@@ -716,9 +729,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=float,
         default=None,
         help=(
-            "Optional fixed learner p2 share in (0, 1). Overrides "
-            "--side-sampling-policy; 0.625 gives 80 p2 and 48 p1 envs "
-            "when --env-count is 128."
+            "Legacy fixed learner actor-2 seat share in (0, 1); this does NOT "
+            "control initiative. Overrides --side-sampling-policy."
+        ),
+    )
+    parser.add_argument(
+        "--second-start-weight",
+        type=float,
+        default=None,
+        help=(
+            "Fixed fraction of episodes in which the learner moves second. "
+            "Rebinds the learner actor after every episode reset and overrides "
+            "--side-sampling-policy."
         ),
     )
     parser.add_argument(
@@ -750,6 +772,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--mana-draw-baseline-count must be non-negative")
     if args.p2_start_weight is not None and not 0.0 < float(args.p2_start_weight) < 1.0:
         parser.error("--p2-start-weight must be between 0 and 1 (exclusive)")
+    if args.second_start_weight is not None and not 0.0 < float(args.second_start_weight) < 1.0:
+        parser.error("--second-start-weight must be between 0 and 1 (exclusive)")
+    if args.p2_start_weight is not None and args.second_start_weight is not None:
+        parser.error("--p2-start-weight and --second-start-weight are mutually exclusive")
     if (
         args.mana_draw_baseline_count is not None
         and int(args.mana_draw_baseline_count) > int(args.mana_draw_baseline_eligible)

@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+from dataclasses import replace
 from typing import Any
 
 import numpy as np
@@ -478,7 +479,7 @@ class TestLearnerPerspectiveReward:
             f"opponent response reward was not folded into learner rows: {rewards}"
         )
 
-    def test_second_mover_reward_bonus_applies_when_learner_did_not_start(self):
+    def test_second_mover_reward_bonus_does_not_apply_per_transition(self):
         learner_actor = 1
         script = _script_alternating(
             learner_actor, opponent_actor=2, n_learner=2,
@@ -493,7 +494,24 @@ class TestLearnerPerspectiveReward:
             config=config, steps=2,
         )
         rewards = np.asarray(rollout.transitions.rewards, dtype=np.float32).reshape(-1)
-        assert rewards.tolist() == pytest.approx([-8.75, 1.25])
+        assert rewards.tolist() == pytest.approx([-9.0, 1.0])
+
+    def test_second_mover_reward_bonus_applies_only_to_terminal_win(self):
+        learner_actor = 1
+        script = _script_alternating(
+            learner_actor, opponent_actor=2, n_learner=2,
+            reward_learner=1.0, reward_opponent=5.0, terminal_at=2,
+        )
+        worker = FakeWorker([script])
+        config = _tiny_config(second_mover_reward_bonus=0.25)
+        rollout = rls.collect_rust_live_rollout(
+            worker, _FakeLearner(), {"end_turn": _EndTurnPolicy()},
+            learner_actor_ids=np.array([learner_actor], dtype=np.int32),
+            opponent_identities=["end_turn"],
+            config=config, steps=2,
+        )
+        rewards = np.asarray(rollout.transitions.rewards, dtype=np.float32).reshape(-1)
+        assert rewards.tolist() == pytest.approx([-9.0, 1.25])
 
     def test_reward_attribution_directly(self):
         # The A3 helper the trainer uses: zero non-learner-actor steps.
@@ -689,6 +707,31 @@ class TestSecondStartOversampling:
         assert scheme["p2_weight"] == 0.625
         assert scheme["oversampled_side"] == "p2"
 
+    def test_fixed_second_start_weight_uses_actual_initiative(self):
+        starts = np.tile(np.array([1, 2], dtype=np.int32), 64)
+        sides, scheme = rls.sample_learner_sides_for_starts(
+            starts,
+            second_start_weight=0.75,
+            rng=np.random.default_rng(11),
+            exact=True,
+        )
+        second = sides != starts
+        assert int(np.count_nonzero(second)) == 96
+        assert int(np.count_nonzero(~second)) == 32
+        assert set(sides.tolist()) == {1, 2}
+        assert scheme["second_start_fraction"] == 0.75
+
+    def test_start_second_binding_is_opposite_every_reset(self):
+        starts = np.array([1, 2, 2, 1], dtype=np.int32)
+        sides, scheme = rls.sample_learner_sides_for_starts(
+            starts,
+            second_start_weight=1.0,
+            rng=np.random.default_rng(12),
+            exact=False,
+        )
+        assert np.array_equal(sides, 3 - starts)
+        assert scheme["second_start_count"] == starts.size
+
 
 # --- helpers used by the composition tests -----------------------------------
 def _tiny_config(
@@ -815,6 +858,26 @@ class TestRealFFISmoke:
             assert ppo_batch is not None
         finally:
             worker.close()
+
+    def test_start_second_rebind_survives_real_episode_resets(self):
+        config = replace(
+            _tiny_config(env_count=4, max_turns=8),
+            steps_per_update=16,
+            second_start_oversampling={"policy": "start_second"},
+        )
+
+        metrics = rls.run_live_self_play_update(
+            config,
+            rls.ArgmaxRandomLearner(seed=29),
+            {},
+            seed=29,
+            steps=16,
+        )
+
+        assert metrics["first_start_learner_steps"] == 0
+        assert metrics["second_start_learner_steps"] == 64
+        assert metrics["second_start_learner_fraction"] == 1.0
+        assert max(metrics["episode_counts"]) > 1, "test must cross a real reset boundary"
 
     def test_max_turns_threaded_into_worker(self):
         # from_live(max_turns=120) must construct without raising (the defensive assert
