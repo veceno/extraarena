@@ -278,14 +278,12 @@ class EndTurnOpponent:
 class GreedyFaceOpponent:
     """``greedy_face`` policy-opponent — prefers face (hero) damage.
 
-    Mirrors the legacy ``rollout_worker.py:218`` ``GreedyFacePolicy`` intent
-    ("prefers face damage", ``opponents_v5.py:141``). The Rust live path exposes packed
-    legal-action ids + features (not action objects), so a feature-aware matcher is
-    INJECTABLE via ``select_fn``. The default heuristic picks the highest legal action id
-    (attacks tend to occupy higher candidate ids than ``end_turn=0``); production wires a
-    feature-aware matcher over ``ctx.legal_action_features``. This is a documented
-    heuristic (NOT a silent stub — the matcher is injectable and the role is "sanity
-    trace source prefers face damage").
+    Exactly mirrors ``ai.train_v2.policies.GreedyFacePolicy`` over the packed
+    classic-action ids exposed by the Rust live path.  The priority is:
+    attack enemy hero, play a no-target card, play any card, attack any enemy,
+    then end turn.  ``select_fn`` remains injectable for experiments, but the
+    production default is now the real benchmark policy rather than the old
+    ``max(legal_action_id)`` approximation.
     """
 
     name = "greedy_face"
@@ -301,7 +299,26 @@ class GreedyFaceOpponent:
             raise ValueError(
                 f"greedy_face opponent: env {env_idx} has no legal actions (should have been reset)"
             )
-        return int(ids[-1])
+        legal = [int(action_id) for action_id in ids]
+
+        # classic_actions_v1: attacks are 545..600, eight targets per attacker,
+        # target code 7 is the enemy hero.
+        for action_id in legal:
+            if action_id >= 545 and (action_id - 545) % 8 == 7:
+                return action_id
+
+        # Plays are 1..544 with 17 target codes; code 0 means no target.
+        for action_id in legal:
+            if 1 <= action_id <= 544 and (action_id - 1) % 17 == 0:
+                return action_id
+        for action_id in legal:
+            if 1 <= action_id <= 544:
+                return action_id
+        for action_id in legal:
+            if action_id >= 545:
+                return action_id
+
+        return 0 if 0 in legal else legal[0]
 
 
 class SelfPrevOpponent:

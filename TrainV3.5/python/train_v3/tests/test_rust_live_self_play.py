@@ -158,6 +158,38 @@ class TestDispatchSplit:
         assert 7 not in rls.RULE_AGENT_CODES.values()
 
 
+class TestGreedyFaceOpponentParity:
+    @pytest.mark.parametrize(
+        "legal",
+        [
+            [0],
+            [0, 545, 552],
+            [0, 545, 1, 18],
+            [0, 545, 2],
+            [0, 545, 546],
+            [18, 35, 552, 560],
+        ],
+    )
+    def test_packed_default_matches_train_v2_benchmark_policy(self, legal):
+        from ai.train_v2.policies import GreedyFacePolicy
+
+        class _LegalOnlyEnv:
+            def legal_action_ids(self, _player_id):
+                return list(legal)
+
+        ctx = rls.OpponentCtx(
+            env_idx=0,
+            actor_id=2,
+            observation_v5=np.zeros(8, dtype=np.float32),
+            legal_action_ids=np.asarray(legal, dtype=np.intp),
+            legal_action_features=None,
+            legal_action_counts=len(legal),
+            mana_draw_legal=False,
+        )
+        expected = GreedyFacePolicy().select_action(_LegalOnlyEnv(), 2)
+        assert rls.GreedyFaceOpponent().select(0, ctx) == expected
+
+
 # ===========================================================================
 # FakeWorker + composition tests (deterministic, no Rust lib)
 # ===========================================================================
