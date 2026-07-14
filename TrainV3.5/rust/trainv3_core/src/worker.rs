@@ -9,6 +9,7 @@ use crate::{ACTION_FEATURE_DIM_V1, MAX_CANDIDATE_ACTIONS, OBS_DIM_V1};
 
 use rand::{RngCore, SeedableRng};
 use rand_chacha::ChaChaRng;
+use rayon::prelude::*;
 
 /// Per-slot RNG owned by the worker. The default is `Deterministic` (used
 /// by golden-fixture replay and the bench bin) so the frozen fixtures —
@@ -724,10 +725,24 @@ impl BatchedRolloutWorker {
             self.terminal_observation_output,
             self.diagnostic_output,
         );
-        for (idx, (state, history)) in self.states.iter().zip(self.histories.iter()).enumerate() {
-            let kernel = RolloutKernel::new(self.slot_configs[idx]);
-            let snapshot =
-                kernel.encode_snapshot_with_history(state, state.current_turn_owner_id, history);
+        // Snapshot encoding is pure per slot and dominates live rollout time.
+        // Keep the output assembly ordered and sequential, but compute those
+        // independent snapshots in Rayon so the training process uses the CPU
+        // budget selected by RAYON_NUM_THREADS (three threads in Block B).
+        let snapshots: Vec<_> = (0..self.env_count())
+            .into_par_iter()
+            .map(|idx| {
+                let state = &self.states[idx];
+                let kernel = RolloutKernel::new(self.slot_configs[idx]);
+                let snapshot = kernel.encode_snapshot_with_history(
+                    state,
+                    state.current_turn_owner_id,
+                    &self.histories[idx],
+                );
+                (snapshot, self.episode_returns[idx], self.episode_lengths[idx], state.status != "ongoing")
+            })
+            .collect();
+        for (snapshot, episode_return, episode_length, terminated) in snapshots {
             out.push_observation_v1(&snapshot.observation_v1);
             out.observation_v5
                 .extend_from_slice(&snapshot.observation_v5);
@@ -735,11 +750,11 @@ impl BatchedRolloutWorker {
             out.mana_draw_legal.push(snapshot.mana_draw_legal);
             out.rewards.push(0.0);
             out.counterparty_rewards.push(0.0);
-            out.terminated.push(state.status != "ongoing");
+            out.terminated.push(terminated);
             out.truncated.push(false);
             out.push_reset_flag(false);
             out.push_empty_terminal_observation();
-            out.push_episode_stats(self.episode_returns[idx], self.episode_lengths[idx]);
+            out.push_episode_stats(episode_return, episode_length);
         }
         out
     }
