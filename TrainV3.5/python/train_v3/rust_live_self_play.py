@@ -801,6 +801,20 @@ def collect_rust_live_rollout(
     max_batch_steps = int(target_steps) * (int(config.max_turns) + 8) * 2 + 64
 
     dispatch_log: list[dict[str, Any]] | None = [] if record_dispatch else None
+    # A rule-only batch can cross opponent turns entirely in Rust.  This skips
+    # the Python dispatch/FFI/encode round-trip for every response, while
+    # preserving exact learner-perspective reward folding supplied by the Rust
+    # primitive.  Mixed/policy leagues retain the general per-action path.
+    rule_fast_forward_codes: np.ndarray | None = None
+    if hasattr(worker, "advance_rule_until_actor"):
+        candidate_codes = np.zeros(env_count, dtype=np.uint32)
+        for i, identity in enumerate(opp_ids):
+            kind, code = resolve_opponent_dispatch(identity)
+            if kind != RULE_DISPATCH:
+                break
+            candidate_codes[i] = int(code)
+        else:
+            rule_fast_forward_codes = candidate_codes
 
     while batch_step < max_batch_steps:
         # FFI arrays are the final authority for resident episode state. In a
@@ -824,6 +838,78 @@ def collect_rust_live_rollout(
             current = worker.arrays(copy=True)
         if bool(np.all(learner_step_count >= target_steps)):
             break  # all envs collected target_steps learner transitions
+
+        # For pure rule opponents, apply all pending opponent responses before
+        # materialising the next learner decision.  Crucially, the opener before
+        # p2's first action still has no learner row and is excluded; a response
+        # after a learner action is folded with the *exact* counterparty reward.
+        if rule_fast_forward_codes is not None:
+            actors_before_fast_forward = np.asarray(worker.current_actor_ids(), dtype=np.int32)
+            pending_opponents = actors_before_fast_forward != learner_actor
+            if bool(np.any(pending_opponents)):
+                advanced = worker.advance_rule_until_actor(
+                    learner_actor,
+                    rule_fast_forward_codes,
+                    max_actions_per_env=int(config.max_turns) + 4,
+                    salt=int(batch_step),
+                    auto_reset=True,
+                    copy=True,
+                )
+                response_rewards = np.asarray(
+                    advanced["rule_learner_rewards"], dtype=np.float32
+                )
+                advanced_terminated = np.asarray(advanced["rule_terminated"], dtype=np.bool_)
+                advanced_truncated = np.asarray(advanced["rule_truncated"], dtype=np.bool_)
+                advanced_reset = np.asarray(advanced["rule_reset_flags"], dtype=np.bool_)
+                advanced_counts = np.asarray(advanced["rule_action_counts"], dtype=np.intp)
+                if (
+                    response_rewards.shape != (env_count,)
+                    or advanced_terminated.shape != (env_count,)
+                    or advanced_truncated.shape != (env_count,)
+                    or advanced_reset.shape != (env_count,)
+                    or advanced_counts.shape != (env_count,)
+                ):
+                    raise ValueError("rule fast-forward output shape does not match env_count")
+
+                manual_resets: list[int] = []
+                rebound_resets: list[int] = []
+                for i in np.flatnonzero(advanced_counts > 0).tolist():
+                    row = last_learner_row[i]
+                    if row is not None and row < target_steps:
+                        folded_reward = float(response_rewards[i])
+                        rewards[row, i] += folded_reward
+                    term_i = bool(advanced_terminated[i])
+                    trunc_i = bool(advanced_truncated[i])
+                    if not (term_i or trunc_i):
+                        continue
+                    if (
+                        row is not None
+                        and row < target_steps
+                        and term_i
+                        and float(response_rewards[i]) > 0.0
+                        and int(learner_actor[i]) != int(episode_starting_actor[i])
+                    ):
+                        rewards[row, i] += float(config.turn_order_second_mover_reward_bonus)
+                    if row is not None and row < target_steps:
+                        terminated[row, i] |= term_i
+                        truncated[row, i] |= trunc_i
+                        last_learner_row[i] = None
+                    if bool(advanced_reset[i]):
+                        rebound_resets.append(i)
+                    else:
+                        manual_resets.append(i)
+                if manual_resets:
+                    manual_idx = np.asarray(manual_resets, dtype=np.uintp)
+                    worker.reset_indices(manual_idx)
+                    rebound_resets.extend(manual_resets)
+                if rebound_resets:
+                    bind_reset_episodes(
+                        np.asarray(rebound_resets, dtype=np.uintp),
+                        increment_episode_count=True,
+                    )
+                current = worker.arrays(copy=True)
+                batch_step += 1
+                continue
 
         actors = np.asarray(worker.current_actor_ids(), dtype=np.int32)
         if actors.shape != (env_count,):

@@ -311,9 +311,20 @@ def test_does_not_edit_a4_sampler() -> None:
     is_reward_attribution_repair = (
         "counterparty_rewards" in diff and "pending_opener_reward" in diff
     )
-    assert is_b8_extension or is_greedy_face_parity_fix or is_reward_attribution_repair, (
+    is_rule_fast_forward = (
+        "rule_fast_forward_codes" in diff
+        and "advance_rule_until_actor" in diff
+        and "rule_learner_rewards" in diff
+    )
+    assert (
+        is_b8_extension
+        or is_greedy_face_parity_fix
+        or is_reward_attribution_repair
+        or is_rule_fast_forward
+    ), (
         "A4 diff is neither the B8 dispatch extension, the scoped "
-        "GreedyFaceOpponent benchmark-parity fix, nor the reward-attribution "
+        "GreedyFaceOpponent benchmark-parity fix, the reward-attribution repair, "
+        "nor the rule-only fast-forward "
         f"repair; got:\n{diff}"
     )
     # The frozen Phase-A constants must NOT be removed or altered (no '-' line

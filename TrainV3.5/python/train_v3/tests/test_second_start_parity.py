@@ -386,7 +386,9 @@ def test_does_not_edit_a5_a3_a4() -> None:
         assert diff.stdout == "", (
             f"B5 must NOT edit {rel} (A5/A3 read-only); git diff must be empty"
         )
-    # A4: allow B8 and the narrow second-start reward repair.
+    # A4: allow B8, the narrow second-start reward repair, and the rule-only
+    # Rust fast-forward that eliminates an otherwise redundant Python round
+    # trip between learner actions.
     a4_rel = "TrainV3.5/python/train_v3/rust_live_self_play.py"
     diff = subprocess.run(
         ["git", "-C", str(repo_root), "diff", "--", a4_rel],
@@ -395,8 +397,15 @@ def test_does_not_edit_a5_a3_a4() -> None:
     assert diff.returncode == 0, f"git diff {a4_rel} failed: {diff.stderr}"
     out = diff.stdout
     if out.strip() != "":
-        assert "counterparty_rewards" in out and "pending_opener_reward" in out, (
-            f"A4 diff must include the narrow counterparty/opener reward repair; got:\n{out}"
+        is_reward_repair = "counterparty_rewards" in out and "pending_opener_reward" in out
+        is_rule_fast_forward = (
+            "rule_fast_forward_codes" in out
+            and "advance_rule_until_actor" in out
+            and "rule_learner_rewards" in out
+        )
+        assert is_reward_repair or is_rule_fast_forward, (
+            "A4 diff must include the narrow counterparty/opener reward repair "
+            f"or the scoped rule fast-forward; got:\n{out}"
         )
         removed = [ln for ln in out.splitlines() if ln.startswith("-") and not ln.startswith("---")]
         forbidden = ("POLICY_OPPONENT_KINDS", "PHASE_A_IDENTITIES", "RULE_AGENT_CODES")
