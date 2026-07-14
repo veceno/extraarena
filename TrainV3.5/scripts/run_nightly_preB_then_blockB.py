@@ -110,7 +110,12 @@ def _checkpoint_from_preb(output_dir: Path) -> Path:
 
 
 def _ensure_benchmark(
-    *, checkpoint: Path, benchmark_dir: Path, seed: int, log_path: Path
+    *,
+    checkpoint: Path,
+    benchmark_dir: Path,
+    seed: int,
+    log_path: Path,
+    games_per_scenario: int = BENCHMARK_GAMES_PER_SCENARIO,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
     h2h_path = benchmark_dir / "v5_h2h.json"
     raw_path = benchmark_dir / "raw.json"
@@ -121,7 +126,7 @@ def _ensure_benchmark(
                 str(BENCHMARK_RUNNER),
                 "--checkpoint", str(checkpoint),
                 "--output-dir", str(benchmark_dir),
-                "--games-per-scenario", str(BENCHMARK_GAMES_PER_SCENARIO),
+                "--games-per-scenario", str(games_per_scenario),
                 "--seed", str(seed),
             ],
             log_path=log_path,
