@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
@@ -39,9 +40,15 @@ def _run(command: list[str], *, log_path: Path) -> None:
     with log_path.open("a", encoding="utf-8") as log:
         log.write(f"\nNIGHTLY_COMMAND {printable}\n")
         log.flush()
+        child_env = os.environ.copy()
+        python_paths = [str(ROOT), str(ROOT / "TrainV3.5" / "python")]
+        if child_env.get("PYTHONPATH"):
+            python_paths.append(child_env["PYTHONPATH"])
+        child_env["PYTHONPATH"] = os.pathsep.join(python_paths)
         process = subprocess.Popen(
             command,
             cwd=ROOT,
+            env=child_env,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -244,25 +251,33 @@ def main(argv: list[str] | None = None) -> int:
         status["attempts"].append(record)
         status_path.write_text(json.dumps(status, indent=2) + "\n", encoding="utf-8")
         try:
-            _run(
-                _preb_command(
-                    source=source,
-                    output_dir=attempt_dir,
-                    games=spec["games"],
-                    anchor_games=spec["anchor_games"],
-                    depth=spec["depth"],
-                    candidates=spec["candidates"],
-                    min_margin=spec["min_margin"],
-                    max_pairs=spec["max_pairs"],
-                    epochs=spec["epochs"],
-                    learning_rate=spec["learning_rate"],
-                    action_coef=spec["action_coef"],
-                    greedy_fraction=spec["greedy_fraction"],
-                    seed=int(args.seed) + index * 1_000_000,
-                ),
-                log_path=log_path,
-            )
-            checkpoint = _checkpoint_from_preb(attempt_dir)
+            summary_path = attempt_dir / "preB_summary.json"
+            if summary_path.exists():
+                checkpoint = _checkpoint_from_preb(attempt_dir)
+                print(
+                    f"NIGHTLY_RESUME_PREB {spec['name']} checkpoint={checkpoint}",
+                    flush=True,
+                )
+            else:
+                _run(
+                    _preb_command(
+                        source=source,
+                        output_dir=attempt_dir,
+                        games=spec["games"],
+                        anchor_games=spec["anchor_games"],
+                        depth=spec["depth"],
+                        candidates=spec["candidates"],
+                        min_margin=spec["min_margin"],
+                        max_pairs=spec["max_pairs"],
+                        epochs=spec["epochs"],
+                        learning_rate=spec["learning_rate"],
+                        action_coef=spec["action_coef"],
+                        greedy_fraction=spec["greedy_fraction"],
+                        seed=int(args.seed) + index * 1_000_000,
+                    ),
+                    log_path=log_path,
+                )
+                checkpoint = _checkpoint_from_preb(attempt_dir)
             gate = _benchmark_and_gate(
                 checkpoint=checkpoint,
                 output_dir=attempt_dir,
