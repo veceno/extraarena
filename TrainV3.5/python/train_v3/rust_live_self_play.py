@@ -797,6 +797,17 @@ def collect_rust_live_rollout(
         if increment_episode_count:
             episode_counts[int_idx] += 1
 
+    def reset_indices_deferred(indices: np.ndarray) -> None:
+        """Reset lanes cheaply; observations are materialised once by encode()."""
+        if hasattr(worker, "reset_indices_deferred"):
+            worker.reset_indices_deferred(indices)
+        else:  # lightweight scripted workers used by unit tests
+            worker.reset_indices(indices)
+
+    def reset_indices_materialized(indices: np.ndarray) -> dict[str, np.ndarray]:
+        reset_indices_deferred(indices)
+        return worker.encode(copy=True)
+
     # A persistent session can arrive with a completed resident episode.  If it
     # was reset above, refresh the learner/start binding before collecting any
     # transition from the new episode.
@@ -842,9 +853,8 @@ def collect_rust_live_rollout(
                     truncated[row, i] |= bool(resident_truncated[i])
                     last_learner_row[i] = None
             reset_idx = np.flatnonzero(resident_done).astype(np.uintp, copy=False)
-            worker.reset_indices(reset_idx)
+            current = reset_indices_materialized(reset_idx)
             bind_reset_episodes(reset_idx, increment_episode_count=True)
-            current = worker.arrays(copy=True)
         if bool(np.all(learner_step_count >= target_steps)):
             break  # all envs collected target_steps learner transitions
 
@@ -909,14 +919,14 @@ def collect_rust_live_rollout(
                         manual_resets.append(i)
                 if manual_resets:
                     manual_idx = np.asarray(manual_resets, dtype=np.uintp)
-                    worker.reset_indices(manual_idx)
+                    reset_indices_deferred(manual_idx)
                     rebound_resets.extend(manual_resets)
                 if rebound_resets:
                     bind_reset_episodes(
                         np.asarray(rebound_resets, dtype=np.uintp),
                         increment_episode_count=True,
                     )
-                current = worker.arrays(copy=True)
+                current = worker.encode(copy=True)
                 batch_step += 1
                 continue
 
@@ -962,9 +972,8 @@ def collect_rust_live_rollout(
         full_needing_reset = [i for i in full_envs if int(cur_counts[i]) <= 0]
         if full_needing_reset:
             reset_idx = np.asarray(full_needing_reset, dtype=np.uintp)
-            worker.reset_indices(reset_idx)
+            current = reset_indices_materialized(reset_idx)
             bind_reset_episodes(reset_idx, increment_episode_count=False)
-            current = worker.arrays(copy=True)
             cur_counts = np.asarray(current["legal_action_counts"], dtype=np.intp)
             cur_offsets = np.asarray(current["legal_action_offsets"], dtype=np.intp)
             cur_legal_ids = np.asarray(current["legal_action_ids"], dtype=np.uintp)
@@ -1209,7 +1218,7 @@ def collect_rust_live_rollout(
                 # from that reset state; leaving game_over resident makes the
                 # persistent worker attempt an invalid action on update N+1.
                 reset_idx = np.asarray([i], dtype=np.uintp)
-                worker.reset_indices(reset_idx)
+                reset_indices_deferred(reset_idx)
                 bind_reset_episodes(reset_idx, increment_episode_count=True)
 
         # Opponent-actor envs: no standalone transition is recorded. Fold the exact
@@ -1261,7 +1270,7 @@ def collect_rust_live_rollout(
                     truncated[row, i] = bool(trunc_i) or bool(truncated[row, i])
                     last_learner_row[i] = None
                     reset_idx = np.asarray([i], dtype=np.uintp)
-                    worker.reset_indices(reset_idx)
+                    reset_indices_deferred(reset_idx)
                     bind_reset_episodes(reset_idx, increment_episode_count=True)
 
         # Full lanes still execute harmless service actions while slower lanes
@@ -1271,11 +1280,13 @@ def collect_rust_live_rollout(
         for i in full_envs:
             if bool(out_terminated[i]) or bool(out_truncated[i]):
                 reset_idx = np.asarray([i], dtype=np.uintp)
-                worker.reset_indices(reset_idx)
+                reset_indices_deferred(reset_idx)
                 bind_reset_episodes(reset_idx, increment_episode_count=True)
 
         # advance: the next iteration reads the post-step + post-reset state.
-        current = worker.arrays(copy=True)
+        # Terminal resets above are deliberately deferred: materialise all 256
+        # lanes once here, rather than once for every completed episode.
+        current = worker.encode(copy=True)
         batch_step += 1
 
     if bool(np.any(learner_step_count < target_steps)):

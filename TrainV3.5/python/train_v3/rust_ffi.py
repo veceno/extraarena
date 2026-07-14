@@ -1028,6 +1028,27 @@ class RustBatchWorker:
             raise RuntimeError(f"trainv3_worker_reset_indices failed: {rc}")
         return self.arrays(copy=copy)
 
+    def reset_indices_deferred(self, indices) -> None:
+        """Reset lanes without encoding all environments after each reset.
+
+        The next :meth:`encode` must run before reading observation arrays.
+        This is intended for the live collector, which batches terminal resets
+        and performs one authoritative encode immediately before its next step.
+        """
+        reset_indices = np.ascontiguousarray(indices, dtype=np.uintp)
+        if reset_indices.ndim != 1:
+            raise ValueError(f"expected reset indices to be 1D, got shape {reset_indices.shape}")
+        ptr = reset_indices.ctypes.data_as(ctypes.POINTER(ctypes.c_size_t))
+        rc = self._lib.trainv3_worker_reset_indices_deferred(
+            self._nonnull_ptr(),
+            ptr,
+            ctypes.c_size_t(reset_indices.size),
+        )
+        if rc == -3:
+            raise ValueError("trainv3_worker_reset_indices_deferred failed: index out of bounds")
+        if rc != 0:
+            raise RuntimeError(f"trainv3_worker_reset_indices_deferred failed: {rc}")
+
     def step(self, action_ids, *, copy: bool = False) -> dict[str, np.ndarray]:
         actions = np.ascontiguousarray(action_ids, dtype=np.uintp)
         if actions.shape != (self.env_count,):
@@ -2008,6 +2029,13 @@ def _load_library(path: Path) -> ctypes.CDLL:
         ctypes.c_size_t,
     ]
     lib.trainv3_worker_reset_indices.restype = ctypes.c_int
+    if hasattr(lib, "trainv3_worker_reset_indices_deferred"):
+        lib.trainv3_worker_reset_indices_deferred.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_size_t),
+            ctypes.c_size_t,
+        ]
+        lib.trainv3_worker_reset_indices_deferred.restype = ctypes.c_int
     lib.trainv3_worker_step.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t), ctypes.c_size_t]
     lib.trainv3_worker_step.restype = ctypes.c_int
     lib.trainv3_worker_step_auto_reset.argtypes = [
