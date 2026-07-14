@@ -74,6 +74,7 @@ class PreBRecoveryConfig:
     min_pairs: int = 24
     greedy_face_fraction: float = 0.25
     hard_negative_only: bool = True
+    train_mana_draw_recovery: bool = True
     save_dataset: bool = True
     dataset_path: Path | None = None
 
@@ -449,8 +450,9 @@ def train_counterfactual_recovery(
         "state_action_query_v2.",
         "state_action_key_v2.",
         "state_action_gate_v2.",
-        "mana_draw_recovery_head.",
     )
+    if config.train_mana_draw_recovery:
+        trainable_prefixes = (*trainable_prefixes, "mana_draw_recovery_head.")
 
     for epoch in range(int(config.epochs)):
         order = np.arange(n, dtype=np.int64)
@@ -801,6 +803,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--min-pairs", type=int, default=24)
     parser.add_argument("--greedy-face-fraction", type=float, default=0.25)
     parser.add_argument(
+        "--freeze-mana-draw-recovery",
+        action="store_true",
+        help="Keep the accepted warm mana-draw policy exact while training action ranking.",
+    )
+    parser.add_argument(
         "--include-all-counterfactuals",
         action="store_true",
         help="Keep generic action-order labels in addition to face/trade and draw hard negatives.",
@@ -842,6 +849,7 @@ def main(argv: list[str] | None = None) -> int:
         min_pairs=args.min_pairs,
         greedy_face_fraction=args.greedy_face_fraction,
         hard_negative_only=not args.include_all_counterfactuals,
+        train_mana_draw_recovery=not args.freeze_mana_draw_recovery,
         save_dataset=not args.no_save_dataset,
         dataset_path=args.dataset_path.resolve() if args.dataset_path is not None else None,
     )

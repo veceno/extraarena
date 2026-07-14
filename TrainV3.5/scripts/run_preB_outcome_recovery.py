@@ -78,6 +78,7 @@ class OutcomeRecoveryConfig:
     recovery_draw_kl_coef: float = 4.0
     anchor_policy_kl_coef: float = 4.0
     anchor_draw_kl_coef: float = 8.0
+    train_mana_draw_recovery: bool = False
 
 
 @dataclass
@@ -457,6 +458,7 @@ def _training_config(config: OutcomeRecoveryConfig) -> PreBRecoveryConfig:
         min_pairs=config.min_pairs,
         greedy_face_fraction=0.0,
         hard_negative_only=False,
+        train_mana_draw_recovery=config.train_mana_draw_recovery,
     )
 
 
@@ -524,6 +526,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--recovery-draw-kl-coef", type=float, default=4.0)
     parser.add_argument("--anchor-policy-kl-coef", type=float, default=4.0)
     parser.add_argument("--anchor-draw-kl-coef", type=float, default=8.0)
+    parser.add_argument(
+        "--train-mana-draw-recovery",
+        action="store_true",
+        help="Also train exact-outcome mana-draw labels; default keeps warm draw behavior exact.",
+    )
     return parser.parse_args(argv)
 
 
