@@ -24,14 +24,7 @@ PYTHON = Path("/Library/Frameworks/Python.framework/Versions/3.13/bin/python3")
 BENCHMARK_RUNNER = ROOT / "TrainV3.5" / "runs" / "run_model_benchmark_v5_current.py"
 PREB_RUNNER = ROOT / "TrainV3.5" / "scripts" / "run_preB_counterfactual_recovery.py"
 BLOCKB_RUNNER = ROOT / "TrainV3.5" / "scripts" / "run_blockB_league.py"
-
-WARM_BASELINE = {
-    "extra-lr-v4-max": {"score_rate": 0.6640625, "first": 0.9375, "second": 0.390625},
-    "greedy_face": {"score_rate": 0.75, "first": 0.875, "second": 0.625},
-    "random": {"score_rate": 1.0, "first": 1.0, "second": 1.0},
-    "OnlyVersusRandomBiggest": {"score_rate": 0.9453125, "first": 0.984375, "second": 0.90625},
-}
-
+BENCHMARK_GAMES_PER_SCENARIO = 32
 
 def _run(command: list[str], *, log_path: Path) -> None:
     printable = " ".join(command)
@@ -116,35 +109,61 @@ def _checkpoint_from_preb(output_dir: Path) -> Path:
     return checkpoint
 
 
-def _benchmark_and_gate(
-    *, checkpoint: Path, output_dir: Path, seed: int, log_path: Path
-) -> dict[str, Any]:
-    benchmark_dir = output_dir / "model_benchmark"
-    _run(
-        [
-            str(PYTHON),
-            str(BENCHMARK_RUNNER),
-            "--checkpoint", str(checkpoint),
-            "--output-dir", str(benchmark_dir),
-            "--games-per-scenario", "8",
-            "--seed", str(seed),
-        ],
-        log_path=log_path,
-    )
+def _ensure_benchmark(
+    *, checkpoint: Path, benchmark_dir: Path, seed: int, log_path: Path
+) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
+    h2h_path = benchmark_dir / "v5_h2h.json"
+    raw_path = benchmark_dir / "raw.json"
+    if not h2h_path.exists() or not raw_path.exists():
+        _run(
+            [
+                str(PYTHON),
+                str(BENCHMARK_RUNNER),
+                "--checkpoint", str(checkpoint),
+                "--output-dir", str(benchmark_dir),
+                "--games-per-scenario", str(BENCHMARK_GAMES_PER_SCENARIO),
+                "--seed", str(seed),
+            ],
+            log_path=log_path,
+        )
     rows = json.loads((benchmark_dir / "v5_h2h.json").read_text(encoding="utf-8"))
     even = {row["opponent"]: row for row in rows if row["scenario"] == "even"}
     raw = json.loads((benchmark_dir / "raw.json").read_text(encoding="utf-8"))
+    return even, raw
+
+
+def _benchmark_and_gate(
+    *,
+    checkpoint: Path,
+    output_dir: Path,
+    seed: int,
+    log_path: Path,
+    baseline_even: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    benchmark_dir = output_dir / "model_benchmark_g32"
+    even, raw = _ensure_benchmark(
+        checkpoint=checkpoint,
+        benchmark_dir=benchmark_dir,
+        seed=seed,
+        log_path=log_path,
+    )
     required = {"extra-lr-v4-max", "greedy_face", "random", "OnlyVersusRandomBiggest"}
-    missing = sorted(required - even.keys())
+    missing = sorted((required - even.keys()) | (required - baseline_even.keys()))
+    v4 = even.get("extra-lr-v4-max", {})
+    base_v4 = baseline_even.get("extra-lr-v4-max", {})
+    greedy = even.get("greedy_face", {})
+    base_greedy = baseline_even.get("greedy_face", {})
+    random_big = even.get("OnlyVersusRandomBiggest", {})
+    base_random_big = baseline_even.get("OnlyVersusRandomBiggest", {})
     checks = {
         # Two additional second-start wins out of 64: more than a one-game
         # fluctuation, while first-start is required to remain byte-equivalent.
-        "v4_second_improved": bool(not missing and even["extra-lr-v4-max"]["second_score_rate"] >= 0.421875),
-        "v4_overall_improved": bool(not missing and even["extra-lr-v4-max"]["score_rate"] >= 0.6796875),
-        "v4_first_preserved": bool(not missing and even["extra-lr-v4-max"]["first_score_rate"] >= 0.9375),
-        "greedy_second_guard": bool(not missing and even["greedy_face"]["second_score_rate"] >= 0.5625),
+        "v4_second_improved": bool(not missing and v4["second_score_rate"] >= base_v4["second_score_rate"] + 2.0 / 64.0),
+        "v4_overall_improved": bool(not missing and v4["score_rate"] >= base_v4["score_rate"] + 2.0 / 128.0),
+        "v4_first_preserved": bool(not missing and v4["first_score_rate"] >= base_v4["first_score_rate"]),
+        "greedy_second_guard": bool(not missing and greedy["second_score_rate"] >= base_greedy["second_score_rate"] - 1.0 / 16.0),
         "random_acceptance": bool(not missing and even["random"]["score_rate"] == 1.0),
-        "random_big_guard": bool(not missing and even["OnlyVersusRandomBiggest"]["score_rate"] >= 0.93),
+        "random_big_guard": bool(not missing and random_big["score_rate"] >= base_random_big["score_rate"] - 1.0 / 128.0),
         "no_invalid_actions": bool(not missing and all(int(even[name]["invalid_actions"]) == 0 for name in required)),
         "no_errors": int(raw.get("error_count", -1)) == 0,
         "required_rows_present": not missing,
@@ -155,7 +174,7 @@ def _benchmark_and_gate(
         "missing": missing,
         "objective": "/ai/model_benchmark",
         "seed": seed,
-        "warm_baseline": WARM_BASELINE,
+        "warm_baseline": {name: baseline_even.get(name) for name in sorted(required)},
         "even": {name: even.get(name) for name in sorted(required)},
         "checkpoint": str(checkpoint),
     }
@@ -245,6 +264,15 @@ def main(argv: list[str] | None = None) -> int:
     }
     status_path.write_text(json.dumps(status, indent=2) + "\n", encoding="utf-8")
 
+    baseline_even, baseline_raw = _ensure_benchmark(
+        checkpoint=source,
+        benchmark_dir=root / "warm_baseline_model_benchmark_g32",
+        seed=int(args.benchmark_seed),
+        log_path=log_path,
+    )
+    if int(baseline_raw.get("error_count", -1)) != 0:
+        raise RuntimeError("warm baseline benchmark contains errors")
+
     for index, spec in enumerate(attempts):
         attempt_dir = root / spec["name"]
         record: dict[str, Any] = {"name": spec["name"], "status": "running"}
@@ -283,6 +311,7 @@ def main(argv: list[str] | None = None) -> int:
                 output_dir=attempt_dir,
                 seed=int(args.benchmark_seed),
                 log_path=log_path,
+                baseline_even=baseline_even,
             )
             record.update({"status": "accepted" if gate["accepted"] else "rejected", "gate": gate})
             status_path.write_text(json.dumps(status, indent=2) + "\n", encoding="utf-8")
