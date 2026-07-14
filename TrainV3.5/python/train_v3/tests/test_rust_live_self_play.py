@@ -196,7 +196,8 @@ class TestGreedyFaceOpponentParity:
 # ===========================================================================
 class _FakeWorkerScriptEntry:
     """One transition in a FakeWorker script: pre-state (actor/mana_draw_legal/legal_counts)
-    + the outcome of acting in that pre-state (reward/terminated/truncated/hero_hp)."""
+    + the outcome of acting in that pre-state (actor/counterparty reward,
+    terminated/truncated/hero_hp)."""
 
     def __init__(
         self,
@@ -205,6 +206,7 @@ class _FakeWorkerScriptEntry:
         mana_draw_legal: bool = False,
         legal_counts: int = 3,
         reward: float = 0.0,
+        counterparty_reward: float | None = None,
         terminated: bool = False,
         truncated: bool = False,
         hero_hp: tuple[int, int, int, int] = (45, 45, 45, 45),
@@ -213,6 +215,7 @@ class _FakeWorkerScriptEntry:
         self.mana_draw_legal = bool(mana_draw_legal)
         self.legal_counts = int(legal_counts)
         self.reward = float(reward)
+        self.counterparty_reward = float(-reward if counterparty_reward is None else counterparty_reward)
         self.terminated = bool(terminated)
         self.truncated = bool(truncated)
         self.hero_hp = tuple(int(x) for x in hero_hp)
@@ -242,6 +245,7 @@ def _make_arrays(env_count: int, entries: list[_FakeWorkerScriptEntry]) -> dict[
         "legal_action_ids": legal_ids,
         "legal_action_features": legal_features,
         "rewards": np.zeros(env_count, dtype=np.float32),
+        "counterparty_rewards": np.zeros(env_count, dtype=np.float32),
         "terminated": np.zeros(env_count, dtype=np.bool_),
         "reset_flags": None,
         "terminal_observation_v5": None,
@@ -308,6 +312,7 @@ class FakeWorker:
         # The outcome of acting in the CURRENT pre-state (entry[ptr]).
         entries = self._current_entries()
         rewards = np.array([e.reward for e in entries], dtype=np.float32)
+        counterparty_rewards = np.array([e.counterparty_reward for e in entries], dtype=np.float32)
         terminated = np.array([e.terminated for e in entries], dtype=np.bool_)
         self.last_outcome = list(entries)
         # advance pointers (post-state = next entry).
@@ -316,6 +321,7 @@ class FakeWorker:
                 self.ptr[i] += 1
         out = _make_arrays(self.env_count, self._current_entries())
         out["rewards"] = rewards
+        out["counterparty_rewards"] = counterparty_rewards
         out["terminated"] = terminated
         return out
 
@@ -456,10 +462,10 @@ class TestLearnerPerspectiveReward:
     """
 
     def test_opponent_response_reward_is_folded_into_previous_learner_row(self):
-        # Single env; opponent turns carry reward 5.0 and learner turns 1.0.
-        # The first opponent turn happens before any learner decision. It must be
-        # carried into the first learner row rather than dropped; subsequent opponent
-        # responses attach to the previous learner row.
+        # Single env; opponent turns carry actor reward 5.0 / counterparty reward
+        # -5.0 and learner turns carry reward 1.0.  The opening opponent transition
+        # precedes every learner action and must be dropped; later opponent responses
+        # attach to the preceding learner row.
         learner_actor = 1
         script = _script_alternating(
             learner_actor, opponent_actor=2, n_learner=4,
@@ -475,9 +481,29 @@ class TestLearnerPerspectiveReward:
         )
         rewards = np.asarray(rollout.transitions.rewards, dtype=np.float32).reshape(-1)
         assert rewards.size > 0, "no learner transitions collected"
-        assert rewards.tolist() == [-9.0, -4.0, -4.0, 1.0], (
-            f"opponent response reward was not folded into learner rows: {rewards}"
+        assert rewards.tolist() == [-4.0, -4.0, -4.0, 1.0], (
+            f"opener was attributed or response reward was not folded correctly: {rewards}"
         )
+
+    def test_response_uses_exact_counterparty_reward_not_actor_negation(self):
+        learner_actor = 2
+        script = _script_alternating(
+            learner_actor, opponent_actor=1, n_learner=2,
+            reward_learner=1.0, reward_opponent=5.0,
+        )
+        # The fake's default counterparty reward is -actor reward. Replace it
+        # with the non-zero-sum dense-reward value that the Rust surface exposes.
+        for entry in script:
+            if entry.actor == 1:
+                entry.counterparty_reward = -0.05
+        worker = FakeWorker([script])
+        rollout = rls.collect_rust_live_rollout(
+            worker, _FakeLearner(), {"end_turn": _EndTurnPolicy()},
+            learner_actor_ids=np.array([learner_actor], dtype=np.int32),
+            opponent_identities=["end_turn"], config=_tiny_config(), steps=2,
+        )
+        rewards = np.asarray(rollout.transitions.rewards, dtype=np.float32).reshape(-1)
+        assert rewards.tolist() == pytest.approx([0.95, 1.0])
 
     def test_second_mover_reward_bonus_does_not_apply_per_transition(self):
         learner_actor = 1
@@ -494,7 +520,7 @@ class TestLearnerPerspectiveReward:
             config=config, steps=2,
         )
         rewards = np.asarray(rollout.transitions.rewards, dtype=np.float32).reshape(-1)
-        assert rewards.tolist() == pytest.approx([-9.0, 1.0])
+        assert rewards.tolist() == pytest.approx([-4.0, 1.0])
 
     def test_second_mover_reward_bonus_applies_only_to_terminal_win(self):
         learner_actor = 1
@@ -511,7 +537,30 @@ class TestLearnerPerspectiveReward:
             config=config, steps=2,
         )
         rewards = np.asarray(rollout.transitions.rewards, dtype=np.float32).reshape(-1)
-        assert rewards.tolist() == pytest.approx([-9.0, 1.25])
+        assert rewards.tolist() == pytest.approx([-4.0, 1.25])
+
+    def test_p2_second_mover_gets_identical_reward_attribution_and_bonus(self):
+        """Seat p2 must not lose the opener fold or terminal second-mover bonus.
+
+        The previous test exercises a learner in seat p1 that moves second.  The
+        production V4-max problem is predominantly the other orientation: the
+        learner is p2 and p1 opens.  Keep this as an explicit regression guard
+        for the pending-opener attribution path.
+        """
+        learner_actor = 2
+        script = _script_alternating(
+            learner_actor, opponent_actor=1, n_learner=2,
+            reward_learner=1.0, reward_opponent=5.0, terminal_at=2,
+        )
+        worker = FakeWorker([script])
+        rollout = rls.collect_rust_live_rollout(
+            worker, _FakeLearner(), {"end_turn": _EndTurnPolicy()},
+            learner_actor_ids=np.array([learner_actor], dtype=np.int32),
+            opponent_identities=["end_turn"],
+            config=_tiny_config(second_mover_reward_bonus=0.25), steps=2,
+        )
+        rewards = np.asarray(rollout.transitions.rewards, dtype=np.float32).reshape(-1)
+        assert rewards.tolist() == pytest.approx([-4.0, 1.25])
 
     def test_reward_attribution_directly(self):
         # The A3 helper the trainer uses: zero non-learner-actor steps.

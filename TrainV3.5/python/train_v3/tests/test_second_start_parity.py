@@ -365,11 +365,11 @@ def test_reuses_a3_scheme() -> None:
 def test_does_not_edit_a5_a3_a4() -> None:
     """B5 does NOT edit A5 ``a_gate.py`` / A3 ``ppo_phaseA_config.py`` (git diff
     empty for each -- frozen-classic guard). A4 ``rust_live_self_play.py`` is
-    additively extended by B8 (``BLOCK_B_PLAN.md`` §3 B8, the FINAL Block-B
-    component) with ``BLOCK_B_POLICY_OPPONENT_KINDS`` + ``opponent_mix_parsed``
-    -- the ONLY A4 edits the Block-B plan authorizes -- so the A4 diff is
-    EITHER empty OR contains ONLY that additive extension and NEVER touches
-    ``POLICY_OPPONENT_KINDS`` / ``PHASE_A_IDENTITIES`` / ``RULE_AGENT_CODES``.
+    additively extended by B8 (``BLOCK_B_POLICY_OPPONENT_KINDS`` +
+    ``opponent_mix_parsed``) and the explicit learner-perspective reward repair
+    (``counterparty_rewards`` and removal of ``pending_opener_reward``). Neither
+    may alter ``POLICY_OPPONENT_KINDS`` / ``PHASE_A_IDENTITIES`` /
+    ``RULE_AGENT_CODES``.
     B5 feeds measured rates via the B8 driver, does NOT edit the sampler.
     """
     repo_root = Path(__file__).resolve().parents[4]  # .../TrainV3.5Prep
@@ -386,7 +386,7 @@ def test_does_not_edit_a5_a3_a4() -> None:
         assert diff.stdout == "", (
             f"B5 must NOT edit {rel} (A5/A3 read-only); git diff must be empty"
         )
-    # A4: allow ONLY the B8 additive extension.
+    # A4: allow B8 and the narrow second-start reward repair.
     a4_rel = "TrainV3.5/python/train_v3/rust_live_self_play.py"
     diff = subprocess.run(
         ["git", "-C", str(repo_root), "diff", "--", a4_rel],
@@ -395,8 +395,8 @@ def test_does_not_edit_a5_a3_a4() -> None:
     assert diff.returncode == 0, f"git diff {a4_rel} failed: {diff.stderr}"
     out = diff.stdout
     if out.strip() != "":
-        assert "BLOCK_B_POLICY_OPPONENT_KINDS" in out and "opponent_mix_parsed" in out, (
-            f"the only allowed A4 edit is the B8 additive extension; got:\n{out}"
+        assert "counterparty_rewards" in out and "pending_opener_reward" in out, (
+            f"A4 diff must include the narrow counterparty/opener reward repair; got:\n{out}"
         )
         removed = [ln for ln in out.splitlines() if ln.startswith("-") and not ln.startswith("---")]
         forbidden = ("POLICY_OPPONENT_KINDS", "PHASE_A_IDENTITIES", "RULE_AGENT_CODES")

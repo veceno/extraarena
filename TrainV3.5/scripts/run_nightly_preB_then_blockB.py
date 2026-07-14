@@ -214,6 +214,9 @@ def _launch_block_b(*, checkpoint: Path, output_dir: Path, log_path: Path) -> No
             "--lr-final-scale", "0.1",
             "--checkpoint-every", "250",
             "--second-start-weight", "0.65",
+            # A terminal second-mover win carries a modest, explicit credit.
+            # The live rollout now attributes it symmetrically to either seat.
+            "--second-mover-reward-bonus", "0.02",
             "--opponent-mix", opponent_mix,
         ],
         log_path=log_path,

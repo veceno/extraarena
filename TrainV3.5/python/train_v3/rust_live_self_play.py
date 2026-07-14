@@ -61,15 +61,15 @@ no discrepancy): the 10 graduated identities
       ``v4max`` / ``v4-orig-argmax`` — the V4 ONNX argmax policy
       (``opponents_v5.py:23`` ``offline_v4max_teacher``; lazy — caller wires the ONNX fn).
 
-REWARD (fix #1, learner-perspective macro-step): ``reward_attribution``
+REWARD (learner-perspective macro-step): ``reward_attribution``
 (``ppo_phaseA_config.py:228``) keeps learner-actor step rewards on the recorded learner
-rows. The Rust env's ``out.rewards[i]`` is the ACTING player's reward
-(``kernel.rs:799`` ``compute_trainv2_reward(state, next, player_id)`` for the acting
-``player_id``; ``worker.rs:861`` ``out.rewards.push(step.reward)``). Opponent-actor steps
-are not recorded as standalone rows, but their response reward is subtracted into the
-last learner row, mirroring ``worker.rs::advance_rule_until_actor`` and TrainV2's
-macro-step semantics. ``reward_v5.py`` is consumed READ-ONLY (frozen-classic guard) — it
-is ALREADY per-side (``reward_snapshot_v5`` takes ``player_id``, ``reward_v5.py:40``).
+rows. The Rust env's ``out.rewards[i]`` is the ACTING player's reward, while
+``out.counterparty_rewards[i]`` is the exact reward from the other player's perspective
+over that same state transition. Opponent response rewards are folded into the prior
+learner row using the latter — never by simply negating the actor's dense shaping, which
+is not zero-sum. An opening opponent transition occurs before any learner action and is
+therefore deliberately excluded from the PPO tape rather than attributed to the learner's
+first action. ``reward_v5.py`` remains read-only and is already per-side.
 
 max_turns (fix #2): ``from_live(max_turns=config.max_turns=120)`` threads into
 ``KernelConfig`` (``kernel.rs:660``). Verified: the worker truncates at
@@ -762,7 +762,6 @@ def collect_rust_live_rollout(
     # --- per-env collection state ----------------------------------------------
     learner_step_count = np.zeros(env_count, dtype=np.intp)
     last_learner_row: list[int | None] = [None] * env_count
-    pending_opener_reward = np.zeros(env_count, dtype=np.float32)
     episode_counts = np.ones(env_count, dtype=np.int64)
     episode_starting_actor = np.asarray(worker.current_actor_ids(), dtype=np.int32).copy()
     if episode_starting_actor.shape != (env_count,):
@@ -1071,7 +1070,7 @@ def collect_rust_live_rollout(
                 continue
             term_i = bool(out_terminated[i])
             trunc_i = bool(out_truncated[i])
-            reward_i = float(attributed[i]) + float(pending_opener_reward[i])
+            reward_i = float(attributed[i])
             # A per-transition bonus rewards longer second-start episodes.  The
             # intended signal is a small bonus only when the learner actually
             # wins a terminal episode after moving second.
@@ -1082,7 +1081,6 @@ def collect_rust_live_rollout(
             ):
                 reward_i += float(config.turn_order_second_mover_reward_bonus)
             rewards[row, i] = reward_i
-            pending_opener_reward[i] = 0.0
             # decisive-early-end (D-A6): a decisive win-margin terminates the episode.
             if config.decisive_early_end:
                 snap = _hero_hp_snapshot(hero_hp, i, int(learner_actor[i]))
@@ -1100,20 +1098,29 @@ def collect_rust_live_rollout(
                 worker.reset_indices(reset_idx)
                 bind_reset_episodes(reset_idx, increment_episode_count=True)
 
-        # Opponent-actor envs: no standalone transition is recorded. Fold the opponent
-        # response reward into the previous learner transition from the learner's
-        # perspective (the Rust rule-only fast path does the same as
-        # `learner_rewards[idx] -= step.reward`). If the episode ended on an opponent
-        # step, mark that same last learner transition terminal/truncated, then reset.
+        # Opponent-actor envs: no standalone transition is recorded. Fold the exact
+        # counterparty-perspective reward into the previous learner transition.  The
+        # opening opponent step has no preceding learner decision, so it is excluded;
+        # attaching it to p2's first action would create a second-start-only causal bug.
+        # If the episode ended on an opponent step, mark that same last learner
+        # transition terminal/truncated, then reset.
+        response_rewards = out.get("counterparty_rewards")
+        if response_rewards is None:
+            raise RuntimeError(
+                "live Rust worker did not provide counterparty_rewards; rebuild libtrainv3_core"
+            )
+        response_rewards = np.asarray(response_rewards, dtype=np.float32)
+        if response_rewards.shape != (env_count,):
+            raise ValueError(
+                f"counterparty_rewards shape {response_rewards.shape} != ({env_count},)"
+            )
         for i in range(env_count):
             if i in learner_envs or int(learner_step_count[i]) >= target_steps:
                 continue
             row = last_learner_row[i]
             if row is not None and row < target_steps:
-                folded_reward = -float(out_rewards[i])
+                folded_reward = float(response_rewards[i])
                 rewards[row, i] += folded_reward
-            elif int(learner_step_count[i]) == 0:
-                pending_opener_reward[i] += -float(out_rewards[i])
             if not (bool(out_terminated[i]) or bool(out_truncated[i])):
                 # still check decisive-early-end on opponent steps.
                 if config.decisive_early_end:

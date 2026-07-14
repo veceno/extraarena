@@ -277,8 +277,10 @@ def test_does_not_edit_a4_sampler() -> None:
     ``BLOCK_B_POLICY_OPPONENT_KINDS`` dispatch check + the optional
     ``opponent_mix_parsed`` param on ``run_live_self_play_update``. The later
     benchmark-parity bugfix may also replace the documented max-id approximation
-    inside ``GreedyFaceOpponent``. This test asserts the A4 diff is EITHER empty
-    OR contains one of those scoped changes, and NEVER touches
+    inside ``GreedyFaceOpponent``. The reward-attribution repair may additionally
+    use exact ``counterparty_rewards`` and remove ``pending_opener_reward``.
+    This test asserts the A4 diff is EITHER empty OR contains one of those scoped
+    changes, and NEVER touches
     ``POLICY_OPPONENT_KINDS`` / ``PHASE_A_IDENTITIES`` / ``RULE_AGENT_CODES``
     (the Phase-A frozen counts)."""
     repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(_HERE))))
@@ -306,9 +308,13 @@ def test_does_not_edit_a4_sampler() -> None:
         and "return int(ids[-1])" in diff
         and "attack enemy hero, play a no-target card" in diff
     )
-    assert is_b8_extension or is_greedy_face_parity_fix, (
-        "A4 diff is neither the B8 dispatch extension nor the scoped "
-        f"GreedyFaceOpponent benchmark-parity fix; got:\n{diff}"
+    is_reward_attribution_repair = (
+        "counterparty_rewards" in diff and "pending_opener_reward" in diff
+    )
+    assert is_b8_extension or is_greedy_face_parity_fix or is_reward_attribution_repair, (
+        "A4 diff is neither the B8 dispatch extension, the scoped "
+        "GreedyFaceOpponent benchmark-parity fix, nor the reward-attribution "
+        f"repair; got:\n{diff}"
     )
     # The frozen Phase-A constants must NOT be removed or altered (no '-' line
     # touches them). Removed lines start with '-' (but not '---').

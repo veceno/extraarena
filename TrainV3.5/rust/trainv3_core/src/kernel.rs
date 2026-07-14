@@ -703,7 +703,13 @@ pub struct KernelSnapshotOutput {
 #[derive(Debug, Clone)]
 pub struct KernelStepOutput {
     pub state: KernelState,
+    /// Reward for the acting player.
     pub reward: f32,
+    /// Exact reward for the other player on the same pre/post transition.
+    ///
+    /// V5 shaping is perspective-dependent and is intentionally not zero-sum,
+    /// so callers must not derive this value by negating `reward`.
+    pub counterparty_reward: f32,
     pub terminated: bool,
     /// Truncation flag (WD-2): true when `state.turn_number > max_turns`,
     /// mirroring `ai/train_v2/classic_rl_env.py::ClassicRLEnv.step`
@@ -795,10 +801,11 @@ impl RolloutKernel {
         // decoding `action_id`. Legality is verified via `mana_draw_legal_for`
         // (separate from the 601 action_mask). The 601 codec layout is frozen.
         if mana_draw_flag {
-            let (actor, _opponent) = state.players_for(player_id);
+            let (actor, opponent) = state.players_for(player_id);
             if !mana_draw_legal_for(actor) {
                 return Err("illegal_action".to_string());
             }
+            let counterparty_id = opponent.user_id;
             let mut next = state.clone();
             let overdraw_to_discard = self.config.overdraw_to_discard;
             let (player, _opponent) = next.players_for_mut(player_id)?;
@@ -816,13 +823,28 @@ impl RolloutKernel {
             // `base_reward`. Do not add a draw reward or a draw penalty here:
             // the engine's mana deduction is the opportunity cost and the
             // policy should learn the card's value from future returns.
-            let reward = reward_before_draw_bonus_cancel
-                - mana_spend_dense_bonus(state, &next, player_id);
+            let reward =
+                reward_before_draw_bonus_cancel - mana_spend_dense_bonus(state, &next, player_id);
+            // The other player did not spend mana, so no draw-spend
+            // cancellation applies to their perspective.
+            let counterparty_base_reward = compute_trainv2_reward(state, &next, counterparty_id);
+            let counterparty_components_v5 =
+                compute_reward_components_v5(state, &next, counterparty_id);
+            let counterparty_reward = if self.config.v5_weighted_reward {
+                compute_weighted_reward_v5(
+                    counterparty_base_reward,
+                    counterparty_components_v5,
+                    self.config.info_mode,
+                )
+            } else {
+                counterparty_base_reward
+            };
             let terminated = next.status != "ongoing";
             let truncated = next.turn_number > self.config.max_turns;
             return Ok(KernelStepOutput {
                 reward_components_v5,
                 reward,
+                counterparty_reward,
                 terminated,
                 truncated,
                 state: next,
@@ -873,6 +895,8 @@ impl RolloutKernel {
         action_id: usize,
         draw_rng: &mut DrawRng,
     ) -> Result<KernelStepOutput, String> {
+        let (_actor, counterparty) = state.players_for(player_id);
+        let counterparty_id = counterparty.user_id;
         let mut next = state.clone();
         let overdraw_to_discard = self.config.overdraw_to_discard;
         match decode_action_id(action_id) {
@@ -916,12 +940,25 @@ impl RolloutKernel {
         } else {
             base_reward
         };
+        let counterparty_base_reward = compute_trainv2_reward(state, &next, counterparty_id);
+        let counterparty_components_v5 =
+            compute_reward_components_v5(state, &next, counterparty_id);
+        let counterparty_reward = if self.config.v5_weighted_reward {
+            compute_weighted_reward_v5(
+                counterparty_base_reward,
+                counterparty_components_v5,
+                self.config.info_mode,
+            )
+        } else {
+            counterparty_base_reward
+        };
         let terminated = next.status != "ongoing";
         let truncated = next.turn_number > self.config.max_turns;
 
         Ok(KernelStepOutput {
             reward_components_v5,
             reward,
+            counterparty_reward,
             terminated,
             truncated,
             state: next,
@@ -3753,8 +3790,47 @@ mod draw_tests {
             let out = kernel
                 .apply_action(&state, 1, 0, true, &mut draw_rng)
                 .expect("legal mana draw");
-            assert!(out.reward.abs() < 1.0e-6, "count={draw_count}, reward={}", out.reward);
+            assert!(
+                out.reward.abs() < 1.0e-6,
+                "count={draw_count}, reward={}",
+                out.reward
+            );
+            assert!(
+                out.counterparty_reward.abs() < 1.0e-6,
+                "count={draw_count}, counterparty_reward={}",
+                out.counterparty_reward
+            );
         }
+    }
+
+    #[test]
+    fn step_output_carries_exact_non_zero_sum_counterparty_reward() {
+        let mut state = v5_state_with_mana_draw_count(0);
+        let mut attacker = card(55, 0, 5, 5);
+        attacker.is_ready = true;
+        state.p1.board = vec![attacker];
+        state.p2.board.clear();
+
+        let mut config = KernelConfig::default();
+        config.v5_weighted_reward = true;
+        let kernel = RolloutKernel::new(config);
+        let mut rng = crate::worker::WorkerRng::Deterministic;
+        let mut draw_rng = DrawRng::live(&mut rng);
+        let out = kernel
+            .apply_action(&state, 1, ATTACK_BASE + 7, false, &mut draw_rng)
+            .expect("face attack is legal");
+
+        let expected_base = compute_trainv2_reward(&state, &out.state, 2);
+        let expected_components = compute_reward_components_v5(&state, &out.state, 2);
+        let expected =
+            compute_weighted_reward_v5(expected_base, expected_components, config.info_mode);
+        assert!((out.counterparty_reward - expected).abs() < 1.0e-6);
+        assert!(
+            (out.counterparty_reward + out.reward).abs() > 1.0e-4,
+            "V5 rewards are intentionally non-zero-sum: actor={} counterparty={}",
+            out.reward,
+            out.counterparty_reward
+        );
     }
 
     // ---- Block 0 component 2: V5 global mana_draw_count channel (spec §6.184) ----

@@ -1544,6 +1544,11 @@ class RustBatchWorker:
             self._lib.trainv3_worker_rewards_len,
             (row_count,),
         )
+        counterparty_rewards = self._float_array(
+            self._lib.trainv3_worker_counterparty_rewards_ptr,
+            self._lib.trainv3_worker_counterparty_rewards_len,
+            (row_count,),
+        )
         diagnostics_optional = self.diagnostic_mode == "none"
         episode_returns = self._optional_float_array(
             self._lib.trainv3_worker_episode_returns_ptr,
@@ -1596,6 +1601,7 @@ class RustBatchWorker:
             "legal_action_features": legal_features,
             "selected_local_indices": selected_local_indices,
             "rewards": rewards,
+            "counterparty_rewards": counterparty_rewards,
             "episode_returns": episode_returns,
             "episode_lengths": episode_lengths,
             "terminated": terminated,
@@ -2100,6 +2106,7 @@ def _load_library(path: Path) -> ctypes.CDLL:
         "trainv3_worker_legal_action_features_f16_len",
         "trainv3_worker_selected_local_indices_len",
         "trainv3_worker_rewards_len",
+        "trainv3_worker_counterparty_rewards_len",
         "trainv3_worker_episode_returns_len",
         "trainv3_worker_episode_lengths_len",
         "trainv3_worker_terminated_len",
@@ -2127,6 +2134,7 @@ def _load_library(path: Path) -> ctypes.CDLL:
         "trainv3_worker_legal_action_features_f16_ptr",
         "trainv3_worker_selected_local_indices_ptr",
         "trainv3_worker_rewards_ptr",
+        "trainv3_worker_counterparty_rewards_ptr",
         "trainv3_worker_episode_returns_ptr",
         "trainv3_worker_episode_lengths_ptr",
         "trainv3_worker_terminated_ptr",

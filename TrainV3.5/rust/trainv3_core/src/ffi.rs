@@ -1575,6 +1575,20 @@ pub unsafe extern "C" fn trainv3_worker_rewards_len(worker: *const FfiWorker) ->
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn trainv3_worker_counterparty_rewards_ptr(
+    worker: *const FfiWorker,
+) -> *const f32 {
+    float_ptr(worker, |w| &w.last.counterparty_rewards)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn trainv3_worker_counterparty_rewards_len(
+    worker: *const FfiWorker,
+) -> usize {
+    float_len(worker, |w| &w.last.counterparty_rewards)
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn trainv3_worker_episode_returns_ptr(
     worker: *const FfiWorker,
 ) -> *const f32 {

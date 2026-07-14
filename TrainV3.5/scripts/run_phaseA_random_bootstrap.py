@@ -297,6 +297,18 @@ def run(config: argparse.Namespace) -> dict[str, Any]:
         phase_overrides["opponent_mix_spec"] = {
             name: weight for name, weight in custom_opponent_mix_parsed or []
         }
+    # The fresh post-repair bootstrap deliberately gives more exposure to the
+    # disadvantaged initiative.  This is an initiative (not seat) weight:
+    # learner != starting_actor means that the learner moves second.
+    phase_overrides["second_start_oversampling"] = {
+        "policy": "fixed_second_start_weight",
+        "second_start_weight": float(config.second_start_weight),
+    }
+    # This credit is terminal-only and therefore cannot reward a mana draw just
+    # for spending mana; it only helps assign a successful second-start outcome.
+    phase_overrides["turn_order_second_mover_reward_bonus"] = float(
+        config.second_mover_reward_bonus
+    )
 
     phase_config = build_phase_a_random_bootstrap_config(
         run_name=str(config.run_name),
@@ -675,6 +687,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--checkpoint-every", type=int, default=10)
     parser.add_argument("--seed", type=int, default=350500)
     parser.add_argument(
+        "--second-start-weight",
+        type=float,
+        default=0.65,
+        help="Fraction of learner episodes that begin second (initiative, not seat).",
+    )
+    parser.add_argument(
+        "--second-mover-reward-bonus",
+        type=float,
+        default=0.02,
+        help="Terminal-only reward bonus for a real learner win after moving second.",
+    )
+    parser.add_argument(
         "--opponent-mix",
         default=None,
         help=(
@@ -717,6 +741,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--minibatch-size must be positive")
     if float(args.learning_rate) <= 0.0:
         parser.error("--learning-rate must be positive")
+    if not 0.0 < float(args.second_start_weight) < 1.0:
+        parser.error("--second-start-weight must be between 0 and 1 (exclusive)")
+    if float(args.second_mover_reward_bonus) < 0.0:
+        parser.error("--second-mover-reward-bonus must be non-negative")
     if not 0.0 < float(args.target_random_score) <= 1.0:
         parser.error("--target-random-score must be in (0, 1]")
     if int(args.random_gate_games) <= 0 or int(args.random_gate_max_steps) <= 0:

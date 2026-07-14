@@ -159,6 +159,8 @@ pub struct BatchTensorOutput {
     pub legal_action_features: Vec<f32>,
     pub selected_local_indices: Vec<i32>,
     pub rewards: Vec<f32>,
+    /// Exact reward for the non-acting player on each transition.
+    pub counterparty_rewards: Vec<f32>,
     pub terminated: Vec<bool>,
     /// Per-env truncation flag (WD-2): true when the post-step
     /// `turn_number > max_turns`, mirroring
@@ -595,7 +597,10 @@ impl BatchedRolloutWorker {
                     self.histories[idx].drain(0..extra);
                 }
 
-                learner_rewards[idx] -= step.reward;
+                // The reward contract is perspective-dependent and not
+                // zero-sum; use the kernel's exact other-player reward rather
+                // than negating the acting opponent's reward.
+                learner_rewards[idx] += step.counterparty_reward;
                 action_counts[idx] += 1;
                 if step_terminated {
                     terminated[idx] = true;
@@ -729,6 +734,7 @@ impl BatchedRolloutWorker {
             out.push_action_tensors(&snapshot.action_mask, &snapshot.action_features);
             out.mana_draw_legal.push(snapshot.mana_draw_legal);
             out.rewards.push(0.0);
+            out.counterparty_rewards.push(0.0);
             out.terminated.push(state.status != "ongoing");
             out.truncated.push(false);
             out.push_reset_flag(false);
@@ -863,6 +869,7 @@ impl BatchedRolloutWorker {
             out.push_action_tensors(&snapshot.action_mask, &snapshot.action_features);
             out.mana_draw_legal.push(snapshot.mana_draw_legal);
             out.rewards.push(step.reward);
+            out.counterparty_rewards.push(step.counterparty_reward);
             out.terminated.push(terminated);
             out.truncated.push(step.truncated);
             out.push_reset_flag(auto_reset && terminated);
@@ -944,6 +951,7 @@ impl BatchedRolloutWorker {
             }
 
             out.rewards.push(step.reward);
+            out.counterparty_rewards.push(step.counterparty_reward);
             out.terminated.push(terminated);
             out.truncated.push(step.truncated);
             out.push_reset_flag(auto_reset && terminated);
@@ -1139,6 +1147,7 @@ impl BatchTensorOutput {
             legal_action_features: Vec::new(),
             selected_local_indices: Vec::with_capacity(env_count),
             rewards: Vec::with_capacity(env_count),
+            counterparty_rewards: Vec::with_capacity(env_count),
             terminated: Vec::with_capacity(env_count),
             truncated: Vec::with_capacity(env_count),
             reset_flags: Vec::with_capacity(diagnostic_capacity),
@@ -1332,6 +1341,7 @@ mod tests {
         ActionFeatureOutput, ActionMaskOutput, BatchTensorOutput, DiagnosticOutput,
         ObservationOutput, TerminalObservationOutput,
     };
+    use crate::action_codec::ATTACK_BASE;
     use crate::kernel::{KernelCard, KernelConfig, KernelPlayer, KernelState};
     use crate::ACTION_FEATURE_DIM_V1;
 
@@ -1505,5 +1515,66 @@ mod tests {
         );
         assert_eq!(out.action_counts, vec![1], "exactly one opponent action");
         assert_eq!(out.reset_flags, vec![false], "no auto-reset (auto_reset=false)");
+    }
+
+    #[test]
+    fn worker_step_exposes_exact_counterparty_reward() {
+        use super::BatchedRolloutWorker;
+
+        let cfg = KernelConfig::default();
+        let mut p1 = player_with(Vec::new());
+        p1.user_id = 1;
+        let mut attacker = card(55, 0, 5, 5);
+        attacker.is_ready = true;
+        p1.board = vec![attacker];
+        let mut p2 = player_with(Vec::new());
+        p2.user_id = 2;
+        let state = KernelState {
+            current_turn_owner_id: 1,
+            turn_number: 1,
+            status: "ongoing".to_string(),
+            p1,
+            p2,
+            ..Default::default()
+        };
+        let mut worker = BatchedRolloutWorker::new(cfg, vec![state]);
+        let out = worker
+            .step(&[ATTACK_BASE + 7])
+            .expect("face attack applies");
+        assert!((out.rewards[0] - 0.10).abs() < 1.0e-6);
+        assert!((out.counterparty_rewards[0] - -0.05).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn advance_rule_until_actor_uses_direct_learner_perspective_reward() {
+        use super::BatchedRolloutWorker;
+
+        let cfg = KernelConfig::default();
+        let mut p1 = player_with(Vec::new());
+        p1.user_id = 1;
+        let mut p2 = player_with(Vec::new());
+        p2.user_id = 2;
+        let mut attacker = card(55, 0, 5, 5);
+        attacker.is_ready = true;
+        p2.board = vec![attacker];
+        let state = KernelState {
+            current_turn_owner_id: 2,
+            turn_number: 1,
+            status: "ongoing".to_string(),
+            p1,
+            p2,
+            ..Default::default()
+        };
+        let mut worker = BatchedRolloutWorker::new(cfg, vec![state]);
+        worker.use_deterministic_rng();
+        let out = worker
+            .advance_rule_until_actor(&[1], &[1], 64, 0, false)
+            .expect("face-rush opponent advances to learner");
+
+        assert_eq!(out.action_counts, vec![2], "face attack followed by end turn");
+        assert!(
+            (out.learner_rewards[0] - -0.05).abs() < 1.0e-6,
+            "received damage is -0.01/hp for learner, not negated +0.02/hp actor reward"
+        );
     }
 }
