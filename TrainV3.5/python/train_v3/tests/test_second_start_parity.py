@@ -407,9 +407,20 @@ def test_does_not_edit_a5_a3_a4() -> None:
             "episode_starting_actor_ids" in out
             and "episode_starting_actors" in out
         )
-        assert is_reward_repair or is_rule_fast_forward or is_session_start_actor_fix, (
+        is_policy_batching = (
+            "policy_contexts" in out
+            and "select_batch" in out
+            and "selected_actions" in out
+        )
+        assert (
+            is_reward_repair
+            or is_rule_fast_forward
+            or is_session_start_actor_fix
+            or is_policy_batching
+        ), (
             "A4 diff must include the narrow counterparty/opener reward repair "
-            "the scoped rule fast-forward, or the session-start-actor fix; "
+            "the scoped rule fast-forward, the session-start-actor fix, or "
+            "policy batching; "
             f"got:\n{out}"
         )
         removed = [ln for ln in out.splitlines() if ln.startswith("-") and not ln.startswith("---")]

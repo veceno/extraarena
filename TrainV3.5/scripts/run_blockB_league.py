@@ -248,6 +248,56 @@ class V4TempOnnxOpponent:
         self.rng = np.random.default_rng(int(seed))
 
     def select(self, env_idx: int, ctx: OpponentCtx) -> int:
+        return self.select_batch([ctx])[0]
+
+    def select_batch(self, contexts: list[OpponentCtx]) -> list[int]:
+        """Select a batch of V4 actions in one ONNX Runtime invocation.
+
+        Block B previously ran one CPU inference per environment, leaving most
+        of the machine idle despite a large rollout batch.  The V4 ONNX graph
+        accepts a dynamic leading batch dimension, so preserving per-row legal
+        masks after one batched call is equivalent to calling ``select`` in a
+        loop and substantially improves throughput.
+        """
+        if not contexts:
+            return []
+        features_batch = np.zeros((len(contexts), 601, ACTION_FEATURE_DIM), dtype=np.float32)
+        observations = np.empty((len(contexts), 1456), dtype=np.float32)
+        legal_ids_batch: list[np.ndarray] = []
+        for row, ctx in enumerate(contexts):
+            legal_ids = np.asarray(ctx.legal_action_ids, dtype=np.intp)
+            legal_ids_batch.append(legal_ids)
+            observations[row] = np.asarray(ctx.observation_v5, dtype=np.float32)[:1456]
+            if legal_ids.size <= 0 or ctx.legal_action_features is None:
+                continue
+            features_batch[row, legal_ids] = np.asarray(ctx.legal_action_features, dtype=np.float32)
+        logits_batch = self.session.run(
+            ["logits", "value"],
+            {"observation": observations, "action_features": features_batch},
+        )[0].astype(np.float32, copy=False)
+        selected: list[int] = []
+        for row, legal_ids in enumerate(legal_ids_batch):
+            if legal_ids.size <= 0 or contexts[row].legal_action_features is None:
+                selected.append(0)
+                continue
+            mask = np.zeros(601, dtype=np.bool_)
+            mask[legal_ids] = True
+            masked = np.where(mask, logits_batch[row], -1.0e9)
+            if self.identity.mode == "sample":
+                scaled = masked / float(self.identity.temperature)
+                shifted = scaled - float(np.max(scaled))
+                probs = np.exp(shifted) * mask.astype(np.float32)
+                denom = float(probs.sum())
+                if not np.isfinite(denom) or denom <= 0.0:
+                    selected.append(int(legal_ids[0]))
+                else:
+                    selected.append(int(self.rng.choice(len(probs), p=probs / denom)))
+            else:
+                selected.append(int(np.argmax(masked)))
+        return selected
+
+    def _select_scalar_reference(self, env_idx: int, ctx: OpponentCtx) -> int:
+        """Reference implementation retained for test parity documentation."""
         legal_ids = np.asarray(ctx.legal_action_ids, dtype=np.intp)
         if legal_ids.size <= 0:
             return 0

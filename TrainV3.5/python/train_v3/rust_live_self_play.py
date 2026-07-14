@@ -983,7 +983,11 @@ def collect_rust_live_rollout(
             # requires codes for ALL envs); only call when there is at least one rule env.
             pass
 
-        # --- policy-opponent actions (Python loop, rollout_worker.py:211-230) ---
+        # --- policy-opponent actions -------------------------------------------
+        # Group same-identity contexts so policies with a vectorized inference
+        # surface (notably Block-B's V4 ONNX opponents) can score one real batch
+        # instead of launching one CPU inference per environment.
+        policy_contexts: dict[str, list[tuple[int, OpponentCtx]]] = {}
         for i, identity in policy_envs:
             ctx = OpponentCtx(
                 env_idx=i,
@@ -1001,13 +1005,28 @@ def collect_rust_live_rollout(
                 legal_action_counts=int(cur_counts[i]),
                 mana_draw_legal=bool(md_legal[i]),
             )
+            policy_contexts.setdefault(identity, []).append((i, ctx))
+        for identity, entries in policy_contexts.items():
+            policy = opponent_policies[identity]
+            batch_select = getattr(policy, "select_batch", None)
+            if callable(batch_select):
+                selected_actions = list(batch_select([ctx for _i, ctx in entries]))
+                if len(selected_actions) != len(entries):
+                    raise ValueError(
+                        f"policy {identity!r} select_batch returned {len(selected_actions)} "
+                        f"actions for {len(entries)} contexts"
+                    )
+                for (i, _ctx), selected_action in zip(entries, selected_actions):
+                    action_ids[i] = int(selected_action)
+                continue
             select_with_mana = getattr(opponent_policies[identity], "select_with_mana", None)
-            if callable(select_with_mana):
-                selected_action, selected_draw = select_with_mana(i, ctx)
-                action_ids[i] = int(selected_action)
-                mana_draw_flags[i] = bool(selected_draw) and bool(md_legal[i])
-            else:
-                action_ids[i] = int(opponent_policies[identity].select(i, ctx))
+            for i, ctx in entries:
+                if callable(select_with_mana):
+                    selected_action, selected_draw = select_with_mana(i, ctx)
+                    action_ids[i] = int(selected_action)
+                    mana_draw_flags[i] = bool(selected_draw) and bool(md_legal[i])
+                else:
+                    action_ids[i] = int(policy.select(i, ctx))
 
         # --- learner actions (learner policy + mana_draw head) -----------------
         if learner_envs:
