@@ -663,6 +663,7 @@ def collect_rust_live_rollout(
     rng: np.random.Generator | None = None,
     record_dispatch: bool = False,
     reset_at_start: bool = True,
+    episode_starting_actor_ids: np.ndarray | None = None,
 ) -> LiveRolloutBatch:
     """Run LIVE self-play on the Rust ``ArenaEnv`` and collect learner transitions.
 
@@ -763,7 +764,15 @@ def collect_rust_live_rollout(
     learner_step_count = np.zeros(env_count, dtype=np.intp)
     last_learner_row: list[int | None] = [None] * env_count
     episode_counts = np.ones(env_count, dtype=np.int64)
-    episode_starting_actor = np.asarray(worker.current_actor_ids(), dtype=np.int32).copy()
+    # A persistent PPO session can cross an update boundary in the middle of a
+    # game.  Its current actor is not necessarily the episode's starter: using
+    # it here would relabel an ongoing p2 episode as p1 and lose second-mover
+    # terminal credit.  The session owns this mutable per-lane metadata.
+    episode_starting_actor = (
+        np.asarray(worker.current_actor_ids(), dtype=np.int32).copy()
+        if episode_starting_actor_ids is None
+        else np.asarray(episode_starting_actor_ids, dtype=np.int32)
+    )
     if episode_starting_actor.shape != (env_count,):
         raise ValueError(f"current_actor_ids shape {episode_starting_actor.shape} != ({env_count},)")
     first_start_learner_steps = 0
@@ -1408,6 +1417,7 @@ class LiveSelfPlaySession:
 
     worker: Any
     learner_actor_ids: np.ndarray
+    episode_starting_actor_ids: np.ndarray
     opponent_identities: tuple[str, ...]
     oversampling_scheme: dict[str, Any]
     closed: bool = False
@@ -1448,12 +1458,13 @@ def create_live_self_play_session(
     )
     # Materialize one known initial episode before binding start-dependent sides.
     worker.reset(copy=False)
+    episode_starting_actors = np.asarray(worker.current_actor_ids(), dtype=np.int32).copy()
     mix = list(opponent_mix_parsed) if opponent_mix_parsed is not None else parse_v5_opponent_mix(config.opponent_mix)
     opponents = sample_opponent_identities(mix, env_count, rng=rng)
     side_policy = str((config.second_start_oversampling or {}).get("policy", "oversample_under_represented_on_breach"))
     second_start_weight = _configured_second_start_weight(config)
     if second_start_weight is not None:
-        starting_actors = np.asarray(worker.current_actor_ids(), dtype=np.int32)
+        starting_actors = episode_starting_actors
         learner_sides, scheme = sample_learner_sides_for_starts(
             starting_actors,
             second_start_weight=second_start_weight,
@@ -1478,6 +1489,7 @@ def create_live_self_play_session(
     return LiveSelfPlaySession(
         worker=worker,
         learner_actor_ids=learner_sides,
+        episode_starting_actor_ids=episode_starting_actors,
         opponent_identities=tuple(opponents),
         oversampling_scheme=scheme,
     )
@@ -1615,6 +1627,9 @@ def run_live_self_play_update(
             steps=steps,
             rng=rng,
             reset_at_start=reset_at_start,
+            episode_starting_actor_ids=(
+                None if session is None else session.episode_starting_actor_ids
+            ),
         )
         collect_seconds = time.perf_counter() - t0
 

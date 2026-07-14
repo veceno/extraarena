@@ -403,9 +403,14 @@ def test_does_not_edit_a5_a3_a4() -> None:
             and "advance_rule_until_actor" in out
             and "rule_learner_rewards" in out
         )
-        assert is_reward_repair or is_rule_fast_forward, (
+        is_session_start_actor_fix = (
+            "episode_starting_actor_ids" in out
+            and "episode_starting_actors" in out
+        )
+        assert is_reward_repair or is_rule_fast_forward or is_session_start_actor_fix, (
             "A4 diff must include the narrow counterparty/opener reward repair "
-            f"or the scoped rule fast-forward; got:\n{out}"
+            "the scoped rule fast-forward, or the session-start-actor fix; "
+            f"got:\n{out}"
         )
         removed = [ln for ln in out.splitlines() if ln.startswith("-") and not ln.startswith("---")]
         forbidden = ("POLICY_OPPONENT_KINDS", "PHASE_A_IDENTITIES", "RULE_AGENT_CODES")

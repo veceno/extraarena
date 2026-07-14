@@ -316,15 +316,20 @@ def test_does_not_edit_a4_sampler() -> None:
         and "advance_rule_until_actor" in diff
         and "rule_learner_rewards" in diff
     )
+    is_session_start_actor_fix = (
+        "episode_starting_actor_ids" in diff
+        and "episode_starting_actors" in diff
+    )
     assert (
         is_b8_extension
         or is_greedy_face_parity_fix
         or is_reward_attribution_repair
         or is_rule_fast_forward
+        or is_session_start_actor_fix
     ), (
         "A4 diff is neither the B8 dispatch extension, the scoped "
         "GreedyFaceOpponent benchmark-parity fix, the reward-attribution repair, "
-        "nor the rule-only fast-forward "
+        "nor the rule-only fast-forward or session-start-actor "
         f"repair; got:\n{diff}"
     )
     # The frozen Phase-A constants must NOT be removed or altered (no '-' line
