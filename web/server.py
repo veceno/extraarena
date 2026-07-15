@@ -20122,55 +20122,6 @@ def create_web_app(
                 "message": "Не удалось улучшить генератор",
             }, status=500)
 
-    async def daily_login_status_handler(request: web.Request) -> web.Response:
-        """GET /api/daily-login/status — статус ежедневной награды за вход."""
-        try:
-            user_id = await require_user_id(request)
-            data = await db.get_daily_login_status(int(user_id))
-            return web.json_response(data)
-        except web.HTTPException:
-            raise
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).error("Ошибка статуса ежедневной награды: %s", e, exc_info=True)
-            return web.json_response({
-                "error": "internal_server_error",
-                "message": "Не удалось получить статус ежедневной награды",
-            }, status=500)
-
-    async def daily_login_claim_handler(request: web.Request) -> web.Response:
-        """POST /api/daily-login/claim — забрать ежедневную награду."""
-        try:
-            user_id = await require_user_id(request)
-        except web.HTTPException:
-            raise
-        try:
-            data = await db.claim_daily_login_reward(int(user_id))
-            if not data.get("success"):
-                error = data.get("error")
-                status = 409 if error == "already_claimed" else 400
-                return web.json_response({"error": error, "message": data.get("message", error)}, status=status)
-            granted = data.get("granted") or {}
-            reward_type = granted.get("reward_type")
-            reward_amount = int(granted.get("reward_amount") or 0)
-            if reward_type and reward_amount > 0:
-                await _track_economy_safe(
-                    db, user_id=int(user_id), event_type="earn",
-                    resource=reward_type, amount=reward_amount, source="daily_login",
-                    metadata={
-                        "streak_day": granted.get("streak_day_before"),
-                        "multiplier": granted.get("multiplier"),
-                    },
-                )
-            return web.json_response(data)
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).error("Ошибка клейма ежедневной награды: %s", e, exc_info=True)
-            return web.json_response({
-                "error": "internal_server_error",
-                "message": "Не удалось забрать ежедневную награду",
-            }, status=500)
-
     async def daily_quests_status_handler(request: web.Request) -> web.Response:
         """GET /api/daily-quests/status — статус ежедневных квестов."""
         try:
@@ -20623,8 +20574,6 @@ def create_web_app(
     app.router.add_get("/api/generator/status", generator_status_handler)
     app.router.add_post("/api/generator/claim", generator_claim_handler)
     app.router.add_post("/api/generator/upgrade", generator_upgrade_handler)
-    app.router.add_get("/api/daily-login/status", daily_login_status_handler)
-    app.router.add_post("/api/daily-login/claim", daily_login_claim_handler)
     app.router.add_get("/api/daily-quests/status", daily_quests_status_handler)
     app.router.add_post("/api/daily-quests/claim", daily_quests_claim_handler)
     async def welcome_create_user_handler(request: web.Request) -> web.Response:

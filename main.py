@@ -466,10 +466,6 @@ async def _scheduled_notifications_task(db: Database | None) -> None:
             created = await db.enqueue_due_scheduled_notifications(limit=100)
             if created:
                 logger.info("Scheduled notifications queued: %d", created)
-            # Уведомления о доступности ежедневной награды за вход.
-            daily_login_created = await db.enqueue_due_daily_login_notifications(limit=100)
-            if daily_login_created:
-                logger.info("Daily login reward notifications queued: %d", daily_login_created)
         except Exception as e:
             logger.error("Ошибка в задаче расписания уведомлений: %s", e, exc_info=True)
             await asyncio.sleep(10)
