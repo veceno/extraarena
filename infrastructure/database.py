@@ -887,6 +887,56 @@ class Database:
             "quests": quests,
         }
 
+    async def claim_daily_quest_reward(self, user_id: int, quest_id: str) -> dict[str, Any]:
+        """Забрать награду за квест. Идемпотентность: блокировка строки + флаг claimed."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        quest = self._quest_def(quest_id)
+        if not quest:
+            return {"success": False, "error": "unknown_quest"}
+        today = self._daily_quests_today()
+        target = quest["target"]
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    """INSERT INTO daily_quests_progress (user_id, quest_id, reset_date, progress)
+                       VALUES ($1, $2, $3, 0)
+                       ON CONFLICT (user_id, quest_id, reset_date) DO NOTHING""",
+                    user_id, quest_id, today)
+                row = await conn.fetchrow(
+                    """SELECT progress, claimed FROM daily_quests_progress
+                       WHERE user_id = $1 AND quest_id = $2 AND reset_date = $3 FOR UPDATE""",
+                    user_id, quest_id, today)
+                if not row:
+                    return {"success": False, "error": "unknown_error"}
+                if row["claimed"]:
+                    return {"success": False, "error": "already_claimed"}
+                if int(row["progress"]) < target:
+                    return {"success": False, "error": "not_claimable"}
+                rt = quest["reward_type"]
+                amt = int(quest["reward_amount"])
+                if rt == "coins":
+                    await conn.execute(
+                        "UPDATE users SET coins = GREATEST(0, COALESCE(coins, 0) + $1), updated_at = NOW() WHERE user_id = $2",
+                        amt, user_id)
+                elif rt == "case":
+                    tier = int(quest.get("case_tier", 1))
+                    for _ in range(amt):
+                        await conn.execute(
+                            "INSERT INTO user_cases (user_id, case_id, tier, status) VALUES ($1, $2, $3, 'pending')",
+                            user_id, tier, tier)
+                await conn.execute(
+                    """INSERT INTO economy_events (user_id, event_type, resource, amount, source, metadata)
+                       VALUES ($1, 'earn', $2, $3, 'daily_quest', $4::jsonb)""",
+                    user_id, rt, amt,
+                    json.dumps({"quest_id": quest_id, "reset_date": today.isoformat(),
+                                "reward_type": rt, "reward_amount": amt}, ensure_ascii=False))
+                await conn.execute(
+                    """UPDATE daily_quests_progress SET claimed = TRUE, claimed_at = NOW(), updated_at = NOW()
+                       WHERE user_id = $1 AND quest_id = $2 AND reset_date = $3""",
+                    user_id, quest_id, today)
+        return {"success": True, "granted": {"reward_type": rt, "reward_amount": amt}, "quest_id": quest_id}
+
     def _choose_daily_login_reward(self, streak_day: int) -> tuple[str, int, int]:
         preset = random.choice(self.DAILY_LOGIN_REWARD_PRESETS)
         base_amount = int(preset["amount"])

@@ -51,7 +51,7 @@ class _QuestsFakeConn:
         self.executed.append((query, args))
         q = " ".join(query.split())
         if "FOR UPDATE" in q:
-            qid = args[2]
+            qid = args[1]
             r = self.rows.get(qid, {"progress": (1 if qid == "login_once" else 0), "claimed": False})
             return {"quest_id": qid, "progress": r["progress"], "claimed": r["claimed"]}
         return None
@@ -129,3 +129,55 @@ def test_status_caps_display_progress_at_target():
     assert q["progress"] == 5  # min(progress, target)
     assert q["target"] == 5
     assert q["claimable"] is True  # progress >= target and not claimed
+
+
+def test_claim_unknown_quest_returns_error():
+    db = _db_with_conn(_QuestsFakeConn())
+    import asyncio
+    r = asyncio.new_event_loop().run_until_complete(db.claim_daily_quest_reward(1, "nope"))
+    assert r["success"] is False and r["error"] == "unknown_quest"
+
+
+def test_claim_coins_grants_and_marks_claimed():
+    conn = _QuestsFakeConn(rows={"login_once": {"progress": 1, "claimed": False}}, balance={"coins": 100})
+    db = _db_with_conn(conn)
+    import asyncio
+    r = asyncio.new_event_loop().run_until_complete(db.claim_daily_quest_reward(42, "login_once"))
+    assert r["success"] is True
+    assert r["granted"] == {"reward_type": "coins", "reward_amount": 50}
+    assert conn.balance["coins"] == 150
+    assert conn.rows["login_once"]["claimed"] is True
+    # exactly one economy_events row, source via metadata json
+    assert len(conn.economy_events) == 1
+
+
+def test_claim_case_grants_n_t1_user_cases_rows():
+    conn = _QuestsFakeConn(rows={"win_battle_5": {"progress": 5, "claimed": False}})
+    db = _db_with_conn(conn)
+    import asyncio
+    r = asyncio.new_event_loop().run_until_complete(db.claim_daily_quest_reward(42, "win_battle_5"))
+    assert r["success"] is True
+    assert r["granted"] == {"reward_type": "case", "reward_amount": 3}
+    # 3 T1 user_cases inserts
+    assert len(conn.user_cases_inserts) == 3
+    for args in conn.user_cases_inserts:
+        # INSERT INTO user_cases (user_id, case_id, tier, status) VALUES ($1,1,1,'pending')
+        assert args[1] == 1 and args[2] == 1
+    assert conn.rows["win_battle_5"]["claimed"] is True
+
+
+def test_claim_already_claimed_returns_409_error():
+    conn = _QuestsFakeConn(rows={"login_once": {"progress": 1, "claimed": True}})
+    db = _db_with_conn(conn)
+    import asyncio
+    r = asyncio.new_event_loop().run_until_complete(db.claim_daily_quest_reward(42, "login_once"))
+    assert r["success"] is False and r["error"] == "already_claimed"
+    assert conn.user_cases_inserts == [] and conn.balance["coins"] == 100  # no grant
+
+
+def test_claim_below_target_returns_not_claimable():
+    conn = _QuestsFakeConn(rows={"win_battle_5": {"progress": 2, "claimed": False}})
+    db = _db_with_conn(conn)
+    import asyncio
+    r = asyncio.new_event_loop().run_until_complete(db.claim_daily_quest_reward(42, "win_battle_5"))
+    assert r["success"] is False and r["error"] == "not_claimable"
