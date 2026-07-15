@@ -937,6 +937,36 @@ class Database:
                     user_id, quest_id, today)
         return {"success": True, "granted": {"reward_type": rt, "reward_amount": amt}, "quest_id": quest_id}
 
+    async def increment_daily_quest(self, user_id: int, quest_id: str, delta: int, *, reset_on_loss: bool = False) -> None:
+        """Атомарно увеличить прогресс квеста (или сбросить в 0 при проигрыше серии).
+        Никогда не бросает исключение наверх — используется в хуках case-claim/battle-end."""
+        if not self._pool:
+            return
+        quest = self._quest_def(quest_id)
+        target = quest["target"] if quest else 1
+        today = self._daily_quests_today()
+        try:
+            async with self._pool.acquire() as conn:
+                if reset_on_loss:
+                    await conn.execute(
+                        """INSERT INTO daily_quests_progress (user_id, quest_id, reset_date, progress)
+                           VALUES ($1, $2, $3, 0)
+                           ON CONFLICT (user_id, quest_id, reset_date)
+                           DO UPDATE SET progress = 0, updated_at = NOW()""",
+                        user_id, quest_id, today)
+                else:
+                    await conn.execute(
+                        """INSERT INTO daily_quests_progress (user_id, quest_id, reset_date, progress)
+                           VALUES ($1, $2, $3, LEAST($4, $5))
+                           ON CONFLICT (user_id, quest_id, reset_date)
+                           DO UPDATE SET progress = LEAST(daily_quests_progress.progress + $4, $5),
+                                         updated_at = NOW()""",
+                        user_id, quest_id, today, int(delta), int(target))
+        except Exception:
+            import logging
+            logging.getLogger(__name__).warning(
+                "daily quest increment failed user_id=%s quest_id=%s", user_id, quest_id, exc_info=True)
+
     def _choose_daily_login_reward(self, streak_day: int) -> tuple[str, int, int]:
         preset = random.choice(self.DAILY_LOGIN_REWARD_PRESETS)
         base_amount = int(preset["amount"])

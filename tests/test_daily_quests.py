@@ -76,14 +76,26 @@ class _QuestsFakeConn:
         if "UPDATE users SET coins" in q and "GREATEST" in q:
             self.balance["coins"] = max(0, (self.balance.get("coins") or 0) + int(args[0]))
             return "UPDATE 1"
-        # INSERT ... ON CONFLICT / DO NOTHING / DO UPDATE — best-effort simulate for login_once
+        # INSERT ... ON CONFLICT / DO NOTHING / DO UPDATE — best-effort simulate for daily-quests upserts
         if "INSERT INTO daily_quests_progress" in q:
-            # args: user_id, quest_id, reset_date, [progress]
+            # args: user_id, quest_id, reset_date, [delta/progress, [target]]
             qid = args[1]
             if qid not in self.rows:
-                self.rows[qid] = {"progress": (1 if qid == "login_once" else 0), "claimed": False}
-            elif qid == "login_once" and "DO UPDATE" in q:
-                self.rows[qid]["progress"] = max(self.rows[qid]["progress"], 1)
+                if "LEAST" in q and "VALUES" in q:
+                    init = min(int(args[3]), int(args[4]))
+                elif qid == "login_once":
+                    init = 1
+                else:
+                    init = 0
+                self.rows[qid] = {"progress": init, "claimed": False}
+            if "DO UPDATE" in q:
+                if "progress = 0" in q:  # reset_on_loss
+                    self.rows[qid]["progress"] = 0
+                elif "LEAST" in q and "progress + $4" in q:
+                    tgt = int(args[4])
+                    self.rows[qid]["progress"] = min(self.rows[qid]["progress"] + int(args[3]), tgt)
+                elif qid == "login_once":
+                    self.rows[qid]["progress"] = max(self.rows[qid]["progress"], 1)
             return "INSERT 0 1"
         return ""
 
@@ -181,3 +193,45 @@ def test_claim_below_target_returns_not_claimable():
     import asyncio
     r = asyncio.new_event_loop().run_until_complete(db.claim_daily_quest_reward(42, "win_battle_5"))
     assert r["success"] is False and r["error"] == "not_claimable"
+
+
+def test_increment_caps_at_target():
+    conn = _QuestsFakeConn(rows={"win_battle_5": {"progress": 4, "claimed": False}})
+    db = _db_with_conn(conn)
+    import asyncio
+    asyncio.new_event_loop().run_until_complete(db.increment_daily_quest(7, "win_battle_5", 1))
+    assert conn.rows["win_battle_5"]["progress"] == 5  # 4+1=5 == target
+
+
+def test_increment_overflow_caps_at_target():
+    conn = _QuestsFakeConn(rows={"win_streak_5": {"progress": 5, "claimed": False}})
+    db = _db_with_conn(conn)
+    import asyncio
+    asyncio.new_event_loop().run_until_complete(db.increment_daily_quest(7, "win_streak_5", 1))
+    assert conn.rows["win_streak_5"]["progress"] == 5  # LEAST(5+1, 5)=5
+
+
+def test_increment_seeds_initial_progress():
+    conn = _QuestsFakeConn()  # no row yet
+    db = _db_with_conn(conn)
+    import asyncio
+    asyncio.new_event_loop().run_until_complete(db.increment_daily_quest(7, "win_battle_1", 1))
+    assert conn.rows["win_battle_1"]["progress"] == 1
+
+
+def test_increment_reset_on_loss_zeroes_streak():
+    conn = _QuestsFakeConn(rows={"win_streak_5": {"progress": 3, "claimed": False}})
+    db = _db_with_conn(conn)
+    import asyncio
+    asyncio.new_event_loop().run_until_complete(db.increment_daily_quest(7, "win_streak_5", 0, reset_on_loss=True))
+    assert conn.rows["win_streak_5"]["progress"] == 0
+
+
+def test_increment_swallows_db_errors():
+    class _BoomConn(_QuestsFakeConn):
+        async def execute(self, query, *args):
+            raise RuntimeError("db down")
+    db = _db_with_conn(_BoomConn())
+    import asyncio
+    # must NOT raise
+    asyncio.new_event_loop().run_until_complete(db.increment_daily_quest(7, "win_battle_1", 1))
