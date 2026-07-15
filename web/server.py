@@ -3128,6 +3128,20 @@ async def _process_battle_end(
         except Exception:
             logger.debug("newbie path battle completion failed for match %s", match_id, exc_info=True)
 
+        try:
+            if tx_result.get("applied") and eligible_mode and winner_id_int is not None:
+                winner_is_human = (winner_id_int == p1_id_int and not p1_is_bot) or (winner_id_int == p2_id_int and not p2_is_bot)
+                if winner_is_human:
+                    await db.increment_daily_quest(winner_id_int, "win_battle_1", 1)
+                    await db.increment_daily_quest(winner_id_int, "win_battle_5", 1)
+                    await db.increment_daily_quest(winner_id_int, "win_streak_5", 1)
+                loser_id_int = p2_id_int if winner_id_int == p1_id_int else p1_id_int
+                loser_is_human = (loser_id_int == p1_id_int and not p1_is_bot) or (loser_id_int == p2_id_int and not p2_is_bot)
+                if loser_is_human:
+                    await db.increment_daily_quest(loser_id_int, "win_streak_5", 0, reset_on_loss=True)
+        except Exception:
+            logger.debug("daily quest battle increment failed for match %s", match_id, exc_info=True)
+
         if not getattr(engine, "_analytics_flushed", False):
             actions = getattr(engine, "_analytics_actions", []) or []
             if actions:
@@ -9431,6 +9445,11 @@ def create_web_app(
         except Exception:
             logging.getLogger(__name__).debug("newbie path key-case completion failed", exc_info=True)
 
+        try:
+            await db.increment_daily_quest(user_id, "open_case_1", 1)
+        except Exception:
+            logging.getLogger(__name__).debug("daily quest open_case_1 increment failed", exc_info=True)
+
         for token, reroll in list(CASE_KEY_REROLL_ROLLS.items()):
             if reroll.get("opening_token") == opening_token:
                 CASE_KEY_REROLL_ROLLS.pop(token, None)
@@ -9534,6 +9553,11 @@ def create_web_app(
             await db.mark_newbie_path_task(user_id, "open_starter_case", claimed=False)
         except Exception:
             logging.getLogger(__name__).debug("newbie path user_case completion failed", exc_info=True)
+
+        try:
+            await db.increment_daily_quest(user_id, "open_case_1", 1)
+        except Exception:
+            logging.getLogger(__name__).debug("daily quest open_case_1 increment failed", exc_info=True)
 
         for token, reroll in list(CASE_USER_REROLL_ROLLS.items()):
             if reroll.get("opening_token") == opening_token:
