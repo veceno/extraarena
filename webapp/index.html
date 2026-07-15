@@ -3461,7 +3461,7 @@ html, body {
       text-shadow: 0 1px 2px rgba(0,0,0,0.3);
     }
     /* Cases tile — permanent violet glow + moving light sheen so it stands out
-       in its row (Мои бои / За вход / Генератор / Кейсы). Distinct from the
+       in its row (Мои бои / Квесты / Генератор / Кейсы). Distinct from the
        green ready / orange ready-orange claimable accents. */
     .mm-redesign .quiet-btn.case {
 
@@ -5145,7 +5145,7 @@ window.loadMobileSquadsBootstrap = async function(options = {}) {
 };
 </script>
 
-<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=4255ddf8772a">
+<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=6f941fa95d2b">
 // ═══════════════════════════════════════════
 // DESIGN TOKENS
 // ═══════════════════════════════════════════
@@ -5766,7 +5766,7 @@ const ICONS = {
   battle:    ICON_ROOT+'Battle.png',
   vsBot:     ICON_ROOT+'vsBotOrFriend.png',
   followingCase: ICON_ROOT+'FollowingCase.png',
-  dailyLogin:    ICON_ROOT+'EveryDayLogin.png',
+  quests:        ICON_ROOT+'Quests.png',
   battleHistory: ICON_ROOT+'BattleHistory.png',
   keyGenerator:  ICON_ROOT+'KeyGenerator.png',
   goToExtraPass: ICON_ROOT+'GoToExtraPass.png',
@@ -9778,7 +9778,7 @@ const SupportSheet = ({onClose}) => {
 // ═══════════════════════════════════════════
 // ARENA SCREEN
 // ═══════════════════════════════════════════
-const ArenaScreen = ({onMenu, onAI, onGenerator, onOpenBattles, onBattlePick, onStartBattle, onOpenCase, onOpenGloryPath, onOpenLeagueInfo, onGoToShop, onOpenBattlePass, onDailyLogin, dailyStatus, profile}) => {
+const ArenaScreen = ({onMenu, onAI, onGenerator, onOpenBattles, onBattlePick, onStartBattle, onOpenCase, onOpenGloryPath, onOpenLeagueInfo, onGoToShop, onOpenBattlePass, onQuests, questsStatus, profile}) => {
   const [genStatus,   setGenStatus]   = React.useState(null);
   const [genTick,     setGenTick]     = React.useState(0);
   const [seasonInfo,  setSeasonInfo]  = React.useState(null);
@@ -9874,30 +9874,31 @@ const ArenaScreen = ({onMenu, onAI, onGenerator, onOpenBattles, onBattlePick, on
     return n > 0 ? (n + ' ' + word) : '—';
   })();
 
-  // Real-time daily-login countdown. dailyStatus is refreshed by the parent
-  // (~30s poll + on sheet open/claim); each refresh re-pins a baseline
-  // (sec + Date.now()) and a 1s clock counts the baseline down without drift.
-  const [dailyBase, setDailyBase] = React.useState({ sec: 0, at: Date.now() });
-  const [dailyNow,  setDailyNow]  = React.useState(Date.now());
+  // Quests badge state machine (driven by questsStatus + a 3s blink toggle).
+  // Reuses genTick (the 1s interval at :9836) as the live tick so we don't
+  // spawn a second 1s interval in ArenaScreen.
+  const [questsBlink, setQuestsBlink] = React.useState(false);
   React.useEffect(() => {
-    if (dailyStatus && dailyStatus.enabled && !dailyStatus.is_claimable) {
-      setDailyBase({ sec: dailyStatus.time_left_seconds || 0, at: Date.now() });
-    }
-  }, [dailyStatus]);
-  React.useEffect(() => {
-    const iv = setInterval(() => setDailyNow(Date.now()), 1000);
+    const iv = setInterval(() => setQuestsBlink(b => !b), 3000);
     return () => clearInterval(iv);
   }, []);
-  const dailyNextSec = (dailyStatus && dailyStatus.enabled && !dailyStatus.is_claimable)
-    ? Math.max(0, dailyBase.sec - Math.floor((dailyNow - dailyBase.at) / 1000))
-    : null;
-  const dailyTimerLabel = (() => {
-    if (!dailyStatus || !dailyStatus.enabled) return '';
-    if (dailyStatus.is_claimable) return '';
-    if (dailyNextSec == null) return '';
-    const h = Math.floor(dailyNextSec / 3600);
-    const m = Math.floor((dailyNextSec % 3600) / 60);
+  const fmtQuestTimer = (sec) => {
+    const s = Math.max(0, Math.floor(sec || 0));
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
     return `${h}ч ${String(m).padStart(2,'0')}м`;
+  };
+  const qStatus = questsStatus;
+  const qQuests = (qStatus && qStatus.quests) || [];
+  const claimableCount = qQuests.filter(q => q.claimable).length;
+  const claimedCount = qQuests.filter(q => q.claimed).length;
+  const qResetSec = Math.max(0, ((qStatus && qStatus.reset_seconds) || 0) - genTick);
+  const questsBadge = (() => {
+    if (!qStatus || !qStatus.enabled) return {text: " ", accent: false};
+    if (claimableCount > 0) return {text: "Награда", accent: true};                 // orange, no blink
+    if (claimedCount >= 5) return {text: fmtQuestTimer(qResetSec), accent: false};  // timer constant
+    if (claimedCount > 0) return {text: questsBlink ? fmtQuestTimer(qResetSec) : "Новые", accent: false}; // blink every 3s
+    return {text: "Новые", accent: false};                                          // steady Новые
   })();
 
 	  const [gloryTiers, setGloryTiers] = React.useState([]);
@@ -10101,10 +10102,10 @@ const ArenaScreen = ({onMenu, onAI, onGenerator, onOpenBattles, onBattlePick, on
             <span>Мои бои</span>
             <small>{historySmall}</small>
           </button>
-          <button className={"quiet-btn" + (dailyStatus?.is_claimable ? " ready" : "")} type="button" onClick={onDailyLogin} aria-label="За вход">
-            <img src={ICONS.dailyLogin} alt=""/>
-            <span>За вход</span>
-            <small>{dailyStatus?.is_claimable ? "Получить" : (dailyTimerLabel || " ")}</small>
+          <button className={"quiet-btn" + (questsBadge.accent ? " ready-orange" : "")} type="button" onClick={onQuests} aria-label="Квесты">
+            <img src={ICONS.quests} alt=""/>
+            <span>Квесты</span>
+            <small>{questsBadge.text}</small>
           </button>
           <button className={"quiet-btn" + (canClaimGen ? " ready-orange" : "")} type="button" onClick={onGenerator} aria-label="Генератор">
             <img src={ICONS.keyGenerator} alt=""/>
@@ -10850,190 +10851,133 @@ const GeneratorScreen = ({onBack, profile}) => {
   );
 };
 
-const DailyLoginSheet = ({onClose, profile, status, onClaimed}) => {
-  const [busy,    setBusy]    = React.useState(false);
-  const [granted, setGranted] = React.useState(null);
-  const [tick,    setTick]    = React.useState(0);
-  const [showHelp, setShowHelp] = React.useState(false);
-
+const QuestsSheet = ({onClose, status, onClaimed}) => {
+  const [busy, setBusy] = React.useState({});          // per-quest busy flag
+  const [tick, setTick] = React.useState(0);
   React.useEffect(() => {
-    const tickIv = setInterval(() => setTick(t => t + 1), 1000);
-    return () => clearInterval(tickIv);
+    const iv = setInterval(() => setTick(t => t + 1), 1000);
+    return () => clearInterval(iv);
   }, []);
 
   const fmtTimer = (sec) => {
-    if (sec == null) return '—';
-    const h = Math.floor(sec / 3600);
-    const m = Math.floor((sec % 3600) / 60);
-    const s = Math.floor(sec % 60);
-    return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+    if (sec == null || sec < 0) return '—';
+    const s = Math.max(0, Math.floor(sec));
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const ss = s % 60;
+    return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(ss).padStart(2,'0')}`;
   };
 
-  const doClaim = async () => {
-    if (busy) return;
-    setBusy(true);
+  const quests = (status && status.quests) || [];
+  const resetSeconds = Math.max(0, (status?.reset_seconds || 0) - tick);
+  const doneCount = quests.filter(q => q.progress >= q.target).length;
+
+  const doClaim = async (qid) => {
+    if (busy[qid]) return;
+    setBusy(b => ({...b, [qid]: true}));
     try {
-      const res = await fetch(apiUrl('/api/daily-login/claim'), {method:'POST'});
+      const res = await fetch(apiUrl('/api/daily-quests/claim'), {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({quest_id: qid}),
+      });
       let data = null; try { data = await res.json(); } catch(_) {}
-      if (!res.ok || !data || data.error) {
-        if (onClaimed) await onClaimed();
-        return;
-      }
-      if (data.success && data.granted) {
-        setGranted(data.granted);
+      if (res.ok && data && data.success) {
         if (window.reloadFreshProfile) {
           window.reloadFreshProfile().then(d => { if (d && window.__updateProfile) window.__updateProfile(d); });
         }
+        if (onClaimed) await onClaimed();
+      } else {
+        if (onClaimed) await onClaimed();
       }
-      if (onClaimed) await onClaimed();
-      setTimeout(()=>setGranted(null), 2000);
     } catch(e) {} finally {
-      setBusy(false);
+      setBusy(b => ({...b, [qid]: false}));
     }
   };
 
-  const enabled   = !!status && status.enabled;
-  const isClaim   = !!status?.is_claimable;
-  const isSpecial = !!status?.is_special;
-  const daysToSpecial = status?.days_to_special ?? 0;
-  const streak     = status?.streak ?? 0;
-  const timeLeft   = Math.max(0, (status?.time_left_seconds || 0) - tick);
-  const alreadyClaimed = !!status?.claimed && !isClaim;
-
-  const displayType   = alreadyClaimed ? (status?.claimed_reward_type || status?.reward_type) : status?.reward_type;
-  const displayAmount = alreadyClaimed ? (status?.claimed_reward_amount ?? 0) : (status?.reward_amount ?? status?.base_amount ?? 0);
-  const storedCycleDay = Number(status?.streak_day || 0);
-  const storedCycleMultiplier = Number(status?.multiplier || 1);
-  const storedCycleIsSpecial = storedCycleMultiplier === 3 || (storedCycleDay > 0 && storedCycleDay % 3 === 0);
-  const nextType      = alreadyClaimed ? status?.reward_type : null;
-  const nextAmount    = alreadyClaimed ? (status?.reward_amount ?? status?.base_amount ?? status?.next_reward_amount ?? 0) : null;
-
-  const rewardIconFor = (type, size=56) => {
+  const rewardIconFor = (type, size=20) => {
     if (type === 'coins') return <IconCoin size={size}/>;
-    if (type === 'gems')  return <IconGem size={size}/>;
-    if (type === 'keys')  return <img src="/DesignAssets/MainMenu/Generator/Key.png" alt="" style={{width:size,height:size,objectFit:'contain',filter:iconWhite+' drop-shadow(0 0 8px rgba(244,179,63,0.4))'}}/>;
-    if (type === 'stars') return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="#f0ecff" strokeWidth="1.8" strokeLinejoin="round" strokeLinecap="round"><path d="M12 2.5l2.9 6.3 6.9.6-5.2 4.6 1.6 6.8L12 17.3 5.8 20.8l1.6-6.8L2.2 9.4l6.9-.6z"/></svg>;
+    if (type === 'case') return <img src="/DesignAssets/Cases/Case.png" alt="" style={{width:size,height:size,objectFit:'contain',filter:'drop-shadow(0 0 6px rgba(244,179,63,0.35))'}}/>;
     return null;
   };
 
-  const rewardLabelFor = (type) => {
-    const map = {coins:'монет', gems:'гемов', stars:'звёзд', keys:'ключей'};
-    return map[type] || '';
-  };
-
-  const subLine = () => {
-    if (isSpecial && !alreadyClaimed) return <span style={{color:'#fbbf24',fontSize:11,fontWeight:700}}>Сегодня — особая награда (x3)!</span>;
-    if (daysToSpecial === 0 && !alreadyClaimed) return <span style={{color:'#fbbf24',fontSize:11,fontWeight:700}}>Особая награда сегодня!</span>;
-    // Уже забрали — строка статуса уже хранит следующий календарный цикл.
-    if (alreadyClaimed && storedCycleIsSpecial) return <span style={{color:'#fbbf24',fontSize:11,fontWeight:600}}>Следующая — особая (x3)!</span>;
-    if (alreadyClaimed) return <span style={{color:'#7a6fa0',fontSize:11,fontWeight:600}}>Награда получена · следующая скоро</span>;
-    // Не получено: точные дни до особой. day_to_special==1 → "завтра" = streak_day+1=3.
-    if (daysToSpecial === 1) return <span style={{color:'#fbbf24',fontSize:11,fontWeight:700,animation:'pulse 1s ease-in-out infinite'}}>Завтра — особая награда (x3)!</span>;
-    return <span style={{color:'#fbbf24',fontSize:11}}>До особой награды осталось {daysToSpecial} дней</span>;
-  };
-
-  // Следующая НАГРАДА: после claim это уже сохранённый в status цикл, до claim — API-превью.
-  const nextIsSpecial = alreadyClaimed ? storedCycleIsSpecial : !!status?.next_is_special;
-
-  const claimLabel = () => {
-    if (!enabled) return '—';
-    if (isClaim) return 'Забрать награду';
-    if (alreadyClaimed || status) return fmtTimer(timeLeft);
-    return '—';
-  };
-
-  const totalWindow = 24 * 3600;
-  const progressPct = Math.max(0, Math.min(100, (1 - (timeLeft / Math.max(1, totalWindow))) * 100));
-  const nearSpecial = daysToSpecial === 1 && !isSpecial && !isClaim && !alreadyClaimed;
-  const timerPulseAnim = nearSpecial ? 'timerPulse 1s ease-in-out infinite' : 'none';
+  const compactHeight = typeof window !== 'undefined' && window.innerHeight < 760;
+  const artTop = compactHeight ? 'calc(var(--ea-safe-top) + 72px)' : 'calc(var(--ea-safe-top) + 76px)';
+  const artWidth = compactHeight ? 'min(116%, 430px)' : 'min(112%, 500px)';
+  const artSpacerHeight = compactHeight ? 'clamp(188px, 29dvh, 224px)' : 'clamp(226px, 32dvh, 304px)';
 
   return (
-    <div style={{position:'fixed',inset:0,zIndex:200,background:'rgba(5,3,14,0.78)',backdropFilter:'blur(10px)',WebkitBackdropFilter:'blur(10px)',display:'flex',alignItems:'center',justifyContent:'center',animation:'fadeIn 0.22s',padding:'calc(24px + var(--ea-safe-top)) 20px calc(24px + var(--ea-safe-bottom-soft))'}} onClick={onClose}>
-      <div onClick={e=>e.stopPropagation()} style={{position:'relative',background:'linear-gradient(165deg,#221642 0%,#161029 45%,#0f0a20 100%)',border:`1.5px solid ${isSpecial?'rgba(251,191,36,0.4)':'rgba(124,92,191,0.28)'}`,borderRadius:22,maxWidth:'420px',width:'100%',maxHeight:'90vh',overflow:'hidden',boxShadow:isSpecial?`0 30px 80px rgba(0,0,0,0.6),0 0 50px rgba(251,191,36,0.1),inset 0 1px 0 rgba(255,248,232,0.1)`:`0 30px 80px rgba(0,0,0,0.6),inset 0 1px 0 rgba(255,248,232,0.08)`,animation:'scaleIn 0.3s cubic-bezier(0.34,1.56,0.64,1)'}}>
-        <div style={{position:'absolute',top:-40,left:'50%',transform:'translateX(-50%)',width:'80%',height:'160px',background:isSpecial?'radial-gradient(ellipse at 50% 0%,rgba(251,191,36,0.18),transparent 65%)':'radial-gradient(ellipse at 50% 0%,rgba(124,92,191,0.16),transparent 65%)',pointerEvents:'none'}}/>
-        <div style={{position:'absolute',top:0,left:'20%',right:'20%',height:1,background:isSpecial?'linear-gradient(90deg,transparent,rgba(251,191,36,0.5),transparent)':'linear-gradient(90deg,transparent,rgba(124,92,191,0.4),transparent)',pointerEvents:'none'}}/>
-        <div style={{position:'relative',padding:'22px 20px 20px'}}>
-          <div style={{display:'grid',gridTemplateColumns:'36px 1fr 36px',alignItems:'center',gap:10,marginBottom:4}}>
-            <button onClick={onClose} type="button" aria-label="Закрыть" style={{display:'grid',placeItems:'center',width:36,height:36,border:'1px solid rgba(255,255,255,0.12)',borderRadius:10,background:'rgba(255,255,255,0.04)',color:'#fff8e8',cursor:'pointer'}}>
-              <svg width="15" height="15" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18l-6-6 6-6" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"/></svg>
-            </button>
-            <div style={{minWidth:0,textAlign:'center'}}>
-              <h1 style={{margin:0,fontSize:21,fontWeight:800,letterSpacing:0.4,lineHeight:1.05,color:'#fff8e8',fontFamily:"'Exo 2',sans-serif",textShadow:'0 2px 12px rgba(0,0,0,0.3)'}}>Ежедневный вход</h1>
-            </div>
-            <button type="button" onClick={()=>setShowHelp(true)} aria-label="Справка" style={{width:36,height:36,borderRadius:10,border:'1px solid rgba(255,255,255,0.12)',background:'rgba(255,255,255,0.04)',color:'#b9a9d3',fontSize:16,fontWeight:800,cursor:'pointer'}}>?</button>
-          </div>
-          {enabled && <div style={{textAlign:'center',marginBottom:18}}>{subLine()}</div>}
-          <div style={{position:'relative',display:'flex',flexDirection:'column',alignItems:'center',padding:'8px 8px 20px'}}>
-            <div style={{position:'relative',display:'inline-grid',placeItems:'center',padding:22,borderRadius:24,border:`1.5px solid ${isSpecial&&!alreadyClaimed?'rgba(251,191,36,0.5)':'rgba(124,92,191,0.25)'}`,background:isSpecial&&!alreadyClaimed?'radial-gradient(circle at 50% 40%,rgba(251,191,36,0.14),transparent 70%)':'radial-gradient(circle at 50% 40%,rgba(124,92,191,0.12),transparent 70%)',animation:isSpecial&&!alreadyClaimed?'yellowPulse 2.5s ease-in-out infinite':'none',transition:'filter 0.35s',filter:alreadyClaimed?'blur(6px) opacity(0.5)':'none'}}>
-              {isSpecial && !alreadyClaimed && <span style={{position:'absolute',top:-14,right:-14,background:'linear-gradient(180deg,#ffd46e,#f4a529)',color:'#2f1800',fontSize:13,fontWeight:900,fontFamily:"'Exo 2',sans-serif",padding:'3px 10px',borderRadius:9,boxShadow:'0 4px 16px rgba(244,179,63,0.5)'}}>x3</span>}
-              {rewardIconFor(displayType, 60)}
-              {granted && (
-                <div style={{position:'absolute',top:'-14px',left:'50%',transform:'translateX(-50%)',color:'#4ade80',fontSize:26,fontWeight:900,fontFamily:"'Exo 2',sans-serif",textShadow:'0 2px 14px rgba(0,0,0,0.5),0 0 20px rgba(74,222,128,0.4)',animation:'fadeUp 1.8s ease forwards'}}>+{granted.reward_amount}</div>
-              )}
-            </div>
-            {alreadyClaimed && (
-              <div style={{position:'absolute',top:'50%',left:'50%',transform:'translate(-50%,-50%)',background:'rgba(15,10,32,0.88)',padding:'8px 16px',borderRadius:12,border:'1px solid rgba(74,222,128,0.35)',color:'#4ade80',fontSize:14,fontWeight:800,fontFamily:"'Exo 2',sans-serif",backdropFilter:'blur(6px)',WebkitBackdropFilter:'blur(6px)',boxShadow:'0 6px 24px rgba(0,0,0,0.45)',whiteSpace:'nowrap',pointerEvents:'none',zIndex:3}}>✓ Награда получена!</div>
-            )}
-            {enabled && (
-              <div style={{marginTop:14,display:'flex',alignItems:'baseline',gap:6,filter:alreadyClaimed?'opacity(0.4)':'none'}}>
-                <span style={{fontSize:36,fontWeight:900,fontFamily:"'Exo 2',sans-serif",color:isSpecial&&!alreadyClaimed?'#fbbf24':'#fff8e8',lineHeight:1,textShadow:isSpecial&&!alreadyClaimed?'0 2px 18px rgba(244,179,63,0.35)':'0 2px 8px rgba(0,0,0,0.2)'}}>{displayAmount > 0 ? displayAmount.toLocaleString('ru-RU') : '—'}</span>
-                {displayAmount > 0 && <span style={{fontSize:12,color:'#b9a9d3',fontFamily:"'Inter',sans-serif",fontWeight:600}}>{rewardLabelFor(displayType)}</span>}
-              </div>
-            )}
-            {alreadyClaimed && nextType && (
-              <div style={{marginTop:16,display:'flex',alignItems:'center',gap:8,padding:'8px 14px',borderRadius:12,background:nextIsSpecial?'rgba(251,191,36,0.12)':'rgba(124,92,191,0.1)',border:nextIsSpecial?'1px solid rgba(251,191,36,0.35)':'1px solid rgba(124,92,191,0.2)'}}>
-                <span style={{fontSize:10,color:nextIsSpecial?'#fbbf24':'#7a6fa0',fontWeight:700,textTransform:'uppercase',letterSpacing:'0.06em',fontFamily:"'Inter',sans-serif"}}>{nextIsSpecial?'Следующая особая':'Далее'}</span>
-                <div style={{display:'flex',alignItems:'center',gap:5}}>
-                  {rewardIconFor(nextType, 20)}
-                  <span style={{fontSize:13,fontWeight:800,color:nextIsSpecial?'#fbbf24':'#c4b8e8',fontFamily:"'Exo 2',sans-serif"}}>{nextAmount > 0 ? nextAmount.toLocaleString('ru-RU') : '—'}</span>
-                  {nextIsSpecial && <span style={{fontSize:10,fontWeight:900,color:'#2f1800',background:'linear-gradient(180deg,#ffd46e,#f4a529)',padding:'1px 6px',borderRadius:6,fontFamily:"'Exo 2',sans-serif"}}>x3</span>}
-                </div>
-              </div>
-            )}
-          </div>
-          <div style={{display:'grid',gridTemplateColumns:'1fr auto',gap:10,alignItems:'stretch',marginTop:4}}>
-            <div style={{position:'relative',borderRadius:12,overflow:'hidden'}}>
-              {!isClaim && enabled && (
-                <div style={{position:'absolute',inset:0,borderRadius:12,background:`conic-gradient(${nearSpecial?'#fbbf24':'rgba(124,92,191,0.55)'} ${progressPct}%, transparent ${progressPct}%)`,padding:2,pointerEvents:'none'}}>
-                  <div style={{width:'100%',height:'100%',borderRadius:10,background:'#0f0a20'}}/>
-                </div>
-              )}
-              <button onClick={doClaim} disabled={!enabled || !isClaim || busy} type="button" style={{position:'relative',zIndex:1,display:'inline-grid',alignItems:'center',justifyContent:'center',minHeight:52,border:0,borderRadius:10,background:isClaim?'linear-gradient(180deg,#ffd46e,#f4a529)':alreadyClaimed?'rgba(74,222,128,0.1)':'rgba(255,255,255,0.06)',color:isClaim?'#2f1800':alreadyClaimed?'#4ade80':'rgba(255,248,232,0.5)',font:'inherit',fontSize:15,fontWeight:900,letterSpacing:0.3,boxShadow:isClaim?'0 6px 0 #8f4f12,0 14px 28px rgba(244,179,63,0.3)':'none',cursor:isClaim && !busy ? 'pointer':'default',fontFamily:"'Exo 2',sans-serif",animation:timerPulseAnim,width:'100%',padding:'0 14px'}}>
-                {busy ? 'Загрузка...' : claimLabel()}
-                {isClaim && !busy && (
-                  <div style={{position:'absolute',inset:0,overflow:'hidden',borderRadius:10,pointerEvents:'none'}}>
-                    <div style={{position:'absolute',top:0,left:0,bottom:0,width:'60%',background:'linear-gradient(90deg,transparent,rgba(255,255,255,0.32),transparent)',transform:'skewX(-18deg)',animation:'shine 1.8s ease-in-out infinite'}}/>
-                  </div>
-                )}
-              </button>
-            </div>
-            <div style={{display:'flex',alignItems:'center',gap:7,padding:'8px 13px',borderRadius:12,background:`linear-gradient(180deg,${T.purple2},${T.purple1})`,border:`1px solid ${T.purpleHL}55`,boxShadow:'inset 0 1px 0 rgba(255,248,232,0.06)'}}>
-              <img src="/DesignAssets/MainMenu/Icons/Wins.png" alt="" style={{width:17,height:17,objectFit:'contain',filter:iconWhite}}/>
-              <span style={{fontFamily:"'Exo 2',sans-serif",fontWeight:800,fontSize:15,color:isSpecial?'#fbbf24':'#fff8e8',fontVariantNumeric:'tabular-nums'}}>{streak}</span>
-            </div>
-          </div>
-        </div>
+    <div style={{flex:1,minHeight:0,height:'var(--ea-viewport-height, 100dvh)',position:'relative',overflowY:'auto',overflowX:'hidden',background:'#120b24',animation:'fadeIn 0.2s',overscrollBehaviorY:'contain',WebkitOverflowScrolling:'touch'}} >
+      <div style={{position:'absolute',top:0,left:0,right:0,zIndex:0,height:'var(--ea-viewport-height, 100dvh)',minHeight:620,overflow:'hidden',background:'#1a0f2d',pointerEvents:'none'}}>
+        <img src="/DesignAssets/Images/quests.jpg" alt="" style={{position:'absolute',top:artTop,left:'50%',width:artWidth,height:'auto',objectFit:'contain',objectPosition:'50% 0%',transform:'translateX(-50%)',filter:'saturate(1.16) contrast(1.04) drop-shadow(0 20px 30px rgba(4,2,10,0.34))'}}/>
+        <div style={{position:'absolute',inset:0,background:'radial-gradient(circle at 50% 23%,rgba(124,92,191,0.14),transparent 28%),linear-gradient(180deg,rgba(9,5,23,0.32) 0%,rgba(9,5,23,0.06) 26%,rgba(18,11,36,0.14) 46%,rgba(18,11,36,0.76) 70%,#120b24 100%)'}}/>
       </div>
-      {showHelp && <DailyLoginHelpSheet onClose={()=>setShowHelp(false)}/>}
-    </div>
-  );
-};
 
-const DailyLoginHelpSheet = ({onClose}) => {
-  return (
-    <div style={{position:'fixed',inset:0,zIndex:220,background:'rgba(0,0,0,0.7)',backdropFilter:'blur(8px)',WebkitBackdropFilter:'blur(8px)',display:'flex',alignItems:'center',justifyContent:'center',animation:'fadeIn 0.2s'}} onClick={onClose}>
-      <div onClick={e=>e.stopPropagation()} style={{background:'#1a1030',border:'1px solid #2d1f52',borderRadius:16,maxWidth:'360px',width:'90%',maxHeight:'80vh',overflowY:'auto',padding:'20px 18px',boxShadow:'0 24px 60px rgba(0,0,0,0.5)',animation:'scaleIn 0.25s ease'}}>
-        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:14}}>
-          <h2 style={{margin:0,fontSize:18,fontWeight:800,color:'#f0ecff',fontFamily:"'Exo 2',sans-serif"}}>Ежедневный вход</h2>
-          <button onClick={onClose} aria-label="Закрыть" style={{width:30,height:30,borderRadius:8,border:'1px solid rgba(255,255,255,0.12)',background:'rgba(255,255,255,0.06)',color:'#b9a9d3',cursor:'pointer',fontSize:14}}>✕</button>
-        </div>
-        <div style={{display:'flex',flexDirection:'column',gap:10,color:'#c4b8e8',fontSize:13,lineHeight:1.5}}>
-          <p style={{margin:0}}>Заходи каждый день и забирай награду.</p>
-          <p style={{margin:0}}>Награды: <b style={{color:'#f0ecff'}}>50 монет</b>, <b style={{color:'#f0ecff'}}>5 гемов</b>, <b style={{color:'#f0ecff'}}>3 звезды</b>, <b style={{color:'#f0ecff'}}>1 ключ</b> — случайно каждый день.</p>
-          <p style={{margin:0}}>Каждый <b style={{color:'#fbbf24'}}>3-й день</b> серии — <b style={{color:'#fbbf24'}}>особая награда</b> в тройном размере!</p>
-          <p style={{margin:0}}>Серия обрывается, если не забрал награду за 24 часа. Награда остаётся доступной — забери её и начни новую серию.</p>
-          <p style={{margin:0,color:'#7a6fa0',fontSize:12}}>Не забудь включить уведомления в настройках, чтобы не пропустить награду.</p>
-        </div>
+      <div style={{position:'relative',zIndex:2,minHeight:'var(--ea-viewport-height, 100dvh)',padding:'0 12px calc(16px + var(--ea-safe-bottom-soft))'}}>
+        <header style={{position:'sticky',top:0,zIndex:6,display:'grid',gridTemplateColumns:'42px 1fr auto',alignItems:'center',gap:10,padding:'max(16px, var(--ea-safe-top-generator)) calc(12px + var(--ea-safe-right)) 12px calc(12px + var(--ea-safe-left))',margin:'0 -12px',background:'linear-gradient(180deg,rgba(18,11,36,0.9),rgba(18,11,36,0.62) 72%,rgba(18,11,36,0))',backdropFilter:'blur(14px)',WebkitBackdropFilter:'blur(14px)',transform:'translateZ(0)'}}>
+          <button onClick={onClose} type="button" aria-label="Назад" style={{display:'grid',placeItems:'center',width:42,height:42,border:'1px solid rgba(255,255,255,0.16)',borderRadius:8,background:'rgba(21,12,39,0.58)',color:'#fff8e8',cursor:'pointer'}}>
+            <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18l-6-6 6-6" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"/></svg>
+          </button>
+          <h1 style={{margin:0,fontSize:24,fontWeight:800,letterSpacing:0,lineHeight:1.05,color:'#fff8e8',textShadow:'0 2px 16px rgba(0,0,0,0.38)',fontFamily:"'Exo 2',sans-serif"}}>Квесты</h1>
+          <div aria-label="Сброс через" style={{display:'inline-grid',gridAutoFlow:'column',alignItems:'center',gap:6,minHeight:34,padding:'0 10px',border:'1px solid rgba(124,92,191,0.38)',borderRadius:8,background:'rgba(34,20,55,0.62)',color:'#fff8e8',fontSize:13,fontWeight:800,fontVariantNumeric:'tabular-nums',backdropFilter:'blur(10px)'}}>
+            <span style={{fontSize:10,fontWeight:700,color:'#b9a9d3',letterSpacing:'0.06em',textTransform:'uppercase'}}>Сброс</span>
+            <span>{fmtTimer(resetSeconds)}</span>
+          </div>
+        </header>
+
+        <div style={{height:artSpacerHeight}}/>
+
+        <section style={{padding:compactHeight?12:14,border:'1px solid rgba(255,233,174,0.2)',borderRadius:12,background:'linear-gradient(180deg,rgba(40,27,70,0.84),rgba(21,13,38,0.92))',boxShadow:'0 -10px 28px rgba(5,3,15,0.26),0 16px 42px rgba(5,3,15,0.34),inset 0 1px 0 rgba(255,248,232,0.08)',backdropFilter:'blur(18px)',WebkitBackdropFilter:'blur(18px)'}}>
+          <div style={{marginBottom:14}}>
+            <p style={{margin:'0 0 4px',fontSize:11,fontWeight:700,letterSpacing:'0.1em',textTransform:'uppercase',color:'#b9a9d3'}}>Ежедневные задания</p>
+            <p style={{margin:'0 0 8px',fontSize:19,fontWeight:800,lineHeight:1.12,color:'#fff8e8',fontFamily:"'Exo 2',sans-serif"}}>Забери дневной маршрут</p>
+            <div style={{display:'flex',alignItems:'center',gap:10}}>
+              <div style={{position:'relative',flex:1,height:8,borderRadius:6,overflow:'hidden',background:'rgba(255,255,255,0.08)'}}>
+                <div style={{position:'absolute',inset:0,width:`${(doneCount/5)*100}%`,background:'linear-gradient(90deg,#7c5cbf,#f4b33f)',borderRadius:6,transition:'width 0.4s'}}/>
+              </div>
+              <span style={{fontSize:12,fontWeight:800,color:'#fff8e8',fontVariantNumeric:'tabular-nums',whiteSpace:'nowrap'}}>Выполнено {doneCount}/5</span>
+            </div>
+          </div>
+
+          <div style={{display:'grid',gap:10}}>
+            {quests.map(q => {
+              const pct = q.target > 0 ? Math.min(100, Math.round((q.progress/q.target)*100)) : 0;
+              const badge = q.claimed ? {t:'Забрано', c:'#4ade80'} : (q.progress >= q.target ? {t:'Готово', c:'#fbbf24'} : {t:'В процессе', c:'#b9a9d3'});
+              return (
+                <div key={q.id} style={{display:'grid',gridTemplateColumns:'44px 1fr auto',alignItems:'center',gap:12,padding:'12px 12px',borderRadius:12,border:q.claimable?'1px solid rgba(251,191,36,0.4)':'1px solid rgba(255,255,255,0.08)',background:q.claimable?'rgba(251,191,36,0.08)':'rgba(255,255,255,0.03)'}}>
+                  <div style={{display:'grid',placeItems:'center',width:44,height:44,borderRadius:10,border:'1px solid rgba(255,255,255,0.1)',background:'rgba(21,12,39,0.6)'}}>
+                    {rewardIconFor(q.reward_type, 22)}
+                  </div>
+                  <div style={{minWidth:0}}>
+                    <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:3}}>
+                      <span style={{fontSize:14,fontWeight:800,color:'#fff8e8',fontFamily:"'Exo 2',sans-serif",overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{q.title}</span>
+                      <span style={{flexShrink:0,fontSize:10,fontWeight:800,color:badge.c,letterSpacing:'0.04em',textTransform:'uppercase'}}>{badge.t}</span>
+                    </div>
+                    <p style={{margin:'0 0 6px',fontSize:12,color:'#b9a9d3',lineHeight:1.3}}>{q.description}</p>
+                    <div style={{display:'flex',alignItems:'center',gap:8}}>
+                      <div style={{position:'relative',flex:1,maxWidth:160,height:6,borderRadius:4,overflow:'hidden',background:'rgba(255,255,255,0.08)'}}>
+                        <div style={{position:'absolute',inset:0,width:`${pct}%`,background:'linear-gradient(90deg,#7c5cbf,#f4b33f)',borderRadius:4,transition:'width 0.3s'}}/>
+                      </div>
+                      <span style={{fontSize:11,fontWeight:700,color:'#c4b8e8',fontVariantNumeric:'tabular-nums'}}>{q.progress}/{q.target}</span>
+                    </div>
+                  </div>
+                  <div style={{display:'grid',justifyItems:'end',gap:4,minWidth:92}}>
+                    <div style={{display:'inline-flex',alignItems:'center',gap:4,fontSize:13,fontWeight:800,color:q.reward_type==='coins'?'#f4b33f':'#fff8e8',fontFamily:"'Exo 2',sans-serif"}}>
+                      {rewardIconFor(q.reward_type, 14)}
+                      <span>{q.reward_amount}</span>
+                    </div>
+                    {q.claimed ? (
+                      <button type="button" disabled style={{minHeight:34,padding:'0 14px',border:0,borderRadius:9,background:'rgba(74,222,128,0.12)',color:'#4ade80',fontSize:12,fontWeight:800,cursor:'default'}}>✓ Забрано</button>
+                    ) : q.claimable ? (
+                      <button type="button" onClick={()=>doClaim(q.id)} disabled={!!busy[q.id]} style={{minHeight:34,padding:'0 14px',border:0,borderRadius:9,background:'linear-gradient(180deg,#ffd46e,#f4a529)',color:'#2f1800',fontSize:12,fontWeight:900,boxShadow:'0 4px 0 #8f4f12,0 8px 18px rgba(244,179,63,0.28)',cursor:busy[q.id]?'wait':'pointer',fontFamily:"'Exo 2',sans-serif"}}>{busy[q.id]?'...':'Забрать'}</button>
+                    ) : (
+                      <button type="button" disabled style={{minHeight:34,padding:'0 14px',border:0,borderRadius:9,background:'rgba(255,255,255,0.06)',color:'rgba(255,248,232,0.45)',fontSize:12,fontWeight:800,cursor:'default'}}>Ждёт</button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
       </div>
     </div>
   );
@@ -18604,8 +18548,8 @@ const App = () => {
   const [showSettings,   setShowSettings]   = React.useState(false);
   const [showAI,         setShowAI]         = React.useState(false);
   const [showGenerator,  setShowGenerator]  = React.useState(false);
-  const [showDailyLogin, setShowDailyLogin] = React.useState(false);
-  const [dailyStatus,    setDailyStatus]    = React.useState(null);
+  const [showQuests, setShowQuests] = React.useState(false);
+  const [questsStatus, setQuestsStatus] = React.useState(null);
   const [showBattlePick, setShowBattlePick] = React.useState(false);
   const [showGameMode,   setShowGameMode]   = React.useState(false);
   const [showMail,       setShowMail]       = React.useState(false);
@@ -18849,7 +18793,7 @@ const App = () => {
     };
   }, []);
 
-  const hasOverlay = squadsOpen || communityOpen || showAI || showGenerator || showDailyLogin || showMenu || showSettings || showBattlePick || showGameMode || showMail || showNews || showCaseOpen || showInfo || showGloryPath || showLeagueInfo || showBattlePass || showPreBattle || showSupport || showInvite || showBattles || showFriends || showProfile || showExtraID || onboardingBlocking || onboardingTourActive || newbiePathOpen || !!seasonResetNotice || !!pendingCaseOpen;
+  const hasOverlay = squadsOpen || communityOpen || showAI || showGenerator || showQuests || showMenu || showSettings || showBattlePick || showGameMode || showMail || showNews || showCaseOpen || showInfo || showGloryPath || showLeagueInfo || showBattlePass || showPreBattle || showSupport || showInvite || showBattles || showFriends || showProfile || showExtraID || onboardingBlocking || onboardingTourActive || newbiePathOpen || !!seasonResetNotice || !!pendingCaseOpen;
 
   React.useEffect(()=>{ window.__rootSetPreBattle = setShowPreBattle; window.__updateProfile = setProfile; window.__initExtraIDData = async ()=>{ const ad = resolveExtraIDAuthData(); const ed = await loadExtraIDProfile(ad); if(ed) setExtraIDData(ed); }; return ()=>window.__rootSetPreBattle=null; }, []);
 
@@ -18893,7 +18837,7 @@ const App = () => {
       if (showSettings) { setShowSettings(false); return true; }
       if (showMenu) { setShowMenu(false); return true; }
       if (showGenerator) { setShowGenerator(false); return true; }
-      if (showDailyLogin) { setShowDailyLogin(false); return true; }
+      if (showQuests) { setShowQuests(false); return true; }
       if (showAI) { setShowAI(false); return true; }
       if (squadsOpen || communityOpen || navTab !== 2) { setNavTab(2); return true; }
       return false;
@@ -19333,43 +19277,34 @@ const App = () => {
     else if (section === 'arena') setNavTab(2);
     else if (section === 'squads') setNavTab(3);
     else if (section === 'generator') { setNavTab(2); setShowGenerator(true); }
-    else if (section === 'daily_login') { setNavTab(2); setShowDailyLogin(true); }
+    else if (section === 'daily_quests') { setNavTab(2); setShowQuests(true); }
     const clean = new URL(location.href);
     clean.searchParams.delete('section');
     history.replaceState(null, '', clean.pathname + clean.search + clean.hash);
   }, []);
 
-  const fetchDailyLoginStatus = React.useCallback(async () => {
+  const fetchQuestStatus = React.useCallback(async () => {
     try {
-      const res = await fetch(apiUrl('/api/daily-login/status'));
+      const res = await fetch(apiUrl('/api/daily-quests/status'));
       if (!res.ok) return;
       const data = await res.json();
-      if (data && data.enabled) setDailyStatus(data);
+      if (data && data.enabled) setQuestsStatus(data);
     } catch(e) {}
   }, []);
   React.useEffect(() => {
-    fetchDailyLoginStatus();
-    const iv = setInterval(fetchDailyLoginStatus, 30000);
+    fetchQuestStatus();
+    const iv = setInterval(fetchQuestStatus, 30000);
     return () => clearInterval(iv);
-  }, [fetchDailyLoginStatus]);
+  }, [fetchQuestStatus]);
   React.useEffect(() => {
-    if (showDailyLogin) fetchDailyLoginStatus();
-  }, [showDailyLogin, fetchDailyLoginStatus]);
+    if (showQuests) fetchQuestStatus();
+  }, [showQuests, fetchQuestStatus]);
 
-  const onDailyClaimed = React.useCallback(async () => {
-    await fetchDailyLoginStatus();
-  }, [fetchDailyLoginStatus]);
+  const onQuestClaimed = React.useCallback(async () => {
+    await fetchQuestStatus();
+  }, [fetchQuestStatus]);
 
-  const dailyTimerLabel = React.useMemo(() => {
-    if (!dailyStatus || !dailyStatus.enabled) return '';
-    if (dailyStatus.is_claimable) return 'Готово!';
-    const sec = dailyStatus.time_left_seconds || 0;
-    const h = Math.floor(sec / 3600);
-    const m = Math.floor((sec % 3600) / 60);
-    return `${h}ч ${String(m).padStart(2,'0')}м`;
-  }, [dailyStatus]);
-
-  React.useEffect(() => { if(showDailyLogin) window.__analytics?.screen('daily_login'); }, [showDailyLogin]);
+  React.useEffect(() => { if(showQuests) window.__analytics?.screen('daily_quests'); }, [showQuests]);
 
   const swipeRef = React.useRef(null);
   const swipeStartX = React.useRef(0);
@@ -19681,7 +19616,7 @@ const App = () => {
         ) : showGenerator ? (
           <GeneratorScreen onBack={()=>setShowGenerator(false)} profile={profile}/>
         ) : navTab===2 ? (
-          <ArenaScreen onMenu={()=>setShowMenu(true)} onAI={()=>setShowAI(true)} onGenerator={()=>setShowGenerator(true)} onOpenBattles={()=>setShowBattles(true)} onBattlePick={()=>setShowBattlePick(true)} onStartBattle={()=>setShowGameMode(true)} onOpenCase={()=>setShowCaseOpen(true)} onOpenGloryPath={()=>setShowLeagueInfo(true)} onOpenLeagueInfo={()=>setShowLeagueInfo(true)} onOpenBattlePass={()=>setShowBattlePass(true)} onGoToShop={()=>featureEnabled(runtimeStatus,'shop')?setNavTab(0):showTempUnavailable()} onDailyLogin={()=>setShowDailyLogin(true)} dailyStatus={dailyStatus} profile={profile}/>
+          <ArenaScreen onMenu={()=>setShowMenu(true)} onAI={()=>setShowAI(true)} onGenerator={()=>setShowGenerator(true)} onOpenBattles={()=>setShowBattles(true)} onBattlePick={()=>setShowBattlePick(true)} onStartBattle={()=>setShowGameMode(true)} onOpenCase={()=>setShowCaseOpen(true)} onOpenGloryPath={()=>setShowLeagueInfo(true)} onOpenLeagueInfo={()=>setShowLeagueInfo(true)} onOpenBattlePass={()=>setShowBattlePass(true)} onGoToShop={()=>featureEnabled(runtimeStatus,'shop')?setNavTab(0):showTempUnavailable()} onQuests={()=>setShowQuests(true)} questsStatus={questsStatus} profile={profile}/>
         ) : navTab===0 ? (
           <ShopScreen profile={profile} onProfileUpdate={function(p){ setProfile(p); }}/>
         ) : navTab===1 ? (
@@ -19718,7 +19653,7 @@ const App = () => {
       {showCaseOpen   && <CaseOpenScreen onClose={()=>setShowCaseOpen(false)} onDone={()=>{invalidateInventoryCaches();setShowCaseOpen(false);window.reloadFreshProfile().then(d=>{if(d)setProfile(d);});completeNewbieTask('open_starter_case');}} profile={profile}/>}
       {pendingCaseOpen && <CaseOpenScreen userCaseId={pendingCaseOpen.userCaseId} initialTier={pendingCaseOpen.initialTier} onClose={()=>setPendingCaseOpen(null)} onDone={()=>{invalidateInventoryCaches();setPendingCaseOpen(null);window.reloadFreshProfile().then(d=>{if(d)setProfile(d);});}} profile={profile}/>}
       {showInfo       && <InfoSheet      onClose={()=>setShowInfo(false)}/>}
-      {showDailyLogin && <DailyLoginSheet onClose={()=>setShowDailyLogin(false)} profile={profile} status={dailyStatus} onClaimed={onDailyClaimed}/>}
+      {showQuests && <QuestsSheet onClose={()=>setShowQuests(false)} status={questsStatus} onClaimed={onQuestClaimed}/>}
       {showLeagueInfo && <LeagueInfoSheet onClose={()=>setShowLeagueInfo(false)} profile={profile}/>}
       {showPreBattle  && <PreBattleScreen  data={window.__preBattleData} onClose={()=>{setShowPreBattle(false);window.__preBattleData=null;}}/>}
       {showSupport    && <SupportSheet    onClose={()=>setShowSupport(false)}/>}
@@ -20873,6 +20808,6 @@ const LeagueInfoSheet = ({onClose, onOpenGloryPath, profile}) => {
 
 ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
 </script>
-<script src="index.compiled.js?v=4255ddf8772a"></script>
+<script src="index.compiled.js?v=6f941fa95d2b"></script>
 </body>
 </html>
