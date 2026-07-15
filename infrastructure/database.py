@@ -8,7 +8,7 @@ import random
 import re
 import uuid
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, date, time
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Optional, Dict, TYPE_CHECKING
@@ -50,7 +50,7 @@ from infrastructure.notifications import (
 
 
 # Версию схемы повышаем при изменении структуры таблиц
-SCHEMA_VERSION = 48
+SCHEMA_VERSION = 49
 STARTER_DECK_CARD_IDS: list[int] = [1, 36, 37, 38, 39, 40, 41, 42, 46]
 BOT_USER_ID_MIN = 900_000_000
 BOT_USER_ID_MAX = 8_999_999_999_999
@@ -814,6 +814,27 @@ class Database:
     DAILY_LOGIN_INTERVAL_SECONDS = 24 * 60 * 60
     DAILY_LOGIN_STREAK_WINDOW_SECONDS = 24 * 60 * 60
 
+    DAILY_QUESTS = (
+        {"id": "login_once",    "title": "Зайти в игру",            "description": "Просто вернись и награда уже твоя.",        "target": 1, "reward_type": "coins", "reward_amount": 50},
+        {"id": "open_case_1",   "title": "Открой 1 кейс",            "description": "Отличный шанс попытать удачу и получить награду!", "target": 1, "reward_type": "coins", "reward_amount": 100},
+        {"id": "win_battle_1",  "title": "Выиграй 1 бой",            "description": "Продвигайся вперед по трофейной дороге!",     "target": 1, "reward_type": "case",  "reward_amount": 1, "case_tier": 1},
+        {"id": "win_battle_5", "title": "Выиграй 5 боев",            "description": "Просто ежедневное боевое крещение.",          "target": 5, "reward_type": "case",  "reward_amount": 3, "case_tier": 1},
+        {"id": "win_streak_5", "title": "Выиграй 5 боев подряд",     "description": "Я в огне! Я сам огонь!",                     "target": 5, "reward_type": "case",  "reward_amount": 5, "case_tier": 1},
+    )
+
+    def _daily_quests_today(self) -> "date":
+        return datetime.now(MOSCOW_TZ).date()
+
+    def _daily_quests_reset_at(self) -> tuple[datetime, int]:
+        """Вернуть (next 00:00 MSK как UTC datetime, секунд до сброса)."""
+        now_msk = datetime.now(MOSCOW_TZ)
+        next_midnight = datetime.combine(now_msk.date(), time(0, 0), tzinfo=MOSCOW_TZ) + timedelta(days=1)
+        reset_seconds = max(0, int((next_midnight - now_msk).total_seconds()))
+        return next_midnight.astimezone(timezone.utc), reset_seconds
+
+    def _quest_def(self, quest_id: str) -> "dict[str, Any] | None":
+        return next((q for q in self.DAILY_QUESTS if q["id"] == quest_id), None)
+
     def _choose_daily_login_reward(self, streak_day: int) -> tuple[str, int, int]:
         preset = random.choice(self.DAILY_LOGIN_REWARD_PRESETS)
         base_amount = int(preset["amount"])
@@ -1469,6 +1490,7 @@ class Database:
         community_polls_changed = await self._ensure_community_polls_table()
         community_submissions_changed = await self._ensure_community_submissions_table()
         rating_cache_changed = await self._ensure_rating_snapshot_cache_table()
+        daily_quests_changed = await self._ensure_daily_quests_progress_table()
         schema_changed = (
             (current_version != SCHEMA_VERSION)
             or users_changed
@@ -1531,6 +1553,7 @@ class Database:
             or community_polls_changed
             or community_submissions_changed
             or rating_cache_changed
+            or daily_quests_changed
         )
 
         # Обновляем референсные данные для новой боевой системы
@@ -6219,6 +6242,30 @@ class Database:
             """
         )
         return changed
+
+    async def _ensure_daily_quests_progress_table(self) -> bool:
+        """Создать таблицу ежедневных квестов, если её нет."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+        await self.execute(
+            """
+            CREATE TABLE IF NOT EXISTS daily_quests_progress (
+              id BIGSERIAL PRIMARY KEY,
+              user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+              quest_id TEXT NOT NULL,
+              reset_date DATE NOT NULL,
+              progress INTEGER NOT NULL DEFAULT 0,
+              claimed BOOLEAN NOT NULL DEFAULT FALSE,
+              claimed_at TIMESTAMPTZ,
+              updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+              UNIQUE(user_id, quest_id, reset_date)
+            )
+            """
+        )
+        await self.execute(
+            "CREATE INDEX IF NOT EXISTS idx_daily_quests_progress_user_date ON daily_quests_progress(user_id, reset_date)"
+        )
+        return True
 
     def _rating_categories_for_scope(self, scope: str) -> tuple[dict[str, str], ...]:
         if scope == "squads":
