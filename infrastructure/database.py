@@ -835,6 +835,58 @@ class Database:
     def _quest_def(self, quest_id: str) -> "dict[str, Any] | None":
         return next((q for q in self.DAILY_QUESTS if q["id"] == quest_id), None)
 
+    async def get_daily_quests_status(self, user_id: int) -> dict[str, Any]:
+        """Вернуть статус ежедневных квестов для UI (лениво создаёт строки на сегодня)."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        today = self._daily_quests_today()
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                for q in self.DAILY_QUESTS:
+                    if q["id"] == "login_once":
+                        await conn.execute(
+                            """INSERT INTO daily_quests_progress (user_id, quest_id, reset_date, progress)
+                               VALUES ($1, $2, $3, 1)
+                               ON CONFLICT (user_id, quest_id, reset_date)
+                               DO UPDATE SET progress = 1, updated_at = NOW()
+                               WHERE daily_quests_progress.progress < 1""",
+                            user_id, q["id"], today)
+                    else:
+                        await conn.execute(
+                            """INSERT INTO daily_quests_progress (user_id, quest_id, reset_date, progress)
+                               VALUES ($1, $2, $3, 0)
+                               ON CONFLICT (user_id, quest_id, reset_date) DO NOTHING""",
+                            user_id, q["id"], today)
+                rows = await conn.fetch(
+                    """SELECT quest_id, progress, claimed FROM daily_quests_progress
+                       WHERE user_id = $1 AND reset_date = $2""",
+                    user_id, today)
+        row_map = {r["quest_id"]: r for r in rows}
+        reset_at, reset_seconds = self._daily_quests_reset_at()
+        quests = []
+        for q in self.DAILY_QUESTS:
+            r = row_map.get(q["id"])
+            target = q["target"]
+            progress = int(r["progress"]) if r else (1 if q["id"] == "login_once" else 0)
+            claimed = bool(r["claimed"]) if r else False
+            quests.append({
+                "id": q["id"],
+                "title": q["title"],
+                "description": q["description"],
+                "reward_type": q["reward_type"],
+                "reward_amount": q["reward_amount"],
+                "progress": min(progress, target),
+                "target": target,
+                "claimable": progress >= target and not claimed,
+                "claimed": claimed,
+            })
+        return {
+            "enabled": True,
+            "reset_at": reset_at.isoformat(),
+            "reset_seconds": reset_seconds,
+            "quests": quests,
+        }
+
     def _choose_daily_login_reward(self, streak_day: int) -> tuple[str, int, int]:
         preset = random.choice(self.DAILY_LOGIN_REWARD_PRESETS)
         base_amount = int(preset["amount"])
