@@ -195,14 +195,12 @@ def test_d11_omniscient_info_mode_explicit(tmp_path, monkeypatch):
     assert InfoModeV5().enemy_deck_known is False
 
 
-def test_history_events_reads_state_history_not_action_history(tmp_path, monkeypatch):
-    """select_action must feed encode_observation_v5 the V5-format history from
-    ``state.history`` (List[Dict], core/state.py:165, populated by engine.py:405
-    via action.to_dict()) — NOT ``state.action_history`` (Deque[tuple], the UI
-    log) and NOT a hardcoded []. This is train/deploy parity: the offline loader
-    feeds ``pre_snap["history"]`` (= list(state.history), v5_trace.py:310) to
-    encode_observation_v5, so deploy must read the same field or the 20x144
-    history channel is silently dropped (train/deploy mismatch)."""
+def test_history_events_reads_dedicated_v5_ring(tmp_path, monkeypatch):
+    """select_action must use the Phase-C ``v5_history_events`` contract.
+
+    Native ``state.history`` and UI ``state.action_history`` remain separate
+    compatibility logs and must never be substituted into the model input.
+    """
     from train_v3.contracts import OBS_V5_DIM
     import train_v3.obs_v5 as obs_v5_mod
 
@@ -219,26 +217,24 @@ def test_history_events_reads_state_history_not_action_history(tmp_path, monkeyp
     arena = engine._arena
     pid = engine.human_user_id
 
-    # Simulate engine.py:405 (state.history.append(action.to_dict())) + the
-    # effects.py UI-log tuples (state.action_history.append((log_type, text))).
+    # Keep all three histories populated so selecting the wrong one is visible.
     hist_event = {
         "actor_id": pid, "action_type": "play_card", "action_id": 7,
         "enemy_hero_hp_delta": 0.0, "own_hero_hp_delta": 0.0,
         "my_board_count_delta": 1.0, "enemy_board_count_delta": 0.0,
         "turn_number": 1, "board_power_delta": 3.0,
     }
-    arena.state.history.append(dict(hist_event))
+    arena.state.v5_history_events.append(dict(hist_event))
+    arena.state.history.append({"type": "end_turn"})
     arena.state.action_history.append(("play_card", "p1 plays card 7"))
 
     adapter = V5RlhfAdapter({"name": "v5-test", "inference": _fake_inference()})
     adapter.select_action(arena, pid)
 
     he = captured["history_events"]
-    # Read state.history (List[Dict]) — the V5-format field — not action_history
-    # tuples (which would filter to []) and not a hardcoded [].
     assert he == [hist_event], (
-        "adapter must pass list(state.history) dicts to encode_observation_v5; "
-        f"got {he!r} (reading action_history or hardcoding [] would drop the channel)"
+        "adapter must pass list(state.v5_history_events) to encode_observation_v5; "
+        f"got {he!r}"
     )
     assert len(he) == 1 and isinstance(he[0], dict)
 

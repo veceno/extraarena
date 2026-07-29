@@ -1,0 +1,51 @@
+{
+  "schema": "extra_lr_aux_onnx_v1",
+  "kind": "metronome",
+  "format": "onnx",
+  "opset": 17,
+  "source_checkpoint": "extra_lr_metronome_v1.npz",
+  "source_checkpoint_sha256": "67349fe2f932539e8a45680dda3e1598521833277b3bcc4cbc482dc212c2cbee",
+  "inputs": {
+    "features": [
+      null,
+      26
+    ]
+  },
+  "outputs": {
+    "predicted_log_ms": [
+      null,
+      1
+    ]
+  },
+  "postprocess": "expm1_clamp_100_25000_ms",
+  "residual_log_quantiles": [
+    -0.049069710075855255,
+    0.565829873085022,
+    1.2644474506378174
+  ],
+  "training": {
+    "schema": "extra_lr_aux_model_v1",
+    "model": "ExtraLR Metronome V1",
+    "target": "log1p(human_decision_time_ms)",
+    "feature_schema": "human_visible_state+legal_complexity+action_context",
+    "split": "group/session proxy; participant key unavailable",
+    "safety_sampling": "sample log-time distribution; clamp only below 100ms and above 25s",
+    "metrics": {
+      "rows": 1262,
+      "mae": 721.5668311150558,
+      "median_ae": 415.96543296403973,
+      "rmse": 1235.6631100396985,
+      "baseline_median_mae": 892.2511885895404,
+      "log_mae": 0.3218764854470605,
+      "p50_coverage": 0.45879556259904913,
+      "p90_coverage": 0.8890649762282092,
+      "raw_human_rows": 12085,
+      "usable_human_rows": 12083,
+      "censored_or_idle_rows": 2,
+      "groups": 68,
+      "participant_key_available": false
+    },
+    "readiness": "candidate_ready",
+    "artifact_sha256": "67349fe2f932539e8a45680dda3e1598521833277b3bcc4cbc482dc212c2cbee"
+  }
+}

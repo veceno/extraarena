@@ -5,13 +5,15 @@
 Интеграция:
     1. Модели загружаются при старте сервера (web/server.py create_web_app()).
     2. Бот-матчи используют ONNX при наличии загруженной модели (engine.is_bot = True).
-    3. Поддержка моделей: TrainV2 v4 ONNX (`train_v2_classic_v1`)
+    3. Поддержка моделей: V4 ONNX (`train_v2_classic_v1`) и V5 ONNX (`v5`)
     4. Температурный сэмплинг: T ∈ [0.1, 1.8] для контроля случайности
     5. Маскирование: недопустимые действия получают логит -1e9
 
 Поддержка форматов наблюдений:
     train_v2_classic_v1: obs_dim=1456, action_feature_dim=171,
     max_candidate_actions=601.
+    v5: obs_dim=7128, action_feature_dim=171,
+    max_candidate_actions=601, отдельная mana-draw голова.
 
 Зависимости:
     - onnxruntime (установить: pip install onnxruntime)
@@ -20,6 +22,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import random
@@ -75,6 +78,14 @@ class BerserkInference:
         except Exception as exc:
             logger.warning("[BerserkInference] Failed to read sidecar %s: %s", sidecar_path, exc)
             return {}
+
+    @staticmethod
+    def _sha256_file(path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
 
     @staticmethod
     def _validate_temperature_range(difficulty: str, profile: dict[str, Any]) -> tuple[float, float]:
@@ -269,6 +280,7 @@ class BerserkInference:
         # на один ONNX-файл с разной temperature/selection, поэтому сессии
         # переиспользуются по пути модели.
         session_cache: Dict[str, ort.InferenceSession] = {}
+        artifact_hash_cache: Dict[str, str] = {}
         load_errors: list[tuple[str, Exception]] = []
         for difficulty, profile in profiles.items():
             try:
@@ -300,6 +312,29 @@ class BerserkInference:
                 action_codec, observation_codec = self._validate_codec_options(difficulty, merged_profile)
 
                 cache_key = str(model_path.resolve())
+                artifact_hash = artifact_hash_cache.get(cache_key)
+                if artifact_hash is None:
+                    artifact_hash = self._sha256_file(model_path)
+                    artifact_hash_cache[cache_key] = artifact_hash
+                source_checkpoint = str(
+                    sidecar.get("source_checkpoint") or model_path.name
+                )
+                provenance = {
+                    "model_id": None,
+                    "model_family": (
+                        "extra-lr-v5"
+                        if profile_format == _V5_FORMAT
+                        else "extra-lr-v4"
+                    ),
+                    "model_version": source_checkpoint,
+                    "checkpoint_id": Path(source_checkpoint).stem,
+                    "weights_hash": str(
+                        sidecar.get("source_checkpoint_sha256")
+                        or sidecar.get("artifact_sha256")
+                        or artifact_hash
+                    ),
+                    "adapter_kind": str(profile_format),
+                }
                 session = session_cache.get(cache_key)
                 if session is None:
                     session = ort.InferenceSession(
@@ -338,6 +373,7 @@ class BerserkInference:
                         "input_names": input_names,
                         "output_names": output_names,
                         "mana_draw_head": bool(merged_profile.get("mana_draw_head", True)),
+                        "provenance": provenance,
                     }
                 else:
                     (
@@ -363,6 +399,7 @@ class BerserkInference:
                         "observation_codec": observation_codec,
                         "input_names": input_names,
                         "output_names": output_names,
+                        "provenance": provenance,
                     }
 
                 input_meta = session.get_inputs()[0]
@@ -384,11 +421,36 @@ class BerserkInference:
             details = "; ".join(f"{name}: {exc}" for name, exc in load_errors)
             logger.error("[BerserkInference] Ошибка загрузки профилей: %s", details)
         if not self.sessions:
-            logger.warning("[BerserkInference] Ни одна TrainV2 v4 модель не загружена; бот уйдет в rule-based fallback")
+            logger.warning(
+                "[BerserkInference] Ни один V4/V5 профиль не загружен; "
+                "model-backed бои должны быть отклонены вызывающим кодом"
+            )
 
     def has_profile(self, difficulty: str) -> bool:
         """Return whether a difficulty profile is loaded and ready for inference."""
         return str(difficulty) in self.sessions
+
+    def get_profile_provenance(
+        self,
+        difficulty: str,
+        *,
+        model_id: str | None = None,
+    ) -> dict[str, str | None] | None:
+        """Return detached model provenance for dataset records."""
+
+        profile = self.sessions.get(str(difficulty))
+        if not isinstance(profile, dict):
+            return None
+        raw = profile.get("provenance")
+        if not isinstance(raw, dict):
+            return None
+        result = {
+            str(key): (str(value) if value is not None else None)
+            for key, value in raw.items()
+        }
+        if model_id:
+            result["model_id"] = str(model_id)
+        return result
 
     def get_action(
         self,
@@ -667,6 +729,7 @@ class BerserkInference:
         # vendored V5 live-path copies) + core.* -- ZERO train_v3 / rlhf_env
         # imports on the live hot path.
         from ai.train_v2.obs_v5 import encode_observation_v5
+        from ai.train_v2.v5_contracts import AssistModeV5, InfoModeV5
         from ai.train_v2.mana_draw_head_v5 import mana_draw_legal_mask, select_includes_mana_draw
         from ai.train_v2.classic_actions_v1 import (
             build_action_mask,
@@ -684,7 +747,32 @@ class BerserkInference:
         verify_mask = bool(profile.get("verify_mask", False))
 
         try:
-            obs = encode_observation_v5(game_state, player_id).reshape(1, obs_dim).astype(np.float32)
+            # Phase-C was trained/evaluated on the omniscient replay bridge:
+            # both players' private zones (including the real deck order) and
+            # the live action history are part of every V5 observation.  Do
+            # not rely on InfoModeV5 defaults here: its enemy fields are
+            # intentionally hidden by default and would silently zero the
+            # opponent hand/deck slots in production.
+            info_mode = InfoModeV5(
+                adaptive_strength=1.0,
+                own_hand_identity_known=True,
+                own_deck_known=True,
+                enemy_hand_known=True,
+                enemy_deck_known=True,
+                enemy_deck_order_known=True,
+                draw_assist_enabled=False,
+                draw_assist_strength=0.0,
+            )
+            obs = encode_observation_v5(
+                game_state,
+                player_id,
+                info_mode=info_mode,
+                # Assembler/CardOptimum alter the external deck/draw process;
+                # the release ablations deliberately kept assist-profile
+                # channels off so every arm used the same policy observation.
+                assist_mode=AssistModeV5(),
+                history_events=list(getattr(game_state, "v5_history_events", ())),
+            ).reshape(1, obs_dim).astype(np.float32)
             mask = build_action_mask(
                 game_state,
                 player_id,

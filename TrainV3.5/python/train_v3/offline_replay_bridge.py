@@ -15,10 +15,11 @@ Design (BLOCK_C_PLAN.md section C2 + decisions D-C7 / D-C10 / D11):
     encoder (design.md:46) AND the omniscient pre_state v5_trace records. The
     loader defaults to self-visible ``InfoModeV5()`` (offline_dataset_loader.py
     :685); the bridge overrides it.
-  * D-C7 HUMAN-ONLY: only ``decision_source=='human'`` rows are replayed (reuse
-    A1 filter pattern bc_dataset.py:313). bot/rl/llm rows are EXCLUDED -- the
-    bot's actions are NOT replayed (we replay the human policy, scored by the
-    current V5 policy at bridge time).
+  * D-C7 HUMAN-ONLY: only successfully executed rows with
+    ``decision_source=='human'`` and ``accepted is True`` are replayed (reuse
+    A1 filter pattern bc_dataset.py:313). bot/rl/llm and rejected rows are
+    EXCLUDED -- the bot's actions are NOT replayed (we replay the human policy,
+    scored by the current V5 policy at bridge time).
   * 601-tcode: per human row, reconstruct ``pre_state`` from the loader's
     ``pre_state_snapshot``; build the append_only mask
     (``build_action_mask(..., placement_mode='append_only')`` -- the C0
@@ -211,6 +212,10 @@ def _resolve_row(
     # D-C7 human filter (reuse A1 pattern bc_dataset.py:313).
     if t.meta.get("decision_source") != "human":
         return None
+    # Rejected attempts are canonical audit rows, never behavior targets.
+    # ``is True`` deliberately excludes missing and truthy non-bool values.
+    if t.meta.get("accepted") is not True:
+        return None
     # The loader carries the raw pre_state snapshot (additive Block-A field);
     # reconstruct the GameState for the append_only mask + tcode resolution.
     if t.pre_state_snapshot is None:
@@ -372,9 +377,13 @@ def build_offline_replay_batch(
     for t in raw:
         row = _resolve_row(t, strict=strict)
         if row is None:
-            # Distinguish skipped (unresolvable / missing snapshot) from filtered
-            # (non-human). Only unresolvable human rows count as skipped.
-            if t.meta.get("decision_source") == "human":
+            # Distinguish skipped (unresolvable / missing snapshot) from
+            # filtered (non-human or rejected). Only an accepted human row that
+            # fails resolution counts as skipped.
+            if (
+                t.meta.get("decision_source") == "human"
+                and t.meta.get("accepted") is True
+            ):
                 skipped += 1
             continue
         bid = row.battle_id

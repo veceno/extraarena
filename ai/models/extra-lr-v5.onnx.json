@@ -1,0 +1,26 @@
+{
+  "model_version": "v5_split_encoder_onnx_v1",
+  "source_checkpoint": "extra_lr_v5_phaseC_candidate_h299.npz",
+  "source_checkpoint_sha256": "1c4e95eda44ac663218a35242a81f965fde56922dc20f26f0eea1172dd63251e",
+  "obs_dim": 7128,
+  "action_feature_dim": 171,
+  "max_candidate_actions": 601,
+  "placement_mode": "append_only",
+  "inputs": [
+    "observation",
+    "action_features"
+  ],
+  "outputs": [
+    "logits",
+    "value",
+    "mana_draw_logit"
+  ],
+  "mana_draw_head": true,
+  "state_action_interaction": "gated_bilinear_query_cap01_v1+gated_bilinear_key_cap2_v2",
+  "format": "v5",
+  "card_shape_version": "v5_card_shape_v1",
+  "config": {
+    "hidden_dim": 256,
+    "action_hidden_dim": 128
+  }
+}

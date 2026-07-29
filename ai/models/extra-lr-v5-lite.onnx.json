@@ -1,0 +1,23 @@
+{
+  "model_version": "v5_split_encoder_onnx_v1",
+  "source_checkpoint": "extra_lr_v5_blockB_league_update_18500.npz",
+  "source_checkpoint_sha256": "99d7973a5cfea3afd56fa1022571d2ac8d8d068bef0bb0f7d850c98485974908",
+  "obs_dim": 7128,
+  "action_feature_dim": 171,
+  "max_candidate_actions": 601,
+  "placement_mode": "append_only",
+  "inputs": [
+    "observation",
+    "action_features"
+  ],
+  "outputs": [
+    "logits",
+    "value",
+    "mana_draw_logit"
+  ],
+  "mana_draw_head": true,
+  "state_action_interaction": "gated_bilinear_query_cap01_v1+gated_bilinear_key_cap2_v2",
+  "format": "v5",
+  "card_shape_version": "v5_card_shape_v1",
+  "config": {}
+}

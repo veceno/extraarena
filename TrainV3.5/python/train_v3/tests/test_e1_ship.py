@@ -1,6 +1,6 @@
 """Synthetic tests for the E5 ship component (``e1_ship.py``) + the prod wiring
-(``ai/bot_brain.py`` V5 branch + ``infrastructure/config.py`` V5 profile + tier
-retargets).
+(``ai/bot_brain.py`` V5 branch + ``infrastructure/config.py`` four-stage
+V4 Micro/V5-family progression).
 
 ALL collaborators are SYNTHETIC: fake ``ort.InferenceSession`` stubs + a fake
 ``onnx_export_fn`` + a real ``ReleaseBundleConfig`` with a tmp ``candidate_dir``
@@ -371,7 +371,7 @@ class TestShipV5Winner:
         os.makedirs(cdir, exist_ok=True)
         # write a candidate.json so build_release_bundle finds the candidate
         with open(os.path.join(cdir, "candidate.json"), "w") as f:
-            json.dump({"model_name": "extra-lr-v5-max", "score": 0.9}, f)
+            json.dump({"model_name": "extra-lr-v5", "score": 0.9}, f)
         # write a profile overlay so build_release_bundle finds the profile
         with open(os.path.join(cdir, "candidate_profile.json"), "w") as f:
             json.dump({"profile": "v5"}, f)
@@ -387,7 +387,7 @@ class TestShipV5Winner:
         return ReleaseBundleConfig(
             candidate_dir=cdir,
             output_dir=str(tmp_path / "output"),
-            name="extra-lr-v5-max-test",
+            name="extra-lr-v5-test",
             include_shadow=False,
             include_acceptance=True,
             create_archive=False,
@@ -431,16 +431,22 @@ class TestShipV5Winner:
         # onnx_export_fn was called with winner_report.candidate_path
         assert len(export_calls) == 1
         assert export_calls[0][0] == winner_report.candidate_path
-        assert export_calls[0][1].endswith("extra-lr-v5-max.onnx")
+        assert export_calls[0][1].endswith("extra-lr-v5.onnx")
 
         # ShipResult populated
         assert isinstance(result, ShipResult)
-        assert result.marker == "extra-lr-v5-max"
-        assert result.prod_profile_key == "extra-lr-v5-max"
+        assert result.marker == "extra-lr-v5"
+        assert result.prod_profile_key == "extra-lr-v5"
+        assert result.production_profiles_verified == (
+            "extra-lr-v4-micro",
+            "extra-lr-v5-lite",
+            "extra-lr-v5",
+            "extra-lr-v5-ultra",
+        )
         assert os.path.exists(result.onnx_path)
         assert os.path.exists(result.manifest_path)
         assert result.fallback_guard_verified is True
-        assert len(result.trophy_tiers_retargeted) == 4
+        assert len(result.trophy_tiers_retargeted) == 12
 
         # V5 detector is registered (in the singleton registry)
         reg = register_v5_kind_detector()
@@ -763,39 +769,80 @@ class TestV4PathUnchanged:
 
 
 # ============================================================================
-# config V5 profile + tier retargets
+# production V4 Micro/V5-family profiles + four-stage trophy progression
 # ============================================================================
 
 class TestConfigV5Profile:
-    def test_config_v5_profile_added_and_top_tiers_retargeted(self):
+    def test_config_has_four_stage_v4_micro_v5_family_progression(self):
         from infrastructure.config import (
             BOT_MODEL_PROFILES,
             BOT_STRENGTH_TIERS,
             BOT_DIFFICULTY_PROFILES,
         )
 
-        assert "extra-lr-v5-max" in BOT_MODEL_PROFILES
-        v5 = BOT_MODEL_PROFILES["extra-lr-v5-max"]
-        assert v5["obs_dim"] == 7128
-        assert v5["mana_draw_head"] is True
-        assert v5["format"] == "v5"
+        assert tuple(BOT_MODEL_PROFILES) == (
+            "extra-lr-v4-micro",
+            "extra-lr-v5-lite",
+            "extra-lr-v5",
+            "extra-lr-v5-ultra",
+        )
 
-        top = ("tier_hard_4500", "tier_hard_plus_6000", "tier_max_minus_7500", "tier_max_9000")
-        tier_by_key = {t["key"]: t for t in BOT_STRENGTH_TIERS}
-        for k in top:
-            assert tier_by_key[k]["brain_profile"] == "extra-lr-v5-max", k
+        v4_micro = BOT_MODEL_PROFILES["extra-lr-v4-micro"]
+        assert v4_micro["obs_dim"] == 1456
+        assert v4_micro["format"] == "train_v2_classic_v1"
 
-        # 8 non-top tiers stay extra-lr-v4-* (regression guard)
-        nontop = [t["key"] for t in BOT_STRENGTH_TIERS if t["key"] not in top]
-        assert len(nontop) == 8
-        for k in nontop:
-            assert tier_by_key[k]["brain_profile"].startswith("extra-lr-v4-"), k
+        for profile_key in (
+            "extra-lr-v5-lite",
+            "extra-lr-v5",
+            "extra-lr-v5-ultra",
+        ):
+            profile = BOT_MODEL_PROFILES[profile_key]
+            assert profile["obs_dim"] == 7128
+            assert profile["mana_draw_head"] is True
+            assert profile["format"] == "v5"
 
-        # BOT_DIFFICULTY_PROFILES derivation propagated to obs_dim=7128 for top
-        for k in top:
-            assert BOT_DIFFICULTY_PROFILES[k]["obs_dim"] == 7128, k
-        for k in nontop:
-            assert BOT_DIFFICULTY_PROFILES[k]["obs_dim"] == 1456, k
+        assert (
+            BOT_MODEL_PROFILES["extra-lr-v5-ultra"]["model_path"]
+            == BOT_MODEL_PROFILES["extra-lr-v5"]["model_path"]
+        )
+        assert BOT_MODEL_PROFILES["extra-lr-v5-ultra"]["assembler_enabled"] is True
+        assert BOT_MODEL_PROFILES["extra-lr-v5-ultra"]["cardoptimum_enabled"] is True
+
+        expected_tiers = (
+            ("tier_lite_0000", 0, 99, "extra-lr-v4-micro"),
+            ("tier_easy_0100", 100, 299, "extra-lr-v4-micro"),
+            ("tier_easy_plus_0300", 300, 599, "extra-lr-v5-lite"),
+            ("tier_easy_plus_0600", 600, 999, "extra-lr-v5-lite"),
+            ("tier_medium_minus_1000", 1000, 1199, "extra-lr-v5-lite"),
+            ("tier_medium_1200", 1200, 1999, "extra-lr-v5"),
+            ("tier_medium_plus_2000", 2000, 2999, "extra-lr-v5"),
+            ("tier_hard_minus_3000", 3000, 4499, "extra-lr-v5"),
+            ("tier_hard_4500", 4500, 5999, "extra-lr-v5-ultra"),
+            ("tier_hard_plus_6000", 6000, 7499, "extra-lr-v5-ultra"),
+            ("tier_max_minus_7500", 7500, 8999, "extra-lr-v5-ultra"),
+            ("tier_max_9000", 9000, 1_000_000_000, "extra-lr-v5-ultra"),
+        )
+        actual_tiers = tuple(
+            (
+                tier["key"],
+                tier["min_trophies"],
+                tier["max_trophies"],
+                tier["brain_profile"],
+            )
+            for tier in BOT_STRENGTH_TIERS
+        )
+        assert actual_tiers == expected_tiers
+
+        for tier_key, _lo, _hi, profile_key in expected_tiers:
+            resolved = BOT_DIFFICULTY_PROFILES[tier_key]
+            expected_obs_dim = 1456 if profile_key == "extra-lr-v4-micro" else 7128
+            expected_format = (
+                "train_v2_classic_v1"
+                if profile_key == "extra-lr-v4-micro"
+                else "v5"
+            )
+            assert resolved["obs_dim"] == expected_obs_dim, tier_key
+            assert resolved["format"] == expected_format, tier_key
 
 
 # ============================================================================

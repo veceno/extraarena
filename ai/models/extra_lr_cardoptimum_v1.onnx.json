@@ -1,0 +1,38 @@
+{
+  "schema": "extra_lr_aux_onnx_v1",
+  "kind": "cardoptimum",
+  "format": "onnx",
+  "opset": 17,
+  "source_checkpoint": "extra_lr_cardoptimum_v1.npz",
+  "source_checkpoint_sha256": "9fc54a9e9d35c04d600ec67eba718bbaf9612b60219f9dcadb7668858749229e",
+  "inputs": {
+    "features": [
+      null,
+      82
+    ]
+  },
+  "outputs": {
+    "card_score": [
+      null,
+      1
+    ]
+  },
+  "postprocess": "identity",
+  "training": {
+    "schema": "extra_lr_aux_model_v1",
+    "model": "ExtraLR CardOptimum V1",
+    "target": "matched_counterfactual_expected_return",
+    "feature_schema": "human_visible_state+candidate_card_identity_and_stats",
+    "split": "state lineage split",
+    "metrics": {
+      "counterfactual_states": 9852,
+      "informative_states": 2906,
+      "test_informative_states": 250,
+      "top1_accuracy": 0.444,
+      "mean_ranking_regret": 0.213,
+      "p90_ranking_regret": 0.5
+    },
+    "readiness": "candidate_ready",
+    "artifact_sha256": "9fc54a9e9d35c04d600ec67eba718bbaf9612b60219f9dcadb7668858749229e"
+  }
+}

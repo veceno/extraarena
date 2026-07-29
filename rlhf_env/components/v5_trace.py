@@ -59,6 +59,8 @@ CARD_SHAPE_VERSION = "classic_card_shape_v1"
 ACTIONS_VERSION = "classic_actions_v1"
 OBS_VERSION = "classic_obs_v1"
 VISIBILITY = "omniscient_offline_only"
+METRONOME_MIN_LABEL_MS = 100
+METRONOME_MAX_LABEL_MS = 25_000
 
 _GIT_SHA_CACHE: Optional[str] = None
 
@@ -245,8 +247,8 @@ class V5TraceRecorder:
             "p2_deck": [{"card_id": int(cid), "level": int(self.p2_levels.get(cid, 1)), "instance_id": None} for cid in self.p2_deck_ids],
             "p1_user_id": int(self.p1_user_id),
             "p2_user_id": int(self.p2_user_id),
-            "p1_is_bot": self.p1_actor_type == "rl",
-            "p2_is_bot": True,
+            "p1_is_bot": self.p1_actor_type in {"bot", "rl", "llm"},
+            "p2_is_bot": self.p2_actor_type in {"bot", "rl", "llm"},
             # Теггинг актора (G15): human | llm | bot | rl. p1_is_bot/p2_is_bot
             # оставлены для back-compat (booleans), но actor_type — каноничное
             # поле для фильтрации Phase A (human) vs semi-synth (llm) vs model-vs-model (rl).
@@ -297,11 +299,13 @@ class V5TraceRecorder:
 
     def _snapshot_state(self) -> Dict[str, Any]:
         st = self.engine._arena.state
-        # G2: захватываем action_history / history / pending_card_feedback
+        # G2: захватываем action_history / native history / structured V5
+        # history / pending_card_feedback
         # чтобы offline-bridge мог реконструировать ПОЛНЫЙ GameState (вкл.
-        # 20×144 history-channel для encode_observation_v5) из pre_state.
+        # 20×162 rich history-channel для encode_observation_v5) из pre_state.
         # action_history — Deque[tuple[str,str]] (UI-лог: rebirth/crime/
-        # mana_draw entries из core/engine.py); history — List[Dict].
+        # mana_draw entries из core/engine.py); history — native List[Dict];
+        # v5_history_events — model-facing Deque[Dict](maxlen=20).
         try:
             action_history = [list(t) for t in st.action_history]
         except Exception:  # noqa: BLE001
@@ -310,6 +314,13 @@ class V5TraceRecorder:
             history = list(getattr(st, "history", []) or [])
         except Exception:  # noqa: BLE001
             history = []
+        try:
+            v5_history_events = [
+                self._snapshot_v5_history_event(event)
+                for event in getattr(st, "v5_history_events", ())
+            ]
+        except Exception:  # noqa: BLE001
+            v5_history_events = []
         try:
             pending_feedback = list(getattr(st, "pending_card_feedback_events", []) or [])
         except Exception:  # noqa: BLE001
@@ -322,9 +333,20 @@ class V5TraceRecorder:
             "p2": self._snapshot_player(st.p2),
             "action_history": action_history,
             "history": history,
+            "v5_history_events": v5_history_events,
             "pending_card_feedback_events": pending_feedback,
             "visibility": VISIBILITY,
         }
+
+    def _snapshot_v5_history_event(self, event: Dict[str, Any]) -> Dict[str, Any]:
+        """Serialize both JSON-safe live events and older CardInstance events."""
+
+        out = dict(event)
+        for key in ("source_card", "target_card"):
+            card = out.get(key)
+            if card is not None and not isinstance(card, dict):
+                out[key] = self._snapshot_card(card)
+        return out
 
     def _reward_snapshot(self, state, player_id: int) -> Dict[str, Any]:
         me = state.p1 if state.p1.user_id == player_id else state.p2
@@ -453,8 +475,88 @@ class V5TraceRecorder:
     # ------------------------------------------------------------------
     # hooks (вызывается из match_runner рядом с analytics-хуками)
     # ------------------------------------------------------------------
-    def before_action(self, user_id: int, action_json: Dict[str, Any], decision_source: str,
-                      action_id_provided: Optional[int] = None) -> int:
+    @staticmethod
+    def _decision_timing_fields(
+        decision_source: str,
+        *,
+        human_decision_time_ms: Optional[int],
+        decision_time_censored: Optional[bool],
+        decision_censor_reason: Optional[str],
+        control_source: Optional[str],
+    ) -> Dict[str, Any]:
+        """Normalize the action-timing contract without fabricating human labels.
+
+        Older callers do not observe a per-action decision clock.  Their human
+        rows are retained, but explicitly censored instead of silently becoming
+        zero/unknown Metronome targets.  Automated actors can never carry a
+        human timing label, including replacement bots on a human seat.
+        """
+
+        normalized_control = (
+            str(control_source).strip() if control_source is not None else None
+        )
+        normalized_control = normalized_control or None
+        if str(decision_source) != "human":
+            return {
+                "human_decision_time_ms": None,
+                "decision_time_censored": False,
+                "decision_censor_reason": None,
+                "control_source": normalized_control,
+            }
+
+        if human_decision_time_ms is None:
+            return {
+                "human_decision_time_ms": None,
+                "decision_time_censored": True,
+                "decision_censor_reason": (
+                    str(decision_censor_reason).strip()
+                    if decision_censor_reason
+                    else "not_observed"
+                ),
+                "control_source": normalized_control,
+            }
+
+        latency_ms = int(human_decision_time_ms)
+        inferred_censored = not (
+            METRONOME_MIN_LABEL_MS <= latency_ms <= METRONOME_MAX_LABEL_MS
+        )
+        censored = (
+            inferred_censored
+            if decision_time_censored is None
+            else bool(decision_time_censored)
+        )
+        reason = (
+            str(decision_censor_reason).strip()
+            if decision_censor_reason is not None
+            else None
+        )
+        if censored and not reason:
+            reason = (
+                "outside_training_window"
+                if inferred_censored
+                else "explicitly_censored"
+            )
+        if not censored:
+            reason = None
+        return {
+            "human_decision_time_ms": latency_ms,
+            "decision_time_censored": censored,
+            "decision_censor_reason": reason,
+            "control_source": normalized_control,
+        }
+
+    def before_action(
+        self,
+        user_id: int,
+        action_json: Dict[str, Any],
+        decision_source: str,
+        action_id_provided: Optional[int] = None,
+        *,
+        human_decision_time_ms: Optional[int] = None,
+        decision_time_censored: Optional[bool] = None,
+        decision_censor_reason: Optional[str] = None,
+        control_source: Optional[str] = None,
+    ) -> int:
         try:
             st = self.engine._arena.state
             # turn snapshot — на первом действии каждого ГЛОБАЛЬНОГО хода
@@ -487,6 +589,13 @@ class V5TraceRecorder:
                 legal_actions = []
             self._seq += 1
             actor_player = 1 if user_id == st.p1.user_id else 2
+            timing_fields = self._decision_timing_fields(
+                decision_source,
+                human_decision_time_ms=human_decision_time_ms,
+                decision_time_censored=decision_time_censored,
+                decision_censor_reason=decision_censor_reason,
+                control_source=control_source,
+            )
             row = {
                 "seq": self._seq,
                 "battle_id": self.battle_id,
@@ -494,6 +603,7 @@ class V5TraceRecorder:
                 "actor_user_id": int(user_id),
                 "actor_player": actor_player,
                 "decision_source": decision_source,
+                **timing_fields,
                 "legal_action_index": legal_index,
                 "action_type": atype,
                 "action_json": action_json,
@@ -549,8 +659,18 @@ class V5TraceRecorder:
         with self.actions_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
-    def record_terminal(self, user_id: int, action_type: str, reason: str,
-                         decision_source: str = "human") -> int:
+    def record_terminal(
+        self,
+        user_id: int,
+        action_type: str,
+        reason: str,
+        decision_source: str = "human",
+        *,
+        human_decision_time_ms: Optional[int] = None,
+        decision_time_censored: Optional[bool] = None,
+        decision_censor_reason: Optional[str] = None,
+        control_source: Optional[str] = None,
+    ) -> int:
         """Синтетический action-row для терминала БЕЗ обычного действия (surrender /
         non-action draw). pre_state снапается тут; post_state + deltas — в
         after_action(handle) ПОСЛЕ мутации (mark_surrender меняет status на P2_WIN).
@@ -567,6 +687,13 @@ class V5TraceRecorder:
             pre_reward = self._reward_snapshot(st, user_id)
             self._seq += 1
             actor_player = 1 if user_id == st.p1.user_id else 2
+            timing_fields = self._decision_timing_fields(
+                decision_source,
+                human_decision_time_ms=human_decision_time_ms,
+                decision_time_censored=decision_time_censored,
+                decision_censor_reason=decision_censor_reason,
+                control_source=control_source,
+            )
             row = {
                 "seq": self._seq,
                 "battle_id": self.battle_id,
@@ -574,6 +701,7 @@ class V5TraceRecorder:
                 "actor_user_id": int(user_id),
                 "actor_player": actor_player,
                 "decision_source": decision_source,
+                **timing_fields,
                 "legal_action_index": None,
                 "action_type": action_type,
                 "action_json": {"type": action_type, "reason": reason},

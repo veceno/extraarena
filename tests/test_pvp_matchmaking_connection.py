@@ -1771,6 +1771,7 @@ async def test_bot_turn_handoff_schedules_disconnected_takeover(monkeypatch):
     engine.current = 99
     engine.turn = 7
     engine.client_ready = True
+    engine._active_matches = web_server.ACTIVE_MATCHES
 
     def is_bot(user_id):
         return int(user_id) == 99
@@ -2290,25 +2291,24 @@ async def test_bots_allowed_false_override_requires_not_friends_and_different_sq
         classic=ClassicParams(bots_allowed=False),
     )
     engine.game_mode = "no-bots"
-    old_app = getattr(web_server.sio, "app", None)
 
-    try:
-        web_server.sio.app = {"db": AntiFraudDB(friends=False, squads={101: 1, 202: 2}), "match_game_modes": {}}
-        assert await web_server._replacement_bot_allowed("m-af", engine) is True
+    engine.runtime_owner_app = {
+        "db": AntiFraudDB(friends=False, squads={101: 1, 202: 2}),
+        "match_game_modes": {},
+    }
+    assert await web_server._replacement_bot_allowed("m-af", engine) is True
 
-        web_server.sio.app = {"db": AntiFraudDB(friends=True, squads={101: 1, 202: 2}), "match_game_modes": {}}
-        assert await web_server._replacement_bot_allowed("m-af", engine) is False
+    engine.runtime_owner_app = {
+        "db": AntiFraudDB(friends=True, squads={101: 1, 202: 2}),
+        "match_game_modes": {},
+    }
+    assert await web_server._replacement_bot_allowed("m-af", engine) is False
 
-        web_server.sio.app = {"db": AntiFraudDB(friends=False, squads={101: 7, 202: 7}), "match_game_modes": {}}
-        assert await web_server._replacement_bot_allowed("m-af", engine) is False
-    finally:
-        if old_app is None:
-            try:
-                delattr(web_server.sio, "app")
-            except AttributeError:
-                pass
-        else:
-            web_server.sio.app = old_app
+    engine.runtime_owner_app = {
+        "db": AntiFraudDB(friends=False, squads={101: 7, 202: 7}),
+        "match_game_modes": {},
+    }
+    assert await web_server._replacement_bot_allowed("m-af", engine) is False
 
 
 @pytest.mark.asyncio(loop_scope="function")
@@ -2410,13 +2410,42 @@ async def test_afk_replacement_human_uses_berserk_inference(monkeypatch):
             return 0
 
     fake_brain = FakeBerserkBrain()
-    monkeypatch.setattr(web_server, "BERSERK_BRAIN", fake_brain)
+    engine.berserk_brain = fake_brain
     monkeypatch.setattr(web_server.random, "uniform", lambda *_args: 0.0)
 
     await web_server.run_bot_routine(engine, 101)
 
     assert fake_brain.calls
     assert fake_brain.calls[0][0] == 101
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_bot_routine_uses_match_brain_after_process_alias_changes(monkeypatch):
+    engine = _engine_with_state()
+    engine.set_player_replacement_status(101, ReplacementStatus.AFK)
+
+    class TrackingBrain:
+        def __init__(self, action_id=0):
+            self.action_id = action_id
+            self.calls = 0
+
+        def has_profile(self, _difficulty):
+            return True
+
+        async def get_action_async(self, *_args, **_kwargs):
+            self.calls += 1
+            return self.action_id
+
+    match_brain = TrackingBrain()
+    replacement_app_brain = TrackingBrain()
+    engine.berserk_brain = match_brain
+    monkeypatch.setattr(web_server, "BERSERK_BRAIN", replacement_app_brain)
+    monkeypatch.setattr(web_server.random, "uniform", lambda *_args: 0.0)
+
+    await web_server.run_bot_routine(engine, 101)
+
+    assert match_brain.calls > 0
+    assert replacement_app_brain.calls == 0
 
 
 @pytest.mark.asyncio(loop_scope="function")
@@ -2443,7 +2472,7 @@ async def test_modified_mode_bot_routine_skips_berserk_and_uses_rule_based(monke
             raise AssertionError("modified modes must not run Berserk inference")
 
     fake_brain = FakeBerserkBrain()
-    monkeypatch.setattr(web_server, "BERSERK_BRAIN", fake_brain)
+    engine.berserk_brain = fake_brain
 
     executed = []
 
@@ -2482,7 +2511,7 @@ async def test_missing_berserk_profile_uses_rule_based_without_inference_excepti
             raise AssertionError("ONNX inference should not run for a missing profile")
 
     fake_brain = MissingProfileBrain()
-    monkeypatch.setattr(web_server, "BERSERK_BRAIN", fake_brain)
+    engine.berserk_brain = fake_brain
 
     executed = []
 
@@ -2507,7 +2536,7 @@ async def test_bot_action_mutation_runs_inside_match_lock(monkeypatch):
     engine.match_id = "m-bot-lock"
     engine.set_player_replacement_status(101, ReplacementStatus.AFK)
     web_server.MATCH_LOCKS.pop("m-bot-lock", None)
-    monkeypatch.setattr(web_server, "BERSERK_BRAIN", None)
+    engine.berserk_brain = None
     monkeypatch.setattr(web_server.random, "uniform", lambda *_args: 0.0)
     monkeypatch.setattr(engine._arena, "get_legal_actions", lambda _bot_id: [EndTurnAction()])
 
@@ -2530,12 +2559,192 @@ async def test_bot_action_mutation_runs_inside_match_lock(monkeypatch):
 
 
 @pytest.mark.asyncio(loop_scope="function")
+async def test_metronome_delays_selected_action_before_mutation_lock(monkeypatch):
+    engine = _engine_with_state()
+    engine.match_id = "m-metronome-order"
+    engine.set_player_replacement_status(101, ReplacementStatus.AFK)
+    web_server.MATCH_LOCKS.pop(engine.match_id, None)
+
+    class EndTurnBrain:
+        def has_profile(self, _difficulty):
+            return True
+
+        async def get_action_async(
+            self,
+            _arena_state,
+            _bot_id,
+            legal_actions,
+            difficulty,
+        ):
+            del difficulty
+            return next(
+                index
+                for index, action in enumerate(legal_actions)
+                if isinstance(action, EndTurnAction)
+            )
+
+    metronome_calls = []
+
+    class FakeMetronome:
+        def sample_ms(
+            self,
+            state,
+            actor_id,
+            *,
+            action_type,
+            legal_action_count,
+            rng,
+        ):
+            lock = web_server.MATCH_LOCKS.get(engine.match_id)
+            metronome_calls.append(
+                {
+                    "state": state,
+                    "actor_id": actor_id,
+                    "action_type": action_type,
+                    "legal_action_count": legal_action_count,
+                    "lock_held": bool(lock and lock.locked()),
+                    "rng": rng,
+                }
+            )
+            return 250.0
+
+    slept = []
+
+    async def fake_sleep(seconds):
+        slept.append(float(seconds))
+
+    engine.berserk_brain = EndTurnBrain()
+    engine.extra_lr_aux_runtime = SimpleNamespace(metronome=FakeMetronome())
+    monkeypatch.setattr(web_server.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(web_server.random, "uniform", lambda *_args: 0.0)
+
+    try:
+        await web_server.run_bot_routine(engine, 101)
+    finally:
+        web_server.MATCH_LOCKS.pop(engine.match_id, None)
+
+    assert len(metronome_calls) == 1
+    assert metronome_calls[0]["actor_id"] == 101
+    assert metronome_calls[0]["action_type"] == "end_turn"
+    assert metronome_calls[0]["legal_action_count"] > 0
+    assert metronome_calls[0]["lock_held"] is False
+    assert slept[0] == pytest.approx(0.25)
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_metronome_fallback_never_spends_emergency_timer_budget(monkeypatch):
+    engine = _engine_with_state()
+    engine.match_id = "m-metronome-budget"
+    engine.set_player_replacement_status(101, ReplacementStatus.AFK)
+    web_server.MATCH_LOCKS.pop(engine.match_id, None)
+    threshold = engine.mode_config.classic.bot_emergency_threshold_seconds
+    remaining = [threshold + 0.4]
+
+    class EndTurnBrain:
+        def has_profile(self, _difficulty):
+            return True
+
+        async def get_action_async(
+            self,
+            _arena_state,
+            _bot_id,
+            legal_actions,
+            difficulty,
+        ):
+            del difficulty
+            return next(
+                index
+                for index, action in enumerate(legal_actions)
+                if isinstance(action, EndTurnAction)
+            )
+
+    class BrokenMetronome:
+        def sample_ms(self, *_args, **_kwargs):
+            raise RuntimeError("injected beta failure")
+
+    slept = []
+
+    async def fake_sleep(seconds):
+        seconds = float(seconds)
+        slept.append(seconds)
+        remaining[0] -= seconds
+
+    monkeypatch.setattr(engine, "get_turn_time_remaining", lambda: remaining[0])
+    engine._metronome_rng = SimpleNamespace(uniform=lambda *_args: 6.0)
+    engine.berserk_brain = EndTurnBrain()
+    engine.extra_lr_aux_runtime = SimpleNamespace(metronome=BrokenMetronome())
+    monkeypatch.setattr(web_server.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(web_server.random, "uniform", lambda *_args: 1.0)
+
+    try:
+        await web_server.run_bot_routine(engine, 101)
+    finally:
+        web_server.MATCH_LOCKS.pop(engine.match_id, None)
+
+    assert sum(slept) == pytest.approx(0.4)
+    assert remaining[0] == pytest.approx(threshold)
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_metronome_cannot_execute_selected_action_after_deadline(monkeypatch):
+    engine = _engine_with_state()
+    engine.match_id = "m-metronome-deadline"
+    engine.set_player_replacement_status(101, ReplacementStatus.AFK)
+    web_server.MATCH_LOCKS.pop(engine.match_id, None)
+    remaining = [
+        engine.mode_config.classic.bot_emergency_threshold_seconds + 0.1
+    ]
+    executed = []
+
+    class EndTurnBrain:
+        def has_profile(self, _difficulty):
+            return True
+
+        async def get_action_async(
+            self,
+            _arena_state,
+            _bot_id,
+            legal_actions,
+            difficulty,
+        ):
+            del difficulty
+            return next(
+                index
+                for index, action in enumerate(legal_actions)
+                if isinstance(action, EndTurnAction)
+            )
+
+    class SlowMetronome:
+        def sample_ms(self, *_args, **_kwargs):
+            remaining[0] = -0.1
+            return 100.0
+
+    monkeypatch.setattr(engine, "get_turn_time_remaining", lambda: remaining[0])
+    monkeypatch.setattr(
+        engine,
+        "execute_bot_action",
+        lambda action: executed.append(action) or {"success": True},
+    )
+    engine.berserk_brain = EndTurnBrain()
+    engine.extra_lr_aux_runtime = SimpleNamespace(metronome=SlowMetronome())
+    monkeypatch.setattr(web_server.random, "uniform", lambda *_args: 0.0)
+
+    try:
+        await web_server.run_bot_routine(engine, 101)
+    finally:
+        web_server.MATCH_LOCKS.pop(engine.match_id, None)
+
+    assert executed == []
+    assert engine.current_player_id == 202
+
+
+@pytest.mark.asyncio(loop_scope="function")
 async def test_bot_forced_end_turn_runs_inside_match_lock(monkeypatch):
     engine = _engine_with_state()
     engine.match_id = "m-bot-force-lock"
     engine.set_player_replacement_status(101, ReplacementStatus.AFK)
     web_server.MATCH_LOCKS.pop("m-bot-force-lock", None)
-    monkeypatch.setattr(web_server, "BERSERK_BRAIN", None)
+    engine.berserk_brain = None
     monkeypatch.setattr(web_server.random, "uniform", lambda *_args: 0.0)
     monkeypatch.setattr(engine._arena, "get_legal_actions", lambda _bot_id: [])
 
@@ -2630,6 +2839,7 @@ async def test_bot_task_guard_starts_one_task_per_turn(monkeypatch):
 
     class BotEngine:
         turn = 3
+        _active_matches = {}
 
     monkeypatch.setattr(web_server, "run_bot_routine", fake_run_bot_routine)
     web_server.BOT_TASKS.pop("m2", None)
@@ -2649,6 +2859,7 @@ async def test_bot_task_finally_does_not_delete_replacement_task(monkeypatch):
     class BotEngine:
         turn = 3
         current_player_id = 9
+        _active_matches = {}
 
         def get_current_player_id(self):
             return self.current_player_id
@@ -2678,3 +2889,142 @@ async def test_bot_task_finally_does_not_delete_replacement_task(monkeypatch):
         if task and not task.done():
             task.cancel()
         web_server.BOT_TASK_KEYS.pop("m-identity", None)
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_old_app_cleanup_only_closes_owned_runtime_and_matches(monkeypatch):
+    class FakeBrain:
+        instances = []
+
+        def __init__(self, *, profiles):
+            self.name = f"brain-{len(self.instances) + 1}"
+            self.sessions = {profile: object() for profile in profiles}
+            self.closed = False
+            self.instances.append(self)
+
+        def has_profile(self, difficulty):
+            return difficulty in self.sessions
+
+        def close(self):
+            self.closed = True
+
+    class FakeAuxRuntime:
+        instances = []
+
+        def __init__(self):
+            self.name = f"aux-{len(self.instances) + 1}"
+            self.availability = {}
+            self.closed = False
+            self.instances.append(self)
+
+        @classmethod
+        def from_model_dir(cls):
+            return cls()
+
+        def close(self):
+            self.closed = True
+
+    async def sleeper(*_args):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(web_server, "BerserkInference", FakeBrain)
+    monkeypatch.setattr(web_server, "ExtraLRAuxRuntime", FakeAuxRuntime)
+    monkeypatch.setattr(web_server, "run_bot_routine", sleeper)
+    monkeypatch.setenv("ENVIRONMENT", "development")
+    monkeypatch.setenv("WEBAPP_HOST", "127.0.0.1")
+    monkeypatch.setenv("BOT_TOKEN", "bot-token")
+    web_server.get_settings.cache_clear()
+
+    app_a = web_server.create_web_app(MinimalWebDB(), bot_token="a")
+    app_b = web_server.create_web_app(MinimalWebDB(), bot_token="b")
+    brain_a = app_a["berserk_brain"]
+    brain_b = app_b["berserk_brain"]
+    aux_a = app_a["extra_lr_aux"]
+    aux_b = app_b["extra_lr_aux"]
+
+    engine_a = BattleEngine(
+        match_id="reload-a",
+        active_matches=app_a["active_matches"],
+    )
+    engine_b = BattleEngine(
+        match_id="reload-b",
+        active_matches=app_b["active_matches"],
+    )
+    web_server._bind_match_runtime(engine_a, app_a)
+    web_server._bind_match_runtime(engine_b, app_b)
+    app_a["active_matches"]["reload-a"] = engine_a
+    app_b["active_matches"]["reload-b"] = engine_b
+
+    disconnect_a = asyncio.create_task(sleeper())
+    disconnect_b = asyncio.create_task(sleeper())
+    web_server.MATCH_DISCONNECT_TASKS[("reload-a", 1)] = disconnect_a
+    web_server.MATCH_DISCONNECT_TASKS[("reload-b", 2)] = disconnect_b
+    web_server.MATCH_DISCONNECT_STATES[("reload-a", 1)] = {"disconnected": True}
+    web_server.MATCH_DISCONNECT_STATES[("reload-b", 2)] = {"disconnected": True}
+    web_server.MATCH_SESSIONS["reload-a"] = {1: {"sid-reload-a"}}
+    web_server.MATCH_SESSIONS["reload-b"] = {2: {"sid-reload-b"}}
+    web_server.SID_TO_MATCH["sid-reload-a"] = {
+        "match_id": "reload-a",
+        "user_id": 1,
+    }
+    web_server.SID_TO_MATCH["sid-reload-b"] = {
+        "match_id": "reload-b",
+        "user_id": 2,
+    }
+
+    web_server._start_guarded_bot_task("reload-a", engine_a, 1)
+    web_server._start_guarded_bot_task("reload-b", engine_b, 2)
+    bot_task_a = web_server.BOT_TASKS["reload-a"]
+    bot_task_b = web_server.BOT_TASKS["reload-b"]
+    assert web_server.BOT_TASK_OWNERS["reload-a"] is app_a
+    assert web_server.BOT_TASK_OWNERS["reload-b"] is app_b
+
+    cleanup_a = app_a.on_cleanup[-1]
+    cleanup_b = app_b.on_cleanup[-1]
+    try:
+        await cleanup_a(app_a)
+
+        assert bot_task_a.cancelled()
+        assert disconnect_a.cancelled()
+        assert "reload-a" not in web_server.ACTIVE_MATCHES
+        assert ("reload-a", 1) not in web_server.MATCH_DISCONNECT_STATES
+        assert "reload-a" not in web_server.MATCH_SESSIONS
+        assert "sid-reload-a" not in web_server.SID_TO_MATCH
+        assert engine_a.is_ended is True
+        assert engine_a.runtime_owner_app is None
+        assert engine_a.berserk_brain is None
+        assert engine_a.extra_lr_aux_runtime is None
+        assert brain_a.closed is True
+        assert aux_a.closed is True
+
+        assert bot_task_b.done() is False
+        assert disconnect_b.done() is False
+        assert web_server.ACTIVE_MATCHES["reload-b"] is engine_b
+        assert web_server.MATCH_DISCONNECT_STATES[("reload-b", 2)]
+        assert web_server.MATCH_SESSIONS["reload-b"]
+        assert web_server.SID_TO_MATCH["sid-reload-b"]["match_id"] == "reload-b"
+        assert engine_b.runtime_owner_app is app_b
+        assert engine_b.berserk_brain is brain_b
+        assert engine_b.extra_lr_aux_runtime is aux_b
+        assert brain_b.closed is False
+        assert aux_b.closed is False
+        assert web_server.BERSERK_BRAIN is brain_b
+        assert web_server.EXTRA_LR_AUX is aux_b
+    finally:
+        await cleanup_b(app_b)
+        for task in (bot_task_a, bot_task_b, disconnect_a, disconnect_b):
+            if not task.done():
+                task.cancel()
+        for match_id in ("reload-a", "reload-b"):
+            web_server.ACTIVE_MATCHES.pop(match_id, None)
+            web_server.MATCH_SESSIONS.pop(match_id, None)
+            web_server.BOT_TASKS.pop(match_id, None)
+            web_server.BOT_TASK_KEYS.pop(match_id, None)
+            web_server.BOT_TASK_OWNERS.pop(match_id, None)
+            web_server.ENDED_MATCH_IDS.discard(match_id)
+            web_server.ENDED_MATCH_TIMES.pop(match_id, None)
+        for key in (("reload-a", 1), ("reload-b", 2)):
+            web_server.MATCH_DISCONNECT_TASKS.pop(key, None)
+            web_server.MATCH_DISCONNECT_STATES.pop(key, None)
+        web_server.SID_TO_MATCH.pop("sid-reload-a", None)
+        web_server.SID_TO_MATCH.pop("sid-reload-b", None)

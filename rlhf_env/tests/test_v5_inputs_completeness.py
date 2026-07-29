@@ -2,11 +2,12 @@
 
 Проверяет, что v5-снапшот захватывает всё, что encode_observation_v5 (Block 0)
 будет читать из реконструированного GameState:
-  - state.action_history (List) — для history-window 20×144;
-  - state.history (List[Dict]);
+  - state.action_history (List) — UI history;
+  - state.history (List[Dict]) — native actions;
+  - state.v5_history_events (List[Dict]) — model history-window 20×162;
   - mechanics НОВЫХ карт 47-52 (5 новых mechanic-семейств) в _snapshot_card.
 
-action_history/history кладутся в pre_state каждой action-строки; bridge
+Все три history-поля кладутся в pre_state каждой action-строки; bridge
 реконструирует полный GameState из pre_state.
 """
 from __future__ import annotations
@@ -83,8 +84,8 @@ def _all_card_snapshots(rows):
     return out
 
 
-def test_action_history_and_history_in_pre_state(tmp_path):
-    """pre_state каждой action-строки содержит action_history + history (List)."""
+def test_all_history_contracts_in_pre_state(tmp_path):
+    """pre_state keeps native/UI logs and the dedicated V5 model tape."""
     from rlhf_env.tests._v5_helpers import create_match
 
     mgr = make_manager(tmp_path)
@@ -112,6 +113,9 @@ def test_action_history_and_history_in_pre_state(tmp_path):
         assert isinstance(ps["action_history"], list), "action_history не list"
         assert "history" in ps, "history отсутствует в pre_state"
         assert isinstance(ps["history"], list), "history не list"
+        assert "v5_history_events" in ps, "v5_history_events отсутствует в pre_state"
+        assert isinstance(ps["v5_history_events"], list), "v5_history_events не list"
+        assert len(ps["v5_history_events"]) <= 20
 
 
 def test_action_history_grows_monotonically(tmp_path):

@@ -8,6 +8,7 @@ import numpy as np
 from ai.train_v2.classic_actions_v1 import _get_me_enemy
 from ai.train_v2.classic_obs_v1 import encode_observation
 from ai.train_v2.v5_card_shape_v1 import CARD_SHAPE_DIM_V5, encode_card_shape_v5
+from core.state import CardInstance, CardType
 
 from .contracts import (
     AssistModeV5,
@@ -127,7 +128,9 @@ def _encode_history(dst: np.ndarray, player_id: int, events: list[dict[str, Any]
 
 def _encode_one_event(dst: np.ndarray, player_id: int, event: dict[str, Any]) -> None:
     actor_id = int(event.get("actor_id", 0) or 0)
-    action_type = str(event.get("action_type") or "")
+    # ``type`` fallback keeps pre-v5_history_event_v1 in-memory matches
+    # readable while newly accepted transitions provide the full rich event.
+    action_type = str(event.get("action_type") or event.get("type") or "")
     dst[0] = 1.0
     dst[1] = float(actor_id == player_id)
     dst[2] = float(actor_id not in (0, player_id))
@@ -141,15 +144,53 @@ def _encode_one_event(dst: np.ndarray, player_id: int, event: dict[str, Any]) ->
     dst[10] = _signed_norm(event.get("enemy_board_count_delta", 0.0), 7.0)
     dst[11] = min(max(float(event.get("turn_number", 0) or 0), 0.0) / 50.0, 1.0)
     dst[12] = _signed_norm(event.get("board_power_delta", 0.0), 200.0)
+    # Mana draw lives outside the frozen 601-action candidate codec.  Rust
+    # Block-B and Phase-C Python replay reserve metadata slot 13 so it cannot
+    # collapse into an arbitrary action_id=0 event.
+    dst[13] = float(action_type == "mana_draw")
 
-    source_card = event.get("source_card")
-    target_card = event.get("target_card")
+    source_card = _coerce_history_card(event.get("source_card"))
+    target_card = _coerce_history_card(event.get("target_card"))
     src_off = HISTORY_EVENT_SOURCE_OFFSET
     tgt_off = HISTORY_EVENT_SOURCE_OFFSET + CARD_SHAPE_DIM_V5
     if source_card is not None:
         dst[src_off : src_off + CARD_SHAPE_DIM_V5] = encode_card_shape_v5(source_card)
     if target_card is not None:
         dst[tgt_off : tgt_off + CARD_SHAPE_DIM_V5] = encode_card_shape_v5(target_card)
+
+
+def _coerce_history_card(card: Any) -> CardInstance | None:
+    """Accept both live CardInstance objects and JSON-safe trace snapshots."""
+
+    if card is None or isinstance(card, CardInstance):
+        return card
+    if not isinstance(card, dict):
+        return None
+
+    raw_type = card.get("card_type", card.get("type", CardType.WARRIOR.value))
+    if isinstance(raw_type, CardType):
+        card_type = raw_type
+    else:
+        normalized_type = str(raw_type or CardType.WARRIOR.value).lower()
+        if normalized_type.startswith("cardtype."):
+            normalized_type = normalized_type.split(".", 1)[1]
+        try:
+            card_type = CardType(normalized_type)
+        except ValueError:
+            card_type = CardType.WARRIOR
+
+    return CardInstance(
+        card_id=int(card.get("card_id", 0) or 0),
+        card_type=card_type,
+        mana_cost=int(card.get("mana_cost", 0) or 0),
+        attack=int(card.get("attack", 0) or 0),
+        hp=int(card.get("hp", 0) or 0),
+        max_hp=int(card.get("max_hp", 0) or 0),
+        mechanics=[str(value) for value in (card.get("mechanics") or [])],
+        is_ready=bool(card.get("is_ready", False)),
+        is_frozen=bool(card.get("is_frozen", False)),
+        level=int(card.get("level", 1) or 1),
+    )
 
 
 def _signed_norm(value: Any, divisor: float) -> float:

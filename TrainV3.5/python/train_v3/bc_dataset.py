@@ -46,8 +46,9 @@ decision_source filter (verifier finding 4b): the pilot deploys a placeholder
   ``offline_dataset_loader``'s ``OfflineTransition.meta`` is EXTENDED
   ADDITIVELY to include ``decision_source`` (the loader is NOT frozen — the
   additive meta extension does NOT touch ``classic_*`` or ``v5_trace.py``;
-  the 6 offline-bridge tests still pass). ``build_bc_dataset`` filters to
-  ``decision_source=='human'`` before emitting ``BCTransition``.
+  the 6 offline-bridge tests still pass). ``build_bc_dataset`` requires both
+  ``decision_source=='human'`` and ``accepted is True`` before emitting
+  ``BCTransition``; rejected attempts remain audit rows only.
 
 No import of ``v5_trace`` recorder code (data-contract READ-ONLY — avoids
 prod-rlhf coupling); frozen-classic guard held (``classic_actions_v1`` /
@@ -308,9 +309,13 @@ def build_bc_dataset(
         assist_mode=assist_mode,
         max_battles=max_battles,
     ):
-        # CRITICAL FIX B (verifier finding 4b): human filter — the binding BC
-        # gate. bot/rl/llm rows are EXCLUDED; only human rows emit BCTransition.
+        # Human-only BC gate. Rejected UI/MCP attempts remain in the canonical
+        # trace for auditability but did not change the environment and must
+        # never become policy targets. Missing/non-bool accepted is rejected
+        # too: provenance has to prove successful execution.
         if t.meta.get("decision_source") != "human":
+            continue
+        if t.meta.get("accepted") is not True:
             continue
         # The loader carries the raw pre_state snapshot (additive Block-A
         # field) so BC can reconstruct the GameState for the append_only mask +

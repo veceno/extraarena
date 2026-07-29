@@ -100,6 +100,7 @@ import numpy as np
 
 from core.state import (
     ACTION_HISTORY_MAXLEN,
+    V5_HISTORY_EVENTS,
     CardInstance,
     CardType,
     GameState,
@@ -125,6 +126,23 @@ _TERMINAL_TYPES = {"surrender", "draw", "stalemate"}
 # Terminal meta.status / state.status values (lowercased core enums +
 # match-runner-only 'stalemate' which has no GameStatus member).
 _TERMINAL_STATUSES = {"p1_win", "p2_win", "draw", "stalemate"}
+
+
+def _history_events_from_snapshot(snapshot: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Read the authoritative V5 tape, with a guarded legacy-trace fallback."""
+
+    if "v5_history_events" in snapshot:
+        raw = snapshot.get("v5_history_events") or []
+    else:
+        # Pre-contract fixtures/traces sometimes embedded rich events in the
+        # native history field. Never feed ordinary native action payloads to
+        # the temporal encoder.
+        raw = [
+            event
+            for event in (snapshot.get("history") or [])
+            if isinstance(event, dict) and "action_type" in event
+        ]
+    return [event for event in raw if isinstance(event, dict)]
 
 
 # ---------------------------------------------------------------------------
@@ -156,7 +174,10 @@ class OfflineTransition:
             reconstructed ``pre_state`` for the actor (parity with the
             parallel binary head's legal predicate).
         meta: provenance dict ``{battle_id, seq, action_type, actor_user_id,
-            turn_number, status, decision_source}``.
+            actor_player, turn_number, status, decision_source, accepted, ...}``.
+            ``accepted`` is carried verbatim so every policy consumer can use
+            the strict ``is True`` gate; rejected attempts remain available to
+            audit/timing consumers without becoming action targets.
         action_native: the ENGINE-sourced action dict (``legal[legal_index]
             .to_dict()`` from ``v5_trace.py:481`` — the engine's own
             ``BaseAction``, INDEPENDENT of ``decode_action``). ``None`` for
@@ -401,7 +422,7 @@ def reconstruct_gamestate(snapshot: Dict[str, Any]) -> GameState:
     ``v5_trace._snapshot_state`` (compare golden_trace._state_payload which
     includes all three) -> left at default ``{}``. HARMLESS for
     ``encode_observation_v5`` (reads only p1/p2/turn_number/
-    current_turn_owner_id/history, obs_v5.py:43-67); flagged here so any
+    current_turn_owner_id/v5_history_events, obs_v5.py:43-67); flagged here so any
     future re-stepping path is aware.
 
     ``classic_params`` / ``arena_engine`` are ``None`` on the rebuilt state:
@@ -418,6 +439,10 @@ def reconstruct_gamestate(snapshot: Dict[str, Any]) -> GameState:
         (tuple(t) for t in raw_ah),
         maxlen=ACTION_HISTORY_MAXLEN,
     )
+    v5_history_events = deque(
+        _history_events_from_snapshot(snapshot),
+        maxlen=V5_HISTORY_EVENTS,
+    )
     return GameState(
         p1=p1,
         p2=p2,
@@ -425,6 +450,7 @@ def reconstruct_gamestate(snapshot: Dict[str, Any]) -> GameState:
         turn_number=_coerce_int(snapshot.get("turn_number"), 1),
         history=list(snapshot.get("history") or []),
         action_history=action_history,
+        v5_history_events=v5_history_events,
         status=_parse_game_status(snapshot.get("status")),
         pending_card_feedback_events=list(snapshot.get("pending_card_feedback_events") or []),
         # OMITTED by v5_trace._snapshot_state -> defaults (safe for obs_v5).
@@ -736,7 +762,7 @@ def iter_offline_transitions(
             obs = encode_observation_v5(
                 pre_gs, actor_user_id,
                 info_mode=info_mode, assist_mode=assist_mode,
-                history_events=pre_snap.get("history") or [],
+                history_events=_history_events_from_snapshot(pre_snap),
             )
             # action_features: (601,171). verify_mask=False builds the mask by
             # mirroring get_legal_actions from state fields (no engine);
@@ -763,7 +789,7 @@ def iter_offline_transitions(
             next_obs = encode_observation_v5(
                 post_gs, actor_user_id,
                 info_mode=info_mode, assist_mode=assist_mode,
-                history_events=post_snap.get("history") or [],
+                history_events=_history_events_from_snapshot(post_snap),
             )
 
             yield OfflineTransition(
@@ -787,6 +813,12 @@ def iter_offline_transitions(
                     # truth, without re-reading actions.jsonl. The raw row
                     # carries it at v5_trace.py:496.
                     "decision_source": row.get("decision_source"),
+                    "actor_player": actor_player,
+                    "accepted": row.get("accepted"),
+                    "human_decision_time_ms": row.get("human_decision_time_ms"),
+                    "decision_time_censored": row.get("decision_time_censored"),
+                    "decision_censor_reason": row.get("decision_censor_reason"),
+                    "control_source": row.get("control_source"),
                 },
                 # Additive Block-A: ENGINE-sourced action dict (v5_trace.py:481
                 # ``legal[legal_index].to_dict()``) for 601-tcode resolution, and

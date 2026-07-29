@@ -1,0 +1,67 @@
+{
+  "schema": "extra_lr_aux_onnx_v1",
+  "kind": "timestamp_duo",
+  "format": "onnx",
+  "opset": 17,
+  "source_checkpoint": "extra_lr_timestamp_v1_duo.npz",
+  "source_checkpoint_sha256": "84ea7716652593ebb9f361aebf8cac4c3b139b47b33f6a73a7c352dc15dcb12a",
+  "inputs": {
+    "turn_features": [
+      null,
+      201
+    ],
+    "duration_context": [
+      null,
+      19
+    ]
+  },
+  "outputs": {
+    "predicted_log_turns": [
+      null,
+      1
+    ],
+    "predicted_log_duration": [
+      null,
+      1
+    ]
+  },
+  "postprocess": "expm1",
+  "duration_residual_log_quantiles": [
+    -0.02150123566389084,
+    0.6156058311462402,
+    1.1407091617584229
+  ],
+  "training": {
+    "schema": "extra_lr_aux_model_v1",
+    "model": "ExtraLR TimeStamp V1 Duo",
+    "targets": [
+      "simulator_turns",
+      "human_wall_clock_seconds"
+    ],
+    "feature_schema": "turn_model(both_decks+levels+starting_player); duration_calibrator(predicted_turns+start+deck_summary)",
+    "split": "simulator lineage plus human group split",
+    "turn_metrics": {
+      "rows": 1656,
+      "mae": 4.134677137487303,
+      "median_ae": 3.091484184211488,
+      "rmse": 5.894631361551214,
+      "baseline_median_mae": 5.185990338164252
+    },
+    "duration_metrics": {
+      "rows": 32,
+      "mae": 64.20004885724609,
+      "median_ae": 35.07794140464345,
+      "rmse": 145.44318008084105,
+      "baseline_median_mae": 66.83615624999999,
+      "p50_coverage": 0.59375,
+      "p90_coverage": 0.875,
+      "human_rows": 298,
+      "human_censored_or_idle": 1,
+      "selected_validation_mae": 29.62847658257488,
+      "selected_alpha": 1000.0,
+      "selected_features": "predicted_turns+start+deck_summary"
+    },
+    "readiness": "candidate_ready",
+    "artifact_sha256": "84ea7716652593ebb9f361aebf8cac4c3b139b47b33f6a73a7c352dc15dcb12a"
+  }
+}

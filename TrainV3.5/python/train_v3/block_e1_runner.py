@@ -1,6 +1,6 @@
 """Block E1 thin in-worktree CLI runner -- ``block_e1_runner.py`` (E-E12).
 
-V5-Max pipeline position: Block D COMPLETE (D1-D3 done) -> Block E1 (this file
+V5-family pipeline position: Block D COMPLETE (D1-D3 done) -> Block E1 (this file
 is the E-E12 thin in-worktree runner + USER-run operational entry). It COMPOSES
 the E1-E5 components READ-ONLY -- it does NOT mutate any E1-E5 file. The
 composition order is:
@@ -187,7 +187,8 @@ def write_candidate_json(
       * ``path`` -- the winning checkpoint path.
       * ``source_checkpoint`` -- the source checkpoint (defaults to
         ``winner_path``).
-      * ``marker`` -- ``"extra-lr-v5-max"`` (the V5-Max release marker).
+      * ``marker`` -- ``"extra-lr-v5"`` (the shipped V5 policy artifact;
+        V5 Ultra shares it and adds the production assist stack).
       * ``created_by`` -- ``"block_e1_runner"`` (the runner provenance).
 
     Returns the ``candidate.json`` path (``<candidate_dir>/candidate.json``).
@@ -197,7 +198,7 @@ def write_candidate_json(
     payload = {
         "path": str(winner_path),
         "source_checkpoint": str(source_checkpoint or winner_path),
-        "marker": "extra-lr-v5-max",
+        "marker": "extra-lr-v5",
         "created_by": "block_e1_runner",
     }
     with open(candidate_json_path, "w", encoding="utf-8") as fh:

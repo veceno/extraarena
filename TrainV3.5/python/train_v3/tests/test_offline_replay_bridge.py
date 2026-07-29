@@ -303,9 +303,12 @@ def _masked_softmax(logits: np.ndarray, mask: np.ndarray) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 
-def test_human_filter_excludes_bot_rows(tmp_path):
-    """A synthetic battle with mixed decision_source rows (human + bot + rl):
-    only decision_source=='human' rows are replayed; bot/rl rows EXCLUDED."""
+def test_human_filter_excludes_bot_and_rejected_rows(tmp_path):
+    """Only accepted human rows are replayed.
+
+    Bot/RL rows and a rejected human attempt remain in the source trace but are
+    excluded from policy targets.
+    """
     snap, _ = _minimal_state_snapshot(p1_hand=2, p1_mana=5, owner=1)
     p1_uid = int(snap["p1"]["user_id"])
     p2_uid = int(snap["p2"]["user_id"])
@@ -328,7 +331,10 @@ def test_human_filter_excludes_bot_rows(tmp_path):
         _row(3, "rl", "attack",
              {"type": "attack", "attacker_id": "x", "target_id": "y",
               "target_is_hero": False}, p2_uid, 2),
+        _row(4, "human", "end_turn", {"type": "end_turn"}, p1_uid, 1),
     ]
+    rows[-1]["accepted"] = False
+    rows[-1]["error"] = "not_your_turn"
     rec = _write_battle_index(tmp_path, "b_ds", meta_status="p2_win",
                               v5_trace_ok=True, rows=rows)
     _write_manifest(tmp_path, [rec])
@@ -342,11 +348,17 @@ def test_human_filter_excludes_bot_rows(tmp_path):
         f"human end_turn must resolve to tcode 0, got {out.target_tcodes[0, 0]}"
     )
     assert out.is_mana_draw[0, 0] is False or bool(out.is_mana_draw[0, 0]) is False
-    # bot/rl rows (seq 2,3) EXCLUDED.
+    # bot/rl rows (seq 2,3) and rejected human row (seq 4) EXCLUDED.
     assert out.num_rows == 1
-    # Cross-check: the loader emits all 3 rows; the bridge filters to 1.
+    # Cross-check: the loader emits all 4 rows; the bridge filters to 1.
     loader_rows = list(iter_offline_transitions(tmp_path))
-    assert len(loader_rows) == 3, "loader emits all rows (no filter)"
+    assert len(loader_rows) == 4, "loader emits all rows (no filter)"
+    assert [row.meta["accepted"] for row in loader_rows] == [
+        True,
+        True,
+        True,
+        False,
+    ]
 
 
 # ---------------------------------------------------------------------------

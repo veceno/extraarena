@@ -4,9 +4,14 @@
 """
 
 from __future__ import annotations
+import asyncio
+import hashlib
+from functools import lru_cache
+from pathlib import Path
 from typing import Any, Optional, Dict, List
-from uuid import UUID
+from uuid import UUID, uuid4
 import logging
+import re
 import time
 
 from core.actions import AttackAction, BaseAction, EndTurnAction, ManaDrawAction, PlayCardAction
@@ -14,6 +19,12 @@ from core.classic_setup import create_classic_game_state
 from core.engine import ArenaEnvironment
 from core.effects import get_taunt_targets, has_taunt
 from core.state import CardInstance, CardType, GameState, GameStatus, PlayerState as CorePlayerState, ReplacementStatus
+from core.v5_dataset import (
+    ACTION_SOURCES as V5_ACTION_SOURCES,
+    V5DatasetRecorder,
+    canonical_actor_type as canonical_v5_actor_type,
+)
+from core.nemesis_dataset import NemesisBattleCollector
 from infrastructure.card_assets import card_asset_url
 from infrastructure.match_modes import ModeConfig, resolve_mode_config, serialize_mode_config
 
@@ -93,6 +104,14 @@ class BattleEngine:
         """Инициализация боевого движка."""
         self._db = db
         self.match_id = match_id
+        # ``match_id`` is a gameplay identifier and can be reused when an
+        # in-memory friendly match is reconstructed after a process restart.
+        # The dataset journal, however, seals battle IDs immutably.  Keep a
+        # separate per-engine trace generation so a rehydrated engine cannot
+        # collide with the sealed prefix from the previous process.
+        self.v5_dataset_trace_id = str(match_id or "")
+        self.v5_dataset_generation = 1
+        self.v5_dataset_generation_reason = "initial"
         self.player_ids = player_ids or []
         self.is_bot_match = is_bot_match
         self.bot_id: Optional[int] = None
@@ -100,6 +119,14 @@ class BattleEngine:
         self.bot_difficulty_label: str = "lite"
         self.bot_strength_tier: str = "lite"
         self.bot_brain_profile: Optional[str] = None
+        # Runtime dependencies are bound by web.server to the aiohttp app that
+        # created this match.  They deliberately live on the match instead of
+        # being resolved from process globals: two app generations may overlap
+        # briefly during a graceful reload, and an old match must never switch
+        # to the new app's ONNX Runtime sessions.
+        self.runtime_owner_app: Any = None
+        self.berserk_brain: Any = None
+        self.extra_lr_aux_runtime: Any = None
         self._active_matches = active_matches if active_matches is not None else ACTIVE_MATCHES
         self._event_emitter = event_emitter
         self.current_player_id: Optional[int] = None
@@ -166,6 +193,337 @@ class BattleEngine:
         self._p2_initial_deck_ids: list[int] = []
         self._p1_initial_deck_params: dict[str, Any] = {}
         self._p2_initial_deck_params: dict[str, Any] = {}
+        # Private omniscient Phase-C/auxiliary-model recorder.  It is
+        # deliberately match-owned and in-memory: server/DB code checkpoints a
+        # detached snapshot through the public methods below.
+        self.v5_dataset_recorder = V5DatasetRecorder()
+        self.nemesis_collector: Optional[NemesisBattleCollector] = None
+
+    @staticmethod
+    @lru_cache(maxsize=1)
+    def _nemesis_catalog_hash() -> Optional[str]:
+        path = Path(__file__).resolve().parent / "ai" / "cards.json"
+        try:
+            return hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError:
+            return None
+
+    @staticmethod
+    def _effective_deck_manifest(
+        deck: list[CardInstance],
+    ) -> list[dict[str, Any]]:
+        """Record the levels actually applied by the engine, not requested levels."""
+
+        return [
+            {
+                "card_id": int(card.card_id),
+                "level": int(card.level),
+                "instance_id": None,
+                "slot": slot,
+            }
+            for slot, card in enumerate(deck)
+        ]
+
+    # =========================================================================
+    # PRIVATE V5 DATASET LIFECYCLE
+    # =========================================================================
+
+    def start_new_v5_dataset_generation(
+        self,
+        *,
+        reason: str,
+        trace_id: Optional[str] = None,
+    ) -> str:
+        """Assign a fresh storage ID before a rehydrated match starts recording."""
+
+        if bool(getattr(self.v5_dataset_recorder, "_started", False)):
+            raise RuntimeError("cannot rotate V5 dataset trace after recording started")
+        gameplay_match_id = str(self.match_id or "")
+        if not gameplay_match_id:
+            raise ValueError("match_id is required before rotating V5 dataset trace")
+        next_generation = max(1, int(self.v5_dataset_generation)) + 1
+        generation_reason = str(reason or "rehydrate")
+        candidate = str(trace_id or "").strip()
+        if not candidate:
+            candidate = f"v5g{next_generation}-{uuid4().hex}"
+        if len(candidate) > 128 or re.fullmatch(r"[A-Za-z0-9._-]+", candidate) is None:
+            raise ValueError("V5 dataset trace_id must be a safe <=128 character component")
+        if candidate == gameplay_match_id:
+            raise ValueError("rehydrated V5 dataset trace must differ from match_id")
+        self.v5_dataset_generation = next_generation
+        self.v5_dataset_generation_reason = generation_reason
+        self.v5_dataset_trace_id = candidate
+        return candidate
+
+    @staticmethod
+    def _selection_deck_manifest(
+        deck_ids: list[Any],
+        levels: dict[int, int],
+        slot_levels: Optional[list[int]] = None,
+    ) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for slot, raw_card_id in enumerate(deck_ids):
+            try:
+                card_id = int(str(raw_card_id).split(":", 1)[0])
+            except (TypeError, ValueError):
+                continue
+            if slot_levels is not None and slot < len(slot_levels):
+                level = int(slot_levels[slot])
+            else:
+                level = int(levels.get(card_id, 1) or 1)
+            rows.append(
+                {
+                    "card_id": card_id,
+                    "level": level,
+                    "instance_id": None,
+                    "slot": slot,
+                }
+            )
+        return rows
+
+    def _start_v5_dataset(
+        self,
+        *,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> None:
+        if not self._arena:
+            return
+        base_metadata: dict[str, Any] = {
+            "game_mode": self.game_mode,
+            "ruleset": self.ruleset,
+            "mode_config": serialize_mode_config(self.mode_config),
+            "bot_policy": {
+                "profile": self.bot_brain_profile,
+                "difficulty": self.bot_difficulty,
+                "difficulty_label": self.bot_difficulty_label,
+                "strength_tier": self.bot_strength_tier,
+            },
+        }
+        if metadata:
+            base_metadata.update(metadata)
+        self.v5_dataset_recorder.start_match(self, metadata=base_metadata)
+
+    def set_v5_dataset_metadata(self, metadata: dict[str, Any]) -> None:
+        """Merge model/deck provenance into the private recorder metadata."""
+
+        if not isinstance(metadata, dict):
+            raise TypeError("metadata must be a dict")
+        if self._arena:
+            self._start_v5_dataset()
+            self.v5_dataset_recorder.merge_metadata(self, metadata)
+
+    def mark_v5_battle_started(
+        self,
+        *,
+        reason: str = "client_ready",
+        now_monotonic: Optional[float] = None,
+        now_wall: Optional[float] = None,
+    ) -> None:
+        """Anchor TimeStamp duration to the first observable battle state."""
+
+        if not self._arena:
+            return
+        self._start_v5_dataset()
+        self.v5_dataset_recorder.mark_battle_started(
+            self,
+            reason=reason,
+            now_monotonic=now_monotonic,
+            now_wall=now_wall,
+        )
+
+    def arm_human_decision_clock(
+        self,
+        user_id: int,
+        *,
+        now_monotonic: Optional[float] = None,
+        censored: bool = False,
+        censor_reason: Optional[str] = None,
+    ) -> None:
+        """Start a monotonic decision interval after private state delivery."""
+
+        self.v5_dataset_recorder.arm_human_decision_clock(
+            int(user_id),
+            now_monotonic=now_monotonic,
+            censored=censored,
+            censor_reason=censor_reason,
+        )
+
+    def censor_human_decision_clock(self, user_id: int, reason: str) -> None:
+        """Mark the next human timing label unusable without discarding action."""
+
+        self.v5_dataset_recorder.censor_human_decision_clock(
+            int(user_id), str(reason)
+        )
+
+    def _classify_v5_action_source(
+        self,
+        user_id: int,
+        action: Optional[BaseAction] = None,
+        *,
+        explicit: Optional[str] = None,
+    ) -> str:
+        if explicit is not None:
+            source = str(explicit).lower()
+            if source in V5_ACTION_SOURCES:
+                return source
+        if isinstance(action, EndTurnAction):
+            try:
+                if self.is_turn_expired():
+                    return "timeout"
+            except Exception:  # noqa: BLE001
+                pass
+        if self._arena:
+            status = self.get_player_replacement_status(int(user_id))
+            if status in {ReplacementStatus.AFK, ReplacementStatus.SURRENDERED}:
+                return "replacement_bot"
+            if self.is_bot(int(user_id)):
+                return "bot"
+        return "human"
+
+    def capture_action_context(
+        self,
+        user_id: int,
+        action_json: dict[str, Any],
+        *,
+        decision_source: Optional[str] = None,
+        control_source: Optional[str] = None,
+        actor_type: Optional[str] = None,
+        request_monotonic: Optional[float] = None,
+        client_action_id: Optional[str] = None,
+        human_decision_time_ms: Optional[float] = None,
+        decision_time_censored: Optional[bool] = None,
+        decision_censor_reason: Optional[str] = None,
+        metronome_prediction_ms: Optional[float] = None,
+        metronome_applied_ms: Optional[float] = None,
+        metronome_fallback_used: Optional[bool] = None,
+        quality_score: Optional[float] = None,
+        legacy_action_index: Optional[int] = None,
+        extra_context: Optional[dict[str, Any]] = None,
+        queue: bool = True,
+    ) -> dict[str, Any]:
+        """Capture one request/decision context for the next engine mutation."""
+
+        inferred_action: Optional[BaseAction] = None
+        if str(action_json.get("type") or "") == "end_turn":
+            inferred_action = EndTurnAction()
+        source = self._classify_v5_action_source(
+            int(user_id), inferred_action, explicit=decision_source
+        )
+        return self.v5_dataset_recorder.capture_action_context(
+            user_id=int(user_id),
+            action_json=action_json,
+            decision_source=source,
+            control_source=control_source,
+            actor_type=actor_type or canonical_v5_actor_type(source),
+            request_monotonic=request_monotonic,
+            client_action_id=client_action_id,
+            human_decision_time_ms=human_decision_time_ms,
+            decision_time_censored=decision_time_censored,
+            decision_censor_reason=decision_censor_reason,
+            metronome_prediction_ms=metronome_prediction_ms,
+            metronome_applied_ms=metronome_applied_ms,
+            metronome_fallback_used=metronome_fallback_used,
+            quality_score=quality_score,
+            legacy_action_index=legacy_action_index,
+            extra_context=extra_context,
+            queue=queue,
+        )
+
+    def get_v5_dataset_snapshot(self) -> dict[str, Any]:
+        """Return a detached, private copy of the current match dataset."""
+
+        if self._arena:
+            self._start_v5_dataset()
+        return self.v5_dataset_recorder.snapshot(self if self._arena else None)
+
+    def checkpoint_v5_dataset(
+        self,
+        *,
+        reason: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Create a detached storage checkpoint for a DB/outbox writer."""
+
+        if not self._arena:
+            return self.v5_dataset_recorder.snapshot()
+        self._start_v5_dataset()
+        return self.v5_dataset_recorder.checkpoint(self, reason=reason)
+
+    def finalize_v5_dataset(
+        self,
+        *,
+        winner_user_id: Optional[int] = None,
+        status: Optional[str] = None,
+        reason: Optional[str] = None,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        """Finalize once and return an idempotent detached terminal snapshot."""
+
+        if not self._arena:
+            return self.v5_dataset_recorder.snapshot()
+        self._start_v5_dataset()
+        if self.nemesis_collector is not None and status:
+            try:
+                normalized_status = str(getattr(status, "value", status))
+                duration_seconds = None
+                if self.match_start_monotonic is not None:
+                    duration_seconds = max(
+                        0,
+                        int(round(time.monotonic() - self.match_start_monotonic)),
+                    )
+                nemesis_record = self.nemesis_collector.finalize(
+                    status=normalized_status,
+                    duration_seconds=duration_seconds,
+                    turns_count=int(
+                        getattr(self._arena.state, "turn_number", 0) or 0
+                    ),
+                )
+                self.v5_dataset_recorder.merge_metadata(
+                    self, {"nemesis_record": nemesis_record}
+                )
+            except Exception:
+                # Dataset collection must never turn a valid terminal game into
+                # a failed gameplay request. The V5 journal retains an explicit
+                # failure marker for audit and the compact exporter fails closed.
+                self._logger.error(
+                    "Nemesis terminal seal failed: match=%s",
+                    self.match_id,
+                    exc_info=True,
+                )
+                self.v5_dataset_recorder.merge_metadata(
+                    self,
+                    {
+                        "nemesis_collection": {
+                            "status": "unavailable",
+                            "reason": "terminal_seal_failed",
+                        }
+                    },
+                )
+        return self.v5_dataset_recorder.finalize(
+            self,
+            winner_user_id=winner_user_id,
+            status=status,
+            reason=reason,
+            metadata=metadata,
+        )
+
+    def abort_v5_dataset(
+        self,
+        reason: str,
+        *,
+        status: str = "aborted",
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        """Finalize a non-training terminal such as reload or disconnect."""
+
+        if not self._arena:
+            return self.v5_dataset_recorder.snapshot()
+        self._start_v5_dataset()
+        return self.v5_dataset_recorder.abort(
+            self,
+            reason=str(reason),
+            status=str(status),
+            metadata=metadata,
+        )
     
     # =========================================================================
     # СОЗДАНИЕ МАТЧА
@@ -206,10 +564,44 @@ class BattleEngine:
             )
             
             self.match_id = match_id
+            if not self.v5_dataset_trace_id:
+                self.v5_dataset_trace_id = str(match_id)
             self.player_ids = [p1_data["user_id"], p2_data["user_id"]]
             self._p1_id = p1_data["user_id"]
             self._p2_id = p2_data["user_id"]
             self.is_bot_match = p1_data.get("is_bot", False) or p2_data.get("is_bot", False)
+
+            snapshot_getter = getattr(self._db, "get_nemesis_profile_snapshot", None)
+            snapshot_failures: list[str] = []
+
+            async def _snapshot(seat: str, data: Dict[str, Any]) -> Any:
+                if data.get("is_bot"):
+                    return None
+                if not callable(snapshot_getter):
+                    snapshot_failures.append(f"{seat}_snapshot_unavailable")
+                    return None
+                try:
+                    return await asyncio.wait_for(
+                        snapshot_getter(
+                            int(data["user_id"]),
+                            history_limit=32,
+                        ),
+                        timeout=1.5,
+                    )
+                except Exception:
+                    snapshot_failures.append(f"{seat}_snapshot_unavailable")
+                    self._logger.warning(
+                        "Nemesis pre-match snapshot failed: match=%s seat=%s",
+                        match_id,
+                        seat,
+                        exc_info=True,
+                    )
+                    return None
+
+            p1_nemesis_snapshot, p2_nemesis_snapshot = await asyncio.gather(
+                _snapshot("p1", p1_data),
+                _snapshot("p2", p2_data),
+            )
             
             if p1_data.get("is_bot"):
                 self.bot_id = p1_data["user_id"]
@@ -353,6 +745,151 @@ class BattleEngine:
             self.turn_start_monotonic = time.monotonic()
             self.match_start_time = self.turn_start_time
             self.match_start_monotonic = self.turn_start_monotonic
+
+            p1_actor_type = "bot" if p1_data.get("is_bot", False) else "human"
+            p2_actor_type = "bot" if p2_data.get("is_bot", False) else "human"
+
+            def _model_provenance(data: Dict[str, Any]) -> Any:
+                supplied = data.get("model_provenance")
+                if isinstance(supplied, dict):
+                    return supplied
+                if not data.get("is_bot"):
+                    return None
+                getter = getattr(
+                    self.berserk_brain,
+                    "get_profile_provenance",
+                    None,
+                )
+                if not callable(getter):
+                    return None
+                try:
+                    return getter(
+                        str(data.get("difficulty") or self.bot_difficulty),
+                        model_id=(
+                            str(data.get("brain_profile"))
+                            if data.get("brain_profile")
+                            else None
+                        ),
+                    )
+                except Exception:
+                    self._logger.warning(
+                        "Unable to resolve bot model provenance: match=%s",
+                        self.match_id,
+                        exc_info=True,
+                    )
+                    return None
+
+            def _aux_provenance(data: Dict[str, Any]) -> Any:
+                supplied = data.get("aux_model_provenance")
+                if isinstance(supplied, dict):
+                    return supplied
+                if not data.get("is_bot"):
+                    return None
+                getter = getattr(
+                    self.extra_lr_aux_runtime,
+                    "dataset_provenance",
+                    None,
+                )
+                if not callable(getter):
+                    return None
+                try:
+                    return getter(
+                        include_policy_assists=(
+                            str(data.get("brain_profile") or "")
+                            == "extra-lr-v5-ultra"
+                        ),
+                        include_metronome=True,
+                    )
+                except Exception:
+                    self._logger.warning(
+                        "Unable to resolve bot auxiliary provenance: match=%s",
+                        self.match_id,
+                        exc_info=True,
+                    )
+                    return None
+
+            self._start_v5_dataset(
+                metadata={
+                    "p1_deck": self._selection_deck_manifest(
+                        p1_data.get("deck_ids") or [],
+                        p1_levels,
+                        p1_slot_levels,
+                    ),
+                    "p2_deck": self._selection_deck_manifest(
+                        p2_data.get("deck_ids") or [],
+                        p2_levels,
+                        p2_slot_levels,
+                    ),
+                    "p1_actor_type": p1_actor_type,
+                    "p2_actor_type": p2_actor_type,
+                    "battle_tag": f"{p1_actor_type}-vs-{p2_actor_type}",
+                    "model_provenance": {
+                        "p1": _model_provenance(p1_data),
+                        "p2": _model_provenance(p2_data),
+                    },
+                    "catalog_hash": self._nemesis_catalog_hash(),
+                    "aux_model_provenance": {
+                        "p1": _aux_provenance(p1_data),
+                        "p2": _aux_provenance(p2_data),
+                    },
+                    "timestamp_features": {
+                        "p1_deck_size": len(p1_data.get("deck_ids") or []),
+                        "p2_deck_size": len(p2_data.get("deck_ids") or []),
+                        "starting_player": (
+                            "p1"
+                            if game_state.current_turn_owner_id == game_state.p1.user_id
+                            else "p2"
+                        ),
+                    },
+                }
+            )
+            # Replace requested collection levels with the exact effective
+            # levels after simplified-card clamping/scaling.
+            self.set_v5_dataset_metadata(
+                {
+                    "p1_deck": self._effective_deck_manifest(p1_deck),
+                    "p2_deck": self._effective_deck_manifest(p2_deck),
+                }
+            )
+            try:
+                v5_meta = self.get_v5_dataset_snapshot()["meta"]
+                cutoff_candidates = [
+                    item.get("captured_at")
+                    for item in (p1_nemesis_snapshot, p2_nemesis_snapshot)
+                    if isinstance(item, dict) and item.get("captured_at")
+                ]
+                feature_cutoff = max(cutoff_candidates) if cutoff_candidates else v5_meta["started_at"]
+                self.nemesis_collector = NemesisBattleCollector.from_v5_meta(
+                    v5_meta,
+                    feature_cutoff_at=feature_cutoff,
+                    extended_by_seat={
+                        "p1": p1_nemesis_snapshot,
+                        "p2": p2_nemesis_snapshot,
+                    },
+                )
+                open_record = self.nemesis_collector.snapshot()
+                if snapshot_failures:
+                    quality = open_record["quality"]
+                    quality["eligible_standard"] = False
+                    quality["exclusion_reasons"] = sorted(
+                        set(quality["exclusion_reasons"] + snapshot_failures)
+                    )
+                    self.nemesis_collector = NemesisBattleCollector(open_record)
+                self.set_v5_dataset_metadata(
+                    {"nemesis_record": self.nemesis_collector.snapshot()}
+                )
+            except Exception:
+                self._logger.warning(
+                    "Nemesis collector init failed: match=%s", match_id, exc_info=True
+                )
+                self.set_v5_dataset_metadata(
+                    {
+                        "nemesis_collection": {
+                            "status": "unavailable",
+                            "reason": "collector_init_failed",
+                        }
+                    }
+                )
             
             # Регистрируем в глобальном словаре
             self._active_matches[match_id] = self
@@ -692,6 +1229,111 @@ class BattleEngine:
                 return "target_not_found"
 
         return None
+
+    def _begin_v5_action(
+        self,
+        user_id: int,
+        action: BaseAction,
+    ) -> int:
+        try:
+            self._start_v5_dataset()
+            source = self._classify_v5_action_source(user_id, action)
+            context = self.v5_dataset_recorder.consume_action_context(
+                int(user_id),
+                fallback_action_json=action.to_dict(),
+                decision_source=source,
+                actor_type=canonical_v5_actor_type(source),
+            )
+            return self.v5_dataset_recorder.before_action(
+                self,
+                user_id=int(user_id),
+                action=action,
+                context=context,
+            )
+        except Exception as exc:  # noqa: BLE001 - recording is fail-open.
+            self._logger.warning("V5 dataset before_action failed: %s", exc, exc_info=True)
+            return -1
+
+    def _arm_current_active_human_clock(self) -> None:
+        if not self._arena or self._arena.state.status != GameStatus.ONGOING:
+            return
+        user_id = int(self._arena.state.current_turn_owner_id)
+        if self.is_bot(user_id):
+            return
+        if self.get_player_replacement_status(user_id) != ReplacementStatus.ACTIVE:
+            return
+        self.arm_human_decision_clock(user_id)
+
+    def _finish_v5_action(
+        self,
+        token: int,
+        *,
+        accepted: bool,
+        error: Optional[str] = None,
+    ) -> None:
+        try:
+            outcome = self.v5_dataset_recorder.after_action(
+                self,
+                token=token,
+                accepted=bool(accepted),
+                error=error,
+            )
+            if outcome:
+                legacy_index = outcome.get("legacy_action_index")
+                if (
+                    isinstance(legacy_index, int)
+                    and 0 <= legacy_index < len(self._analytics_actions)
+                ):
+                    legacy_row = self._analytics_actions[legacy_index]
+                    legacy_context = legacy_row.setdefault("context_json", {})
+                    legacy_context["accepted"] = bool(accepted)
+                    legacy_context["error"] = (
+                        str(error) if error else None if accepted else "rejected_without_error"
+                    )
+            if accepted:
+                self._arm_current_active_human_clock()
+        except Exception as exc:  # noqa: BLE001 - recording is fail-open.
+            self._logger.warning("V5 dataset after_action failed: %s", exc, exc_info=True)
+
+    def _record_v5_rejected_action(
+        self,
+        user_id: int,
+        action_json: dict[str, Any],
+        error: str,
+    ) -> None:
+        if not self._arena:
+            return
+        try:
+            self._start_v5_dataset()
+            source = self._classify_v5_action_source(int(user_id))
+            context = self.v5_dataset_recorder.consume_action_context(
+                int(user_id),
+                fallback_action_json=action_json,
+                decision_source=source,
+                actor_type=canonical_v5_actor_type(source),
+            )
+            token = self.v5_dataset_recorder.record_rejected_action(
+                self,
+                user_id=int(user_id),
+                action_json=action_json,
+                context=context,
+                error=str(error),
+            )
+            # ``record_rejected_action`` finishes internally; mirror its
+            # accepted/error status into the legacy admin context as well.
+            legacy_index = context.get("legacy_action_index")
+            if (
+                token >= 0
+                and isinstance(legacy_index, int)
+                and 0 <= legacy_index < len(self._analytics_actions)
+            ):
+                legacy_context = self._analytics_actions[legacy_index].setdefault(
+                    "context_json", {}
+                )
+                legacy_context["accepted"] = False
+                legacy_context["error"] = str(error)
+        except Exception as exc:  # noqa: BLE001 - recording is fail-open.
+            self._logger.warning("V5 dataset rejected action failed: %s", exc, exc_info=True)
     
     def execute_action(self, user_id: int, action: BaseAction) -> Dict[str, Any]:
         """
@@ -707,13 +1349,24 @@ class BattleEngine:
         if not self._arena:
             return {"success": False, "error": "arena_not_initialized"}
 
+        v5_token = self._begin_v5_action(user_id, action)
         preflight_error = self._preflight_action_error(user_id, action)
         if preflight_error is not None:
+            self._finish_v5_action(
+                v5_token,
+                accepted=False,
+                error=preflight_error,
+            )
             return {"success": False, "error": preflight_error}
         
         import copy
 
         state_snapshot = copy.deepcopy(self._arena.state)
+        rng_snapshot = None
+        try:
+            rng_snapshot = self._arena._rng.getstate()
+        except (AttributeError, TypeError):
+            pass
         previous_turn_number = self._arena.state.turn_number
         previous_turn_owner_id = self._arena.state.current_turn_owner_id
         previous_turn_start_time = self.turn_start_time
@@ -724,20 +1377,34 @@ class BattleEngine:
         try:
             success, error = self._arena.step(user_id, action)
         except Exception as exc:  # noqa: BLE001
-            self._arena.state = state_snapshot
+            self._arena.reset_to_state(state_snapshot)
+            if rng_snapshot is not None:
+                self._arena._rng.setstate(rng_snapshot)
             self.current_player_id = previous_turn_owner_id
             self.turn = previous_turn_number
             self.turn_start_time = previous_turn_start_time
             self.turn_start_monotonic = previous_turn_start_monotonic
             self._logger.error("execute_action failed: %s", exc, exc_info=True)
+            self._finish_v5_action(
+                v5_token,
+                accepted=False,
+                error="action_failed",
+            )
             return {"success": False, "error": "action_failed"}
         
         if not success:
-            self._arena.state = state_snapshot
+            self._arena.reset_to_state(state_snapshot)
+            if rng_snapshot is not None:
+                self._arena._rng.setstate(rng_snapshot)
             self.current_player_id = previous_turn_owner_id
             self.turn = previous_turn_number
             self.turn_start_time = previous_turn_start_time
             self.turn_start_monotonic = previous_turn_start_monotonic
+            self._finish_v5_action(
+                v5_token,
+                accepted=False,
+                error=str(error or "action_rejected"),
+            )
             return {"success": False, "error": error}
         
         # Обновляем метаданные
@@ -755,6 +1422,8 @@ class BattleEngine:
             )
             self.turn_start_time = time.time()
             self.turn_start_monotonic = time.monotonic()
+
+        self._finish_v5_action(v5_token, accepted=True)
         
         # Проверяем завершение игры
         result: Dict[str, Any] = {"success": True}
@@ -778,6 +1447,10 @@ class BattleEngine:
             result["game_over"] = True
             result["winner"] = winner_id
             result["winner_id"] = winner_id
+            self.finalize_v5_dataset(
+                winner_user_id=winner_id,
+                status=state.status.value,
+            )
         
         # Рассылаем событие обновления (если есть эмиттер)
         if self._event_emitter:
@@ -818,7 +1491,22 @@ class BattleEngine:
         # Определяем индекс карты в руке
         hand_index = self._resolve_hand_index(player.hand, card_id_from_hand)
         if hand_index < 0:
-            return {"action": "play_card", "error": "card_not_found_in_hand"}
+            self._record_v5_rejected_action(
+                int(user_id),
+                {
+                    "type": "play_card",
+                    "card_ref": card_id_from_hand,
+                    "position": target_position,
+                    "target_id": target_id,
+                    "target_is_hero": bool(target_is_hero),
+                },
+                "card_not_found_in_hand",
+            )
+            return {
+                "success": False,
+                "action": "play_card",
+                "error": "card_not_found_in_hand",
+            }
         
         # Определяем target_id для core/actions. Если фронтенд уже передал
         # instance_id героя, сохраняем его: герой может быть и союзной целью.
@@ -1453,7 +2141,11 @@ class BattleEngine:
         
         # При 2+ таймаутах переводим в AFK
         if timeout_count >= 2 and player.replacement_status == ReplacementStatus.ACTIVE:
-            player.replacement_status = ReplacementStatus.AFK
+            self.set_player_replacement_status(
+                player_id,
+                ReplacementStatus.AFK,
+                reason="consecutive_timeouts",
+            )
             self._logger.warning(
                 "[AFK_DETECTED] Match: %s | Player: %s marked as AFK (2+ timeouts)",
                 self.match_id, player_id
@@ -1534,8 +2226,12 @@ class BattleEngine:
             self._logger.warning("mark_surrender: unknown player_id=%s", player_id)
             return
         
-        # Переводим в статус SURRENDERED
-        player.replacement_status = ReplacementStatus.SURRENDERED
+        # Переводим в статус SURRENDERED и сохраняем отдельное control event.
+        self.set_player_replacement_status(
+            player_id,
+            ReplacementStatus.SURRENDERED,
+            reason="surrender",
+        )
         
         self._logger.warning(
             "[SURRENDER] Player %s surrendered. Bot will continue playing.",
@@ -1544,14 +2240,14 @@ class BattleEngine:
         self._logger.info("Player %s surrendered; replacement bot takes control", player_id)
     
     def _requires_ready_barrier(self) -> bool:
-        """PvP human-vs-human matches start only after both clients finish prebattle."""
-        if self.is_bot_match or not self._arena:
+        """Any match with a human starts only after all human clients are ready."""
+        if not self._arena:
             return False
         required_ids = self.required_ready_user_ids()
-        return len(required_ids) >= 2
+        return len(required_ids) >= 1
 
     def required_ready_user_ids(self) -> set[int]:
-        """Human participants that must report client_ready before PvP actions unlock."""
+        """Human participants that must report ``client_ready`` before actions unlock."""
         if not self._arena:
             return set()
         state = self._arena.state
@@ -1562,19 +2258,23 @@ class BattleEngine:
                 and getattr(player, "replacement_status", ReplacementStatus.ACTIVE) == ReplacementStatus.ACTIVE
             ):
                 try:
-                    required.add(int(player.user_id))
+                    raw_user_id = getattr(player, "user_id", None)
+                    if raw_user_id is None:
+                        continue
+                    required.add(int(raw_user_id))
                 except (TypeError, ValueError):
                     continue
         return required
 
     def is_waiting_for_players(self) -> bool:
-        """Return True while a human-vs-human match is created but not fully synchronized."""
+        """Return True while required human clients have not received prebattle state."""
         if self.is_ended or not self._requires_ready_barrier():
             return False
         return not self.required_ready_user_ids().issubset(self.client_ready_users)
 
     def mark_client_ready(self, user_id: Optional[int] = None) -> dict[str, Any]:
-        """Помечает клиента готовым и запускает PvP-таймер только после готовности обоих."""
+        """Помечает клиента готовым и запускает таймер после готовности всех людей."""
+        was_ready = bool(self.client_ready)
         if user_id is not None:
             try:
                 self.client_ready_users.add(int(user_id))
@@ -1588,11 +2288,15 @@ class BattleEngine:
             if not self.client_ready:
                 self.turn_start_time = time.time()
                 self.turn_start_monotonic = time.monotonic()
-                self.match_start_time = self.match_start_time or self.turn_start_time
-                self.match_start_monotonic = self.match_start_monotonic or self.turn_start_monotonic
+                self.match_start_time = self.turn_start_time
+                self.match_start_monotonic = self.turn_start_monotonic
             self.client_ready = True
         else:
             self.client_ready = False
+
+        if self.client_ready and not was_ready:
+            self.mark_v5_battle_started(reason="client_ready")
+            self._arm_current_active_human_clock()
 
         ready_count = len(self.client_ready_users.intersection(required_ids))
         return {
@@ -1603,7 +2307,13 @@ class BattleEngine:
             "required_ready_count": len(required_ids),
         }
     
-    def set_player_replacement_status(self, user_id: int, status: "ReplacementStatus") -> None:
+    def set_player_replacement_status(
+        self,
+        user_id: int,
+        status: "ReplacementStatus",
+        *,
+        reason: Optional[str] = None,
+    ) -> None:
         """
         Устанавливает статус замены для игрока.
         Используется для мгновенного перевода в AFK при разрыве сокета.
@@ -1621,13 +2331,18 @@ class BattleEngine:
         state = self._arena.state
         
         # Определяем игрока и меняем статус
+        player = None
         if state.p1.user_id == user_id:
+            player = state.p1
+            previous_status = state.p1.replacement_status
             state.p1.replacement_status = status
             self._logger.info(
                 "[STATUS_CHANGE] Match: %s | Player: %s | New status: %s",
                 self.match_id, user_id, status.value
             )
         elif state.p2.user_id == user_id:
+            player = state.p2
+            previous_status = state.p2.replacement_status
             state.p2.replacement_status = status
             self._logger.info(
                 "[STATUS_CHANGE] Match: %s | Player: %s | New status: %s",
@@ -1638,6 +2353,33 @@ class BattleEngine:
                 "set_player_replacement_status: unknown player_id=%s in match=%s",
                 user_id, self.match_id
             )
+            return
+
+        if player is not None and previous_status != status:
+            try:
+                self._start_v5_dataset()
+                self.v5_dataset_recorder.record_control_change(
+                    self,
+                    user_id=int(user_id),
+                    previous_status=previous_status,
+                    new_status=status,
+                    reason=reason,
+                )
+                if status == ReplacementStatus.ACTIVE:
+                    self.censor_human_decision_clock(
+                        int(user_id), "control_restored"
+                    )
+                else:
+                    self.censor_human_decision_clock(
+                        int(user_id),
+                        str(reason or f"control_changed_{status.value}"),
+                    )
+            except Exception as exc:  # noqa: BLE001 - telemetry is fail-open.
+                self._logger.warning(
+                    "V5 control-change recording failed: %s",
+                    exc,
+                    exc_info=True,
+                )
     
     # =========================================================================
     # СОВМЕСТИМОСТЬ СО СТАРЫМ API (property-подобные атрибуты)
@@ -1704,8 +2446,20 @@ class BattleEngine:
             )
         elif action_type == "end_turn":
             action = EndTurnAction()
+        elif action_type == "mana_draw":
+            action = ManaDrawAction()
         else:
-            return {"error": f"unknown_action_type: {action_type}"}
+            current_player_id = self.get_current_player_id()
+            if current_player_id is not None:
+                self._record_v5_rejected_action(
+                    int(current_player_id),
+                    dict(action_dict),
+                    f"unknown_action_type: {action_type}",
+                )
+            return {
+                "success": False,
+                "error": f"unknown_action_type: {action_type}",
+            }
         
         return self.execute_action(self.get_current_player_id(), action)
 
@@ -1866,23 +2620,73 @@ class BattleEngine:
         user_id: int,
         action_json: dict[str, Any],
         quality_score: Optional[float] = None,
-    ) -> None:
-        if not self._arena or self._analytics_flushed:
-            return
+        *,
+        decision_source: Optional[str] = None,
+        control_source: Optional[str] = None,
+        actor_type: Optional[str] = None,
+        request_monotonic: Optional[float] = None,
+        client_action_id: Optional[str] = None,
+        human_decision_time_ms: Optional[float] = None,
+        decision_time_censored: Optional[bool] = None,
+        decision_censor_reason: Optional[str] = None,
+        metronome_prediction_ms: Optional[float] = None,
+        metronome_applied_ms: Optional[float] = None,
+        metronome_fallback_used: Optional[bool] = None,
+    ) -> Optional[dict[str, Any]]:
+        if not self._arena:
+            return None
         st = self._arena.state
         acting_player = 1 if user_id == st.p1.user_id else 2
         snapshot = self.build_analytics_snapshot()
         context = self._build_analytics_action_context(user_id, acting_player, action_json)
-        self._analytics_actions.append({
-            "turn_number": st.turn_number,
-            "acting_player": acting_player,
-            "acting_user_id": user_id,
-            "is_bot": self.is_bot(user_id),
-            "state_json": snapshot or {},
-            "action_json": action_json,
-            "context_json": context,
-            "quality_score": quality_score,
-        })
+        legacy_action_index: Optional[int] = None
+        if not self._analytics_flushed:
+            legacy_action_index = len(self._analytics_actions)
+            self._analytics_actions.append({
+                "turn_number": st.turn_number,
+                "acting_player": acting_player,
+                "acting_user_id": user_id,
+                "is_bot": self.is_bot(user_id),
+                "state_json": snapshot or {},
+                "action_json": action_json,
+                "context_json": context,
+                "quality_score": quality_score,
+            })
+
+        captured = self.capture_action_context(
+            int(user_id),
+            action_json,
+            decision_source=decision_source,
+            control_source=control_source,
+            actor_type=actor_type,
+            request_monotonic=request_monotonic,
+            client_action_id=client_action_id,
+            human_decision_time_ms=human_decision_time_ms,
+            decision_time_censored=decision_time_censored,
+            decision_censor_reason=decision_censor_reason,
+            metronome_prediction_ms=metronome_prediction_ms,
+            metronome_applied_ms=metronome_applied_ms,
+            metronome_fallback_used=metronome_fallback_used,
+            quality_score=quality_score,
+            legacy_action_index=legacy_action_index,
+            extra_context=context,
+            queue=True,
+        )
+        # Preserve the legacy context schema while making the richer request
+        # context visible to admin exports without exposing the private state.
+        if legacy_action_index is not None:
+            context["v5_action_context"] = {
+                key: value
+                for key, value in captured.items()
+                if key
+                not in {
+                    "action_json",
+                    "extra_context",
+                    "legacy_action_index",
+                    "request_monotonic_ms",
+                }
+            }
+        return captured
 
 
 class _LegacyPlayerStateWrapper:

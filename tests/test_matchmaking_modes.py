@@ -626,7 +626,7 @@ class DisplayNameCaptureFactory(BotGenerator):
             "trophies": 1200,
             "difficulty_label": "medium",
             "strength_tier": "tier_medium_1200",
-            "brain_profile": "extra-lr-v4-opti",
+            "brain_profile": "extra-lr-v5",
             "selection": "softmax",
             "temperature": 1.8,
             "card_level_policy": {"delta_min": 0, "delta_max": 0, "cap": 5, "boost_fraction": 0.0},

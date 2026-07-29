@@ -1,0 +1,843 @@
+{
+  "schema": "extra_lr_nemesis_lite_preview_onnx_v1",
+  "model_id": "extra-lr-nemesis-lite-preview",
+  "status": "preview",
+  "format": "onnx",
+  "opset": 17,
+  "artifact": "extra_lr_nemesis_lite_preview.onnx",
+  "artifact_sha256": "e71e29f6fddae54e471a495474a8b99ff266b61bd8688cc2576b93b9841a78df",
+  "source_checkpoint": "extra_lr_nemesis_lite_preview.npz",
+  "source_checkpoint_sha256": "dc9c0084a46f9f35dbdafdfd85d6252fb5cb4d2345d2997c7d4d08f3d1273e2b",
+  "catalog": {
+    "path": "cards.json",
+    "sha256": "2d4e28c0f774097538c0c90ed341152155a1bb0622aa598c4677c3de51b39315",
+    "card_count": 50,
+    "ordered_card_ids": [
+      1,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19,
+      20,
+      21,
+      22,
+      23,
+      24,
+      25,
+      26,
+      27,
+      28,
+      29,
+      30,
+      31,
+      32,
+      33,
+      34,
+      35,
+      36,
+      37,
+      38,
+      39,
+      40,
+      41,
+      42,
+      43,
+      44,
+      45,
+      46,
+      47,
+      48,
+      49,
+      50,
+      51,
+      52
+    ],
+    "max_card_id": 52,
+    "hero_card_ids": [
+      1,
+      3,
+      4,
+      5,
+      6,
+      7,
+      49
+    ],
+    "level_policy": {
+      "1": 10,
+      "3": 10,
+      "4": 10,
+      "5": 10,
+      "6": 10,
+      "7": 10,
+      "8": 10,
+      "10": 10,
+      "11": 2,
+      "12": 2,
+      "13": 2,
+      "14": 10,
+      "15": 10,
+      "16": 10,
+      "17": 10,
+      "18": 10,
+      "19": 10,
+      "20": 10,
+      "21": 10,
+      "22": 10,
+      "23": 10,
+      "24": 10,
+      "25": 10,
+      "26": 10,
+      "27": 10,
+      "28": 10,
+      "29": 10,
+      "30": 10,
+      "31": 10,
+      "32": 10,
+      "33": 10,
+      "34": 10,
+      "35": 10,
+      "36": 10,
+      "37": 10,
+      "38": 10,
+      "39": 10,
+      "40": 10,
+      "41": 10,
+      "42": 10,
+      "43": 10,
+      "44": 10,
+      "45": 10,
+      "46": 10,
+      "47": 10,
+      "48": 10,
+      "49": 10,
+      "50": 10,
+      "51": 10,
+      "52": 10
+    }
+  },
+  "ruleset": {
+    "id": "python TrainV3ClassicEnv/current production mechanics",
+    "delivery": "manifest_static_not_dynamic_input"
+  },
+  "inputs": {
+    "p1_card_ids": [
+      "batch",
+      9
+    ],
+    "p1_levels": [
+      "batch",
+      9
+    ],
+    "p2_card_ids": [
+      "batch",
+      9
+    ],
+    "p2_levels": [
+      "batch",
+      9
+    ],
+    "starting_side": [
+      "batch",
+      1
+    ]
+  },
+  "input_dtypes": {
+    "p1_card_ids": "int64",
+    "p1_levels": "int64",
+    "p2_card_ids": "int64",
+    "p2_levels": "int64",
+    "starting_side": "int64"
+  },
+  "outputs": {
+    "outcome_logits": [
+      "batch",
+      3
+    ],
+    "outcome_probabilities": [
+      "batch",
+      3
+    ]
+  },
+  "class_order": [
+    "p1_win",
+    "draw",
+    "p2_win"
+  ],
+  "starting_side_values": {
+    "p2": 0,
+    "p1": 1
+  },
+  "swap_contract": "swap p1/p2 deck tensors, flip starting_side, exchange p1_win/p2_win output columns",
+  "parity": {
+    "max_abs_logits_parity_error": 4.76837158203125e-06,
+    "max_abs_probabilities_parity_error": 2.682209014892578e-07,
+    "max_abs_swap_consistency_error": 1.1920928955078125e-07
+  },
+  "training": {
+    "metrics": {
+      "train_unaugmented": {
+        "rows": 13804,
+        "accuracy": 0.842581860330339,
+        "logloss": 0.3498533607436161,
+        "brier": 0.22122995939737625,
+        "ece": 0.00989822013521151,
+        "ece_bins": 15,
+        "swap_consistency": {
+          "rows": 13804,
+          "mean_abs": 8.05869682096727e-09,
+          "max_abs": 1.1920928955078125e-07
+        },
+        "observed_labels": {
+          "rows": 13804,
+          "total_sample_weight": 13804.0,
+          "class_counts": {
+            "p1_win": 6893,
+            "draw": 1,
+            "p2_win": 6910
+          },
+          "class_row_prevalence": {
+            "p1_win": 0.49934801506809623,
+            "draw": 7.24427702115329e-05,
+            "p2_win": 0.5005795421616923
+          },
+          "class_weighted_counts": {
+            "p1_win": 6893.0,
+            "draw": 1.0,
+            "p2_win": 6910.0
+          },
+          "class_weighted_prevalence": {
+            "p1_win": 0.49934801506809623,
+            "draw": 7.24427702115329e-05,
+            "p2_win": 0.5005795421616923
+          },
+          "draw_observation": {
+            "count": 1,
+            "row_prevalence": 7.24427702115329e-05,
+            "weighted_prevalence": 7.24427702115329e-05,
+            "note": "descriptive split frequency only; no rarity or calibration claim"
+          }
+        }
+      },
+      "validation": {
+        "rows": 2884,
+        "accuracy": 0.8359916782246879,
+        "logloss": 0.36704957649494413,
+        "brier": 0.23305675754593336,
+        "ece": 0.03252432940737055,
+        "ece_bins": 15,
+        "swap_consistency": {
+          "rows": 2884,
+          "mean_abs": 7.74708297512916e-09,
+          "max_abs": 1.1920928955078125e-07
+        },
+        "observed_labels": {
+          "rows": 2884,
+          "total_sample_weight": 2884.0,
+          "class_counts": {
+            "p1_win": 1403,
+            "draw": 0,
+            "p2_win": 1481
+          },
+          "class_row_prevalence": {
+            "p1_win": 0.4864771151178918,
+            "draw": 0.0,
+            "p2_win": 0.5135228848821082
+          },
+          "class_weighted_counts": {
+            "p1_win": 1403.0,
+            "draw": 0.0,
+            "p2_win": 1481.0
+          },
+          "class_weighted_prevalence": {
+            "p1_win": 0.4864771151178918,
+            "draw": 0.0,
+            "p2_win": 0.5135228848821082
+          },
+          "draw_observation": {
+            "count": 0,
+            "row_prevalence": 0.0,
+            "weighted_prevalence": 0.0,
+            "note": "descriptive split frequency only; no rarity or calibration claim"
+          }
+        }
+      },
+      "test": {
+        "rows": 3160,
+        "accuracy": 0.8395569620253165,
+        "logloss": 0.3689794968849207,
+        "brier": 0.22854268746847822,
+        "ece": 0.012747429518759996,
+        "ece_bins": 15,
+        "swap_consistency": {
+          "rows": 3160,
+          "mean_abs": 8.679655216781157e-09,
+          "max_abs": 1.1920928955078125e-07
+        },
+        "observed_labels": {
+          "rows": 3160,
+          "total_sample_weight": 3160.0,
+          "class_counts": {
+            "p1_win": 1570,
+            "draw": 1,
+            "p2_win": 1589
+          },
+          "class_row_prevalence": {
+            "p1_win": 0.49683544303797467,
+            "draw": 0.00031645569620253165,
+            "p2_win": 0.5028481012658228
+          },
+          "class_weighted_counts": {
+            "p1_win": 1570.0,
+            "draw": 1.0,
+            "p2_win": 1589.0
+          },
+          "class_weighted_prevalence": {
+            "p1_win": 0.49683544303797467,
+            "draw": 0.00031645569620253165,
+            "p2_win": 0.5028481012658228
+          },
+          "draw_observation": {
+            "count": 1,
+            "row_prevalence": 0.00031645569620253165,
+            "weighted_prevalence": 0.00031645569620253165,
+            "note": "descriptive split frequency only; no rarity or calibration claim"
+          }
+        }
+      },
+      "test_baselines": {
+        "fit_scope": "grouped_train_only",
+        "evaluation_scope": "grouped_test_only",
+        "majority_class": {
+          "kind": "constant_train_empirical_class_prior",
+          "predicted_class": "p2_win",
+          "train_probabilities": {
+            "p1_win": 0.49934801506809623,
+            "draw": 7.24427702115329e-05,
+            "p2_win": 0.5005795421616923
+          },
+          "metrics": {
+            "rows": 3160,
+            "accuracy": 0.5028481012658228,
+            "logloss": 0.6960102871087674,
+            "brier": 0.5003097483713321,
+            "ece": 0.0022685591041303743,
+            "ece_bins": 15,
+            "observed_labels": {
+              "rows": 3160,
+              "total_sample_weight": 3160.0,
+              "class_counts": {
+                "p1_win": 1570,
+                "draw": 1,
+                "p2_win": 1589
+              },
+              "class_row_prevalence": {
+                "p1_win": 0.49683544303797467,
+                "draw": 0.00031645569620253165,
+                "p2_win": 0.5028481012658228
+              },
+              "class_weighted_counts": {
+                "p1_win": 1570.0,
+                "draw": 1.0,
+                "p2_win": 1589.0
+              },
+              "class_weighted_prevalence": {
+                "p1_win": 0.49683544303797467,
+                "draw": 0.00031645569620253165,
+                "p2_win": 0.5028481012658228
+              },
+              "draw_observation": {
+                "count": 1,
+                "row_prevalence": 0.00031645569620253165,
+                "weighted_prevalence": 0.00031645569620253165,
+                "note": "descriptive split frequency only; no rarity or calibration claim"
+              }
+            }
+          }
+        },
+        "starter_only_empirical": {
+          "kind": "train_empirical_outcome_prior_conditioned_on_starter",
+          "starting_side_values": {
+            "p2": 0,
+            "p1": 1
+          },
+          "train_probabilities": {
+            "p2_starts": {
+              "p1_win": 0.44277021153288904,
+              "draw": 0.0,
+              "p2_win": 0.557229788467111
+            },
+            "p1_starts": {
+              "p1_win": 0.5559258186033034,
+              "draw": 0.0001448855404230658,
+              "p2_win": 0.44392929585627355
+            }
+          },
+          "fallback_to_global_prior": {
+            "p2_starts": false,
+            "p1_starts": false
+          },
+          "metrics": {
+            "rows": 3160,
+            "accuracy": 0.5534810126582278,
+            "logloss": 0.6959880378039178,
+            "brier": 0.4945731874584742,
+            "ece": 0.0030967908769794494,
+            "ece_bins": 15,
+            "observed_labels": {
+              "rows": 3160,
+              "total_sample_weight": 3160.0,
+              "class_counts": {
+                "p1_win": 1570,
+                "draw": 1,
+                "p2_win": 1589
+              },
+              "class_row_prevalence": {
+                "p1_win": 0.49683544303797467,
+                "draw": 0.00031645569620253165,
+                "p2_win": 0.5028481012658228
+              },
+              "class_weighted_counts": {
+                "p1_win": 1570.0,
+                "draw": 1.0,
+                "p2_win": 1589.0
+              },
+              "class_weighted_prevalence": {
+                "p1_win": 0.49683544303797467,
+                "draw": 0.00031645569620253165,
+                "p2_win": 0.5028481012658228
+              },
+              "draw_observation": {
+                "count": 1,
+                "row_prevalence": 0.00031645569620253165,
+                "weighted_prevalence": 0.00031645569620253165,
+                "note": "descriptive split frequency only; no rarity or calibration claim"
+              }
+            }
+          }
+        }
+      },
+      "test_breakdowns": {
+        "scope": "grouped_test_only",
+        "by_source": [
+          {
+            "source": "nemesis_lite_preview.jsonl",
+            "source_sha256": "baff2161168aeabdee3e2137da7260ff840bead032f54ff6a58c8e8abd8f016f",
+            "metrics": {
+              "rows": 3160,
+              "accuracy": 0.8395569620253165,
+              "logloss": 0.3689794968849207,
+              "brier": 0.22854268746847822,
+              "ece": 0.012747429518759996,
+              "ece_bins": 15,
+              "swap_consistency": {
+                "rows": 3160,
+                "mean_abs": 8.679655216781157e-09,
+                "max_abs": 1.1920928955078125e-07
+              },
+              "observed_labels": {
+                "rows": 3160,
+                "total_sample_weight": 3160.0,
+                "class_counts": {
+                  "p1_win": 1570,
+                  "draw": 1,
+                  "p2_win": 1589
+                },
+                "class_row_prevalence": {
+                  "p1_win": 0.49683544303797467,
+                  "draw": 0.00031645569620253165,
+                  "p2_win": 0.5028481012658228
+                },
+                "class_weighted_counts": {
+                  "p1_win": 1570.0,
+                  "draw": 1.0,
+                  "p2_win": 1589.0
+                },
+                "class_weighted_prevalence": {
+                  "p1_win": 0.49683544303797467,
+                  "draw": 0.00031645569620253165,
+                  "p2_win": 0.5028481012658228
+                },
+                "draw_observation": {
+                  "count": 1,
+                  "row_prevalence": 0.00031645569620253165,
+                  "weighted_prevalence": 0.00031645569620253165,
+                  "note": "descriptive split frequency only; no rarity or calibration claim"
+                }
+              }
+            }
+          }
+        ],
+        "by_checkpoint_mix": [
+          {
+            "checkpoint_mix": [
+              "h299"
+            ],
+            "metrics": {
+              "rows": 1500,
+              "accuracy": 0.8026666666666666,
+              "logloss": 0.40961759024346533,
+              "brier": 0.26495557813999,
+              "ece": 0.03705655022462208,
+              "ece_bins": 15,
+              "swap_consistency": {
+                "rows": 1500,
+                "mean_abs": 8.057042144571369e-09,
+                "max_abs": 1.1920928955078125e-07
+              },
+              "observed_labels": {
+                "rows": 1500,
+                "total_sample_weight": 1500.0,
+                "class_counts": {
+                  "p1_win": 744,
+                  "draw": 0,
+                  "p2_win": 756
+                },
+                "class_row_prevalence": {
+                  "p1_win": 0.496,
+                  "draw": 0.0,
+                  "p2_win": 0.504
+                },
+                "class_weighted_counts": {
+                  "p1_win": 744.0,
+                  "draw": 0.0,
+                  "p2_win": 756.0
+                },
+                "class_weighted_prevalence": {
+                  "p1_win": 0.496,
+                  "draw": 0.0,
+                  "p2_win": 0.504
+                },
+                "draw_observation": {
+                  "count": 0,
+                  "row_prevalence": 0.0,
+                  "weighted_prevalence": 0.0,
+                  "note": "descriptive split frequency only; no rarity or calibration claim"
+                }
+              }
+            }
+          },
+          {
+            "checkpoint_mix": [
+              "u29250"
+            ],
+            "metrics": {
+              "rows": 1660,
+              "accuracy": 0.8728915662650603,
+              "logloss": 0.3322583281874406,
+              "brier": 0.19563947300626883,
+              "ece": 0.037939896533288185,
+              "ece_bins": 15,
+              "swap_consistency": {
+                "rows": 1660,
+                "mean_abs": 9.242256737707066e-09,
+                "max_abs": 1.1920928955078125e-07
+              },
+              "observed_labels": {
+                "rows": 1660,
+                "total_sample_weight": 1660.0,
+                "class_counts": {
+                  "p1_win": 826,
+                  "draw": 1,
+                  "p2_win": 833
+                },
+                "class_row_prevalence": {
+                  "p1_win": 0.4975903614457831,
+                  "draw": 0.0006024096385542169,
+                  "p2_win": 0.5018072289156627
+                },
+                "class_weighted_counts": {
+                  "p1_win": 826.0,
+                  "draw": 1.0,
+                  "p2_win": 833.0
+                },
+                "class_weighted_prevalence": {
+                  "p1_win": 0.4975903614457831,
+                  "draw": 0.0006024096385542169,
+                  "p2_win": 0.5018072289156627
+                },
+                "draw_observation": {
+                  "count": 1,
+                  "row_prevalence": 0.0006024096385542169,
+                  "weighted_prevalence": 0.0006024096385542169,
+                  "note": "descriptive split frequency only; no rarity or calibration claim"
+                }
+              }
+            }
+          }
+        ],
+        "by_source_checkpoint": [
+          {
+            "source": "nemesis_lite_preview.jsonl",
+            "source_sha256": "baff2161168aeabdee3e2137da7260ff840bead032f54ff6a58c8e8abd8f016f",
+            "checkpoint_mix": [
+              "h299"
+            ],
+            "metrics": {
+              "rows": 1500,
+              "accuracy": 0.8026666666666666,
+              "logloss": 0.40961759024346533,
+              "brier": 0.26495557813999,
+              "ece": 0.03705655022462208,
+              "ece_bins": 15,
+              "swap_consistency": {
+                "rows": 1500,
+                "mean_abs": 8.057042144571369e-09,
+                "max_abs": 1.1920928955078125e-07
+              },
+              "observed_labels": {
+                "rows": 1500,
+                "total_sample_weight": 1500.0,
+                "class_counts": {
+                  "p1_win": 744,
+                  "draw": 0,
+                  "p2_win": 756
+                },
+                "class_row_prevalence": {
+                  "p1_win": 0.496,
+                  "draw": 0.0,
+                  "p2_win": 0.504
+                },
+                "class_weighted_counts": {
+                  "p1_win": 744.0,
+                  "draw": 0.0,
+                  "p2_win": 756.0
+                },
+                "class_weighted_prevalence": {
+                  "p1_win": 0.496,
+                  "draw": 0.0,
+                  "p2_win": 0.504
+                },
+                "draw_observation": {
+                  "count": 0,
+                  "row_prevalence": 0.0,
+                  "weighted_prevalence": 0.0,
+                  "note": "descriptive split frequency only; no rarity or calibration claim"
+                }
+              }
+            }
+          },
+          {
+            "source": "nemesis_lite_preview.jsonl",
+            "source_sha256": "baff2161168aeabdee3e2137da7260ff840bead032f54ff6a58c8e8abd8f016f",
+            "checkpoint_mix": [
+              "u29250"
+            ],
+            "metrics": {
+              "rows": 1660,
+              "accuracy": 0.8728915662650603,
+              "logloss": 0.3322583281874406,
+              "brier": 0.19563947300626883,
+              "ece": 0.037939896533288185,
+              "ece_bins": 15,
+              "swap_consistency": {
+                "rows": 1660,
+                "mean_abs": 9.242256737707066e-09,
+                "max_abs": 1.1920928955078125e-07
+              },
+              "observed_labels": {
+                "rows": 1660,
+                "total_sample_weight": 1660.0,
+                "class_counts": {
+                  "p1_win": 826,
+                  "draw": 1,
+                  "p2_win": 833
+                },
+                "class_row_prevalence": {
+                  "p1_win": 0.4975903614457831,
+                  "draw": 0.0006024096385542169,
+                  "p2_win": 0.5018072289156627
+                },
+                "class_weighted_counts": {
+                  "p1_win": 826.0,
+                  "draw": 1.0,
+                  "p2_win": 833.0
+                },
+                "class_weighted_prevalence": {
+                  "p1_win": 0.4975903614457831,
+                  "draw": 0.0006024096385542169,
+                  "p2_win": 0.5018072289156627
+                },
+                "draw_observation": {
+                  "count": 1,
+                  "row_prevalence": 0.0006024096385542169,
+                  "weighted_prevalence": 0.0006024096385542169,
+                  "note": "descriptive split frequency only; no rarity or calibration claim"
+                }
+              }
+            }
+          }
+        ],
+        "small_group_note": "breakdowns are descriptive; small row counts are not evidence of reliable subgroup performance"
+      },
+      "observed_class_prevalence": {
+        "all": {
+          "rows": 19848,
+          "total_sample_weight": 19848.0,
+          "class_counts": {
+            "p1_win": 9866,
+            "draw": 2,
+            "p2_win": 9980
+          },
+          "class_row_prevalence": {
+            "p1_win": 0.4970777912132205,
+            "draw": 0.00010076582023377671,
+            "p2_win": 0.5028214429665457
+          },
+          "class_weighted_counts": {
+            "p1_win": 9866.0,
+            "draw": 2.0,
+            "p2_win": 9980.0
+          },
+          "class_weighted_prevalence": {
+            "p1_win": 0.4970777912132205,
+            "draw": 0.00010076582023377671,
+            "p2_win": 0.5028214429665457
+          },
+          "draw_observation": {
+            "count": 2,
+            "row_prevalence": 0.00010076582023377671,
+            "weighted_prevalence": 0.00010076582023377671,
+            "note": "descriptive split frequency only; no rarity or calibration claim"
+          }
+        },
+        "train": {
+          "rows": 13804,
+          "total_sample_weight": 13804.0,
+          "class_counts": {
+            "p1_win": 6893,
+            "draw": 1,
+            "p2_win": 6910
+          },
+          "class_row_prevalence": {
+            "p1_win": 0.49934801506809623,
+            "draw": 7.24427702115329e-05,
+            "p2_win": 0.5005795421616923
+          },
+          "class_weighted_counts": {
+            "p1_win": 6893.0,
+            "draw": 1.0,
+            "p2_win": 6910.0
+          },
+          "class_weighted_prevalence": {
+            "p1_win": 0.49934801506809623,
+            "draw": 7.24427702115329e-05,
+            "p2_win": 0.5005795421616923
+          },
+          "draw_observation": {
+            "count": 1,
+            "row_prevalence": 7.24427702115329e-05,
+            "weighted_prevalence": 7.24427702115329e-05,
+            "note": "descriptive split frequency only; no rarity or calibration claim"
+          }
+        },
+        "validation": {
+          "rows": 2884,
+          "total_sample_weight": 2884.0,
+          "class_counts": {
+            "p1_win": 1403,
+            "draw": 0,
+            "p2_win": 1481
+          },
+          "class_row_prevalence": {
+            "p1_win": 0.4864771151178918,
+            "draw": 0.0,
+            "p2_win": 0.5135228848821082
+          },
+          "class_weighted_counts": {
+            "p1_win": 1403.0,
+            "draw": 0.0,
+            "p2_win": 1481.0
+          },
+          "class_weighted_prevalence": {
+            "p1_win": 0.4864771151178918,
+            "draw": 0.0,
+            "p2_win": 0.5135228848821082
+          },
+          "draw_observation": {
+            "count": 0,
+            "row_prevalence": 0.0,
+            "weighted_prevalence": 0.0,
+            "note": "descriptive split frequency only; no rarity or calibration claim"
+          }
+        },
+        "test": {
+          "rows": 3160,
+          "total_sample_weight": 3160.0,
+          "class_counts": {
+            "p1_win": 1570,
+            "draw": 1,
+            "p2_win": 1589
+          },
+          "class_row_prevalence": {
+            "p1_win": 0.49683544303797467,
+            "draw": 0.00031645569620253165,
+            "p2_win": 0.5028481012658228
+          },
+          "class_weighted_counts": {
+            "p1_win": 1570.0,
+            "draw": 1.0,
+            "p2_win": 1589.0
+          },
+          "class_weighted_prevalence": {
+            "p1_win": 0.49683544303797467,
+            "draw": 0.00031645569620253165,
+            "p2_win": 0.5028481012658228
+          },
+          "draw_observation": {
+            "count": 1,
+            "row_prevalence": 0.00031645569620253165,
+            "weighted_prevalence": 0.00031645569620253165,
+            "note": "descriptive split frequency only; no rarity or calibration claim"
+          }
+        },
+        "interpretation": "descriptive counts and frequencies only; draw frequency does not by itself establish draw calibration"
+      }
+    },
+    "split": {
+      "method": "unordered_exact_decks_with_levels_group_holdout_v1",
+      "rows": {
+        "train": 13804,
+        "validation": 2884,
+        "test": 3160
+      },
+      "groups": {
+        "train": 1024,
+        "validation": 220,
+        "test": 220
+      },
+      "assignment_sha256": "a02269e4ce430d8206f6f3da16da0b090e9ccf908bbb11b8ef332bcc7aeec1a6",
+      "leakage_free": true
+    },
+    "dataset_contract": {
+      "schema_version": "extraarena_nemesis_battle_v1",
+      "rows": 19848,
+      "catalog_verified_rows": 19848,
+      "catalog_unverified_lite_rows": 0,
+      "sources": [
+        {
+          "path": "nemesis_lite_preview.jsonl",
+          "sha256": "baff2161168aeabdee3e2137da7260ff840bead032f54ff6a58c8e8abd8f016f",
+          "rows": 19848,
+          "records": 19848,
+          "excluded_rows": 0,
+          "catalog_unverified_rows": 0
+        }
+      ],
+      "explicit_card_levels_required": true,
+      "quality_policy": "eligible_lite=true and sample_weight>0; catalog-unavailable Lite rows retain their contract weight",
+      "terminal_stalemate_maps_to": "draw"
+    }
+  }
+}

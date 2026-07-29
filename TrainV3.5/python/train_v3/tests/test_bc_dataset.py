@@ -650,9 +650,12 @@ def test_orphan_and_terminal_skip(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_decision_source_human_filter(tmp_path):
-    """A synthetic battle with mixed decision_source rows (human + bot + rl):
-    only decision_source=='human' rows emit BCTransition; bot/rl rows EXCLUDED."""
+def test_decision_source_and_accepted_filter(tmp_path):
+    """Only accepted human rows emit BCTransition.
+
+    Bot/RL and rejected-human rows remain available in the raw loader output,
+    but none may become a behavior-cloning target.
+    """
     snap, live = _minimal_state_snapshot(p1_hand=2, p1_mana=5, owner=1)
     p1_uid = int(snap["p1"]["user_id"])
     p2_uid = int(snap["p2"]["user_id"])
@@ -681,7 +684,11 @@ def test_decision_source_human_filter(tmp_path):
         _row(3, "rl", "attack",
              {"type": "attack", "attacker_id": "x", "target_id": "y",
               "target_is_hero": False}, p2_uid, 2),
+        # rejected human action -> audit row, never a policy target.
+        _row(4, "human", "end_turn", {"type": "end_turn"}, p1_uid, 1),
     ]
+    rows[-1]["accepted"] = False
+    rows[-1]["error"] = "not_your_turn"
     rec = _write_battle_index(tmp_path, "b_ds", meta_status="p2_win",
                               v5_trace_ok=True, rows=rows)
     (tmp_path / "manifest.json").write_text(json.dumps({
@@ -701,13 +708,19 @@ def test_decision_source_human_filter(tmp_path):
         f"human end_turn must resolve to tcode 0, got {t.target_tcode}"
     )
     assert t.is_mana_draw is False
-    # bot/rl rows (seq 2,3) are EXCLUDED.
+    # bot/rl rows (seq 2,3) and rejected human row (seq 4) are EXCLUDED.
     emitted_seqs = {tt.meta["seq"] for tt in bc}
     assert emitted_seqs == {1}, f"only seq=1 (human) must emit; got {emitted_seqs}"
 
-    # Cross-check: the loader emits ALL 3 rows (it does not filter
+    # Cross-check: the loader emits ALL 4 rows (it does not filter
     # decision_source); BC filters to 1.
     loader_transitions = list(iter_offline_transitions(tmp_path))
-    assert len(loader_transitions) == 3, "loader emits all rows (no filter)"
+    assert len(loader_transitions) == 4, "loader emits all rows (no filter)"
     assert {tt.meta["decision_source"] for tt in loader_transitions} == \
         {"human", "bot", "rl"}
+    assert [tt.meta["accepted"] for tt in loader_transitions] == [
+        True,
+        True,
+        True,
+        False,
+    ]

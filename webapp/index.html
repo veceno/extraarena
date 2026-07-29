@@ -5145,7 +5145,7 @@ window.loadMobileSquadsBootstrap = async function(options = {}) {
 };
 </script>
 
-<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=4255ddf8772a">
+<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=52ed1962e9d5">
 // ═══════════════════════════════════════════
 // DESIGN TOKENS
 // ═══════════════════════════════════════════
@@ -8697,16 +8697,15 @@ const caseRewardSfxId = (rewards) => {
 // BATTLE PICK SHEET (спасательный круг)
 // ═══════════════════════════════════════════
 const DIFFICULTIES = [
-  {id:'tier_lite_0000',   label:'Новичок',  desc:'Спокойный темп и простые решения', color:'#4ade80'},
-  {id:'tier_easy_0100',   label:'Лёгкий',   desc:'Базовая тактика без жесткого давления', color:'#a3e635'},
-  {id:'tier_medium_1200', label:'Средний',  desc:'Сбалансированный соперник для разминки', color:T.orange},
-  {id:'tier_hard_4500',   label:'Сложный',  desc:'Ошибки быстро превращает в преимущество', color:'#fb923c'},
-  {id:'tier_max_9000',    label:'Максимум', desc:'Жесткая проверка колоды и решений', color:'#f87171'},
+  {id:'tier_lite_0000',      label:'V4 Micro', desc:'Базовая модель для новичков', color:'#4ade80'},
+  {id:'tier_easy_plus_0300', label:'V5 Lite',  desc:'Облегчённая V5 для уверенной тренировки', color:'#a3e635'},
+  {id:'tier_medium_1200',    label:'V5',       desc:'Полная модель V5 с открытой информацией', color:T.orange},
+  {id:'tier_hard_4500',      label:'V5 Ultra', desc:'V5 с Assembler и CardOptimum', color:'#f87171'},
 ];
 
 const BattlePickSheet = ({onClose, profile, runtimeStatus}) => {
   const [tab, setTab]           = React.useState('friend');
-  const [diff, setDiff]         = React.useState('tier_medium_1200');
+  const [diff, setDiff]         = React.useState('tier_lite_0000');
   const [starting, setStarting] = React.useState(false);
   const [deckId, setDeckId]     = React.useState('');
   const [presets, setPresets]   = React.useState([]);
@@ -9035,7 +9034,7 @@ const BattlePickSheet = ({onClose, profile, runtimeStatus}) => {
               <div className="difficulty-list">
                 {DIFFICULTIES.map((d, idx) => (
                   <button key={d.id} className={'difficulty-row' + (diff===d.id?' active':'')} type="button" onClick={()=>setDiff(d.id)}>
-                    <div className="mode-icon" aria-hidden="true">{['I','II','III','IV','V'][idx] || String(idx+1)}</div>
+                    <div className="mode-icon" aria-hidden="true">{['I','II','III','IV'][idx] || String(idx+1)}</div>
                     <div className="row-copy">
                       <strong>{d.label}</strong>
                       <span>{d.desc}</span>
@@ -20873,6 +20872,6 @@ const LeagueInfoSheet = ({onClose, onOpenGloryPath, profile}) => {
 
 ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
 </script>
-<script src="index.compiled.js?v=4255ddf8772a"></script>
+<script src="index.compiled.js?v=52ed1962e9d5"></script>
 </body>
 </html>

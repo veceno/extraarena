@@ -7,6 +7,7 @@ from typing import Any
 from ai.train_v2.classic_actions_v1 import decode_action, _get_me_enemy
 from ai.train_v2.classic_rl_env import ClassicRLEnv
 from core.actions import AttackAction, PlayCardAction
+from core.v5_history import snapshot_v5_history_card
 
 from .contracts import AssistModeV5, InfoModeV5
 from .obs_v5 import encode_observation_v5
@@ -120,8 +121,11 @@ class TrainV3ClassicEnv:
             "actor_id": actor_id,
             "action_id": int(action_id),
             "action_type": action_type,
-            "source_card": source_card,
-            "target_card": target_card,
+            # Freeze PRE-action values. Holding the live CardInstance here
+            # lets the subsequent engine step mutate is_ready/hp and silently
+            # turns a PRE contract into a POST snapshot.
+            "source_card": snapshot_v5_history_card(source_card),
+            "target_card": snapshot_v5_history_card(target_card),
         }
 
 

@@ -459,22 +459,20 @@ def test_ai_profiles_temperature_table():
     # Models
     assert "extra-lr-v4-micro" in profiles["lite"]["model_path"]
     assert "extra-lr-v4-micro" in profiles["easy"]["model_path"]
-    assert "extra-lr-v4-lite" in profiles["tier_easy_plus_0300"]["model_path"]
-    assert "extra-lr-v4-opti" in profiles["medium"]["model_path"]
-    # Top tiers (hard/max aliases map to tier_hard_4500/tier_max_9000) are
-    # retargeted to the V5 model (Block E1 ship -- extra-lr-v5-max).
-    assert "extra-lr-v5-max" in profiles["hard"]["model_path"]
-    assert "extra-lr-v5-max" in profiles["max"]["model_path"]
-    # Non-top tiers (lite/easy/medium) stay V4 (train_v2_classic_v1, obs_dim 1456).
-    for difficulty in ("lite", "easy", "medium"):
+    assert "extra-lr-v5-lite" in profiles["tier_easy_plus_0300"]["model_path"]
+    assert profiles["medium"]["model_path"].endswith("extra-lr-v5.onnx")
+    assert profiles["hard"]["model_path"].endswith("extra-lr-v5.onnx")
+    assert profiles["max"]["model_path"].endswith("extra-lr-v5.onnx")
+    # The newcomer band is the only V4 runtime path.
+    for difficulty in ("lite", "easy"):
         assert profiles[difficulty]["format"] == "train_v2_classic_v1"
         assert profiles[difficulty]["obs_dim"] == 1456
         assert profiles[difficulty]["action_feature_dim"] == 171
         assert profiles[difficulty]["max_candidate_actions"] == 601
         assert profiles[difficulty]["placement_mode"] == "append_only"
         assert profiles[difficulty]["verify_mask"] is False
-    # Top tiers (hard/max) are V5 (format v5, obs_dim 7128, mana_draw_head).
-    for difficulty in ("hard", "max"):
+    # All later bands are V5 (format v5, obs_dim 7128, mana_draw_head).
+    for difficulty in ("tier_easy_plus_0300", "medium", "hard", "max"):
         assert profiles[difficulty]["format"] == "v5"
         assert profiles[difficulty]["obs_dim"] == 7128
         assert profiles[difficulty]["action_feature_dim"] == 171

@@ -16,6 +16,11 @@ from .contracts import (
 )
 
 
+STATE_ACTION_INTERACTION_KIND = "gated_bilinear_query_cap01_v1+gated_bilinear_key_cap2_v2"
+STATE_ACTION_GATE_CAP = 0.1
+STATE_ACTION_V2_GATE_CAP = 2.0
+
+
 @dataclass(frozen=True)
 class V5PolicyShape:
     obs_dim: int = OBS_V5_DIM
@@ -75,6 +80,23 @@ class V5ActionConditionedPolicy(nn.Module):
         )
         self.action_encoder = nn.Linear(action_feature_dim, action_hidden_dim)
         self.candidate_scorer = nn.Linear(hidden_dim + action_hidden_dim, 1)
+        # The legacy scorer is additively separable, so its state contribution
+        # cancels between candidates. These gated residuals supply genuine
+        # state/action compatibility while remaining exactly zero for older
+        # checkpoints.
+        self.state_action_query = nn.Linear(hidden_dim, action_hidden_dim)
+        import mlx.core as mx
+
+        self.state_action_gate = nn.Linear(1, 1, bias=False)
+        self.state_action_gate.weight = mx.zeros_like(self.state_action_gate.weight)
+        self.state_action_query_v2 = nn.Linear(hidden_dim, action_hidden_dim)
+        self.state_action_key_v2 = nn.Linear(action_hidden_dim, action_hidden_dim)
+        self.state_action_gate_v2 = nn.Linear(1, 1, bias=False)
+        self.state_action_gate_v2.weight = mx.zeros_like(self.state_action_gate_v2.weight)
+        self.state_action_interaction_kind = STATE_ACTION_INTERACTION_KIND
+        self.state_action_interaction_scale = float(action_hidden_dim) ** -0.5
+        self.state_action_gate_cap = STATE_ACTION_GATE_CAP
+        self.state_action_v2_gate_cap = STATE_ACTION_V2_GATE_CAP
         self.value_head = nn.Linear(hidden_dim, 1)
         # Parallel binary mana_draw head (Block 0 component 3 / spec §0.89
         # decision γ). This is NOT a 602nd candidate — MAX_CANDIDATE_ACTIONS=601
@@ -83,6 +105,13 @@ class V5ActionConditionedPolicy(nn.Module):
         # fused state_emb as value_head; its logit is gated by the legal mask
         # from mana_draw_head_v5.mana_draw_legal_mask (illegal → -inf).
         self.mana_draw_head = nn.Linear(hidden_dim, 1)
+        self.mana_draw_recovery_head = nn.Linear(hidden_dim, 1)
+        self.mana_draw_recovery_head.weight = mx.zeros_like(
+            self.mana_draw_recovery_head.weight
+        )
+        self.mana_draw_recovery_head.bias = mx.zeros_like(
+            self.mana_draw_recovery_head.bias
+        )
 
     def encode_state(self, obs):
         import mlx.core as mx
@@ -133,11 +162,45 @@ class V5ActionConditionedPolicy(nn.Module):
 
         joint = mx.concatenate([state_bc, action_emb], axis=-1)
         joint = mx.reshape(joint, (batch * 601, self.hidden_dim + self.action_hidden_dim))
-        logits = mx.reshape(self.candidate_scorer(joint), (batch, 601))
+        legacy_logits = mx.reshape(self.candidate_scorer(joint), (batch, 601))
+        state_query = mx.tanh(self.state_action_query(state_emb))
+        bounded_action_emb = mx.tanh(action_emb)
+        interaction_gate = self.state_action_gate_cap * mx.tanh(
+            self.state_action_gate.weight[0, 0]
+        )
+        interaction_logits = mx.sum(
+            mx.expand_dims(state_query, axis=1) * bounded_action_emb,
+            axis=-1,
+        ) * self.state_action_interaction_scale * interaction_gate
+        state_query_v2 = mx.tanh(self.state_action_query_v2(state_emb))
+        flat_action_emb = mx.reshape(
+            action_emb, (batch * 601, self.action_hidden_dim)
+        )
+        action_key_v2 = self.state_action_key_v2(flat_action_emb)
+        action_key_v2 = mx.tanh(
+            mx.reshape(action_key_v2, (batch, 601, self.action_hidden_dim))
+        )
+        interaction_gate_v2 = self.state_action_v2_gate_cap * mx.tanh(
+            self.state_action_gate_v2.weight[0, 0]
+        )
+        interaction_logits_v2 = mx.sum(
+            mx.expand_dims(state_query_v2, axis=1) * action_key_v2,
+            axis=-1,
+        ) * self.state_action_interaction_scale * interaction_gate_v2
+        # V2 is the dedicated second-start recovery lane.
+        am_first_player = mx.clip(obs[:, OBS_V1_DIM + 16], 0.0, 1.0)
+        interaction_logits_v2 = interaction_logits_v2 * mx.expand_dims(
+            1.0 - am_first_player, axis=1
+        )
+        logits = legacy_logits + interaction_logits + interaction_logits_v2
         value = self.value_head(state_emb).squeeze(-1)
         # Parallel binary mana_draw head on the fused state_emb (same input as
         # value_head). (batch, 1) → (batch,).
         mana_draw_logit = self.mana_draw_head(state_emb).squeeze(-1)
+        mana_draw_recovery = self.mana_draw_recovery_head(state_emb).squeeze(-1)
+        mana_draw_logit = mana_draw_logit + mana_draw_recovery * (
+            1.0 - am_first_player
+        )
         if mana_draw_legal is not None:
             # Gate the head: illegal → -inf (masked out of any selection).
             # bool or (batch,) array; broadcast over the batch dim.
@@ -181,4 +244,11 @@ def create_v5_policy(
     raise ValueError("policy_kind must be v5_split_encoder or baseline_mlp")
 
 
-__all__ = ["V5ActionConditionedPolicy", "V5PolicyShape", "create_v5_policy"]
+__all__ = [
+    "STATE_ACTION_INTERACTION_KIND",
+    "STATE_ACTION_GATE_CAP",
+    "STATE_ACTION_V2_GATE_CAP",
+    "V5ActionConditionedPolicy",
+    "V5PolicyShape",
+    "create_v5_policy",
+]

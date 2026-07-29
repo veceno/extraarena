@@ -839,7 +839,7 @@ def test_friend_list_payload_marks_runtime_online_friends():
     assert "\"online_ttl_seconds\": ONLINE_USER_TTL_SECONDS" in handler_block
 
 
-def test_training_uses_canonical_v4_difficulty_tiers():
+def test_training_uses_four_release_models():
     source = Path("webapp/index.html").read_text(encoding="utf-8")
     server = Path("web/server.py").read_text(encoding="utf-8")
     from infrastructure.config import BOT_DIFFICULTY_PROFILES
@@ -851,36 +851,35 @@ def test_training_uses_canonical_v4_difficulty_tiers():
     )[0]
 
     assert "tier_lite_0000" in difficulty_block
-    assert "tier_easy_0100" in difficulty_block
+    assert "tier_easy_plus_0300" in difficulty_block
     assert "tier_medium_1200" in difficulty_block
     assert "tier_hard_4500" in difficulty_block
-    assert "tier_max_9000" in difficulty_block
     assert "TrainV2" not in difficulty_block
-    assert "v4" not in difficulty_block
     assert "extra-lr" not in difficulty_block
+    assert "V4 Micro" in difficulty_block
+    assert "V5 Lite" in difficulty_block
+    assert "V5 Ultra" in difficulty_block
+    assert difficulty_block.count("{id:") == 4
+    assert "React.useState('tier_lite_0000')" in source
     assert "BOT_DIFFICULTY_ALIASES.get" in handler_block
     assert "BOT_DIFFICULTY_PROFILES" in handler_block
     assert "valid_difficulties = tuple(BOT_DIFFICULTY_PROFILES.keys())" in handler_block
-    # Non-top tiers stay V4 (train_v2_classic_v1, -v4- model path).
+    profile = BOT_DIFFICULTY_PROFILES["tier_lite_0000"]
+    assert profile["format"] == "train_v2_classic_v1"
+    assert profile["model_path"].endswith("extra-lr-v4-micro.onnx")
+    # Every later UI choice uses a V5 contract; the Ultra choice enables assists.
     for tier_key in (
-        "tier_lite_0000",
-        "tier_easy_0100",
+        "tier_easy_plus_0300",
         "tier_medium_1200",
-    ):
-        profile = BOT_DIFFICULTY_PROFILES[tier_key]
-        assert profile["format"] == "train_v2_classic_v1"
-        assert "-v4-" in profile["model_path"]
-    # Top tiers (tier_hard_4500, tier_max_9000) are retargeted to V5
-    # (Block E1 ship -- extra-lr-v5-max, format v5, obs_dim 7128).
-    for tier_key in (
         "tier_hard_4500",
-        "tier_max_9000",
     ):
         profile = BOT_DIFFICULTY_PROFILES[tier_key]
         assert profile["format"] == "v5"
-        assert "-v5-" in profile["model_path"]
+        assert "extra-lr-v5" in profile["model_path"]
         assert profile["obs_dim"] == 7128
         assert profile["mana_draw_head"] is True
+    assert BOT_DIFFICULTY_PROFILES["tier_hard_4500"]["assembler_enabled"] is True
+    assert BOT_DIFFICULTY_PROFILES["tier_hard_4500"]["cardoptimum_enabled"] is True
 
 
 def test_friendly_invite_uses_persistent_waiting_watcher():

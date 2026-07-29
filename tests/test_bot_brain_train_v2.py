@@ -76,15 +76,17 @@ class TestTrainV2Profile:
     def test_production_v4_profiles_disable_preview_features(self):
         from infrastructure.config import BOT_MODEL_PROFILES
 
-        for key in ("extra-lr-v4-micro", "extra-lr-v4-lite", "extra-lr-v4-opti", "extra-lr-v4-max"):
-            assert BOT_MODEL_PROFILES[key]["include_preview_features"] is False
+        assert BOT_MODEL_PROFILES["extra-lr-v4-micro"]["include_preview_features"] is False
 
     def test_production_model_registry_excludes_legacy_profiles(self):
         from infrastructure.config import BOT_MODEL_PROFILES
 
-        assert "extra-lr-v1" not in BOT_MODEL_PROFILES
-        assert "extra-lr-v2" not in BOT_MODEL_PROFILES
-        assert "extra-lr-v3-max" not in BOT_MODEL_PROFILES
+        assert set(BOT_MODEL_PROFILES) == {
+            "extra-lr-v4-micro",
+            "extra-lr-v5-lite",
+            "extra-lr-v5",
+            "extra-lr-v5-ultra",
+        }
 
     def test_train_v2_profile_loads(self, train_v2_onnx_model):
         from ai.bot_brain import BerserkInference

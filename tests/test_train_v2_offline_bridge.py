@@ -100,6 +100,9 @@ class StubRecorder:
     def _snapshot_player(self, p):
         return V5TraceRecorder._snapshot_player(self, p)
 
+    def _snapshot_v5_history_event(self, event):
+        return V5TraceRecorder._snapshot_v5_history_event(self, event)
+
     def snapshot_state(self):
         return V5TraceRecorder._snapshot_state(self)
 
@@ -172,11 +175,11 @@ def test_deserializer_correctness_vs_known_state():
 
         obs_live = encode_observation_v5(
             live, actor, info_mode=info, assist_mode=assist,
-            history_events=live.history,
+            history_events=list(live.v5_history_events),
         )
         obs_recon = encode_observation_v5(
             recon, actor, info_mode=info, assist_mode=assist,
-            history_events=snap["history"],
+            history_events=snap["v5_history_events"],
         )
         assert obs_recon.shape == (7128,)
         assert np.allclose(obs_live, obs_recon, atol=1e-6), (
@@ -391,11 +394,11 @@ def test_deserializer_round_trip_obs_integrity(tmp_path):
         recon_pre_next = reconstruct_gamestate(pre_next)
         obs_post = encode_observation_v5(
             recon_post, p1_uid, info_mode=info, assist_mode=assist,
-            history_events=post_n["history"],
+            history_events=post_n["v5_history_events"],
         )
         obs_pre_next = encode_observation_v5(
             recon_pre_next, p1_uid, info_mode=info, assist_mode=assist,
-            history_events=pre_next["history"],
+            history_events=pre_next["v5_history_events"],
         )
         assert np.allclose(obs_post, obs_pre_next, atol=1e-6), (
             f"round-trip obs broken at i={i} (fixed perspective p1): "

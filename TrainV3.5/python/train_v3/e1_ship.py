@@ -1,13 +1,13 @@
-"""V5-Max Block E1 SHIP component -- export + bundle + register + verify.
+"""V5-family Block E1 SHIP component -- export + bundle + register + verify.
 
 This is the TRAINING-SIDE ship component (lives in ``TrainV3.5/python/train_v3``,
 NOT in prod ``ai/``). It consumes the E3 tournament winner report, exports the
 winning checkpoint to ONNX via the E1 exporter, builds the release bundle via
 the REUSED-AS-IS ``ai.train_v2.release_bundle.build_release_bundle``, registers
 the V5 sidecar kind detector into the rlhf_env adapter registry (LIFO, ahead
-of the V4 ``_sidecar_kind_detector``), and verifies the prod wiring
-(``infrastructure.config`` profile + tier retargets) is in place. It does NOT
-mutate prod files -- those edits are committed source changes in
+of the V4 ``_sidecar_kind_detector``), and verifies that the complete
+four-stage production progression (V4 Micro -> V5 Lite -> V5 -> V5 Ultra) is
+in place. It does NOT mutate prod files -- those edits are committed source changes in
 ``ai/bot_brain.py`` + ``infrastructure/config.py``; ``ship_v5_winner`` only
 EXPORTS + BUNDLES + REGISTERS + VERIFIES.
 
@@ -145,12 +145,28 @@ def register_v5_kind_detector(registry=None):
 # ShipResult (frozen)
 # ---------------------------------------------------------------------------
 
-_TOP_TIER_KEYS = (
-    "tier_hard_4500",
-    "tier_hard_plus_6000",
-    "tier_max_minus_7500",
-    "tier_max_9000",
+_SHIPPED_PROFILE_KEY = "extra-lr-v5"
+_PRODUCTION_PROFILE_KEYS = (
+    "extra-lr-v4-micro",
+    "extra-lr-v5-lite",
+    "extra-lr-v5",
+    "extra-lr-v5-ultra",
 )
+_EXPECTED_TIER_PROGRESSION = (
+    ("tier_lite_0000", 0, 99, "extra-lr-v4-micro"),
+    ("tier_easy_0100", 100, 299, "extra-lr-v4-micro"),
+    ("tier_easy_plus_0300", 300, 599, "extra-lr-v5-lite"),
+    ("tier_easy_plus_0600", 600, 999, "extra-lr-v5-lite"),
+    ("tier_medium_minus_1000", 1000, 1199, "extra-lr-v5-lite"),
+    ("tier_medium_1200", 1200, 1999, "extra-lr-v5"),
+    ("tier_medium_plus_2000", 2000, 2999, "extra-lr-v5"),
+    ("tier_hard_minus_3000", 3000, 4499, "extra-lr-v5"),
+    ("tier_hard_4500", 4500, 5999, "extra-lr-v5-ultra"),
+    ("tier_hard_plus_6000", 6000, 7499, "extra-lr-v5-ultra"),
+    ("tier_max_minus_7500", 7500, 8999, "extra-lr-v5-ultra"),
+    ("tier_max_9000", 9000, 1_000_000_000, "extra-lr-v5-ultra"),
+)
+_PROGRESSION_TIER_KEYS = tuple(row[0] for row in _EXPECTED_TIER_PROGRESSION)
 
 
 @dataclass(frozen=True)
@@ -162,9 +178,10 @@ class ShipResult:
     sidecar_path: str
     bundle_dir: str
     manifest_path: str
-    marker: str = "extra-lr-v5-max"
-    prod_profile_key: str = "extra-lr-v5-max"
-    trophy_tiers_retargeted: tuple = _TOP_TIER_KEYS
+    marker: str = _SHIPPED_PROFILE_KEY
+    prod_profile_key: str = _SHIPPED_PROFILE_KEY
+    production_profiles_verified: tuple = _PRODUCTION_PROFILE_KEYS
+    trophy_tiers_retargeted: tuple = _PROGRESSION_TIER_KEYS
     fallback_guard_verified: bool = False
 
 
@@ -178,7 +195,7 @@ def ship_v5_winner(
     onnx_export_fn: Callable[[str, str], str],
     bundle_config: Any,
 ) -> ShipResult:
-    """Ship the E3 tournament winner to a V5-Max release bundle.
+    """Ship the E3 tournament winner to the production V5-family bundle.
 
     GATED on E3: asserts ``winner_report`` is not None and
     ``winner_report.passed()`` is True (the E3 threshold-table gate). A
@@ -188,17 +205,18 @@ def ship_v5_winner(
       (a) NO-SHIP guard -- assert winner_report.passed().
       (b) Export the winning checkpoint to ONNX via ``onnx_export_fn`` (E1
           ``export_v5_checkpoint_to_onnx``) into ``bundle_config.candidate_dir``
-          as ``extra-lr-v5-max.onnx``. ``onnx_export_fn`` writes the ONNX 3-tuple
+          as ``extra-lr-v5.onnx``. V5 Ultra intentionally shares this policy
+          artifact and adds its Assembler/CardOptimum assist stack.
+          ``onnx_export_fn`` writes the ONNX 3-tuple
           + the ``.onnx.json`` sidecar into the candidate dir.
       (c) Build the release bundle via ``release_bundle.build_release_bundle``
           (REUSED AS-IS, format-agnostic -- first *.onnx + .onnx.json sidecar
           + candidate.json).
       (d) Register the V5 sidecar kind detector (LIFO, ahead of V4).
-      (e) Verify the prod wiring is in place: ``extra-lr-v5-max`` in
-          ``BOT_MODEL_PROFILES``; the 4 top tiers ``brain_profile`` ==
-          ``extra-lr-v5-max`` in ``BOT_STRENGTH_TIERS``;
-          ``BOT_DIFFICULTY_PROFILES`` contains the retargeted tier keys with
-          ``obs_dim == 7128`` (derivation propagated).
+      (e) Verify the prod wiring is in place: the registry contains exactly
+          V4 Micro + V5 Lite + V5 + V5 Ultra; every trophy tier follows the
+          four-stage progression; and ``BOT_DIFFICULTY_PROFILES`` carries the
+          expected V4/V5 observation contract for every derived tier.
       (f) Return ``ShipResult`` populated.
 
     Does NOT mutate ``ai/bot_brain.py`` or ``infrastructure/config.py`` at call
@@ -216,7 +234,7 @@ def ship_v5_winner(
     winner_path = winner_report.candidate_path
 
     # (b) Export the winning checkpoint to ONNX into the candidate dir.
-    onnx_output_path = os.path.join(bundle_config.candidate_dir, "extra-lr-v5-max.onnx")
+    onnx_output_path = os.path.join(bundle_config.candidate_dir, "extra-lr-v5.onnx")
     onnx_export_fn(winner_path, onnx_output_path)
 
     # (c) Build the release bundle (REUSED AS-IS -- format-agnostic).
@@ -236,44 +254,93 @@ def ship_v5_winner(
         BOT_DIFFICULTY_PROFILES,
     )
 
-    if "extra-lr-v5-max" not in BOT_MODEL_PROFILES:
+    actual_profile_keys = tuple(BOT_MODEL_PROFILES)
+    if actual_profile_keys != _PRODUCTION_PROFILE_KEYS:
         raise RuntimeError(
-            "ship_v5_winner: prod wiring incomplete -- 'extra-lr-v5-max' missing "
-            "from BOT_MODEL_PROFILES (infrastructure/config.py not committed yet)"
-        )
-    v5_profile = BOT_MODEL_PROFILES["extra-lr-v5-max"]
-    if v5_profile.get("obs_dim") != 7128 or v5_profile.get("format") != "v5":
-        raise RuntimeError(
-            "ship_v5_winner: prod wiring incomplete -- 'extra-lr-v5-max' profile "
-            f"has wrong shape {v5_profile}"
+            "ship_v5_winner: prod wiring incomplete -- BOT_MODEL_PROFILES must "
+            f"contain exactly {_PRODUCTION_PROFILE_KEYS}, got {actual_profile_keys}"
         )
 
-    tier_by_key = {tier["key"]: tier for tier in BOT_STRENGTH_TIERS}
-    for tier_key in _TOP_TIER_KEYS:
-        tier = tier_by_key.get(tier_key)
-        if tier is None:
+    v4_profile = BOT_MODEL_PROFILES["extra-lr-v4-micro"]
+    if (
+        v4_profile.get("obs_dim") != 1456
+        or v4_profile.get("format") != "train_v2_classic_v1"
+    ):
+        raise RuntimeError(
+            "ship_v5_winner: prod wiring incomplete -- 'extra-lr-v4-micro' "
+            f"profile has wrong contract {v4_profile}"
+        )
+
+    for profile_key in _PRODUCTION_PROFILE_KEYS[1:]:
+        profile = BOT_MODEL_PROFILES[profile_key]
+        if (
+            profile.get("obs_dim") != 7128
+            or profile.get("format") != "v5"
+            or not profile.get("mana_draw_head")
+        ):
             raise RuntimeError(
-                f"ship_v5_winner: prod wiring incomplete -- tier {tier_key} missing"
+                "ship_v5_winner: prod wiring incomplete -- "
+                f"{profile_key!r} profile has wrong V5 contract {profile}"
             )
-        if tier.get("brain_profile") != "extra-lr-v5-max":
-            raise RuntimeError(
-                f"ship_v5_winner: prod wiring incomplete -- tier {tier_key} "
-                f"brain_profile={tier.get('brain_profile')!r} != 'extra-lr-v5-max'"
-            )
+
+    # Ultra is a composite profile: it shares the shipped V5 policy artifact
+    # and is distinguished by the two match-scoped assists.
+    v5_profile = BOT_MODEL_PROFILES["extra-lr-v5"]
+    ultra_profile = BOT_MODEL_PROFILES["extra-lr-v5-ultra"]
+    if ultra_profile.get("model_path") != v5_profile.get("model_path"):
+        raise RuntimeError(
+            "ship_v5_winner: prod wiring incomplete -- V5 Ultra must share "
+            "the ExtraLR V5 policy artifact"
+        )
+    if not (
+        ultra_profile.get("assembler_enabled")
+        and ultra_profile.get("cardoptimum_enabled")
+    ):
+        raise RuntimeError(
+            "ship_v5_winner: prod wiring incomplete -- V5 Ultra requires "
+            "Assembler V1 and CardOptimum V1"
+        )
+
+    actual_tiers = tuple(
+        (
+            tier.get("key"),
+            tier.get("min_trophies"),
+            tier.get("max_trophies"),
+            tier.get("brain_profile"),
+        )
+        for tier in BOT_STRENGTH_TIERS
+    )
+    if actual_tiers != _EXPECTED_TIER_PROGRESSION:
+        raise RuntimeError(
+            "ship_v5_winner: prod wiring incomplete -- BOT_STRENGTH_TIERS "
+            "does not match the four-stage V4 Micro/V5 progression"
+        )
 
     # BOT_DIFFICULTY_PROFILES derives automatically from BOT_MODEL_PROFILES keyed
-    # by tier brain_profile -- verify the retargeted tiers resolved to obs_dim=7128.
-    for tier_key in _TOP_TIER_KEYS:
+    # by tier brain_profile. Verify every tier retained the expected contract.
+    for tier_key, _min_trophies, _max_trophies, profile_key in _EXPECTED_TIER_PROGRESSION:
         resolved = BOT_DIFFICULTY_PROFILES.get(tier_key)
         if resolved is None:
             raise RuntimeError(
                 f"ship_v5_winner: prod wiring incomplete -- {tier_key} missing "
                 "from BOT_DIFFICULTY_PROFILES (derivation broken)"
             )
-        if resolved.get("obs_dim") != 7128:
+        expected_obs_dim = 1456 if profile_key == "extra-lr-v4-micro" else 7128
+        expected_format = (
+            "train_v2_classic_v1"
+            if profile_key == "extra-lr-v4-micro"
+            else "v5"
+        )
+        if (
+            resolved.get("obs_dim") != expected_obs_dim
+            or resolved.get("format") != expected_format
+        ):
             raise RuntimeError(
-                f"ship_v5_winner: prod wiring incomplete -- {tier_key} derived "
-                f"profile obs_dim={resolved.get('obs_dim')} != 7128"
+                "ship_v5_winner: prod wiring incomplete -- "
+                f"{tier_key} derived contract is "
+                f"obs_dim={resolved.get('obs_dim')}, "
+                f"format={resolved.get('format')!r}; expected "
+                f"obs_dim={expected_obs_dim}, format={expected_format!r}"
             )
 
     # The ONNX fallback guard (SPEC :174) is the last-resort prod safety -- it
@@ -293,8 +360,9 @@ def ship_v5_winner(
         sidecar_path=sidecar_path,
         bundle_dir=bundle_dir,
         manifest_path=manifest_path,
-        marker="extra-lr-v5-max",
-        prod_profile_key="extra-lr-v5-max",
-        trophy_tiers_retargeted=_TOP_TIER_KEYS,
+        marker=_SHIPPED_PROFILE_KEY,
+        prod_profile_key=_SHIPPED_PROFILE_KEY,
+        production_profiles_verified=_PRODUCTION_PROFILE_KEYS,
+        trophy_tiers_retargeted=_PROGRESSION_TIER_KEYS,
         fallback_guard_verified=fallback_guard_verified,
     )

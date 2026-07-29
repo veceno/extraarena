@@ -24,6 +24,7 @@ ai/train_v2/releases/
 ai/model_benchmark/
 ai/model_benchmark/results/
 *.onnx
+!ai/models/*.onnx
 
 # Local research/workflow scratch
 .codex/

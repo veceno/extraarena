@@ -12,6 +12,7 @@ In-process (без HTTP/stdio): ArenaMatchManager + MatchRunner.run_auto гон�
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import shutil
 from pathlib import Path
@@ -84,6 +85,13 @@ def test_real_trace_passes_all_invariants(tmp_path):
     assert rep["ok"], f"реальный trace должен проходить, но issues={rep['issues']}"
     assert rep["checks"]["rows"] > 0
     assert rep["checks"]["turns"] > 0
+    for row in _load_actions(v5):
+        assert {
+            "human_decision_time_ms",
+            "decision_time_censored",
+            "decision_censor_reason",
+            "control_source",
+        }.issubset(row)
 
 
 def test_real_trace_via_mcp_tool(tmp_path):
@@ -433,3 +441,455 @@ def test_mutation_terminal_draw_with_winner_flagged(tmp_path):
     (dst_v5 / "meta.json").write_text(json.dumps(m, ensure_ascii=False), encoding="utf-8")
     rep = validate_v5_trace(dst_v5, battle_log_path=dst_blog)
     assert not rep["ok"] and _has_issue(rep, "draw/stalemate has no winner"), rep["issues"]
+
+
+# ---------------------------------------------------------------------------
+# Human-vs-human, timing and rejected-attempt compatibility
+# ---------------------------------------------------------------------------
+
+def _rewrite_actor_side_as_human(
+    rows: List[Dict[str, Any]],
+    actor_player: int,
+    *,
+    latency_ms: int = 500,
+) -> None:
+    for row in rows:
+        if row.get("actor_player") != actor_player:
+            continue
+        row["decision_source"] = "human"
+        row["control_source"] = None
+        row["human_decision_time_ms"] = latency_ms
+        row["decision_time_censored"] = False
+        row["decision_censor_reason"] = None
+
+
+def _prepare_human_vs_human_trace(
+    tmp_path: Path,
+    name: str,
+) -> tuple[Path, Path, Dict[str, Any], List[Dict[str, Any]]]:
+    src_v5, src_blog = _drive_completed(tmp_path)
+    dst_v5 = tmp_path / name / "v5"
+    dst_blog = tmp_path / name / "b.json"
+    _copy_trace(src_v5, src_blog, dst_v5, dst_blog)
+
+    meta_path = dst_v5 / "meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["p1_actor_type"] = "human"
+    meta["p2_actor_type"] = "human"
+    meta["p1_is_bot"] = False
+    meta["p2_is_bot"] = False
+    meta["battle_tag"] = "human-vs-human"
+
+    rows = _load_actions(dst_v5)
+    _rewrite_actor_side_as_human(rows, 1, latency_ms=450)
+    _rewrite_actor_side_as_human(rows, 2, latency_ms=650)
+    meta_path.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+    _save_actions(dst_v5, rows)
+    return dst_v5, dst_blog, meta, rows
+
+
+def _same_turn_boundary(rows: List[Dict[str, Any]]) -> int:
+    """Return a boundary which does not also exercise turns.jsonl matching."""
+    for index in range(len(rows) - 1):
+        if (
+            rows[index].get("turn_number") == rows[index + 1].get("turn_number")
+            and rows[index].get("post_state") is not None
+            and rows[index + 1].get("pre_state") is not None
+        ):
+            return index
+    raise AssertionError("fixture has no two adjacent actions in one turn")
+
+
+def _control_event(
+    *,
+    seq: int,
+    after_action_seq: int,
+    user_id: int,
+    previous_status: str,
+    new_status: str,
+) -> Dict[str, Any]:
+    return {
+        "seq": seq,
+        "after_action_seq": after_action_seq,
+        "user_id": user_id,
+        "previous_status": previous_status,
+        "new_status": new_status,
+    }
+
+
+def test_human_vs_human_sources_are_validated_symmetrically(tmp_path):
+    src_v5, src_blog = _drive_completed(tmp_path)
+    dst_v5 = tmp_path / "human_vs_human" / "v5"
+    dst_blog = tmp_path / "human_vs_human" / "b.json"
+    _copy_trace(src_v5, src_blog, dst_v5, dst_blog)
+
+    meta_path = dst_v5 / "meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["p1_actor_type"] = "human"
+    meta["p2_actor_type"] = "human"
+    meta["p1_is_bot"] = False
+    meta["p2_is_bot"] = False
+    meta["battle_tag"] = "human-vs-human"
+    meta_path.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+
+    rows = _load_actions(dst_v5)
+    _rewrite_actor_side_as_human(rows, 1, latency_ms=450)
+    _rewrite_actor_side_as_human(rows, 2, latency_ms=650)
+    _save_actions(dst_v5, rows)
+
+    rep = validate_v5_trace(dst_v5, battle_log_path=dst_blog)
+    assert rep["ok"], rep["issues"]
+
+
+@pytest.mark.parametrize("remaining_afk_side", ("p1", "p2"))
+def test_audited_human_vs_human_afk_and_reconnect_preserve_continuity(
+    tmp_path,
+    remaining_afk_side,
+):
+    """Both H-v-H seats may disconnect/reconnect at the same action boundary.
+
+    One seat remains AFK while the other reconnects.  Parameterizing the
+    remaining seat proves that p1/p2 identity mapping is symmetric, and the
+    three-event tape exercises ordered transitions for the same user.
+    """
+
+    v5, blog, meta, rows = _prepare_human_vs_human_trace(
+        tmp_path,
+        f"control_positive_{remaining_afk_side}",
+    )
+    boundary = _same_turn_boundary(rows)
+    after_seq = rows[boundary]["seq"]
+    reconnect_side = "p2" if remaining_afk_side == "p1" else "p1"
+
+    events: List[Dict[str, Any]] = []
+    event_seq = 1
+    for side in ("p1", "p2"):
+        events.append(
+            _control_event(
+                seq=event_seq,
+                after_action_seq=after_seq,
+                user_id=meta[f"{side}_user_id"],
+                previous_status="active",
+                new_status="afk",
+            )
+        )
+        event_seq += 1
+    events.append(
+        _control_event(
+            seq=event_seq,
+            after_action_seq=after_seq,
+            user_id=meta[f"{reconnect_side}_user_id"],
+            previous_status="afk",
+            new_status="active",
+        )
+    )
+    meta["control_events"] = events
+    rows[boundary + 1]["pre_state"][remaining_afk_side][
+        "replacement_status"
+    ] = "afk"
+
+    (v5 / "meta.json").write_text(
+        json.dumps(meta, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    _save_actions(v5, rows)
+
+    rep = validate_v5_trace(v5, battle_log_path=blog)
+    assert rep["ok"], rep["issues"]
+
+
+def test_unaudited_human_vs_human_replacement_status_mutation_is_invalid(tmp_path):
+    v5, blog, meta, rows = _prepare_human_vs_human_trace(
+        tmp_path,
+        "control_unaudited",
+    )
+    boundary = _same_turn_boundary(rows)
+    rows[boundary + 1]["pre_state"]["p1"]["replacement_status"] = "afk"
+    rows[boundary + 1]["pre_state"]["p2"]["replacement_status"] = "afk"
+    meta["control_events"] = []
+    (v5 / "meta.json").write_text(
+        json.dumps(meta, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    _save_actions(v5, rows)
+
+    rep = validate_v5_trace(v5, battle_log_path=blog)
+    assert not rep["ok"]
+    assert _has_issue(rep, "audited control events"), rep["issues"]
+
+
+@pytest.mark.parametrize(
+    ("event_patch", "needle"),
+    [
+        ({"user_id": 999_999}, "is not meta p1/p2 user"),
+        ({"previous_status": "surrendered"}, "previous_status"),
+        ({"new_status": "surrendered"}, "audited control events"),
+    ],
+)
+def test_control_event_must_match_user_previous_and_new_status(
+    tmp_path,
+    event_patch,
+    needle,
+):
+    v5, blog, meta, rows = _prepare_human_vs_human_trace(
+        tmp_path,
+        f"control_bad_{next(iter(event_patch))}",
+    )
+    boundary = _same_turn_boundary(rows)
+    after_seq = rows[boundary]["seq"]
+    rows[boundary + 1]["pre_state"]["p1"]["replacement_status"] = "afk"
+    event = _control_event(
+        seq=1,
+        after_action_seq=after_seq,
+        user_id=meta["p1_user_id"],
+        previous_status="active",
+        new_status="afk",
+    )
+    event.update(event_patch)
+    meta["control_events"] = [event]
+    (v5 / "meta.json").write_text(
+        json.dumps(meta, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    _save_actions(v5, rows)
+
+    rep = validate_v5_trace(v5, battle_log_path=blog)
+    assert not rep["ok"] and _has_issue(rep, needle), rep["issues"]
+
+
+@pytest.mark.parametrize(
+    ("event_patch", "needle"),
+    [
+        ({"seq": 2}, "is not contiguous"),
+        ({"battle_id": "another-battle"}, "!= meta.battle_id"),
+    ],
+)
+def test_control_event_identity_tape_is_contiguous_and_battle_bound(
+    tmp_path,
+    event_patch,
+    needle,
+):
+    v5, blog, meta, rows = _prepare_human_vs_human_trace(
+        tmp_path,
+        f"control_identity_{next(iter(event_patch))}",
+    )
+    boundary = _same_turn_boundary(rows)
+    rows[boundary + 1]["pre_state"]["p1"]["replacement_status"] = "afk"
+    event = _control_event(
+        seq=1,
+        after_action_seq=rows[boundary]["seq"],
+        user_id=meta["p1_user_id"],
+        previous_status="active",
+        new_status="afk",
+    )
+    event.update(event_patch)
+    meta["control_events"] = [event]
+    (v5 / "meta.json").write_text(
+        json.dumps(meta, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    _save_actions(v5, rows)
+
+    rep = validate_v5_trace(v5, battle_log_path=blog)
+    assert not rep["ok"] and _has_issue(rep, needle), rep["issues"]
+
+
+def test_audited_control_event_does_not_mask_unrelated_state_mutation(tmp_path):
+    v5, blog, meta, rows = _prepare_human_vs_human_trace(
+        tmp_path,
+        "control_unrelated_mutation",
+    )
+    boundary = _same_turn_boundary(rows)
+    after_seq = rows[boundary]["seq"]
+    rows[boundary + 1]["pre_state"]["p1"]["replacement_status"] = "afk"
+    rows[boundary + 1]["pre_state"]["p2"]["mana"] += 1
+    meta["control_events"] = [
+        _control_event(
+            seq=1,
+            after_action_seq=after_seq,
+            user_id=meta["p1_user_id"],
+            previous_status="active",
+            new_status="afk",
+        )
+    ]
+    (v5 / "meta.json").write_text(
+        json.dumps(meta, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    _save_actions(v5, rows)
+
+    rep = validate_v5_trace(v5, battle_log_path=blog)
+    assert not rep["ok"]
+    assert _has_issue(rep, "diff keys: ['p2']"), rep["issues"]
+
+
+def test_human_seat_replacement_bot_is_explicit_and_has_no_human_timing(tmp_path):
+    src_v5, src_blog = _drive_completed(tmp_path)
+    dst_v5 = tmp_path / "replacement_bot" / "v5"
+    dst_blog = tmp_path / "replacement_bot" / "b.json"
+    _copy_trace(src_v5, src_blog, dst_v5, dst_blog)
+
+    meta_path = dst_v5 / "meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["p2_actor_type"] = "human"
+    meta["p2_is_bot"] = False
+    meta_path.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+
+    rows = _load_actions(dst_v5)
+    timeout_marked = False
+    for row in rows:
+        if row.get("actor_player") == 2:
+            row["decision_source"] = "bot"
+            if row.get("action_type") == "end_turn" and not timeout_marked:
+                row["control_source"] = "timeout"
+                timeout_marked = True
+            else:
+                row["control_source"] = "replacement_bot"
+            row["human_decision_time_ms"] = None
+            row["decision_time_censored"] = False
+            row["decision_censor_reason"] = None
+    assert timeout_marked
+    _save_actions(dst_v5, rows)
+
+    rep = validate_v5_trace(dst_v5, battle_log_path=dst_blog)
+    assert rep["ok"], rep["issues"]
+
+
+@pytest.mark.parametrize(
+    ("mutate", "needle"),
+    [
+        (
+            lambda row: row.pop("human_decision_time_ms"),
+            "missing fields",
+        ),
+        (
+            lambda row: row.update(
+                human_decision_time_ms=True,
+                decision_time_censored=False,
+            ),
+            "non-negative int",
+        ),
+        (
+            lambda row: row.update(
+                human_decision_time_ms=50_000,
+                decision_time_censored=False,
+            ),
+            "outside [100,25000]",
+        ),
+        (
+            lambda row: row.update(
+                human_decision_time_ms=None,
+                decision_time_censored=True,
+                decision_censor_reason=None,
+            ),
+            "requires decision_censor_reason",
+        ),
+    ],
+)
+def test_human_timing_contract_rejects_malformed_rows(tmp_path, mutate, needle):
+    src_v5, _src_blog = _drive_completed(tmp_path)
+    dst_v5 = tmp_path / f"timing_{needle[:8]}" / "v5"
+    dst_blog = tmp_path / f"timing_{needle[:8]}" / "b.json"
+    _copy_trace(src_v5, _src_blog, dst_v5, dst_blog)
+
+    meta_path = dst_v5 / "meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["p1_actor_type"] = "human"
+    meta_path.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+    rows = _load_actions(dst_v5)
+    _rewrite_actor_side_as_human(rows, 1)
+    target = next(row for row in rows if row.get("actor_player") == 1)
+    mutate(target)
+    _save_actions(dst_v5, rows)
+
+    rep = validate_v5_trace(dst_v5, battle_log_path=dst_blog)
+    assert not rep["ok"] and _has_issue(rep, needle), rep["issues"]
+
+
+def _insert_rejected_out_of_turn_row(rows: List[Dict[str, Any]], meta: Dict[str, Any]) -> None:
+    first = rows[0]
+    actor_player = 2 if first["actor_player"] == 1 else 1
+    rejected = copy.deepcopy(first)
+    rejected.update(
+        seq=1,
+        actor_player=actor_player,
+        actor_user_id=meta[f"p{actor_player}_user_id"],
+        decision_source=meta[f"p{actor_player}_actor_type"],
+        control_source=None,
+        human_decision_time_ms=None,
+        decision_time_censored=False,
+        decision_censor_reason=None,
+        legal_action_index=None,
+        action_type="end_turn",
+        action_json={"type": "end_turn"},
+        action_native=None,
+        source_card=None,
+        target_card=None,
+        pre_state=copy.deepcopy(first["pre_state"]),
+        post_state=copy.deepcopy(first["pre_state"]),
+        deltas=None,
+        accepted=False,
+        error="not_your_turn",
+    )
+    for row in rows:
+        row["seq"] += 1
+    rows.insert(0, rejected)
+
+
+def test_rejected_out_of_turn_attempt_is_valid_when_state_is_unchanged(tmp_path):
+    src_v5, src_blog = _drive_completed(tmp_path)
+    dst_v5 = tmp_path / "rejected_unchanged" / "v5"
+    dst_blog = tmp_path / "rejected_unchanged" / "b.json"
+    _copy_trace(src_v5, src_blog, dst_v5, dst_blog)
+    meta = json.loads((dst_v5 / "meta.json").read_text(encoding="utf-8"))
+    rows = _load_actions(dst_v5)
+    _insert_rejected_out_of_turn_row(rows, meta)
+    _save_actions(dst_v5, rows)
+
+    # No correspondence check: this fixture inserts the audit row directly
+    # instead of adding its matching rejected entry to the compact battle log.
+    rep = validate_v5_trace(dst_v5)
+    assert rep["ok"], rep["issues"]
+
+
+def test_rejected_attempt_that_mutates_state_is_invalid(tmp_path):
+    src_v5, src_blog = _drive_completed(tmp_path)
+    dst_v5 = tmp_path / "rejected_mutated" / "v5"
+    dst_blog = tmp_path / "rejected_mutated" / "b.json"
+    _copy_trace(src_v5, src_blog, dst_v5, dst_blog)
+    meta = json.loads((dst_v5 / "meta.json").read_text(encoding="utf-8"))
+    rows = _load_actions(dst_v5)
+    _insert_rejected_out_of_turn_row(rows, meta)
+    rows[0]["post_state"]["turn_number"] += 1
+    _save_actions(dst_v5, rows)
+
+    rep = validate_v5_trace(dst_v5)
+    assert not rep["ok"] and _has_issue(rep, "rejected row mutated state"), rep["issues"]
+
+
+def test_missing_structured_v5_history_is_invalid(tmp_path):
+    src_v5, src_blog = _drive_completed(tmp_path)
+    dst_v5 = tmp_path / "missing_v5_history" / "v5"
+    dst_blog = tmp_path / "missing_v5_history" / "b.json"
+    _copy_trace(src_v5, src_blog, dst_v5, dst_blog)
+    rows = _load_actions(dst_v5)
+    rows[0]["pre_state"].pop("v5_history_events", None)
+    _save_actions(dst_v5, rows)
+
+    rep = validate_v5_trace(dst_v5, battle_log_path=dst_blog)
+    assert not rep["ok"] and _has_issue(rep, "[history]"), rep["issues"]
+
+
+def test_terminal_row_requires_empty_legal_surface(tmp_path):
+    src_v5, src_blog = _drive_surrender(tmp_path)
+    dst_v5 = tmp_path / "terminal_legal" / "v5"
+    dst_blog = tmp_path / "terminal_legal" / "b.json"
+    _copy_trace(src_v5, src_blog, dst_v5, dst_blog)
+    rows = _load_actions(dst_v5)
+    terminal = rows[-1]
+    terminal["legal_actions"] = [{"type": "end_turn"}]
+    terminal["legal_action_count"] = 1
+    _save_actions(dst_v5, rows)
+
+    rep = validate_v5_trace(dst_v5, battle_log_path=dst_blog)
+    assert not rep["ok"] and _has_issue(rep, "terminal row requires empty"), rep["issues"]

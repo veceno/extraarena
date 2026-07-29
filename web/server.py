@@ -33,6 +33,7 @@ from infrastructure.database import Card, Database, RUNTIME_FEATURE_DEFAULTS, SQ
 from ai.bot_factory import BotGenerator
 from ai.bot_ai import BotAI
 from ai.bot_brain import BerserkInference
+from ai.aux_models import ExtraLRAuxRuntime
 from battle_engine import BattleEngine, BattleEventEmitter
 from core.state import ReplacementStatus
 from onboarding_tutorial import (
@@ -128,6 +129,7 @@ MATCH_DISCONNECT_STATES: dict[tuple[str, int], dict[str, Any]] = {}
 MATCH_DISCONNECT_TASKS: dict[tuple[str, int], asyncio.Task] = {}
 BOT_TASKS: dict[str, asyncio.Task] = {}
 BOT_TASK_KEYS: dict[str, tuple[str, int]] = {}
+BOT_TASK_OWNERS: dict[str, web.Application | None] = {}
 BOT_VS_BOT_MARKERS: dict[str, dict[str, Any]] = {}
 ENDED_MATCH_IDS: set[str] = set()
 ENDED_MATCH_TIMES: dict[str, float] = {}
@@ -812,6 +814,7 @@ def _prune_finished_match_runtime(now: float | None = None) -> None:
         if bot_task and not bot_task.done() and bot_task is not asyncio.current_task():
             bot_task.cancel()
         BOT_TASK_KEYS.pop(match_id, None)
+        BOT_TASK_OWNERS.pop(match_id, None)
         BOT_VS_BOT_MARKERS.pop(match_id, None)
 
 
@@ -2305,6 +2308,305 @@ def _build_extra_pass_payload(
 # Активируется для любого бота, если модель загружена.
 # Fallback на rule-based BotAI если модель не загрузилась.
 BERSERK_BRAIN: Optional[BerserkInference] = None
+# Match-scoped V5 auxiliary runtime. Its ONNX sessions are shared read-only;
+# mutable CardOptimum RNG wrappers are created separately for every battle.
+EXTRA_LR_AUX: Optional[ExtraLRAuxRuntime] = None
+
+
+def _bind_match_runtime(
+    engine: BattleEngine,
+    app: web.Application,
+) -> BattleEngine:
+    """Bind one match to the exact app-owned inference/runtime generation."""
+    engine.runtime_owner_app = app
+    engine.berserk_brain = app.get("berserk_brain")
+    engine.extra_lr_aux_runtime = app.get("extra_lr_aux")
+    return engine
+
+
+async def _persist_v5_dataset_checkpoint(
+    app: Any,
+    engine: Any,
+    *,
+    reason: str,
+    terminal_status: str | None = None,
+    winner_user_id: int | None = None,
+    abort_reason: str | None = None,
+) -> dict[str, Any]:
+    """Persist one match-owned canonical V5 snapshot without coupling it to rewards.
+
+    The engine keeps an in-memory complete prefix and the database upserts that
+    prefix idempotently by ``(battle_id, seq)``.  Callers may therefore retry
+    after a transient DB failure or after the reward transaction has already
+    committed.  Dataset failures are fail-open for gameplay but remain visible
+    in logs and are retried by the next action/finalization checkpoint.
+    """
+
+    # The deterministic onboarding scenario rebuilds and silently replays its
+    # graph between tutorial steps. Those synthetic transitions are neither a
+    # real player-vs-bot trajectory nor a valid TimeStamp sample, so keeping
+    # them in the production journal could poison a bulk human-data export.
+    if bool(getattr(engine, "is_onboarding_tutorial", False)):
+        return {
+            "applied": False,
+            "reason": "onboarding_tutorial_excluded",
+        }
+
+    db = app.get("db") if hasattr(app, "get") else None
+    if db is None:
+        return {"applied": False, "reason": "database_unavailable"}
+    upsert_checkpoint = getattr(db, "upsert_v5_battle_trace_checkpoint", None)
+    if not callable(upsert_checkpoint):
+        return {"applied": False, "reason": "v5_storage_unavailable"}
+    checkpoint = getattr(engine, "checkpoint_v5_dataset", None)
+    if not callable(checkpoint):
+        return {"applied": False, "reason": "v5_recorder_unavailable"}
+
+    battle_id = ""
+
+    try:
+        # Aborts are a two-step seal: first persist the last valid ongoing
+        # prefix, then write the diagnostic aborted meta.  The DB checkpoint
+        # API intentionally rejects arbitrary non-terminal status values.
+        if abort_reason is not None:
+            snapshot = checkpoint(reason=reason)
+        elif terminal_status is not None:
+            finalize = getattr(engine, "finalize_v5_dataset", None)
+            if not callable(finalize):
+                return {"applied": False, "reason": "v5_finalize_unavailable"}
+            snapshot = finalize(
+                winner_user_id=winner_user_id,
+                status=terminal_status,
+                reason=reason,
+            )
+        else:
+            snapshot = checkpoint(reason=reason)
+
+        meta = dict(snapshot.get("meta") or {})
+        turns = list(snapshot.get("turns") or [])
+        actions = list(snapshot.get("actions") or [])
+        # Dataset identity is recorder-owned.  A rehydrated engine intentionally
+        # preserves gameplay ``match_id`` while rotating ``meta.battle_id``.
+        battle_id = str(meta.get("battle_id") or "")
+        if not battle_id:
+            return {"applied": False, "reason": "battle_id_unavailable"}
+        recorded_status = str(meta.get("status") or "").lower()
+        if abort_reason is not None and recorded_status in {
+            "p1_win",
+            "p2_win",
+            "draw",
+            "stalemate",
+        }:
+            # A caller can race with the synchronous terminal mutation. Once
+            # the recorder is terminal it is immutable: route this request to
+            # the matching terminal seal instead of converting valid data into
+            # an aborted diagnostic trace.
+            terminal_status = recorded_status
+            abort_reason = None
+            raw_winner = meta.get("winner_user_id")
+            try:
+                winner_user_id = (
+                    int(raw_winner) if raw_winner is not None else None
+                )
+            except (TypeError, ValueError):
+                winner_user_id = None
+        # Control changes are sparse battle-level audit data. Keep them inside
+        # canonical meta so AFK/reconnect/surrender provenance survives the
+        # database journal and its standard three-file materialization.
+        meta["control_events"] = list(snapshot.get("control_events") or [])
+        stored = await upsert_checkpoint(
+            battle_id=battle_id,
+            meta=meta,
+            turns=turns,
+            actions=actions,
+        )
+
+        if abort_reason is not None:
+            mark_aborted = getattr(db, "mark_v5_battle_trace_aborted", None)
+            if not callable(mark_aborted):
+                return {
+                    "checkpoint": stored,
+                    "seal": {"applied": False, "reason": "v5_abort_storage_unavailable"},
+                }
+            abort = getattr(engine, "abort_v5_dataset", None)
+            aborted_snapshot = (
+                abort(abort_reason, metadata={"persistence_reason": reason})
+                if callable(abort)
+                else snapshot
+            )
+            aborted_meta = dict(aborted_snapshot.get("meta") or meta)
+            sealed = await mark_aborted(
+                battle_id=battle_id,
+                reason=abort_reason,
+                meta=aborted_meta,
+            )
+            return {"checkpoint": stored, "seal": sealed}
+
+        if terminal_status is not None:
+            finalize_trace = getattr(db, "finalize_v5_battle_trace", None)
+            if not callable(finalize_trace):
+                return {
+                    "checkpoint": stored,
+                    "seal": {"applied": False, "reason": "v5_finalize_storage_unavailable"},
+                }
+            sealed = await finalize_trace(
+                battle_id=battle_id,
+                status=str(terminal_status).lower(),
+                winner_user_id=winner_user_id,
+                meta=meta,
+            )
+            return {"checkpoint": stored, "seal": sealed}
+
+        return stored
+    except Exception as exc:  # noqa: BLE001 - analytics must never break gameplay.
+        logging.getLogger(__name__).warning(
+            "V5 dataset checkpoint failed: match=%s reason=%s error=%s",
+            battle_id,
+            reason,
+            exc,
+            exc_info=True,
+        )
+        return {
+            "applied": False,
+            "reason": "v5_checkpoint_failed",
+            "battle_id": battle_id,
+        }
+
+
+def _resolve_v5_terminal_status(
+    engine: Any,
+    winner_user_id: Any,
+) -> str:
+    """Resolve the canonical terminal side used by ``rlhf_v5_storage_v1``."""
+
+    arena = getattr(engine, "_arena", None)
+    state = getattr(arena, "state", None)
+    raw_status = getattr(getattr(state, "status", None), "value", None)
+    normalized = str(raw_status or "").lower()
+    if normalized in {"p1_win", "p2_win", "draw", "stalemate"}:
+        return normalized
+
+    try:
+        winner = int(winner_user_id) if winner_user_id is not None else None
+    except (TypeError, ValueError):
+        winner = None
+    try:
+        p1_user_id = int(getattr(getattr(state, "p1", None), "user_id"))
+        p2_user_id = int(getattr(getattr(state, "p2", None), "user_id"))
+    except (TypeError, ValueError):
+        p1_user_id = p2_user_id = None
+    if winner is not None and winner == p1_user_id:
+        return "p1_win"
+    if winner is not None and winner == p2_user_id:
+        return "p2_win"
+    return "draw"
+
+
+async def _persist_v5_dataset_on_cleanup(
+    app: Any,
+    engine: Any,
+    *,
+    reason: str,
+) -> dict[str, Any]:
+    """Seal terminal data on shutdown; abort only a genuinely live prefix."""
+
+    terminal_statuses = {"p1_win", "p2_win", "draw", "stalemate"}
+    snapshot_getter = getattr(engine, "get_v5_dataset_snapshot", None)
+    if callable(snapshot_getter):
+        try:
+            snapshot = snapshot_getter()
+            meta = dict(snapshot.get("meta") or {})
+            recorded_status = str(meta.get("status") or "").lower()
+            if recorded_status in terminal_statuses:
+                raw_winner = meta.get("winner_user_id")
+                try:
+                    winner_user_id = (
+                        int(raw_winner) if raw_winner is not None else None
+                    )
+                except (TypeError, ValueError):
+                    winner_user_id = None
+                return await _persist_v5_dataset_checkpoint(
+                    app,
+                    engine,
+                    reason=f"{reason}:terminal_recorder",
+                    terminal_status=recorded_status,
+                    winner_user_id=winner_user_id,
+                )
+        except Exception:  # noqa: BLE001 - cleanup must continue fail-open.
+            logging.getLogger(__name__).warning(
+                "Failed to inspect V5 recorder during cleanup: match=%s",
+                getattr(engine, "match_id", None),
+                exc_info=True,
+            )
+
+    checker = getattr(engine, "check_game_over", None)
+    if bool(getattr(engine, "is_ended", False)) and callable(checker):
+        try:
+            terminal_result = checker()
+        except Exception:  # noqa: BLE001 - fall through to diagnostic abort.
+            terminal_result = None
+            logging.getLogger(__name__).warning(
+                "Failed to inspect terminal engine during cleanup: match=%s",
+                getattr(engine, "match_id", None),
+                exc_info=True,
+            )
+        if isinstance(terminal_result, dict) and terminal_result.get("game_over"):
+            winner_user_id = terminal_result.get(
+                "winner_id", terminal_result.get("winner")
+            )
+            return await _persist_v5_dataset_checkpoint(
+                app,
+                engine,
+                reason=f"{reason}:terminal_engine",
+                terminal_status=_resolve_v5_terminal_status(
+                    engine, winner_user_id
+                ),
+                winner_user_id=winner_user_id,
+            )
+
+    return await _persist_v5_dataset_checkpoint(
+        app,
+        engine,
+        reason=reason,
+        abort_reason=reason,
+    )
+
+
+def _v5_bot_control_source(engine: Any, user_id: Any) -> str:
+    """Distinguish a native bot from a bot temporarily controlling a human."""
+
+    try:
+        user_id_int = int(user_id)
+        if bool(engine.is_bot(user_id_int)):
+            return "bot"
+        if _player_replacement_status(engine, user_id_int) != ReplacementStatus.ACTIVE:
+            return "replacement_bot"
+    except (AttributeError, TypeError, ValueError):
+        pass
+    return "bot"
+
+
+def _arm_human_clock_after_state_delivery(engine: Any, user_id: Any) -> None:
+    """Start the next human timing label after an HTTP state response is built."""
+
+    try:
+        user_id_int = int(user_id)
+        if bool(getattr(engine, "is_ended", False)):
+            return
+        if _is_match_waiting_for_players(engine):
+            return
+        if int(engine.get_current_player_id()) != user_id_int:
+            return
+        if bool(engine.is_bot(user_id_int)):
+            return
+        if _player_replacement_status(engine, user_id_int) != ReplacementStatus.ACTIVE:
+            return
+        arm_clock = getattr(engine, "arm_human_decision_clock", None)
+        if callable(arm_clock):
+            arm_clock(user_id_int)
+    except (AttributeError, TypeError, ValueError):
+        return
+
 
 # Socket.io сервер для WebSocket подключений
 sio = socketio.AsyncServer(
@@ -2525,6 +2827,16 @@ async def client_ready(sid: str, data: dict[str, Any]) -> None:
             logger.warning("client_ready: engine has no mark_client_ready for match_id=%s", match_id)
 
         if ready_info.get("all_ready"):
+            marker = getattr(engine, "mark_v5_battle_started", None)
+            if callable(marker):
+                marker(reason="client_ready")
+            owner_app = getattr(engine, "runtime_owner_app", None) or getattr(sio, "app", None)
+            if owner_app is not None:
+                await _persist_v5_dataset_checkpoint(
+                    owner_app,
+                    engine,
+                    reason="client_ready",
+                )
             try:
                 await check_and_run_bot(match_id, ACTIVE_MATCHES)
             except Exception as exc:
@@ -2790,6 +3102,14 @@ async def _process_battle_end(
         return False
 
     if getattr(engine, 'battle_end_processed', False) or getattr(engine, 'rewards_granted', False):
+        terminal_status = _resolve_v5_terminal_status(engine, winner_id)
+        await _persist_v5_dataset_checkpoint(
+            app,
+            engine,
+            reason="battle_end_idempotent_retry",
+            terminal_status=terminal_status,
+            winner_user_id=winner_id,
+        )
         _mark_match_ended(match_id)
         await _mark_matchmaker_finished(app, match_id, winner_id)
         logger.info("Battle end already processed for match %s", match_id)
@@ -2816,6 +3136,12 @@ async def _process_battle_end(
             match_id, p1_raw, p2_raw, p1_id_int, p2_id_int, winner_id_int,
             getattr(engine, "player_ids", ()),
         )
+        await _persist_v5_dataset_checkpoint(
+            app,
+            engine,
+            reason="battle_end_invalid_participant_ids",
+            abort_reason="invalid_participant_ids",
+        )
         engine.is_ended = True
         engine.battle_end_processed = True
         engine.rewards_granted = False
@@ -2825,6 +3151,18 @@ async def _process_battle_end(
         if match_id in ACTIVE_MATCHES:
             del ACTIVE_MATCHES[match_id]
         return True
+
+    terminal_status = _resolve_v5_terminal_status(engine, winner_id_int)
+    # Seal gameplay data before entering the reward transaction. Dataset
+    # durability is deliberately independent from economy/reward idempotency;
+    # a later retry simply observes the same terminal journal.
+    await _persist_v5_dataset_checkpoint(
+        app,
+        engine,
+        reason="battle_terminal_state",
+        terminal_status=terminal_status,
+        winner_user_id=winner_id_int,
+    )
 
     p1_is_bot = False
     p2_is_bot = False
@@ -3012,11 +3350,29 @@ async def _process_battle_end(
         p1_cards_played = 0
         p2_cards_played = 0
         for a in getattr(engine, "_analytics_actions", []) or []:
-            if a.get("action_json", {}).get("type") == "play_card":
+            if (
+                a.get("action_json", {}).get("type") == "play_card"
+                and (a.get("context_json") or {}).get("accepted") is True
+            ):
                 if a.get("acting_player") == 1:
                     p1_cards_played += 1
                 elif a.get("acting_player") == 2:
                     p2_cards_played += 1
+
+        v5_summary_meta: dict[str, Any] = {}
+        try:
+            snapshot_getter = getattr(engine, "get_v5_dataset_snapshot", None)
+            if callable(snapshot_getter):
+                snapshot = snapshot_getter()
+                candidate = snapshot.get("meta") if isinstance(snapshot, dict) else None
+                if isinstance(candidate, dict):
+                    v5_summary_meta = candidate
+        except Exception:
+            logger.warning(
+                "Unable to attach V5/Nemesis summary metadata for match %s",
+                match_id,
+                exc_info=True,
+            )
 
         tx_result = await db.apply_battle_end_rewards_transaction(
             match_id=match_id,
@@ -3044,6 +3400,16 @@ async def _process_battle_end(
                 "is_bot_match": is_bot_match,
                 "p1_is_bot": p1_is_bot,
                 "p2_is_bot": p2_is_bot,
+                "p1_actor_type": str(
+                    v5_summary_meta.get("p1_actor_type")
+                    or ("bot" if p1_is_bot else "human")
+                ),
+                "p2_actor_type": str(
+                    v5_summary_meta.get("p2_actor_type")
+                    or ("bot" if p2_is_bot else "human")
+                ),
+                "starting_player": v5_summary_meta.get("starting_player"),
+                "v5_dataset_battle_id": v5_summary_meta.get("battle_id"),
                 "schema_version": "battle_summary_metadata_v2",
                 "card_params_schema": "train_v3_card_params_v1",
                 "deck_param_snapshots": {
@@ -3089,6 +3455,13 @@ async def _process_battle_end(
     _mark_match_ended(match_id)
     await _mark_matchmaker_finished(app, match_id, winner_id_int)
     app.get("match_game_modes", {}).pop(match_id, None)
+    await _persist_v5_dataset_checkpoint(
+        app,
+        engine,
+        reason="battle_rewards_finalized",
+        terminal_status=terminal_status,
+        winner_user_id=winner_id_int,
+    )
 
     try:
         try:
@@ -3436,6 +3809,13 @@ async def _finalize_terminal_match_if_needed(
         if not processed:
             return None
     else:
+        await _persist_v5_dataset_checkpoint(
+            app,
+            engine,
+            reason=f"{reason}:idempotent_retry",
+            terminal_status=_resolve_v5_terminal_status(engine, winner_id),
+            winner_user_id=winner_id,
+        )
         _mark_match_ended(match_id)
         await _mark_matchmaker_finished(app, match_id, winner_id)
     return game_over_result
@@ -3497,6 +3877,25 @@ async def _emit_personalized_match_state(
                 payload,
                 to=sid,
             )
+            # Start the next Metronome label only after this actor's updated
+            # state has actually been handed to a client. Multiple sessions
+            # intentionally re-arm to the latest delivered copy.
+            try:
+                current_player = engine.get_current_player_id()
+                is_real_human = (
+                    int(current_player) == int(user_id)
+                    and not bool(engine.is_bot(int(user_id)))
+                    and _player_replacement_status(engine, int(user_id))
+                    == ReplacementStatus.ACTIVE
+                    and not bool(getattr(engine, "is_ended", False))
+                    and not _is_match_waiting_for_players(engine)
+                )
+            except (AttributeError, TypeError, ValueError):
+                is_real_human = False
+            if is_real_human:
+                arm_clock = getattr(engine, "arm_human_decision_clock", None)
+                if callable(arm_clock):
+                    arm_clock(int(user_id))
         except Exception as exc:
             logger.error(
                 "[SOCKET_EMIT] Failed personalized emit event=%s match=%s sid=%s user=%s: %s",
@@ -3743,6 +4142,11 @@ async def surrender(sid: str, data: dict[str, Any]) -> None:
                 return
 
             engine.mark_surrender(user_id_int)
+            await _persist_v5_dataset_checkpoint(
+                app,
+                engine,
+                reason="socket_surrender_control_change",
+            )
 
             penalty_result = await _apply_surrender_penalty_once(app, match_id, engine, user_id_int)
             if not penalty_result.get("success"):
@@ -4448,6 +4852,15 @@ def _unregister_session(match_id: str, user_id: int, sid: str) -> bool:
 
 def _mark_player_disconnected(match_id: str, user_id: int, engine: BattleEngine) -> None:
     """Track a fully disconnected human without immediately replacing them."""
+    censor_clock = getattr(engine, "censor_human_decision_clock", None)
+    if callable(censor_clock):
+        try:
+            censor_clock(int(user_id), "client_disconnected")
+        except Exception:
+            logging.getLogger(__name__).debug(
+                "Failed to censor V5 human timing on disconnect",
+                exc_info=True,
+            )
     key = (str(match_id), int(user_id))
     state = MATCH_DISCONNECT_STATES.setdefault(
         key,
@@ -4559,6 +4972,7 @@ def _cancel_replacement_bot_task(match_id: str, user_id: int) -> None:
         task.cancel()
         BOT_TASKS.pop(str(match_id), None)
         BOT_TASK_KEYS.pop(str(match_id), None)
+        BOT_TASK_OWNERS.pop(str(match_id), None)
 
 
 def _mark_user_activity_for_match(match_id: str, user_id: int, engine: BattleEngine) -> None:
@@ -4731,8 +5145,9 @@ async def _get_user_squad_id(db: Any, user_id: int) -> int:
 
 
 async def _replacement_bot_allowed(match_id: str, engine: BattleEngine) -> bool:
-    app_ref = getattr(sio, "app", None)
-    raw_mode = (app_ref or {}).get("match_game_modes", {}).get(match_id, "") or getattr(engine, "game_mode", "") or "classic"
+    app_ref = getattr(engine, "runtime_owner_app", None)
+    app_context = app_ref if app_ref is not None else {}
+    raw_mode = app_context.get("match_game_modes", {}).get(match_id, "") or getattr(engine, "game_mode", "") or "classic"
     engine_mode_config = getattr(engine, "mode_config", None)
     if engine_mode_config is not None and getattr(engine_mode_config, "mode_id", None) == raw_mode:
         mode_config = engine_mode_config
@@ -4741,7 +5156,7 @@ async def _replacement_bot_allowed(match_id: str, engine: BattleEngine) -> bool:
     if mode_config.classic.bots_allowed:
         return True
 
-    if not app_ref:
+    if app_ref is None:
         return False
     db = app_ref.get("db")
     if not db:
@@ -4833,7 +5248,15 @@ async def _terminate_match_without_rewards(
 ) -> None:
     logger = logging.getLogger(__name__)
     engine = active_matches.get(str(match_id))
+    app_ref = getattr(engine, "runtime_owner_app", None) if engine else None
     if engine:
+        if app_ref is not None:
+            await _persist_v5_dataset_checkpoint(
+                app_ref,
+                engine,
+                reason=f"match_terminated:{reason}",
+                abort_reason=str(reason),
+            )
         engine.is_ended = True
         engine.rewards_granted = False
     _mark_match_ended(match_id)
@@ -4858,10 +5281,12 @@ async def _terminate_match_without_rewards(
     if bot_task and not bot_task.done() and bot_task is not asyncio.current_task():
         bot_task.cancel()
     BOT_TASK_KEYS.pop(str(match_id), None)
+    BOT_TASK_OWNERS.pop(str(match_id), None)
     BOT_VS_BOT_MARKERS.pop(str(match_id), None)
-    app_ref = getattr(sio, "app", None)
-    if app_ref:
-        app_ref.get("active_matches", {}).pop(str(match_id), None)
+    if app_ref is not None:
+        app_matches = app_ref.get("active_matches", {})
+        if app_matches.get(str(match_id)) is engine:
+            app_matches.pop(str(match_id), None)
         app_ref.get("match_game_modes", {}).pop(str(match_id), None)
     try:
         await sio.emit(
@@ -4907,6 +5332,19 @@ async def _handle_bot_vs_bot_policy(match_id: str, engine: BattleEngine, active_
 def _start_guarded_bot_task(match_id: str, engine: BattleEngine, bot_id: int | str) -> None:
     """Start one bot routine per match/current-turn pair."""
     turn_key = (str(bot_id), int(getattr(engine, "turn", 0) or 0))
+    owner_app = getattr(engine, "runtime_owner_app", None)
+    if owner_app is not None and owner_app.get("_runtime_closing", False):
+        logging.getLogger(__name__).info(
+            "Bot routine not started for closing app match_id=%s", match_id
+        )
+        return
+    bound_active_matches = getattr(engine, "_active_matches", None)
+    if not isinstance(bound_active_matches, dict):
+        logging.getLogger(__name__).error(
+            "Bot routine not started for unbound active-match registry match_id=%s",
+            match_id,
+        )
+        return
     existing = BOT_TASKS.get(match_id)
     if existing and not existing.done() and BOT_TASK_KEYS.get(match_id) == turn_key:
         logging.getLogger(__name__).info(
@@ -4917,6 +5355,7 @@ def _start_guarded_bot_task(match_id: str, engine: BattleEngine, bot_id: int | s
     if existing and existing.done():
         BOT_TASKS.pop(match_id, None)
         BOT_TASK_KEYS.pop(match_id, None)
+        BOT_TASK_OWNERS.pop(match_id, None)
 
     current_task: asyncio.Task | None = None
 
@@ -4925,23 +5364,29 @@ def _start_guarded_bot_task(match_id: str, engine: BattleEngine, bot_id: int | s
             await run_bot_routine(engine, bot_id)
             if not getattr(engine, "is_ended", False):
                 if _both_players_bot_controlled(engine):
-                    if await _handle_bot_vs_bot_policy(match_id, engine, ACTIVE_MATCHES):
+                    if await _handle_bot_vs_bot_policy(
+                        match_id,
+                        engine,
+                        bound_active_matches,
+                    ):
                         return
 
                 next_player = engine.get_current_player_id() if hasattr(engine, "get_current_player_id") else getattr(engine, "current_player_id", None)
                 next_key = (str(next_player), int(getattr(engine, "turn", 0) or 0))
                 if next_player is not None and next_key != turn_key:
-                    await check_and_run_bot(match_id, ACTIVE_MATCHES)
+                    await check_and_run_bot(match_id, bound_active_matches)
         except asyncio.CancelledError:
             return
         finally:
             if BOT_TASKS.get(match_id) is current_task and BOT_TASK_KEYS.get(match_id) == turn_key:
                 BOT_TASK_KEYS.pop(match_id, None)
                 BOT_TASKS.pop(match_id, None)
+                BOT_TASK_OWNERS.pop(match_id, None)
 
     BOT_TASK_KEYS[match_id] = turn_key
     current_task = asyncio.create_task(_guarded())
     BOT_TASKS[match_id] = current_task
+    BOT_TASK_OWNERS[match_id] = owner_app
 
 def _create_telegram_api_session():
     """Create a Telegram Bot API session that honors the shared HAPP/proxy settings."""
@@ -5108,6 +5553,13 @@ async def run_bot_routine(engine: BattleEngine, bot_id: int | str) -> None:
     """
     logger = logging.getLogger(__name__)
     logger.info("BOT ROUTINE STARTED for %s", bot_id)
+    # Snapshot match-owned dependencies once.  A graceful reload may replace
+    # module aliases and ``sio.app`` while this coroutine is alive; inference,
+    # auxiliary predictions, and terminal processing must stay on the runtime
+    # generation that created the match.
+    owner_app = getattr(engine, "runtime_owner_app", None)
+    berserk_brain = getattr(engine, "berserk_brain", None)
+    aux_runtime = getattr(engine, "extra_lr_aux_runtime", None)
 
     if _replacement_human_is_active_again(engine, bot_id):
         logger.info("run_bot_routine: player %s restored control before bot action", bot_id)
@@ -5149,23 +5601,21 @@ async def run_bot_routine(engine: BattleEngine, bot_id: int | str) -> None:
         mode_config = getattr(engine, "mode_config", resolve_mode_config(getattr(engine, "game_mode", "classic")))
         classic_params = mode_config.classic
 
-        # Единая задержка хода (Turn Delay): бот «раздумывает» перед серией действий
-        delay_range = (
-            classic_params.bot_hard_turn_delay_range
-            if str(difficulty_label).startswith(("hard", "max"))
-            else classic_params.bot_turn_delay_range
-        )
-        turn_delay = random.uniform(*delay_range)
-
-        logger.info(
-            "[BOT_THINKING] Match: %s | Difficulty: %s | Turn delay: %.2fs",
-            match_id, difficulty_label, turn_delay
-        )
-        await asyncio.sleep(turn_delay)
-
-        if _replacement_human_is_active_again(engine, bot_id):
-            logger.info("run_bot_routine: player %s restored control during bot delay", bot_id)
-            return
+        # Metronome models a human decision, not a whole turn. The delay is
+        # therefore evaluated below after every action is chosen, against the
+        # unchanged pre-action state. Keep a timing-only RNG separate from the
+        # arena RNG so humanisation cannot perturb weighted card draws.
+        turn_delay = 0.0
+        timing_rng = getattr(engine, "_metronome_rng", None)
+        if timing_rng is None:
+            timing_seed = int.from_bytes(
+                hashlib.sha256(
+                    f"metronome:{match_id}:{bot_id}".encode("utf-8")
+                ).digest()[:8],
+                "big",
+            )
+            timing_rng = random.Random(timing_seed)
+            engine._metronome_rng = timing_rng
 
         # КРИТИЧНО: Еще раз проверяем is_ended перед тем как бот начнет думать
         if hasattr(engine, 'is_ended') and engine.is_ended:
@@ -5178,24 +5628,24 @@ async def run_bot_routine(engine: BattleEngine, bot_id: int | str) -> None:
         replacement_status = _player_replacement_status(engine, int(bot_id))
         train_v2_safe_mode = is_train_v2_bot_safe_mode(getattr(mode_config, "mode_id", getattr(engine, "game_mode", "classic")))
         berserk_eligible = (
-            BERSERK_BRAIN is not None
+            berserk_brain is not None
             and train_v2_safe_mode
             and (is_bot_player or replacement_status != ReplacementStatus.ACTIVE)
         )
         berserk_profile_ready = False
         if berserk_eligible:
-            has_profile = getattr(BERSERK_BRAIN, "has_profile", None)
+            has_profile = getattr(berserk_brain, "has_profile", None)
             if callable(has_profile):
                 berserk_profile_ready = bool(has_profile(difficulty))
             else:
-                sessions = getattr(BERSERK_BRAIN, "sessions", None)
+                sessions = getattr(berserk_brain, "sessions", None)
                 berserk_profile_ready = not isinstance(sessions, dict) or difficulty in sessions
         use_berserk = berserk_eligible and berserk_profile_ready
 
         if use_berserk:
             logger.info("[SERVER] ONNX Берсерк для bot_id=%s (difficulty=%s)", bot_id, difficulty)
         else:
-            if BERSERK_BRAIN is None:
+            if berserk_brain is None:
                 reason = "no ONNX session"
             elif not train_v2_safe_mode:
                 reason = f"mode not TrainV2-safe: {getattr(mode_config, 'mode_id', getattr(engine, 'game_mode', 'classic'))}"
@@ -5213,6 +5663,7 @@ async def run_bot_routine(engine: BattleEngine, bot_id: int | str) -> None:
         # Пошаговое выполнение действий
         max_actions = 20
         action_count = 0
+        total_decision_delays = 0.0
         total_action_delays = 0.0  # Суммарное время на технические паузы
         bot_aborted_for_reconnect = False
 
@@ -5251,9 +5702,16 @@ async def run_bot_routine(engine: BattleEngine, bot_id: int | str) -> None:
                     return False
 
                 try:
-                    engine.record_analytics_action(bot_id, {
-                        "type": "end_turn", "forced": True, "reason": reason
-                    })
+                    engine.record_analytics_action(
+                        bot_id,
+                        {"type": "end_turn", "forced": True, "reason": reason},
+                        decision_source="bot",
+                        control_source=_v5_bot_control_source(engine, bot_id),
+                        actor_type="bot",
+                        metronome_prediction_ms=None,
+                        metronome_applied_ms=0.0,
+                        metronome_fallback_used=True,
+                    )
                 except Exception:
                     pass
 
@@ -5269,9 +5727,21 @@ async def run_bot_routine(engine: BattleEngine, bot_id: int | str) -> None:
                         reason,
                         result.get("error"),
                     )
+                    if owner_app is not None:
+                        await _persist_v5_dataset_checkpoint(
+                            owner_app,
+                            engine,
+                            reason=f"bot_forced_end_turn_rejected:{reason}",
+                        )
                     return False
+                if owner_app is not None:
+                    await _persist_v5_dataset_checkpoint(
+                        owner_app,
+                        engine,
+                        reason=f"bot_forced_end_turn:{reason}",
+                    )
                 terminal = await _finalize_terminal_match_if_needed(
-                    getattr(sio, "app", None) or {},
+                    owner_app if owner_app is not None else {},
                     str(match_id),
                     engine,
                     reason=f"bot_forced_end_turn:{reason}",
@@ -5331,8 +5801,8 @@ async def run_bot_routine(engine: BattleEngine, bot_id: int | str) -> None:
                 if use_berserk:
                     # ONNX-инференс с учетом difficulty
                     try:
-                        if hasattr(BERSERK_BRAIN, "get_action_async"):
-                            action_id = await BERSERK_BRAIN.get_action_async(
+                        if hasattr(berserk_brain, "get_action_async"):
+                            action_id = await berserk_brain.get_action_async(
                                 engine._arena.state,
                                 bot_id,
                                 legal_actions_obj,
@@ -5340,7 +5810,7 @@ async def run_bot_routine(engine: BattleEngine, bot_id: int | str) -> None:
                             )
                         else:
                             action_id = await asyncio.to_thread(
-                                BERSERK_BRAIN.get_action,
+                                berserk_brain.get_action,
                                 engine._arena.state,
                                 bot_id,
                                 legal_actions_obj,
@@ -5351,11 +5821,14 @@ async def run_bot_routine(engine: BattleEngine, bot_id: int | str) -> None:
                             action_id, len(legal_actions_obj), difficulty
                         )
                     except Exception as exc:
-                        logger.error("[BERSERK] Ошибка инференса: %s, fallback на rule-based", exc, exc_info=True)
-                        # Fallback на rule-based
-                        chosen_action = BotAI.decide_action(legal_actions_dict)
-                        if chosen_action:
-                            action_id = legal_actions_dict.index(chosen_action)
+                        logger.error(
+                            "[BERSERK] Ошибка V4/V5 инференса: %s; "
+                            "rule-based fallback запрещён для model-backed боя",
+                            exc,
+                            exc_info=True,
+                        )
+                        await _force_end_bot_turn("onnx_inference_error")
+                        break
                 else:
                     # Rule-based выбор
                     chosen_action = BotAI.decide_action(legal_actions_dict)
@@ -5370,11 +5843,117 @@ async def run_bot_routine(engine: BattleEngine, bot_id: int | str) -> None:
 
                 action_dict = legal_actions_dict[action_id]
                 action_type = action_dict.get("type")
+                predicted_ms: float | None = None
+                decision_delay = 0.0
+                # Emergency mode intentionally bypasses inference; represent
+                # the zero-delay safety path as a fallback, not as a missing
+                # successful Metronome prediction.
+                metronome_fallback_used = bool(emergency_mode)
+
+                # State -> Metronome wait -> revalidate -> action. This is
+                # outside the mutation lock by design: the delay emulates a
+                # player thinking before committing the selected action.
+                if not emergency_mode:
+                    try:
+                        if aux_runtime is None:
+                            raise RuntimeError("Metronome runtime is not loaded")
+                        metronome = aux_runtime.metronome
+                        if metronome is None:
+                            raise RuntimeError("Metronome V1 component is unavailable")
+                        predicted_ms = await asyncio.wait_for(
+                            asyncio.to_thread(
+                                metronome.sample_ms,
+                                engine._arena.state,
+                                int(bot_id),
+                                action_type=str(action_type or "end_turn"),
+                                legal_action_count=len(legal_actions_obj),
+                                rng=timing_rng,
+                            ),
+                            timeout=0.25,
+                        )
+                        remaining_now = (
+                            engine.get_turn_time_remaining()
+                            if hasattr(engine, "get_turn_time_remaining")
+                            else time_remaining
+                        )
+                        decision_delay = min(
+                            max(0.1, float(predicted_ms) / 1000.0),
+                            max(
+                                0.0,
+                                float(remaining_now)
+                                - float(classic_params.bot_emergency_threshold_seconds),
+                            ),
+                        )
+                        logger.info(
+                            "[METRONOME_V1] Match: %s | Model: %s | "
+                            "Action: %s | Legal: %d | Delay: %.2fs",
+                            match_id,
+                            getattr(engine, "bot_brain_profile", difficulty),
+                            action_type,
+                            len(legal_actions_obj),
+                            decision_delay,
+                        )
+                    except Exception as exc:
+                        # Beta model fail-open. This bounded delay preserves
+                        # playability without changing the selected V4/V5
+                        # action or falling back to another decision model.
+                        metronome_fallback_used = True
+                        fallback_range = (
+                            classic_params.bot_hard_turn_delay_range
+                            if str(difficulty_label).startswith(("hard", "max"))
+                            else classic_params.bot_turn_delay_range
+                        )
+                        decision_delay = (
+                            min(3.0, timing_rng.uniform(*fallback_range))
+                            if action_count == 0
+                            else timing_rng.uniform(0.25, 0.75)
+                        )
+                        remaining_now = (
+                            engine.get_turn_time_remaining()
+                            if hasattr(engine, "get_turn_time_remaining")
+                            else time_remaining
+                        )
+                        decision_delay = min(
+                            decision_delay,
+                            max(
+                                0.0,
+                                float(remaining_now)
+                                - float(classic_params.bot_emergency_threshold_seconds),
+                            ),
+                        )
+                        logger.warning(
+                            "[METRONOME_V1] prediction failed for match=%s: %s; "
+                            "bounded fallback=%.2fs",
+                            match_id,
+                            exc,
+                            decision_delay,
+                        )
+                    if decision_delay > 0:
+                        total_decision_delays += decision_delay
+                        await asyncio.sleep(decision_delay)
+                    if _replacement_human_is_active_again(engine, bot_id):
+                        logger.info(
+                            "run_bot_routine: player %s restored control during Metronome delay",
+                            bot_id,
+                        )
+                        bot_aborted_for_reconnect = True
+                        break
+                    if hasattr(engine, "is_ended") and engine.is_ended:
+                        logger.info(
+                            "run_bot_routine: game ended during Metronome delay"
+                        )
+                        break
+                    if engine.current_player_id != bot_id:
+                        logger.info(
+                            "run_bot_routine: turn changed during Metronome delay"
+                        )
+                        break
 
                 logger.info("[SERVER] Executing action: %s", action_dict)
 
                 # Выполнение действия через execute_bot_action сериализуем с HTTP actions/timeouts.
                 mutation_lock = _get_match_lock(str(match_id))
+                decision_deadline_expired = False
                 async with mutation_lock:
                     if _replacement_human_is_active_again(engine, bot_id):
                         logger.info("run_bot_routine: player %s restored control before locked mutation", bot_id)
@@ -5386,16 +5965,64 @@ async def run_bot_routine(engine: BattleEngine, bot_id: int | str) -> None:
                     if engine.current_player_id != bot_id:
                         logger.info("run_bot_routine: not bot's turn before locked mutation")
                         break
-                    try:
-                        engine.record_analytics_action(bot_id, action_dict)
-                    except Exception:
-                        pass
-                    result = engine.execute_bot_action(action_dict)
-                    action_count += 1
+                    remaining_before_mutation = (
+                        engine.get_turn_time_remaining()
+                        if hasattr(engine, "get_turn_time_remaining")
+                        else 1.0
+                    )
+                    if float(remaining_before_mutation) <= 0.0:
+                        decision_deadline_expired = True
+                    else:
+                        try:
+                            engine.record_analytics_action(
+                                bot_id,
+                                action_dict,
+                                decision_source="bot",
+                                control_source=_v5_bot_control_source(engine, bot_id),
+                                actor_type="bot",
+                                metronome_prediction_ms=predicted_ms,
+                                metronome_applied_ms=decision_delay * 1000.0,
+                                metronome_fallback_used=metronome_fallback_used,
+                            )
+                        except Exception:
+                            pass
+                        result = engine.execute_bot_action(action_dict)
+                        action_count += 1
 
-                # Минимальная техническая пауза для анимаций UI.
-                if not emergency_mode:
-                    action_gap = random.uniform(*classic_params.bot_action_gap_range)
+                if decision_deadline_expired:
+                    logger.info(
+                        "run_bot_routine: decision deadline expired before "
+                        "locked mutation for match=%s",
+                        match_id,
+                    )
+                    await _force_end_bot_turn("decision_deadline_expired")
+                    break
+
+                if owner_app is not None:
+                    await _persist_v5_dataset_checkpoint(
+                        owner_app,
+                        engine,
+                        reason=f"bot_action:{action_type or 'unknown'}",
+                    )
+
+                # Минимальная техническая пауза для анимаций UI. Повторно
+                # считаем budget: Metronome уже мог израсходовать почти весь
+                # доступный остаток хода.
+                remaining_after_action = (
+                    engine.get_turn_time_remaining()
+                    if hasattr(engine, "get_turn_time_remaining")
+                    else time_remaining
+                )
+                action_gap_budget = max(
+                    0.0,
+                    float(remaining_after_action)
+                    - float(classic_params.bot_emergency_threshold_seconds),
+                )
+                if not emergency_mode and action_gap_budget > 0:
+                    action_gap = min(
+                        random.uniform(*classic_params.bot_action_gap_range),
+                        action_gap_budget,
+                    )
                     total_action_delays += action_gap
                     await asyncio.sleep(action_gap)
                 else:
@@ -5451,15 +6078,19 @@ async def run_bot_routine(engine: BattleEngine, bot_id: int | str) -> None:
             and not getattr(engine, 'rewards_granted', False)
             and not getattr(engine, 'battle_end_processed', False)
         ):
-            app = getattr(sio, 'app', None)
-            if app:
+            if owner_app is not None:
                 game_over_result = engine.check_game_over()
                 logger.info(
                     "[BOT_GAME_OVER] Bot triggered game over in match=%s winner=%s — calling _process_battle_end",
                     match_id, game_over_result.get("winner_id"),
                 )
                 try:
-                    await _process_battle_end(app, match_id, engine, game_over_result.get("winner_id"))
+                    await _process_battle_end(
+                        owner_app,
+                        match_id,
+                        engine,
+                        game_over_result.get("winner_id"),
+                    )
                     try:
                         await sio.emit(
                             "game_over",
@@ -5474,11 +6105,16 @@ async def run_bot_routine(engine: BattleEngine, bot_id: int | str) -> None:
                 logger.error("[BOT_GAME_OVER] No app available for bot game_over processing match=%s", match_id)
 
         # Итоговая статистика хода бота
-        total_turn_time = turn_delay + total_action_delays
+        total_turn_time = total_decision_delays + total_action_delays
         logger.info(
             "[BOT_TURN_SUMMARY] Match: %s | Difficulty: %s | Total thinking time: %.2fs "
-            "(turn_delay=%.2fs + action_gaps=%.2fs) | Actions executed: %d",
-            match_id, difficulty, total_turn_time, turn_delay, total_action_delays, action_count
+            "(metronome=%.2fs + action_gaps=%.2fs) | Actions executed: %d",
+            match_id,
+            difficulty,
+            total_turn_time,
+            total_decision_delays,
+            total_action_delays,
+            action_count,
         )
 
         # Финальная проверка: если бот все еще владеет ходом, завершаем принудительно
@@ -5570,6 +6206,29 @@ async def _handle_natural_turn_timeout(
         is_bot_turn = engine.is_current_player_bot() if hasattr(engine, "is_current_player_bot") else False
         status = _player_replacement_status(engine, current_player_int)
 
+        def _record_timeout_end_turn() -> None:
+            try:
+                engine.record_analytics_action(
+                    current_player_int,
+                    {
+                        "type": "end_turn",
+                        "forced": True,
+                        "reason": "natural_timeout",
+                    },
+                    decision_source="bot",
+                    control_source="timeout",
+                    actor_type="bot",
+                    decision_time_censored=False,
+                    metronome_prediction_ms=None,
+                    metronome_applied_ms=0.0,
+                    metronome_fallback_used=False,
+                )
+            except Exception:
+                logger.debug(
+                    "Failed to capture V5 natural-timeout context",
+                    exc_info=True,
+                )
+
         if _is_player_disconnected(str(match_id), current_player_int) and not is_bot_turn:
             missed = _record_disconnected_turn_timeout(str(match_id), current_player_int)
             logger.warning(
@@ -5593,6 +6252,11 @@ async def _handle_natural_turn_timeout(
                     return True
 
                 engine.set_player_replacement_status(current_player_int, ReplacementStatus.AFK)
+                await _persist_v5_dataset_checkpoint(
+                    app,
+                    engine,
+                    reason="natural_timeout_afk_takeover",
+                )
                 disconnect_state = MATCH_DISCONNECT_STATES.get((str(match_id), current_player_int))
                 if disconnect_state is not None:
                     disconnect_state["takeover_started"] = True
@@ -5602,6 +6266,7 @@ async def _handle_natural_turn_timeout(
                 )
             else:
                 try:
+                    _record_timeout_end_turn()
                     result = engine.end_turn(current_player_int)
                     if result.get("success") is False:
                         logger.warning("Failed to auto-end turn on timer expiry: %s", result.get("error"))
@@ -5613,6 +6278,7 @@ async def _handle_natural_turn_timeout(
         elif not is_bot_turn and getattr(status, "value", "active") == "active" and hasattr(engine, "mark_timeout"):
             engine.mark_timeout(current_player_int)
             try:
+                _record_timeout_end_turn()
                 result = engine.end_turn(current_player_int)
                 if result.get("success") is False:
                     logger.warning("Failed to auto-end turn on timer expiry: %s", result.get("error"))
@@ -5623,6 +6289,7 @@ async def _handle_natural_turn_timeout(
                 return False
         else:
             try:
+                _record_timeout_end_turn()
                 result = engine.end_turn(current_player_int)
                 if result.get("success") is False:
                     logger.warning("Failed to auto-end turn on timer expiry: %s", result.get("error"))
@@ -5632,6 +6299,11 @@ async def _handle_natural_turn_timeout(
                 logger.warning("Failed to auto-end turn on timer expiry: %s", exc)
                 return False
         if auto_ended:
+            await _persist_v5_dataset_checkpoint(
+                app,
+                engine,
+                reason="natural_timeout",
+            )
             terminal_result = await _finalize_terminal_match_if_needed(
                 app,
                 str(match_id),
@@ -5766,32 +6438,63 @@ def create_web_app(
     app["match_game_modes"] = {}
     app["battle_init_errors"] = {}
     app["online_users"] = {}
+    app["_runtime_closing"] = False
     logging.getLogger(__name__).warning(
         "PvP matchmaking and active battle state are process-local. Use one web process "
         "unless a shared queue/state backend is added."
     )
 
     # Инициализация ONNX-мозга Берсерка с профилями сложности
-    global BERSERK_BRAIN
+    global BERSERK_BRAIN, EXTRA_LR_AUX
     try:
         from infrastructure.config import BOT_DIFFICULTY_PROFILES
         BERSERK_BRAIN = BerserkInference(profiles=BOT_DIFFICULTY_PROFILES)
         loaded_profiles = list(BERSERK_BRAIN.sessions.keys())
+        missing_profiles = sorted(set(BOT_DIFFICULTY_PROFILES) - set(loaded_profiles))
         if loaded_profiles:
+            app["berserk_brain"] = BERSERK_BRAIN
             logging.getLogger(__name__).info(
                 f"✅ ONNX Берсерк загружен: {len(loaded_profiles)} профилей ({', '.join(loaded_profiles)})"
             )
+            if missing_profiles:
+                logging.getLogger(__name__).error(
+                    "❌ Часть V4/V5 профилей недоступна (эти матчи будут "
+                    "отклонены адресно): %s",
+                    ", ".join(missing_profiles),
+                )
         else:
             logging.getLogger(__name__).warning(
-                "⚠️ ONNX Берсерк не загрузил ни одного TrainV2 v4 профиля; боты будут использовать rule-based AI"
+                "⚠️ ONNX Берсерк не загрузил ни одного V4/V5 профиля; "
+                "model-backed матчи будут отклонены"
             )
             BERSERK_BRAIN = None
+            app["berserk_brain"] = None
     except Exception as exc:
         logging.getLogger(__name__).warning(
-            "⚠️ Не удалось загрузить ONNX Берсерк: %s (боты будут использовать rule-based AI)",
+            "⚠️ Не удалось загрузить ONNX Берсерк: %s "
+            "(model-backed матчи будут отклонены)",
             exc,
         )
         BERSERK_BRAIN = None
+        app["berserk_brain"] = None
+
+    try:
+        EXTRA_LR_AUX = ExtraLRAuxRuntime.from_model_dir()
+        app["extra_lr_aux"] = EXTRA_LR_AUX
+        logging.getLogger(__name__).info(
+            "✅ ExtraLR auxiliary ONNX runtime availability: %s",
+            EXTRA_LR_AUX.availability,
+        )
+    except Exception as exc:
+        logging.getLogger(__name__).error(
+            "❌ ExtraLR auxiliary ONNX runtime unavailable: %s",
+            exc,
+            exc_info=True,
+        )
+        EXTRA_LR_AUX = None
+        app["extra_lr_aux"] = None
+
+    _bind_match_runtime(app["battle_engine"], app)
 
     # Настраиваем обработчики событий для Socket.io
     setup_battle_events()
@@ -8774,6 +9477,7 @@ def create_web_app(
             event_emitter=request.app.get("event_emitter"),
             game_mode="friendly",
         )
+        _bind_match_runtime(engine, request.app)
         logger.info("game_mode in engine (friendly): %s", engine.game_mode)
 
         try:
@@ -10375,6 +11079,7 @@ def create_web_app(
         except Exception as profile_exc:
             logger.warning("Battle init: failed to load player profiles: %s", profile_exc)
 
+        disabled_ids: set[int] = set()
         try:
             p1_deck_id = player_decks.get(str(p1_id_int)) if player_decks else None
             p2_deck_id = player_decks.get(str(p2_id_int)) if player_decks else None
@@ -10456,6 +11161,137 @@ def create_web_app(
             card_cache,
             allow_cache_fallback=(not is_bot and allow_human_cache_fallback),
         )
+        bot_brain_profile_for_init = (
+            str((bot_info or {}).get("brain_profile") or "")
+            if is_bot
+            else ""
+        )
+        if is_bot:
+            bot_difficulty_for_init = str((bot_info or {}).get("difficulty") or "lite")
+            app_brain = request.app.get("berserk_brain")
+            profile_ready = bool(
+                app_brain is not None
+                and app_brain.has_profile(bot_difficulty_for_init)
+            )
+            if not profile_ready:
+                logger.error(
+                    "Battle init rejected: required V4/V5 profile is not loaded "
+                    "match_id=%s difficulty=%s brain_profile=%s",
+                    match_id,
+                    bot_difficulty_for_init,
+                    bot_brain_profile_for_init,
+                )
+                return _fail_battle_init("bot_model_unavailable")
+
+        assembler_telemetry: dict[str, Any] | None = None
+        if is_bot and bot_brain_profile_for_init == "extra-lr-v5-ultra":
+            aux_runtime = request.app.get("extra_lr_aux")
+            if (
+                aux_runtime is None
+                or aux_runtime.assembler is None
+                or aux_runtime.cardoptimum is None
+            ):
+                logger.error(
+                    "Battle init rejected Ultra match %s: required "
+                    "Assembler/CardOptimum component unavailable",
+                    match_id,
+                )
+                return _fail_battle_init("ultra_aux_unavailable")
+            try:
+                assembler_seed = int.from_bytes(
+                    hashlib.sha256(str(match_id).encode("utf-8")).digest()[:8],
+                    "big",
+                )
+                level_mode = str(mode_config.classic.card_level_mode or "normal")
+                opponent_levels: dict[int, int] = {}
+                if level_mode == "normal":
+                    try:
+                        user_cards = await asyncio.wait_for(
+                            db_instance.get_user_cards(p1_id_int),
+                            timeout=2.0,
+                        )
+                        opponent_levels = {
+                            int(card["id"]): max(
+                                1,
+                                min(10, int(card.get("level", 1) or 1)),
+                            )
+                            for card in (user_cards or [])
+                            if card.get("id") is not None
+                        }
+                    except Exception as level_exc:
+                        # Assembler remains usable when the auxiliary level
+                        # lookup is unavailable; IDs are still authoritative
+                        # and the feature contract defaults missing levels to 1.
+                        logger.warning(
+                            "[ASSEMBLER_V1] player level lookup failed "
+                            "match=%s user=%s: %s",
+                            match_id,
+                            p1_id_int,
+                            level_exc,
+                        )
+                    candidate_slot_levels = [
+                        max(1, min(10, int(level or 1)))
+                        for level in ((bot_info or {}).get("card_levels") or [])
+                    ]
+                else:
+                    forced_level = 1 if level_mode == "disabled" else 10
+                    opponent_levels = {
+                        int(str(card_id).split(":", 1)[0]): forced_level
+                        for card_id in p1_deck_ids
+                    }
+                    candidate_slot_levels = [forced_level] * DECK_SIZE
+
+                if len(candidate_slot_levels) != DECK_SIZE:
+                    candidate_slot_levels = [1] * DECK_SIZE
+                opponent_deck_for_assembler = [
+                    int(str(card_id).split(":", 1)[0])
+                    for card_id in p1_deck_ids
+                ]
+                assembler_result = await asyncio.to_thread(
+                    aux_runtime.assemble_deck,
+                    opponent_deck_for_assembler,
+                    seed=assembler_seed,
+                    allowed_card_ids=card_cache.keys(),
+                    disabled_card_ids=disabled_ids,
+                    candidate_count=256,
+                    candidate_slot_levels=candidate_slot_levels,
+                    opponent_levels=opponent_levels,
+                )
+                assembled_deck = [
+                    int(card_id)
+                    for card_id in assembler_result.get("deck_ids", [])
+                ]
+                assembler_telemetry = dict(assembler_result.get("telemetry") or {})
+                if (
+                    len(assembled_deck) != DECK_SIZE
+                    or len(set(assembled_deck)) != DECK_SIZE
+                    or any(card_id in disabled_ids for card_id in assembled_deck)
+                ):
+                    raise ValueError(
+                        f"Assembler returned invalid deck: {assembled_deck}"
+                    )
+                p2_deck_ids = assembled_deck
+                bot_info = dict(bot_info or {})
+                bot_info["deck_ids"] = list(assembled_deck)
+                bot_info["deck_source"] = "extra-lr-assembler-v1"
+                assembler_telemetry["level_mode"] = level_mode
+                bot_info["assembler_telemetry"] = dict(assembler_telemetry)
+                logger.info(
+                    "[ASSEMBLER_V1] match=%s candidates=%s score=%s deck=%s",
+                    match_id,
+                    assembler_telemetry.get("candidates_scored"),
+                    assembler_telemetry.get("score"),
+                    assembled_deck,
+                )
+            except Exception as exc:
+                logger.error(
+                    "Battle init rejected Ultra match %s: Assembler failed: %s",
+                    match_id,
+                    exc,
+                    exc_info=True,
+                )
+                return _fail_battle_init("ultra_assembler_failed")
+
         if mode_config.rewards.enabled and (
             len(p1_deck_ids) != DECK_SIZE or (not is_bot and len(p2_deck_ids) != DECK_SIZE)
         ):
@@ -10496,6 +11332,7 @@ def create_web_app(
                 event_emitter=request.app.get("event_emitter"),
                 game_mode=game_mode,
             )
+            _bind_match_runtime(engine, request.app)
             logger.info("game_mode in engine: %s", engine.game_mode)
 
             # Вызываем create_match для инициализации core/engine.ArenaEnvironment
@@ -10571,6 +11408,38 @@ def create_web_app(
             if not create_result.get("success"):
                 logger.error("Battle init: create_match failed: %s", create_result.get("error"))
                 return False
+
+            if is_bot and bot_brain_profile == "extra-lr-v5-ultra":
+                try:
+                    aux_runtime = request.app.get("extra_lr_aux")
+                    if (
+                        aux_runtime is None
+                        or engine._arena is None
+                        or engine.bot_id is None
+                    ):
+                        raise RuntimeError("CardOptimum runtime unavailable")
+                    engine._arena._rng = aux_runtime.wrap_draw_rng(
+                        engine._arena._rng,
+                        state=engine._arena.state,
+                        assisted_player_id=int(engine.bot_id),
+                    )
+                    engine.extra_lr_aux_profile = {
+                        "assembler": assembler_telemetry,
+                        "cardoptimum": "extra-lr-cardoptimum-v1",
+                    }
+                except Exception as aux_exc:
+                    # create_match registers the engine before returning. An
+                    # assist failure must remove that partial match so a retry
+                    # cannot observe an unassisted object under an Ultra ID.
+                    request.app["active_matches"].pop(match_id, None)
+                    logger.error(
+                        "Battle init rejected Ultra match %s: "
+                        "CardOptimum setup failed: %s",
+                        match_id,
+                        aux_exc,
+                        exc_info=True,
+                    )
+                    return _fail_battle_init("ultra_cardoptimum_unavailable")
             logger.info(
                 "Battle init: starting_player_id=%s current_player_id=%s match_id=%s",
                 starting_player_id_int,
@@ -10579,6 +11448,7 @@ def create_web_app(
             )
 
         except Exception as engine_exc:  # noqa: BLE001
+            request.app["active_matches"].pop(match_id, None)
             logger.error(
                 "Battle init: engine creation failed for match_id=%s players=%s: %s",
                 match_id,
@@ -10586,7 +11456,7 @@ def create_web_app(
                 engine_exc,
                 exc_info=True,
             )
-            return False
+            return _fail_battle_init("engine_creation_failed")
 
         request.app["active_matches"][match_id] = engine
         logger.info("Battle init: engine cached for match_id=%s", match_id)
@@ -10896,7 +11766,7 @@ def create_web_app(
         user_id = await require_user_id_from_payload(request, data)
         from infrastructure.config import BOT_DIFFICULTY_ALIASES, BOT_DIFFICULTY_PROFILES
 
-        difficulty = str(data.get("difficulty", "medium") or "medium")
+        difficulty = str(data.get("difficulty", "v4-micro") or "v4-micro")
         difficulty = BOT_DIFFICULTY_ALIASES.get(difficulty, difficulty)
         selected_deck_id = data.get("selected_deck_id") or data.get("deck_id")
         raw_game_mode = data.get("game_mode") or data.get("mode") or "classic"
@@ -10904,7 +11774,7 @@ def create_web_app(
 
         valid_difficulties = tuple(BOT_DIFFICULTY_PROFILES.keys())
         if difficulty not in valid_difficulties:
-            difficulty = BOT_DIFFICULTY_ALIASES.get("medium", "tier_medium_1200")
+            difficulty = BOT_DIFFICULTY_ALIASES.get("v4-micro", "tier_lite_0000")
 
         try:
             user_id = int(user_id)
@@ -11574,6 +12444,8 @@ def create_web_app(
             event_emitter=app.get("event_emitter"),
             game_mode=mode_id,
         )
+        engine.start_new_v5_dataset_generation(reason="friendly_rehydrate")
+        _bind_match_runtime(engine, app)
         create_result = await engine.create_match(
             match_id=match_id,
             p1_data={
@@ -11773,6 +12645,11 @@ def create_web_app(
                 except Exception as extra_pass_exc:
                     logging.getLogger(__name__).debug("Failed to load ExtraPass status: %s", extra_pass_exc)
 
+            # A restored HTTP client may not have an active Socket.IO session.
+            # Anchor its next human decision to the state that was actually
+            # delivered, while the helper excludes pre-ready/terminal/off-turn
+            # and replacement-bot states.
+            _arm_human_clock_after_state_delivery(engine, viewer_id)
             return web.json_response(state)
         except web.HTTPException:
             raise
@@ -11804,6 +12681,7 @@ def create_web_app(
                         db=db,
                         active_matches=request.app["active_matches"],
                     )
+                    _bind_match_runtime(engine, request.app)
                     request.app["active_matches"][match_id] = engine
                     request.app["match_game_modes"][match_id] = "tutorial"
                 return web.json_response({
@@ -11861,6 +12739,7 @@ def create_web_app(
         """
         Розыгрыш карты игрока через core/actions.PlayCardAction.
         """
+        request_received_monotonic = time.monotonic()
         try:
             payload = await request.json()
         except Exception:
@@ -11988,13 +12867,19 @@ def create_web_app(
 
                 _mark_user_activity_for_match(str(match_id), int(user_id_int), engine)
                 try:
-                    engine.record_analytics_action(user_id_int, {
-                        "type": "play_card",
-                        "card_ref": raw_card_id,
-                        "board_position": board_position,
-                        "target_id": target_id,
-                        "target_is_hero": target_is_hero,
-                    })
+                    engine.record_analytics_action(
+                        user_id_int,
+                        {
+                            "type": "play_card",
+                            "card_ref": raw_card_id,
+                            "board_position": board_position,
+                            "target_id": target_id,
+                            "target_is_hero": target_is_hero,
+                        },
+                        decision_source="human",
+                        request_monotonic=request_received_monotonic,
+                        client_action_id=client_action_id,
+                    )
                 except Exception:
                     pass
 
@@ -12005,8 +12890,14 @@ def create_web_app(
                     target_id=target_id,
                     target_is_hero=target_is_hero
                 )
+                await _persist_v5_dataset_checkpoint(
+                    request.app,
+                    engine,
+                    reason="human_play_card",
+                )
                 if result.get("success") is False:
                     state = engine.get_full_state(viewer_id=user_id_int)
+                    _arm_human_clock_after_state_delivery(engine, user_id_int)
                     payload_out = {"result": result, "state": state, "error": result.get("error")}
                     status = _action_failure_status(result)
                     _action_cache_set(match_id, user_id_int, client_action_id, payload_out, status=status)
@@ -12027,6 +12918,7 @@ def create_web_app(
 
                 # Получаем состояние с legal_actions
                 state = engine.get_full_state(viewer_id=user_id_int)
+                _arm_human_clock_after_state_delivery(engine, user_id_int)
 
                 # Добавляем данные о трофеях/монетах/звёздах если game_over
                 if result.get("game_over"):
@@ -12070,6 +12962,7 @@ def create_web_app(
         """
         Атака существом через core/actions.AttackAction.
         """
+        request_received_monotonic = time.monotonic()
         try:
             payload = await request.json()
         except Exception:
@@ -12180,12 +13073,18 @@ def create_web_app(
 
                 _mark_user_activity_for_match(str(match_id), int(user_id_int), engine)
                 try:
-                    engine.record_analytics_action(user_id_int, {
-                        "type": "attack",
-                        "attacker_id": attacker_id,
-                        "target_id": target_id,
-                        "target_is_hero": target_is_hero,
-                    })
+                    engine.record_analytics_action(
+                        user_id_int,
+                        {
+                            "type": "attack",
+                            "attacker_id": attacker_id,
+                            "target_id": target_id,
+                            "target_is_hero": target_is_hero,
+                        },
+                        decision_source="human",
+                        request_monotonic=request_received_monotonic,
+                        client_action_id=client_action_id,
+                    )
                 except Exception:
                     pass
 
@@ -12195,8 +13094,14 @@ def create_web_app(
                     target_id,
                     target_is_hero=target_is_hero,
                 )
+                await _persist_v5_dataset_checkpoint(
+                    request.app,
+                    engine,
+                    reason="human_attack",
+                )
                 if result.get("success") is False:
                     state = engine.get_full_state(viewer_id=user_id_int)
+                    _arm_human_clock_after_state_delivery(engine, user_id_int)
                     payload_out = {"result": result, "state": state, "error": result.get("error")}
                     status = _action_failure_status(result)
                     _action_cache_set(match_id, user_id_int, client_action_id, payload_out, status=status)
@@ -12217,6 +13122,7 @@ def create_web_app(
 
                 # Получаем состояние с legal_actions
                 state = engine.get_full_state(viewer_id=user_id_int)
+                _arm_human_clock_after_state_delivery(engine, user_id_int)
 
                 # Добавляем данные о трофеях/монетах/звёздах если game_over
                 if result.get("game_over"):
@@ -12339,6 +13245,11 @@ def create_web_app(
                 return web.json_response(payload_out)
 
             engine.mark_surrender(user_id_int)
+            await _persist_v5_dataset_checkpoint(
+                request.app,
+                engine,
+                reason="http_surrender_control_change",
+            )
 
             penalty_result = await _apply_surrender_penalty_once(request.app, match_id, engine, user_id_int)
             if not penalty_result.get("success"):
@@ -12400,6 +13311,7 @@ def create_web_app(
 
     async def battle_turn_end_handler(request: web.Request) -> web.Response:
         """Завершение хода игрока через core/actions.EndTurnAction."""
+        request_received_monotonic = time.monotonic()
         try:
             payload = await request.json()
         except Exception:
@@ -12503,12 +13415,24 @@ def create_web_app(
 
                 _mark_user_activity_for_match(str(match_id), int(user_id_int), engine)
                 try:
-                    engine.record_analytics_action(user_id_int, {"type": "end_turn"})
+                    engine.record_analytics_action(
+                        user_id_int,
+                        {"type": "end_turn"},
+                        decision_source="human",
+                        request_monotonic=request_received_monotonic,
+                        client_action_id=client_action_id,
+                    )
                 except Exception:
                     pass
                 result = engine.end_turn(user_id_int)
+                await _persist_v5_dataset_checkpoint(
+                    request.app,
+                    engine,
+                    reason="human_end_turn",
+                )
                 if result.get("success") is False:
                     state = engine.get_full_state(viewer_id=user_id_int)
+                    _arm_human_clock_after_state_delivery(engine, user_id_int)
                     payload_out = {"result": result, "state": state, "error": result.get("error")}
                     status = _action_failure_status(result)
                     _action_cache_set(match_id, user_id_int, client_action_id, payload_out, status=status)
@@ -12543,6 +13467,7 @@ def create_web_app(
                 )
 
         state = engine.get_full_state(viewer_id=user_id_int)
+        _arm_human_clock_after_state_delivery(engine, user_id_int)
 
         payload_out = {"match_id": match_id, "result": result, "state": state}
         _action_cache_set(match_id, user_id_int, client_action_id, payload_out)
@@ -12556,6 +13481,7 @@ def create_web_app(
         client_action_id}. См. core/engine.py ArenaEnvironment._handle_mana_draw
         и docs/CYCLE_DRAW.md.
         """
+        request_received_monotonic = time.monotonic()
         try:
             payload = await request.json()
         except Exception:
@@ -12652,13 +13578,25 @@ def create_web_app(
 
                 _mark_user_activity_for_match(str(match_id), int(user_id_int), engine)
                 try:
-                    engine.record_analytics_action(user_id_int, {"type": "mana_draw"})
+                    engine.record_analytics_action(
+                        user_id_int,
+                        {"type": "mana_draw"},
+                        decision_source="human",
+                        request_monotonic=request_received_monotonic,
+                        client_action_id=client_action_id,
+                    )
                 except Exception:
                     pass
 
                 result = engine.mana_draw(user_id_int)
+                await _persist_v5_dataset_checkpoint(
+                    request.app,
+                    engine,
+                    reason="human_mana_draw",
+                )
                 if result.get("success") is False:
                     state = engine.get_full_state(viewer_id=user_id_int)
+                    _arm_human_clock_after_state_delivery(engine, user_id_int)
                     payload_out = {"result": result, "state": state, "error": result.get("error")}
                     status = _action_failure_status(result)
                     _action_cache_set(match_id, user_id_int, client_action_id, payload_out, status=status)
@@ -12667,6 +13605,7 @@ def create_web_app(
                 # Добор за ману никогда не заканчивает игру и не передаёт ход
                 # (turn не переключается, бот не ходит).
                 state = engine.get_full_state(viewer_id=user_id_int)
+                _arm_human_clock_after_state_delivery(engine, user_id_int)
                 payload_out = {"result": result, "state": state, "sound_events": result.get("sound_events", [])}
                 _action_cache_set(match_id, user_id_int, client_action_id, payload_out)
                 return web.json_response(payload_out)
@@ -13099,36 +14038,121 @@ def create_web_app(
         user_id = await require_user_id(request)
         if not await _is_admin_user(db, user_id):
             return web.json_response({"error": "admin_access_required"}, status=403)
+        response: web.StreamResponse | None = None
         try:
             days = _admin_int_query(request, "days", 30, min_value=1, max_value=365)
-            limit = _admin_int_query(request, "limit", 5000, min_value=1, max_value=100_000)
+            # ``limit`` used to mean action rows and could truncate a battle in
+            # the middle.  Keep it as a query-string alias, but V5 always
+            # applies the bound to whole terminal battles.
+            limit_name = (
+                "limit_battles"
+                if "limit_battles" in request.rel_url.query
+                else "limit"
+            )
+            limit_battles = _admin_int_query(
+                request,
+                limit_name,
+                1000,
+                min_value=1,
+                max_value=10_000,
+            )
             include_players = request.rel_url.query.get("include_players", "0") in ("1", "true", "yes")
-            rows = await db.export_train_v2_battle_dataset(
+            selection = await db.list_v5_export_battle_ids(
                 days=days,
-                limit=limit,
-                include_players=include_players,
+                limit_battles=limit_battles,
             )
+            battle_ids = [
+                str(battle_id)
+                for battle_id in selection.get("battle_ids", [])
+                if str(battle_id)
+            ]
+            if not battle_ids:
+                return web.json_response(
+                    {"error": "no_valid_v5_battles"},
+                    status=404,
+                )
             header = {
-                "format": "train_v2_admin_battle_action_jsonl_v2",
-                "format_version": 2,
-                "dataset_schema": "train_v3_battle_action_context_v1",
-                "compatible_with": ["train_v2_admin_battle_action_jsonl_v1"],
-                "created_at": datetime.now(timezone.utc).isoformat(),
-                "days": max(days, 1),
-                "rows": len(rows),
-                "notes": "Each following line is a battle action sample with raw state_json/action_json plus TrainV3-style context_json card parameters.",
+                key: value
+                for key, value in selection.items()
+                if key != "battle_ids"
             }
-            lines = [_stdlib_json.dumps(header, ensure_ascii=False)]
-            lines.extend(_stdlib_json.dumps(row, ensure_ascii=False) for row in rows)
-            filename = f"extraarena_trainv2_dataset_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.jsonl"
-            return web.Response(
-                text="\n".join(lines) + "\n",
-                content_type="application/x-ndjson",
-                headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+            header.update(
+                {
+                    "record_type": "header",
+                    "privacy": (
+                        "raw_player_ids"
+                        if include_players
+                        else "side_pseudonyms_p1_1_p2_2"
+                    ),
+                    "include_players": bool(include_players),
+                    "battle_count": len(battle_ids),
+                    "skipped_invalid": 0,
+                    "notes": (
+                        "Each following line is one complete terminal "
+                        "rlhf_v5_storage_v1 battle bundle with meta, turns and actions."
+                    ),
+                }
             )
+            filename = (
+                "extraarena_v5_dataset_"
+                f"{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.jsonl"
+            )
+            response = web.StreamResponse(
+                status=200,
+                headers={
+                    "Content-Type": "application/x-ndjson; charset=utf-8",
+                    "Content-Disposition": f'attachment; filename="{filename}"',
+                    "X-Content-Type-Options": "nosniff",
+                },
+            )
+            await response.prepare(request)
+            try:
+                await response.write(
+                    (
+                        _stdlib_json.dumps(header, ensure_ascii=False)
+                        + "\n"
+                    ).encode("utf-8")
+                )
+                for battle_id in battle_ids:
+                    bundle = await db.get_v5_export_battle_bundle(
+                        battle_id=battle_id,
+                        include_players=include_players,
+                    )
+                    if bundle is None:
+                        # The first header is an exact-count contract consumed
+                        # fail-closed by the materializer. Never silently skip a
+                        # malformed/pruned row after that header was sent.
+                        raise RuntimeError(
+                            f"v5_export_bundle_invalid:{battle_id}"
+                        )
+                    await response.write(
+                        (
+                            _stdlib_json.dumps(
+                                {"record_type": "battle", **bundle},
+                                ensure_ascii=False,
+                            )
+                            + "\n"
+                        ).encode("utf-8")
+                    )
+                await response.write_eof()
+            except (ConnectionResetError, BrokenPipeError):
+                logging.getLogger(__name__).info(
+                    "V5 dataset export client disconnected",
+                )
+                response.force_close()
+            except Exception:
+                logging.getLogger(__name__).error(
+                    "V5 dataset streaming failed",
+                    exc_info=True,
+                )
+                response.force_close()
+            return response
         except AdminInputError as e:
             return _admin_json_error(e.error, status=e.status)
         except Exception as e:
+            if response is not None and response.prepared:
+                response.force_close()
+                return response
             logging.getLogger(__name__).error("analytics_dataset_export error: %s", e, exc_info=True)
             return web.json_response({"error": str(e)}, status=500)
 
@@ -20213,6 +21237,7 @@ def create_web_app(
                 db=db,
                 active_matches=request.app["active_matches"],
             )
+            _bind_match_runtime(engine, request.app)
             request.app["active_matches"][match_id] = engine
         else:
             engine.set_tutorial_step(tutorial_step)
@@ -21829,15 +22854,70 @@ def create_web_app(
         except asyncio.CancelledError:
             pass
 
+    async def _run_v5_dataset_maintenance(
+        app: web.Application,
+        *,
+        reason: str,
+    ) -> None:
+        db_ref = app.get("db")
+        mark_stale = getattr(db_ref, "mark_stale_v5_battle_traces_aborted", None)
+        if callable(mark_stale):
+            await mark_stale(
+                older_than_seconds=3600,
+                reason=reason,
+            )
+        prune_traces = getattr(db_ref, "prune_v5_battle_traces", None)
+        if callable(prune_traces):
+            await prune_traces(
+                terminal_older_than_days=90,
+                aborted_older_than_days=30,
+                limit_battles=1000,
+            )
+
+    async def _v5_dataset_maintenance_loop(app: web.Application) -> None:
+        """Seal crash leftovers and prune only whole old traces."""
+        logger = logging.getLogger(__name__)
+        try:
+            while True:
+                await asyncio.sleep(900)
+                try:
+                    await _run_v5_dataset_maintenance(
+                        app,
+                        reason="stale_ongoing_trace",
+                    )
+                except Exception:
+                    logger.warning(
+                        "V5 dataset periodic maintenance failed",
+                        exc_info=True,
+                    )
+        except asyncio.CancelledError:
+            pass
+
     async def start_background_tasks(app: web.Application) -> None:
         """Запуск фоновых задач при старте сервера."""
+        try:
+            await _run_v5_dataset_maintenance(
+                app,
+                reason="stale_after_process_restart",
+            )
+        except Exception:
+            logging.getLogger(__name__).warning(
+                "V5 dataset startup maintenance failed",
+                exc_info=True,
+            )
         app['match_timer_task'] = asyncio.create_task(match_timer_checker(app))
         app['announcement_expiry_task'] = asyncio.create_task(_announcement_expiry_loop(app))
         app['squad_weekly_cbrp_task'] = asyncio.create_task(_squad_weekly_cbrp_loop(app))
         app['rating_snapshot_refresh_task'] = asyncio.create_task(_rating_snapshot_refresh_loop(app))
+        app['v5_dataset_maintenance_task'] = asyncio.create_task(
+            _v5_dataset_maintenance_loop(app)
+        )
 
     async def cleanup_background_tasks(app: web.Application) -> None:
         """Остановка фоновых задач при остановке сервера."""
+        global BERSERK_BRAIN, EXTRA_LR_AUX
+        app["_runtime_closing"] = True
+
         if 'match_timer_task' in app:
             app['match_timer_task'].cancel()
             try:
@@ -21862,6 +22942,138 @@ def create_web_app(
                 await app['rating_snapshot_refresh_task']
             except asyncio.CancelledError:
                 pass
+        if 'v5_dataset_maintenance_task' in app:
+            app['v5_dataset_maintenance_task'].cancel()
+            try:
+                await app['v5_dataset_maintenance_task']
+            except asyncio.CancelledError:
+                pass
+
+        # A bot inference task may still be between Metronome selection and a
+        # mutation. Stop only this app generation's tasks and await them before
+        # releasing native ONNX sessions. ``sio.app`` is intentionally ignored:
+        # a replacement app may already own that process-global pointer.
+        bot_tasks = [
+            (match_id, task)
+            for match_id, task in list(BOT_TASKS.items())
+            if BOT_TASK_OWNERS.get(match_id) is app
+        ]
+        for _match_id, task in bot_tasks:
+            task.cancel()
+        if bot_tasks:
+            await asyncio.gather(
+                *(task for _match_id, task in bot_tasks),
+                return_exceptions=True,
+            )
+        for match_id, task in bot_tasks:
+            # Preserve a newer task that may have replaced the snapshot while
+            # cancellation was being awaited.
+            if BOT_TASKS.get(match_id) is task:
+                BOT_TASKS.pop(match_id, None)
+                BOT_TASK_KEYS.pop(match_id, None)
+                BOT_TASK_OWNERS.pop(match_id, None)
+
+        active_matches = app.get("active_matches", {})
+        owned_matches = [
+            (str(match_id), engine)
+            for match_id, engine in list(active_matches.items())
+            if getattr(engine, "runtime_owner_app", None) is app
+        ]
+        owned_match_ids = {
+            match_id
+            for match_id, engine in owned_matches
+            if (
+                active_matches.get(match_id) is engine
+                and ACTIVE_MATCHES.get(match_id, engine) is engine
+            )
+        }
+
+        # Disconnect/takeover tasks can schedule a bot turn, so stop them while
+        # the app-owned runtimes are still open and await cancellation too.
+        disconnect_tasks = [
+            (key, task)
+            for key, task in list(MATCH_DISCONNECT_TASKS.items())
+            if str(key[0]) in owned_match_ids
+        ]
+        for _key, task in disconnect_tasks:
+            task.cancel()
+        if disconnect_tasks:
+            await asyncio.gather(
+                *(task for _key, task in disconnect_tasks),
+                return_exceptions=True,
+            )
+        for key, task in disconnect_tasks:
+            if MATCH_DISCONNECT_TASKS.get(key) is task:
+                MATCH_DISCONNECT_TASKS.pop(key, None)
+
+        # A graceful reload invalidates all in-memory matches owned by this app
+        # generation. Seal already-terminal trajectories first; only live
+        # prefixes are diagnostic aborts.
+        if owned_matches:
+            await asyncio.gather(
+                *(
+                    _persist_v5_dataset_on_cleanup(
+                        app,
+                        engine,
+                        reason="server_reload",
+                    )
+                    for _match_id, engine in owned_matches
+                ),
+                return_exceptions=True,
+            )
+
+        # A stopped app cannot serve its in-memory matches. Remove exactly its
+        # engines from the shared registry before closing sessions; preserving
+        # identity checks prevents an old cleanup from deleting a replacement
+        # app's match that happens to reuse an ID.
+        for match_id, engine in owned_matches:
+            registry_slot_owned = (
+                active_matches.get(match_id) is engine
+                or ACTIVE_MATCHES.get(match_id) is engine
+            )
+            if active_matches.get(match_id) is engine:
+                active_matches.pop(match_id, None)
+            if ACTIVE_MATCHES.get(match_id) is engine:
+                ACTIVE_MATCHES.pop(match_id, None)
+            engine.is_ended = True
+            engine.runtime_owner_app = None
+            engine.berserk_brain = None
+            engine.extra_lr_aux_runtime = None
+            if not registry_slot_owned:
+                # A newer app reused this match ID. Its per-ID socket/task
+                # state belongs to the replacement engine and must survive.
+                continue
+            _mark_match_ended(match_id)
+            app.get("match_game_modes", {}).pop(match_id, None)
+            app.get("battle_init_errors", {}).pop(match_id, None)
+            MATCH_SESSIONS.pop(match_id, None)
+            MATCH_LOCKS.pop(match_id, None)
+            MATCH_INIT_LOCKS.pop(match_id, None)
+            if BOT_TASK_OWNERS.get(match_id) is app:
+                BOT_TASK_KEYS.pop(match_id, None)
+                BOT_TASK_OWNERS.pop(match_id, None)
+            BOT_VS_BOT_MARKERS.pop(match_id, None)
+            for key in list(MATCH_DISCONNECT_STATES):
+                if str(key[0]) == match_id:
+                    MATCH_DISCONNECT_STATES.pop(key, None)
+            for sid, session_data in list(SID_TO_MATCH.items()):
+                if str(session_data.get("match_id")) == match_id:
+                    SID_TO_MATCH.pop(sid, None)
+            for cache_key in list(ACTION_RESULT_CACHE):
+                if str(cache_key[0]) == match_id:
+                    ACTION_RESULT_CACHE.pop(cache_key, None)
+
+        aux_runtime = app.pop("extra_lr_aux", None)
+        if aux_runtime is not None:
+            aux_runtime.close()
+        if EXTRA_LR_AUX is aux_runtime:
+            EXTRA_LR_AUX = None
+
+        berserk_brain = app.pop("berserk_brain", None)
+        if berserk_brain is not None:
+            berserk_brain.close()
+        if BERSERK_BRAIN is berserk_brain:
+            BERSERK_BRAIN = None
 
     app.on_startup.append(start_background_tasks)
     app.on_cleanup.append(cleanup_background_tasks)

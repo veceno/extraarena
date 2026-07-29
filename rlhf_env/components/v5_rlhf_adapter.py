@@ -157,21 +157,10 @@ class V5RlhfAdapter:
         info_mode = InfoModeV5(enemy_hand_known=True, enemy_deck_known=True)
         assist_mode = AssistModeV5()
 
-        # history_events: encode_observation_v5 expects list[dict[str, Any]] and
-        # fills the 20x144 history channel from them (_encode_history, obs_v5.py
-        # :120). The CORRECT live field is ``state.history`` (List[Dict],
-        # core/state.py:165), which the engine populates via
-        # ``state.history.append(action.to_dict())`` (core/engine.py:405) during
-        # play. v5_trace captures ``history = list(state.history)`` into the
-        # snapshot (v5_trace.py:310) and the offline loader feeds
-        # ``pre_snap["history"]`` to encode_observation_v5 (offline_dataset_loader
-        # .py:736) — so reading ``state.history`` here gives TRAIN/DEPLOY PARITY
-        # (deploy obs history == offline training obs history). Do NOT read
-        # ``state.action_history`` (core/state.py:177) — that is a Deque of
-        # (log_type, text) UI-log tuples, a different field; filtering it to dicts
-        # yields [] and silently drops the history channel (train/deploy mismatch).
-        raw_history = getattr(state, "history", None) or []
-        history_events = [e for e in raw_history if isinstance(e, dict)]
+        # Phase-C replay and live inference both consume the dedicated
+        # structured ring. ``state.history`` remains the native action log;
+        # ``state.action_history`` is UI text. Neither is the V5 tape.
+        history_events = list(getattr(state, "v5_history_events", ()))
 
         obs = encode_observation_v5(
             state,

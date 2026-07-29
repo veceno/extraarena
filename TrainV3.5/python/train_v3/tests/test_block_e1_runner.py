@@ -6,8 +6,8 @@ ALL collaborators are fakes: a fake ``GameRunner`` returning canned
 .onnx + .onnx.json files. NO real MLX/Rust/ONNX/rlhf_env DB/socket is touched --
 the runner is the composition shell, + the threshold-table verdict logic is
 unit-testable via the injected fakes. The prod wiring
-(``infrastructure/config.py`` ``extra-lr-v5-max`` profile + the 4 retargeted
-tiers) IS committed in the worktree, so ``ship_v5_winner``'s prod-wiring
+(``infrastructure/config.py`` V4 Micro/V5-family profiles + the four-stage
+trophy progression) IS committed in the worktree, so ``ship_v5_winner``'s prod-wiring
 verification passes without monkeypatching (the ONNX export is faked).
 
 The fake ``GameRunner`` + ``_meta`` builder mirror the E3 test patterns
@@ -288,14 +288,14 @@ def test_build_e1_candidate_set_from_manifest_accepts_object_and_dict():
 # =============================================================================
 def test_write_candidate_json_writes_required_file(tmp_path):
     """write_candidate_json(tmp_dir, winner_path=win.npz) -> a candidate.json
-    exists in tmp_dir with path=win.npz + marker=extra-lr-v5-max."""
+    exists in tmp_dir with path=win.npz + marker=extra-lr-v5."""
     cpath = write_candidate_json(str(tmp_path), winner_path="win.npz")
     assert cpath == str(tmp_path / "candidate.json")
     assert (tmp_path / "candidate.json").exists()
     data = json.loads((tmp_path / "candidate.json").read_text(encoding="utf-8"))
     assert data["path"] == "win.npz"
     assert data["source_checkpoint"] == "win.npz"
-    assert data["marker"] == "extra-lr-v5-max"
+    assert data["marker"] == "extra-lr-v5"
     assert data["created_by"] == "block_e1_runner"
 
 
@@ -353,8 +353,8 @@ def test_run_e1_pipeline_ships_a_passing_winner(tmp_path):
     # candidate.json was written BEFORE ship (build_release_bundle requires it).
     assert (tmp_path / "candidate.json").exists()
     # the fake onnx_export_fn wrote the dummy onnx + sidecar into candidate_dir.
-    assert (tmp_path / "extra-lr-v5-max.onnx").exists()
-    assert (tmp_path / "extra-lr-v5-max.onnx.json").exists()
+    assert (tmp_path / "extra-lr-v5.onnx").exists()
+    assert (tmp_path / "extra-lr-v5.onnx.json").exists()
 
 
 def test_run_e1_pipeline_no_ship_when_no_passer(tmp_path):

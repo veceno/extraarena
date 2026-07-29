@@ -717,7 +717,7 @@ class TestPayloadBuilding:
         assert payload["persisted"] is False
         assert payload["source_bot_id"] == 900000001
         assert payload["difficulty"] == "medium"
-        assert payload["brain_profile"] == "extra-lr-v4-opti"
+        assert payload["brain_profile"] == "extra-lr-v5"
         assert payload["league"] > 0
         assert "cosmetics" in payload
 

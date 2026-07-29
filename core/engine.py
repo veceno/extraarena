@@ -24,6 +24,7 @@ from core.effects import (
     requires_target,
 )
 from core.state import CardInstance, CardType, GameState, GameStatus, PlayerState
+from core.v5_history import capture_v5_history_event, finalize_v5_history_event
 from infrastructure.match_modes import ClassicParams
 
 
@@ -177,6 +178,22 @@ def draw_one_from_deck(
                 player.user_id,
             )
             return False
+
+    # Optional match-scoped draw assistant hook. The default ``random.Random``
+    # has no such method, so every non-Ultra battle follows the exact existing
+    # path. CardOptimum's wrapper prepares one forced weighted sample and must
+    # fail open: a beta assistant is never allowed to break the core draw.
+    if len(player.hand) < HAND_CAP:
+        prepare_draw = getattr(rng, "prepare_draw", None)
+        if callable(prepare_draw):
+            try:
+                prepare_draw(player)
+            except Exception:
+                log.warning(
+                    "[DRAW_ASSIST] prepare_draw failed for user_id=%s; using natural draw",
+                    player.user_id,
+                    exc_info=True,
+                )
 
     # Шаг 2: проверяем лимит руки. Логика расходится по overdraw_to_discard.
     # Перед этим инкрементируем skip_count для всех карт в колоде — если
@@ -350,6 +367,13 @@ class ArenaEnvironment:
             )
             return False, str(e)
 
+        history_capture = capture_v5_history_event(
+            player_id,
+            player,
+            opponent,
+            action,
+        )
+
         # Обработка действий
         action_description: Optional[Tuple[str, str]] = None
         
@@ -401,8 +425,17 @@ class ArenaEnvironment:
                 break
         self._check_game_over()
 
-        # Запись в историю
+        # Legacy/native action log remains byte-compatible for UI and older
+        # consumers. V5 gets its own 20-event actor-relative tape.
         self.state.history.append(action.to_dict())
+        self.state.v5_history_events.append(
+            finalize_v5_history_event(
+                self.state,
+                player,
+                opponent,
+                history_capture,
+            )
+        )
         
         # Обновляем action_history. GameState.action_history — это
         # collections.deque(maxlen=ACTION_HISTORY_MAXLEN), он сам
@@ -1467,6 +1500,14 @@ class ArenaEnvironment:
     def reset_to_state(self, state: GameState) -> None:
         """Сбросить состояние к указанному (для симуляций)."""
         self.state = state
+        # State snapshots carry runtime back-references.  Rebind them to this
+        # live environment after a rollback instead of leaving effects and
+        # match-scoped assistants attached to the deep-copied environment.
+        self.state.classic_params = self.classic_params
+        self.state.arena_engine = self
+        bind_state = getattr(self._rng, "bind_state", None)
+        if callable(bind_state):
+            bind_state(self.state)
     
     def _describe_play_card(
         self, 

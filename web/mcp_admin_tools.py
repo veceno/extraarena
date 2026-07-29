@@ -1717,27 +1717,40 @@ async def adapter_read_analytics_section(app: Any, admin_user_id: int, args: dic
 
 async def adapter_export_analytics_dataset(app: Any, admin_user_id: int, args: dict[str, Any]) -> dict[str, Any]:
     days = _int_arg(args, "days", 30, minimum=1, maximum=365)
-    limit = _int_arg(args, "limit", 5_000, minimum=1, maximum=100_000)
+    # Backward-compatible argument name; in the V5 exporter it always limits
+    # complete terminal battles, never individual action rows.
+    if "limit_battles" in args:
+        limit_battles = _int_arg(
+            args,
+            "limit_battles",
+            1_000,
+            minimum=1,
+            maximum=10_000,
+        )
+    else:
+        limit_battles = _int_arg(
+            args,
+            "limit",
+            1_000,
+            minimum=1,
+            maximum=10_000,
+        )
     include_players = _bool_arg(args, "include_players", False)
-    rows = await _call_db(
+    dataset = await _call_db(
         app["db"],
-        "export_train_v2_battle_dataset",
+        "export_v5_battle_dataset",
         days=days,
-        limit=limit,
+        limit_battles=limit_battles,
         include_players=include_players,
-        default=[],
+        default={
+            "format": "extraarena_v5_dataset_export_v1",
+            "format_version": 1,
+            "storage_schema": "rlhf_v5_storage_v1",
+            "battles": [],
+            "battle_count": 0,
+        },
     )
-    return json_safe({
-        "format": "train_v2_admin_battle_action_jsonl_v2",
-        "format_version": 2,
-        "dataset_schema": "train_v3_battle_action_context_v1",
-        "compatible_with": ["train_v2_admin_battle_action_jsonl_v1"],
-        "days": days,
-        "limit": limit,
-        "include_players": include_players,
-        "rows": rows or [],
-        "row_count": len(rows or []),
-    })
+    return json_safe(dataset)
 
 
 async def adapter_read_players_analytics(app: Any, admin_user_id: int, args: dict[str, Any]) -> dict[str, Any]:

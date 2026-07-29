@@ -45,7 +45,28 @@ from infrastructure.notifications import (
 
 
 # Версию схемы повышаем при изменении структуры таблиц
-SCHEMA_VERSION = 48
+SCHEMA_VERSION = 49
+RLHF_V5_STORAGE_SCHEMA = "rlhf_v5_storage_v1"
+EXTRAARENA_V5_DATASET_EXPORT_SCHEMA = "extraarena_v5_dataset_export_v1"
+V5_TERMINAL_STATUSES = frozenset({"p1_win", "p2_win", "draw", "stalemate"})
+V5_TRACE_ACTION_REQUIRED_FIELDS = frozenset(
+    {
+        "battle_id",
+        "seq",
+        "turn_number",
+        "actor_user_id",
+        "actor_player",
+        "decision_source",
+        "legal_action_index",
+        "action_type",
+        "action_json",
+        "legal_actions",
+        "legal_action_count",
+        "pre_state",
+        "post_state",
+        "accepted",
+    }
+)
 STARTER_DECK_CARD_IDS: list[int] = [1, 36, 37, 38, 39, 40, 41, 42, 46]
 BOT_USER_ID_MIN = 900_000_000
 BOT_USER_ID_MAX = 8_999_999_999_999
@@ -202,6 +223,466 @@ def _jsonb_dict(value: Any) -> dict[str, Any]:
             return {}
         return dict(parsed) if isinstance(parsed, dict) else {}
     return {}
+
+
+def _jsonb_list(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return list(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except Exception:
+            return []
+        return list(parsed) if isinstance(parsed, list) else []
+    return []
+
+
+def _v5_optional_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"invalid_v5_user_id:{value!r}") from exc
+
+
+def _v5_required_participant_id(value: Any, *, field: str) -> int:
+    """Return one canonical participant id without permissive coercion.
+
+    Export pseudonymization is only safe when both seat identities are known
+    exactly.  Accepting ``None``, bools, zero or numeric strings here can leave
+    a raw user id in nested state/action payloads while the export still claims
+    ``side_pseudonyms_p1_1_p2_2``. Negative integers remain valid: production
+    deliberately uses them for an unpersisted fallback bot when bot-profile
+    creation fails, and those battles are still useful human-vs-bot data.
+    """
+
+    if not isinstance(value, int) or isinstance(value, bool) or value == 0:
+        raise ValueError(f"invalid_v5_participant_id:{field}:{value!r}")
+    return value
+
+
+def _v5_optional_participant_id(value: Any, *, field: str) -> int | None:
+    if value is None:
+        return None
+    return _v5_required_participant_id(value, field=field)
+
+
+def _validate_v5_state_participants(
+    state: Dict[str, Any],
+    *,
+    p1_user_id: int,
+    p2_user_id: int,
+    label: str,
+) -> None:
+    """Require a state snapshot to use the same two authoritative seat ids."""
+
+    if not isinstance(state, dict):
+        raise ValueError(f"{label}_must_be_object")
+    for player, expected_user_id in (
+        ("p1", p1_user_id),
+        ("p2", p2_user_id),
+    ):
+        player_state = state.get(player)
+        if not isinstance(player_state, dict):
+            raise ValueError(f"{label}_{player}_must_be_object")
+        actual_user_id = _v5_required_participant_id(
+            player_state.get("user_id"),
+            field=f"{label}.{player}.user_id",
+        )
+        if actual_user_id != expected_user_id:
+            raise ValueError(
+                f"{label}_{player}_user_id_mismatch:"
+                f"expected={expected_user_id}:got={actual_user_id}"
+            )
+
+    owner_user_id = _v5_required_participant_id(
+        state.get("current_turn_owner_id"),
+        field=f"{label}.current_turn_owner_id",
+    )
+    if owner_user_id not in {p1_user_id, p2_user_id}:
+        raise ValueError(
+            f"{label}_current_turn_owner_not_participant:{owner_user_id}"
+        )
+
+
+def _validate_v5_trace_checkpoint(
+    battle_id: str,
+    meta: Dict[str, Any],
+    turns: list[Dict[str, Any]],
+    actions: list[Dict[str, Any]],
+) -> tuple[str, dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Validate and copy one authoritative, complete-prefix V5 checkpoint."""
+    normalized_battle_id = str(battle_id or "").strip()
+    if not normalized_battle_id:
+        raise ValueError("battle_id_required")
+    if not isinstance(meta, dict):
+        raise ValueError("v5_meta_must_be_object")
+    normalized_meta = dict(meta)
+    if normalized_meta.get("schema_version") != RLHF_V5_STORAGE_SCHEMA:
+        raise ValueError(
+            f"v5_meta_schema_must_be:{RLHF_V5_STORAGE_SCHEMA}"
+        )
+    missing_meta = sorted(
+        {
+            "battle_id",
+            "status",
+            "p1_user_id",
+            "p2_user_id",
+            "p1_actor_type",
+            "p2_actor_type",
+        }.difference(normalized_meta)
+    )
+    if missing_meta:
+        raise ValueError(f"v5_meta_missing_fields:{','.join(missing_meta)}")
+    meta_battle_id = normalized_meta.get("battle_id")
+    if str(meta_battle_id) != normalized_battle_id:
+        raise ValueError("v5_meta_battle_id_mismatch")
+    p1_user_id = _v5_required_participant_id(
+        normalized_meta.get("p1_user_id"),
+        field="meta.p1_user_id",
+    )
+    p2_user_id = _v5_required_participant_id(
+        normalized_meta.get("p2_user_id"),
+        field="meta.p2_user_id",
+    )
+    if p1_user_id == p2_user_id:
+        raise ValueError("v5_participant_ids_must_be_distinct")
+    normalized_meta["p1_user_id"] = p1_user_id
+    normalized_meta["p2_user_id"] = p2_user_id
+    for player in ("p1", "p2"):
+        actor_type = normalized_meta.get(f"{player}_actor_type")
+        if not isinstance(actor_type, str) or actor_type not in {
+            "human",
+            "bot",
+            "llm",
+            "rl",
+        }:
+            raise ValueError(f"v5_meta_{player}_actor_type_invalid")
+    winner_user_id = _v5_optional_participant_id(
+        normalized_meta.get("winner_user_id"),
+        field="meta.winner_user_id",
+    )
+    if winner_user_id is not None and winner_user_id not in {
+        p1_user_id,
+        p2_user_id,
+    }:
+        raise ValueError("v5_meta_winner_user_id_not_participant")
+
+    if not isinstance(turns, list):
+        raise ValueError("v5_turns_must_be_list")
+    normalized_turns: list[dict[str, Any]] = []
+    for index, turn in enumerate(turns, start=1):
+        if not isinstance(turn, dict):
+            raise ValueError(f"v5_turn_{index}_must_be_object")
+        missing_turn = sorted(
+            {
+                "turn_number",
+                "current_turn_owner_id",
+                "status",
+                "p1",
+                "p2",
+            }.difference(turn)
+        )
+        if missing_turn:
+            raise ValueError(
+                f"v5_turn_{index}_missing_fields:{','.join(missing_turn)}"
+            )
+        normalized_turn = dict(turn)
+        _validate_v5_state_participants(
+            normalized_turn,
+            p1_user_id=p1_user_id,
+            p2_user_id=p2_user_id,
+            label=f"v5_turn_{index}",
+        )
+        normalized_turns.append(normalized_turn)
+
+    if not isinstance(actions, list):
+        raise ValueError("v5_actions_must_be_list")
+    normalized_actions: list[dict[str, Any]] = []
+    for expected_seq, action in enumerate(actions, start=1):
+        if not isinstance(action, dict):
+            raise ValueError(f"v5_action_{expected_seq}_must_be_object")
+        missing = sorted(V5_TRACE_ACTION_REQUIRED_FIELDS.difference(action))
+        if missing:
+            raise ValueError(
+                f"v5_action_{expected_seq}_missing_fields:{','.join(missing)}"
+            )
+        try:
+            actual_seq = int(action.get("seq"))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"v5_action_{expected_seq}_invalid_seq") from exc
+        if actual_seq != expected_seq:
+            raise ValueError(
+                f"v5_actions_must_be_contiguous:expected={expected_seq}:got={actual_seq}"
+            )
+        action_battle_id = action.get("battle_id")
+        if str(action_battle_id) != normalized_battle_id:
+            raise ValueError(f"v5_action_{expected_seq}_battle_id_mismatch")
+        if not isinstance(action.get("accepted"), bool):
+            raise ValueError(f"v5_action_{expected_seq}_accepted_must_be_bool")
+        try:
+            actor_player = int(action.get("actor_player"))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"v5_action_{expected_seq}_actor_player_invalid"
+            ) from exc
+        if actor_player not in (1, 2):
+            raise ValueError(f"v5_action_{expected_seq}_actor_player_invalid")
+        actor_user_id = _v5_required_participant_id(
+            action.get("actor_user_id"),
+            field=f"action[{expected_seq}].actor_user_id",
+        )
+        expected_actor_user_id = (
+            p1_user_id if actor_player == 1 else p2_user_id
+        )
+        if actor_user_id != expected_actor_user_id:
+            raise ValueError(
+                f"v5_action_{expected_seq}_actor_user_id_mismatch:"
+                f"expected={expected_actor_user_id}:got={actor_user_id}"
+            )
+        if str(action.get("decision_source")) not in {"human", "llm", "bot", "rl"}:
+            raise ValueError(f"v5_action_{expected_seq}_decision_source_invalid")
+        if not isinstance(action.get("action_json"), dict):
+            raise ValueError(f"v5_action_{expected_seq}_action_json_must_be_object")
+        if not isinstance(action.get("pre_state"), dict):
+            raise ValueError(f"v5_action_{expected_seq}_pre_state_must_be_object")
+        if not isinstance(action.get("post_state"), dict):
+            raise ValueError(f"v5_action_{expected_seq}_post_state_must_be_object")
+        legal_actions = action.get("legal_actions")
+        if not isinstance(legal_actions, list):
+            raise ValueError(f"v5_action_{expected_seq}_legal_actions_must_be_list")
+        try:
+            legal_count = int(action.get("legal_action_count"))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"v5_action_{expected_seq}_legal_action_count_invalid"
+            ) from exc
+        if legal_count != len(legal_actions):
+            raise ValueError(
+                f"v5_action_{expected_seq}_legal_action_count_mismatch"
+            )
+        normalized_action = dict(action)
+        _validate_v5_state_participants(
+            normalized_action["pre_state"],
+            p1_user_id=p1_user_id,
+            p2_user_id=p2_user_id,
+            label=f"v5_action_{expected_seq}_pre_state",
+        )
+        _validate_v5_state_participants(
+            normalized_action["post_state"],
+            p1_user_id=p1_user_id,
+            p2_user_id=p2_user_id,
+            label=f"v5_action_{expected_seq}_post_state",
+        )
+        normalized_actions.append(normalized_action)
+
+    if normalized_actions and not normalized_turns:
+        raise ValueError("v5_actions_require_turns")
+    final_state = normalized_meta.get("final_state")
+    if final_state is not None:
+        _validate_v5_state_participants(
+            final_state,
+            p1_user_id=p1_user_id,
+            p2_user_id=p2_user_id,
+            label="v5_meta_final_state",
+        )
+    return (
+        normalized_battle_id,
+        normalized_meta,
+        normalized_turns,
+        normalized_actions,
+    )
+
+
+_V5_PLAYER_ID_KEYS = frozenset(
+    {
+        "user_id",
+        "player_id",
+        "participant_id",
+        "actor_user_id",
+        "acting_user_id",
+        "current_turn_owner_id",
+        "winner_user_id",
+        "loser_user_id",
+        "p1_user_id",
+        "p2_user_id",
+        "owner_user_id",
+        "source_user_id",
+        "target_user_id",
+        "actor_id",
+        "owner_id",
+        "current_player",
+        "current_player_id",
+        "starting_player_id",
+        "winner_id",
+        "loser_id",
+    }
+)
+
+_V5_PLAYER_ID_LIST_KEYS = frozenset(
+    {
+        "player_ids",
+        "ready_user_ids",
+        "waiting_for_user_ids",
+    }
+)
+
+
+def _pseudonymize_v5_player_id_scalar(
+    value: Any,
+    mapping: dict[int, int],
+) -> Any:
+    if isinstance(value, int) and not isinstance(value, bool):
+        return mapping.get(value, value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        try:
+            numeric_value = int(stripped)
+        except ValueError:
+            return value
+        if stripped == str(numeric_value) and numeric_value in mapping:
+            return str(mapping[numeric_value])
+    return value
+
+
+def _pseudonymize_v5_player_ids(value: Any, mapping: dict[int, int]) -> Any:
+    """Deep-copy a bundle and replace only structurally declared player IDs.
+
+    A raw user ID can numerically equal a card ID, HP value, level, sequence
+    number or timestamp. Replacing arbitrary scalar matches would silently
+    corrupt training state, so recursion is key-aware and leaves all unrelated
+    values and dictionary keys untouched.
+    """
+    if isinstance(value, dict):
+        result: dict[str, Any] = {}
+        for raw_key, item in value.items():
+            key = str(raw_key)
+            if (
+                key in _V5_PLAYER_ID_KEYS
+                or key.endswith("_user_id")
+            ):
+                result[key] = _pseudonymize_v5_player_id_scalar(item, mapping)
+                continue
+            if key in _V5_PLAYER_ID_LIST_KEYS and isinstance(item, list):
+                result[key] = [
+                    _pseudonymize_v5_player_id_scalar(entry, mapping)
+                    for entry in item
+                ]
+                continue
+            result[key] = _pseudonymize_v5_player_ids(item, mapping)
+        return result
+    if isinstance(value, list):
+        return [_pseudonymize_v5_player_ids(item, mapping) for item in value]
+    return value
+
+
+def _build_v5_export_bundle(
+    raw_row: Any,
+    *,
+    include_players: bool,
+) -> dict[str, Any] | None:
+    """Validate and detach one complete terminal bundle for export.
+
+    Participant identity is checked before pseudonymization, using both the
+    relational header and every canonical state/action row.  A malformed row is
+    skipped rather than allowing an export labelled pseudonymous to retain a
+    raw id.
+    """
+
+    row = dict(raw_row)
+    battle_id = str(row.get("battle_id") or "")
+    status = str(row.get("status") or "")
+    meta = _jsonb_dict(row.get("meta_json"))
+    turns = _jsonb_list(row.get("turns_json"))
+    actions = _jsonb_list(row.get("actions_json"))
+    expected_count = int(row.get("action_count") or 0)
+
+    try:
+        header_p1_user_id = _v5_required_participant_id(
+            row.get("p1_user_id"),
+            field="header.p1_user_id",
+        )
+        header_p2_user_id = _v5_required_participant_id(
+            row.get("p2_user_id"),
+            field="header.p2_user_id",
+        )
+        if header_p1_user_id == header_p2_user_id:
+            raise ValueError("v5_participant_ids_must_be_distinct")
+        (
+            normalized_battle_id,
+            normalized_meta,
+            normalized_turns,
+            normalized_actions,
+        ) = _validate_v5_trace_checkpoint(
+            battle_id,
+            meta,
+            turns,
+            actions,
+        )
+    except (TypeError, ValueError):
+        return None
+
+    if (
+        not normalized_battle_id
+        or row.get("storage_schema") != RLHF_V5_STORAGE_SCHEMA
+        or status not in V5_TERMINAL_STATUSES
+        or normalized_meta.get("schema_version") != RLHF_V5_STORAGE_SCHEMA
+        or normalized_meta.get("status") != status
+        or normalized_meta["p1_user_id"] != header_p1_user_id
+        or normalized_meta["p2_user_id"] != header_p2_user_id
+        or not normalized_turns
+        or expected_count < 1
+        or len(normalized_actions) != expected_count
+    ):
+        return None
+
+    try:
+        header_winner_user_id = _v5_optional_participant_id(
+            row.get("winner_user_id"),
+            field="header.winner_user_id",
+        )
+        meta_winner_user_id = _v5_optional_participant_id(
+            normalized_meta.get("winner_user_id"),
+            field="meta.winner_user_id",
+        )
+    except ValueError:
+        return None
+    if header_winner_user_id != meta_winner_user_id:
+        return None
+    if status == "p1_win" and header_winner_user_id != header_p1_user_id:
+        return None
+    if status == "p2_win" and header_winner_user_id != header_p2_user_id:
+        return None
+    if status in {"draw", "stalemate"} and header_winner_user_id is not None:
+        return None
+    for player in ("p1", "p2"):
+        header_actor_type = row.get(f"{player}_actor_type")
+        if (
+            not isinstance(header_actor_type, str)
+            or header_actor_type not in {"human", "bot", "llm", "rl"}
+            or normalized_meta.get(f"{player}_actor_type") != header_actor_type
+        ):
+            return None
+
+    bundle: dict[str, Any] = {
+        "battle_id": normalized_battle_id,
+        "storage_schema": RLHF_V5_STORAGE_SCHEMA,
+        "status": status,
+        "finished_at": _json_safe(row.get("finished_at")),
+        "meta": normalized_meta,
+        "turns": normalized_turns,
+        "actions": normalized_actions,
+    }
+    if not include_players:
+        bundle = _pseudonymize_v5_player_ids(
+            bundle,
+            {
+                header_p1_user_id: 1,
+                header_p2_user_id: 2,
+            },
+        )
+    return bundle
 
 
 def _is_unique_violation(exc: BaseException) -> bool:
@@ -1444,6 +1925,7 @@ class Database:
         battle_summary_changed = await self._ensure_battle_summary_table()
         battle_surrender_penalties_changed = await self._ensure_battle_surrender_penalties_table()
         battle_actions_changed = await self._ensure_battle_actions_table()
+        battle_v5_trace_changed = await self._ensure_battle_v5_trace_tables()
         admin_actions_changed = await self._ensure_admin_account_actions_table()
         mcp_admin_changed = await self._ensure_mcp_admin_tables()
         cosmetics_changed = await self._ensure_cosmetic_tables()
@@ -1507,6 +1989,7 @@ class Database:
             or battle_summary_changed
             or battle_surrender_penalties_changed
             or battle_actions_changed
+            or battle_v5_trace_changed
             or admin_actions_changed
             or mcp_admin_changed
             or cosmetics_changed
@@ -4035,6 +4518,311 @@ class Database:
             "current_streak_count": current_streak_count,
             "current_win_streak": current_streak_count if current_streak_result == "win" else 0,
             "max_win_streak": max_win_streak,
+        }
+
+    async def get_nemesis_profile_snapshot(
+        self,
+        user_id: int,
+        history_limit: int = 32,
+    ) -> dict[str, Any]:
+        """Capture a de-identified, bounded and time-causal pre-match snapshot."""
+
+        if not self._pool:
+            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+        user_id_int = int(user_id)
+        bounded_limit = max(1, min(128, int(history_limit)))
+        row = await self.fetchrow(
+            """
+            WITH cutoff AS MATERIALIZED (
+                SELECT clock_timestamp() AS captured_at
+            ),
+            target AS (
+                SELECT user_id, trophies
+                FROM users
+                WHERE user_id = $1
+            ),
+            summary_history AS (
+                SELECT
+                    bs.winner_user_id,
+                    COALESCE(bs.game_mode, bs.match_type, 'classic') AS game_mode,
+                    bs.duration_seconds,
+                    bs.turns_count,
+                    bs.p1_trophy_change AS trophy_change,
+                    bs.created_at AS completed_at,
+                    bs.p2_user_id AS opponent_id,
+                    COALESCE(
+                        bs.metadata->>'p2_actor_type',
+                        CASE
+                            WHEN LOWER(bs.metadata->>'p2_is_bot') = 'true'
+                                THEN 'bot'
+                            WHEN LOWER(bs.metadata->>'p2_is_bot') = 'false'
+                                THEN 'human'
+                            ELSE NULL
+                        END
+                    ) AS opponent_actor_hint,
+                    CASE
+                        WHEN bs.metadata->>'starting_player' = 'p1' THEN TRUE
+                        WHEN bs.metadata->>'starting_player' = 'p2' THEN FALSE
+                        ELSE NULL
+                    END AS started_first
+                FROM battle_summary bs, cutoff
+                WHERE bs.p1_user_id = $1
+                  AND bs.created_at < cutoff.captured_at
+                UNION ALL
+                SELECT
+                    bs.winner_user_id,
+                    COALESCE(bs.game_mode, bs.match_type, 'classic') AS game_mode,
+                    bs.duration_seconds,
+                    bs.turns_count,
+                    bs.p2_trophy_change AS trophy_change,
+                    bs.created_at AS completed_at,
+                    bs.p1_user_id AS opponent_id,
+                    COALESCE(
+                        bs.metadata->>'p1_actor_type',
+                        CASE
+                            WHEN LOWER(bs.metadata->>'p1_is_bot') = 'true'
+                                THEN 'bot'
+                            WHEN LOWER(bs.metadata->>'p1_is_bot') = 'false'
+                                THEN 'human'
+                            ELSE NULL
+                        END
+                    ) AS opponent_actor_hint,
+                    CASE
+                        WHEN bs.metadata->>'starting_player' = 'p2' THEN TRUE
+                        WHEN bs.metadata->>'starting_player' = 'p1' THEN FALSE
+                        ELSE NULL
+                    END AS started_first
+                FROM battle_summary bs, cutoff
+                WHERE bs.p2_user_id = $1
+                  AND bs.created_at < cutoff.captured_at
+            ),
+            legacy_dedup AS (
+                SELECT DISTINCT ON (br.match_id)
+                    br.match_id,
+                    br.p1_id,
+                    br.p2_id,
+                    br.winner_id,
+                    br.loser_id,
+                    br.p1_trophy_change,
+                    br.p2_trophy_change,
+                    COALESCE(br.match_type, 'classic') AS game_mode,
+                    br.match_duration AS duration_seconds,
+                    br.turns_count,
+                    br.created_at
+                FROM battle_results br, cutoff
+                WHERE br.created_at < cutoff.captured_at
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM battle_summary bs
+                      WHERE bs.match_id = br.match_id
+                  )
+                  AND (
+                      br.p1_id = $1
+                      OR br.p2_id = $1
+                      OR (
+                          br.p1_id IS NULL
+                          AND br.p2_id IS NULL
+                          AND (br.winner_id = $1 OR br.loser_id = $1)
+                      )
+                  )
+                ORDER BY br.match_id, br.created_at DESC
+            ),
+            legacy_history AS (
+                SELECT
+                    legacy.winner_id AS winner_user_id,
+                    legacy.game_mode,
+                    legacy.duration_seconds,
+                    legacy.turns_count,
+                    legacy.p1_trophy_change AS trophy_change,
+                    legacy.created_at AS completed_at,
+                    legacy.p2_id AS opponent_id,
+                    NULL::text AS opponent_actor_hint,
+                    NULL::boolean AS started_first
+                FROM legacy_dedup legacy
+                WHERE legacy.p1_id = $1 AND legacy.p2_id IS NOT NULL
+                UNION ALL
+                SELECT
+                    legacy.winner_id AS winner_user_id,
+                    legacy.game_mode,
+                    legacy.duration_seconds,
+                    legacy.turns_count,
+                    legacy.p2_trophy_change AS trophy_change,
+                    legacy.created_at AS completed_at,
+                    legacy.p1_id AS opponent_id,
+                    NULL::text AS opponent_actor_hint,
+                    NULL::boolean AS started_first
+                FROM legacy_dedup legacy
+                WHERE legacy.p2_id = $1 AND legacy.p1_id IS NOT NULL
+                UNION ALL
+                SELECT
+                    legacy.winner_id AS winner_user_id,
+                    legacy.game_mode,
+                    legacy.duration_seconds,
+                    legacy.turns_count,
+                    0 AS trophy_change,
+                    legacy.created_at AS completed_at,
+                    CASE
+                        WHEN legacy.winner_id = $1 THEN legacy.loser_id
+                        ELSE legacy.winner_id
+                    END AS opponent_id,
+                    NULL::text AS opponent_actor_hint,
+                    NULL::boolean AS started_first
+                FROM legacy_dedup legacy
+                WHERE legacy.p1_id IS NULL
+                  AND legacy.p2_id IS NULL
+                  AND (legacy.winner_id = $1 OR legacy.loser_id = $1)
+            ),
+            history AS (
+                SELECT * FROM summary_history
+                UNION ALL
+                SELECT * FROM legacy_history
+            ),
+            scored AS (
+                SELECT
+                    *,
+                    CASE
+                        WHEN winner_user_id IS NULL THEN 'draw'
+                        WHEN winner_user_id = $1 THEN 'win'
+                        ELSE 'lose'
+                    END AS result
+                FROM history
+            ),
+            summary AS (
+                SELECT
+                    COUNT(*)::int AS total,
+                    COUNT(*) FILTER (WHERE result = 'win')::int AS wins,
+                    COUNT(*) FILTER (WHERE result = 'lose')::int AS losses,
+                    COUNT(*) FILTER (WHERE result = 'draw')::int AS draws,
+                    AVG(turns_count) FILTER (WHERE turns_count > 0) AS avg_turns,
+                    AVG(duration_seconds) FILTER (WHERE duration_seconds > 0)
+                        AS avg_duration_seconds,
+                    COALESCE(SUM(trophy_change), 0)::int AS trophy_delta
+                FROM scored
+            ),
+            recent AS (
+                SELECT COALESCE(
+                    jsonb_agg(
+                        jsonb_build_object(
+                            'result', item.result,
+                            'opponent_actor_type', item.opponent_actor_type,
+                            'game_mode', item.game_mode,
+                            'completed_at', item.completed_at,
+                            'duration_seconds', item.duration_seconds,
+                            'turns_count', item.turns_count,
+                            'trophy_change', item.trophy_change,
+                            'started_first', item.started_first
+                        )
+                        ORDER BY item.completed_at DESC
+                    ),
+                    '[]'::jsonb
+                ) AS rows
+                FROM (
+                    SELECT
+                        s.result,
+                        s.game_mode,
+                        s.completed_at,
+                        s.duration_seconds,
+                        s.turns_count,
+                        s.trophy_change,
+                        s.started_first,
+                        CASE
+                            WHEN s.opponent_actor_hint = 'human' THEN 'human'
+                            WHEN s.opponent_actor_hint IN ('bot', 'rl', 'llm') THEN 'bot'
+                            WHEN opponent.is_bot IS TRUE THEN 'bot'
+                            WHEN opponent.is_bot IS FALSE THEN 'human'
+                            ELSE 'unknown'
+                        END AS opponent_actor_type
+                    FROM scored s
+                    LEFT JOIN users opponent ON opponent.user_id = s.opponent_id
+                    ORDER BY s.completed_at DESC
+                    LIMIT $2
+                ) item
+            )
+            SELECT
+                cutoff.captured_at,
+                target.trophies,
+                summary.total,
+                summary.wins,
+                summary.losses,
+                summary.draws,
+                summary.avg_turns,
+                summary.avg_duration_seconds,
+                summary.trophy_delta,
+                recent.rows AS recent
+            FROM target
+            CROSS JOIN cutoff
+            CROSS JOIN summary
+            CROSS JOIN recent
+            """,
+            user_id_int,
+            bounded_limit,
+        )
+        if not row:
+            raise LookupError("nemesis_profile_user_not_found")
+
+        captured_at = row["captured_at"]
+        if isinstance(captured_at, datetime):
+            captured_at_value = captured_at.astimezone(timezone.utc).isoformat().replace(
+                "+00:00", "Z"
+            )
+        else:
+            captured_at_value = str(captured_at)
+        recent_value = row.get("recent") or []
+        if isinstance(recent_value, str):
+            recent_value = json.loads(recent_value)
+        recent_rows: list[dict[str, Any]] = []
+        for item in list(recent_value)[:bounded_limit]:
+            completed_at = item.get("completed_at")
+            if isinstance(completed_at, datetime):
+                completed_at = completed_at.astimezone(timezone.utc).isoformat().replace(
+                    "+00:00", "Z"
+                )
+            recent_rows.append(
+                {
+                    "result": str(item.get("result") or "draw"),
+                    "opponent_actor_type": str(
+                        item.get("opponent_actor_type") or "unknown"
+                    ),
+                    "game_mode": str(item.get("game_mode") or "classic"),
+                    "completed_at": str(completed_at),
+                    "duration_seconds": int(item.get("duration_seconds") or 0),
+                    "turns_count": int(item.get("turns_count") or 0),
+                    "trophy_change": int(item.get("trophy_change") or 0),
+                    "started_first": item.get("started_first"),
+                }
+            )
+        wins = int(row.get("wins") or 0)
+        losses = int(row.get("losses") or 0)
+        draws = int(row.get("draws") or 0)
+        return {
+            "captured_at": captured_at_value,
+            "profile": {
+                "wins": wins,
+                "losses": losses,
+                "trophies": int(row.get("trophies") or 0),
+            },
+            "summary": {
+                "history_total": int(row.get("total") or 0),
+                "total": int(row.get("total") or 0),
+                "wins": wins,
+                "losses": losses,
+                "draws": draws,
+                "win_rate": (
+                    round((wins / (wins + losses)) * 100.0, 1)
+                    if wins + losses
+                    else 0.0
+                ),
+                "trophy_delta": int(row.get("trophy_delta") or 0),
+                "avg_turns": (
+                    float(row["avg_turns"]) if row.get("avg_turns") is not None else None
+                ),
+                "avg_duration_seconds": (
+                    float(row["avg_duration_seconds"])
+                    if row.get("avg_duration_seconds") is not None
+                    else None
+                ),
+            },
+            "recent": recent_rows,
         }
 
     @staticmethod
@@ -12575,6 +13363,238 @@ class Database:
 
         return changed
 
+    async def _ensure_battle_v5_trace_tables(self) -> bool:
+        """Create the production canonical V5 journal without touching legacy rows."""
+        changed = False
+
+        traces_exists = await self.fetchval(
+            "SELECT to_regclass('public.battle_v5_traces')"
+        )
+        if not traces_exists:
+            await self.execute(
+                """
+                CREATE TABLE battle_v5_traces (
+                    battle_id TEXT PRIMARY KEY,
+                    storage_schema TEXT NOT NULL DEFAULT 'rlhf_v5_storage_v1',
+                    status TEXT NOT NULL DEFAULT 'ongoing',
+                    winner_user_id BIGINT,
+                    p1_user_id BIGINT,
+                    p2_user_id BIGINT,
+                    p1_actor_type TEXT,
+                    p2_actor_type TEXT,
+                    battle_tag TEXT,
+                    game_mode TEXT,
+                    meta_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    turns_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    last_seq INTEGER NOT NULL DEFAULT 0,
+                    action_count INTEGER NOT NULL DEFAULT 0,
+                    abort_reason TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    finished_at TIMESTAMPTZ,
+                    aborted_at TIMESTAMPTZ
+                )
+                """
+            )
+            changed = True
+
+        trace_columns = await self._get_columns("battle_v5_traces")
+        changed |= await self._add_column_if_missing(
+            "battle_v5_traces",
+            trace_columns,
+            "storage_schema TEXT NOT NULL DEFAULT 'rlhf_v5_storage_v1'",
+        )
+        changed |= await self._add_column_if_missing(
+            "battle_v5_traces", trace_columns, "status TEXT NOT NULL DEFAULT 'ongoing'"
+        )
+        changed |= await self._add_column_if_missing(
+            "battle_v5_traces", trace_columns, "winner_user_id BIGINT"
+        )
+        changed |= await self._add_column_if_missing(
+            "battle_v5_traces", trace_columns, "p1_user_id BIGINT"
+        )
+        changed |= await self._add_column_if_missing(
+            "battle_v5_traces", trace_columns, "p2_user_id BIGINT"
+        )
+        changed |= await self._add_column_if_missing(
+            "battle_v5_traces", trace_columns, "p1_actor_type TEXT"
+        )
+        changed |= await self._add_column_if_missing(
+            "battle_v5_traces", trace_columns, "p2_actor_type TEXT"
+        )
+        changed |= await self._add_column_if_missing(
+            "battle_v5_traces", trace_columns, "battle_tag TEXT"
+        )
+        changed |= await self._add_column_if_missing(
+            "battle_v5_traces", trace_columns, "game_mode TEXT"
+        )
+        changed |= await self._add_column_if_missing(
+            "battle_v5_traces",
+            trace_columns,
+            "meta_json JSONB NOT NULL DEFAULT '{}'::jsonb",
+        )
+        changed |= await self._add_column_if_missing(
+            "battle_v5_traces",
+            trace_columns,
+            "turns_json JSONB NOT NULL DEFAULT '[]'::jsonb",
+        )
+        changed |= await self._add_column_if_missing(
+            "battle_v5_traces", trace_columns, "last_seq INTEGER NOT NULL DEFAULT 0"
+        )
+        changed |= await self._add_column_if_missing(
+            "battle_v5_traces", trace_columns, "action_count INTEGER NOT NULL DEFAULT 0"
+        )
+        changed |= await self._add_column_if_missing(
+            "battle_v5_traces", trace_columns, "abort_reason TEXT"
+        )
+        changed |= await self._add_column_if_missing(
+            "battle_v5_traces",
+            trace_columns,
+            "created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()",
+        )
+        changed |= await self._add_column_if_missing(
+            "battle_v5_traces",
+            trace_columns,
+            "updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()",
+        )
+        changed |= await self._add_column_if_missing(
+            "battle_v5_traces", trace_columns, "finished_at TIMESTAMPTZ"
+        )
+        changed |= await self._add_column_if_missing(
+            "battle_v5_traces", trace_columns, "aborted_at TIMESTAMPTZ"
+        )
+        if not await self._constraint_exists(
+            "battle_v5_traces", "battle_v5_traces_pkey"
+        ):
+            await self.execute(
+                """
+                ALTER TABLE battle_v5_traces
+                ADD CONSTRAINT battle_v5_traces_pkey PRIMARY KEY (battle_id)
+                """
+            )
+            changed = True
+        if not await self._constraint_exists(
+            "battle_v5_traces", "battle_v5_traces_status_check"
+        ):
+            await self.execute(
+                """
+                ALTER TABLE battle_v5_traces
+                ADD CONSTRAINT battle_v5_traces_status_check
+                CHECK (
+                    status IN (
+                        'ongoing', 'aborted',
+                        'p1_win', 'p2_win', 'draw', 'stalemate'
+                    )
+                )
+                """
+            )
+            changed = True
+
+        actions_exists = await self.fetchval(
+            "SELECT to_regclass('public.battle_v5_trace_actions')"
+        )
+        if not actions_exists:
+            await self.execute(
+                """
+                CREATE TABLE battle_v5_trace_actions (
+                    battle_id TEXT NOT NULL
+                        REFERENCES battle_v5_traces(battle_id) ON DELETE CASCADE,
+                    seq INTEGER NOT NULL,
+                    payload_json JSONB NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (battle_id, seq)
+                )
+                """
+            )
+            changed = True
+
+        action_columns = await self._get_columns("battle_v5_trace_actions")
+        changed |= await self._add_column_if_missing(
+            "battle_v5_trace_actions", action_columns, "battle_id TEXT NOT NULL"
+        )
+        changed |= await self._add_column_if_missing(
+            "battle_v5_trace_actions", action_columns, "seq INTEGER NOT NULL"
+        )
+        changed |= await self._add_column_if_missing(
+            "battle_v5_trace_actions",
+            action_columns,
+            "payload_json JSONB NOT NULL DEFAULT '{}'::jsonb",
+        )
+        changed |= await self._add_column_if_missing(
+            "battle_v5_trace_actions",
+            action_columns,
+            "created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()",
+        )
+        changed |= await self._add_column_if_missing(
+            "battle_v5_trace_actions",
+            action_columns,
+            "updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()",
+        )
+        if not await self._constraint_exists(
+            "battle_v5_trace_actions", "battle_v5_trace_actions_pkey"
+        ):
+            await self.execute(
+                """
+                ALTER TABLE battle_v5_trace_actions
+                ADD CONSTRAINT battle_v5_trace_actions_pkey
+                PRIMARY KEY (battle_id, seq)
+                """
+            )
+            changed = True
+        if not await self._constraint_exists(
+            "battle_v5_trace_actions",
+            "battle_v5_trace_actions_battle_id_fkey",
+        ):
+            await self.execute(
+                """
+                ALTER TABLE battle_v5_trace_actions
+                ADD CONSTRAINT battle_v5_trace_actions_battle_id_fkey
+                FOREIGN KEY (battle_id)
+                REFERENCES battle_v5_traces(battle_id)
+                ON DELETE CASCADE
+                """
+            )
+            changed = True
+        if not await self._constraint_exists(
+            "battle_v5_trace_actions", "battle_v5_trace_actions_seq_check"
+        ):
+            await self.execute(
+                """
+                ALTER TABLE battle_v5_trace_actions
+                ADD CONSTRAINT battle_v5_trace_actions_seq_check
+                CHECK (seq > 0)
+                """
+            )
+            changed = True
+
+        await self.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_battle_v5_traces_terminal_finished
+            ON battle_v5_traces (status, finished_at DESC)
+            WHERE status IN ('p1_win', 'p2_win', 'draw', 'stalemate')
+            """
+        )
+        await self.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_battle_v5_traces_updated_at
+            ON battle_v5_traces (updated_at)
+            """
+        )
+        await self.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_battle_v5_traces_battle_tag
+            ON battle_v5_traces (battle_tag)
+            """
+        )
+        await self.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_battle_v5_trace_actions_battle_seq
+            ON battle_v5_trace_actions (battle_id, seq)
+            """
+        )
+        return changed
+
     async def create_friend_invite(
         self,
         from_user_id: int,
@@ -19933,6 +20953,856 @@ class Database:
                     battle_id, item.get("turn_number"), exc_info=True,
                 )
         return inserted
+
+    async def upsert_v5_battle_trace_checkpoint(
+        self,
+        *,
+        battle_id: str,
+        meta: Dict[str, Any],
+        turns: list[Dict[str, Any]],
+        actions: list[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Atomically persist one authoritative complete-prefix V5 checkpoint.
+
+        ``actions`` must contain the canonical contiguous sequence ``1..N``.
+        A checkpoint may extend that immutable prefix or refresh meta/turn
+        snapshots at the same ``last_seq``; it may not regress the persisted
+        sequence. Finalized/aborted battles are immutable through this API.
+        """
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        (
+            normalized_battle_id,
+            normalized_meta,
+            normalized_turns,
+            normalized_actions,
+        ) = _validate_v5_trace_checkpoint(battle_id, meta, turns, actions)
+
+        meta_status = str(normalized_meta.get("status") or "ongoing").lower()
+        if meta_status not in {"ongoing", *V5_TERMINAL_STATUSES}:
+            raise ValueError(f"invalid_v5_meta_status:{meta_status}")
+        p1_user_id = int(normalized_meta["p1_user_id"])
+        p2_user_id = int(normalized_meta["p2_user_id"])
+        p1_actor_type = (
+            str(normalized_meta.get("p1_actor_type"))
+            if normalized_meta.get("p1_actor_type") is not None
+            else None
+        )
+        p2_actor_type = (
+            str(normalized_meta.get("p2_actor_type"))
+            if normalized_meta.get("p2_actor_type") is not None
+            else None
+        )
+        battle_tag = (
+            str(normalized_meta.get("battle_tag"))
+            if normalized_meta.get("battle_tag") is not None
+            else None
+        )
+        game_mode = (
+            str(normalized_meta.get("game_mode"))
+            if normalized_meta.get("game_mode") is not None
+            else None
+        )
+        last_seq = len(normalized_actions)
+        meta_json = json.dumps(_json_safe(normalized_meta), ensure_ascii=False)
+        turns_json = json.dumps(_json_safe(normalized_turns), ensure_ascii=False)
+
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    """
+                    INSERT INTO battle_v5_traces (
+                        battle_id, storage_schema, status,
+                        p1_user_id, p2_user_id, p1_actor_type, p2_actor_type,
+                        battle_tag, game_mode, meta_json, turns_json
+                    )
+                    VALUES (
+                        $1, $2, 'ongoing',
+                        $3, $4, $5, $6, $7, $8, $9::jsonb, $10::jsonb
+                    )
+                    ON CONFLICT (battle_id) DO NOTHING
+                    """,
+                    normalized_battle_id,
+                    RLHF_V5_STORAGE_SCHEMA,
+                    p1_user_id,
+                    p2_user_id,
+                    p1_actor_type,
+                    p2_actor_type,
+                    battle_tag,
+                    game_mode,
+                    meta_json,
+                    turns_json,
+                )
+                current = await conn.fetchrow(
+                    """
+                    SELECT status, last_seq,
+                           p1_user_id, p2_user_id,
+                           p1_actor_type, p2_actor_type
+                    FROM battle_v5_traces
+                    WHERE battle_id = $1
+                    FOR UPDATE
+                    """,
+                    normalized_battle_id,
+                )
+                if not current:
+                    raise RuntimeError("v5_trace_header_missing_after_insert")
+                current_status = str(current["status"] or "ongoing")
+                current_last_seq = int(current["last_seq"] or 0)
+                stored_p1_user_id = _v5_required_participant_id(
+                    current["p1_user_id"],
+                    field="stored.p1_user_id",
+                )
+                stored_p2_user_id = _v5_required_participant_id(
+                    current["p2_user_id"],
+                    field="stored.p2_user_id",
+                )
+                if (
+                    stored_p1_user_id != p1_user_id
+                    or stored_p2_user_id != p2_user_id
+                ):
+                    raise ValueError("v5_checkpoint_participant_ids_changed")
+                if (
+                    current["p1_actor_type"] != p1_actor_type
+                    or current["p2_actor_type"] != p2_actor_type
+                ):
+                    raise ValueError("v5_checkpoint_actor_types_changed")
+                if current_status != "ongoing":
+                    return {
+                        "applied": False,
+                        "reason": "trace_sealed",
+                        "battle_id": normalized_battle_id,
+                        "status": current_status,
+                        "last_seq": current_last_seq,
+                    }
+                if last_seq < current_last_seq:
+                    return {
+                        "applied": False,
+                        "reason": "stale_checkpoint",
+                        "battle_id": normalized_battle_id,
+                        "status": current_status,
+                        "last_seq": current_last_seq,
+                    }
+
+                await conn.execute(
+                    """
+                    UPDATE battle_v5_traces
+                    SET storage_schema = $2,
+                        p1_user_id = $3,
+                        p2_user_id = $4,
+                        p1_actor_type = $5,
+                        p2_actor_type = $6,
+                        battle_tag = $7,
+                        game_mode = $8,
+                        meta_json = $9::jsonb,
+                        turns_json = $10::jsonb,
+                        last_seq = $11,
+                        action_count = $11,
+                        updated_at = NOW()
+                    WHERE battle_id = $1
+                      AND status = 'ongoing'
+                    """,
+                    normalized_battle_id,
+                    RLHF_V5_STORAGE_SCHEMA,
+                    p1_user_id,
+                    p2_user_id,
+                    p1_actor_type,
+                    p2_actor_type,
+                    battle_tag,
+                    game_mode,
+                    meta_json,
+                    turns_json,
+                    last_seq,
+                )
+                # Rows at or below ``current_last_seq`` were committed in the
+                # same transaction as the previous header update and are
+                # immutable once ``after_action`` appended them. Persist only
+                # the newly extended suffix; otherwise action N would be
+                # rewritten on every later checkpoint (quadratic write load).
+                new_actions = normalized_actions[current_last_seq:]
+                if new_actions:
+                    await conn.executemany(
+                        """
+                        INSERT INTO battle_v5_trace_actions (
+                            battle_id, seq, payload_json
+                        )
+                        VALUES ($1, $2, $3::jsonb)
+                        ON CONFLICT (battle_id, seq) DO UPDATE
+                        SET payload_json = EXCLUDED.payload_json,
+                            updated_at = NOW()
+                        """,
+                        [
+                            (
+                                normalized_battle_id,
+                                int(action["seq"]),
+                                json.dumps(_json_safe(action), ensure_ascii=False),
+                            )
+                            for action in new_actions
+                        ],
+                    )
+                # The checkpoint is an authoritative full prefix. Removing only
+                # rows above N is safe because contiguous 1..N was validated.
+                await conn.execute(
+                    """
+                    DELETE FROM battle_v5_trace_actions
+                    WHERE battle_id = $1 AND seq > $2
+                    """,
+                    normalized_battle_id,
+                    last_seq,
+                )
+                return {
+                    "applied": True,
+                    "reason": "checkpoint_upserted",
+                    "battle_id": normalized_battle_id,
+                    "status": "ongoing",
+                    "last_seq": last_seq,
+                    "action_count": last_seq,
+                }
+
+    async def finalize_v5_battle_trace(
+        self,
+        *,
+        battle_id: str,
+        status: str,
+        winner_user_id: Optional[int],
+        meta: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Seal a complete V5 journal as terminal; idempotent for same outcome."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        normalized_battle_id = str(battle_id or "").strip()
+        if not normalized_battle_id:
+            raise ValueError("battle_id_required")
+        normalized_status = str(status or "").strip().lower()
+        if normalized_status not in V5_TERMINAL_STATUSES:
+            raise ValueError(f"invalid_v5_terminal_status:{normalized_status}")
+        normalized_winner = _v5_optional_participant_id(
+            winner_user_id,
+            field="winner_user_id",
+        )
+        if normalized_status in {"draw", "stalemate"} and normalized_winner is not None:
+            raise ValueError("draw_or_stalemate_winner_must_be_null")
+        if normalized_status in {"p1_win", "p2_win"} and normalized_winner is None:
+            raise ValueError("winner_user_id_required")
+        if meta is not None:
+            if not isinstance(meta, dict):
+                raise ValueError("v5_meta_must_be_object")
+            if meta.get("schema_version") != RLHF_V5_STORAGE_SCHEMA:
+                raise ValueError(
+                    f"v5_meta_schema_must_be:{RLHF_V5_STORAGE_SCHEMA}"
+                )
+            if (
+                meta.get("battle_id") is not None
+                and str(meta.get("battle_id")) != normalized_battle_id
+            ):
+                raise ValueError("v5_meta_battle_id_mismatch")
+
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                current = await conn.fetchrow(
+                    """
+                    SELECT status, winner_user_id, p1_user_id, p2_user_id,
+                           p1_actor_type, p2_actor_type,
+                           meta_json, turns_json, action_count, last_seq,
+                           (
+                               SELECT COUNT(*)
+                               FROM battle_v5_trace_actions AS action
+                               WHERE action.battle_id = trace.battle_id
+                           ) AS stored_action_count
+                    FROM battle_v5_traces AS trace
+                    WHERE trace.battle_id = $1
+                    FOR UPDATE
+                    """,
+                    normalized_battle_id,
+                )
+                if not current:
+                    return {
+                        "applied": False,
+                        "reason": "trace_not_found",
+                        "battle_id": normalized_battle_id,
+                    }
+                current_status = str(current["status"] or "ongoing")
+                current_winner = _v5_optional_participant_id(
+                    current["winner_user_id"],
+                    field="stored.winner_user_id",
+                )
+                if current_status in V5_TERMINAL_STATUSES:
+                    same_outcome = (
+                        current_status == normalized_status
+                        and current_winner == normalized_winner
+                    )
+                    return {
+                        "applied": False,
+                        "reason": (
+                            "already_finalized" if same_outcome else "terminal_conflict"
+                        ),
+                        "battle_id": normalized_battle_id,
+                        "status": current_status,
+                        "winner_user_id": current_winner,
+                    }
+                if current_status != "ongoing":
+                    return {
+                        "applied": False,
+                        "reason": "trace_aborted",
+                        "battle_id": normalized_battle_id,
+                        "status": current_status,
+                    }
+
+                turns = _jsonb_list(current["turns_json"])
+                action_count = int(current["action_count"] or 0)
+                last_seq = int(current["last_seq"] or 0)
+                stored_action_count = int(current["stored_action_count"] or 0)
+                if (
+                    not turns
+                    or action_count < 1
+                    or last_seq != action_count
+                    or stored_action_count != action_count
+                ):
+                    return {
+                        "applied": False,
+                        "reason": "incomplete_trace",
+                        "battle_id": normalized_battle_id,
+                        "turn_count": len(turns),
+                        "action_count": action_count,
+                        "last_seq": last_seq,
+                        "stored_action_count": stored_action_count,
+                    }
+                p1_user_id = _v5_required_participant_id(
+                    current["p1_user_id"],
+                    field="stored.p1_user_id",
+                )
+                p2_user_id = _v5_required_participant_id(
+                    current["p2_user_id"],
+                    field="stored.p2_user_id",
+                )
+                if p1_user_id == p2_user_id:
+                    raise ValueError("v5_participant_ids_must_be_distinct")
+                expected_winner = (
+                    p1_user_id if normalized_status == "p1_win" else p2_user_id
+                )
+                if (
+                    normalized_status in {"p1_win", "p2_win"}
+                    and expected_winner != normalized_winner
+                ):
+                    raise ValueError("winner_user_id_does_not_match_terminal_side")
+
+                final_meta = (
+                    dict(meta)
+                    if meta is not None
+                    else _jsonb_dict(current["meta_json"])
+                )
+                final_p1_user_id = _v5_required_participant_id(
+                    final_meta.get("p1_user_id"),
+                    field="final_meta.p1_user_id",
+                )
+                final_p2_user_id = _v5_required_participant_id(
+                    final_meta.get("p2_user_id"),
+                    field="final_meta.p2_user_id",
+                )
+                if final_p1_user_id == final_p2_user_id:
+                    raise ValueError("v5_participant_ids_must_be_distinct")
+                if (
+                    final_p1_user_id != p1_user_id
+                    or final_p2_user_id != p2_user_id
+                ):
+                    raise ValueError("v5_final_meta_participant_ids_mismatch")
+                for player in ("p1", "p2"):
+                    header_actor_type = current[f"{player}_actor_type"]
+                    meta_actor_type = final_meta.get(f"{player}_actor_type")
+                    if (
+                        not isinstance(meta_actor_type, str)
+                        or meta_actor_type != header_actor_type
+                    ):
+                        raise ValueError(
+                            f"v5_final_meta_{player}_actor_type_mismatch"
+                        )
+                final_state = final_meta.get("final_state")
+                if final_state is not None:
+                    _validate_v5_state_participants(
+                        final_state,
+                        p1_user_id=p1_user_id,
+                        p2_user_id=p2_user_id,
+                        label="v5_final_meta_final_state",
+                    )
+                final_meta["schema_version"] = RLHF_V5_STORAGE_SCHEMA
+                final_meta["battle_id"] = normalized_battle_id
+                final_meta["status"] = normalized_status
+                final_meta["winner_user_id"] = normalized_winner
+                final_meta.setdefault(
+                    "finished_at",
+                    datetime.now(timezone.utc).isoformat(),
+                )
+                await conn.execute(
+                    """
+                    UPDATE battle_v5_traces
+                    SET status = $2,
+                        winner_user_id = $3,
+                        meta_json = $4::jsonb,
+                        finished_at = NOW(),
+                        updated_at = NOW(),
+                        abort_reason = NULL,
+                        aborted_at = NULL
+                    WHERE battle_id = $1
+                      AND status = 'ongoing'
+                    """,
+                    normalized_battle_id,
+                    normalized_status,
+                    normalized_winner,
+                    json.dumps(_json_safe(final_meta), ensure_ascii=False),
+                )
+                return {
+                    "applied": True,
+                    "reason": "trace_finalized",
+                    "battle_id": normalized_battle_id,
+                    "status": normalized_status,
+                    "winner_user_id": normalized_winner,
+                    "action_count": action_count,
+                    "turn_count": len(turns),
+                }
+
+    async def mark_v5_battle_trace_aborted(
+        self,
+        *,
+        battle_id: str,
+        reason: str,
+        meta: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Seal an ongoing trace as aborted while retaining its whole journal."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        normalized_battle_id = str(battle_id or "").strip()
+        normalized_reason = str(reason or "").strip()
+        if not normalized_battle_id:
+            raise ValueError("battle_id_required")
+        if not normalized_reason:
+            raise ValueError("abort_reason_required")
+        if len(normalized_reason) > 500:
+            raise ValueError("abort_reason_too_long")
+        if meta is not None:
+            if not isinstance(meta, dict):
+                raise ValueError("v5_meta_must_be_object")
+            if meta.get("schema_version") != RLHF_V5_STORAGE_SCHEMA:
+                raise ValueError(
+                    f"v5_meta_schema_must_be:{RLHF_V5_STORAGE_SCHEMA}"
+                )
+
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                current = await conn.fetchrow(
+                    """
+                    SELECT status, meta_json
+                    FROM battle_v5_traces
+                    WHERE battle_id = $1
+                    FOR UPDATE
+                    """,
+                    normalized_battle_id,
+                )
+                if not current:
+                    return {
+                        "applied": False,
+                        "reason": "trace_not_found",
+                        "battle_id": normalized_battle_id,
+                    }
+                current_status = str(current["status"] or "ongoing")
+                if current_status != "ongoing":
+                    return {
+                        "applied": False,
+                        "reason": (
+                            "already_aborted"
+                            if current_status == "aborted"
+                            else "already_finalized"
+                        ),
+                        "battle_id": normalized_battle_id,
+                        "status": current_status,
+                    }
+                aborted_meta = (
+                    dict(meta) if meta is not None else _jsonb_dict(current["meta_json"])
+                )
+                aborted_meta["collection_status"] = "aborted"
+                aborted_meta["abort_reason"] = normalized_reason
+                await conn.execute(
+                    """
+                    UPDATE battle_v5_traces
+                    SET status = 'aborted',
+                        meta_json = $2::jsonb,
+                        abort_reason = $3,
+                        aborted_at = NOW(),
+                        updated_at = NOW()
+                    WHERE battle_id = $1
+                      AND status = 'ongoing'
+                    """,
+                    normalized_battle_id,
+                    json.dumps(_json_safe(aborted_meta), ensure_ascii=False),
+                    normalized_reason,
+                )
+                return {
+                    "applied": True,
+                    "reason": "trace_aborted",
+                    "battle_id": normalized_battle_id,
+                    "status": "aborted",
+                    "abort_reason": normalized_reason,
+                }
+
+    async def mark_stale_v5_battle_traces_aborted(
+        self,
+        *,
+        older_than_seconds: int = 3600,
+        reason: str = "stale_ongoing_trace",
+    ) -> Dict[str, Any]:
+        """Atomically mark old ongoing journals aborted; terminal rows are untouched."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        threshold = max(1, int(older_than_seconds))
+        normalized_reason = str(reason or "stale_ongoing_trace").strip()[:500]
+        rows = await self.fetch(
+            """
+            UPDATE battle_v5_traces
+            SET status = 'aborted',
+                abort_reason = $2,
+                aborted_at = NOW(),
+                updated_at = NOW(),
+                meta_json = meta_json || jsonb_build_object(
+                    'collection_status', 'aborted',
+                    'abort_reason', $2
+                )
+            WHERE status = 'ongoing'
+              AND updated_at < NOW() - ($1::double precision * INTERVAL '1 second')
+            RETURNING battle_id
+            """,
+            threshold,
+            normalized_reason,
+        )
+        battle_ids = [str(row["battle_id"]) for row in rows]
+        return {
+            "marked": len(battle_ids),
+            "battle_ids": battle_ids,
+            "older_than_seconds": threshold,
+            "reason": normalized_reason,
+        }
+
+    async def prune_v5_battle_traces(
+        self,
+        *,
+        terminal_older_than_days: int = 90,
+        aborted_older_than_days: int = 30,
+        limit_battles: int = 1000,
+    ) -> Dict[str, Any]:
+        """Delete bounded whole journals; action rows only disappear via CASCADE."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        terminal_days = max(1, int(terminal_older_than_days))
+        aborted_days = max(1, int(aborted_older_than_days))
+        bounded_limit = min(max(1, int(limit_battles)), 10_000)
+        rows = await self.fetch(
+            """
+            WITH doomed AS (
+                SELECT battle_id
+                FROM battle_v5_traces
+                WHERE (
+                    status IN ('p1_win', 'p2_win', 'draw', 'stalemate')
+                    AND finished_at < NOW() - ($1::double precision * INTERVAL '1 day')
+                ) OR (
+                    status = 'aborted'
+                    AND COALESCE(aborted_at, updated_at)
+                        < NOW() - ($2::double precision * INTERVAL '1 day')
+                )
+                ORDER BY COALESCE(finished_at, aborted_at, updated_at) ASC, battle_id
+                LIMIT $3
+                FOR UPDATE SKIP LOCKED
+            ),
+            deleted AS (
+                DELETE FROM battle_v5_traces AS trace
+                USING doomed
+                WHERE trace.battle_id = doomed.battle_id
+                RETURNING trace.battle_id
+            )
+            SELECT battle_id FROM deleted ORDER BY battle_id
+            """,
+            terminal_days,
+            aborted_days,
+            bounded_limit,
+        )
+        battle_ids = [str(row["battle_id"]) for row in rows]
+        return {
+            "deleted": len(battle_ids),
+            "battle_ids": battle_ids,
+            "terminal_older_than_days": terminal_days,
+            "aborted_older_than_days": aborted_days,
+            "limit_battles": bounded_limit,
+        }
+
+    async def list_v5_export_battle_ids(
+        self,
+        *,
+        days: int = 30,
+        limit_battles: int = 1000,
+    ) -> Dict[str, Any]:
+        """Select a bounded list of complete export candidates without payloads.
+
+        The HTTP exporter can hold this small identifier list while fetching
+        and serializing one whole battle at a time.  It therefore never retains
+        the aggregated action payloads for the complete dataset in memory.
+        """
+        if not self._pool:
+            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+        normalized_days = min(max(1, int(days)), 3650)
+        bounded_limit = min(max(1, int(limit_battles)), 10_000)
+        since = datetime.now(timezone.utc) - timedelta(days=normalized_days)
+        rows = await self.fetch(
+            """
+            SELECT trace.battle_id
+            FROM battle_v5_traces AS trace
+            CROSS JOIN LATERAL (
+                SELECT COUNT(*)::bigint AS stored_count,
+                       MIN(action.seq) AS min_seq,
+                       MAX(action.seq) AS max_seq
+                FROM battle_v5_trace_actions AS action
+                WHERE action.battle_id = trace.battle_id
+            ) AS action_stats
+            WHERE trace.storage_schema = 'rlhf_v5_storage_v1'
+              AND trace.status IN ('p1_win', 'p2_win', 'draw', 'stalemate')
+              AND (
+                  trace.p1_actor_type = 'human'
+                  OR trace.p2_actor_type = 'human'
+              )
+              AND trace.finished_at >= $1
+              AND trace.p1_user_id IS NOT NULL
+              AND trace.p2_user_id IS NOT NULL
+              AND trace.p1_user_id <> 0
+              AND trace.p2_user_id <> 0
+              AND trace.p1_user_id <> trace.p2_user_id
+              AND jsonb_typeof(trace.meta_json) = 'object'
+              AND trace.meta_json->>'schema_version' = 'rlhf_v5_storage_v1'
+              AND trace.meta_json->>'battle_id' = trace.battle_id
+              AND trace.meta_json->>'status' = trace.status
+              AND trace.meta_json->>'p1_user_id' = trace.p1_user_id::text
+              AND trace.meta_json->>'p2_user_id' = trace.p2_user_id::text
+              AND trace.meta_json->>'p1_actor_type' = trace.p1_actor_type
+              AND trace.meta_json->>'p2_actor_type' = trace.p2_actor_type
+              AND trace.meta_json #>> '{start_metadata,client_ready_anchored}'
+                  = 'true'
+              AND trace.meta_json->>'duration_seconds' IS NOT NULL
+              AND jsonb_typeof(trace.meta_json->'timestamp_features') = 'object'
+              AND jsonb_typeof(trace.turns_json) = 'array'
+              AND jsonb_array_length(trace.turns_json) > 0
+              AND trace.action_count > 0
+              AND trace.last_seq = trace.action_count
+              AND action_stats.stored_count = trace.action_count
+              AND action_stats.min_seq = 1
+              AND action_stats.max_seq = trace.action_count
+              AND (
+                  (
+                      trace.status = 'p1_win'
+                      AND trace.winner_user_id = trace.p1_user_id
+                      AND trace.meta_json->>'winner_user_id'
+                          = trace.p1_user_id::text
+                  )
+                  OR (
+                      trace.status = 'p2_win'
+                      AND trace.winner_user_id = trace.p2_user_id
+                      AND trace.meta_json->>'winner_user_id'
+                          = trace.p2_user_id::text
+                  )
+                  OR (
+                      trace.status IN ('draw', 'stalemate')
+                      AND trace.winner_user_id IS NULL
+                      AND trace.meta_json->>'winner_user_id' IS NULL
+                  )
+              )
+            ORDER BY trace.finished_at DESC, trace.battle_id
+            LIMIT $2
+            """,
+            since,
+            bounded_limit,
+        )
+        battle_ids = [str(row["battle_id"]) for row in rows]
+        return {
+            "format": EXTRAARENA_V5_DATASET_EXPORT_SCHEMA,
+            "format_version": 1,
+            "storage_schema": RLHF_V5_STORAGE_SCHEMA,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "days": normalized_days,
+            "limit_battles": bounded_limit,
+            "battle_ids": battle_ids,
+        }
+
+    async def get_v5_export_battle_bundle(
+        self,
+        *,
+        battle_id: str,
+        include_players: bool = False,
+    ) -> dict[str, Any] | None:
+        """Load, validate and pseudonymize exactly one terminal battle bundle."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+        normalized_battle_id = str(battle_id or "").strip()
+        if not normalized_battle_id:
+            raise ValueError("battle_id_required")
+        row = await self.fetchrow(
+            """
+            WITH eligible AS (
+                SELECT trace.*
+                FROM battle_v5_traces AS trace
+                CROSS JOIN LATERAL (
+                    SELECT COUNT(*)::bigint AS stored_count,
+                           MIN(action.seq) AS min_seq,
+                           MAX(action.seq) AS max_seq
+                    FROM battle_v5_trace_actions AS action
+                    WHERE action.battle_id = trace.battle_id
+                ) AS action_stats
+                WHERE trace.battle_id = $1
+                  AND trace.storage_schema = 'rlhf_v5_storage_v1'
+                  AND trace.status IN ('p1_win', 'p2_win', 'draw', 'stalemate')
+                  AND (
+                      trace.p1_actor_type = 'human'
+                      OR trace.p2_actor_type = 'human'
+                  )
+                  AND trace.p1_user_id IS NOT NULL
+                  AND trace.p2_user_id IS NOT NULL
+                  AND trace.p1_user_id <> 0
+                  AND trace.p2_user_id <> 0
+                  AND trace.p1_user_id <> trace.p2_user_id
+                  AND jsonb_typeof(trace.meta_json) = 'object'
+                  AND trace.meta_json->>'schema_version' = 'rlhf_v5_storage_v1'
+                  AND trace.meta_json->>'battle_id' = trace.battle_id
+                  AND trace.meta_json->>'status' = trace.status
+                  AND trace.meta_json->>'p1_user_id' = trace.p1_user_id::text
+                  AND trace.meta_json->>'p2_user_id' = trace.p2_user_id::text
+                  AND trace.meta_json->>'p1_actor_type' = trace.p1_actor_type
+                  AND trace.meta_json->>'p2_actor_type' = trace.p2_actor_type
+                  AND trace.meta_json #>> '{start_metadata,client_ready_anchored}'
+                      = 'true'
+                  AND trace.meta_json->>'duration_seconds' IS NOT NULL
+                  AND jsonb_typeof(trace.meta_json->'timestamp_features') = 'object'
+                  AND jsonb_typeof(trace.turns_json) = 'array'
+                  AND jsonb_array_length(trace.turns_json) > 0
+                  AND trace.action_count > 0
+                  AND trace.last_seq = trace.action_count
+                  AND action_stats.stored_count = trace.action_count
+                  AND action_stats.min_seq = 1
+                  AND action_stats.max_seq = trace.action_count
+                  AND (
+                      (
+                          trace.status = 'p1_win'
+                          AND trace.winner_user_id = trace.p1_user_id
+                          AND trace.meta_json->>'winner_user_id'
+                              = trace.p1_user_id::text
+                      )
+                      OR (
+                          trace.status = 'p2_win'
+                          AND trace.winner_user_id = trace.p2_user_id
+                          AND trace.meta_json->>'winner_user_id'
+                              = trace.p2_user_id::text
+                      )
+                      OR (
+                          trace.status IN ('draw', 'stalemate')
+                          AND trace.winner_user_id IS NULL
+                          AND trace.meta_json->>'winner_user_id' IS NULL
+                      )
+                  )
+            )
+            SELECT eligible.battle_id, eligible.storage_schema, eligible.status,
+                   eligible.winner_user_id,
+                   eligible.p1_user_id, eligible.p2_user_id,
+                   eligible.p1_actor_type, eligible.p2_actor_type,
+                   eligible.battle_tag, eligible.game_mode, eligible.meta_json,
+                   eligible.turns_json, eligible.action_count, eligible.finished_at,
+                   (
+                       SELECT jsonb_agg(action.payload_json ORDER BY action.seq)
+                       FROM battle_v5_trace_actions AS action
+                       WHERE action.battle_id = eligible.battle_id
+                   ) AS actions_json
+            FROM eligible
+            """,
+            normalized_battle_id,
+        )
+        if not row:
+            return None
+        return _build_v5_export_bundle(
+            row,
+            include_players=bool(include_players),
+        )
+
+    async def export_v5_battle_dataset(
+        self,
+        *,
+        days: int = 30,
+        limit_battles: int = 1000,
+        include_players: bool = False,
+    ) -> Dict[str, Any]:
+        """Export whole terminal canonical bundles, never a row-limited trajectory."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+        normalized_days = min(max(1, int(days)), 3650)
+        bounded_limit = min(max(1, int(limit_battles)), 10_000)
+        since = datetime.now(timezone.utc) - timedelta(days=normalized_days)
+        rows = await self.fetch(
+            """
+            WITH eligible AS (
+                SELECT trace.*
+                FROM battle_v5_traces AS trace
+                WHERE trace.storage_schema = 'rlhf_v5_storage_v1'
+                  AND trace.status IN ('p1_win', 'p2_win', 'draw', 'stalemate')
+                  AND (
+                      trace.p1_actor_type = 'human'
+                      OR trace.p2_actor_type = 'human'
+                  )
+                  AND trace.finished_at >= $1
+                  AND trace.action_count > 0
+                  AND jsonb_typeof(trace.turns_json) = 'array'
+                  AND jsonb_array_length(trace.turns_json) > 0
+                  AND trace.meta_json->>'status' = trace.status
+                  AND trace.action_count = (
+                      SELECT COUNT(*)
+                      FROM battle_v5_trace_actions AS counted
+                      WHERE counted.battle_id = trace.battle_id
+                  )
+                ORDER BY trace.finished_at DESC, trace.battle_id
+                LIMIT $2
+            )
+            SELECT eligible.battle_id, eligible.storage_schema, eligible.status,
+                   eligible.winner_user_id, eligible.p1_user_id, eligible.p2_user_id,
+                   eligible.p1_actor_type, eligible.p2_actor_type,
+                   eligible.battle_tag, eligible.game_mode, eligible.meta_json,
+                   eligible.turns_json, eligible.action_count, eligible.finished_at,
+                   (
+                       SELECT jsonb_agg(action.payload_json ORDER BY action.seq)
+                       FROM battle_v5_trace_actions AS action
+                       WHERE action.battle_id = eligible.battle_id
+                   ) AS actions_json
+            FROM eligible
+            ORDER BY eligible.finished_at DESC, eligible.battle_id
+            """,
+            since,
+            bounded_limit,
+        )
+
+        bundles: list[dict[str, Any]] = []
+        skipped_invalid = 0
+        for raw_row in rows:
+            bundle = _build_v5_export_bundle(
+                raw_row,
+                include_players=bool(include_players),
+            )
+            if bundle is None:
+                skipped_invalid += 1
+                continue
+            bundles.append(bundle)
+
+        return {
+            "format": EXTRAARENA_V5_DATASET_EXPORT_SCHEMA,
+            "format_version": 1,
+            "storage_schema": RLHF_V5_STORAGE_SCHEMA,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "privacy": (
+                "raw_player_ids" if include_players else "side_pseudonyms_p1_1_p2_2"
+            ),
+            "include_players": bool(include_players),
+            "days": normalized_days,
+            "limit_battles": bounded_limit,
+            "battle_count": len(bundles),
+            "skipped_invalid": skipped_invalid,
+            "battles": bundles,
+        }
 
     # ── Analytics: admin queries ──
 

@@ -1,0 +1,99 @@
+{
+  "schema": "extra_lr_aux_onnx_v1",
+  "kind": "assembler",
+  "format": "onnx",
+  "opset": 17,
+  "source_checkpoint": "extra_lr_assembler_v1.npz",
+  "source_checkpoint_sha256": "fd4d53c0d5eaf8dc1d259787f4de071ba6114dc924b51182212bfb8989e8d4fc",
+  "inputs": {
+    "features": [
+      null,
+      2753
+    ]
+  },
+  "outputs": {
+    "matchup_score": [
+      null,
+      1
+    ]
+  },
+  "postprocess": "identity",
+  "training": {
+    "schema": "extra_lr_aux_model_v1",
+    "model": "ExtraLR Assembler V1",
+    "target": "paired_seed_expected_matchup_score",
+    "feature_schema": "assembler_bilinear_counter_v1",
+    "feature_dim": 2753,
+    "base_feature_dim": 253,
+    "interaction_feature_dim": 2500,
+    "interaction_shape": [
+      50,
+      50
+    ],
+    "effective_level_policy": {
+      "simplified_levelup_max": 2,
+      "standard_max": 10
+    },
+    "split": "provided compositional pool split",
+    "selection": {
+      "base": {
+        "mode": "curated_frozen_base",
+        "artifact": "extra_lr_assembler_v1.npz",
+        "sha256": "a223778bc95ba64b9a236d88cb4c9f7410e2e0152dfbcce283ab9bf1372a4657"
+      },
+      "interaction_alpha": 3000.0,
+      "interaction_shrinkage": 1.0,
+      "criterion": "validation_mae_then_rmse"
+    },
+    "metrics": {
+      "validation": {
+        "rows": 151,
+        "mae": 0.15998537934362161,
+        "median_ae": 0.1299995930209502,
+        "rmse": 0.22197972897989313
+      },
+      "base_validation": {
+        "rows": 151,
+        "mae": 0.18167661185521114,
+        "median_ae": 0.14173240184918268,
+        "rmse": 0.25251122435860085
+      },
+      "test": {
+        "rows": 132,
+        "mae": 0.21953929006236622,
+        "median_ae": 0.2033517957230111,
+        "rmse": 0.2773213510225974
+      },
+      "base_test": {
+        "rows": 132,
+        "mae": 0.21684376675206368,
+        "median_ae": 0.18664195341052275,
+        "rmse": 0.29092835799801653
+      },
+      "constant_test": {
+        "rows": 132,
+        "mae": 0.36500346963018837,
+        "median_ae": 0.4323904546389632,
+        "rmse": 0.3977457229549651
+      },
+      "max_composition_drift": 2.378554553317258e-08,
+      "interaction_coefficient_l2": 0.07407827441675639
+    },
+    "training_sources": [
+      {
+        "path": "aux_authoritative_h299_dense20k_s7_20260727/assembler_matchups.jsonl",
+        "sha256": "47666daa4e508b69b4182058083dd7bba333d8e6e5e774c3cb94d654f1d32568",
+        "rows": 1000,
+        "usable_battles": 19971
+      },
+      {
+        "path": "aux_authoritative_postD/assembler_matchups.jsonl",
+        "sha256": "498939ad45fb3cde983ae300046323a8f873cdee481eca948188a49280591cd9",
+        "rows": 500,
+        "usable_battles": 9986
+      }
+    ],
+    "readiness": "bootstrap_ready",
+    "artifact_sha256": "fd4d53c0d5eaf8dc1d259787f4de071ba6114dc924b51182212bfb8989e8d4fc"
+  }
+}
