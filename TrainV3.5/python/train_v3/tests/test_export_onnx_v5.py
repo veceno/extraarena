@@ -302,9 +302,7 @@ class TestV5OnnxFallbackGuard:
         assert "onnxruntime" in src.lower()
 
     def test_adapter_train_v3_import_failure_raise_point_structural(self):
-        """The train_v3-import-failure path (:140-148) is env-dependent
-        (train_v3 IS importable here). Assert the raise point EXISTS by reading
-        the source (mirrors the :108 onnxruntime structural check)."""
+        """Unexpected encoder/import failures use the stable policy envelope."""
         import inspect
 
         from rlhf_env.components.v5_rlhf_adapter import V5RlhfAdapter
@@ -312,7 +310,8 @@ class TestV5OnnxFallbackGuard:
         src = inspect.getsource(V5RlhfAdapter.select_action)
         assert "from train_v3" in src
         assert "RuntimeError" in src
-        assert "ImportError" in src
+        assert "v5_policy_failure_error" in src
+        assert '"unexpected_failure"' in src
 
 
 # ============================================================================

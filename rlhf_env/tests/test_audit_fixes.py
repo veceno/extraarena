@@ -73,6 +73,25 @@ def test_f4_run_auto_turn_cap_on_broken_policies(tmp_path, monkeypatch):
     man = call(srv, "get_battle_group_manifest", {"group_id": r["group_id"]})
     res = (man or {}).get("results", {}) or {}
     assert res.get("battles_finished", 0) == 1
+    battle_result = man["battles_results"][0]
+    assert battle_result["degraded"] is True
+    assert battle_result["policy_warnings"]
+
+    completed = call(
+        srv,
+        "next_battle",
+        {"group_id": r["group_id"]},
+    )
+    assert completed["status"] == "series_complete"
+    with pytest.raises(ValueError, match="degraded policy result"):
+        call(
+            srv,
+            "export_nemesis_training_dataset",
+            {
+                "group_id": r["group_id"],
+                "output": "nemesis/degraded.jsonl",
+            },
+        )
 
 
 def test_wfB1_build_writes_resolved_path_kind_into_spec(tmp_path):

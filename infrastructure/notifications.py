@@ -288,5 +288,15 @@ def build_webapp_url(base_url: str, *, section: str, payload: dict[str, Any] | N
     for key in ("invite_id", "invite_action", "request_id"):
         if payload.get(key) is not None:
             query[key] = str(payload.get(key))
+    decision_id = payload.get("rc_decision_id")
+    if decision_id is None:
+        decision_id = payload.get("decision_id")
+    if decision_id is not None:
+        query["rc_decision_id"] = str(decision_id)
+    for key in ("notification_id", "delivery_id"):
+        if payload.get(key) is not None:
+            query[key] = str(payload.get(key))
+    if decision_id is not None or payload.get("notification_id") is not None:
+        query["entrypoint"] = "notification"
     sep = "&" if "?" in base_url else "?"
     return f"{base_url}{sep}{urlencode(query)}"

@@ -45,6 +45,7 @@ let onboardingSfxLastStep = null;
 let onboardingVictorySfxPlayed = false;
 let onboardingMenuTourLeaving = false;
 let arenaLaunchBlocked = false;
+let arenaAnalytics = null;
 
 // Для drag & drop
 let selectedCard = null;
@@ -2284,6 +2285,27 @@ function buildArenaAuthUrl(path) {
   return path + separator + '_auth=' + encodeURIComponent(authToken);
 }
 
+function startArenaAnalytics() {
+  if (arenaAnalytics) return arenaAnalytics;
+  const analyticsFactory = window.ExtraArenaAnalyticsV2;
+  if (!analyticsFactory || typeof analyticsFactory.create !== 'function') {
+    console.warn('[ARENA] Analytics v2 module is unavailable');
+    return null;
+  }
+  try {
+    arenaAnalytics = analyticsFactory.create({
+      apiUrl: buildArenaAuthUrl,
+      initialScreen: 'arena',
+    });
+    window.__arenaAnalytics = arenaAnalytics;
+    arenaAnalytics.start();
+  } catch (error) {
+    console.warn('[ARENA] Analytics v2 failed to start:', error);
+    arenaAnalytics = null;
+  }
+  return arenaAnalytics;
+}
+
 function looksLikeArenaJwtBearer(value) {
   return typeof value === 'string'
     && /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(value.trim());
@@ -3409,6 +3431,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     );
     return;
   }
+
+  // arena.html is a separate document, so it owns a separate ReturnClock
+  // session. Start only after authentication has been resolved.
+  startArenaAnalytics();
   
   initTalkies();
   await loadTalkieStartupSettings();
@@ -6423,6 +6449,10 @@ function showBattleResult(outcome, trophyDelta, trophyTotal, coinsDelta, coinsTo
     outcome = outcome ? String(outcome) : 'defeat';
     if (!['victory', 'defeat', 'draw'].includes(outcome)) outcome = 'defeat';
   }
+  // game_over, state_changed and surrender fallbacks can all reach this
+  // function. The analytics controller deduplicates them by match id, so the
+  // completed battle is counted exactly once and never at arena launch.
+  arenaAnalytics?.battleFinished(matchId);
   const isWinner = outcome === 'victory';
   const isDraw = outcome === 'draw';
   if (!window.__arenaBattleResultHaptic) {

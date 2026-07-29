@@ -33,6 +33,8 @@ from torch import nn
 
 from core.nemesis_dataset import (
     NEMESIS_EXPORT_FORMAT,
+    NEMESIS_PSEUDONYMIZED_PLAYER_GROUP_SCHEME,
+    NEMESIS_PSEUDONYMIZED_RECORD_ID_SCHEME,
     NEMESIS_SCHEMA,
     validate_nemesis_record,
 )
@@ -437,6 +439,18 @@ def load_unified_jsonl(
                         raise ValueError(f"{path}:{line_number}: invalid header position")
                     if raw.get("format") != NEMESIS_EXPORT_FORMAT:
                         raise ValueError(f"{path}:{line_number}: unsupported export format")
+                    if (
+                        raw.get("identity_scheme")
+                        != "side_pseudonyms_p1_1_p2_2"
+                        or raw.get("include_players") is not False
+                        or raw.get("record_id_scheme")
+                        != NEMESIS_PSEUDONYMIZED_RECORD_ID_SCHEME
+                        or raw.get("player_group_scheme")
+                        != NEMESIS_PSEUDONYMIZED_PLAYER_GROUP_SCHEME
+                    ):
+                        raise ValueError(
+                            f"{path}:{line_number}: unsafe privacy header"
+                        )
                     expected_battles = int(raw.get("battle_count") or 0)
                     continue
                 if raw.get("record_type") == "battle":

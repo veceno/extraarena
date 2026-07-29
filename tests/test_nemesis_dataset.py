@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 
@@ -9,9 +10,12 @@ import pytest
 
 from core.nemesis_dataset import (
     NEMESIS_EXPORT_FORMAT,
+    NEMESIS_PSEUDONYMIZED_RECORD_ID_SCHEME,
+    NEMESIS_RAW_RECORD_ID_SCHEME,
     NemesisBattleCollector,
     NemesisContractError,
     export_nemesis_ndjson,
+    validate_nemesis_record,
     write_nemesis_export,
 )
 
@@ -229,11 +233,24 @@ def test_export_is_whole_battle_terminal_and_pseudonymized_by_default() -> None:
     lines = [json.loads(line) for line in payload.splitlines()]
     assert lines[0]["format"] == NEMESIS_EXPORT_FORMAT
     assert lines[0]["battle_count"] == 1
+    assert (
+        lines[0]["record_id_scheme"]
+        == NEMESIS_PSEUDONYMIZED_RECORD_ID_SCHEME
+    )
     battle = lines[1]
     assert battle["record_type"] == "battle"
     assert battle["privacy"]["identity_scheme"] == "side_pseudonyms_p1_1_p2_2"
     assert battle["features"]["base"]["seats"]["p1"]["participant_id"] == 1
     assert battle["features"]["base"]["seats"]["p2"]["participant_id"] == 2
+    assert re.fullmatch(r"record_[0-9a-f]{32}", battle["battle_id"])
+    assert re.fullmatch(r"record_[0-9a-f]{32}", battle["match_id"])
+    assert battle["privacy"]["record_id_scheme"] == (
+        NEMESIS_PSEUDONYMIZED_RECORD_ID_SCHEME
+    )
+    aliases = battle["privacy"]["player_group_aliases"]
+    assert re.fullmatch(r"player_[0-9a-f]{32}", aliases["p1"])
+    assert re.fullmatch(r"player_[0-9a-f]{32}", aliases["p2"])
+    assert aliases["p1"] != aliases["p2"]
     assert battle["label"]["status"] == "p2_win"
     assert battle["label"]["winner_seat"] == "p2"
 
@@ -281,6 +298,36 @@ def test_standard_eligibility_requires_two_human_pre_match_snapshots() -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        (("profile", "telegram_id"), 987654321),
+        (("recent", 0, "opponent_user_id"), 123456789),
+    ],
+)
+def test_standard_extension_rejects_unexpected_identity_fields(
+    path,
+    value,
+) -> None:
+    human_human = _meta(p1_actor="human", p2_actor="human")
+    record = NemesisBattleCollector.from_v5_meta(
+        human_human,
+        feature_cutoff_at="2026-07-28T12:00:00Z",
+        extended_by_seat={"p1": _extended(), "p2": _extended()},
+    ).snapshot()
+    target = record["features"]["extended"]["p1"]
+    if path[0] == "profile":
+        target["profile"][path[1]] = value
+    else:
+        target["recent"][path[1]][path[2]] = value
+
+    with pytest.raises(
+        NemesisContractError,
+        match="non-canonical or unexpected",
+    ):
+        validate_nemesis_record(record)
+
+
 def test_rehydrated_generation_is_retained_but_ineligible() -> None:
     meta = _meta(p1_actor="rl", p2_actor="rl")
     meta["dataset_generation"] = 2
@@ -313,8 +360,125 @@ def test_authorized_export_retains_ids_and_atomic_writer(tmp_path: Path) -> None
     assert result == destination
     lines = [json.loads(line) for line in destination.read_text().splitlines()]
     assert lines[0]["identity_scheme"] == "raw_player_ids"
+    assert lines[0]["record_id_scheme"] == NEMESIS_RAW_RECORD_ID_SCHEME
     assert lines[1]["features"]["base"]["seats"]["p1"]["participant_id"] == 101
     assert lines[1]["features"]["base"]["seats"]["p2"]["participant_id"] == -5001
+    assert lines[1]["battle_id"] == record["battle_id"]
+    assert lines[1]["match_id"] == record["match_id"]
+    assert lines[1]["privacy"]["player_group_aliases"] == {
+        "p1": "101",
+        "p2": "-5001",
+    }
+
+
+def test_player_group_aliases_are_export_local_and_stable() -> None:
+    first = NemesisBattleCollector.from_v5_meta(
+        _meta(),
+        feature_cutoff_at="2026-07-28T12:00:00Z",
+    ).finalize(status="p1_win")
+    second_meta = _meta()
+    second_meta["battle_id"] = "second-battle"
+    second_meta["match_id"] = "second-match"
+    second = NemesisBattleCollector.from_v5_meta(
+        second_meta,
+        feature_cutoff_at="2026-07-28T12:00:00Z",
+    ).finalize(status="p2_win")
+    swapped_meta = _meta()
+    swapped_meta["battle_id"] = "swapped-battle"
+    swapped_meta["match_id"] = "swapped-match"
+    swapped_meta["p1_user_id"], swapped_meta["p2_user_id"] = (
+        swapped_meta["p2_user_id"],
+        swapped_meta["p1_user_id"],
+    )
+    swapped = NemesisBattleCollector.from_v5_meta(
+        swapped_meta,
+        feature_cutoff_at="2026-07-28T12:00:00Z",
+    ).finalize(status="draw")
+
+    first_export = [
+        json.loads(line)
+        for line in export_nemesis_ndjson(
+            [first, second, swapped]
+        ).splitlines()
+    ][1:]
+    second_export = [
+        json.loads(line)
+        for line in export_nemesis_ndjson([first]).splitlines()
+    ][1]
+
+    assert (
+        first_export[0]["privacy"]["player_group_aliases"]
+        == first_export[1]["privacy"]["player_group_aliases"]
+    )
+    assert (
+        first_export[0]["privacy"]["player_group_aliases"]["p1"]
+        == first_export[2]["privacy"]["player_group_aliases"]["p2"]
+    )
+    assert (
+        first_export[0]["privacy"]["player_group_aliases"]["p2"]
+        == first_export[2]["privacy"]["player_group_aliases"]["p1"]
+    )
+    assert (
+        first_export[0]["privacy"]["player_group_aliases"]
+        != second_export["privacy"]["player_group_aliases"]
+    )
+    reexported = [
+        json.loads(line)
+        for line in export_nemesis_ndjson(
+            [
+                {
+                    key: value
+                    for key, value in row.items()
+                    if key != "record_type"
+                }
+                for row in first_export
+            ]
+        ).splitlines()
+    ][1:]
+    assert (
+        reexported[0]["privacy"]["player_group_aliases"]
+        == reexported[1]["privacy"]["player_group_aliases"]
+    )
+    assert (
+        reexported[0]["privacy"]["player_group_aliases"]["p1"]
+        == reexported[2]["privacy"]["player_group_aliases"]["p2"]
+    )
+
+
+def test_pseudonymized_export_removes_user_id_bearing_record_ids() -> None:
+    meta = _meta()
+    meta["battle_id"] = "tutorial-987654321"
+    meta["match_id"] = "tutorial-987654321"
+    record = NemesisBattleCollector.from_v5_meta(
+        meta,
+        feature_cutoff_at="2026-07-28T12:00:00Z",
+    ).finalize(status="p1_win")
+
+    payload = export_nemesis_ndjson([record])
+    lines = [json.loads(line) for line in payload.splitlines()]
+    battle = lines[1]
+
+    assert battle["battle_id"] == battle["match_id"]
+    assert re.fullmatch(r"record_[0-9a-f]{32}", battle["battle_id"])
+    assert "987654321" not in payload
+
+
+def test_pseudonymized_privacy_record_ids_fail_closed() -> None:
+    record = NemesisBattleCollector.from_v5_meta(
+        _meta(),
+        feature_cutoff_at="2026-07-28T12:00:00Z",
+    ).finalize(status="p1_win")
+    exported = json.loads(
+        export_nemesis_ndjson([record]).splitlines()[1]
+    )
+    exported.pop("record_type")
+    exported["match_id"] = "tutorial-987654321"
+
+    with pytest.raises(
+        NemesisContractError,
+        match="random opaque battle_id and match_id",
+    ):
+        validate_nemesis_record(exported, require_terminal=True)
 
 
 def test_export_rejects_duplicate_battle_ids() -> None:
@@ -370,7 +534,9 @@ def test_cli_extracts_exact_nested_record_from_v5_bundle(tmp_path: Path) -> None
         text=True,
     )
     assert completed.returncode == 0, completed.stderr
-    assert json.loads(output.read_text().splitlines()[1])["battle_id"] == record["battle_id"]
+    exported = json.loads(output.read_text().splitlines()[1])
+    assert re.fullmatch(r"record_[0-9a-f]{32}", exported["battle_id"])
+    assert exported["battle_id"] != record["battle_id"]
 
 
 def test_cli_fails_closed_for_v5_bundle_without_nemesis_record(tmp_path: Path) -> None:

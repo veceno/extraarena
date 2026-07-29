@@ -497,6 +497,93 @@ async def _notification_outbox_task(
             await asyncio.sleep(10)
 
 
+async def _record_returnclock_delivery_event(
+    db: Database,
+    notif: dict,
+    payload: dict,
+    *,
+    event_type: str,
+    channel: str | None = None,
+    provider_message_id: str | None = None,
+    event_key: str = "default",
+    metadata: dict | None = None,
+) -> None:
+    """Best-effort append-only attribution for ReturnClock-linked notifications."""
+    if not hasattr(db, "record_returnclock_delivery_event"):
+        return
+    decision_id = (
+        notif.get("returnclock_decision_id")
+        or payload.get("rc_decision_id")
+        or payload.get("decision_id")
+    )
+    if not decision_id:
+        return
+    notification_id = int(notif["id"])
+    attempt = int(notif.get("attempts") or 0)
+    delivery_id = (
+        notif.get("returnclock_delivery_id")
+        or payload.get("delivery_id")
+        or str(notification_id)
+    )
+    safe_key = str(event_key or "default").replace(":", "_")[:96]
+    event_id = (
+        f"outbox:{notification_id}:attempt:{attempt}:"
+        f"{channel or 'none'}:{safe_key}:{event_type}"
+    )
+    try:
+        await db.record_returnclock_delivery_event(
+            int(notif["user_id"]),
+            str(decision_id),
+            event_id=event_id,
+            event_type=event_type,
+            outbox_id=notification_id,
+            delivery_id=str(delivery_id),
+            provider_message_id=(
+                str(provider_message_id) if provider_message_id else None
+            ),
+            channel=(str(channel) if channel else None),
+            metadata=metadata or {},
+        )
+    except Exception:
+        logger.warning(
+            "ReturnClock delivery telemetry failed: notification_id=%s event=%s",
+            notification_id,
+            event_type,
+            exc_info=True,
+        )
+
+
+async def _update_returnclock_delivery_status(
+    db: Database,
+    notif: dict,
+    payload: dict,
+    status: str,
+) -> None:
+    if not hasattr(db, "update_returnclock_decision"):
+        return
+    decision_id = (
+        notif.get("returnclock_decision_id")
+        or payload.get("rc_decision_id")
+        or payload.get("decision_id")
+    )
+    if not decision_id:
+        return
+    try:
+        await db.update_returnclock_decision(
+            int(notif["user_id"]),
+            str(decision_id),
+            status=status,
+            outbox_id=int(notif["id"]),
+        )
+    except Exception:
+        logger.warning(
+            "ReturnClock decision status failed: notification_id=%s status=%s",
+            notif.get("id"),
+            status,
+            exc_info=True,
+        )
+
+
 async def _deliver_notification(
     bot: Bot,
     db: Database,
@@ -514,6 +601,19 @@ async def _deliver_notification(
             payload = json.loads(payload)
         except Exception:
             payload = {}
+    payload = dict(payload)
+    payload["notification_id"] = str(notif_id)
+    decision_id = (
+        notif.get("returnclock_decision_id")
+        or payload.get("rc_decision_id")
+        or payload.get("decision_id")
+    )
+    delivery_id = notif.get("returnclock_delivery_id") or payload.get("delivery_id")
+    if decision_id:
+        payload["rc_decision_id"] = str(decision_id)
+        payload["entrypoint"] = "notification"
+    if delivery_id:
+        payload["delivery_id"] = str(delivery_id)
 
     category = str(notif["category"])
     event_type = str(notif["event_type"])
@@ -550,10 +650,20 @@ async def _deliver_notification(
             return
         if push_sent:
             await db.mark_notification_sent(notif_id)
+            await _update_returnclock_delivery_status(db, notif, payload, "sent")
             return
 
     if delivery_mode == "app_only":
         await db.mark_notification_failed(notif_id)
+        await _record_returnclock_delivery_event(
+            db,
+            notif,
+            payload,
+            event_type="provider_unavailable",
+            channel="android",
+            metadata={"reason": "app_only_without_successful_push"},
+        )
+        await _update_returnclock_delivery_status(db, notif, payload, "failed")
         return
 
     try:
@@ -569,24 +679,50 @@ async def _deliver_notification(
                 web_app=WebAppInfo(url=webapp_url_with_section),
             )
         ]])
-        await bot.send_message(
+        telegram_message = await bot.send_message(
             chat_id=user_id,
             text=body,
             parse_mode="HTML",
             reply_markup=keyboard,
         )
         telegram_sent = True
+        await _record_returnclock_delivery_event(
+            db,
+            notif,
+            payload,
+            event_type="provider_accepted",
+            channel="telegram",
+            provider_message_id=getattr(telegram_message, "message_id", None),
+        )
     except (TelegramForbiddenError, TelegramBadRequest):
         telegram_blocked = True
+        await _record_returnclock_delivery_event(
+            db,
+            notif,
+            payload,
+            event_type="provider_blocked",
+            channel="telegram",
+        )
     except Exception as e:
         logger.debug("Не удалось отправить Telegram-уведомление %s: %s", notif_id, e)
+        await _record_returnclock_delivery_event(
+            db,
+            notif,
+            payload,
+            event_type="provider_failed",
+            channel="telegram",
+            metadata={"error_class": type(e).__name__},
+        )
 
     if telegram_sent:
         await db.mark_notification_sent(notif_id)
+        await _update_returnclock_delivery_status(db, notif, payload, "sent")
     elif telegram_blocked and not push_attempted:
         await db.mark_notification_blocked(notif_id)
+        await _update_returnclock_delivery_status(db, notif, payload, "blocked")
     else:
         await db.mark_notification_failed(notif_id)
+        await _update_returnclock_delivery_status(db, notif, payload, "failed")
 
 
 async def _send_android_pushes(
@@ -617,10 +753,11 @@ async def _send_android_pushes(
     quiet_skipped = False
     defer_until_candidates = []
     now_utc = _notification_utc_now()
-    for device in devices:
+    for device_index, device in enumerate(devices):
         token = device.get("token")
         if not token:
             continue
+        device_key = str(device.get("id") or device_index)
         if _is_quiet_android_reminder_push(
             device,
             category=category,
@@ -641,7 +778,30 @@ async def _send_android_pushes(
         )
         if result.ok:
             any_sent = True
+            await _record_returnclock_delivery_event(
+                db,
+                notif,
+                payload,
+                event_type="provider_accepted",
+                channel="android",
+                provider_message_id=getattr(result, "message_id", None),
+                event_key=device_key,
+                metadata={"device_id": device.get("id")},
+            )
             continue
+        await _record_returnclock_delivery_event(
+            db,
+            notif,
+            payload,
+            event_type="provider_failed",
+            channel="android",
+            event_key=device_key,
+            metadata={
+                "device_id": device.get("id"),
+                "error": result.error,
+                "permanent": bool(result.permanent),
+            },
+        )
         if hasattr(db, "mark_push_device_error"):
             await db.mark_push_device_error(
                 token,
@@ -652,6 +812,14 @@ async def _send_android_pushes(
         defer_until = min(defer_until_candidates) if defer_until_candidates else None
         if defer_until is not None and hasattr(db, "postpone_notification"):
             await db.postpone_notification(int(notif["id"]), defer_until)
+            await _record_returnclock_delivery_event(
+                db,
+                notif,
+                payload,
+                event_type="deferred_quiet_hours",
+                channel="android",
+                metadata={"defer_until": defer_until.isoformat()},
+            )
             logger.info(
                 "Android reminder push postponed until %s during local quiet hours for user_id=%s",
                 defer_until.isoformat(),
@@ -659,6 +827,13 @@ async def _send_android_pushes(
             )
             return True, False, True
         logger.info("Android reminder push skipped during local quiet hours for user_id=%s", user_id)
+        await _record_returnclock_delivery_event(
+            db,
+            notif,
+            payload,
+            event_type="skipped_quiet_hours",
+            channel="android",
+        )
         return True, True, False
     return push_attempted or quiet_skipped, any_sent, False
 

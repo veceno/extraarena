@@ -312,6 +312,14 @@ class BattleEngine:
             self._start_v5_dataset()
             self.v5_dataset_recorder.merge_metadata(self, metadata)
 
+    def mark_v5_policy_degraded(self, code: str) -> str:
+        """Record one stable policy-failure code without exposing exception text."""
+
+        if not self._arena:
+            raise RuntimeError("arena_not_initialized")
+        self._start_v5_dataset()
+        return self.v5_dataset_recorder.mark_policy_degraded(self, code)
+
     def mark_v5_battle_started(
         self,
         *,
@@ -572,13 +580,11 @@ class BattleEngine:
             self.is_bot_match = p1_data.get("is_bot", False) or p2_data.get("is_bot", False)
 
             snapshot_getter = getattr(self._db, "get_nemesis_profile_snapshot", None)
-            snapshot_failures: list[str] = []
 
             async def _snapshot(seat: str, data: Dict[str, Any]) -> Any:
                 if data.get("is_bot"):
                     return None
                 if not callable(snapshot_getter):
-                    snapshot_failures.append(f"{seat}_snapshot_unavailable")
                     return None
                 try:
                     return await asyncio.wait_for(
@@ -589,7 +595,6 @@ class BattleEngine:
                         timeout=1.5,
                     )
                 except Exception:
-                    snapshot_failures.append(f"{seat}_snapshot_unavailable")
                     self._logger.warning(
                         "Nemesis pre-match snapshot failed: match=%s seat=%s",
                         match_id,
@@ -867,14 +872,6 @@ class BattleEngine:
                         "p2": p2_nemesis_snapshot,
                     },
                 )
-                open_record = self.nemesis_collector.snapshot()
-                if snapshot_failures:
-                    quality = open_record["quality"]
-                    quality["eligible_standard"] = False
-                    quality["exclusion_reasons"] = sorted(
-                        set(quality["exclusion_reasons"] + snapshot_failures)
-                    )
-                    self.nemesis_collector = NemesisBattleCollector(open_record)
                 self.set_v5_dataset_metadata(
                     {"nemesis_record": self.nemesis_collector.snapshot()}
                 )

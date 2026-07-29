@@ -37,6 +37,7 @@ val syncExtraArenaShellAssets by tasks.registering(Sync::class) {
         into("ea_webapp")
         include("index.html")
         include("arena.html")
+        include("analytics-v2.js")
         include("arena.js")
         include("arena-styles.css")
         include("main.js")

@@ -5,6 +5,7 @@ import base64
 import json
 import logging
 import os
+import uuid
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
@@ -94,13 +95,26 @@ def build_android_push_payload(
         "category": category,
         "event_type": event_type,
         "section": section,
+        "entrypoint": "notification",
         "title": title,
         "body": body,
         "android_channel_id": ANDROID_GAME_CHANNEL_ID,
     }
-    for key in ("invite_id", "invite_action", "request_id", "from_user_id"):
+    for key in (
+        "invite_id",
+        "invite_action",
+        "request_id",
+        "from_user_id",
+        "notification_id",
+        "delivery_id",
+    ):
         if payload.get(key) is not None:
             data[key] = str(payload.get(key))
+    decision_id = payload.get("rc_decision_id")
+    if decision_id is None:
+        decision_id = payload.get("decision_id")
+    if decision_id is not None:
+        data["rc_decision_id"] = str(decision_id)
     return AndroidPushPayload(
         title=title,
         body=body,
@@ -242,6 +256,27 @@ class FcmPushSender:
             )
 
 
+async def _best_effort_returnclock_call(
+    db: Any,
+    method_name: str,
+    *args: Any,
+    **kwargs: Any,
+) -> Any:
+    """Keep broadcast delivery independent from optional ReturnClock telemetry."""
+    method = getattr(db, method_name, None)
+    if not callable(method):
+        return None
+    try:
+        return await method(*args, **kwargs)
+    except Exception:
+        logger.debug(
+            "ReturnClock broadcast telemetry failed: method=%s",
+            method_name,
+            exc_info=True,
+        )
+        return None
+
+
 async def send_android_broadcast(
     *,
     db: Any,
@@ -254,26 +289,122 @@ async def send_android_broadcast(
         return PushBroadcastResult(total=0, sent=0, failed=0)
 
     devices = await db.get_push_devices_for_broadcast(platform=platform, limit=limit)
+    broadcast_id = str(uuid.uuid4())
+    decisions_by_user: dict[int, str] = {}
+    outcomes_by_user: dict[int, list[bool]] = {}
     sent = 0
     failed = 0
     for device in devices:
         token = device.get("token")
         if not token:
             continue
+
+        user_id: int | None = None
+        try:
+            if device.get("user_id") is not None:
+                user_id = int(device["user_id"])
+        except (TypeError, ValueError):
+            user_id = None
+
+        decision_id: str | None = None
+        delivery_id: str | None = None
+        send_data = dict(payload.data)
+        if user_id is not None:
+            decision_id = decisions_by_user.get(user_id)
+            if decision_id is None:
+                decision_id = f"android-broadcast:{broadcast_id}:{user_id}"
+                decisions_by_user[user_id] = decision_id
+                outcomes_by_user[user_id] = []
+                await _best_effort_returnclock_call(
+                    db,
+                    "create_returnclock_decision",
+                    user_id,
+                    decision="send",
+                    policy_version="manual-broadcast-v1",
+                    decision_id=decision_id,
+                    schedule_type="broadcast",
+                    decision_source="admin_broadcast",
+                    treatment_arm="observational",
+                    assignment_probability=1.0,
+                    eligible_actions=[{"action": "send_now"}],
+                    context={
+                        "broadcast_id": broadcast_id,
+                        "platform": str(platform or ""),
+                        "category": payload.data.get("category"),
+                        "event_type": payload.data.get("event_type"),
+                        "notification_type": payload.data.get("type"),
+                    },
+                    reason_code="admin_broadcast",
+                )
+
+            delivery_id = str(uuid.uuid4())
+            send_data.update(
+                {
+                    "rc_decision_id": decision_id,
+                    "delivery_id": delivery_id,
+                    "entrypoint": "notification",
+                }
+            )
+
         result = await push_sender.send(
             token=token,
             title=payload.title,
             body=payload.body,
-            data=payload.data,
+            data=send_data,
         )
         if result.ok:
             sent += 1
         else:
             failed += 1
+
+        if user_id is not None and decision_id is not None and delivery_id is not None:
+            outcomes_by_user[user_id].append(bool(result.ok))
+            event_type = "provider_accepted" if result.ok else "provider_failed"
+            await _best_effort_returnclock_call(
+                db,
+                "record_returnclock_delivery_event",
+                user_id,
+                decision_id,
+                event_id=(
+                    f"android-broadcast:{broadcast_id}:{delivery_id}:{event_type}"
+                ),
+                event_type=event_type,
+                delivery_id=delivery_id,
+                provider_message_id=(
+                    str(result.message_id)
+                    if getattr(result, "message_id", None) is not None
+                    else None
+                ),
+                channel="android",
+                metadata={
+                    "broadcast_id": broadcast_id,
+                    "device_id": device.get("id"),
+                    "platform": str(platform or ""),
+                    "error": (
+                        str(result.error)
+                        if getattr(result, "error", None)
+                        else None
+                    ),
+                    "permanent": bool(getattr(result, "permanent", False)),
+                },
+            )
+
+        if not result.ok:
             if hasattr(db, "mark_push_device_error"):
                 await db.mark_push_device_error(
                     token,
                     result.error or "push_delivery_failed",
                     permanent=result.permanent,
                 )
+
+    for user_id, decision_id in decisions_by_user.items():
+        outcomes = outcomes_by_user.get(user_id, [])
+        await _best_effort_returnclock_call(
+            db,
+            "update_returnclock_decision",
+            user_id,
+            decision_id,
+            status=("sent" if any(outcomes) else "failed"),
+        )
+
     return PushBroadcastResult(total=len(devices), sent=sent, failed=failed)

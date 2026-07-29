@@ -37,11 +37,16 @@ def test_manifest_writer_appends_results(tmp_path):
         status="P1_WIN",
         turns=12,
         duration_seconds=1.5,
+        policy_warnings=["fallback: broken policy"],
+        degraded=True,
     )
     assert mw.manifest["results"]["battles_finished"] == 1
     assert mw.manifest["results"]["p1_wins"] == 1
     assert mw.manifest["results"]["winrate_p1"] == 1.0
     assert mw.manifest["battle_ids"] == ["b1"]
+    row = mw.manifest["battles_results"][0]
+    assert row["policy_warnings"] == ["fallback: broken policy"]
+    assert row["degraded"] is True
 
 
 def test_manifest_writer_winrate_calculation(tmp_path):

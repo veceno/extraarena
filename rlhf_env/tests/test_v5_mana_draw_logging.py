@@ -3,10 +3,14 @@
 Покрывает WS1 (план joyful-churning-bird): ManaDrawAction проходит через
 MatchRunner.execute_human_action → engine.mana_draw → v5_trace.before_action
 с корректным action_native / legal_action_index / mana_draw_count_this_turn в
-снапшоте, а бот НИКОГДА не выполняет mana_draw (post-pick guard в run_bot_turn).
+снапшоте. Non-V5 bot guard сохраняет совместимость, а V5 parallel mana head
+доходит до реальной механики и логируется как bot action.
 """
 from __future__ import annotations
 
+import asyncio
+
+from core.actions import EndTurnAction, ManaDrawAction
 from rlhf_env.tests._v5_helpers import (
     create_match,
     drive_until_mana_draw_then,
@@ -18,8 +22,6 @@ from rlhf_env.tests._v5_helpers import (
 
 def _drew_match(tmp_path, *, p1_actor_type="llm", p2_model="random", seed=42):
     """Гоняет бой до первого mana_draw p1, затем сдаётся. Возвращает (match, drew)."""
-    import asyncio
-
     mgr = make_manager(tmp_path)
     match, engine, runner = create_match(
         mgr, p1_actor_type=p1_actor_type, p2_model=p2_model, seed=seed
@@ -76,15 +78,92 @@ def test_mana_draw_count_in_every_p1_snapshot(tmp_path):
         )
 
 
-def test_bot_never_performs_mana_draw(tmp_path):
-    """Бот не выполняет mana_draw: post-pick guard в run_bot_turn срабатывает.
+class _PreferManaPolicy:
+    name = "prefer-mana"
 
-    Guard должен заменять ManaDrawAction на EndTurnAction для любого бота
-    (V4 слеп к mana_draw по 601-кандидатной маске, guard = belt-and-suspenders).
-    """
-    match, _ = _drew_match(tmp_path, p2_model="random")
+    def __init__(self, kind: str) -> None:
+        self.kind = kind
+
+    def select_action(self, arena, player_id: int) -> int:
+        legal = arena.get_legal_actions(player_id)
+        for index, action in enumerate(legal):
+            if isinstance(action, ManaDrawAction):
+                return index
+        return next(
+            index
+            for index, action in enumerate(legal)
+            if isinstance(action, EndTurnAction)
+        )
+
+
+async def _no_sleep(_delay: float) -> None:
+    return None
+
+
+def _run_bot_with_mana_surface(
+    tmp_path,
+    monkeypatch,
+    *,
+    policy_kind: str,
+):
+    mgr = make_manager(tmp_path)
+    match, engine, runner = create_match(
+        mgr,
+        p2_model="random",
+        starting_player="p2",
+    )
+    match.bot_policy = _PreferManaPolicy(policy_kind)
+    state = engine._arena.state
+    state.p2.mana = 2
+    state.p2.max_mana = max(2, state.p2.max_mana)
+    assert state.p2.deck
+    monkeypatch.setattr(
+        "rlhf_env.components.match_runner.asyncio.sleep",
+        _no_sleep,
+    )
+
+    asyncio.run(runner.run_bot_turn())
+    return match, engine
+
+
+def test_non_v5_bot_mana_draw_is_replaced_by_end_turn(
+    tmp_path,
+    monkeypatch,
+):
+    """The compatibility guard remains active for V4/non-V5 policies."""
+
+    match, engine = _run_bot_with_mana_surface(
+        tmp_path,
+        monkeypatch,
+        policy_kind="random",
+    )
+    assert engine._arena.state.p2.mana_draw_count_this_turn == 0
     rows = read_jsonl(v5_dir_for(match, tmp_path) / "actions.jsonl")
-    bot_rows = [r for r in rows if r.get("decision_source") == "bot"]
-    assert bot_rows, "бот не сделал ни одного хода — тест не имеет смысла"
-    bot_md = [r for r in bot_rows if r.get("action_type") == "mana_draw"]
-    assert not bot_md, f"бот выполнил mana_draw: {bot_md}"
+    assert not [
+        row
+        for row in rows
+        if row.get("decision_source") == "bot"
+        and row.get("action_type") == "mana_draw"
+    ]
+
+
+def test_v5_bot_parallel_head_executes_and_logs_mana_draw(
+    tmp_path,
+    monkeypatch,
+):
+    """A V5 policy must reach the latest Arena mana-draw mechanic."""
+
+    match, engine = _run_bot_with_mana_surface(
+        tmp_path,
+        monkeypatch,
+        policy_kind="v5",
+    )
+    rows = read_jsonl(v5_dir_for(match, tmp_path) / "actions.jsonl")
+    mana_rows = [
+        row
+        for row in rows
+        if row.get("decision_source") == "bot"
+        and row.get("action_type") == "mana_draw"
+    ]
+    assert mana_rows
+    assert engine._arena.state.p2.mana_draw_count_this_turn == 1

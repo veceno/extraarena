@@ -13,17 +13,28 @@ import json
 import math
 import os
 from pathlib import Path
+import re
+import shutil
 import tempfile
 from typing import Any, Iterable, Mapping, Optional
+from uuid import UUID, uuid4, uuid5
 
 
 NEMESIS_SCHEMA = "extraarena_nemesis_battle_v1"
 NEMESIS_EXPORT_FORMAT = "extraarena_nemesis_dataset_export_v1"
 NEMESIS_VISIBILITY = "private_server_only"
+NEMESIS_PSEUDONYMIZED_RECORD_ID_SCHEME = "random_per_export_record_ids_v1"
+NEMESIS_RAW_RECORD_ID_SCHEME = "raw_record_ids"
+NEMESIS_PSEUDONYMIZED_PLAYER_GROUP_SCHEME = (
+    "random_per_export_player_groups_v1"
+)
+NEMESIS_RAW_PLAYER_GROUP_SCHEME = "raw_player_ids"
 TERMINAL_STATUSES = frozenset({"p1_win", "p2_win", "draw", "stalemate"})
 ACTOR_TYPES = frozenset({"human", "bot", "llm", "rl"})
 DOMAINS = frozenset({"human-human", "human-bot", "model-model"})
 SEATS = ("p1", "p2")
+_PSEUDONYMIZED_RECORD_ID_RE = re.compile(r"^record_[0-9a-f]{32}$")
+_PSEUDONYMIZED_PLAYER_GROUP_RE = re.compile(r"^player_[0-9a-f]{32}$")
 
 MODEL_PROVENANCE_FIELDS = (
     "model_id",
@@ -498,11 +509,16 @@ def validate_nemesis_record(
     if extended is not None:
         if not isinstance(extended, Mapping) or set(extended) != set(SEATS):
             raise NemesisContractError("features.extended must contain p1 and p2")
+        normalized_extended: dict[str, Any] = {}
         for seat in SEATS:
-            _normalize_extended_seat(
+            normalized_extended[seat] = _normalize_extended_seat(
                 extended.get(seat),
                 seat=seat,
                 feature_cutoff=feature_cutoff,
+            )
+        if dict(extended) != normalized_extended:
+            raise NemesisContractError(
+                "features.extended contains non-canonical or unexpected fields"
             )
 
     provenance = record.get("provenance")
@@ -521,9 +537,33 @@ def validate_nemesis_record(
         raise NemesisContractError("provenance.source is required")
     if not isinstance(provenance.get("checkpoint_mix"), list):
         raise NemesisContractError("provenance.checkpoint_mix must be a list")
-    _required_int(provenance.get("dataset_generation"), field="provenance.dataset_generation", minimum=1)
-    if len(str(provenance.get("split_fingerprint") or "")) != 64:
+    dataset_generation = _required_int(
+        provenance.get("dataset_generation"),
+        field="provenance.dataset_generation",
+        minimum=1,
+    )
+    split_fingerprint = str(provenance.get("split_fingerprint") or "")
+    if not re.fullmatch(r"[0-9a-f]{64}", split_fingerprint):
         raise NemesisContractError("provenance.split_fingerprint must be sha256")
+    expected_split_fingerprint = _deck_pair_split_fingerprint(
+        seats=seats,
+        ruleset=str(base["ruleset"]),
+        catalog_hash=(
+            str(base["catalog_hash"])
+            if base.get("catalog_hash") not in {None, ""}
+            else None
+        ),
+    )
+    if split_fingerprint != expected_split_fingerprint:
+        raise NemesisContractError(
+            "provenance.split_fingerprint does not match the deck pair"
+        )
+    if provenance.get("split_group") != (
+        f"deck_pair:{expected_split_fingerprint}"
+    ):
+        raise NemesisContractError(
+            "provenance.split_group does not match split_fingerprint"
+        )
 
     quality = record.get("quality")
     expected_quality = {
@@ -570,6 +610,54 @@ def validate_nemesis_record(
                 "standard eligibility requires catalogued human-human "
                 "features with both pre-match snapshots"
             )
+    expected_exclusions: list[str] = []
+    if not catalog_available:
+        expected_exclusions.append("catalog_unavailable")
+    if base["domain"] == "human-human":
+        if not isinstance(extended, Mapping):
+            expected_exclusions.extend(
+                f"{seat}_snapshot_unavailable" for seat in SEATS
+            )
+        else:
+            expected_exclusions.extend(
+                f"{seat}_snapshot_unavailable"
+                for seat in SEATS
+                if extended.get(seat) is None
+            )
+    elif base["domain"] == "human-bot":
+        expected_exclusions.append("human_bot_standard_auxiliary_only")
+    else:
+        expected_exclusions.append("model_model_lite_only")
+    if dataset_generation != 1:
+        expected_exclusions.append("rehydrated_trace_generation")
+    expected_exclusions = sorted(set(expected_exclusions))
+    expected_lite = dataset_generation == 1
+    expected_standard = expected_lite and not expected_exclusions
+    expected_weight = (
+        0.0
+        if not expected_lite
+        else 1.0
+        if catalog_available
+        else 0.5
+    )
+    if exclusion_reasons != expected_exclusions:
+        raise NemesisContractError(
+            "quality.exclusion_reasons do not match record provenance "
+            "and feature availability"
+        )
+    if quality["eligible_lite"] is not expected_lite:
+        raise NemesisContractError(
+            "quality.eligible_lite does not match dataset generation"
+        )
+    if quality["eligible_standard"] is not expected_standard:
+        raise NemesisContractError(
+            "quality.eligible_standard does not match the canonical "
+            "standard exclusions"
+        )
+    if weight != expected_weight:
+        raise NemesisContractError(
+            "quality.sample_weight does not match the canonical policy"
+        )
 
     label = record.get("label")
     if label is None:
@@ -593,6 +681,103 @@ def validate_nemesis_record(
                 _required_int(label[field], field=f"label.{field}")
     else:
         raise NemesisContractError("label must be an object or null")
+    privacy = record.get("privacy")
+    if privacy is not None:
+        if not isinstance(privacy, Mapping) or set(privacy) != {
+            "identity_scheme",
+            "include_players",
+            "player_group_aliases",
+            "player_group_scheme",
+            "record_id_scheme",
+        }:
+            raise NemesisContractError(
+                "privacy fields do not match the contract"
+            )
+        include_players = privacy.get("include_players")
+        if not isinstance(include_players, bool):
+            raise NemesisContractError("privacy.include_players must be bool")
+        expected_scheme = (
+            "raw_player_ids"
+            if include_players
+            else "side_pseudonyms_p1_1_p2_2"
+        )
+        if privacy.get("identity_scheme") != expected_scheme:
+            raise NemesisContractError(
+                "privacy.identity_scheme mismatches include_players"
+            )
+        expected_record_id_scheme = (
+            NEMESIS_RAW_RECORD_ID_SCHEME
+            if include_players
+            else NEMESIS_PSEUDONYMIZED_RECORD_ID_SCHEME
+        )
+        if privacy.get("record_id_scheme") != expected_record_id_scheme:
+            raise NemesisContractError(
+                "privacy.record_id_scheme mismatches include_players"
+            )
+        expected_player_group_scheme = (
+            NEMESIS_RAW_PLAYER_GROUP_SCHEME
+            if include_players
+            else NEMESIS_PSEUDONYMIZED_PLAYER_GROUP_SCHEME
+        )
+        if (
+            privacy.get("player_group_scheme")
+            != expected_player_group_scheme
+        ):
+            raise NemesisContractError(
+                "privacy.player_group_scheme mismatches include_players"
+            )
+        player_group_aliases = privacy.get("player_group_aliases")
+        if (
+            not isinstance(player_group_aliases, Mapping)
+            or set(player_group_aliases) != set(SEATS)
+        ):
+            raise NemesisContractError(
+                "privacy.player_group_aliases must contain p1 and p2"
+            )
+        if not include_players and (
+            any(
+                _PSEUDONYMIZED_PLAYER_GROUP_RE.fullmatch(
+                    str(player_group_aliases.get(seat) or "")
+                )
+                is None
+                for seat in SEATS
+            )
+            or player_group_aliases["p1"] == player_group_aliases["p2"]
+        ):
+            raise NemesisContractError(
+                "pseudonymized privacy requires distinct opaque player "
+                "group aliases"
+            )
+        if include_players and (
+            str(player_group_aliases.get("p1"))
+            != str(seats["p1"]["participant_id"])
+            or str(player_group_aliases.get("p2"))
+            != str(seats["p2"]["participant_id"])
+        ):
+            raise NemesisContractError(
+                "raw privacy player group aliases must match participant IDs"
+            )
+        if not include_players and (
+            seats["p1"]["participant_id"] != 1
+            or seats["p2"]["participant_id"] != 2
+        ):
+            raise NemesisContractError(
+                "pseudonymized privacy requires participant IDs p1=1,p2=2"
+            )
+        if not include_players and (
+            _PSEUDONYMIZED_RECORD_ID_RE.fullmatch(
+                str(record.get("battle_id") or "")
+            )
+            is None
+            or _PSEUDONYMIZED_RECORD_ID_RE.fullmatch(
+                str(record.get("match_id") or "")
+            )
+            is None
+        ):
+            raise NemesisContractError(
+                "pseudonymized privacy requires random opaque battle_id "
+                "and match_id values"
+            )
     return deepcopy(dict(record))
 
 
@@ -665,12 +850,7 @@ class NemesisBattleCollector:
         else:
             standard_exclusions.append("model_model_lite_only")
         dataset_generation = int(meta.get("dataset_generation") or 1)
-        generation_reason = str(
-            meta.get("dataset_generation_reason") or "initial"
-        )
-        rehydrated_generation = (
-            dataset_generation != 1 or generation_reason != "initial"
-        )
+        rehydrated_generation = dataset_generation != 1
         if rehydrated_generation:
             standard_exclusions.append("rehydrated_trace_generation")
         standard_exclusions = sorted(set(standard_exclusions))
@@ -770,16 +950,64 @@ class NemesisBattleCollector:
         return self.snapshot()
 
 
+def _pseudonymized_record_id(value: Any, *, namespace: UUID) -> str:
+    """Return an export-local opaque alias without preserving raw substrings."""
+
+    raw = str(value or "")
+    if not raw:
+        raise NemesisContractError("record identifier is required")
+    return f"record_{uuid5(namespace, raw).hex}"
+
+
 def _privacy_transform(
     record: Mapping[str, Any],
     *,
     include_players: bool,
+    record_id_namespace: UUID | None = None,
 ) -> dict[str, Any]:
     exported = validate_nemesis_record(record, require_terminal=True)
     seats = exported["features"]["base"]["seats"]
+    existing_privacy = exported.get("privacy")
+    existing_group_aliases = (
+        existing_privacy.get("player_group_aliases")
+        if isinstance(existing_privacy, Mapping)
+        else None
+    )
+    player_group_sources = {
+        seat: (
+            existing_group_aliases.get(seat)
+            if isinstance(existing_group_aliases, Mapping)
+            else seats[seat]["participant_id"]
+        )
+        for seat in SEATS
+    }
     if not include_players:
+        namespace = record_id_namespace or uuid4()
         seats["p1"]["participant_id"] = 1
         seats["p2"]["participant_id"] = 2
+        exported["battle_id"] = _pseudonymized_record_id(
+            exported["battle_id"],
+            namespace=namespace,
+        )
+        exported["match_id"] = _pseudonymized_record_id(
+            exported["match_id"],
+            namespace=namespace,
+        )
+        player_group_aliases = {
+            seat: (
+                "player_"
+                + uuid5(
+                    namespace,
+                    f"player-group:{player_group_sources[seat]}",
+                ).hex
+            )
+            for seat in SEATS
+        }
+    else:
+        player_group_aliases = {
+            seat: str(seats[seat]["participant_id"])
+            for seat in SEATS
+        }
     exported["privacy"] = {
         "identity_scheme": (
             "raw_player_ids"
@@ -787,8 +1015,34 @@ def _privacy_transform(
             else "side_pseudonyms_p1_1_p2_2"
         ),
         "include_players": bool(include_players),
+        "player_group_aliases": player_group_aliases,
+        "player_group_scheme": (
+            NEMESIS_RAW_PLAYER_GROUP_SCHEME
+            if include_players
+            else NEMESIS_PSEUDONYMIZED_PLAYER_GROUP_SCHEME
+        ),
+        "record_id_scheme": (
+            NEMESIS_RAW_RECORD_ID_SCHEME
+            if include_players
+            else NEMESIS_PSEUDONYMIZED_RECORD_ID_SCHEME
+        ),
     }
+    validate_nemesis_record(exported, require_terminal=True)
     return exported
+
+
+def pseudonymize_nemesis_record(
+    record: Mapping[str, Any],
+    *,
+    record_id_namespace: UUID | None = None,
+) -> dict[str, Any]:
+    """Prepare one terminal training record under the canonical privacy contract."""
+
+    return _privacy_transform(
+        record,
+        include_players=False,
+        record_id_namespace=record_id_namespace,
+    )
 
 
 def export_nemesis_ndjson(
@@ -800,8 +1054,13 @@ def export_nemesis_ndjson(
 
     exported: list[dict[str, Any]] = []
     seen: set[str] = set()
+    record_id_namespace = uuid4()
     for record in records:
-        transformed = _privacy_transform(record, include_players=include_players)
+        transformed = _privacy_transform(
+            record,
+            include_players=include_players,
+            record_id_namespace=record_id_namespace,
+        )
         battle_id = str(transformed["battle_id"])
         if battle_id in seen:
             raise NemesisContractError(f"duplicate battle_id: {battle_id}")
@@ -822,6 +1081,16 @@ def export_nemesis_ndjson(
             else "side_pseudonyms_p1_1_p2_2"
         ),
         "include_players": bool(include_players),
+        "player_group_scheme": (
+            NEMESIS_RAW_PLAYER_GROUP_SCHEME
+            if include_players
+            else NEMESIS_PSEUDONYMIZED_PLAYER_GROUP_SCHEME
+        ),
+        "record_id_scheme": (
+            NEMESIS_RAW_RECORD_ID_SCHEME
+            if include_players
+            else NEMESIS_PSEUDONYMIZED_RECORD_ID_SCHEME
+        ),
     }
     lines = [json.dumps(header, ensure_ascii=False, sort_keys=True)]
     lines.extend(
@@ -841,28 +1110,99 @@ def write_nemesis_export(
     *,
     include_players: bool = False,
 ) -> Path:
-    """Atomically write one private whole-battle NDJSON export."""
+    """Atomically stream one private whole-battle NDJSON export."""
 
     target = Path(destination)
     target.parent.mkdir(parents=True, exist_ok=True)
-    payload = export_nemesis_ndjson(records, include_players=include_players)
-    fd, temporary = tempfile.mkstemp(
-        prefix=f".{target.name}.",
+    spool_fd, spool_name = tempfile.mkstemp(
+        prefix=f".{target.name}.records.",
         suffix=".tmp",
         dir=target.parent,
     )
+    spool = Path(spool_name)
+    temporary: str | None = None
     try:
+        os.fchmod(spool_fd, 0o600)
+        seen: set[str] = set()
+        battle_count = 0
+        record_id_namespace = uuid4()
+        with os.fdopen(spool_fd, "w", encoding="utf-8") as handle:
+            for record in records:
+                transformed = _privacy_transform(
+                    record,
+                    include_players=include_players,
+                    record_id_namespace=record_id_namespace,
+                )
+                battle_id = str(transformed["battle_id"])
+                if battle_id in seen:
+                    raise NemesisContractError(
+                        f"duplicate battle_id: {battle_id}"
+                    )
+                seen.add(battle_id)
+                battle_count += 1
+                handle.write(
+                    json.dumps(
+                        {"record_type": "battle", **transformed},
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    )
+                    + "\n"
+                )
+            handle.flush()
+            os.fsync(handle.fileno())
+        if battle_count == 0:
+            raise NemesisContractError(
+                "at least one terminal battle is required"
+            )
+
+        header = {
+            "record_type": "header",
+            "format": NEMESIS_EXPORT_FORMAT,
+            "format_version": 1,
+            "schema_version": NEMESIS_SCHEMA,
+            "created_at": _utc_now_iso(),
+            "battle_count": battle_count,
+            "identity_scheme": (
+                "raw_player_ids"
+                if include_players
+                else "side_pseudonyms_p1_1_p2_2"
+            ),
+            "include_players": bool(include_players),
+            "player_group_scheme": (
+                NEMESIS_RAW_PLAYER_GROUP_SCHEME
+                if include_players
+                else NEMESIS_PSEUDONYMIZED_PLAYER_GROUP_SCHEME
+            ),
+            "record_id_scheme": (
+                NEMESIS_RAW_RECORD_ID_SCHEME
+                if include_players
+                else NEMESIS_PSEUDONYMIZED_RECORD_ID_SCHEME
+            ),
+        }
+        fd, temporary = tempfile.mkstemp(
+            prefix=f".{target.name}.",
+            suffix=".tmp",
+            dir=target.parent,
+        )
+        os.fchmod(fd, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(payload)
+            handle.write(
+                json.dumps(header, ensure_ascii=False, sort_keys=True)
+                + "\n"
+            )
+            with spool.open("r", encoding="utf-8") as source:
+                shutil.copyfileobj(source, handle, length=1024 * 1024)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, target)
+        temporary = None
+        target.chmod(0o600)
     except Exception:
-        try:
-            os.unlink(temporary)
-        except FileNotFoundError:
-            pass
+        if temporary is not None:
+            Path(temporary).unlink(missing_ok=True)
         raise
+    finally:
+        spool.unlink(missing_ok=True)
     return target
 
 
@@ -870,10 +1210,15 @@ __all__ = [
     "ACTOR_TYPES",
     "DOMAINS",
     "NEMESIS_EXPORT_FORMAT",
+    "NEMESIS_PSEUDONYMIZED_RECORD_ID_SCHEME",
+    "NEMESIS_PSEUDONYMIZED_PLAYER_GROUP_SCHEME",
+    "NEMESIS_RAW_RECORD_ID_SCHEME",
+    "NEMESIS_RAW_PLAYER_GROUP_SCHEME",
     "NEMESIS_SCHEMA",
     "NemesisBattleCollector",
     "NemesisContractError",
     "export_nemesis_ndjson",
+    "pseudonymize_nemesis_record",
     "validate_nemesis_record",
     "write_nemesis_export",
 ]

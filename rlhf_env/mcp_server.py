@@ -33,8 +33,11 @@ import argparse
 import asyncio
 import json
 import logging
+import math
 import os
+import re
 import sys
+import tempfile
 import zipfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -46,12 +49,461 @@ if str(_REPO_ROOT) not in sys.path:
 
 from rlhf_env import __version__  # noqa: E402
 from rlhf_env.components.arena_match_manager import ArenaMatchManager  # noqa: E402
+from rlhf_env.components.dataset_toolbox import DatasetToolbox  # noqa: E402
 from rlhf_env.components.match_runner import MatchRunner  # noqa: E402
 from rlhf_env.components.policy_factory import BOT_MAX_DIFFICULTY  # noqa: E402
 from rlhf_env.components.policy_registry import PolicyRegistry  # noqa: E402
-from rlhf_env.components.v5_trace_validate import validate_v5_trace  # noqa: E402
+from rlhf_env.components.v5_trace_validate import (  # noqa: E402
+    validate_v5_metronome_contract,
+    validate_v5_timestamp_contract,
+    validate_v5_trace,
+)
 
 logger = logging.getLogger(__name__)
+
+_SAFE_COMPONENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_CREDENTIAL_URL_RE = re.compile(
+    r"(?i)([a-z][a-z0-9+.-]*://)([^/\s@:]+):([^/\s@]+)@"
+)
+_SENSITIVE_ASSIGNMENT_RE = re.compile(
+    r"(?i)\b([a-z0-9_-]*(?:password|passwd|secret|token|api[_-]?key|"
+    r"authorization|dsn|database[_-]?url))"
+    r"(\s*[:=]\s*)(\"[^\"]*\"|'[^']*'|[^,\s;]+)"
+)
+_BEARER_TOKEN_RE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+")
+_PRIVATE_KEY_RE = re.compile(
+    r"-----BEGIN [^-]*PRIVATE KEY-----.*?"
+    r"-----END [^-]*PRIVATE KEY-----",
+    re.DOTALL,
+)
+
+
+def _redact_sensitive_error_text(value: Any) -> str:
+    """Redact common credential forms without reflecting raw exceptions."""
+
+    text = str(value or "")
+    text = _CREDENTIAL_URL_RE.sub(r"\1[REDACTED]@", text)
+    text = _SENSITIVE_ASSIGNMENT_RE.sub(
+        lambda match: (
+            f"{match.group(1)}{match.group(2)}[REDACTED]"
+        ),
+        text,
+    )
+    text = _BEARER_TOKEN_RE.sub("Bearer [REDACTED]", text)
+    return _PRIVATE_KEY_RE.sub("[REDACTED PRIVATE KEY]", text)
+
+
+def _public_tool_error(exc: Exception) -> dict[str, str]:
+    """Build a stable MCP error that cannot expose an internal exception."""
+
+    if isinstance(exc, ValueError):
+        message = _redact_sensitive_error_text(exc).strip()
+        return {
+            "error": message or "invalid tool request",
+            "error_code": "invalid_request",
+        }
+    return {
+        "error": "internal tool error",
+        "error_code": "internal_tool_error",
+    }
+
+
+def _safe_component(value: Any, *, field: str) -> str:
+    component = str(value or "")
+    if (
+        not _SAFE_COMPONENT_RE.fullmatch(component)
+        or component in {".", ".."}
+        or "/" in component
+        or "\\" in component
+    ):
+        raise ValueError(f"invalid {field}")
+    return component
+
+
+def _safe_session_path(root: Path, *components: tuple[str, str] | str) -> Path:
+    root_resolved = root.resolve()
+    current = root_resolved
+    for raw in components:
+        if isinstance(raw, tuple):
+            value, field = raw
+        else:
+            value, field = raw, "path_component"
+        current = current / _safe_component(value, field=field)
+        if current.is_symlink():
+            raise ValueError("session path crosses a symlink")
+    resolved = current.resolve(strict=False)
+    try:
+        resolved.relative_to(root_resolved)
+    except ValueError as exc:
+        raise ValueError("session path escapes sessions_dir") from exc
+    return resolved
+
+
+def _validate_tool_arguments(
+    arguments: Dict[str, Any],
+    schema: Dict[str, Any],
+) -> None:
+    """Enforce the bounded JSON-Schema subset used by dataset tools."""
+    properties = schema.get("properties") or {}
+    missing = [
+        name
+        for name in (schema.get("required") or [])
+        if name not in arguments
+    ]
+    if missing:
+        raise ValueError(
+            "missing required tool arguments: " + ", ".join(sorted(missing))
+        )
+    if schema.get("additionalProperties") is False:
+        unknown = sorted(set(arguments) - set(properties))
+        if unknown:
+            raise ValueError(
+                "unknown tool arguments: " + ", ".join(unknown)
+            )
+    for name, value in arguments.items():
+        field_schema = properties.get(name)
+        if not isinstance(field_schema, dict):
+            continue
+        expected_type = field_schema.get("type")
+        type_ok = (
+            expected_type == "string"
+            and isinstance(value, str)
+            or expected_type == "boolean"
+            and isinstance(value, bool)
+            or expected_type == "integer"
+            and isinstance(value, int)
+            and not isinstance(value, bool)
+            or expected_type == "number"
+            and isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(float(value))
+            or expected_type == "object"
+            and isinstance(value, dict)
+            or expected_type == "array"
+            and isinstance(value, list)
+            or expected_type is None
+        )
+        if not type_ok:
+            raise ValueError(
+                f"tool argument {name} must be {expected_type}"
+            )
+        if "enum" in field_schema and value not in field_schema["enum"]:
+            raise ValueError(
+                f"tool argument {name} must be one of "
+                f"{field_schema['enum']}"
+            )
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            if (
+                "minimum" in field_schema
+                and value < field_schema["minimum"]
+            ):
+                raise ValueError(
+                    f"tool argument {name} is below minimum"
+                )
+            if (
+                "maximum" in field_schema
+                and value > field_schema["maximum"]
+            ):
+                raise ValueError(
+                    f"tool argument {name} is above maximum"
+                )
+            if (
+                "exclusiveMinimum" in field_schema
+                and value <= field_schema["exclusiveMinimum"]
+            ):
+                raise ValueError(
+                    f"tool argument {name} is below exclusive minimum"
+                )
+            if (
+                "exclusiveMaximum" in field_schema
+                and value >= field_schema["exclusiveMaximum"]
+            ):
+                raise ValueError(
+                    f"tool argument {name} is above exclusive maximum"
+                )
+
+
+def _wilson_lower_bound(wins: int, games: int, z: float = 1.96) -> float:
+    if games <= 0:
+        return 0.0
+    p = wins / games
+    denominator = 1.0 + z * z / games
+    centre = p + z * z / (2.0 * games)
+    margin = z * math.sqrt(
+        (p * (1.0 - p) + z * z / (4.0 * games)) / games
+    )
+    return max(0.0, (centre - margin) / denominator)
+
+
+def _semi_synthetic_quality(
+    group_dir: Path,
+    results: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Behavioral gate for LLM traces; structural validity is insufficient."""
+
+    llm_results = [
+        row
+        for row in results
+        if str(row.get("battle_tag") or "").startswith("llm-vs-")
+    ]
+    games = len(llm_results)
+    wins = sum(
+        str(row.get("status") or "").upper() == "P1_WIN"
+        for row in llm_results
+    )
+    decisions = rejected = end_turn = 0
+    end_turn_attack = end_turn_play = mana_draw = degraded = 0
+    accepted_training_rows = 0
+    for result in llm_results:
+        degraded += int(
+            bool(result.get("degraded") or result.get("policy_warnings"))
+        )
+        try:
+            action_path = _safe_session_path(
+                group_dir,
+                "battles",
+                (
+                    str(result.get("battle_id")),
+                    "battle_id",
+                ),
+                "v5",
+                "actions.jsonl",
+            )
+        except ValueError:
+            degraded += 1
+            continue
+        if not action_path.is_file():
+            continue
+        with action_path.open("r", encoding="utf-8") as handle:
+            for raw in handle:
+                if not raw.strip():
+                    continue
+                row = json.loads(raw)
+                if row.get("decision_source") != "llm":
+                    continue
+                decisions += 1
+                accepted = row.get("accepted") is True
+                accepted_training_rows += int(accepted)
+                rejected += int(not accepted or bool(row.get("error")))
+                action_type = row.get("action_type")
+                mana_draw += int(action_type == "mana_draw")
+                if action_type == "end_turn":
+                    end_turn += 1
+                    legal_types = {
+                        action.get("type")
+                        for action in (row.get("legal_actions") or [])
+                        if isinstance(action, dict)
+                    }
+                    end_turn_attack += int("attack" in legal_types)
+                    end_turn_play += int("play_card" in legal_types)
+    win_rate = wins / games if games else 0.0
+    lower_bound = _wilson_lower_bound(wins, games)
+    usable = bool(
+        games >= 50
+        and decisions > 0
+        and degraded == 0
+        and rejected == 0
+        and lower_bound > 0.03
+    )
+    return {
+        "llm_battles": games,
+        "llm_wins": wins,
+        "p1_win_rate": win_rate,
+        "p1_win_rate_wilson_lower_95": lower_bound,
+        "llm_decisions": decisions,
+        "accepted_training_rows": accepted_training_rows,
+        "rejected_audit_rows": rejected,
+        "rejection_rate": rejected / decisions if decisions else 0.0,
+        "degraded_battles": degraded,
+        "mana_draw_decisions": mana_draw,
+        "end_turn_decisions": end_turn,
+        "end_turn_with_attack_legal": end_turn_attack,
+        "end_turn_with_play_legal": end_turn_play,
+        "minimum_battles": 50,
+        "minimum_wilson_lower_bound": 0.03,
+        "semi_synthetic_usable": usable,
+    }
+
+
+def _aggregate_quality_reports(
+    reports: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    additive = (
+        "llm_battles",
+        "llm_wins",
+        "llm_decisions",
+        "accepted_training_rows",
+        "rejected_audit_rows",
+        "degraded_battles",
+        "mana_draw_decisions",
+        "end_turn_decisions",
+        "end_turn_with_attack_legal",
+        "end_turn_with_play_legal",
+    )
+    total = {
+        key: sum(int(report.get(key, 0) or 0) for report in reports)
+        for key in additive
+    }
+    games = total["llm_battles"]
+    decisions = total["llm_decisions"]
+    total["p1_win_rate"] = total["llm_wins"] / games if games else 0.0
+    total["p1_win_rate_wilson_lower_95"] = _wilson_lower_bound(
+        total["llm_wins"],
+        games,
+    )
+    total["rejection_rate"] = (
+        total["rejected_audit_rows"] / decisions if decisions else 0.0
+    )
+    total["minimum_battles"] = 50
+    total["minimum_wilson_lower_bound"] = 0.03
+    total["semi_synthetic_usable"] = bool(
+        games >= 50
+        and decisions > 0
+        and total["degraded_battles"] == 0
+        and total["rejected_audit_rows"] == 0
+        and total["p1_win_rate_wilson_lower_95"] > 0.03
+    )
+    return total
+
+
+def _headless_auxiliary_evidence(v5_dir: Path) -> Dict[str, Any]:
+    """Report timing evidence without pretending it is part of policy readiness."""
+
+    meta_path = v5_dir / "meta.json"
+    actions_path = v5_dir / "actions.jsonl"
+    if (
+        meta_path.is_symlink()
+        or actions_path.is_symlink()
+        or not meta_path.is_file()
+        or not actions_path.is_file()
+    ):
+        return {
+            "timestamp_contract_ok": False,
+            "metronome_contract_ok": False,
+            "metronome_observed_labels": 0,
+        }
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        actions = [
+            json.loads(raw)
+            for raw in actions_path.read_text(
+                encoding="utf-8"
+            ).splitlines()
+            if raw.strip()
+        ]
+    except (OSError, json.JSONDecodeError):
+        return {
+            "timestamp_contract_ok": False,
+            "metronome_contract_ok": False,
+            "metronome_observed_labels": 0,
+        }
+    return {
+        "timestamp_contract_ok": not validate_v5_timestamp_contract(meta),
+        "metronome_contract_ok": not validate_v5_metronome_contract(
+            actions
+        ),
+        "metronome_observed_labels": sum(
+            row.get("decision_source") == "human"
+            and row.get("control_source") == "human"
+            and row.get("decision_time_censored") is False
+            and isinstance(
+                row.get("human_decision_time_raw_ms"),
+                (int, float),
+            )
+            and not isinstance(
+                row.get("human_decision_time_raw_ms"),
+                bool,
+            )
+            for row in actions
+        ),
+    }
+
+
+def _compact_state(
+    state: Dict[str, Any],
+    *,
+    history_limit: int = 8,
+) -> Dict[str, Any]:
+    """Decision-complete, token-bounded view for LLM player loops."""
+
+    card_keys = (
+        "instance_id",
+        "card_id",
+        "name",
+        "description",
+        "card_type",
+        "mana_cost",
+        "attack",
+        "hp",
+        "max_hp",
+        "mechanics",
+        "is_ready",
+        "can_attack",
+        "is_frozen",
+        "level",
+    )
+
+    def compact_card(value: Any) -> Dict[str, Any]:
+        return {
+            key: value[key]
+            for key in card_keys
+            if isinstance(value, dict) and key in value
+        }
+
+    def compact_side(value: Any, *, include_hand: bool) -> Dict[str, Any]:
+        raw = value if isinstance(value, dict) else {}
+        result = {
+            "user_id": raw.get("user_id"),
+            "mana": raw.get("mana"),
+            "max_mana": raw.get("max_mana"),
+            "mana_draw_count_this_turn": raw.get(
+                "mana_draw_count_this_turn",
+                0,
+            ),
+            "hero": compact_card(raw.get("hero")),
+            "board": [
+                compact_card(card) for card in (raw.get("board") or [])
+            ],
+            "hand_count": raw.get(
+                "hand_count",
+                len(raw.get("hand") or []),
+            ),
+            "deck_count": raw.get("deck_count"),
+        }
+        if include_hand:
+            result["hand"] = [
+                compact_card(card) for card in (raw.get("hand") or [])
+            ]
+        return result
+
+    top_keys = (
+        "match_id",
+        "turn",
+        "current_player_id",
+        "is_my_turn",
+        "is_ended",
+        "game_over",
+        "winner_id",
+        "ruleset",
+        "sudden_death",
+    )
+    result = {key: state.get(key) for key in top_keys if key in state}
+    result["player"] = compact_side(state.get("player"), include_hand=True)
+    result["opponent"] = compact_side(
+        state.get("opponent"),
+        include_hand=False,
+    )
+    result["legal_actions"] = [
+        {"legal_action_index": index, **dict(action)}
+        for index, action in enumerate(state.get("legal_actions") or [])
+        if isinstance(action, dict)
+    ]
+    history = list(state.get("action_history") or [])
+    result["action_history"] = history[
+        -max(0, min(int(history_limit), 20)) :
+    ]
+    result["compact"] = True
+    return result
 
 
 def _policy_info(policy: Any) -> Optional[Dict[str, Any]]:
@@ -122,7 +574,13 @@ class HeadlessHub:
 # ============================================================================
 
 class MCPServer:
-    def __init__(self, hub: HeadlessHub, registry: Optional[PolicyRegistry] = None):
+    def __init__(
+        self,
+        hub: HeadlessHub,
+        registry: Optional[PolicyRegistry] = None,
+        *,
+        dataset_toolbox: Optional[DatasetToolbox] = None,
+    ):
         self.hub = hub
         # BUG1 фикс: list_models/register_custom_model и start_series должны делить
         # один реестр. Авторитативный — hub.manager.registry (его использует
@@ -133,13 +591,32 @@ class MCPServer:
             for spec in registry.specs:
                 if spec.name not in self.registry._name_index:
                     self.registry.add_spec(spec)
+        production_enabled = str(
+            os.environ.get("RLHF_ENABLE_PRODUCTION_DATASETS", "")
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        self.dataset_toolbox = dataset_toolbox or DatasetToolbox(
+            os.environ.get(
+                "RLHF_DATASETS_DIR",
+                str(hub.manager.sessions_dir.parent / "datasets"),
+            ),
+            returnclock_salt_env=os.environ.get(
+                "RLHF_RETURNCLOCK_SALT_ENV",
+                "RETURNCLOCK_DATASET_SALT",
+            ),
+            returnclock_salt_key_id_env=os.environ.get(
+                "RLHF_RETURNCLOCK_SALT_KEY_ID_ENV",
+                "RETURNCLOCK_DATASET_SALT_KEY_ID",
+            ),
+            production_enabled=production_enabled,
+            cards_path=hub.manager.cards_path,
+        )
         self.tools = self._build_tools()
 
     # ------------------------------------------------------------------
     # tool schemas
     # ------------------------------------------------------------------
     def _build_tools(self) -> List[Dict[str, Any]]:
-        return [
+        tools = [
             {
                 "name": "start_series",
                 "description": (
@@ -194,18 +671,40 @@ class MCPServer:
             },
             {
                 "name": "get_state",
-                "description": "Полный actor-perspective state боя (тот же формат, что /api/battle/state в браузере).",
-                "inputSchema": {"type": "object", "properties": {"match_id": {"type": "string"}}, "required": ["match_id"]},
+                "description": (
+                    "Actor-perspective state. compact=true keeps all decision "
+                    "fields and indexed legal actions while bounding history "
+                    "for efficient LLM player loops."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "match_id": {"type": "string"},
+                        "compact": {"type": "boolean", "default": False},
+                        "history_limit": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 20,
+                            "default": 8,
+                        },
+                    },
+                    "required": ["match_id"],
+                },
             },
             {
                 "name": "get_legal_actions",
-                "description": "Список легальных действий для текущего (человека) игрока.",
+                "description": (
+                    "Легальные действия с stable legal_action_index, чтобы "
+                    "малой модели не приходилось копировать UUID."
+                ),
                 "inputSchema": {"type": "object", "properties": {"match_id": {"type": "string"}}, "required": ["match_id"]},
             },
             {
                 "name": "submit_action",
                 "description": (
-                    "Выполнить действие игрока (p1). action: {type:'play_card'|'attack'|'end_turn'|'mana_draw', ...}. "
+                    "Выполнить действие игрока (p1). Предпочтительно передать "
+                    "legal_action_index из последнего get_state/"
+                    "get_legal_actions; legacy action также поддерживается. "
                     "play_card: {type:'play_card', card_id_from_hand|hand_index, target_position?, target_id?, target_is_hero?}. "
                     "attack: {type:'attack', attacker_id, target_id, target_is_hero?}. "
                     "end_turn: {type:'end_turn'}. "
@@ -216,6 +715,20 @@ class MCPServer:
                     "type": "object",
                     "properties": {
                         "match_id": {"type": "string"},
+                        "legal_action_index": {
+                            "type": "integer",
+                            "minimum": 0,
+                        },
+                        "compact_response": {
+                            "type": "boolean",
+                            "default": False,
+                        },
+                        "history_limit": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 20,
+                            "default": 8,
+                        },
                         "action": {
                             "type": "object",
                             "properties": {
@@ -230,7 +743,7 @@ class MCPServer:
                             "required": ["type"],
                         },
                     },
-                    "required": ["match_id", "action"],
+                    "required": ["match_id"],
                 },
             },
             {
@@ -361,6 +874,17 @@ class MCPServer:
                         "group_id": {"type": "string"},
                         "battle_id": {"type": "string"},
                         "what": {"type": "string", "enum": ["meta", "turns", "actions"]},
+                        "offset": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "default": 0,
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 2000,
+                            "default": 200,
+                        },
                     },
                     "required": ["group_id", "battle_id", "what"],
                 },
@@ -379,7 +903,280 @@ class MCPServer:
                 ),
                 "inputSchema": {"type": "object", "properties": {"group_id": {"type": "string"}}, "required": ["group_id"]},
             },
+            {
+                "name": "get_training_data_status",
+                "description": (
+                    "Readiness overview for local exports and the opt-in "
+                    "read-only production dataset plane. Never returns DSNs, "
+                    "salts or raw telemetry."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {},
+                },
+            },
+            {
+                "name": "list_training_exports",
+                "description": (
+                    "List V5, Nemesis and ReturnClock artifacts under the "
+                    "private datasets root."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "kind": {
+                            "type": "string",
+                            "enum": [
+                                "returnclock",
+                                "returnclock_split",
+                                "nemesis",
+                                "nemesis_split",
+                                "v5_export",
+                                "v5_materialized",
+                            ],
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 1000,
+                            "default": 200,
+                        },
+                    },
+                },
+            },
+            {
+                "name": "inspect_training_export",
+                "description": (
+                    "Inspect header, checksum, size and bounded manifest "
+                    "metadata for one artifact. Does not return dataset rows."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"],
+                },
+            },
+            {
+                "name": "validate_training_export",
+                "description": (
+                    "Deep schema/privacy/readiness validation for V5, Nemesis "
+                    "or ReturnClock. Recomputes counts and split diagnostics."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"],
+                },
+            },
+            {
+                "name": "export_v5_training_dataset",
+                "description": (
+                    "Opt-in read-only production export of complete terminal "
+                    "V5 bundles. Always pseudonymized; publishes atomically."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "output": {"type": "string"},
+                        "days": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 365,
+                            "default": 30,
+                        },
+                        "limit_battles": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 10000,
+                            "default": 1000,
+                        },
+                        "overwrite": {
+                            "type": "boolean",
+                            "default": False,
+                        },
+                    },
+                    "required": ["output"],
+                },
+            },
+            {
+                "name": "materialize_v5_training_dataset",
+                "description": (
+                    "Convert a V5 transport export into the canonical "
+                    "rlhf_v5_storage_v1 directory and publish it only after "
+                    "deep validation of V5/Metronome/TimeStamp contracts. "
+                    "Use a fresh versioned output_dir for crash-safe handoff."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "input_path": {"type": "string"},
+                        "output_dir": {"type": "string"},
+                        "group_id": {"type": "string"},
+                        "overwrite": {
+                            "type": "boolean",
+                            "default": False,
+                        },
+                    },
+                    "required": ["input_path", "output_dir"],
+                },
+            },
+            {
+                "name": "export_nemesis_training_dataset",
+                "description": (
+                    "Extract canonical meta.nemesis_record rows from either "
+                    "a V5 export or an authoritative headless group, enforce "
+                    "terminal/eligibility contracts and write a pseudonymized "
+                    "private dataset. Provide exactly one of input_path or "
+                    "group_id."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "input_path": {"type": "string"},
+                        "group_id": {"type": "string"},
+                        "output": {"type": "string"},
+                        "overwrite": {
+                            "type": "boolean",
+                            "default": False,
+                        },
+                    },
+                    "required": ["output"],
+                },
+            },
+            {
+                "name": "export_returnclock_training_dataset",
+                "description": (
+                    "Opt-in read-only ReturnClock natural-return export. HMAC "
+                    "salt is read only from server env; raw user IDs and salt "
+                    "values never enter MCP arguments/responses."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "output": {"type": "string"},
+                        "start": {"type": "string"},
+                        "end": {"type": "string"},
+                        "horizon_hours": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 744,
+                            "default": 168,
+                        },
+                        "safety_lag_minutes": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 1440,
+                            "default": 10,
+                        },
+                        "min_analytics_version": {
+                            "type": "integer",
+                            "minimum": 2,
+                            "default": 2,
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 1000000,
+                            "default": 50000,
+                        },
+                        "overwrite": {
+                            "type": "boolean",
+                            "default": False,
+                        },
+                    },
+                    "required": ["output"],
+                },
+            },
+            {
+                "name": "split_nemesis_training_dataset",
+                "description": (
+                    "Create separately audited Nemesis handoff artifacts from "
+                    "a canonical pseudonymized export: Lite deck-matchup "
+                    "grouped splits and, when Standard preconditions pass, a "
+                    "player-disjoint split that accounts for excluded "
+                    "cross-partition battles plus chronological and "
+                    "deck-group evaluation splits. Lite-only sources remain "
+                    "training-ready for Lite. Standard needs at least six "
+                    "players, three pairwise-disjoint battles, three matchup "
+                    "groups and three cutoff cohorts. Player grouping aliases "
+                    "remain metadata and are forbidden as features."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "source": {"type": "string"},
+                        "output_dir": {"type": "string"},
+                        "train_fraction": {
+                            "type": "number",
+                            "exclusiveMinimum": 0,
+                            "exclusiveMaximum": 1,
+                            "default": 0.70,
+                        },
+                        "validation_fraction": {
+                            "type": "number",
+                            "exclusiveMinimum": 0,
+                            "exclusiveMaximum": 1,
+                            "default": 0.15,
+                        },
+                        "overwrite": {
+                            "type": "boolean",
+                            "default": False,
+                        },
+                    },
+                    "required": ["source", "output_dir"],
+                },
+            },
+            {
+                "name": "split_returnclock_training_dataset",
+                "description": (
+                    "Create deterministic organic-only train/validation/test "
+                    "JSONL files from a validated ReturnClock export. Users "
+                    "are disjoint between splits, user groups are ordered by "
+                    "their first prediction cutoff, and treated/boundary "
+                    "exclusions are recorded in the manifest."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "source": {"type": "string"},
+                        "output_dir": {"type": "string"},
+                        "train_fraction": {
+                            "type": "number",
+                            "exclusiveMinimum": 0,
+                            "exclusiveMaximum": 1,
+                            "default": 0.70,
+                        },
+                        "validation_fraction": {
+                            "type": "number",
+                            "exclusiveMinimum": 0,
+                            "exclusiveMaximum": 1,
+                            "default": 0.15,
+                        },
+                        "overwrite": {
+                            "type": "boolean",
+                            "default": False,
+                        },
+                    },
+                    "required": ["source", "output_dir"],
+                },
+            },
         ]
+        dataset_tools = {
+            "get_training_data_status",
+            "list_training_exports",
+            "inspect_training_export",
+            "validate_training_export",
+            "export_v5_training_dataset",
+            "materialize_v5_training_dataset",
+            "export_nemesis_training_dataset",
+            "split_nemesis_training_dataset",
+            "export_returnclock_training_dataset",
+            "split_returnclock_training_dataset",
+        }
+        for tool in tools:
+            if tool["name"] in dataset_tools:
+                tool["inputSchema"]["additionalProperties"] = False
+        return tools
 
     # ------------------------------------------------------------------
     # tool handlers (async)
@@ -424,8 +1221,16 @@ class MCPServer:
             }
 
         if name == "next_battle":
-            gid = args["group_id"]
-            match = hub.manager.next_match(gid)
+            gid = _safe_component(args["group_id"], field="group_id")
+            try:
+                match = hub.manager.next_match(gid)
+            except RuntimeError as exc:
+                if str(exc) == "current_battle_in_progress":
+                    return {
+                        "error": "current_battle_in_progress",
+                        "group_id": gid,
+                    }
+                raise
             if match is None:
                 return {"status": "series_complete", "group_id": gid}
             runner = await hub.get_runner(match.engine.match_id)
@@ -443,19 +1248,34 @@ class MCPServer:
             match = hub._match(args["match_id"])
             if match is None:
                 return {"error": "match_not_found"}
-            return match.engine.get_full_state(viewer_id=match.engine.human_user_id)
+            state = match.engine.get_full_state(
+                viewer_id=match.engine.human_user_id
+            )
+            if args.get("compact"):
+                return _compact_state(
+                    state,
+                    history_limit=int(args.get("history_limit", 8)),
+                )
+            return state
 
         if name == "get_legal_actions":
             match = hub._match(args["match_id"])
             if match is None:
                 return {"error": "match_not_found"}
             uid = match.engine.human_user_id
-            legal = match.engine.get_legal_actions(uid) if not match.engine.is_current_player_bot() else []
+            legal_raw = (
+                match.engine.get_legal_actions(uid)
+                if not match.engine.is_current_player_bot()
+                else []
+            )
+            legal = [
+                {"legal_action_index": index, **dict(action)}
+                for index, action in enumerate(legal_raw)
+            ]
             return {"legal_actions": legal, "is_my_turn": match.engine.get_current_player_id() == uid}
 
         if name == "submit_action":
             match_id = args["match_id"]
-            action = args.get("action", {})
             runner = await hub.get_runner(match_id)
             if runner is None:
                 return {"error": "match_not_found"}
@@ -466,12 +1286,50 @@ class MCPServer:
             # (run_bot_turn с match.p1_policy). Симметрично surrender/get_legal_actions.
             if getattr(runner.match.engine, "p1_actor_type", "human") == "rl":
                 return {"error": "submit_action_unavailable_for_rl_p1"}
+            resolved_index = args.get("legal_action_index")
+            if resolved_index is not None:
+                engine = runner.match.engine
+                uid = engine.human_user_id
+                if engine.get_current_player_id() != uid:
+                    return {"error": "not_your_turn"}
+                legal_raw = engine.get_legal_actions_raw(uid)
+                if (
+                    isinstance(resolved_index, bool)
+                    or not isinstance(resolved_index, int)
+                ):
+                    return {"error": "legal_action_index_must_be_integer"}
+                if resolved_index < 0 or resolved_index >= len(legal_raw):
+                    return {
+                        "error": "legal_action_index_out_of_range",
+                        "legal_action_count": len(legal_raw),
+                    }
+                action = legal_raw[resolved_index].to_dict()
+            else:
+                action = args.get("action")
+                if not isinstance(action, dict) or not action.get("type"):
+                    return {
+                        "error": "action_or_legal_action_index_required"
+                    }
             action = dict(action)
+            resolved_action = dict(action)
             action.setdefault("client_action_id", f"mcp_{match_id}_{int(asyncio.get_event_loop().time()*1000)&0xffff}")
             resp = await runner.execute_human_action(action)
             # авто-advance бота уже выполнен в execute_human_action (create_task run_bot_turn),
             # но в headless-режоте create_task мог быть запланирован — дождёмся его.
             await self._drain_bot(runner)
+            if resolved_index is not None and isinstance(resp, dict):
+                resp = dict(resp)
+                resp["resolved_legal_action_index"] = resolved_index
+                resp["resolved_legal_action"] = resolved_action
+            if args.get("compact_response") and isinstance(resp, dict):
+                state = runner.match.engine.get_full_state(
+                    viewer_id=runner.match.engine.human_user_id,
+                )
+                resp = dict(resp)
+                resp["state"] = _compact_state(
+                    state,
+                    history_limit=int(args.get("history_limit", 8)),
+                )
             return resp
 
         if name == "advance_bot":
@@ -506,7 +1364,7 @@ class MCPServer:
             return {"groups": hub.manager.list_groups()}
 
         if name == "get_battle_group_status":
-            gid = args["group_id"]
+            gid = _safe_component(args["group_id"], field="group_id")
             hub.manager.reap_completed(gid)
             m = hub.manager.list_groups()
             for g in m:
@@ -515,20 +1373,47 @@ class MCPServer:
             return {"error": "group not found"}
 
         if name == "get_battle_group_manifest":
-            gid = args["group_id"]
-            path = hub.manager.sessions_dir / gid / "manifest.json"
+            gid = _safe_component(args["group_id"], field="group_id")
+            path = _safe_session_path(
+                hub.manager.sessions_dir,
+                (gid, "group_id"),
+                "manifest.json",
+            )
             if not path.exists():
                 return {"error": "group not found"}
             return json.loads(path.read_text(encoding="utf-8"))
 
         if name == "get_dataset":
-            gid = args["group_id"]
-            gdir = hub.manager.sessions_dir / gid
+            gid = _safe_component(args["group_id"], field="group_id")
+            gdir = _safe_session_path(
+                hub.manager.sessions_dir,
+                (gid, "group_id"),
+            )
             if not gdir.exists():
                 return {"error": "group not found"}
-            dataset = gdir / "dataset.jsonl"
-            battles_dir = gdir / "battles"
-            per_battle = sorted(str(p) for p in battles_dir.glob("*.jsonl")) if battles_dir.exists() else []
+            dataset = _safe_session_path(
+                hub.manager.sessions_dir,
+                (gid, "group_id"),
+                "dataset.jsonl",
+            )
+            battles_dir = _safe_session_path(
+                hub.manager.sessions_dir,
+                (gid, "group_id"),
+                "battles",
+            )
+            per_battle = (
+                sorted(
+                    str(path)
+                    for path in battles_dir.glob("*.jsonl")
+                    if path.is_file()
+                    and not path.is_symlink()
+                    and path.resolve().is_relative_to(
+                        battles_dir.resolve()
+                    )
+                )
+                if battles_dir.exists()
+                else []
+            )
             return {
                 "group_id": gid,
                 "dataset_jsonl": str(dataset),
@@ -538,27 +1423,72 @@ class MCPServer:
             }
 
         if name == "list_battle_manifests":
-            gid = args["group_id"]
-            gdir = hub.manager.sessions_dir / gid / "battles"
+            gid = _safe_component(args["group_id"], field="group_id")
+            gdir = _safe_session_path(
+                hub.manager.sessions_dir,
+                (gid, "group_id"),
+                "battles",
+            )
             if not gdir.exists():
                 return {"error": "group not found"}
-            return {"battles": sorted(str(p) for p in gdir.glob("*.json"))}
+            return {
+                "battles": sorted(
+                    str(path)
+                    for path in gdir.glob("*.json")
+                    if path.is_file()
+                    and not path.is_symlink()
+                    and path.resolve().is_relative_to(gdir.resolve())
+                )
+            }
 
         if name == "download_battle_logs":
-            gid = args["group_id"]
+            gid = _safe_component(args["group_id"], field="group_id")
             fmt = args.get("format", "json")
-            gdir = hub.manager.sessions_dir / gid
+            gdir = _safe_session_path(
+                hub.manager.sessions_dir,
+                (gid, "group_id"),
+            )
             if not gdir.exists():
                 return {"error": "group not found"}
             if fmt == "zip":
-                zip_path = hub.manager.sessions_dir / f"{gid}.zip"
-                with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-                    for f in gdir.rglob("*"):
-                        if f.is_file():
-                            zf.write(f, arcname=f.relative_to(gdir))
+                zip_path = _safe_session_path(
+                    hub.manager.sessions_dir,
+                    (f"{gid}.zip", "archive_name"),
+                )
+                with tempfile.NamedTemporaryFile(
+                    dir=hub.manager.sessions_dir,
+                    prefix=f".{gid}.",
+                    suffix=".zip.tmp",
+                    delete=False,
+                ) as temporary_handle:
+                    temporary_zip = Path(temporary_handle.name)
+                    os.fchmod(temporary_handle.fileno(), 0o600)
+                try:
+                    with zipfile.ZipFile(
+                        temporary_zip,
+                        "w",
+                        zipfile.ZIP_DEFLATED,
+                    ) as archive:
+                        for file_path in gdir.rglob("*"):
+                            if file_path.is_symlink() or not file_path.is_file():
+                                continue
+                            file_path.resolve().relative_to(gdir.resolve())
+                            archive.write(
+                                file_path,
+                                arcname=file_path.relative_to(gdir),
+                            )
+                    os.replace(temporary_zip, zip_path)
+                    zip_path.chmod(0o600)
+                except Exception:
+                    temporary_zip.unlink(missing_ok=True)
+                    raise
                 return {"path": str(zip_path), "size": zip_path.stat().st_size, "format": "zip"}
             return {"path": str(gdir), "format": "json",
-                    "files": sorted(str(p.relative_to(hub.manager.sessions_dir)) for p in gdir.rglob("*") if p.is_file())}
+                    "files": sorted(
+                        str(path.relative_to(hub.manager.sessions_dir))
+                        for path in gdir.rglob("*")
+                        if path.is_file() and not path.is_symlink()
+                    )}
 
         if name == "list_models":
             return {"models": self.registry.list_specs()}
@@ -642,7 +1572,7 @@ class MCPServer:
             return {"actions": actions[-limit:], "count": len(actions)}
 
         if name == "finish_series":
-            gid = args["group_id"]
+            gid = _safe_component(args["group_id"], field="group_id")
             live = hub.manager._groups.get(gid)
             if live is None:
                 return {"error": "group not found"}
@@ -687,50 +1617,196 @@ class MCPServer:
         # --- V5 training orchestrator --------------------------------------
 
         if name == "get_v5_dataset_summary":
-            gid = args["group_id"]
-            gdir = hub.manager.sessions_dir / gid
+            gid = _safe_component(args["group_id"], field="group_id")
+            gdir = _safe_session_path(
+                hub.manager.sessions_dir,
+                (gid, "group_id"),
+            )
             if not gdir.exists():
                 return {"error": "group not found"}
-            man = hub.manager.sessions_dir / gid / "manifest.json"
+            man = _safe_session_path(
+                hub.manager.sessions_dir,
+                (gid, "group_id"),
+                "manifest.json",
+            )
             if not man.exists():
                 return {"error": "manifest not found"}
             m = json.loads(man.read_text(encoding="utf-8"))
             results = m.get("battles_results", []) or []
             tag_dist: Dict[str, int] = {}
             v5_ok = 0
+            manifest_v5_ok = 0
             turns_total = 0
             actions_total = 0
+            accepted_training_rows = 0
+            rejected_audit_rows = 0
+            timestamp_contract_battles = 0
+            metronome_contract_battles = 0
+            metronome_observed_labels = 0
+            expected_catalog_hash = hub.manager.catalog_hash
+            expected_card_count = len(hub.manager.catalog.cards)
             for r in results:
                 t = r.get("battle_tag")
                 if t:
                     tag_dist[t] = tag_dist.get(t, 0) + 1
                 if r.get("v5_trace_ok"):
+                    manifest_v5_ok += 1
+                battle_id = _safe_component(
+                    r["battle_id"],
+                    field="battle_id",
+                )
+                v5dir = _safe_session_path(
+                    hub.manager.sessions_dir,
+                    (gid, "group_id"),
+                    "battles",
+                    (battle_id, "battle_id"),
+                    "v5",
+                )
+                battle_log = _safe_session_path(
+                    hub.manager.sessions_dir,
+                    (gid, "group_id"),
+                    "battles",
+                    (f"{battle_id}.json", "battle_log"),
+                )
+                report = validate_v5_trace(
+                    v5dir,
+                    battle_log_path=battle_log,
+                    expected_catalog_hash=expected_catalog_hash,
+                    expected_card_count=expected_card_count,
+                )
+                if report["ok"]:
                     v5_ok += 1
-                v5dir = gdir / "battles" / r["battle_id"] / "v5"
-                tpath = v5dir / "turns.jsonl"
-                apath = v5dir / "actions.jsonl"
+                auxiliary = _headless_auxiliary_evidence(v5dir)
+                timestamp_contract_battles += int(
+                    auxiliary["timestamp_contract_ok"]
+                )
+                metronome_contract_battles += int(
+                    auxiliary["metronome_contract_ok"]
+                )
+                metronome_observed_labels += int(
+                    auxiliary["metronome_observed_labels"]
+                )
+                tpath = _safe_session_path(
+                    hub.manager.sessions_dir,
+                    (gid, "group_id"),
+                    "battles",
+                    (battle_id, "battle_id"),
+                    "v5",
+                    "turns.jsonl",
+                )
+                apath = _safe_session_path(
+                    hub.manager.sessions_dir,
+                    (gid, "group_id"),
+                    "battles",
+                    (battle_id, "battle_id"),
+                    "v5",
+                    "actions.jsonl",
+                )
                 if tpath.exists():
-                    turns_total += sum(1 for _ in tpath.open())
+                    with tpath.open("r", encoding="utf-8") as handle:
+                        turns_total += sum(1 for raw in handle if raw.strip())
                 if apath.exists():
-                    actions_total += sum(1 for _ in apath.open())
+                    with apath.open("r", encoding="utf-8") as handle:
+                        for raw in handle:
+                            if not raw.strip():
+                                continue
+                            actions_total += 1
+                            action_row = json.loads(raw)
+                            if (
+                                action_row.get("accepted") is True
+                                and action_row.get("legal_action_index")
+                                is not None
+                            ):
+                                accepted_training_rows += 1
+                            elif action_row.get("accepted") is not True:
+                                rejected_audit_rows += 1
+            degraded_battles = sum(
+                bool(row.get("degraded") or row.get("policy_warnings"))
+                for row in results
+            )
+            v5_policy_training_ready = bool(
+                results
+                and v5_ok == len(results)
+                and manifest_v5_ok == len(results)
+                and degraded_battles == 0
+                and accepted_training_rows > 0
+            )
             return {
                 "group_id": gid,
+                "group_dir": str(gdir),
+                "battle_ids": [
+                    str(row.get("battle_id"))
+                    for row in results
+                    if row.get("battle_id")
+                ],
+                "battles": [
+                    {
+                        "battle_id": row.get("battle_id"),
+                        "policy_warnings": list(
+                            row.get("policy_warnings") or []
+                        ),
+                        "degraded": bool(row.get("degraded")),
+                        "v5_trace_ok": bool(row.get("v5_trace_ok")),
+                    }
+                    for row in results
+                ],
                 "battles_finished": len(results),
                 "v5_trace_ok_count": v5_ok,
+                "manifest_v5_trace_ok_count": manifest_v5_ok,
+                "deep_validated": True,
+                "current_catalog_hash": expected_catalog_hash,
+                "current_card_count": expected_card_count,
                 "battle_tag_distribution": tag_dist,
                 "turns_total": turns_total,
                 "actions_total": actions_total,
-                "rows": actions_total,
+                "accepted_training_rows": accepted_training_rows,
+                "rejected_audit_rows": rejected_audit_rows,
+                "training_ready": v5_policy_training_ready,
+                "training_ready_scope": "v5_policy_only",
+                "v5_policy_training_ready": (
+                    v5_policy_training_ready
+                ),
+                "metronome_training_ready": bool(
+                    results
+                    and metronome_contract_battles == len(results)
+                    and metronome_observed_labels > 0
+                ),
+                # Headless runtime timestamps measure local execution/LLM
+                # latency, not real player battle duration. Keep contract
+                # diagnostics visible but never promote them to a TimeStamp
+                # training label.
+                "timestamp_training_ready": False,
+                "metronome_observed_labels": (
+                    metronome_observed_labels
+                ),
+                "metronome_contract_battles": (
+                    metronome_contract_battles
+                ),
+                "timestamp_contract_battles": (
+                    timestamp_contract_battles
+                ),
+                "rows": accepted_training_rows,
+                "quality": _semi_synthetic_quality(gdir, results),
             }
 
         if name == "list_v5_groups":
             tag_filter = args.get("battle_tag")
             limit = int(args.get("limit", 100) or 100)
             out: List[Dict[str, Any]] = []
+            quality_reports: List[Dict[str, Any]] = []
             sdir = hub.manager.sessions_dir
             if sdir.exists():
                 for gdir in sorted(sdir.iterdir()):
-                    man = gdir / "manifest.json"
+                    if gdir.is_symlink() or not gdir.is_dir():
+                        continue
+                    try:
+                        man = _safe_session_path(
+                            sdir,
+                            (gdir.name, "group_id"),
+                            "manifest.json",
+                        )
+                    except ValueError:
+                        continue
                     if not man.exists():
                         continue
                     try:
@@ -741,6 +1817,9 @@ class MCPServer:
                     tags = {r.get("battle_tag") for r in results if r.get("battle_tag")}
                     if tag_filter and tag_filter not in tags:
                         continue
+                    quality_reports.append(
+                        _semi_synthetic_quality(gdir, results)
+                    )
                     out.append({
                         "group_id": gdir.name,
                         "agent_name": m.get("agent_name"),
@@ -751,48 +1830,393 @@ class MCPServer:
                     })
                     if len(out) >= limit:
                         break
-            return {"groups": out}
+            return {
+                "groups": out,
+                "quality": _aggregate_quality_reports(quality_reports),
+            }
 
         if name == "get_v5_trace":
-            gid = args["group_id"]
-            bid = args["battle_id"]
+            gid = _safe_component(args["group_id"], field="group_id")
+            bid = _safe_component(args["battle_id"], field="battle_id")
             what = args["what"]
-            v5dir = hub.manager.sessions_dir / gid / "battles" / bid / "v5"
+            v5dir = _safe_session_path(
+                hub.manager.sessions_dir,
+                (gid, "group_id"),
+                "battles",
+                (bid, "battle_id"),
+                "v5",
+            )
             if not v5dir.exists():
                 return {"error": "v5 trace not found", "path": str(v5dir)}
             fname = {"meta": "meta.json", "turns": "turns.jsonl", "actions": "actions.jsonl"}[what]
-            fpath = v5dir / fname
+            fpath = _safe_session_path(
+                hub.manager.sessions_dir,
+                (gid, "group_id"),
+                "battles",
+                (bid, "battle_id"),
+                "v5",
+                fname,
+            )
             if not fpath.exists():
                 return {"error": f"{fname} not found", "path": str(fpath)}
             if fname.endswith(".json"):
                 return {"data": json.loads(fpath.read_text(encoding="utf-8")), "rows_count": 1}
-            rows = [json.loads(l) for l in fpath.read_text(encoding="utf-8").splitlines() if l.strip()]
-            return {"data": rows, "rows_count": len(rows)}
+            offset = max(0, int(args.get("offset", 0) or 0))
+            limit = max(1, min(int(args.get("limit", 200) or 200), 2000))
+            rows: List[Dict[str, Any]] = []
+            total_rows = 0
+            with fpath.open("r", encoding="utf-8") as handle:
+                for raw in handle:
+                    if not raw.strip():
+                        continue
+                    if offset <= total_rows < offset + limit:
+                        rows.append(json.loads(raw))
+                    total_rows += 1
+            return {
+                "data": rows,
+                "rows_count": len(rows),
+                "total_rows": total_rows,
+                "offset": offset,
+                "limit": limit,
+                "truncated": offset + len(rows) < total_rows,
+            }
 
         if name == "validate_v5_traces":
-            gid = args["group_id"]
-            gdir = hub.manager.sessions_dir / gid
+            gid = _safe_component(args["group_id"], field="group_id")
+            gdir = _safe_session_path(
+                hub.manager.sessions_dir,
+                (gid, "group_id"),
+            )
             if not gdir.exists():
                 return {"error": "group not found"}
-            man = hub.manager.sessions_dir / gid / "manifest.json"
+            man = _safe_session_path(
+                hub.manager.sessions_dir,
+                (gid, "group_id"),
+                "manifest.json",
+            )
             m = json.loads(man.read_text(encoding="utf-8")) if man.exists() else {"battles_results": []}
             results = m.get("battles_results", []) or []
             checked = 0
             ok = 0
+            accepted_training_rows = 0
+            timestamp_contract_battles = 0
+            metronome_contract_battles = 0
+            metronome_observed_labels = 0
             broken: List[Dict[str, Any]] = []
             for r in results:
                 checked += 1
-                bid = r["battle_id"]
-                v5dir = gdir / "battles" / bid / "v5"
+                bid = _safe_component(r["battle_id"], field="battle_id")
+                v5dir = _safe_session_path(
+                    hub.manager.sessions_dir,
+                    (gid, "group_id"),
+                    "battles",
+                    (bid, "battle_id"),
+                    "v5",
+                )
                 # battle_log b_<bid>.json лежит рядом с v5/-директорией боя; путь
                 # строится от того же battle_id (уже содержит префикс b_).
-                battle_log = gdir / "battles" / f"{bid}.json"
-                rep = validate_v5_trace(v5dir, battle_log_path=battle_log)
+                battle_log = _safe_session_path(
+                    hub.manager.sessions_dir,
+                    (gid, "group_id"),
+                    "battles",
+                    (f"{bid}.json", "battle_log"),
+                )
+                rep = validate_v5_trace(
+                    v5dir,
+                    battle_log_path=battle_log,
+                    expected_catalog_hash=hub.manager.catalog_hash,
+                    expected_card_count=len(hub.manager.catalog.cards),
+                )
                 if rep["ok"]:
                     ok += 1
                 else:
                     broken.append({"battle_id": bid, "issues": rep["issues"]})
-            return {"checked": checked, "ok": ok, "broken": broken}
+                accepted_training_rows += int(
+                    (rep.get("checks") or {}).get(
+                        "accepted_training_rows",
+                        0,
+                    )
+                    or 0
+                )
+                auxiliary = _headless_auxiliary_evidence(v5dir)
+                timestamp_contract_battles += int(
+                    auxiliary["timestamp_contract_ok"]
+                )
+                metronome_contract_battles += int(
+                    auxiliary["metronome_contract_ok"]
+                )
+                metronome_observed_labels += int(
+                    auxiliary["metronome_observed_labels"]
+                )
+            degraded = [
+                {
+                    "battle_id": row.get("battle_id"),
+                    "policy_warnings": list(
+                        row.get("policy_warnings") or []
+                    ),
+                }
+                for row in results
+                if row.get("degraded") or row.get("policy_warnings")
+            ]
+            v5_policy_training_ready = bool(
+                checked > 0
+                and ok == checked
+                and all(
+                    row.get("v5_trace_ok") is True
+                    for row in results
+                )
+                and not degraded
+                and accepted_training_rows > 0
+            )
+            return {
+                "checked": checked,
+                "ok": ok,
+                "broken": broken,
+                "degraded": degraded,
+                "accepted_training_rows": accepted_training_rows,
+                "training_ready": v5_policy_training_ready,
+                "training_ready_scope": "v5_policy_only",
+                "v5_policy_training_ready": (
+                    v5_policy_training_ready
+                ),
+                "metronome_training_ready": bool(
+                    checked > 0
+                    and metronome_contract_battles == checked
+                    and metronome_observed_labels > 0
+                ),
+                # Headless wall-clock data is diagnostic only.
+                "timestamp_training_ready": False,
+                "metronome_observed_labels": (
+                    metronome_observed_labels
+                ),
+                "metronome_contract_battles": (
+                    metronome_contract_battles
+                ),
+                "timestamp_contract_battles": (
+                    timestamp_contract_battles
+                ),
+                "current_catalog_hash": hub.manager.catalog_hash,
+                "current_card_count": len(hub.manager.catalog.cards),
+            }
+
+        # --- Cross-contour dataset administration --------------------------
+
+        toolbox = self.dataset_toolbox
+        if name == "get_training_data_status":
+            status = toolbox.status()
+            groups = hub.manager.list_groups()
+            status["headless_groups"] = len(groups)
+            status["headless_finished_battles"] = sum(
+                int(group.get("battles_finished", 0) or 0)
+                for group in groups
+            )
+            return status
+
+        if name == "list_training_exports":
+            return toolbox.list_artifacts(
+                kind=args.get("kind"),
+                limit=int(args.get("limit", 200) or 200),
+            )
+
+        if name == "inspect_training_export":
+            return toolbox.inspect_artifact(args["path"])
+
+        if name == "validate_training_export":
+            return toolbox.validate_artifact(args["path"])
+
+        if name == "export_v5_training_dataset":
+            return await toolbox.export_production_v5(
+                output=args["output"],
+                days=int(args.get("days", 30) or 30),
+                limit_battles=int(
+                    args.get("limit_battles", 1000) or 1000
+                ),
+                overwrite=bool(args.get("overwrite", False)),
+            )
+
+        if name == "materialize_v5_training_dataset":
+            return toolbox.materialize_v5(
+                input_path=args["input_path"],
+                output_dir=args["output_dir"],
+                group_id=args.get("group_id"),
+                overwrite=bool(args.get("overwrite", False)),
+            )
+
+        if name == "export_nemesis_training_dataset":
+            input_path = args.get("input_path")
+            group_id = args.get("group_id")
+            if bool(input_path) == bool(group_id):
+                raise ValueError(
+                    "provide exactly one of input_path or group_id"
+                )
+            if input_path:
+                return toolbox.export_nemesis(
+                    input_path=input_path,
+                    output=args["output"],
+                    overwrite=bool(args.get("overwrite", False)),
+                )
+
+            gid = _safe_component(group_id, field="group_id")
+            manifest_path = _safe_session_path(
+                hub.manager.sessions_dir,
+                (gid, "group_id"),
+                "manifest.json",
+            )
+            if not manifest_path.is_file():
+                raise ValueError("headless group manifest not found")
+            manifest = json.loads(
+                manifest_path.read_text(encoding="utf-8")
+            )
+            if not manifest.get("finished_at"):
+                raise ValueError(
+                    "headless group must be finalized before export"
+                )
+            results = manifest.get("battles_results")
+            if not isinstance(results, list) or not results:
+                raise ValueError(
+                    "headless group has no completed battle results"
+                )
+            planned = int(
+                (manifest.get("spec") or {}).get("battles_planned", 0)
+                or 0
+            )
+            if planned <= 0 or len(results) != planned:
+                raise ValueError(
+                    "headless group is incomplete"
+                )
+
+            def group_records():
+                for result in results:
+                    if not isinstance(result, dict):
+                        raise ValueError(
+                            "headless group result must be an object"
+                        )
+                    battle_id = _safe_component(
+                        result.get("battle_id"),
+                        field="battle_id",
+                    )
+                    if result.get("v5_trace_ok") is not True:
+                        raise ValueError(
+                            f"V5 trace is not valid for battle {battle_id}"
+                        )
+                    if (
+                        result.get("degraded") is True
+                        or result.get("policy_warnings")
+                    ):
+                        raise ValueError(
+                            f"degraded policy result for battle {battle_id}"
+                        )
+                    v5_dir = _safe_session_path(
+                        hub.manager.sessions_dir,
+                        (gid, "group_id"),
+                        "battles",
+                        (battle_id, "battle_id"),
+                        "v5",
+                    )
+                    battle_log = _safe_session_path(
+                        hub.manager.sessions_dir,
+                        (gid, "group_id"),
+                        "battles",
+                        (f"{battle_id}.json", "battle_log"),
+                    )
+                    trace_report = validate_v5_trace(
+                        v5_dir,
+                        battle_log_path=battle_log,
+                        expected_catalog_hash=hub.manager.catalog_hash,
+                        expected_card_count=len(
+                            hub.manager.catalog.cards
+                        ),
+                    )
+                    if not trace_report.get("ok"):
+                        raise ValueError(
+                            "invalid V5 policy trace for battle "
+                            f"{battle_id}: "
+                            + "; ".join(
+                                trace_report.get("issues") or []
+                            )
+                        )
+                    if int(
+                        (trace_report.get("checks") or {}).get(
+                            "accepted_training_rows",
+                            0,
+                        )
+                        or 0
+                    ) <= 0:
+                        raise ValueError(
+                            "V5 trace has no accepted training rows for "
+                            f"battle {battle_id}"
+                        )
+                    meta_path = _safe_session_path(
+                        v5_dir,
+                        "meta.json",
+                    )
+                    if not meta_path.is_file():
+                        raise ValueError(
+                            f"Nemesis meta missing for battle {battle_id}"
+                        )
+                    meta = json.loads(
+                        meta_path.read_text(encoding="utf-8")
+                    )
+                    record = meta.get("nemesis_record")
+                    if not isinstance(record, dict):
+                        raise ValueError(
+                            "canonical Nemesis record missing for battle "
+                            f"{battle_id}"
+                        )
+                    yield record
+
+            return toolbox.export_nemesis_records(
+                records=group_records(),
+                source_label=f"headless-group:{gid}",
+                output=args["output"],
+                overwrite=bool(args.get("overwrite", False)),
+            )
+
+        if name == "export_returnclock_training_dataset":
+            return await toolbox.export_returnclock(
+                output=args["output"],
+                start=args.get("start"),
+                end=args.get("end"),
+                horizon_hours=int(
+                    args.get("horizon_hours", 7 * 24) or 7 * 24
+                ),
+                safety_lag_minutes=int(
+                    args.get("safety_lag_minutes", 10)
+                    if args.get("safety_lag_minutes") is not None
+                    else 10
+                ),
+                min_analytics_version=int(
+                    args.get("min_analytics_version", 2) or 2
+                ),
+                limit=int(args.get("limit", 50_000) or 50_000),
+                overwrite=bool(args.get("overwrite", False)),
+            )
+
+        if name == "split_nemesis_training_dataset":
+            return toolbox.split_nemesis(
+                source=args["source"],
+                output_dir=args["output_dir"],
+                train_fraction=float(
+                    args.get("train_fraction", 0.70)
+                ),
+                validation_fraction=float(
+                    args.get("validation_fraction", 0.15)
+                ),
+                overwrite=bool(args.get("overwrite", False)),
+            )
+
+        if name == "split_returnclock_training_dataset":
+            return toolbox.split_returnclock(
+                source=args["source"],
+                output_dir=args["output_dir"],
+                train_fraction=float(
+                    args.get("train_fraction", 0.70)
+                ),
+                validation_fraction=float(
+                    args.get("validation_fraction", 0.15)
+                ),
+                overwrite=bool(args.get("overwrite", False)),
+            )
 
         raise ValueError(f"unknown tool: {name}")
 
@@ -841,11 +2265,67 @@ class MCPServer:
             name = params.get("name")
             args = params.get("arguments", {}) or {}
             try:
+                if not isinstance(args, dict):
+                    raise ValueError("tool arguments must be an object")
+                tool_spec = next(
+                    (
+                        tool
+                        for tool in self.tools
+                        if tool.get("name") == name
+                    ),
+                    None,
+                )
+                if tool_spec is not None:
+                    schema = tool_spec.get("inputSchema") or {}
+                    if schema.get("additionalProperties") is False:
+                        _validate_tool_arguments(args, schema)
                 result = await self._tool(name, args)
-                return {"content": [{"type": "json", "data": result}], "isError": False}
+                return {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": json.dumps(
+                                result,
+                                ensure_ascii=False,
+                            ),
+                        }
+                    ],
+                    "structuredContent": result,
+                    "isError": False,
+                }
             except Exception as exc:  # noqa: BLE001
-                logger.exception("[mcp] tool %s failed", name)
-                return {"content": [{"type": "json", "data": {"error": str(exc)}}], "isError": True}
+                error = _public_tool_error(exc)
+                tool_label = (
+                    str(name)
+                    if isinstance(name, str)
+                    and _SAFE_COMPONENT_RE.fullmatch(name)
+                    else "<unknown>"
+                )
+                if isinstance(exc, ValueError):
+                    logger.warning(
+                        "[mcp] tool %s rejected request (%s)",
+                        tool_label,
+                        type(exc).__name__,
+                    )
+                else:
+                    logger.error(
+                        "[mcp] tool %s failed (%s)",
+                        tool_label,
+                        type(exc).__name__,
+                    )
+                return {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": json.dumps(
+                                error,
+                                ensure_ascii=False,
+                            ),
+                        }
+                    ],
+                    "structuredContent": error,
+                    "isError": True,
+                }
         return {"error": {"code": -32601, "message": f"unknown method: {method}"}}
 
 
@@ -866,14 +2346,89 @@ async def _amain(server: MCPServer) -> None:
             continue
         try:
             msg = json.loads(line)
-            req_id = msg.get("id", 0)
-            method = msg.get("method", "")
-            params = msg.get("params", {}) or {}
-            result = await server.dispatch(method, params)
-            sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": req_id, "result": result}) + "\n")
+        except json.JSONDecodeError as exc:
+            sys.stdout.write(
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": None,
+                        "error": {
+                            "code": -32700,
+                            "message": f"parse error: {exc}",
+                        },
+                    }
+                )
+                + "\n"
+            )
+            sys.stdout.flush()
+            continue
+        if not isinstance(msg, dict) or not isinstance(msg.get("method"), str):
+            sys.stdout.write(
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": msg.get("id") if isinstance(msg, dict) else None,
+                        "error": {
+                            "code": -32600,
+                            "message": "invalid request",
+                        },
+                    }
+                )
+                + "\n"
+            )
+            sys.stdout.flush()
+            continue
+        is_notification = "id" not in msg
+        try:
+            result = await server.dispatch(
+                msg["method"],
+                msg.get("params", {}) or {},
+            )
+            if is_notification:
+                continue
+            req_id = msg.get("id")
+            if (
+                isinstance(result, dict)
+                and set(result) == {"error"}
+                and isinstance(result["error"], dict)
+                and "code" in result["error"]
+            ):
+                response = {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "error": result["error"],
+                }
+            else:
+                response = {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "result": result,
+                }
+            sys.stdout.write(json.dumps(response) + "\n")
         except Exception as exc:  # noqa: BLE001
-            sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": 0,
-                                         "error": {"code": -32700, "message": str(exc)}}) + "\n")
+            if is_notification:
+                logger.error(
+                    "[mcp] notification failed (%s)",
+                    type(exc).__name__,
+                )
+                continue
+            logger.error(
+                "[mcp] request failed (%s)",
+                type(exc).__name__,
+            )
+            sys.stdout.write(
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": msg.get("id"),
+                        "error": {
+                            "code": -32603,
+                            "message": "internal server error",
+                        },
+                    }
+                )
+                + "\n"
+            )
         sys.stdout.flush()
 
 
@@ -885,7 +2440,37 @@ def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="MCP-сервер RLHF-среды (stdio)")
     p.add_argument("--models-dir", default=os.environ.get("RLHF_MODELS_DIR", "ai/models"))
     p.add_argument("--sessions-dir", default=os.environ.get("RLHF_SESSIONS_DIR", "rlhf_env/sessions"))
+    p.add_argument(
+        "--datasets-dir",
+        default=os.environ.get("RLHF_DATASETS_DIR", "datasets"),
+    )
     p.add_argument("--cards-path", default=os.environ.get("RLHF_CARDS_PATH", "ai/cards.json"))
+    p.add_argument(
+        "--enable-production-datasets",
+        action="store_true",
+        default=str(
+            os.environ.get("RLHF_ENABLE_PRODUCTION_DATASETS", "")
+        ).strip().lower()
+        in {"1", "true", "yes", "on"},
+        help=(
+            "Enable read-only PostgreSQL exports for V5/ReturnClock. "
+            "Disabled by default; local inspect/validate tools still work."
+        ),
+    )
+    p.add_argument(
+        "--returnclock-salt-env",
+        default=os.environ.get(
+            "RLHF_RETURNCLOCK_SALT_ENV",
+            "RETURNCLOCK_DATASET_SALT",
+        ),
+    )
+    p.add_argument(
+        "--returnclock-salt-key-id-env",
+        default=os.environ.get(
+            "RLHF_RETURNCLOCK_SALT_KEY_ID_ENV",
+            "RETURNCLOCK_DATASET_SALT_KEY_ID",
+        ),
+    )
     p.add_argument("--log-level", default=os.environ.get("RLHF_LOG_LEVEL", "WARNING"))
     return p.parse_args()
 
@@ -897,8 +2482,20 @@ def main() -> None:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
     registry = PolicyRegistry.scan(args.models_dir)
-    hub = HeadlessHub(sessions_dir=args.sessions_dir, models_dir=args.models_dir, cards_path=args.cards_path)
-    server = MCPServer(hub, registry)
+    hub = HeadlessHub(
+        sessions_dir=args.sessions_dir,
+        models_dir=args.models_dir,
+        cards_path=args.cards_path,
+        registry=registry,
+    )
+    toolbox = DatasetToolbox(
+        args.datasets_dir,
+        returnclock_salt_env=args.returnclock_salt_env,
+        returnclock_salt_key_id_env=args.returnclock_salt_key_id_env,
+        production_enabled=args.enable_production_datasets,
+        cards_path=args.cards_path,
+    )
+    server = MCPServer(hub, registry, dataset_toolbox=toolbox)
     logger.info("MCP server starting (stdio). tools=%d, models=%d", len(server.tools), len(registry.specs))
     try:
         asyncio.run(_amain(server))

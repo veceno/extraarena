@@ -698,7 +698,10 @@ class TestGetActionV5:
 
         session = FakeV5Session(logits_fn=logits_fn, mana_draw_logit=0.0)
         brain = self._brain_with_v5_session(session)
-        with pytest.raises(RuntimeError, match="non-finite"):
+        with pytest.raises(
+            RuntimeError,
+            match="v5_policy_failure:non_finite_logits",
+        ):
             brain._get_action_v5(st, 1, legal, "v5-test", brain.sessions["v5-test"])
 
     def test_get_action_v5_fallback_guard_no_legal_raises(self):
@@ -727,7 +730,10 @@ class TestGetActionV5:
 
         codec.build_action_mask = fake_build_mask
         try:
-            with pytest.raises(RuntimeError, match="no finite masked-in candidate"):
+            with pytest.raises(
+                RuntimeError,
+                match="v5_policy_failure:no_legal_candidate",
+            ):
                 brain._get_action_v5(st, 1, legal, "v5-test", brain.sessions["v5-test"])
         finally:
             codec.build_action_mask = original_build

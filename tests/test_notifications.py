@@ -10,6 +10,7 @@ from infrastructure.notifications import (
     REMINDER_DUSTY_WEIGHT,
     choose_reminder_payload,
     classify_generator_event,
+    build_webapp_url,
     format_notification_message,
     format_telegram_notification_message,
     notification_section,
@@ -91,6 +92,24 @@ def test_plain_notification_message_does_not_include_telegram_html():
         "🔑 Новый ключ уже готов! - скорее открой кейс! В генераторе уже 3 ключ(ей)."
     )
     assert "<b>" not in format_notification_message("generator_full_on_new_key", {"cap": 5})
+
+
+def test_webapp_notification_url_preserves_returnclock_attribution():
+    url = build_webapp_url(
+        "https://example.test/play?lang=ru",
+        section="arena",
+        payload={
+            "decision_id": "decision-1",
+            "notification_id": 77,
+            "delivery_id": "delivery-1",
+        },
+    )
+
+    assert "section=arena" in url
+    assert "rc_decision_id=decision-1" in url
+    assert "notification_id=77" in url
+    assert "delivery_id=delivery-1" in url
+    assert "entrypoint=notification" in url
 
 
 @pytest.mark.asyncio

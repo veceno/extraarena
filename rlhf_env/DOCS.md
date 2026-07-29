@@ -1,14 +1,13 @@
 # RLHF-среда ExtraArena — Полная документация
 
-> **Версия:** 0.2.0
-> **Дата:** 2026-06-28
-> **Зачем:** автономная среда для сбора обучающих траекторий (human-vs-model,
-> model-vs-model) на детерминированном движке ExtraArena. Не зависит от
-> прод-стека, запускается отдельно, хранит данные в файлах.
-> **0.2:** модульный adapter-registry, p1-as-RL (model-vs-model), AgentRegistry
-> кодовых имён, omniscient V5-trace, 25 MCP-инструментов + 3 уровня оркестрации
-> (см. §7). LLM-навыки оркестрации: `.codex/skills/extra-rlhf/`. Краткий обзор
-> графа: `docs/RLHF_ENV.md`.
+> **Ревизия документации:** 2026-07-29
+> **Зачем:** автономный headless-сбор боёв плюс приватный training-data toolbox
+> для V5/Metronome/TimeStamp, Nemesis и ReturnClock.
+> **0.3:** compact/indexed LLM player, реализованный V5 adapter, глубокие
+> catalog/degraded/accepted gates, standard MCP wire, root-confined
+> export/inspect/validate/materialize/split с opt-in read-only production
+> plane. LLM playbooks: `.codex/skills/extra-rlhf/`. Краткий обзор:
+> `docs/RLHF_ENV.md`.
 
 ---
 
@@ -42,9 +41,10 @@ imitation learning или RLHF.
 
 ### 1.2. Почему отдельная среда
 
-- **Не задеваем прод.** БД, бот, прод-веб остаются нетронутыми.
+- **Headless не задевает прод.** БД, бот, прод-веб остаются отдельными.
 - **Отдельный порт** (8090) и процесс — можно запустить/остановить когда угодно.
-- **Файлы вместо БД** — проще инспектировать, версионировать, переносить.
+- **Файлы для training artifacts** — проще инспектировать, валидировать,
+  версионировать и передавать тренеру.
 - **MCP-агентам** удобно: запустить N боёв, забрать логи, поменять модель «на лету».
 - **Web 1:1 как прод** — те же CSS-классы `.arena-*`, `.board-slot`, `.hand-card`, `.hp-*`.
 
@@ -53,12 +53,13 @@ imitation learning или RLHF.
 | Компонент | Назначение |
 |-----------|-----------|
 | `server.py` | aiohttp app: HTTP + WebSocket (web-арена @ 8090) |
-| `mcp_server.py` | MCP stdio (JSON-RPC 2.0), 25 инструментов, `HeadlessHub` |
+| `mcp_server.py` | MCP stdio (JSON-RPC 2.0), `HeadlessHub` + private dataset toolbox |
+| `components/dataset_toolbox.py` | Root-confined inventory, inspect, deep validate, V5/Nemesis/ReturnClock export/materialize/split |
 | `components/arena_match_manager.py` | Реестр серий: `create_series`/`next_match`/`finish_series`/`reap_completed` (self-heal) |
 | `components/match_runner.py` | Один матч: `run_bot_turn`/`run_auto`/`execute_human_action`; p1-as-RL auto-play; `_capture_models` |
 | `components/arena_engine.py` | `RlhfBattleEngine` — обёртка над `core.engine`, `p1_actor_type`, `battle_tag` |
 | `components/agent_registry.py` | Кодовые имена суб-агентов; `fcntl.flock` cross-process + `_self_heal_locked` |
-| `components/policy_adapters.py` | `AdapterRegistry` — модульная точка расширения (`register`/`register_detector`/`build`/`detect_kind`), V5StubAdapter |
+| `components/policy_adapters.py` | `AdapterRegistry` — legacy/V4/V5/baselines, extension via `register`/`register_detector` |
 | `components/policy_registry.py` | Сканирует `ai/models/*.onnx` + sidecar; `resolve_spec` (вкл. custom by path) |
 | `components/policy_factory.py` | `build_policy(spec)` → делегирует `AdapterRegistry` |
 | `components/v5_trace.py` | `V5TraceRecorder` — omniscient offline-трейс (`v5/{meta,turns,actions}.jsonl`) |
@@ -121,7 +122,7 @@ Web-путь выше — для браузера. Оркестрация (MCP +
 
 ```mermaid
 flowchart TD
-  MCP["MCP stdio (mcp_server.py)<br/>25 tools · HeadlessHub"]
+  MCP["MCP stdio (mcp_server.py)<br/>HeadlessHub + DatasetToolbox"]
   MGR["ArenaMatchManager<br/>create_series / next_match / finish_series / reap_completed"]
   AR["AgentRegistry<br/>кодовые имена · fcntl · self-heal"]
   ADAP["AdapterRegistry (policy_adapters)<br/>detect_kind · register · build"]
@@ -129,7 +130,7 @@ flowchart TD
   ENG["RlhfBattleEngine<br/>p1_actor_type · battle_tag"]
   V5["V5TraceRecorder<br/>meta/turns/actions.jsonl"]
   MAN["ManifestWriter<br/>manifest/summary/catalog"]
-  POL["Policies: legacy_onnx · action_onnx/v4 · v5-stub · random · greedy_face · end_turn"]
+  POL["Policies: legacy_onnx · action_onnx/v4 · v5 · random · greedy_face · end_turn"]
   DISK[("sessions/<group>/...")]
 
   MCP --> MGR
@@ -198,9 +199,12 @@ rlhf_env/sessions/<group_id>/
 `rlhf_env/requirements.txt`:
 ```
 aiohttp>=3.9.0
+python-socketio>=5.11.0
 numpy>=1.24.0
 onnxruntime>=1.17.0
 mcp>=1.0.0
+asyncpg>=0.30.0
+python-dotenv>=1.0.0
 ```
 
 ### 3.2. Запуск через `start_rlhf_env.sh`
@@ -212,7 +216,7 @@ mcp>=1.0.0
 ./rlhf_env/start_rlhf_env.sh --models-dir /path    # другая папка моделей
 ./rlhf_env/start_rlhf_env.sh --sessions-dir /path  # другая папка сессий
 ./rlhf_env/start_rlhf_env.sh mcp                   # MCP stdio
-./rlhf_env/start_rlhf_env.sh setup                 # только venv + deps
+./rlhf_env/start_rlhf_env.sh setup --python /path/to/python3.13
 ./rlhf_env/start_rlhf_env.sh --no-venv             # использовать системный Python
 ```
 
@@ -225,8 +229,9 @@ mcp>=1.0.0
 ### 3.3. Запуск вручную
 
 ```bash
-python3 -m rlhf_env.server --port 8090
-python3 -m rlhf_env.mcp_server    # для MCP
+PY=./rlhf_env/.venv/bin/python
+"$PY" -m rlhf_env.server --port 8090
+"$PY" -m rlhf_env.mcp_server --datasets-dir datasets
 ```
 
 Env-vars (читаются `server.py`):
@@ -234,7 +239,13 @@ Env-vars (читаются `server.py`):
 - `RLHF_PORT` (default `8090`)
 - `RLHF_MODELS_DIR` (default `ai/models`)
 - `RLHF_SESSIONS_DIR` (default `rlhf_env/sessions`)
+- `RLHF_DATASETS_DIR` (MCP default `datasets`)
 - `RLHF_CARDS_PATH` (default `ai/cards.json`)
+- `RLHF_ENABLE_PRODUCTION_DATASETS` (default false)
+- `RLHF_RETURNCLOCK_SALT_ENV` (имя env с salt; default
+  `RETURNCLOCK_DATASET_SALT`)
+- `RLHF_RETURNCLOCK_SALT_KEY_ID_ENV` (имя env с non-secret key id; default
+  `RETURNCLOCK_DATASET_SALT_KEY_ID`)
 
 ### 3.4. Что НЕ требуется
 
@@ -412,9 +423,13 @@ ws.onmessage = (e) => {
 ## 7. MCP-сервер и оркестрация
 
 MCP-сервер — stdio JSON-RPC 2.0 (`rlhf_env/mcp_server.py`, transport `HeadlessHub`).
-Открывает 25 инструментов: жизненный цикл серии, player-инструменты, датасет/v5-trace,
-оркестрацию флотом агентов и V5-пайплайн. Подключается к Claude Code / Codex /
-OpenCode (см. §7.7 и `.codex/skills/extra-rlhf/INSTALL.md`).
+Открывает headless series/player/trace инструменты и приватный dataset toolbox
+для V5, Nemesis и ReturnClock. Подключается к Claude Code / Codex / OpenCode
+(см. §7.7 и `.codex/skills/extra-rlhf/INSTALL.md`).
+
+`tools/call` отвечает стандартным MCP payload: JSON text в
+`content[0].text`, тот же объект в `structuredContent`, `isError` для статуса.
+Клиентам следует читать `structuredContent`, если он доступен.
 
 ### 7.1. Запуск
 
@@ -422,17 +437,20 @@ OpenCode (см. §7.7 и `.codex/skills/extra-rlhf/INSTALL.md`).
 ./rlhf_env/start_rlhf_env.sh mcp
 # или напрямую (ОБЯЗАТЕЛЬНО из корня репо — иначе не резолвится пакет rlhf_env
 # и относительные пути ai/models, ai/cards.json):
-python3 -m rlhf_env.mcp_server \
+./rlhf_env/.venv/bin/python \
+  -m rlhf_env.mcp_server \
   --models-dir ai/models \
   --sessions-dir rlhf_env/sessions \
+  --datasets-dir datasets \
   --cards-path ai/cards.json
 ```
 
 CLI-флаги дублируются env-переменными: `RLHF_MODELS_DIR`, `RLHF_SESSIONS_DIR`,
-`RLHF_CARDS_PATH`, `RLHF_LOG_LEVEL`. Логи идут в stderr (stdout — только
-JSON-RPC, stdio не ломается).
+`RLHF_DATASETS_DIR`, `RLHF_CARDS_PATH`, `RLHF_LOG_LEVEL`. Нужно пинить
+checkout-local dependency-bearing interpreter: bare `python3` может быть без
+NumPy/ONNX Runtime. Логи идут в stderr (stdout — только JSON-RPC).
 
-### 7.2. Инструменты (25)
+### 7.2. Инструменты
 
 **Жизненный цикл серии (data-gen)**
 
@@ -453,9 +471,9 @@ JSON-RPC, stdio не ломается).
 
 | Tool | Аргументы | Возврат |
 |------|-----------|---------|
-| `get_state` | `match_id: str` | actor-perspective full_state (hand/board/deck/action_history — как `/api/battle/state`) |
-| `get_legal_actions` | `match_id: str` | `{legal_actions, is_my_turn}` |
-| `submit_action` | `match_id, action` | `{result, state, sound_events}` \| `{result, state, error}` (**отвергается при `p1_actor_type=="rl"`** → `submit_action_unavailable_for_rl_p1`) |
+| `get_state` | `match_id, compact?, history_limit?` | actor-perspective state; compact сохраняет decision fields и полный indexed legal set |
+| `get_legal_actions` | `match_id: str` | `{legal_actions:[{legal_action_index,...}], is_my_turn}` |
+| `submit_action` | `match_id, legal_action_index` (preferred) или `action`, `compact_response?`, `history_limit?` | `{result, state, sound_events}`; при rl-p1 отвергается |
 | `advance_bot` | `match_id: str` | `{status, is_ended}` — шаг авто-игрока (p2 всегда; p1 тоже, если rl) |
 | `surrender` | `match_id: str` | `{result:{game_over, winner_id}, state}` (**отвергается при `p1_actor_type=="rl"`**) |
 | `get_match_status` | `match_id: str` | lightweight `{turn, is_ended, winner, is_my_turn, current_player_id, action_count}` (без полного state — для polling) |
@@ -466,10 +484,10 @@ JSON-RPC, stdio не ломается).
 | Tool | Аргументы | Возврат |
 |------|-----------|---------|
 | `get_dataset` | `group_id: str` | `{dataset_jsonl, dataset_rows, per_battle_jsonl}` |
-| `get_v5_dataset_summary` | `group_id: str` | `{rows, v5_trace_ok_count, battle_tag_distribution:{...}, turns_total, actions_total}` |
-| `list_v5_groups` | `battle_tag?, limit?` | `{groups:[{group_id, battles_finished, battle_tag, v5_trace_ok_count}]}` |
-| `get_v5_trace` | `group_id, battle_id, what:"meta"\|"turns"\|"actions"` | `{data, rows_count}` — содержимое v5-trace |
-| `validate_v5_traces` | `group_id: str` | `{checked, ok, broken:[{battle_id, issues:[tagged...]}]}` — глубокие инварианты (см. §7.6) |
+| `get_v5_dataset_summary` | `group_id: str` | accepted/rejected counts, catalog provenance, degraded battles, tag/actions/turns, behavioral quality и readiness по контурам |
+| `list_v5_groups` | `battle_tag?, limit?` | группы + pooled quality по выборке |
+| `get_v5_trace` | `group_id, battle_id, what, offset?, limit?` | bounded/paginated trace |
+| `validate_v5_traces` | `group_id: str` | deep integrity + degraded/catalog/card-count gate; `v5_policy_training_ready`, отдельные Metronome/TimeStamp readiness и backward-compatible `training_ready` |
 
 **Оркестрация флотом (агенты/серии)**
 
@@ -478,6 +496,21 @@ JSON-RPC, stdio не ломается).
 | `list_active_series` | — | `{count, agents:[{agent_name, group_id, battles N/M, wins, losses, draws, opponent_model, p1_actor_type}], by_model:[{model, groups, wins, losses}]}` |
 | `get_agent_status` | `agent_name: str` | `{agent_name, busy, group_id, current_match_id, battles_finished, battles_planned, wins, losses, draws, decks:{p1,p2}, opponent_model, p1_actor_type}` |
 | `list_preset_decks` | — | `{presets:[{preset_number, preset_name, card_ids, is_playable}]}` (без БД → `[]` + note) |
+
+**Private training-data toolbox**
+
+| Tool | Назначение |
+|------|------------|
+| `get_training_data_status` | datasets root, inventory, production/salt readiness, headless counts, causal blocker |
+| `list_training_exports` | bounded inventory по kind |
+| `inspect_training_export` | checksum/mode/header/manifest без строк датасета |
+| `validate_training_export` | schema/privacy/count/provenance/split readiness |
+| `export_v5_training_dataset` | opt-in read-only terminal production V5 export, side pseudonyms |
+| `materialize_v5_training_dataset` | transport → canonical `rlhf_v5_storage_v1`; fresh-path temp build + rename after deep validation |
+| `export_nemesis_training_dataset` | V5 transport `input_path` или completed headless `group_id` → одна terminal battle row: Lite base + optional standard extension |
+| `split_nemesis_training_dataset` | всегда Lite deck-grouped; при прохождении Standard gates — player-disjoint / chronological / deck-grouped; Lite-only handoff остаётся готовым, player aliases только для группировки |
+| `export_returnclock_training_dataset` | cutoff-safe audit/survival export; keyset-paged repeatable-read snapshot, HMAC salt only from env |
+| `split_returnclock_training_dataset` | organic-only grouped-by-user temporal train/validation/test + leakage gate |
 
 ### 7.3. `start_series` — анатомия spec
 
@@ -490,7 +523,7 @@ JSON-RPC, stdio не ломается).
   // или nested-объект:
   // "p2_model": {"name":"my","path":"...","kind":"action_onnx"},
 
-  "p1_actor_type": "human",               // human|llm|rl  (default human)
+  "p1_actor_type": "llm",                 // human|llm|rl  (default llm)
   "p1_model": "random",                   // только для rl (p1 auto-play, model-vs-model)
   "p1_model_path": "...", "p1_model_kind": "auto",
 
@@ -503,7 +536,8 @@ JSON-RPC, stdio не ломается).
   "deck_strategy_p1": "random_arenaenv",  // random_arenaenv|custom|preset
   "deck_strategy_p2": "random_arenaenv",
   "preset_name_p1": "...", "preset_number_p1": 3,
-  "custom_decks": {"p1":[...], "p2":[...]}
+  "custom_deck_p1": [...],
+  "custom_deck_p2": [...]
 }
 ```
 
@@ -536,11 +570,11 @@ JSON-RPC, stdio не ломается).
 (2) имена карт из `ai/cards.json`;
 (3) random-fallback `Agent-<hex>` при исчерпании.
 
-Состояниеpersist в `sessions/agents_index.json` (atomic tmp+rename, `threading.Lock`).
-`release_group` срабатывает на `finish_series` (явное закрытие) — **не** на
-read-paths (`get_match_status`/`reap_completed`), иначе ранний pop ломал поздние
-читалки статуса → ложная «ничья». Self-healing reap восстанавливает зависшие серии
-после краша процесса.
+Состояние persist в `sessions/agents_index.json` (atomic tmp+rename,
+`fcntl.flock`). Явный `finish_series` освобождает имя. Read-path self-healing
+reap (`get_match_status`, `get_agent_status`, `list_active_series`) освобождает
+его только когда текущий бой terminal **и**
+`battles_finished >= battles_planned`; mid-series release запрещён.
 
 ### 7.6. V5-trace и integrity
 
@@ -549,7 +583,12 @@ V5-trace (`V5TraceRecorder`) — **omniscient** offline-only след боя: з
 `sessions/<group>/battles/<bid>/v5/{meta.json, turns.jsonl, actions.jsonl}`.
 `actions.jsonl` — поверхность тренировочных данных (model-version-agnostic).
 `weights_hash=sha256(onnx)[:16]` + флаг `degraded` доказывают, какой чекпоинт
-реально играл (silent-fallback guard).
+реально играл (silent-fallback guard). В action targets допускаются только
+строки `accepted is True`; отклонённые действия сохраняются для аудита.
+`human_decision_time_ms` заполняется только для human и aligned с
+соответствующим pre-action state для Metronome. CPU/wall-clock длительность
+headless engine, LLM latency и искусственная задержка не считаются human
+labels.
 
 **Глубокая integrity-проверка** (`validate_v5_traces` →
 `rlhf_env/components/v5_trace_validate.py:validate_v5_trace`) — не только
@@ -575,6 +614,9 @@ V5-trace (`V5TraceRecorder`) — **omniscient** offline-only след боя: з
    `actor`/`action_type`/`action_json`/`accepted`/`turn(post)`; терминальные
    `surrender`-строки (нет battle_log-записи) исключаются из подсчёта
    (`[correspondence]`).
+5. **provenance** — `meta.catalog_hash` совпадает с текущим каталогом,
+   catalog file безопасен и имеет ожидаемое число карт; degraded/policy
+   warnings делают группу неготовой к обучению.
 
 `issues` — тегированные строки `[legal_index|actor|continuity|correspondence]
 ...`. Покрыто тестами `rlhf_env/tests/test_v5_trace_validate.py` (реальный бой
@@ -588,17 +630,114 @@ V5-trace (`V5TraceRecorder`) — **omniscient** offline-only след боя: з
 | 1 | Data-gen оркестратор | план/диспетч флота серий, валидация, шип датасета | L2 (для human/llm p1) |
 | 2 | Player-субагент | играет ОДИН бой как p1 (human/llm) | player-tools |
 
-Композиция: **L0 → L1 → много L2 параллельно**. Model-vs-model (`p1_actor_type=rl`)
-auto-играет без L2. Playbook'и: `.codex/skills/extra-rlhf/` (umbrella) +
+Композиция: **L0 → L1 → много L2 параллельно**. Каждый L2 владеет полным
+start→play→finish lifecycle в одном persistent MCP process: live `match_id`
+process-local и не переносится между stdio-серверами. Model-vs-model
+(`p1_actor_type=rl`) auto-играет без L2. Playbook'и:
+`.codex/skills/extra-rlhf/` (umbrella) +
 `extrarlhf-pipeline-orchestration` (L0) + `extrarlhf-gen-orchestration` (L1) +
 `extrarlhf-player` (L2). Универсальны, не привязаны к V5 (см. §14.1, §14.4).
 
-### 7.8. Пример (curl-style через stdin)
+### 7.8. Training-ready dataset workflow
+
+Dataset paths confined to `--datasets-dir`: `..`, symlink escape и внешний
+absolute path отвергаются. Local inventory/inspect/validate/materialize/split
+доступны по умолчанию. Production reads включаются только в trusted process:
 
 ```bash
-# 1. server жив + tools enumerate (ожидаем 25)
+export RLHF_ENABLE_PRODUCTION_DATASETS=1
+export RETURNCLOCK_DATASET_SALT='<export-specific secret, at least 32 bytes>'
+export RETURNCLOCK_DATASET_SALT_KEY_ID='<non-secret rotation id>'
+```
+
+Salt value, DSN и raw-player export switch не являются MCP arguments.
+ReturnClock output псевдонимизирован, не анонимен, и остаётся в закрытом
+training storage. `RETURNCLOCK_DATASET_SALT_KEY_ID` нужен для аудита ротаций;
+объединять user groups из разных key id без явного mapping нельзя.
+
+Общий flow:
+
+1. `get_training_data_status`.
+2. Export в новый versioned путь (`overwrite=false`).
+3. `inspect_training_export` и `validate_training_export`; требовать `ok` и
+   readiness именно обучаемого контура.
+4. V5: materialize и повторно validate directory. Nemesis:
+   `split_nemesis_training_dataset`; Lite deck-grouped публикуется всегда, а
+   Standard player-disjoint/chronological/deck-grouped assignments — только
+   при `training_ready_standard=true`. Cross-partition player battles
+   исключаются и учитываются в manifest. ReturnClock: dedicated
+   grouped-temporal split и leakage gate.
+5. Сохранить SHA-256, format/version, validation summary,
+   split/materialization manifest, catalog/weights provenance, exclusion
+   counts/sample weights и privacy key id.
+
+**V5 policy.** В action targets идут только строки `accepted is True`;
+rejected rows остаются audit evidence. Нужны текущий catalog hash/card count,
+правильный `weights_hash`, zero degraded и state/action/terminal continuity.
+Для headless групп требовать `v5_policy_training_ready=true` и
+`training_ready_scope="v5_policy_only"`; общий `training_ready` — только
+backward-compatible alias policy gate. Такой group допустим и как источник
+отдельно eligible Nemesis Lite rows.
+
+**Metronome / TimeStamp.** Это независимые readiness gates. Metronome требует
+observed uncensored human decision-time labels, aligned с pre-action state.
+TimeStamp требует реальные production battle-time labels. При отсутствии
+таких наблюдений соответствующий readiness остаётся false, даже если V5 policy
+ready. Headless CPU/wall-clock duration, LLM latency и synthetic delay не
+заменяют human labels. TimeStamp inputs строятся только из prebattle колоды или
+пары колод, `starting_player` и явно разрешённых признаков, существовавших до
+начала боя. `duration_seconds`, `turns`, `finished_at` и производные являются
+только labels/audit. Loader, передающий весь `timestamp_features` или `meta`,
+должен fail closed как target-leakage defect.
+
+**Nemesis.** Одна строка на terminal battle содержит `features.base` для Lite и
+optional `features.extended` для standard. Использовать
+`eligible_lite`/`eligible_standard`, `sample_weight`, exclusion reasons и
+deck-pair split group. Human-vs-bot и model-vs-model обучают Lite; masked
+human-bot extension сохраняется только для аудита/будущего domain-aware
+research и не входит в текущий canonical Standard trainer. Source export
+намеренно не объявляет Standard training-ready до
+`split_nemesis_training_dataset`. Split bundle всегда содержит Lite
+deck-grouped, а Standard player-disjoint primary + chronological/deck-grouped
+evaluation добавляются только при наличии минимум шести игроков, трёх
+pairwise-disjoint human-human боёв, трёх matchup groups и трёх cutoff cohorts.
+Player aliases назначаются ровно
+одному partition, cross-partition battles исключаются и fingerprint-ятся;
+aliases остаются вне `features`.
+
+**ReturnClock.** Estimator получает только `header.feature_columns`.
+`post_cutoff`, `user_id_hash`, `prediction_cutoff_at` запрещены как features.
+Raw export может сохранять treated intervals для аудита, но training split
+строго grouped by user, temporal и organic-only: каждая train/eval строка имеет
+`post_cutoff.organic_candidate=true`, а manifest содержит `training_filter` и
+число исключённых treated rows. Natural-return trainer не читает mixed raw
+export. Causal send-time policy блокирован до randomized no-send/control pilot.
+
+Production snapshot читается keyset pagination внутри одной repeatable-read
+transaction: страницы до 50,000, максимум 1,000,000 строк на каждый raw stream.
+Exclusive `end_at` ограничивает event time/censoring. Более поздний
+`ingested_before` отдельно ограничивает `created_at` session, decision и
+delivery rows, поэтому late status/update не выбрасывает старый assignment и
+не меняет treated interval на organic. Safety lag защищает границу только когда
+`end` не задан; explicit historical `end` используется без сдвига. Если stream
+достиг ceiling, export считается неполным: нельзя молча склеивать независимо
+цензурированные выгрузки. Exporter и splitter сейчас материализуют выбранное
+окно в памяти, поэтому крупные окна нужно подбирать с учётом доступной RAM.
+
+Fresh destination собирается рядом во временном пути и публикуется
+same-filesystem rename. Overwrite имеет rollback для обычных перехваченных
+ошибок, но не гарантирует crash-atomic replacement при `SIGKILL`/power loss.
+Поэтому promotion выполняется новым versioned path с `overwrite=false` и
+внешним pointer после validation.
+
+### 7.9. Пример (curl-style через stdin)
+
+```bash
+PY=./rlhf_env/.venv/bin/python
+
+# 1. server жив + tools enumerate
 echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
-  | python3 -m rlhf_env.mcp_server
+  | "$PY" -m rlhf_env.mcp_server
 
 # 2. llm-vs-bot серия: 3 боя против V4-max, авто-кодовое имя
 echo '{
@@ -606,7 +745,7 @@ echo '{
   "params":{"name":"start_series",
             "arguments":{"spec":{"p2_model":"extra-lr-v4-max","battles_planned":3,
                                  "seed":42,"starting_player":"p1"}}}
-}' | python3 -m rlhf_env.mcp_server
+}' | "$PY" -m rlhf_env.mcp_server
 
 # 3. model-vs-model: наша RL p1 auto-играет, тег rl-vs-rl
 echo '{
@@ -614,12 +753,12 @@ echo '{
   "params":{"name":"start_series",
             "arguments":{"spec":{"p1_actor_type":"rl","p1_model":"extra-lr-v3-max",
                                  "p2_model":"extra-lr-v4-max","battles_planned":3,"seed":7}}}
-}' | python3 -m rlhf_env.mcp_server
+}' | "$PY" -m rlhf_env.mcp_server
 
 # 4. статус агента
 echo '{"jsonrpc":"2.0","id":4,"method":"tools/call",
        "params":{"name":"get_agent_status","arguments":{"agent_name":"veceno"}}}' \
-  | python3 -m rlhf_env.mcp_server
+  | "$PY" -m rlhf_env.mcp_server
 ```
 
 ---
@@ -740,6 +879,26 @@ omniscient: обе руки/борды/колоды). Читается чере�
 `get_v5_dataset_summary` / `validate_v5_traces`. См. также
 `.codex/skills/extra-rlhf/references/data-format.md`.
 
+### 8.5. Private exports (`datasets/`)
+
+- `extraarena_v5_dataset_export_v1`: header + complete terminal battle bundle
+  на строку; fixed side pseudonyms + export-local opaque `battle_id/match_id`.
+  После
+  `materialize_v5_training_dataset` получается canonical
+  `extraarena_v5_materialized_dataset_v1` directory.
+- `extraarena_nemesis_dataset_export_v1`: header + terminal battle rows
+  `extraarena_nemesis_battle_v1`; одна shared base для Lite и optional extended
+  snapshot для standard; native record IDs запрещены под pseudonymized header.
+- `extraarena_returnclock_dataset_v1`: header с exact feature allowlist и
+  pseudonymization key id; далее survival examples с раздельными
+  `features`/`label`/`post_cutoff`.
+
+Файлы создаются с mode `0600`; fresh destination публикуется temp+rename.
+Overwrite не считается crash-atomic promotion. Path traversal/symlink escape
+запрещены.
+Полный контракт: `.codex/skills/extra-rlhf/references/data-format.md` и
+`docs/returnclock-dataset-contract.md`.
+
 ---
 
 ## 9. Добавление собственных моделей
@@ -814,10 +973,10 @@ fallback через gitignored `ai.model_benchmark.inspect_model`, если laye
 ### 9.6. Новый adapter-kind (расширение реестра)
 
 `AdapterRegistry` (`rlhf_env/components/policy_adapters.py`) — единственная точка
-расширения: `register(kind, factory)` + `register_detector(detector)`. V5 —
-зарезервированный слот (`V5StubAdapter` поднимает `NotImplementedError` как
-шаблон; impl = Block 0, зона пользователя). Добавить новый kind можно без правок
-if/elif:
+расширения: `register(kind, factory)` + `register_detector(detector)`. V5
+реализован отдельным adapter contract (7128 observation, 601 action candidate,
+value и mana-draw heads) и детектируется раньше общего V4 detector. Добавить
+новый kind можно без правок if/elif:
 
 ```python
 from rlhf_env.components.policy_adapters import default_registry
@@ -931,16 +1090,16 @@ log = asyncio.run(runner.arun())
 ### 12.1. Unit-тесты
 
 ```bash
-python3 -m pytest rlhf_env/tests/ rlhf_env/tests_*.py -q
-# 135 passed, 1 skipped, 0 failed (2026-06-28)
+./rlhf_env/.venv/bin/python \
+  -m pytest rlhf_env/tests/ rlhf_env/tests_*.py -q
 ```
 
 Покрытие:
 - `test_log_schema.py` — battle_log v1.0, manifest v1.0
 - `test_deck_builder.py` — каталог, случайные деки, парсинг, валидация
 - `test_policy_factory.py` / `test_policy_adapters.py` — baselines, V4 sidecar,
-  V3 legacy, `AdapterRegistry` (register/detect_kind/build), `V5StubAdapter`
-  raises, layer-A-missing → явная `ValueError`
+  V3 legacy, V5 adapter, `AdapterRegistry` (register/detect_kind/build),
+  layer-A-missing → явная `ValueError`
 - `test_battle_runner.py` — 1 бой end-to-end (random / V4-Max)
 - `test_p1_rl_autoplay.py` — p1_actor_type=rl auto-играет, `battle_tag`,
   `decision_source="rl"`, regression human/llm путей
@@ -948,7 +1107,11 @@ python3 -m pytest rlhf_env/tests/ rlhf_env/tests_*.py -q
 - `test_agent_registry.py` — claim/release, pool-exhaustion, pin_group+persist
 - `test_mcp_tools_inprocess.py` — MCP через `MCPServer._tool` in-process:
   start_series+agent, list_active_series, get_agent_status, finish_series,
-  get_match_status, register_custom_model, submit_action rejected for rl-p1
+  get_match_status, compact/indexed player, standard wire, dataset tools,
+  register_custom_model, submit_action rejected for rl-p1
+- `test_dataset_toolbox.py` / ReturnClock tests — path/privacy/schema/readiness,
+  fresh-path publication, overwrite rollback, organic-only grouped-temporal
+  split and leakage gate
 - `test_manifest.py`, `test_session_manager.py`, `test_v5_*`, `test_actor_tagging`
 - `test_v5_trace_validate.py` — глубокие инварианты `validate_v5_trace`: реальный
   rl-vs-bot бой проходит; мутации каждого класса (legal_index / actor-source /
@@ -975,12 +1138,10 @@ python3 rlhf_env/tests/smoke_e2e.py --port 8096 --battles 1 --models v4-max
 
 Перед коммитом:
 ```bash
-python3 -m pytest rlhf_env/tests/ rlhf_env/tests_*.py -q   # rlhf_env
-python3 -m pytest tests/ -q --ignore=...                   # прод-тесты (если меняли engine)
+PY=./rlhf_env/.venv/bin/python
+"$PY" -m pytest rlhf_env/tests/ rlhf_env/tests_*.py -q
+"$PY" -m pytest tests/ -q --ignore=...
 ```
-
-База main (2026-06-24): 32/1967 прод-тестов падают — сверяй с baseline до/после,
-чтобы отделить pre-existing от регрессий.
 
 ---
 
@@ -1021,10 +1182,12 @@ V3 legacy — без sidecar, автоопределение.
 Python 3.10+: `asyncio.get_event_loop()` deprecated. Запускайте через
 `asyncio.run(main())` или используйте `sm.astart(spec)` из async-контекста.
 
-### 13.7. macOS: `python` not found
+### 13.7. macOS: неверный Python / нет NumPy
 
-Используйте `python3` или `pyenv`. В скрипте `start_rlhf_env.sh` уже
-есть авто-детект.
+Пиньте `<REPO_ROOT>/rlhf_env/.venv/bin/python`, созданный
+`start_rlhf_env.sh setup --python /path/to/python3.13`, и проверяйте импорт
+зависимостей. Bare `python3`
+может не содержать NumPy/ONNX Runtime/pytest независимо от minor-версии.
 
 ### 13.8. ONNX runtime warning
 
@@ -1055,8 +1218,8 @@ default_registry().register_detector(
 
 Adapter контракт: attrs `name/kind/model_path/weights_hash/weights_version` +
 `select_action(engine, player_id) -> int` (идентично потребителям в
-`arena_match_manager`/`match_runner._capture_models`). V5 — зарезервированный
-слот (`V5StubAdapter`); impl = Block 0 (зона пользователя), см. §9.6.
+`arena_match_manager`/`match_runner._capture_models`). Реализованный V5 adapter
+подчиняется тому же контракту, см. §9.6.
 
 ### 14.2. Добавить новый формат deck_strategy
 

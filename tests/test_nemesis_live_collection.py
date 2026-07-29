@@ -237,6 +237,21 @@ def test_human_bot_is_lite_primary_with_human_extension_and_bot_provenance() -> 
     }
 
 
+def test_human_bot_snapshot_failure_preserves_lite_record() -> None:
+    engine = asyncio.run(_create(db=_DB(fail_user_id=101), p2_bot=True))
+    meta = engine.get_v5_dataset_snapshot()["meta"]
+
+    assert "nemesis_record" in meta
+    record = meta["nemesis_record"]
+    assert record["features"]["base"]["domain"] == "human-bot"
+    assert record["features"]["extended"]["p1"] is None
+    assert record["quality"]["eligible_lite"] is True
+    assert record["quality"]["eligible_standard"] is False
+    assert record["quality"]["exclusion_reasons"] == [
+        "human_bot_standard_auxiliary_only"
+    ]
+
+
 def test_snapshot_failure_and_rehydrate_fail_closed_without_breaking_gameplay() -> None:
     failed = asyncio.run(_create(db=_DB(fail_user_id=202)))
     failed_record = failed.get_v5_dataset_snapshot()["meta"]["nemesis_record"]

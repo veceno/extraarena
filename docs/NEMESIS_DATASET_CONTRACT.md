@@ -48,8 +48,8 @@ Standard eligibility is deliberately narrower than record compatibility:
   are present;
 - `human-bot` retains the human extension and full model provenance, but is
   marked `human_bot_standard_auxiliary_only`; it is primary data for Lite and
-  optional masked/domain-aware pretraining data for Standard, not a directly
-  calibrated human-matchmaking target;
+  audit/future-research material for a possible masked/domain-aware auxiliary
+  regime. The current canonical Standard trainer excludes it;
 - `model-model` is Lite-only;
 - a rehydrated V5 trace generation is stored for audit but has zero weight and
   is ineligible, preventing one gameplay match from becoming two labels.
@@ -102,6 +102,18 @@ Evaluation should combine:
 - calibration metrics, not accuracy alone;
 - slices by trophies, first mover, history length, ruleset/catalog and actor
   domain.
+
+`split_nemesis_training_dataset` always materializes the Lite deck-grouped
+assignment. It adds all three Standard assignments only when their joint gates
+pass: at least six distinct players, three pairwise-disjoint human-human
+battles, three matchup groups and three cutoff cohorts. Otherwise the artifact
+remains Lite-ready and records `standard_readiness_blockers`. The primary
+Standard assignment maps each export-local player alias to exactly one of
+train/validation/test and excludes battles whose two aliases land in different
+partitions. Those excluded battle fingerprints and counts are part of the
+validated private manifest; MCP surfaces only exact counts and a bounded
+sample. Player aliases are split-only metadata and must never be projected
+into model features. No one partitioning is claimed to satisfy every holdout.
 
 Because Nemesis will eventually affect which battles occur, its own
 matchmaking decisions create a feedback loop. Production training exports

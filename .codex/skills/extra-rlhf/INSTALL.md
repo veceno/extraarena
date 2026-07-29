@@ -7,19 +7,26 @@ the MCP gives tools; the skills give the workflows.
 The MCP server is **stdio JSON-RPC 2.0**, launched from the **repo root**:
 
 ```bash
-python3 -m rlhf_env.mcp_server \
+<PYTHON_WITH_RLHF_DEPS> -m rlhf_env.mcp_server \
   --models-dir ai/models \
   --sessions-dir rlhf_env/sessions \
+  --datasets-dir datasets \
   --cards-path ai/cards.json
 ```
 
 CLI flags can also be env vars: `RLHF_MODELS_DIR`, `RLHF_SESSIONS_DIR`,
-`RLHF_CARDS_PATH`, `RLHF_LOG_LEVEL`. A bash wrapper exists:
+`RLHF_DATASETS_DIR`, `RLHF_CARDS_PATH`, `RLHF_LOG_LEVEL`. A bash wrapper exists:
 `./rlhf_env/start_rlhf_env.sh mcp`.
 
-> Replace `<REPO_ROOT>` below with the absolute path to your ExtraArenaRaS
-> checkout. The `cwd` must be the repo root so the `rlhf_env` package and the
-> relative `ai/models`, `ai/cards.json` paths resolve.
+> Replace `<REPO_ROOT>` below with the absolute path to the exact checkout or
+> worktree you are curating, and `<PYTHON_WITH_RLHF_DEPS>` with an absolute
+> interpreter path. Run
+> `./rlhf_env/start_rlhf_env.sh setup --python <PYTHON_WITH_RLHF_DEPS_BASE>`,
+> then use
+> `<REPO_ROOT>/rlhf_env/.venv/bin/python`. Verify that exact interpreter with
+> `-c 'import numpy, onnxruntime, asyncpg'`; a Python minor version alone does
+> not prove the dependencies are installed. The `cwd` must be the repo root so
+> packages and relative paths resolve.
 
 ---
 
@@ -32,10 +39,11 @@ Create `.mcp.json` in the repo root (or merge into an existing one):
 {
   "mcpServers": {
     "extra-rlhf": {
-      "command": "python3",
+      "command": "<PYTHON_WITH_RLHF_DEPS>",
       "args": ["-m", "rlhf_env.mcp_server",
                "--models-dir", "ai/models",
                "--sessions-dir", "rlhf_env/sessions",
+               "--datasets-dir", "datasets",
                "--cards-path", "ai/cards.json"],
       "cwd": "<REPO_ROOT>"
     }
@@ -46,8 +54,9 @@ Create `.mcp.json` in the repo root (or merge into an existing one):
 Or via CLI (run from repo root, so `cwd` is implicit):
 
 ```bash
-claude mcp add extra-rlhf -- python3 -m rlhf_env.mcp_server \
-  --models-dir ai/models --sessions-dir rlhf_env/sessions --cards-path ai/cards.json
+claude mcp add extra-rlhf -- <PYTHON_WITH_RLHF_DEPS> -m rlhf_env.mcp_server \
+  --models-dir ai/models --sessions-dir rlhf_env/sessions \
+  --datasets-dir datasets --cards-path ai/cards.json
 ```
 
 Verify: `claude mcp list` → `extra-rlhf`. In a session, `/mcp` shows it connected.
@@ -76,10 +85,11 @@ Add to `~/.codex/config.toml`:
 
 ```toml
 [mcp_servers.extra-rlhf]
-command = "python3"
+command = "<PYTHON_WITH_RLHF_DEPS>"
 args = ["-m", "rlhf_env.mcp_server",
         "--models-dir", "ai/models",
         "--sessions-dir", "rlhf_env/sessions",
+        "--datasets-dir", "datasets",
         "--cards-path", "ai/cards.json"]
 cwd = "<REPO_ROOT>"
 ```
@@ -100,9 +110,10 @@ Add to `opencode.json` (or `~/.config/opencode/opencode.json`):
   "mcp": {
     "extra-rlhf": {
       "type": "local",
-      "command": ["python3", "-m", "rlhf_env.mcp_server",
+      "command": ["<PYTHON_WITH_RLHF_DEPS>", "-m", "rlhf_env.mcp_server",
                    "--models-dir", "ai/models",
                    "--sessions-dir", "rlhf_env/sessions",
+                   "--datasets-dir", "datasets",
                    "--cards-path", "ai/cards.json"],
       "cwd": "<REPO_ROOT>"
     }
@@ -127,7 +138,9 @@ done
 
 Point your client at the command above. Config snippet template:
 [`mcp/extra-rlhf.mcp.json`](./mcp/extra-rlhf.mcp.json). The server speaks
-standard MCP: `initialize` → `tools/list` (25 tools) → `tools/call`.
+standard MCP: `initialize` → `tools/list` → `tools/call`. A successful tool
+result is available as JSON text in `content[0].text` and as the same object in
+`structuredContent`; errors set `isError=true`.
 
 ---
 
@@ -136,14 +149,14 @@ standard MCP: `initialize` → `tools/list` (25 tools) → `tools/call`.
 ```bash
 # 1. server alive + tools enumerate
 echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
-  | python3 -m rlhf_env.mcp_server   # expect 25 tools
+  | <PYTHON_WITH_RLHF_DEPS> -m rlhf_env.mcp_server
 
-# 2. start a quick series (llm-vs-bot, auto-plays)
+# 2. start a quick series (llm-vs-bot; the caller plays p1)
 echo '{
   "jsonrpc":"2.0","id":2,"method":"tools/call",
   "params":{"name":"start_series",
             "arguments":{"spec":{"p2_model":"random","battles_planned":1,"seed":42}}}
-}' | python3 -m rlhf_env.mcp_server
+}' | <PYTHON_WITH_RLHF_DEPS> -m rlhf_env.mcp_server
 ```
 
 In your client, ask: *"Use the extra-rlhf skill to run 3 llm-vs-bot battles vs
@@ -154,9 +167,12 @@ random."* It should route to `extrarlhf-gen-orchestration` (L1) and call
 
 ## Notes & troubleshooting
 
-- **Python**: needs Python 3.10+ with `aiohttp`, `numpy`, `onnxruntime`, `mcp`
-  (`rlhf_env/requirements.txt`). Use `./rlhf_env/start_rlhf_env.sh setup` to make
-  a venv, or run with system python (`--no-venv`).
+- **Python**: use Python 3.13 with dependencies from
+  `rlhf_env/requirements.txt` (`aiohttp`, `numpy`, `onnxruntime`, `mcp`,
+  `asyncpg`, `python-dotenv`). Use
+  `./rlhf_env/start_rlhf_env.sh setup --python /path/to/python3.13` to make a
+  venv from an explicit interpreter (`RLHF_PYTHON` is equivalent), or pin the
+  known dependency-bearing interpreter above.
 - **Layer A (`ai.model_benchmark`) absent**: onnx auto-detect is unavailable →
   onnx models won't resolve by name. Pass `p2_model_path` + `p2_model_kind`
   explicitly (see `references/concepts.md`). Baselines (`random`/`greedy_face`/
@@ -164,8 +180,39 @@ random."* It should route to `extrarlhf-gen-orchestration` (L1) and call
 - **Port**: the **MCP server is stdio** (no port). The **web arena** is
   `127.0.0.1:8090` (`./rlhf_env/start_rlhf_env.sh` / `--port`). They're separate
   processes sharing the same engine + sessions dir.
-- **Do not touch prod** (port 8081). `rlhf_env` is autonomous; `config.json`
-  switches the dev/prod/local backend the rlhf-proxy reaches for `/api/rlhf/*`
-  (default `dev` → 8082).
+- **Headless collection does not touch prod** (port 8081). The only exception is
+  the explicit read-only dataset plane described below.
 - **Logs**: `--log-level DEBUG` or `RLHF_LOG_LEVEL=DEBUG` (stderr; doesn't break
   stdio since only stdout is JSON-RPC).
+
+## Optional production dataset exports
+
+Local listing, inspection, validation, V5 materialization and ReturnClock
+splitting work with the default configuration. Production PostgreSQL reads are
+fail-closed until one of these equivalent opt-ins is present:
+
+```bash
+# Prefer environment variables in the trusted launcher/service:
+export RLHF_ENABLE_PRODUCTION_DATASETS=1
+export RETURNCLOCK_DATASET_SALT='<export-specific HMAC secret, at least 32 bytes>'
+export RETURNCLOCK_DATASET_SALT_KEY_ID='<non-secret rotation id>'
+
+# Or add --enable-production-datasets to the MCP command.
+```
+
+`RLHF_RETURNCLOCK_SALT_ENV` / `--returnclock-salt-env` selects the **name** of
+the environment variable containing the secret; the default is
+`RETURNCLOCK_DATASET_SALT`.
+`RLHF_RETURNCLOCK_SALT_KEY_ID_ENV` /
+`--returnclock-salt-key-id-env` similarly selects the env containing the
+non-secret rotation id. Never add the salt value or a production DSN to a
+checked-in MCP config. `RETURNCLOCK_DATASET_SALT_KEY_ID` is safe to log and
+must change when the secret rotates.
+
+The datasets directory is a private boundary: tool paths must resolve beneath
+it, symlinks/path traversal are rejected, private files use mode `0600`, and
+raw user IDs are not an export option. Files and fresh versioned directories
+are promoted only after validation; directory `overwrite=true` is rollback-safe
+for handled errors but not crash-atomic, so immutable training handoffs should
+use `overwrite=false`. ReturnClock output is pseudonymized, not anonymous; keep
+it in closed training storage.

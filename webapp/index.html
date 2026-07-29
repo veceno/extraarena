@@ -4290,7 +4290,6 @@ window._openPreBattle = function(data) {
     showBrowserArenaUnavailable();
     return;
   }
-  window.__analytics?.battlePlayed();
   window.__preBattleData = null;
   window.__rootSetPreBattle?.(false);
   const musicParam = '&music=' + (window._musicEnabled ? '1' : '0');
@@ -5145,7 +5144,7 @@ window.loadMobileSquadsBootstrap = async function(options = {}) {
 };
 </script>
 
-<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=52ed1962e9d5">
+<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=0245150d9dc4">
 // ═══════════════════════════════════════════
 // DESIGN TOKENS
 // ═══════════════════════════════════════════
@@ -17260,6 +17259,8 @@ const BattleHistorySheet = ({onClose, profile}) => {
 
 // ── Analytics Controller ──
 const AnalyticsController = (() => {
+  const ANALYTICS_VERSION = 2;
+  const SESSION_INACTIVITY_MS = 30 * 60 * 1000;
   let _sessionId = null;
   let _screens = [];
   let _battlesPlayed = 0;
@@ -17267,15 +17268,64 @@ const AnalyticsController = (() => {
   let _lastUpdate = 0;
   let _updateTimer = null;
   let _ended = false;
+  let _started = false;
+  let _startConfirmed = false;
+  let _startRequest = null;
+  let _startRetryTimer = null;
+  let _hiddenAt = null;
+  let _launchAttributionConsumed = false;
+
+  const _readLaunchContext = () => {
+    let params = null;
+    try { params = new URLSearchParams(window.location.search); } catch(e) {}
+    const cleanParam = (name, maxLength) => {
+      const value = params?.get(name);
+      if (typeof value !== 'string') return null;
+      const cleaned = value.trim();
+      return cleaned ? cleaned.slice(0, maxLength) : null;
+    };
+    const platform = cleanParam('ea_platform', 64);
+    let timezone = null;
+    try { timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || null; } catch(e) {}
+    return {
+      source: platform || (window.Telegram?.WebApp?.initData ? 'telegram_webapp' : 'web'),
+      timezone,
+      entrypoint: cleanParam('entrypoint', 128),
+      returnclockDecisionId: cleanParam('rc_decision_id', 128) || cleanParam('returnclock_decision_id', 128) || cleanParam('decision_id', 128),
+      returnclockDeliveryId: cleanParam('delivery_id', 128) || cleanParam('notification_id', 128),
+      notificationId: cleanParam('notification_id', 128),
+    };
+  };
+
+  // Read deep-link attribution before another bootstrap step can clean the URL.
+  const _launchContext = _readLaunchContext();
+
+  const _clearLaunchAttributionFromUrl = () => {
+    if (!_launchContext.returnclockDecisionId && !_launchContext.returnclockDeliveryId && !_launchContext.notificationId && _launchContext.entrypoint !== 'notification') return;
+    try {
+      const url = new URL(window.location.href);
+      ['rc_decision_id', 'returnclock_decision_id', 'decision_id', 'delivery_id', 'notification_id'].forEach((key) => url.searchParams.delete(key));
+      if (url.searchParams.get('entrypoint') === 'notification') url.searchParams.delete('entrypoint');
+      window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`);
+    } catch(e) {}
+  };
 
   const _getSessionId = () => {
     if (_sessionId) return _sessionId;
-    try { _sessionId = sessionStorage.getItem('ea_session_id'); } catch(e) {}
-    if (!_sessionId) {
-      _sessionId = (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : (Date.now() + '_' + Math.random().toString(36).slice(2, 10));
-      try { sessionStorage.setItem('ea_session_id', _sessionId); } catch(e) {}
-    }
+    // A new document is a new analytics session. Reusing an id left by a
+    // killed background WebView would merge a real return into the old row.
+    _sessionId = (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : (Date.now() + '_' + Math.random().toString(36).slice(2, 10));
+    try { sessionStorage.setItem('ea_session_id', _sessionId); } catch(e) {}
     return _sessionId;
+  };
+
+  const _forgetSessionId = (sessionId) => {
+    if (_sessionId === sessionId) _sessionId = null;
+    try {
+      if (sessionStorage.getItem('ea_session_id') === sessionId) {
+        sessionStorage.removeItem('ea_session_id');
+      }
+    } catch(e) {}
   };
 
   const _apiUrl = (path) => {
@@ -17288,8 +17338,18 @@ const AnalyticsController = (() => {
     return fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), keepalive: true }).catch(() => {});
   };
 
+  const _postJSONChecked = async (path, body) => {
+    const url = _apiUrl(path);
+    if (!url) throw new Error('analytics_auth_unavailable');
+    const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), keepalive: true });
+    if (!response.ok) throw new Error(`analytics_http_${response.status}`);
+    const result = await response.json();
+    if (!result?.success) throw new Error('analytics_start_rejected');
+    return result;
+  };
+
   const _flushUpdate = () => {
-    if (_ended) return;
+    if (_ended || !_started || !_startConfirmed) return;
     _lastUpdate = Date.now();
     _postJSON('/api/analytics/session/update', {
       session_id: _getSessionId(),
@@ -17300,39 +17360,163 @@ const AnalyticsController = (() => {
   };
 
   const _scheduleUpdate = () => {
-    if (_ended) return;
+    if (_ended || !_started) return;
     const now = Date.now();
     if (_updateTimer) clearTimeout(_updateTimer);
     if (now - _lastUpdate > 25000) { _flushUpdate(); return; }
     _updateTimer = setTimeout(_flushUpdate, 3000);
   };
 
-  const _sendEnd = () => {
-    if (_ended) return;
+  const _dispatchEnd = (url, payload) => {
+    if (!url) return;
+    const body = JSON.stringify(payload);
+    // JWT auth is injected by the fetch bridge as an Authorization header.
+    // sendBeacon cannot carry that header and returning true does not mean the
+    // server accepted the request, so it is safe only for query-auth URLs.
+    const beaconSafe = /(?:[?&])(?:_auth|user_id)=/.test(url);
+    if (beaconSafe && typeof navigator.sendBeacon === 'function') {
+      try {
+        const blob = new Blob([body], { type: 'application/json' });
+        if (!navigator.sendBeacon(url, blob)) {
+          _postJSON('/api/analytics/session/end', payload);
+        }
+      } catch(e) {
+        _postJSON('/api/analytics/session/end', payload);
+      }
+    } else {
+      _postJSON('/api/analytics/session/end', payload);
+    }
+  };
+
+  const _sendEnd = (endedAtMs = null, endReason = null) => {
+    if (_ended || !_started) return;
+    const sessionId = _getSessionId();
+    const hasClientBoundary = Number.isFinite(endedAtMs);
+    const clientEndedAt = hasClientBoundary ? endedAtMs : Date.now();
+    const startWasConfirmed = _startConfirmed;
+    const pendingStart = _startRequest;
     _ended = true;
+    _started = false;
+    _startConfirmed = false;
+    _startRequest = null;
+    if (_startRetryTimer) clearTimeout(_startRetryTimer);
+    _startRetryTimer = null;
     if (_updateTimer) clearTimeout(_updateTimer);
-    const body = JSON.stringify({
-      session_id: _getSessionId(),
+    _updateTimer = null;
+    const payload = {
+      session_id: sessionId,
       screens_visited: _screens.slice(-200),
       battles_played: _battlesPlayed,
-      cases_opened: _casesOpened
-    });
+      cases_opened: _casesOpened,
+      ended_at: new Date(clientEndedAt).toISOString(),
+      metadata: endReason ? { end_reason: endReason } : {}
+    };
     const url = _apiUrl('/api/analytics/session/end');
-    if (!url) return;
-    try {
-      const blob = new Blob([body], { type: 'application/json' });
-      navigator.sendBeacon(url, blob);
-    } catch(e) {
-      _postJSON('/api/analytics/session/end', body);
+    if (startWasConfirmed) {
+      _dispatchEnd(url, payload);
+    } else if (pendingStart) {
+      // Do not let /end overtake the INSERT from a slow /start request.
+      pendingStart.then((result) => {
+        if (result?.started) _dispatchEnd(url, payload);
+      });
+    }
+    // A reload or BFCache restore must never reopen a row already ended above.
+    _forgetSessionId(sessionId);
+  };
+
+  const _startCurrentSession = () => {
+    if (_started && !_ended) return _startRequest;
+    _ended = false;
+    _started = true;
+    _startConfirmed = false;
+    _lastUpdate = Date.now();
+    const includeLaunchAttribution = !_launchAttributionConsumed;
+    const sessionId = _getSessionId();
+    const payload = {
+      session_id: sessionId,
+      analytics_version: ANALYTICS_VERSION,
+      source: _launchContext.source,
+      timezone: _launchContext.timezone,
+      utc_offset_minutes: -new Date().getTimezoneOffset(),
+      entrypoint: includeLaunchAttribution ? _launchContext.entrypoint : null,
+      returnclock_decision_id: includeLaunchAttribution ? _launchContext.returnclockDecisionId : null,
+      returnclock_delivery_id: includeLaunchAttribution ? _launchContext.returnclockDeliveryId : null,
+      notification_id: includeLaunchAttribution ? _launchContext.notificationId : null,
+    };
+    _startRequest = _postJSONChecked('/api/analytics/session/start', payload)
+      .then((result) => {
+        if (!result?.started) throw new Error('analytics_session_not_started');
+        if (!_ended && _sessionId === sessionId) _startConfirmed = true;
+        if (includeLaunchAttribution) {
+          _launchAttributionConsumed = true;
+          _clearLaunchAttributionFromUrl();
+        }
+        if (_screens.length && !_ended && _sessionId === sessionId) _scheduleUpdate();
+        return result;
+      })
+      .catch(() => {
+        if (!_ended && _sessionId === sessionId) {
+          _started = false;
+          _startRequest = null;
+          if (_startRetryTimer) clearTimeout(_startRetryTimer);
+          _startRetryTimer = setTimeout(_startCurrentSession, 5000);
+        }
+        return null;
+      });
+    return _startRequest;
+  };
+
+  const _startFreshSession = () => {
+    const currentScreen = _screens.length ? _screens[_screens.length - 1].screen : null;
+    const staleSessionId = _sessionId;
+    if (staleSessionId) _forgetSessionId(staleSessionId);
+    _sessionId = null;
+    _screens = currentScreen ? [{ screen: currentScreen, ts: Date.now() }] : [];
+    _battlesPlayed = 0;
+    _casesOpened = 0;
+    _lastUpdate = 0;
+    _ended = false;
+    _started = false;
+    _startConfirmed = false;
+    _startRequest = null;
+    if (_startRetryTimer) clearTimeout(_startRetryTimer);
+    _startRetryTimer = null;
+    return _startCurrentSession();
+  };
+
+  const _handleVisible = () => {
+    const now = Date.now();
+    const hiddenStartedAt = _hiddenAt;
+    const hiddenFor = hiddenStartedAt == null ? 0 : now - hiddenStartedAt;
+    _hiddenAt = null;
+    if (_ended) {
+      _startFreshSession();
+    } else if (_started && hiddenFor >= SESSION_INACTIVITY_MS) {
+      // Close at the moment the app was hidden. Closing at resume time would
+      // collapse a multi-hour return gap into a near-zero training target.
+      _sendEnd(hiddenStartedAt, 'background_inactivity');
+      _startFreshSession();
+    } else if (_started) {
+      _scheduleUpdate();
     }
   };
 
   // lifecycle
   if (typeof window !== 'undefined') {
-    window.addEventListener('pagehide', _sendEnd);
-    window.addEventListener('beforeunload', _sendEnd);
+    const _handlePageExit = () => _sendEnd(
+      Number.isFinite(_hiddenAt) ? _hiddenAt : Date.now(),
+      'page_exit'
+    );
+    window.addEventListener('pagehide', _handlePageExit);
+    window.addEventListener('beforeunload', _handlePageExit);
+    window.addEventListener('pageshow', _handleVisible);
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'hidden') _sendEnd();
+      if (document.visibilityState === 'hidden') {
+        _hiddenAt = Date.now();
+        _flushUpdate();
+      } else if (document.visibilityState === 'visible') {
+        _handleVisible();
+      }
     });
     setInterval(() => {
       if (!_ended && document.visibilityState === 'visible' && Date.now() - _lastUpdate > 25000) _flushUpdate();
@@ -17340,9 +17524,7 @@ const AnalyticsController = (() => {
   }
 
   return {
-    start: () => {
-      _postJSON('/api/analytics/session/start', { session_id: _getSessionId(), source: 'telegram_webapp' });
-    },
+    start: _startCurrentSession,
 
     screen: (name) => {
       if (!name || (_screens.length && _screens[_screens.length - 1].screen === name)) return;
@@ -20872,6 +21054,6 @@ const LeagueInfoSheet = ({onClose, onOpenGloryPath, profile}) => {
 
 ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
 </script>
-<script src="index.compiled.js?v=52ed1962e9d5"></script>
+<script src="index.compiled.js?v=0245150d9dc4"></script>
 </body>
 </html>

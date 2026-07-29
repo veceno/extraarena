@@ -22,6 +22,11 @@ from typing import Any, Callable, Dict, List, Optional
 
 from core.actions import EndTurnAction, ManaDrawAction
 from core.state import GameStatus
+from core.v5_dataset import (
+    v5_policy_failure_code,
+    v5_policy_failure_error,
+    v5_policy_failure_warning,
+)
 
 from rlhf_env.components.log_schema import BATTLE_LOG_VERSION, new_battle_log, summarize_state
 
@@ -380,20 +385,50 @@ class MatchRunner:
                 legal = engine.get_legal_actions_raw(bot_id)
                 if not legal:
                     return
+                policy_kind = str(
+                    getattr(bot_policy, "kind", "") or ""
+                ).lower()
                 try:
                     idx = int(bot_policy.select_action(engine._arena, bot_id))
+                    if policy_kind == "v5" and not 0 <= idx < len(legal):
+                        raise v5_policy_failure_error(
+                            "invalid_action_index"
+                        )
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("bot policy failed, fallback end_turn: %s", exc)
-                    msg = f"bot policy {getattr(bot_policy, 'name', '?')} (kind={getattr(bot_policy, 'kind', '?')}) failed, fallback end_turn: {exc}"
+                    if policy_kind == "v5":
+                        msg = v5_policy_failure_warning(
+                            v5_policy_failure_code(exc)
+                        )
+                    else:
+                        msg = (
+                            "bot policy "
+                            f"{getattr(bot_policy, 'name', '?')} "
+                            f"(kind={getattr(bot_policy, 'kind', '?')}) "
+                            f"failed, fallback end_turn: {exc}"
+                        )
                     if msg not in self.policy_fallbacks:
                         self.policy_fallbacks.append(msg)
-                    idx = len(legal) - 1
-                idx = max(0, min(idx, len(legal) - 1))
+                    idx = next(
+                        (
+                            index
+                            for index, action in enumerate(legal)
+                            if isinstance(action, EndTurnAction)
+                        ),
+                        len(legal) - 1,
+                    )
+                else:
+                    if policy_kind != "v5":
+                        idx = max(0, min(idx, len(legal) - 1))
                 chosen = legal[idx]
                 # Guard: V4/v4-orig боты слепы к mana_draw (нет 602-го кандидата),
-                # но defense-in-depth — если политика всё же выбрала ManaDrawAction,
-                # заменяем на end_turn (см. V5 spec D11: bots filter mana_draw).
-                if isinstance(chosen, ManaDrawAction):
+                # но V5 имеет отдельную parallel mana head. Поэтому только
+                # non-V5 политика, случайно выбравшая ManaDrawAction, заменяется
+                # на end_turn; V5 выполняет реальный добор.
+                if (
+                    policy_kind != "v5"
+                    and isinstance(chosen, ManaDrawAction)
+                ):
                     chosen = next((a for a in legal if isinstance(a, EndTurnAction)), legal[-1])
                     idx = legal.index(chosen)
                 action_json = chosen.to_dict()
@@ -534,6 +569,8 @@ class MatchRunner:
             p1_actor_type=getattr(engine, "p1_actor_type", None),
             v5_trace_ok=not getattr(match, "v5_trace_init_failed", False) and v5 is not None,
             agent_name=getattr(match, "agent_name", None),
+            policy_warnings=list(self.policy_fallbacks),
+            degraded=bool(self.policy_fallbacks),
         )
 
         # аналитика (NDJSON)

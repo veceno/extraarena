@@ -12,6 +12,8 @@ from scripts.materialize_v5_dataset_export import (
     materialize_export,
 )
 
+OPAQUE_BATTLE_ID = f"record_{'1' * 32}"
+
 
 def _state(*, owner: int = 1) -> dict:
     return {
@@ -35,7 +37,7 @@ def _state(*, owner: int = 1) -> dict:
     }
 
 
-def _bundle(*, battle_id: str = "battle-1", status: str = "p2_win") -> dict:
+def _bundle(*, battle_id: str = OPAQUE_BATTLE_ID, status: str = "p2_win") -> dict:
     state = _state()
     meta = {
         "schema_version": "rlhf_v5_storage_v1",
@@ -121,6 +123,7 @@ def _write_export(path: Path, battles: list[dict], *, count: int | None = None) 
         "created_at": "2026-07-28T12:00:00Z",
         "privacy": "side_pseudonyms_p1_1_p2_2",
         "include_players": False,
+        "record_id_scheme": "random_per_export_record_ids_v1",
         "days": 30,
         "limit_battles": 1000,
         "battle_count": len(battles) if count is None else count,
@@ -147,7 +150,7 @@ def test_materializes_canonical_layout_and_deep_validates(tmp_path: Path) -> Non
         group_id="production-human-20260728",
     )
 
-    v5_dir = output / "battles" / "battle-1" / "v5"
+    v5_dir = output / "battles" / OPAQUE_BATTLE_ID / "v5"
     assert (v5_dir / "meta.json").is_file()
     assert (v5_dir / "turns.jsonl").is_file()
     assert (v5_dir / "actions.jsonl").is_file()
@@ -156,10 +159,10 @@ def test_materializes_canonical_layout_and_deep_validates(tmp_path: Path) -> Non
     on_disk = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
     assert on_disk == manifest
     assert manifest["schema_version"] == "rlhf_v5_storage_v1"
-    assert manifest["battle_ids"] == ["battle-1"]
+    assert manifest["battle_ids"] == [OPAQUE_BATTLE_ID]
     assert manifest["results"]["battles_finished"] == 1
     assert manifest["battles_results"][0] == {
-        "battle_id": "battle-1",
+        "battle_id": OPAQUE_BATTLE_ID,
         "winner_user_id": 2,
         "loser_user_id": 1,
         "status": "P2_WIN",
@@ -169,8 +172,8 @@ def test_materializes_canonical_layout_and_deep_validates(tmp_path: Path) -> Non
         "collection_class": "human-vs-bot",
         "p1_actor_type": "human",
         "p2_actor_type": "bot",
-        "v5_dir": "battles/battle-1/v5",
-        "v5_meta_path": "battles/battle-1/v5/meta.json",
+        "v5_dir": f"battles/{OPAQUE_BATTLE_ID}/v5",
+        "v5_meta_path": f"battles/{OPAQUE_BATTLE_ID}/v5/meta.json",
         "v5_trace_ok": True,
         "validation_scope": "v5_trace_without_legacy_battle_log",
         "finished_at": "2026-07-28T10:01:05Z",
@@ -187,6 +190,19 @@ def test_materializes_canonical_layout_and_deep_validates(tmp_path: Path) -> Non
         (
             lambda battle: battle.update(battle_id="../escape"),
             "safe path component",
+        ),
+        (
+            lambda battle: (
+                battle.update(battle_id="tutorial-987654321"),
+                battle["meta"].update(
+                    battle_id="tutorial-987654321",
+                    match_id="tutorial-987654321",
+                ),
+                battle["actions"][0].update(
+                    battle_id="tutorial-987654321",
+                ),
+            ),
+            "export-local opaque record identifier",
         ),
         (
             lambda battle: battle.update(actions=[]),
@@ -235,6 +251,20 @@ def test_materializes_canonical_layout_and_deep_validates(tmp_path: Path) -> Non
             ),
             "p1_deck_size must match",
         ),
+        (
+            lambda battle: battle["meta"].update(
+                raw_user_id=987654321
+            ),
+            "forbidden identity field",
+        ),
+        (
+            lambda battle: battle["meta"].update(
+                database_dsn=(
+                    "postgresql://alice:SUPERSECRET@db/prod"
+                )
+            ),
+            "forbidden sensitive field",
+        ),
     ],
 )
 def test_rejects_unsafe_or_incomplete_bundles_without_publish(
@@ -253,6 +283,26 @@ def test_rejects_unsafe_or_incomplete_bundles_without_publish(
 
     assert not output.exists()
     assert list(tmp_path.glob(".must-not-exist.tmp-*")) == []
+
+
+def test_missing_record_id_privacy_scheme_is_rejected(tmp_path: Path) -> None:
+    source = tmp_path / "missing-record-scheme.jsonl"
+    output = tmp_path / "must-not-exist"
+    _write_export(source, [_bundle()])
+    rows = [
+        json.loads(line)
+        for line in source.read_text(encoding="utf-8").splitlines()
+    ]
+    rows[0].pop("record_id_scheme")
+    source.write_text(
+        "\n".join(json.dumps(row) for row in rows) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(MaterializationError, match="header fields"):
+        materialize_export(source, output, group_id="safe-group")
+
+    assert not output.exists()
 
 
 def test_header_count_mismatch_does_not_replace_existing_dataset(

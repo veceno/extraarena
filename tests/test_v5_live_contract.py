@@ -216,6 +216,107 @@ def test_v5_live_path_uses_full_private_info_and_phase_c_history(monkeypatch):
     assert obs[OBS_V1_DIM + 6] == pytest.approx(1.0 / 20.0)
 
 
+def _minimal_v5_inference_case(monkeypatch, session):
+    state = GameState(
+        p1=PlayerState(
+            user_id=1,
+            is_bot=True,
+            hero=_hero(1, "bot-hero"),
+            mana=0,
+            max_mana=0,
+        ),
+        p2=PlayerState(
+            user_id=2,
+            hero=_hero(2, "human-hero"),
+            mana=0,
+            max_mana=0,
+        ),
+        current_turn_owner_id=1,
+        status=GameStatus.ONGOING,
+    )
+    legal = [EndTurnAction()]
+    mask = np.zeros(601, dtype=np.float32)
+    mask[0] = 1.0
+    import ai.train_v2.classic_actions_v1 as action_codec
+    import ai.train_v2.obs_v5 as obs_codec
+
+    monkeypatch.setattr(
+        obs_codec,
+        "encode_observation_v5",
+        lambda *_args, **_kwargs: np.zeros(7128, dtype=np.float32),
+    )
+    monkeypatch.setattr(
+        action_codec,
+        "build_action_mask",
+        lambda *_args, **_kwargs: mask.copy(),
+    )
+    monkeypatch.setattr(
+        action_codec,
+        "encode_action_features",
+        lambda *_args, **_kwargs: np.zeros((601, 171), dtype=np.float32),
+    )
+    profile = {
+        "session": session,
+        "obs_dim": 7128,
+        "max_candidate_actions": 601,
+        "action_feature_dim": 171,
+        "placement_mode": "append_only",
+        "verify_mask": False,
+        "input_names": ["observation", "action_features"],
+        "output_names": ["logits", "value", "mana_draw_logit"],
+    }
+    return state, legal, profile, action_codec
+
+
+def test_v5_live_decode_failure_never_uses_legal_fallback(monkeypatch):
+    class FakeSession:
+        def run(self, _output_names, _input_feed):
+            logits = np.full((1, 601), -1.0, dtype=np.float32)
+            logits[0, 0] = 1.0
+            return [
+                logits,
+                np.zeros((1, 1), dtype=np.float32),
+                np.asarray([[-10.0]], dtype=np.float32),
+            ]
+
+    state, legal, profile, action_codec = _minimal_v5_inference_case(
+        monkeypatch,
+        FakeSession(),
+    )
+    monkeypatch.setattr(
+        action_codec,
+        "decode_action",
+        lambda *_args, **_kwargs: None,
+    )
+    brain = BerserkInference.__new__(BerserkInference)
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"^v5_policy_failure:decode_failed$",
+    ):
+        brain._get_action_v5(state, 1, legal, "v5-test", profile)
+
+
+def test_v5_live_unexpected_error_is_stable_and_secret_free(monkeypatch):
+    class BrokenSession:
+        def run(self, _output_names, _input_feed):
+            raise RuntimeError(
+                "postgresql://alice:SUPERSECRET@example.invalid/prod"
+            )
+
+    state, legal, profile, _ = _minimal_v5_inference_case(
+        monkeypatch,
+        BrokenSession(),
+    )
+    brain = BerserkInference.__new__(BerserkInference)
+
+    with pytest.raises(RuntimeError) as caught:
+        brain._get_action_v5(state, 1, legal, "v5-test", profile)
+
+    assert str(caught.value) == "v5_policy_failure:unexpected_failure"
+    assert "SUPERSECRET" not in str(caught.value)
+
+
 def test_execute_bot_action_runs_live_mana_draw():
     """The V5 parallel mana head's action dict reaches the real core engine."""
     drawn = _card(301, "drawn-card")

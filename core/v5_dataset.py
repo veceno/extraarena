@@ -46,9 +46,53 @@ ACTION_SOURCE_ACTOR_TYPES: dict[str, str] = {
 }
 TRAINING_ACTION_TYPES = frozenset({"play_card", "attack", "end_turn", "mana_draw"})
 
+V5_POLICY_FAILURE_PREFIX = "v5_policy_failure:"
+V5_POLICY_FAILURE_CODES = frozenset(
+    {
+        "decode_failed",
+        "empty_legal_actions",
+        "invalid_action_index",
+        "invalid_io_contract",
+        "invalid_output_contract",
+        "legal_mapping_failed",
+        "mana_surface_mismatch",
+        "no_legal_candidate",
+        "non_finite_logits",
+        "non_finite_mana_logit",
+        "profile_unavailable",
+        "unexpected_failure",
+    }
+)
+
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def v5_policy_failure_warning(code: Any) -> str:
+    """Return a bounded, secret-free warning code for trace metadata."""
+
+    normalized = str(code or "").strip().lower()
+    if normalized not in V5_POLICY_FAILURE_CODES:
+        normalized = "unexpected_failure"
+    return f"{V5_POLICY_FAILURE_PREFIX}{normalized}"
+
+
+def v5_policy_failure_error(code: Any) -> RuntimeError:
+    """Build the stable RuntimeError used by every fail-closed V5 adapter."""
+
+    return RuntimeError(v5_policy_failure_warning(code))
+
+
+def v5_policy_failure_code(error: BaseException) -> str:
+    """Extract a known code without copying arbitrary exception text."""
+
+    message = str(error or "")
+    if message.startswith(V5_POLICY_FAILURE_PREFIX):
+        code = message[len(V5_POLICY_FAILURE_PREFIX) :]
+        if code in V5_POLICY_FAILURE_CODES:
+            return code
+    return "unexpected_failure"
 
 
 def canonical_actor_type(decision_source: str) -> str:
@@ -234,6 +278,8 @@ class InMemoryV5DatasetRecorder:
             "p2_deck": self._fallback_initial_deck(state.p2),
             "model_provenance": {},
             "aux_model_provenance": {},
+            "degraded": False,
+            "policy_warnings": [],
             "timestamp_features": {
                 "p1_deck_size": self._full_deck_size(state.p1),
                 "p2_deck_size": self._full_deck_size(state.p2),
@@ -290,8 +336,45 @@ class InMemoryV5DatasetRecorder:
             self._ensure_started_unlocked(engine)
             self._merge_metadata_unlocked(metadata)
 
+    def mark_policy_degraded(self, engine: Any, code: Any) -> str:
+        """Permanently exclude a policy-fallback trace from training readiness."""
+
+        warning = v5_policy_failure_warning(code)
+        with self._lock:
+            self._ensure_started_unlocked(engine)
+            self._meta["degraded"] = True
+            warnings = self._meta.setdefault("policy_warnings", [])
+            if not isinstance(warnings, list):
+                warnings = []
+                self._meta["policy_warnings"] = warnings
+            if warning not in warnings:
+                warnings.append(warning)
+        return warning
+
     def _merge_metadata_unlocked(self, metadata: Mapping[str, Any]) -> None:
         for key, value in _json_safe(metadata).items():
+            if key == "degraded":
+                # A policy failure is a permanent property of the trace.
+                # Later lifecycle metadata must never make it trainable again.
+                self._meta["degraded"] = bool(
+                    self._meta.get("degraded") is True or value is True
+                )
+                continue
+            if key == "policy_warnings":
+                warnings = self._meta.setdefault("policy_warnings", [])
+                if not isinstance(warnings, list):
+                    warnings = []
+                    self._meta["policy_warnings"] = warnings
+                incoming = value if isinstance(value, list) else [value]
+                for item in incoming:
+                    warning = v5_policy_failure_warning(
+                        v5_policy_failure_code(RuntimeError(str(item)))
+                    )
+                    if warning not in warnings:
+                        warnings.append(warning)
+                if warnings:
+                    self._meta["degraded"] = True
+                continue
             if (
                 key in self._meta
                 and isinstance(self._meta[key], dict)
@@ -1178,7 +1261,12 @@ __all__ = [
     "InMemoryV5DatasetRecorder",
     "TRAINING_ACTION_TYPES",
     "V5DatasetRecorder",
+    "V5_POLICY_FAILURE_CODES",
+    "V5_POLICY_FAILURE_PREFIX",
     "V5_STORAGE_SCHEMA",
     "V5_VISIBILITY",
     "canonical_actor_type",
+    "v5_policy_failure_code",
+    "v5_policy_failure_error",
+    "v5_policy_failure_warning",
 ]

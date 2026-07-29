@@ -2,6 +2,7 @@ from pathlib import Path
 import asyncio
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 
@@ -503,6 +504,105 @@ def test_telegram_broadcast_uses_html_preview_and_confirm_flow():
     assert 'parse_mode="HTML"' in source
     assert "TelegramBadRequest" in source
     assert "Проверьте HTML-разметку" in source
+    assert "manual-broadcast-v1" in source
+    assert "provider_accepted" in source
+    assert "provider_failed" in source
+
+
+def test_telegram_broadcast_attributes_only_first_party_links():
+    from bot.handlers import _with_returnclock_attribution
+
+    attributed = _with_returnclock_attribution(
+        "https://game.example/arena?section=shop",
+        webapp_url="https://game.example/",
+        decision_id="broadcast-decision",
+        delivery_id="broadcast-delivery",
+    )
+    parsed = urlparse(attributed)
+    query = parse_qs(parsed.query)
+
+    assert query["section"] == ["shop"]
+    assert query["rc_decision_id"] == ["broadcast-decision"]
+    assert query["delivery_id"] == ["broadcast-delivery"]
+    assert query["entrypoint"] == ["notification"]
+    assert (
+        _with_returnclock_attribution(
+            "https://external.example/action",
+            webapp_url="https://game.example/",
+            decision_id="secret-decision",
+            delivery_id="secret-delivery",
+        )
+        == "https://external.example/action"
+    )
+
+
+@pytest.mark.asyncio
+async def test_telegram_broadcast_telemetry_is_observational_and_idempotent():
+    from bot.handlers import (
+        _record_broadcast_decision,
+        _record_broadcast_delivery,
+    )
+
+    class FakeDb:
+        def __init__(self):
+            self.decisions = []
+            self.events = []
+            self.updates = []
+
+        async def create_returnclock_decision(self, user_id, **kwargs):
+            self.decisions.append((user_id, kwargs))
+
+        async def record_returnclock_delivery_event(
+            self, user_id, decision_id, **kwargs
+        ):
+            self.events.append((user_id, decision_id, kwargs))
+
+        async def update_returnclock_decision(
+            self, user_id, decision_id, **kwargs
+        ):
+            self.updates.append((user_id, decision_id, kwargs))
+
+    db = FakeDb()
+    await _record_broadcast_decision(
+        db,
+        42,
+        decision_id="telegram-broadcast:batch:42",
+        broadcast_id="batch",
+        channel="telegram",
+        payload={
+            "text": "News",
+            "photo_id": None,
+            "button_text": "Open",
+            "button_url": "https://game.example/",
+        },
+    )
+    await _record_broadcast_delivery(
+        db,
+        42,
+        decision_id="telegram-broadcast:batch:42",
+        delivery_id="delivery-42",
+        broadcast_id="batch",
+        channel="telegram",
+        event_type="provider_accepted",
+        status="sent",
+        provider_message_id=99,
+    )
+
+    assert db.decisions[0][1]["treatment_arm"] == "observational"
+    assert db.decisions[0][1]["assignment_probability"] == 1.0
+    assert db.decisions[0][1]["decision_source"] == "admin_broadcast"
+    assert db.events[0][2]["event_id"] == (
+        "broadcast:batch:42:telegram:provider_accepted"
+    )
+    assert db.events[0][2]["delivery_id"] == "delivery-42"
+    assert db.events[0][2]["provider_message_id"] == "99"
+    assert db.updates == [
+        (
+            42,
+            "telegram-broadcast:batch:42",
+            {"status": "sent"},
+        )
+    ]
 
 
 def test_beta_release_checklist_documents_config_policy_risks():

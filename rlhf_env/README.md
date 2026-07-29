@@ -1,139 +1,169 @@
-# RLHF-среда ExtraArena
+# ExtraArena RLHF environment
 
-Автономная среда для сбора обучающих данных (человек-vs-модель или модель-vs-модель)
-на основе `core.engine.ArenaEnvironment`. Не зависит от прод-стека (БД, бот, прод-веб),
-запускается отдельным процессом, порт и пути настраиваются.
-
-## Что это
-
-- Web-интерфейс 1:1 как прод-арена (те же CSS-классы).
-- Любые ONNX из `ai/models/` + baselines (random / greedy_face / end_turn).
-- Группы боёв (batch'и) с manifest + battle_log в файловой системе.
-- MCP-сервер для программного управления группами.
-- Никаких изменений в прод-коде, никакой БД.
+Автономная Arena-среда для human/LLM/RL-vs-model боёв, V5-трейсов и
+training-ready управления приватными датасетами. Полная документация:
+[`DOCS.md`](./DOCS.md). MCP skills:
+[`../.codex/skills/extra-rlhf/`](../.codex/skills/extra-rlhf/).
 
 ## Быстрый старт
 
 ```bash
-# из корня репозитория
-./rlhf_env/start_rlhf_env.sh                # web @ 127.0.0.1:8090
-./rlhf_env/start_rlhf_env.sh --port 9000    # другой порт
-./rlhf_env/start_rlhf_env.sh mcp            # MCP-сервер (stdio)
-./rlhf_env/start_rlhf_env.sh setup          # только создать venv + deps
+# Web Arena @ 127.0.0.1:8090
+./rlhf_env/start_rlhf_env.sh
+
+# MCP stdio с checkout-local окружением:
+./rlhf_env/start_rlhf_env.sh setup --python /path/to/python3.13
+./rlhf_env/.venv/bin/python \
+  -m rlhf_env.mcp_server \
+  --models-dir ai/models \
+  --sessions-dir rlhf_env/sessions \
+  --datasets-dir datasets \
+  --cards-path ai/cards.json
 ```
 
-После запуска web: открыть `http://127.0.0.1:8090` в браузере, выбрать модель/колоду/количество боёв, нажать «Запустить».
+Не используйте случайный bare `python3`: версия интерпретатора не гарантирует
+наличие NumPy/ONNX Runtime. Зависимости, включая `asyncpg` и `python-dotenv`,
+находятся в `rlhf_env/requirements.txt`.
 
-## Архитектура (5 слоёв)
+## Два контура
 
-```
-[Browser @ 8090]
-    ↓ HTTP / WebSocket
-[server.py: aiohttp app]
-    ↓ start(spec)
-[SessionManager] ── manage ──> [asyncio task per group]
-    ↓
-[BattleRunner per battle]
-    ↓ step(legal_action)
-[core.engine.ArenaEnvironment]   ← чистое ядро, без обвязки RL
-    ↓
-[ai/models/*.onnx] (через BerserkInference) или baselines
-```
+### Headless Arena
 
-Все бои пишутся в `rlhf_env/sessions/<group_id>/{manifest.json, summary.json, battles/<battle_id>.json}`.
+- тот же `core.engine.ArenaEnvironment`, каталог из `ai/cards.json` и
+  `mana_draw`;
+- адаптеры legacy/V4/V5 и baselines;
+- browser human-vs-model, LLM player и auto-play RL-vs-RL;
+- manifest + omniscient V5
+  `battles/<battle_id>/v5/{meta,turns,actions}.jsonl`;
+- поля для Metronome/TimeStamp в общем V5-контракте, которые считаются
+  обучающими labels только после поступления реальных production-наблюдений;
+- глубокая проверка state/action continuity, terminal outcome,
+  catalog/card-count и `degraded`.
 
-## Структура каталога
+Headless-контур пишет только в `RLHF_SESSIONS_DIR` и не подключается к
+production. Поэтому его `training_ready` — только backward-compatible alias
+для `v5_policy_training_ready` (`training_ready_scope="v5_policy_only"`).
+Headless policy traces пригодны для V5 policy и, после собственных eligibility
+checks, Nemesis Lite, но не доказывают готовность Metronome/TimeStamp. CPU/
+wall-clock длительность, LLM latency и синтетические задержки не являются
+human timing labels.
 
-```
-rlhf_env/
-├── README.md              ← этот файл (quick start)
-├── DOCS.md                ← полная документация (архитектура, API, расширение)
-├── start_rlhf_env.sh      ← bash-лаунчер (venv, deps, env vars)
-├── requirements.txt       ← aiohttp, numpy, onnxruntime, mcp
-├── server.py              ← aiohttp app
-├── mcp_server.py          ← MCP stdio-server
-├── index.html             ← форма старта серии (POST /api/groups → redirect_url → /arena)
-├── static/                ← rlhf.js / rlhf.css (клиент формы)
-├── webapp_borrow/         ← verbatim копия webapp/: arena.html, arena.js, safe-area.js, arena-styles.css (1:1 арена)
-├── components/
-│   ├── policy_registry.py
-│   ├── policy_factory.py
-│   ├── deck_builder.py
-│   ├── inference_params.py
-│   ├── log_schema.py
-│   ├── manifest.py
-│   ├── battle_runner.py
-│   └── session_manager.py
-├── sessions/              ← файлы боёв (НЕ в git)
-├── static/                ← JS/CSS
-└── tests/
-    ├── test_log_schema.py
-    ├── test_deck_builder.py
-    ├── test_policy_factory.py
-    ├── test_battle_runner.py
-    ├── test_manifest.py
-    ├── test_session_manager.py
-    └── smoke_e2e.py       ← автоматический E2E против реального сервера
-```
+TimeStamp loader обязан использовать явный prebattle allowlist: только колода
+или пара колод, `starting_player` и заранее одобренные признаки, доступные до
+старта боя. `duration_seconds`, `turns`, `finished_at` и производные — только
+labels/audit. Передавать целиком `timestamp_features` или `meta` как model input
+запрещено из-за target leakage.
 
-## Использование
+### Private dataset toolbox
 
-### Web-интерфейс
+MCP умеет:
 
-1. Откройте `http://127.0.0.1:8090/`.
-2. Выберите p1_model / p2_model, deck_strategy, battles_planned.
-3. Нажмите «Запустить группу».
-4. Играйте против модели в браузере (1:1 как в проде).
+- показать readiness и inventory;
+- inspect/validate V5, Nemesis и ReturnClock artifacts;
+- read-only экспортировать terminal production V5 bundles;
+- materialize V5 transport в canonical `rlhf_v5_storage_v1`;
+- извлечь единый Nemesis dataset (Lite base + optional standard extension);
+- всегда материализовать Nemesis Lite deck-grouped split и, когда проходят
+  Standard gates, добавить player-disjoint/chronological/deck-grouped views;
+- экспортировать cutoff-safe ReturnClock survival dataset;
+- разбить ReturnClock на organic-only grouped-by-user temporal
+  train/validation/test с leakage gate.
 
-### API (для интеграций)
+Все пути ограничены `RLHF_DATASETS_DIR` (`datasets/`), symlink/traversal
+запрещены, файлы создаются с mode `0600`. Новый путь собирается во временной
+директории и публикуется same-filesystem rename. Overwrite откатывает обычные
+перехваченные ошибки, но не crash-atomic при `SIGKILL`/power loss; используйте
+versioned destination с `overwrite=false`. Raw player IDs и raw privacy salt не
+являются MCP-опциями; production V5/Nemesis также заменяет battle/match IDs
+экспорт-локальными `record_<hex>` alias, чтобы opaque ID не мог содержать raw
+user ID.
 
-| Метод | URL | Назначение |
-|-------|-----|-----------|
-| `GET`  | `/health` | Статус сервера + количество загруженных моделей |
-| `GET`  | `/api/registry/models` | Список всех доступных моделей с sidecar |
-| `GET`  | `/api/registry/sample-deck` | Пример случайной арены-деки |
-| `POST` | `/api/groups` | Старт группы боёв (spec: p1, p2, count, deck, seed, …) |
-| `GET`  | `/api/groups` | Список всех групп (running + completed с диска) |
-| `GET`  | `/api/groups/{gid}` | Статус группы |
-| `GET`  | `/api/groups/{gid}/manifest` | Полный manifest.json |
-| `GET`  | `/api/groups/{gid}/battles` | Список battle_id |
-| `GET`  | `/api/groups/{gid}/battles/{bid}` | Battle log |
-| `POST` | `/api/groups/{gid}/stop` | Остановить running группу |
-| `WS`   | `/ws/groups/{gid}/battles/{bid}` | WebSocket для human-vs-model |
+## Production opt-in
 
-### MCP
+Локальные inspect/validate/materialize/split доступны по умолчанию. Production
+reads fail-closed до явного запуска:
 
 ```bash
-./rlhf_env/start_rlhf_env.sh mcp
+export RLHF_ENABLE_PRODUCTION_DATASETS=1
+export RETURNCLOCK_DATASET_SALT='<export-specific secret, at least 32 bytes>'
+export RETURNCLOCK_DATASET_SALT_KEY_ID='<non-secret rotation id>'
 ```
 
-Доступно 6 инструментов: `start_battle_group`, `stop_battle_group`,
-`list_battle_groups`, `get_battle_group_status`, `get_battle_group_manifest`,
-`download_battle_logs`. Подробнее — `DOCS.md#mcp`.
+ReturnClock output псевдонимизирован, но не анонимен. Salt остаётся только в
+environment; key id нужен для аудита ротаций. Никогда не помещайте DSN или salt
+value в MCP config/arguments.
 
-### CLI / скрипты
+## MCP dataset workflow
+
+1. `get_training_data_status`.
+2. Export в новый путь (`overwrite=false`).
+3. `inspect_training_export`.
+4. `validate_training_export` → требовать `ok=true` и readiness именно
+   обучаемого контура. Для headless V5 это
+   `v5_policy_training_ready=true`; timing readiness проверяется отдельно.
+5. V5: `materialize_v5_training_dataset`, затем повторная validation.
+   Nemesis: `split_nemesis_training_dataset`; Lite-only handoff допустим,
+   Standard требует `training_ready_standard=true`, минимум шесть игроков,
+   три pairwise-disjoint human-human боя, три matchup group и три cutoff cohort.
+   Player-disjoint view исключает и учитывает cross-partition battles,
+   остальные Standard views проверяют deck/time drift.
+   ReturnClock: `split_returnclock_training_dataset`.
+6. Зафиксировать SHA-256, format/version, validation summary,
+   split/materialization manifest, catalog/weights provenance и privacy key id.
+
+Для action training допустимы только строки `accepted is True`; rejected rows
+остаются audit evidence. ReturnClock estimator читает только
+`header.feature_columns`; `post_cutoff`, `user_id_hash` и cutoff timestamp в
+features не входят. Raw ReturnClock export может хранить treated intervals
+только для аудита; natural-return train/eval читает исключительно organic-only
+split files, где каждая строка имеет
+`post_cutoff.organic_candidate=true`, а manifest учитывает исключённые treated
+rows. Causal notification policy нельзя обучать до рандомизированного
+no-send/control пилота.
+
+ReturnClock production snapshot читается keyset-страницами до 50,000 строк,
+максимум 1,000,000 строк на raw stream, внутри одной repeatable-read
+transaction. Exclusive `end_at` ограничивает event time/censoring, а отдельный
+более поздний `ingested_before` — создание session/decision/delivery rows.
+Так позднее status/update не удаляет старый assignment. Safety lag применяется
+при отсутствующем явном `end`; исторический explicit `end` используется как
+есть.
+Достижение лимита означает неполный export — независимо цензурированные
+выгрузки нельзя склеивать молча. Текущая реализация держит выбранные raw
+потоки и split window в памяти, поэтому окно до потолка нужно подбирать с
+учётом RAM, а не считать путь полностью streaming.
+
+## Player loop
+
+LLM worker обязан владеть полным lifecycle в одном persistent MCP process:
+`start_series → compact get_state → indexed submit_action → finish/next`.
+`match_id` нельзя переносить в другой MCP процесс.
+
+Перед игрой LLM читает обязательный гайд:
+[`../.codex/skills/extrarlhf-player/references/arena-strategy-guide.md`](../.codex/skills/extrarlhf-player/references/arena-strategy-guide.md).
+Используйте `compact=true`, `history_limit=8`, `legal_action_index` и
+`compact_response=true`.
+
+## MCP wire
+
+MCP — stdio JSON-RPC 2.0. `tools/call` возвращает JSON text в
+`content[0].text`, тот же объект в `structuredContent` и `isError`. Клиентам
+следует читать `structuredContent`, если он доступен.
+
+## Проверка
 
 ```bash
-# Smoke E2E (запускает свой сервер на alt-порту и валидирует весь pipeline)
-python3 rlhf_env/tests/smoke_e2e.py --port 8096 --battles 2 --models random
-python3 rlhf_env/tests/smoke_e2e.py --port 8096 --battles 1 --models v4-max
+PY=./rlhf_env/.venv/bin/python
+
+echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
+  | "$PY" -m rlhf_env.mcp_server
+
+"$PY" -m pytest rlhf_env/tests -q
+"$PY" rlhf_env/tests/smoke_e2e.py --port 8096 --models random
 ```
 
-## Тестирование
+Детальные tool schemas и data formats:
 
-```bash
-python3 -m pytest rlhf_env/tests/ -v          # 44 unit-теста (~3 сек)
-python3 rlhf_env/tests/smoke_e2e.py --port 8096 --models random
-```
-
-## Что НЕ делаем
-
-- Не трогаем прод-код (`web/`, `bot/`, `infrastructure/`, `core/`).
-- Не используем БД — только файлы.
-- Не валидируем Android Java (см. примечание в MEMORY).
-
-## Подробная документация
-
-`DOCS.md` — расширенная версия (≥ 500 строк): архитектура с диаграммами,
-полный API, формат battle_log и manifest, рецепты sidecar-файлов,
-добавление собственных моделей, troubleshooting.
+- [`../.codex/skills/extra-rlhf/references/mcp-tools.md`](../.codex/skills/extra-rlhf/references/mcp-tools.md)
+- [`../.codex/skills/extra-rlhf/references/data-format.md`](../.codex/skills/extra-rlhf/references/data-format.md)
+- [`../docs/returnclock-dataset-contract.md`](../docs/returnclock-dataset-contract.md)

@@ -29,13 +29,22 @@ from bot.constants import ADMIN_ID, DEFAULT_CATEGORY
 from infrastructure import card_assets
 from infrastructure.card_assets import card_asset_url, resolve_card_asset_path
 from infrastructure.config import DECK_SIZE, LEAGUE_CONFIG, get_settings, MAX_FREE_DECK_PRESETS, MAX_TOTAL_DECK_PRESETS
-from infrastructure.database import Card, Database, RUNTIME_FEATURE_DEFAULTS, SQUAD_SETTINGS_DEFAULTS, _extra_pass_mode_active
+from infrastructure.database import (
+    Card,
+    Database,
+    RUNTIME_FEATURE_DEFAULTS,
+    SQUAD_SETTINGS_DEFAULTS,
+    V5_PSEUDONYMIZED_RECORD_ID_SCHEME,
+    V5_RAW_RECORD_ID_SCHEME,
+    _extra_pass_mode_active,
+)
 from ai.bot_factory import BotGenerator
 from ai.bot_ai import BotAI
 from ai.bot_brain import BerserkInference
 from ai.aux_models import ExtraLRAuxRuntime
 from battle_engine import BattleEngine, BattleEventEmitter
 from core.state import ReplacementStatus
+from core.v5_dataset import v5_policy_failure_code
 from onboarding_tutorial import (
     NEWBIE_PATH_TASKS,
     ONBOARDING_CHAT_URL,
@@ -100,7 +109,12 @@ DESIGN_ASSETS_DIR = Path(__file__).resolve().parents[1] / "DesignAssets"
 EXTRA_SHOP_DIR = Path(__file__).resolve().parents[1] / "extraShop"
 STATIC_ASSET_CACHE_HEADERS = {"Cache-Control": "public, max-age=31536000, immutable"}
 NO_STORE_CACHE_HEADERS = {"Cache-Control": "no-store, no-cache, must-revalidate"}
-BATTLE_SHELL_STATIC_FILES = {"arena.js", "arena-styles.css", "safe-area.js"}
+BATTLE_SHELL_STATIC_FILES = {
+    "analytics-v2.js",
+    "arena.js",
+    "arena-styles.css",
+    "safe-area.js",
+}
 COMMUNITY_UPLOADS_DIR = Path(__file__).resolve().parents[1] / "uploads" / "community"
 COMMUNITY_UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 SQUAD_UPLOADS_DIR = Path(__file__).resolve().parents[1] / "uploads" / "squads"
@@ -5543,6 +5557,44 @@ async def check_and_run_bot(match_id: str, active_matches: dict[str, BattleEngin
         logger.error("check_and_run_bot: ошибка проверки бота для match_id=%s: %s", match_id, exc, exc_info=True)
 
 
+def _is_v5_model_backed_policy(
+    engine: BattleEngine,
+    brain: Any,
+    difficulty: str,
+    *,
+    train_v2_safe_mode: bool,
+) -> bool:
+    """Identify a V5 turn without guessing from an inference exception."""
+
+    if not train_v2_safe_mode:
+        return False
+    profile_id = str(getattr(engine, "bot_brain_profile", "") or "").lower()
+    if profile_id.startswith("extra-lr-v5"):
+        return True
+    sessions = getattr(brain, "sessions", None)
+    if isinstance(sessions, dict):
+        profile = sessions.get(str(difficulty))
+        return isinstance(profile, dict) and profile.get("format") == "v5"
+    return False
+
+
+def _mark_v5_policy_failure(engine: BattleEngine, code: str) -> None:
+    """Best-effort trace marker; gameplay safety must not depend on storage."""
+
+    marker = getattr(engine, "mark_v5_policy_degraded", None)
+    if not callable(marker):
+        return
+    try:
+        marker(code)
+    except Exception:
+        logging.getLogger(__name__).error(
+            "Failed to mark V5 policy trace degraded: match=%s code=%s",
+            getattr(engine, "match_id", None),
+            code,
+            exc_info=True,
+        )
+
+
 async def run_bot_routine(engine: BattleEngine, bot_id: int | str) -> None:
     """
     Асинхронный сценарий хода бота:
@@ -5641,6 +5693,12 @@ async def run_bot_routine(engine: BattleEngine, bot_id: int | str) -> None:
                 sessions = getattr(berserk_brain, "sessions", None)
                 berserk_profile_ready = not isinstance(sessions, dict) or difficulty in sessions
         use_berserk = berserk_eligible and berserk_profile_ready
+        use_v5_policy = _is_v5_model_backed_policy(
+            engine,
+            berserk_brain,
+            difficulty,
+            train_v2_safe_mode=train_v2_safe_mode,
+        )
 
         if use_berserk:
             logger.info("[SERVER] ONNX Берсерк для bot_id=%s (difficulty=%s)", bot_id, difficulty)
@@ -5760,6 +5818,11 @@ async def run_bot_routine(engine: BattleEngine, bot_id: int | str) -> None:
             await _emit_turn_switched_after_bot_end()
             return True
 
+        if use_v5_policy and not use_berserk:
+            _mark_v5_policy_failure(engine, "profile_unavailable")
+            await _force_end_bot_turn("v5_policy_failure")
+            return
+
         for step in range(max_actions):
             if _replacement_human_is_active_again(engine, bot_id):
                 logger.info("run_bot_routine: player %s restored control during bot step %d", bot_id, step)
@@ -5791,6 +5854,8 @@ async def run_bot_routine(engine: BattleEngine, bot_id: int | str) -> None:
 
                 if not legal_actions_dict:
                     logger.info("[SERVER] Нет легальных действий, завершаем ход")
+                    if use_v5_policy:
+                        _mark_v5_policy_failure(engine, "empty_legal_actions")
                     await _force_end_bot_turn("no_legal_actions")
                     break
 
@@ -5821,6 +5886,11 @@ async def run_bot_routine(engine: BattleEngine, bot_id: int | str) -> None:
                             action_id, len(legal_actions_obj), difficulty
                         )
                     except Exception as exc:
+                        if use_v5_policy:
+                            _mark_v5_policy_failure(
+                                engine,
+                                v5_policy_failure_code(exc),
+                            )
                         logger.error(
                             "[BERSERK] Ошибка V4/V5 инференса: %s; "
                             "rule-based fallback запрещён для model-backed боя",
@@ -5838,6 +5908,8 @@ async def run_bot_routine(engine: BattleEngine, bot_id: int | str) -> None:
                 # Проверка валидности
                 if action_id < 0 or action_id >= len(legal_actions_dict):
                     logger.warning("[SERVER] Невалидный action_id=%d, принудительный end_turn", action_id)
+                    if use_v5_policy:
+                        _mark_v5_policy_failure(engine, "invalid_action_index")
                     await _force_end_bot_turn("invalid_action_id")
                     break
 
@@ -13795,30 +13867,105 @@ def create_web_app(
 
     # ── Analytics endpoints (public: session + onboarding tracking) ──
 
-    def _analytics_json_safe(value: Any) -> Any:
-        if isinstance(value, (str, int, float, bool)) or value is None:
+    def _analytics_json_safe(value: Any, *, depth: int = 0) -> Any:
+        """Bound client telemetry before it reaches JSONB or a training export."""
+        if depth >= 5:
+            return None
+        if isinstance(value, str):
+            return value[:2048]
+        if isinstance(value, float):
+            return value if math.isfinite(value) else None
+        if isinstance(value, (int, bool)) or value is None:
             return value
         if isinstance(value, datetime):
             return value.isoformat()
         if isinstance(value, dict):
             return {
-                str(k): _analytics_json_safe(v)
-                for k, v in value.items()
-                if str(k) not in {"_auth", "initData", "hash", "signature"}
+                str(k)[:128]: _analytics_json_safe(v, depth=depth + 1)
+                for k, v in list(value.items())[:64]
+                if str(k).lower()
+                not in {"_auth", "initdata", "hash", "signature", "authorization"}
             }
         if isinstance(value, list):
-            return [_analytics_json_safe(v) for v in value]
-        return str(value)
+            return [
+                _analytics_json_safe(v, depth=depth + 1)
+                for v in value[:200]
+            ]
+        return str(value)[:2048]
 
     def _safe_json_list(value: Any, max_items: int = 200) -> list:
         if not isinstance(value, list):
             return []
-        return [_analytics_json_safe(v) for v in value[:max_items]]
+        screens: list[dict[str, Any]] = []
+        for item in value[:max_items]:
+            if isinstance(item, str):
+                screen = item.strip()[:128]
+                if screen:
+                    screens.append({"screen": screen})
+                continue
+            if not isinstance(item, dict):
+                continue
+            screen = str(item.get("screen") or "").strip()[:128]
+            if not screen:
+                continue
+            normalized: dict[str, Any] = {"screen": screen}
+            timestamp = item.get("ts")
+            if isinstance(timestamp, int) or (
+                isinstance(timestamp, float) and math.isfinite(timestamp)
+            ):
+                normalized["ts"] = timestamp
+            elif isinstance(timestamp, str) and timestamp.strip():
+                normalized["ts"] = timestamp.strip()[:64]
+            screens.append(normalized)
+        return screens
 
     def _safe_json_dict(value: Any) -> dict:
         if not isinstance(value, dict):
             return {}
         return _analytics_json_safe(value)
+
+    def _safe_battle_ids(value: Any) -> list[str] | None:
+        """Bound and deduplicate authoritative terminal match identifiers."""
+        if value is None:
+            return None
+        if not isinstance(value, list):
+            raise ValueError("invalid_battle_ids")
+        result: list[str] = []
+        seen: set[str] = set()
+        for raw in value[:200]:
+            if not isinstance(raw, str):
+                raise ValueError("invalid_battle_ids")
+            battle_id = raw.strip()
+            if not battle_id or len(battle_id) > 128:
+                raise ValueError("invalid_battle_ids")
+            if battle_id in seen:
+                continue
+            seen.add(battle_id)
+            result.append(battle_id)
+        return result
+
+    def _analytics_count(value: Any) -> int:
+        try:
+            return max(0, min(int(value or 0), 1_000_000))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("invalid_activity_count") from exc
+
+    def _analytics_client_timestamp(value: Any) -> datetime | None:
+        if value in (None, ""):
+            return None
+        if not isinstance(value, str) or len(value) > 64:
+            raise ValueError("invalid_ended_at")
+        try:
+            parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError("invalid_ended_at") from exc
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise ValueError("invalid_ended_at")
+        parsed = parsed.astimezone(timezone.utc)
+        now = datetime.now(timezone.utc)
+        if parsed > now + timedelta(minutes=5) or parsed < now - timedelta(days=31):
+            raise ValueError("invalid_ended_at")
+        return parsed
 
     async def analytics_session_start_handler(request: web.Request) -> web.Response:
         user_id = await require_user_id(request)
@@ -13829,9 +13976,223 @@ def create_web_app(
         session_id = str(data.get("session_id", "")).strip()
         if not session_id or len(session_id) > 128:
             return web.json_response({"error": "invalid_session_id"}, status=400)
-        source = str(data.get("source", "telegram_webapp"))
-        await db.start_user_session(user_id, session_id, source)
-        return web.json_response({"success": True})
+        source = str(data.get("source") or "telegram_webapp").strip().lower()
+        if source not in {"web", "webapp", "telegram_webapp", "android_app"}:
+            source = "unknown"
+        try:
+            analytics_version = max(1, min(int(data.get("analytics_version") or 1), 10))
+        except (TypeError, ValueError):
+            return web.json_response({"error": "invalid_analytics_version"}, status=400)
+        timezone_name = str(data.get("timezone") or "").strip()[:128] or None
+        utc_offset_minutes = data.get("utc_offset_minutes")
+        if utc_offset_minutes is not None:
+            try:
+                utc_offset_minutes = int(utc_offset_minutes)
+            except (TypeError, ValueError):
+                return web.json_response({"error": "invalid_utc_offset"}, status=400)
+            if not -14 * 60 <= utc_offset_minutes <= 14 * 60:
+                return web.json_response({"error": "invalid_utc_offset"}, status=400)
+        entrypoint_raw = str(data.get("entrypoint") or "").strip().lower()
+        entrypoint = "notification" if entrypoint_raw == "notification" else None
+        decision_id = (
+            str(data.get("returnclock_decision_id") or "").strip()[:128] or None
+        )
+        delivery_id = (
+            str(data.get("returnclock_delivery_id") or "").strip()[:128] or None
+        )
+        notification_id_raw = data.get("notification_id")
+        notification_id: int | None = None
+        if notification_id_raw not in (None, ""):
+            try:
+                notification_id = int(notification_id_raw)
+            except (TypeError, ValueError):
+                return web.json_response({"error": "invalid_notification_id"}, status=400)
+            if not 1 <= notification_id <= 9_223_372_036_854_775_807:
+                return web.json_response({"error": "invalid_notification_id"}, status=400)
+        metadata = _safe_json_dict(data.get("metadata"))
+        attribution_verified = False
+        delivery_verified = False
+        if decision_id and hasattr(
+            db,
+            "get_returnclock_attribution_validation",
+        ):
+            try:
+                attribution_validation = (
+                    await db.get_returnclock_attribution_validation(
+                        user_id,
+                        decision_id,
+                        delivery_id=delivery_id,
+                        outbox_id=notification_id,
+                    )
+                )
+                attribution_verified = bool(
+                    attribution_validation.get("decision_valid")
+                )
+                delivery_verified = bool(
+                    attribution_validation.get(
+                        "delivery_binding_valid"
+                    )
+                )
+            except Exception:
+                logging.getLogger(__name__).warning(
+                    "ReturnClock attribution validation failed: "
+                    "user_id=%s session_id=%s",
+                    user_id,
+                    session_id,
+                    exc_info=True,
+                )
+        elif (
+            decision_id
+            and hasattr(db, "validate_returnclock_attribution")
+        ):
+            try:
+                attribution_verified = bool(
+                    await db.validate_returnclock_attribution(
+                        user_id,
+                        decision_id,
+                        delivery_id=delivery_id,
+                        outbox_id=notification_id,
+                    )
+                )
+                delivery_verified = attribution_verified
+            except Exception:
+                logging.getLogger(__name__).warning(
+                    "ReturnClock attribution validation failed: "
+                    "user_id=%s session_id=%s",
+                    user_id,
+                    session_id,
+                    exc_info=True,
+                )
+        if not attribution_verified:
+            entrypoint = None
+            decision_id = None
+            delivery_id = None
+            notification_id = None
+        elif not delivery_verified:
+            # A direct Telegram/Android broadcast can open before its
+            # best-effort provider event has committed. The owned send
+            # decision is still valid treatment evidence, but unbound
+            # delivery/outbox identifiers are not persisted.
+            delivery_id = None
+            notification_id = None
+        metadata["returnclock_attribution_verified"] = (
+            attribution_verified
+        )
+        metadata["returnclock_delivery_verified"] = delivery_verified
+        start_result = await db.start_user_session(
+            user_id,
+            session_id,
+            source,
+            analytics_version=analytics_version,
+            timezone_name=timezone_name,
+            utc_offset_minutes=utc_offset_minutes,
+            entrypoint=entrypoint,
+            returnclock_decision_id=decision_id,
+            returnclock_delivery_id=delivery_id,
+            metadata=metadata,
+            resumed=data.get("resumed") is True,
+            return_status=True,
+        )
+        if isinstance(start_result, dict):
+            started = bool(start_result.get("ok"))
+            created = bool(start_result.get("created"))
+            active = bool(start_result.get("active", started))
+            persisted_attribution_verified = bool(
+                start_result.get(
+                    "returnclock_attribution_verified",
+                    attribution_verified,
+                )
+            )
+            persisted_entrypoint = (
+                start_result.get("entrypoint") or entrypoint
+            )
+            persisted_decision_id = (
+                start_result.get("returnclock_decision_id")
+                or decision_id
+            )
+            persisted_delivery_id = (
+                start_result.get("returnclock_delivery_id")
+                or delivery_id
+            )
+        else:
+            # Compatibility with a custom Database implementation that has
+            # not yet adopted the richer idempotency result.
+            started = bool(start_result)
+            created = bool(start_result)
+            active = started
+            persisted_attribution_verified = attribution_verified
+            persisted_entrypoint = entrypoint
+            persisted_decision_id = decision_id
+            persisted_delivery_id = delivery_id
+        if (
+            started
+            and active
+            and hasattr(db, "cancel_stale_returnclock_notifications")
+        ):
+            try:
+                await db.cancel_stale_returnclock_notifications(
+                    user_id,
+                    reason="user_returned",
+                    session_id=session_id,
+                )
+            except Exception:
+                logging.getLogger(__name__).warning(
+                    "ReturnClock stale-notification cancellation failed: "
+                    "user_id=%s session_id=%s",
+                    user_id,
+                    session_id,
+                    exc_info=True,
+                )
+        if (
+            started
+            and persisted_attribution_verified
+            and persisted_decision_id
+            and hasattr(db, "record_returnclock_delivery_event")
+        ):
+            channel = (
+                "android"
+                if source == "android_app"
+                else "telegram"
+                if source == "telegram_webapp"
+                else source
+            )
+            try:
+                await db.record_returnclock_delivery_event(
+                    user_id,
+                    persisted_decision_id,
+                    event_id=f"session:{session_id}:deeplink_opened",
+                    event_type="deeplink_opened",
+                    outbox_id=notification_id,
+                    delivery_id=persisted_delivery_id,
+                    channel=channel,
+                    session_id=session_id,
+                    metadata={
+                        "entrypoint": persisted_entrypoint,
+                        "source": source,
+                        "analytics_version": analytics_version,
+                    },
+                )
+            except Exception:
+                logging.getLogger(__name__).warning(
+                    "ReturnClock deeplink attribution failed: "
+                    "user_id=%s session_id=%s decision_id=%s",
+                    user_id,
+                    session_id,
+                    persisted_decision_id,
+                    exc_info=True,
+                )
+        return web.json_response(
+            {
+                "success": True,
+                "started": started,
+                "created": created,
+                "active": active,
+                "returnclock_attribution_verified": (
+                    persisted_attribution_verified
+                ),
+                "returnclock_delivery_verified": delivery_verified,
+            }
+        )
 
     async def analytics_session_update_handler(request: web.Request) -> web.Response:
         user_id = await require_user_id(request)
@@ -13840,13 +14201,40 @@ def create_web_app(
         except Exception:
             return web.json_response({"error": "invalid_json"}, status=400)
         session_id = str(data.get("session_id", "")).strip()
-        if not session_id:
+        if not session_id or len(session_id) > 128:
             return web.json_response({"error": "invalid_session_id"}, status=400)
         screens = _safe_json_list(data.get("screens_visited"), max_items=200)
-        battles = int(data.get("battles_played") or 0)
-        cases = int(data.get("cases_opened") or 0)
-        await db.update_user_session(session_id, screens_visited=screens, battles_played=battles, cases_opened=cases)
-        return web.json_response({"success": True})
+        try:
+            battles = _analytics_count(data.get("battles_played"))
+            battle_ids = _safe_battle_ids(data.get("battle_ids"))
+            cases = _analytics_count(data.get("cases_opened"))
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        timezone_name = str(data.get("timezone") or "").strip()[:128] or None
+        utc_offset_minutes = data.get("utc_offset_minutes")
+        if utc_offset_minutes is not None:
+            try:
+                utc_offset_minutes = int(utc_offset_minutes)
+            except (TypeError, ValueError):
+                return web.json_response({"error": "invalid_utc_offset"}, status=400)
+            if not -14 * 60 <= utc_offset_minutes <= 14 * 60:
+                return web.json_response({"error": "invalid_utc_offset"}, status=400)
+        updated = await db.update_user_session(
+            user_id,
+            session_id,
+            screens_visited=screens,
+            battles_played=battles,
+            battle_ids=battle_ids,
+            cases_opened=cases,
+            timezone_name=timezone_name,
+            utc_offset_minutes=utc_offset_minutes,
+            heartbeat=True,
+            # A resume marker is telemetry only. Database.update_user_session
+            # is constrained to an open row and can never reopen a session.
+            resumed=data.get("resumed") is True,
+            metadata=_safe_json_dict(data.get("metadata")),
+        )
+        return web.json_response({"success": True, "updated": bool(updated)})
 
     async def analytics_session_end_handler(request: web.Request) -> web.Response:
         user_id = await require_user_id(request)
@@ -13855,13 +14243,27 @@ def create_web_app(
         except Exception:
             return web.json_response({"error": "invalid_json"}, status=400)
         session_id = str(data.get("session_id", "")).strip()
-        if not session_id:
+        if not session_id or len(session_id) > 128:
             return web.json_response({"error": "invalid_session_id"}, status=400)
         screens = _safe_json_list(data.get("screens_visited"), max_items=200)
-        battles = int(data.get("battles_played") or 0)
-        cases = int(data.get("cases_opened") or 0)
-        await db.finish_user_session(session_id, screens_visited=screens, battles_played=battles, cases_opened=cases)
-        return web.json_response({"success": True})
+        try:
+            battles = _analytics_count(data.get("battles_played"))
+            battle_ids = _safe_battle_ids(data.get("battle_ids"))
+            cases = _analytics_count(data.get("cases_opened"))
+            ended_at = _analytics_client_timestamp(data.get("ended_at"))
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        finished = await db.finish_user_session(
+            user_id,
+            session_id,
+            screens_visited=screens,
+            battles_played=battles,
+            battle_ids=battle_ids,
+            cases_opened=cases,
+            ended_at=ended_at,
+            metadata=_safe_json_dict(data.get("metadata")),
+        )
+        return web.json_response({"success": True, "finished": bool(finished)})
 
     async def analytics_onboarding_handler(request: web.Request) -> web.Response:
         user_id = await require_user_id(request)
@@ -14099,11 +14501,16 @@ def create_web_app(
                         else "side_pseudonyms_p1_1_p2_2"
                     ),
                     "include_players": bool(include_players),
+                    "record_id_scheme": (
+                        V5_RAW_RECORD_ID_SCHEME
+                        if include_players
+                        else V5_PSEUDONYMIZED_RECORD_ID_SCHEME
+                    ),
                     "battle_count": len(battle_ids),
                     "skipped_invalid": 0,
                     "notes": (
                         "Each following line is one complete terminal "
-                        "rlhf_v5_storage_v1 battle bundle with meta, turns and actions."
+                        "rlhf_v5_storage_v1 battle bundle."
                     ),
                 }
             )
@@ -14121,6 +14528,7 @@ def create_web_app(
             )
             await response.prepare(request)
             try:
+                record_id_namespace = uuid.uuid4()
                 await response.write(
                     (
                         _stdlib_json.dumps(header, ensure_ascii=False)
@@ -14131,6 +14539,7 @@ def create_web_app(
                     bundle = await db.get_v5_export_battle_bundle(
                         battle_id=battle_id,
                         include_players=include_players,
+                        record_id_namespace=record_id_namespace,
                     )
                     if bundle is None:
                         # The first header is an exact-count contract consumed

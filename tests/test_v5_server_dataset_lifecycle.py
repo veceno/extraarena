@@ -149,14 +149,25 @@ class StreamingExportDB(TraceDB):
         *,
         battle_id: str,
         include_players: bool,
+        record_id_namespace: uuid.UUID,
     ) -> dict[str, Any]:
         self.bundle_calls.append((str(battle_id), bool(include_players)))
+        exported_id = (
+            str(battle_id)
+            if include_players
+            else f"record_{uuid.uuid5(record_id_namespace, str(battle_id)).hex}"
+        )
         return {
-            "battle_id": str(battle_id),
+            "battle_id": exported_id,
             "storage_schema": "rlhf_v5_storage_v1",
             "status": "p1_win",
             "finished_at": "2026-07-28T00:00:00+00:00",
-            "meta": {"p1_user_id": 1, "p2_user_id": 2},
+            "meta": {
+                "battle_id": exported_id,
+                "match_id": exported_id,
+                "p1_user_id": 1,
+                "p2_user_id": 2,
+            },
             "turns": [{"turn_number": 1}],
             "actions": [{"seq": 1}],
         }
@@ -486,10 +497,16 @@ async def test_admin_v5_dataset_export_streams_one_bundle_at_a_time(
         assert records[0]["record_type"] == "header"
         assert records[0]["battle_count"] == 2
         assert records[0]["privacy"] == "side_pseudonyms_p1_1_p2_2"
-        assert [row["battle_id"] for row in records[1:]] == [
-            "stream-battle-1",
-            "stream-battle-2",
-        ]
+        assert records[0]["record_id_scheme"] == (
+            "random_per_export_record_ids_v1"
+        )
+        exported_ids = [row["battle_id"] for row in records[1:]]
+        assert len(set(exported_ids)) == 2
+        assert all(
+            re.fullmatch(r"record_[0-9a-f]{32}", value)
+            for value in exported_ids
+        )
+        assert "stream-battle" not in payload
         assert db.bundle_calls == [
             ("stream-battle-1", False),
             ("stream-battle-2", False),
@@ -905,6 +922,50 @@ async def test_bot_action_persists_metronome_prediction_and_applied_delay(
         assert row["metronome_fallback_used"] is False
         assert db.checkpoints
         assert db.checkpoints[-1]["actions"][0]["seq"] == row["seq"]
+    finally:
+        web_server.ACTIVE_MATCHES.pop(engine.match_id, None)
+        web_server.MATCH_LOCKS.pop(engine.match_id, None)
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_v5_inference_failure_forces_safe_end_and_degrades_trace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = _real_engine("v5-inference-fail-closed", p1_is_bot=True)
+    engine.bot_brain_profile = "extra-lr-v5"
+    engine.get_turn_time_remaining = lambda: 25.0
+    db = TraceDB()
+    app = {"db": db, "active_matches": {engine.match_id: engine}}
+    engine.runtime_owner_app = app
+
+    class BrokenV5Brain:
+        def has_profile(self, _difficulty: str) -> bool:
+            return True
+
+        async def get_action_async(self, *_args: Any, **_kwargs: Any) -> int:
+            raise RuntimeError(
+                "postgresql://alice:SUPERSECRET@example.invalid/prod"
+            )
+
+    async def no_sleep(_seconds: float) -> None:
+        return None
+
+    engine.berserk_brain = BrokenV5Brain()
+    monkeypatch.setattr(web_server.asyncio, "sleep", no_sleep)
+    web_server.ACTIVE_MATCHES[engine.match_id] = engine
+    try:
+        await web_server.run_bot_routine(engine, 101)
+
+        meta = engine.get_v5_dataset_snapshot()["meta"]
+        assert meta["degraded"] is True
+        assert meta["policy_warnings"] == [
+            "v5_policy_failure:unexpected_failure"
+        ]
+        assert "SUPERSECRET" not in json.dumps(meta)
+        assert db.checkpoints
+        persisted_meta = db.checkpoints[-1]["meta"]
+        assert persisted_meta["degraded"] is True
+        assert persisted_meta["policy_warnings"] == meta["policy_warnings"]
     finally:
         web_server.ACTIVE_MATCHES.pop(engine.match_id, None)
         web_server.MATCH_LOCKS.pop(engine.match_id, None)

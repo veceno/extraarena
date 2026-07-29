@@ -168,10 +168,88 @@ class V5TraceRecorder:
         self._start_monotonic = time.monotonic()
         # catalog.json — флаг успешной записи (G5: retry на неудаче, skip на успехе).
         self._catalog_written = False
+        self._nemesis_collector = None
 
         # catalog.json — once per group (idempotent by existence).
         self.catalog_path = self.group_dir / "catalog.json"
         self._write_catalog()
+        try:
+            from core.nemesis_dataset import NemesisBattleCollector
+
+            state = self.engine._arena.state
+
+            def model_provenance(
+                info: Optional[Dict[str, Any]],
+            ) -> Dict[str, Any]:
+                source = info if isinstance(info, dict) else {}
+                return {
+                    "model_id": source.get("name"),
+                    "model_family": (
+                        "extra-lr" if source else None
+                    ),
+                    "model_version": source.get("weights_version"),
+                    "checkpoint_id": source.get("weights_version"),
+                    "weights_hash": source.get("weights_hash"),
+                    "adapter_kind": source.get("kind"),
+                }
+
+            starting_player = (
+                "p1"
+                if int(state.current_turn_owner_id) == int(p1_user_id)
+                else "p2"
+            )
+            nemesis_meta = {
+                "battle_id": self.battle_id,
+                "match_id": str(self.engine.match_id),
+                "started_at": self._created_at,
+                "game_mode": self.game_mode,
+                "ruleset": getattr(self.engine, "ruleset", "classic"),
+                "catalog_hash": self.catalog_hash,
+                "card_params_schema": CARD_PARAMS_SCHEMA,
+                "deck_params_schema": DECK_PARAMS_SCHEMA,
+                "starting_player": starting_player,
+                "p1_user_id": int(p1_user_id),
+                "p2_user_id": int(p2_user_id),
+                "p1_actor_type": self.p1_actor_type,
+                "p2_actor_type": self.p2_actor_type,
+                "p1_deck": [
+                    {
+                        "slot": slot,
+                        "card_id": int(card_id),
+                        "level": int(self.p1_levels.get(card_id, 1)),
+                    }
+                    for slot, card_id in enumerate(self.p1_deck_ids)
+                ],
+                "p2_deck": [
+                    {
+                        "slot": slot,
+                        "card_id": int(card_id),
+                        "level": int(self.p2_levels.get(card_id, 1)),
+                    }
+                    for slot, card_id in enumerate(self.p2_deck_ids)
+                ],
+                "model_provenance": {
+                    "p1": model_provenance(self.p1_policy_info),
+                    "p2": model_provenance(self.bot_policy_info),
+                },
+                "aux_model_provenance": {"p1": {}, "p2": {}},
+                "dataset_generation": 1,
+            }
+            self._nemesis_collector = (
+                NemesisBattleCollector.from_v5_meta(
+                    nemesis_meta,
+                    feature_cutoff_at=self._created_at,
+                    source="rlhf_headless",
+                    campaign_id=self.group_id,
+                    seed=self.battle_seed,
+                )
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "headless Nemesis collector init failed: %s",
+                self.battle_id,
+                exc_info=True,
+            )
 
         self._write_meta(terminal=False)
 
@@ -258,6 +336,8 @@ class V5TraceRecorder:
             # G4: маркер что v5-trace реально создан (для collection-скриптов).
             "v5_trace_present": True,
         }
+        if self._nemesis_collector is not None:
+            meta["nemesis_record"] = self._nemesis_collector.snapshot()
         tmp = self.meta_path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp.replace(self.meta_path)
@@ -745,6 +825,19 @@ class V5TraceRecorder:
                 "duration_seconds": duration,
                 "turns": int(st.turn_number),
             })
+            if self._nemesis_collector is not None:
+                nemesis_status = (
+                    status
+                    if status in {"p1_win", "p2_win", "draw", "stalemate"}
+                    else "draw"
+                )
+                meta["nemesis_record"] = (
+                    self._nemesis_collector.finalize(
+                        status=nemesis_status,
+                        duration_seconds=max(0, int(round(duration))),
+                        turns_count=int(st.turn_number),
+                    )
+                )
             # атомарная запись (tmp+replace), симметрично _write_meta/_write_catalog.
             tmp = self.meta_path.with_suffix(".json.tmp")
             tmp.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")

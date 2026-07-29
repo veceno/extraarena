@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import re
 from datetime import datetime, timezone
 
 import pytest
@@ -553,8 +554,17 @@ async def test_v5_export_limits_battles_not_actions_and_pseudonymizes_by_default
     assert exported["format"] == EXTRAARENA_V5_DATASET_EXPORT_SCHEMA
     assert exported["storage_schema"] == RLHF_V5_STORAGE_SCHEMA
     assert exported["privacy"] == "side_pseudonyms_p1_1_p2_2"
+    assert exported["record_id_scheme"] == (
+        "random_per_export_record_ids_v1"
+    )
     assert exported["battle_count"] == 1
     bundle = exported["battles"][0]
+    assert re.fullmatch(r"record_[0-9a-f]{32}", bundle["battle_id"])
+    assert bundle["meta"]["battle_id"] == bundle["battle_id"]
+    assert all(
+        action["battle_id"] == bundle["battle_id"]
+        for action in bundle["actions"]
+    )
     assert len(bundle["actions"]) == 2
     assert bundle["meta"]["p1_user_id"] == 1
     assert bundle["meta"]["p2_user_id"] == 2
@@ -562,6 +572,18 @@ async def test_v5_export_limits_battles_not_actions_and_pseudonymizes_by_default
     nemesis_seats = bundle["meta"]["nemesis_record"]["features"]["base"]["seats"]
     assert nemesis_seats["p1"]["participant_id"] == 1
     assert nemesis_seats["p2"]["participant_id"] == 2
+    nemesis_privacy = bundle["meta"]["nemesis_record"]["privacy"]
+    assert nemesis_privacy["player_group_scheme"] == (
+        "random_per_export_player_groups_v1"
+    )
+    assert re.fullmatch(
+        r"player_[0-9a-f]{32}",
+        nemesis_privacy["player_group_aliases"]["p1"],
+    )
+    assert re.fullmatch(
+        r"player_[0-9a-f]{32}",
+        nemesis_privacy["player_group_aliases"]["p2"],
+    )
     assert bundle["turns"][0]["current_turn_owner_id"] == 1
     assert bundle["turns"][0]["p1"]["hero"] == {
         "card_id": 101,
@@ -590,6 +612,8 @@ async def test_v5_export_limits_battles_not_actions_and_pseudonymizes_by_default
         include_players=True,
     )
     assert raw["privacy"] == "raw_player_ids"
+    assert raw["record_id_scheme"] == "raw_record_ids"
+    assert raw["battles"][0]["battle_id"] == "battle-1"
     assert raw["battles"][0]["meta"]["p1_user_id"] == 101
     assert raw["battles"][0]["actions"][1]["actor_user_id"] == 202
     raw_nemesis_seats = raw["battles"][0]["meta"]["nemesis_record"]["features"][
@@ -667,6 +691,12 @@ async def test_v5_stream_bundle_loads_and_pseudonymizes_one_battle():
     )
 
     assert bundle is not None
+    assert re.fullmatch(r"record_[0-9a-f]{32}", bundle["battle_id"])
+    assert bundle["meta"]["battle_id"] == bundle["battle_id"]
+    assert all(
+        action["battle_id"] == bundle["battle_id"]
+        for action in bundle["actions"]
+    )
     assert bundle["meta"]["p1_user_id"] == 1
     assert bundle["meta"]["p2_user_id"] == 2
     assert bundle["actions"][0]["actor_user_id"] == 1

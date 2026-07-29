@@ -32,12 +32,17 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from rlhf_env.components.v5_trace_validate import validate_v5_trace
+from rlhf_env.components.v5_trace_validate import (
+    validate_v5_metronome_contract,
+    validate_v5_timestamp_contract,
+    validate_v5_trace,
+)
 
 
 EXPORT_FORMAT = "extraarena_v5_dataset_export_v1"
 STORAGE_SCHEMA = "rlhf_v5_storage_v1"
 MATERIALIZED_FORMAT = "extraarena_v5_materialized_dataset_v1"
+PSEUDONYMIZED_RECORD_ID_SCHEME = "random_per_export_record_ids_v1"
 TERMINAL_STATUSES = frozenset({"p1_win", "p2_win", "draw", "stalemate"})
 MANIFEST_STATUS = {
     "p1_win": "P1_WIN",
@@ -46,6 +51,7 @@ MANIFEST_STATUS = {
     "stalemate": "STALEMATE",
 }
 SAFE_COMPONENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+PSEUDONYMIZED_RECORD_ID_RE = re.compile(r"^record_[0-9a-f]{32}$")
 REQUIRED_TIMING_KEYS = frozenset(
     {
         "human_decision_time_ms",
@@ -56,6 +62,114 @@ REQUIRED_TIMING_KEYS = frozenset(
         "metronome_applied_ms",
         "metronome_fallback_used",
     }
+)
+HEADER_REQUIRED_KEYS = frozenset(
+    {
+        "record_type",
+        "format",
+        "format_version",
+        "storage_schema",
+        "created_at",
+        "privacy",
+        "include_players",
+        "record_id_scheme",
+        "days",
+        "limit_battles",
+        "battle_count",
+        "skipped_invalid",
+    }
+)
+HEADER_ALLOWED_KEYS = HEADER_REQUIRED_KEYS | frozenset(
+    {
+        "current_catalog_hash",
+        "current_card_count",
+        "notes",
+    }
+)
+BATTLE_ENVELOPE_KEYS = frozenset(
+    {
+        "record_type",
+        "battle_id",
+        "storage_schema",
+        "status",
+        "finished_at",
+        "meta",
+        "turns",
+        "actions",
+    }
+)
+PARTICIPANT_ID_KEYS = frozenset(
+    {
+        "userid",
+        "playerid",
+        "participantid",
+        "actoruserid",
+        "actinguserid",
+        "currentturnownerid",
+        "winneruserid",
+        "loseruserid",
+        "p1userid",
+        "p2userid",
+        "owneruserid",
+        "sourceuserid",
+        "targetuserid",
+        "actorid",
+        "ownerid",
+        "currentplayer",
+        "currentplayerid",
+        "startingplayerid",
+        "winnerid",
+        "loserid",
+    }
+)
+PARTICIPANT_ID_LIST_KEYS = frozenset(
+    {
+        "playerids",
+        "readyuserids",
+        "waitingforuserids",
+    }
+)
+SENSITIVE_FIELD_NAMES = frozenset(
+    {
+        "accesstoken",
+        "apikey",
+        "apitoken",
+        "authorization",
+        "authtoken",
+        "bearertoken",
+        "bottoken",
+        "clientsecret",
+        "connectionstring",
+        "cookie",
+        "credential",
+        "credentials",
+        "databasepassword",
+        "databasedsn",
+        "databaseurl",
+        "dsn",
+        "idtoken",
+        "password",
+        "passwd",
+        "privatekey",
+        "refreshtoken",
+        "secret",
+        "sessioncookie",
+        "sessiontoken",
+        "token",
+    }
+)
+RAW_IDENTITY_FRAGMENTS = (
+    "telegramid",
+    "telegramuser",
+    "chatid",
+    "username",
+    "firstname",
+    "lastname",
+    "phone",
+    "email",
+)
+CREDENTIAL_URI_RE = re.compile(
+    r"(?i)^[a-z][a-z0-9+.-]*://[^/\s@:]+:[^/\s@]+@"
 )
 
 
@@ -81,6 +195,80 @@ def _safe_component(value: Any, *, field: str) -> str:
     return component
 
 
+def _normalized_key(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(value).strip().lower())
+
+
+def _validate_private_bundle(
+    value: Any,
+    *,
+    battle_id: str,
+    path: str = "bundle",
+) -> None:
+    """Reject raw identities and credentials before anything is published."""
+
+    if isinstance(value, Mapping):
+        for key, nested in value.items():
+            normalized = _normalized_key(key)
+            child_path = f"{path}.{key}"
+            if (
+                normalized in SENSITIVE_FIELD_NAMES
+                or normalized.endswith("password")
+                or normalized.endswith("secret")
+                or normalized.endswith("apikey")
+                or normalized.endswith("authtoken")
+                or normalized.endswith("accesstoken")
+                or normalized.endswith("refreshtoken")
+            ):
+                raise MaterializationError(
+                    f"battle {battle_id}: {child_path} contains a "
+                    "forbidden sensitive field"
+                )
+            if (
+                normalized in PARTICIPANT_ID_KEYS
+                and nested not in (None, 1, 2)
+            ):
+                raise MaterializationError(
+                    f"battle {battle_id}: {child_path} contains a raw "
+                    "participant identity"
+                )
+            if normalized in PARTICIPANT_ID_LIST_KEYS and (
+                not isinstance(nested, list)
+                or any(item not in (1, 2) for item in nested)
+            ):
+                raise MaterializationError(
+                    f"battle {battle_id}: {child_path} contains raw "
+                    "participant identities"
+                )
+            if (
+                "userid" in normalized
+                and normalized not in PARTICIPANT_ID_KEYS
+            ) or any(
+                fragment in normalized
+                for fragment in RAW_IDENTITY_FRAGMENTS
+            ):
+                raise MaterializationError(
+                    f"battle {battle_id}: {child_path} contains a "
+                    "forbidden identity field"
+                )
+            _validate_private_bundle(
+                nested,
+                battle_id=battle_id,
+                path=child_path,
+            )
+    elif isinstance(value, list):
+        for index, nested in enumerate(value):
+            _validate_private_bundle(
+                nested,
+                battle_id=battle_id,
+                path=f"{path}[{index}]",
+            )
+    elif isinstance(value, str) and CREDENTIAL_URI_RE.match(value.strip()):
+        raise MaterializationError(
+            f"battle {battle_id}: {path} contains a credential URI"
+        )
+
+
 def _load_record(raw: str, *, line_number: int) -> dict[str, Any]:
     try:
         value = json.loads(raw)
@@ -103,6 +291,13 @@ def _iter_records(handle: TextIO) -> Iterable[tuple[int, dict[str, Any]]]:
 
 
 def _validate_header(header: Mapping[str, Any], *, line_number: int) -> int:
+    if not HEADER_REQUIRED_KEYS.issubset(header) or not set(
+        header
+    ).issubset(HEADER_ALLOWED_KEYS):
+        raise MaterializationError(
+            f"line {line_number}: header fields do not match the "
+            "V5 transport allowlist"
+        )
     if header.get("record_type") != "header":
         raise MaterializationError(
             f"line {line_number}: first record must be record_type='header'"
@@ -119,6 +314,24 @@ def _validate_header(header: Mapping[str, Any], *, line_number: int) -> int:
     if header.get("storage_schema") != STORAGE_SCHEMA:
         raise MaterializationError(
             f"line {line_number}: storage_schema must be {STORAGE_SCHEMA!r}"
+        )
+    if (
+        header.get("privacy") != "side_pseudonyms_p1_1_p2_2"
+        or header.get("include_players") is not False
+        or header.get("record_id_scheme")
+        != PSEUDONYMIZED_RECORD_ID_SCHEME
+    ):
+        raise MaterializationError(
+            f"line {line_number}: V5 training export must use fixed side "
+            "pseudonyms, include_players=false and export-local random "
+            "record IDs"
+        )
+    if "notes" in header and header.get("notes") != (
+        "Each following line is one complete terminal "
+        "rlhf_v5_storage_v1 battle bundle."
+    ):
+        raise MaterializationError(
+            f"line {line_number}: non-canonical notes field"
         )
     battle_count = header.get("battle_count")
     if (
@@ -319,17 +532,78 @@ def _require_metronome_contract(
             )
 
 
+def _require_pseudonymized_record_ids(
+    value: Any,
+    *,
+    battle_id: str,
+) -> None:
+    """Fail closed if a declared battle/match ID is not an opaque export ID."""
+
+    def check(candidate: Any, *, field: str) -> None:
+        if candidate is None:
+            return
+        if (
+            not isinstance(candidate, str)
+            or PSEUDONYMIZED_RECORD_ID_RE.fullmatch(candidate) is None
+        ):
+            raise MaterializationError(
+                f"battle {battle_id}: {field} must be an export-local "
+                "opaque record identifier"
+            )
+
+    def walk(nested: Any, path: str) -> None:
+        if isinstance(nested, Mapping):
+            for key, child in nested.items():
+                key_text = str(key)
+                normalized_key = re.sub(
+                    r"[^a-z0-9]",
+                    "",
+                    key_text.strip().lower(),
+                )
+                child_path = f"{path}.{key_text}"
+                if normalized_key.endswith(("battleid", "matchid")):
+                    check(child, field=child_path)
+                elif normalized_key.endswith(("battleids", "matchids")):
+                    if not isinstance(child, list):
+                        raise MaterializationError(
+                            f"battle {battle_id}: {child_path} must be a list "
+                            "of export-local opaque record identifiers"
+                        )
+                    for index, candidate in enumerate(child):
+                        check(
+                            candidate,
+                            field=f"{child_path}[{index}]",
+                        )
+                else:
+                    walk(child, child_path)
+        elif isinstance(nested, list):
+            for index, child in enumerate(nested):
+                walk(child, f"{path}[{index}]")
+
+    walk(value, "bundle")
+
+
 def _validate_bundle(
     record: Mapping[str, Any],
     *,
     line_number: int,
     seen_battle_ids: set[str],
 ) -> tuple[str, dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
+    if set(record) != BATTLE_ENVELOPE_KEYS:
+        raise MaterializationError(
+            f"line {line_number}: battle envelope fields do not match "
+            "the V5 transport allowlist"
+        )
     if record.get("record_type") != "battle":
         raise MaterializationError(
             f"line {line_number}: expected record_type='battle'"
         )
     battle_id = _safe_component(record.get("battle_id"), field="battle_id")
+    if PSEUDONYMIZED_RECORD_ID_RE.fullmatch(battle_id) is None:
+        raise MaterializationError(
+            f"line {line_number}: battle_id must be an export-local opaque "
+            "record identifier"
+        )
     if battle_id in seen_battle_ids:
         raise MaterializationError(f"line {line_number}: duplicate battle_id={battle_id!r}")
     if record.get("storage_schema") != STORAGE_SCHEMA:
@@ -374,11 +648,28 @@ def _validate_bundle(
         raise MaterializationError(
             f"battle {battle_id}: meta.battle_id does not match the bundle"
         )
+    _require_pseudonymized_record_ids(
+        {
+            "battle_id": battle_id,
+            "meta": meta,
+            "turns": turns,
+            "actions": actions,
+        },
+        battle_id=battle_id,
+    )
     if meta.get("status") != status:
         raise MaterializationError(
             f"battle {battle_id}: meta.status={meta.get('status')!r} "
             f"does not match status={status!r}"
         )
+    _validate_private_bundle(
+        {
+            "meta": meta,
+            "turns": turns,
+            "actions": actions,
+        },
+        battle_id=battle_id,
+    )
 
     actor_types = (meta.get("p1_actor_type"), meta.get("p2_actor_type"))
     if "human" not in actor_types:
@@ -393,8 +684,14 @@ def _validate_bundle(
             f"battle {battle_id}: action seq must be contiguous 1..N"
         )
 
-    _require_timestamp_contract(meta, battle_id=battle_id)
-    _require_metronome_contract(actions, battle_id=battle_id)
+    auxiliary_issues = [
+        *validate_v5_timestamp_contract(meta),
+        *validate_v5_metronome_contract(actions),
+    ]
+    if auxiliary_issues:
+        raise MaterializationError(
+            f"battle {battle_id}: {auxiliary_issues[0]}"
+        )
     seen_battle_ids.add(battle_id)
     return battle_id, dict(meta), list(turns), list(actions)
 
@@ -402,6 +699,7 @@ def _validate_bundle(
 def _write_json(path: Path, payload: Any) -> None:
     data = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     with path.open("w", encoding="utf-8") as handle:
+        os.fchmod(handle.fileno(), 0o600)
         handle.write(data)
         handle.flush()
         os.fsync(handle.fileno())
@@ -409,6 +707,7 @@ def _write_json(path: Path, payload: Any) -> None:
 
 def _write_jsonl(path: Path, rows: Iterable[Mapping[str, Any]]) -> None:
     with path.open("w", encoding="utf-8") as handle:
+        os.fchmod(handle.fileno(), 0o600)
         for row in rows:
             handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True))
             handle.write("\n")
@@ -484,6 +783,7 @@ def _build_manifest(
             "source_file": input_name,
             "privacy": header.get("privacy"),
             "include_players": bool(header.get("include_players", False)),
+            "record_id_scheme": header.get("record_id_scheme"),
             "days": header.get("days"),
             "limit_battles": header.get("limit_battles"),
             "source_skipped_invalid": int(header.get("skipped_invalid") or 0),

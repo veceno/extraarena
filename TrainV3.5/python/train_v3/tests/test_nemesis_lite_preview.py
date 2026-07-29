@@ -94,6 +94,7 @@ def _record(
     p2_seed: int | None = None,
     status: str | None = None,
     starting_player: str | None = None,
+    catalog_available: bool = True,
 ) -> dict:
     terminal = status or CLASS_NAMES[index % len(CLASS_NAMES)]
     if terminal == "draw":
@@ -104,7 +105,9 @@ def _record(
         "started_at": "2026-07-28T12:00:01Z",
         "game_mode": "classic",
         "ruleset": RULESET,
-        "catalog_hash": _sha256(CATALOG_PATH),
+        "catalog_hash": (
+            _sha256(CATALOG_PATH) if catalog_available else None
+        ),
         "card_params_schema": "train_v3_card_params_v1",
         "deck_params_schema": "train_v3_deck_params_v1",
         "starting_player": starting_player or ("p1" if index % 2 else "p2"),
@@ -196,21 +199,17 @@ def test_unified_quality_gate_weight_and_catalog_unavailable_lite_policy(
     tmp_path: Path,
 ) -> None:
     excluded = _record(90)
+    excluded["provenance"]["dataset_generation"] = 2
     excluded["quality"] = {
         "eligible_lite": False,
         "eligible_standard": False,
         "sample_weight": 0.0,
-        "exclusion_reasons": ["invalid_terminal_trace"],
+        "exclusion_reasons": [
+            "model_model_lite_only",
+            "rehydrated_trace_generation",
+        ],
     }
-    unverified = _record(91)
-    unverified["features"]["base"]["catalog_hash"] = None
-    unverified["features"]["base"]["catalog_available"] = False
-    unverified["quality"] = {
-        "eligible_lite": True,
-        "eligible_standard": False,
-        "sample_weight": 0.5,
-        "exclusion_reasons": ["catalog_unavailable"],
-    }
+    unverified = _record(91, catalog_available=False)
     dataset = _write_export(
         tmp_path / "quality.ndjson",
         [excluded, unverified],
@@ -223,13 +222,39 @@ def test_unified_quality_gate_weight_and_catalog_unavailable_lite_policy(
     )
 
     assert len(rows) == 1
-    assert rows[0].battle_id == unverified["battle_id"]
+    assert rows[0].battle_id != unverified["battle_id"]
+    assert rows[0].battle_id.startswith("record_")
     assert rows[0].sample_weight == 0.5
     assert rows[0].catalog_verified is False
     assert sources[0]["records"] == 2
     assert sources[0]["rows"] == 1
     assert sources[0]["excluded_rows"] == 1
     assert sources[0]["catalog_unverified_rows"] == 1
+
+
+def test_loader_rejects_missing_record_id_privacy_header(
+    tmp_path: Path,
+) -> None:
+    dataset = _write_export(
+        tmp_path / "unsafe-header.ndjson",
+        [_record(1)],
+    )
+    rows = [
+        json.loads(line)
+        for line in dataset.read_text(encoding="utf-8").splitlines()
+    ]
+    rows[0].pop("record_id_scheme")
+    dataset.write_text(
+        "\n".join(json.dumps(row) for row in rows) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="unsafe privacy header"):
+        load_unified_jsonl(
+            [dataset],
+            catalog=load_catalog_contract(CATALOG_PATH),
+            ruleset=RULESET,
+        )
 
 
 def test_architecture_is_permutation_invariant_and_exactly_swap_consistent() -> None:

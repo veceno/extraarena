@@ -6,7 +6,7 @@ import argparse
 import json
 from pathlib import Path
 import sys
-from typing import Any
+from typing import Any, Iterator
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -32,20 +32,31 @@ def _canonical_record(value: dict[str, Any], *, line_number: int) -> dict[str, A
     )
 
 
-def _load_records(path: Path) -> list[dict[str, Any]]:
-    records: list[dict[str, Any]] = []
-    for line_number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-        if not raw.strip():
-            continue
-        value = json.loads(raw)
-        if not isinstance(value, dict):
-            raise ValueError(f"line {line_number}: record must be an object")
-        if value.get("record_type") == "header":
-            continue
-        if value.get("record_type") == "battle":
-            value = {key: item for key, item in value.items() if key != "record_type"}
-        records.append(_canonical_record(value, line_number=line_number))
-    return records
+def _load_records(path: Path) -> Iterator[dict[str, Any]]:
+    """Stream canonical records without loading a large V5 export into RAM."""
+    with path.open("r", encoding="utf-8") as handle:
+        for line_number, raw in enumerate(handle, 1):
+            if not raw.strip():
+                continue
+            try:
+                value = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"line {line_number}: invalid JSON: {exc}"
+                ) from exc
+            if not isinstance(value, dict):
+                raise ValueError(
+                    f"line {line_number}: record must be an object"
+                )
+            if value.get("record_type") == "header":
+                continue
+            if value.get("record_type") == "battle":
+                value = {
+                    key: item
+                    for key, item in value.items()
+                    if key != "record_type"
+                }
+            yield _canonical_record(value, line_number=line_number)
 
 
 def main(argv: list[str] | None = None) -> int:

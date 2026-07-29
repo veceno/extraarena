@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import logging
 import re
+import uuid
 from html import escape
 from typing import Any, Optional
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
@@ -147,19 +148,77 @@ def register_basic_handlers(dp: Dispatcher, webapp_url: str, db: Database | None
         if callback.message:
             await callback.message.edit_text("Рассылка отправляется...")
 
-        keyboard = _build_broadcast_keyboard(payload.get("button_text"), payload.get("button_url"))
+        broadcast_id = str(uuid.uuid4())
         sent, failed = 0, 0
         for user_id in recipients:
+            decision_id = f"telegram-broadcast:{broadcast_id}:{user_id}"
+            delivery_id = str(uuid.uuid4())
+            await _record_broadcast_decision(
+                db,
+                user_id,
+                decision_id=decision_id,
+                broadcast_id=broadcast_id,
+                channel="telegram",
+                payload=payload,
+            )
+            attributed_url = _with_returnclock_attribution(
+                payload.get("button_url"),
+                webapp_url=webapp_url,
+                decision_id=decision_id,
+                delivery_id=delivery_id,
+            )
+            keyboard = _build_broadcast_keyboard(
+                payload.get("button_text"),
+                attributed_url,
+            )
             try:
-                await _send_broadcast_payload(bot, user_id, payload, reply_markup=keyboard)
+                message = await _send_broadcast_payload(
+                    bot,
+                    user_id,
+                    payload,
+                    reply_markup=keyboard,
+                )
                 sent += 1
-            except (TelegramForbiddenError, TelegramBadRequest):
+                await _record_broadcast_delivery(
+                    db,
+                    user_id,
+                    decision_id=decision_id,
+                    delivery_id=delivery_id,
+                    broadcast_id=broadcast_id,
+                    channel="telegram",
+                    event_type="provider_accepted",
+                    provider_message_id=getattr(message, "message_id", None),
+                    status="sent",
+                )
+            except (TelegramForbiddenError, TelegramBadRequest) as exc:
                 failed += 1
-            except Exception:
+                await _record_broadcast_delivery(
+                    db,
+                    user_id,
+                    decision_id=decision_id,
+                    delivery_id=delivery_id,
+                    broadcast_id=broadcast_id,
+                    channel="telegram",
+                    event_type="provider_failed",
+                    status="failed",
+                    error=str(exc),
+                )
+            except Exception as exc:
                 logging.getLogger(__name__).exception(
                     "Unexpected broadcast delivery failure: user_id=%s", user_id
                 )
                 failed += 1
+                await _record_broadcast_delivery(
+                    db,
+                    user_id,
+                    decision_id=decision_id,
+                    delivery_id=delivery_id,
+                    broadcast_id=broadcast_id,
+                    channel="telegram",
+                    event_type="provider_failed",
+                    status="failed",
+                    error=str(exc),
+                )
 
         if callback.message:
             await callback.message.edit_text(
@@ -387,6 +446,136 @@ def _safe_button_url(url: Optional[str]) -> Optional[str]:
     return raw
 
 
+def _with_returnclock_attribution(
+    button_url: Optional[str],
+    *,
+    webapp_url: str,
+    decision_id: str,
+    delivery_id: str,
+) -> Optional[str]:
+    """Attribute only first-party game links; never leak ids to external URLs."""
+    safe_url = _safe_button_url(button_url)
+    if not safe_url:
+        return safe_url
+    try:
+        parsed = urlparse(safe_url)
+        game = urlparse(webapp_url)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or parsed.scheme != game.scheme
+            or parsed.netloc != game.netloc
+        ):
+            return safe_url
+        query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+        query.update(
+            {
+                "rc_decision_id": str(decision_id),
+                "delivery_id": str(delivery_id),
+                "entrypoint": "notification",
+            }
+        )
+        return urlunparse(parsed._replace(query=urlencode(query)))
+    except (TypeError, ValueError):
+        return safe_url
+
+
+async def _record_broadcast_decision(
+    db: Database | None,
+    user_id: int,
+    *,
+    decision_id: str,
+    broadcast_id: str,
+    channel: str,
+    payload: dict[str, Any],
+) -> None:
+    """Best-effort observational envelope for a direct manual broadcast."""
+    if db is None or not hasattr(db, "create_returnclock_decision"):
+        return
+    try:
+        await db.create_returnclock_decision(
+            int(user_id),
+            decision_id=str(decision_id),
+            decision="send",
+            schedule_type="broadcast",
+            decision_source="admin_broadcast",
+            policy_version="manual-broadcast-v1",
+            treatment_arm="observational",
+            assignment_probability=1.0,
+            eligible_actions=[{"action": "send_now"}],
+            context={
+                "broadcast_id": str(broadcast_id),
+                "channel": str(channel),
+                "has_photo": bool(payload.get("photo_id")),
+                "has_button": bool(
+                    payload.get("button_text") and payload.get("button_url")
+                ),
+            },
+            reason_code="admin_broadcast",
+        )
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "ReturnClock broadcast decision telemetry failed: user_id=%s "
+            "broadcast_id=%s",
+            user_id,
+            broadcast_id,
+            exc_info=True,
+        )
+
+
+async def _record_broadcast_delivery(
+    db: Database | None,
+    user_id: int,
+    *,
+    decision_id: str,
+    delivery_id: str,
+    broadcast_id: str,
+    channel: str,
+    event_type: str,
+    status: str,
+    provider_message_id: Any = None,
+    error: str | None = None,
+) -> None:
+    """Best-effort provider outcome; delivery failure cannot abort the broadcast."""
+    if db is None:
+        return
+    try:
+        if hasattr(db, "record_returnclock_delivery_event"):
+            await db.record_returnclock_delivery_event(
+                int(user_id),
+                str(decision_id),
+                event_id=(
+                    f"broadcast:{broadcast_id}:{user_id}:{channel}:{event_type}"
+                ),
+                event_type=str(event_type),
+                delivery_id=str(delivery_id),
+                provider_message_id=(
+                    str(provider_message_id)
+                    if provider_message_id is not None
+                    else None
+                ),
+                channel=str(channel),
+                metadata={
+                    "broadcast_id": str(broadcast_id),
+                    **({"error": str(error)[:500]} if error else {}),
+                },
+            )
+        if hasattr(db, "update_returnclock_decision"):
+            await db.update_returnclock_decision(
+                int(user_id),
+                str(decision_id),
+                status=str(status),
+            )
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "ReturnClock broadcast delivery telemetry failed: user_id=%s "
+            "broadcast_id=%s event=%s",
+            user_id,
+            broadcast_id,
+            event_type,
+            exc_info=True,
+        )
+
+
 def _build_broadcast_keyboard(
     button_text: Optional[str], button_url: Optional[str]
 ) -> InlineKeyboardMarkup:
@@ -415,36 +604,34 @@ async def _send_broadcast_payload(
     payload: dict[str, Any],
     *,
     reply_markup: InlineKeyboardMarkup | None,
-) -> None:
+) -> Any:
     text = str(payload.get("text") or "")
     photo_id = payload.get("photo_id")
 
     if photo_id and text and len(text) <= BROADCAST_CAPTION_LIMIT:
-        await bot.send_photo(
+        return await bot.send_photo(
             chat_id=chat_id,
             photo=photo_id,
             caption=text,
             parse_mode="HTML",
             reply_markup=reply_markup,
         )
-        return
 
     if photo_id and not text:
-        await bot.send_photo(
+        return await bot.send_photo(
             chat_id=chat_id,
             photo=photo_id,
             reply_markup=reply_markup,
         )
-        return
 
     if photo_id:
         await bot.send_photo(chat_id=chat_id, photo=photo_id)
 
     if text:
-        await bot.send_message(
+        return await bot.send_message(
             chat_id=chat_id,
             text=text,
             parse_mode="HTML",
             reply_markup=reply_markup,
         )
-        return
+    return None

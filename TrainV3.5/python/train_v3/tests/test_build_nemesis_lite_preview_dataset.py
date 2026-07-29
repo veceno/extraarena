@@ -3,7 +3,9 @@ from __future__ import annotations
 import importlib.util
 import json
 from pathlib import Path
+import re
 import sys
+from uuid import UUID
 
 import pytest
 
@@ -102,6 +104,13 @@ def test_candidate_seat_maps_exact_decks_levels_and_starter() -> None:
     assert p1_base["seats"]["p2"]["initial_deck"][2]["level"] == 2
     assert normalized == 2
     assert p1_meta["candidate_seat"] == 1
+    assert re.fullmatch(r"record_[0-9a-f]{32}", p1_record["battle_id"])
+    assert p1_record["privacy"]["record_id_scheme"] == (
+        "random_per_export_record_ids_v1"
+    )
+    assert p1_record["privacy"]["player_group_scheme"] == (
+        "random_per_export_player_groups_v1"
+    )
 
     p2_record, p2_meta, _ = builder.convert_source_row(
         _row(candidate_seat=2),
@@ -117,6 +126,31 @@ def test_candidate_seat_maps_exact_decks_levels_and_starter() -> None:
         1, 8, 11, 14, 15, 16, 17, 18, 19
     ]
     assert p1_meta["matchup_group_id"] == p2_meta["matchup_group_id"]
+
+
+def test_preview_record_export_hides_user_bearing_source_id() -> None:
+    catalog = builder.load_catalog(ROOT / "ai" / "cards.json")
+    campaign = _campaign(
+        "u29250-test",
+        "6128da46bc7e79d5dfdae5307e834e1eea6cf30315ef536486aa8e20516be01c",
+    )
+    row = _row(candidate_seat=1)
+    row["battle_id"] = "tutorial-987654321"
+
+    record, metadata, _ = builder.convert_source_row(
+        row,
+        campaign=campaign,
+        catalog=catalog,
+        ruleset=campaign.manifest["ruleset"],
+        record_id_namespace=UUID(int=1),
+    )
+
+    assert re.fullmatch(r"record_[0-9a-f]{32}", record["battle_id"])
+    assert record["battle_id"] == record["match_id"]
+    assert metadata["battle_id"] == record["battle_id"]
+    assert metadata["source_battle_id"] == record["battle_id"]
+    assert "987654321" not in json.dumps(record, sort_keys=True)
+    assert "987654321" not in json.dumps(metadata, sort_keys=True)
 
 
 def test_namespaced_ids_remove_legacy_cross_campaign_collision() -> None:

@@ -43,7 +43,29 @@ class NotificationMailHarness(MailDBHarness):
 
     async def fetchrow(self, query, *args):
         self.fetch_args = (query, args)
-        return {"id": 1} if self.inserted else None
+        return {
+            "id": 1,
+            "user_id": args[0],
+            "category": args[1],
+            "event_type": args[2],
+            "payload": json.loads(args[3]),
+            "dedupe_key": args[4],
+            "returnclock_decision_id": args[5],
+            "returnclock_delivery_id": args[6],
+            "is_discretionary": args[7],
+            "created": self.inserted,
+        }
+
+    async def create_returnclock_decision(self, user_id, **kwargs):
+        return {"decision_id": kwargs["decision_id"]}
+
+    async def update_returnclock_decision(
+        self,
+        user_id,
+        decision_id,
+        **kwargs,
+    ):
+        return {"decision_id": decision_id}
 
     async def create_mail(self, **kwargs):
         self.mail_kwargs = kwargs

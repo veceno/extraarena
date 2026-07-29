@@ -215,17 +215,21 @@ def test_arena_shell_cache_busts_battle_assets_for_telegram_webapp():
     markup = ARENA_HTML.read_text(encoding="utf-8")
     server = SERVER.read_text(encoding="utf-8")
 
-    version = "arena-newcards2606-20260627-sfx-1"
+    version = "arena-newcards2606-20260627-sfx-1-returnclock-v2"
     assert f'content="{version}"' in markup
     assert f"safe-area.js?v={version}" in markup
     assert f"arena-styles.css?v={version}" in markup
     assert f"window.__EXTRA_ARENA_ASSET_VERSION__ = '{version}';" in markup
+    assert f"analytics-v2.js?v={version}" in markup
     assert f"arena.js?v={version}" in markup
     assert 'src="arena.js"></script>' not in markup
     assert 'href="arena-styles.css">' not in markup
 
     assert 'NO_STORE_CACHE_HEADERS = {"Cache-Control": "no-store, no-cache, must-revalidate"}' in server
-    assert 'BATTLE_SHELL_STATIC_FILES = {"arena.js", "arena-styles.css", "safe-area.js"}' in server
+    assert '"analytics-v2.js",' in server
+    assert '"arena.js",' in server
+    assert '"arena-styles.css",' in server
+    assert '"safe-area.js",' in server
     assert "if relative_path in BATTLE_SHELL_STATIC_FILES:" in server
     assert "return _static_text_response(file_path, headers=NO_STORE_CACHE_HEADERS)" in server
 

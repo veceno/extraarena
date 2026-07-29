@@ -58,6 +58,7 @@ pool_modes_*_manifest.json
 # Runtime data
 infrastructure/data/
 data/support/
+datasets/
 generated/
 uploads/
 graphify-out/

@@ -99,6 +99,8 @@ def test_manifest_carries_battle_tag_and_p1_actor(tmp_path):
     assert r["battle_tag"] == "llm-vs-bot"
     assert r["p1_actor_type"] == "llm"
     assert r["v5_trace_ok"] is True
+    assert r["policy_warnings"] == []
+    assert r["degraded"] is False
 
 
 def test_invalid_p1_actor_defaults_to_human(tmp_path):

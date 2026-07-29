@@ -20,9 +20,8 @@ so the observation is built with ``InfoModeV5(enemy_hand_known=True,
 enemy_deck_known=True)`` — explicitly, NOT the ``InfoModeV5()`` default
 (``contracts.py:46-47`` defaults both to False, which would violate D11).
 
-ONNX I/O contract (documented for the future V5 export, design.md:158 — the real
-export is an operational step, so the real-load path is exercised only with a
-fake ``InferenceSession`` in tests):
+ONNX I/O contract (design.md:158; shared by the deployed V5-family exports and
+the fake ``InferenceSession`` used by focused unit tests):
   inputs:
     "observation"     : float32[1, OBS_V5_DIM]            (7128)
     "action_features" : float32[1, MAX_CANDIDATE_ACTIONS, ACTION_FEATURE_DIM]
@@ -45,6 +44,10 @@ from typing import Any, Callable, Dict, Optional
 
 import numpy as np
 
+from core.v5_dataset import (
+    V5_POLICY_FAILURE_PREFIX,
+    v5_policy_failure_error,
+)
 from rlhf_env.components.policy_factory import _onnx_sha256
 
 logger = logging.getLogger(__name__)
@@ -90,9 +93,7 @@ class V5RlhfAdapter:
             # TEST injection / custom inference front end.
             self._inference = inference
         elif self.model_path:
-            # Real ONNX load (mirrors OnnxActionPolicy:33). The V5 ONNX export is
-            # a FUTURE operational step (design.md:158); exercised only with a
-            # fake InferenceSession in tests.
+            # Real ONNX load (mirrors OnnxActionPolicy:33).
             self._inference = self._build_onnx_inference(self.model_path)
         else:
             raise ValueError(
@@ -125,130 +126,164 @@ class V5RlhfAdapter:
         return _infer
 
     def select_action(self, engine: Any, player_id: int) -> int:
-        # 1. legal = engine.get_legal_actions(player_id); empty -> 0
-        #    (mirror _BerserkPolicyAdapter:184-186 / _LegacyOnnxBotPolicy:267-269).
-        legal = engine.get_legal_actions(player_id)
-        if not legal:
-            return 0
-
-        # 2. Live GameState (server-side bot has FULL state -> omniscient).
-        state = engine.state
-
-        # Lazy imports: train_v3 encoders live only in TrainV3.5/python (added to
-        # sys.path at module import). Import failure is a clear runtime error only
-        # when a V5 bot actually plays, not at rlhf_env boot.
         try:
+            # 1. legal = engine.get_legal_actions(player_id). An empty surface
+            # is an engine/adapter mismatch, never candidate zero.
+            legal = list(engine.get_legal_actions(player_id))
+            if not legal:
+                raise v5_policy_failure_error("empty_legal_actions")
+
+            # 2. Live GameState (server-side bot has FULL state -> omniscient).
+            state = engine.state
+
+            # Lazy imports: train_v3 encoders live only in TrainV3.5/python
+            # (added to sys.path at module import).
             from train_v3.contracts import AssistModeV5, InfoModeV5
             from train_v3.obs_v5 import encode_observation_v5
-        except ImportError as exc:
-            raise RuntimeError(
-                f"V5RlhfAdapter needs train_v3 (TrainV3.5/python on sys.path) to "
-                f"encode the V5 observation, but import failed: {exc}. Ensure "
-                f"TrainV3.5/python is present at {_TRAIN_V3_PY}."
-            ) from exc
-        from ai.train_v2.classic_actions_v1 import (
-            build_action_mask,
-            encode_action_features,
-        )
+            from ai.train_v2.classic_actions_v1 import (
+                build_action_mask,
+                encode_action_features,
+            )
+            from ai.train_v2.mana_draw_head_v5 import (
+                mana_draw_legal_mask,
+                select_includes_mana_draw,
+            )
+            from ai.train_v2.v5_inference_guard import (
+                _assert_v5_logits_finite_legal,
+            )
+            from core.actions import ManaDrawAction
 
-        # 3. D11 OMNISCIENT observation: enemy_hand_known=True + enemy_deck_known=True
-        #    EXPLICIT (InfoModeV5() default is SELF-VISIBLE, contracts.py:46-47 —
-        #    would VIOLATE D11). AssistModeV5() default = no assist channels.
-        info_mode = InfoModeV5(enemy_hand_known=True, enemy_deck_known=True)
-        assist_mode = AssistModeV5()
+            # 3. D11 OMNISCIENT observation.
+            info_mode = InfoModeV5(
+                enemy_hand_known=True,
+                enemy_deck_known=True,
+                enemy_deck_order_known=True,
+            )
+            assist_mode = AssistModeV5()
+            history_events = list(getattr(state, "v5_history_events", ()))
+            obs = encode_observation_v5(
+                state,
+                player_id,
+                info_mode=info_mode,
+                assist_mode=assist_mode,
+                history_events=history_events,
+            )
 
-        # Phase-C replay and live inference both consume the dedicated
-        # structured ring. ``state.history`` remains the native action log;
-        # ``state.action_history`` is UI text. Neither is the V5 tape.
-        history_events = list(getattr(state, "v5_history_events", ()))
+            # 4. append-only candidate features and legal mask.
+            action_features = encode_action_features(
+                state,
+                player_id,
+                verify_mask=False,
+                placement_mode="append_only",
+                include_preview=False,
+            )
+            legal_mask = build_action_mask(
+                state,
+                player_id,
+                verify_mask=False,
+                placement_mode="append_only",
+            )
 
-        obs = encode_observation_v5(
-            state,
-            player_id,
-            info_mode=info_mode,
-            assist_mode=assist_mode,
-            history_events=history_events,
-        )
+            # 5. V5 3-tuple forward. Validate every output before selection.
+            outputs = self._inference(obs, action_features)
+            if not isinstance(outputs, (list, tuple)) or len(outputs) != 3:
+                raise v5_policy_failure_error("invalid_output_contract")
+            try:
+                logits = np.asarray(outputs[0], dtype=np.float32)
+                value_output = np.asarray(outputs[1], dtype=np.float32)
+                mana_output = np.asarray(outputs[2], dtype=np.float32).reshape(-1)
+            except (TypeError, ValueError) as exc:
+                raise v5_policy_failure_error("invalid_output_contract") from exc
+            if value_output.size == 0 or not np.all(np.isfinite(value_output)):
+                raise v5_policy_failure_error("invalid_output_contract")
+            if mana_output.size != 1:
+                raise v5_policy_failure_error("invalid_output_contract")
+            mana_draw_logit = float(mana_output[0])
+            if not np.isfinite(mana_draw_logit):
+                raise v5_policy_failure_error("non_finite_mana_logit")
 
-        # 4. action_features (C0 fix: placement_mode='append_only'; mirror
-        #    _LiveArenaShim:223). include_preview=False — live inference does not
-        #    need preview deltas and this skips the deep-copy simulation.
-        action_features = encode_action_features(
-            state,
-            player_id,
-            verify_mask=False,
-            placement_mode="append_only",
-            include_preview=False,
-        )
+            try:
+                chosen_candidate = _assert_v5_logits_finite_legal(
+                    logits, legal_mask
+                )
+            except RuntimeError as exc:
+                code = (
+                    "non_finite_logits"
+                    if "non-finite logits" in str(exc)
+                    else "no_legal_candidate"
+                )
+                raise v5_policy_failure_error(code) from exc
+            except (TypeError, ValueError) as exc:
+                raise v5_policy_failure_error("invalid_output_contract") from exc
 
-        # 5. legal_mask — the legal candidate set (frozen classic_actions_v1:188).
-        legal_mask = build_action_mask(
-            state, player_id, verify_mask=False, placement_mode="append_only",
-        )
+            # 6. The parallel mana head and the real legal surface must agree.
+            mana_draw_legal = mana_draw_legal_mask(state, player_id)
+            mana_indices = [
+                index
+                for index, action in enumerate(legal)
+                if isinstance(action, ManaDrawAction)
+            ]
+            if bool(mana_draw_legal) != bool(mana_indices) or len(mana_indices) > 1:
+                raise v5_policy_failure_error("mana_surface_mismatch")
+            flat_logits = np.asarray(logits, dtype=np.float32).reshape(-1)
+            if select_includes_mana_draw(
+                mana_draw_logit,
+                float(flat_logits[chosen_candidate]),
+                mana_draw_legal,
+            ):
+                return mana_indices[0]
 
-        # 6. V5 3-tuple forward (logits, value, mana_draw_logit).
-        logits, _value, _mana_draw_logit = self._inference(obs, action_features)
-        logits = np.asarray(logits, dtype=np.float32).reshape(-1)
-
-        # 7. argmax over legal-masked candidates -> candidate id -> legal index.
-        masked = np.where(legal_mask.astype(bool), logits, -np.inf).astype(np.float32)
-        if not np.any(np.isfinite(masked)):
-            # No masked-in candidate (shouldn't happen — legal was non-empty).
-            return 0
-        chosen_candidate = int(np.argmax(masked))
-        return self._candidate_to_legal_index(
-            state, player_id, chosen_candidate, legal
-        )
+            # 7. Candidate id -> exact/field-equivalent legal index.
+            return self._candidate_to_legal_index(
+                state, player_id, chosen_candidate, legal
+            )
+        except RuntimeError as exc:
+            if str(exc).startswith(V5_POLICY_FAILURE_PREFIX):
+                raise
+            raise v5_policy_failure_error("unexpected_failure") from exc
+        except Exception as exc:
+            raise v5_policy_failure_error("unexpected_failure") from exc
 
     @staticmethod
     def _candidate_to_legal_index(state, player_id: int, candidate_id: int, legal) -> int:
         """Map a V5/train_v2 candidate action_id (0..600) to the index of the
         matching BaseAction in ``legal`` (``engine.get_legal_actions``).
 
-        Mirrors ``_LegacyOnnxBotPolicy`` idx-matching (policy_factory.py:267+):
-        exact @dataclass eq first, then loosen-match by type+fields (warrior
-        position may drift), then type-fallback, then last legal.
+        Exact dataclass equality is preferred, followed only by the known
+        placement-insensitive field equivalence. Type/last-action fallbacks are
+        forbidden because they would create a plausible but false label.
         """
         from ai.train_v2.classic_actions_v1 import decode_action
-        from core.actions import AttackAction, EndTurnAction, PlayCardAction
+        from core.actions import AttackAction, PlayCardAction
 
         base = decode_action(state, player_id, candidate_id)
 
-        if base is not None:
-            # 1) Exact value-equality (@dataclass auto-eq on fields).
-            for i, a in enumerate(legal):
-                if a == base:
-                    return i
-            # 2) Loosen-match: warrior position may have drifted.
-            if isinstance(base, PlayCardAction):
-                for i, a in enumerate(legal):
-                    if (isinstance(a, PlayCardAction)
-                            and a.hand_index == base.hand_index
-                            and a.target_id == base.target_id):
-                        return i
-            elif isinstance(base, AttackAction):
-                for i, a in enumerate(legal):
-                    if (isinstance(a, AttackAction)
-                            and a.attacker_id == base.attacker_id
-                            and a.target_id == base.target_id
-                            and a.target_is_hero == base.target_is_hero):
-                        return i
+        if base is None:
+            raise v5_policy_failure_error("decode_failed")
 
-        # 3) Type fallback (never return an invalid idx).
-        if candidate_id == 0 or base is None or isinstance(base, EndTurnAction):
-            for i, a in enumerate(legal):
-                if isinstance(a, EndTurnAction):
-                    return i
+        # 1) Exact value-equality (@dataclass auto-eq on fields).
+        for i, a in enumerate(legal):
+            if a == base:
+                return i
+        # 2) Placement-insensitive field match.
         if isinstance(base, PlayCardAction):
             for i, a in enumerate(legal):
-                if isinstance(a, PlayCardAction):
+                if (
+                    isinstance(a, PlayCardAction)
+                    and a.hand_index == base.hand_index
+                    and a.target_id == base.target_id
+                ):
                     return i
-        if isinstance(base, AttackAction):
+        elif isinstance(base, AttackAction):
             for i, a in enumerate(legal):
-                if isinstance(a, AttackAction):
+                if (
+                    isinstance(a, AttackAction)
+                    and a.attacker_id == base.attacker_id
+                    and a.target_id == base.target_id
+                    and a.target_is_hero == base.target_is_hero
+                ):
                     return i
-        # 4) Last legal.
-        return len(legal) - 1
+        raise v5_policy_failure_error("legal_mapping_failed")
 
 
 # ----------------------------------------------------------------------------

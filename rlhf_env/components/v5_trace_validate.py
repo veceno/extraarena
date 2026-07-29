@@ -34,8 +34,10 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from datetime import datetime, timezone
 import json
 import logging
+import math
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -97,6 +99,12 @@ _REQUIRED_ACTION_FIELDS = (
     "error",
     "timestamp_ms",
 )
+_AUXILIARY_ACTION_FIELDS = (
+    "human_decision_time_raw_ms",
+    "metronome_prediction_ms",
+    "metronome_applied_ms",
+    "metronome_fallback_used",
+)
 
 _VALID_DECISION_SOURCES = {"human", "llm", "bot", "rl"}
 
@@ -113,6 +121,31 @@ _STATE_KEYS = (
     "v5_history_events",
     "pending_card_feedback_events",
 )
+
+
+def _parse_timestamp(value: Any) -> Optional[datetime]:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(
+            value.strip().replace("Z", "+00:00")
+        )
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed.astimezone(timezone.utc)
+
+
+def _finite_nonnegative(value: Any) -> Optional[float]:
+    if (
+        not isinstance(value, (int, float))
+        or isinstance(value, bool)
+        or not math.isfinite(float(value))
+        or float(value) < 0.0
+    ):
+        return None
+    return float(value)
 
 
 # ---------------------------------------------------------------------------
@@ -135,6 +168,44 @@ def _read_jsonl(path: Path) -> Tuple[Optional[List[Dict[str, Any]]], Optional[st
         except json.JSONDecodeError as exc:
             return None, f"invalid jsonl line {ln}: {exc}"
     return rows, None
+
+
+def _check_card_catalog_membership(
+    value: Any,
+    *,
+    valid_card_ids: set[str],
+    path: str,
+    issues: List[str],
+) -> None:
+    if len(issues) >= 100:
+        return
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            child_path = f"{path}.{key}"
+            if key == "card_id":
+                if (
+                    isinstance(nested, bool)
+                    or not isinstance(nested, (int, str))
+                    or str(nested).strip() not in valid_card_ids
+                ):
+                    issues.append(
+                        f"[ruleset] {child_path}={nested!r} is not in "
+                        "the attached current catalog"
+                    )
+            _check_card_catalog_membership(
+                nested,
+                valid_card_ids=valid_card_ids,
+                path=child_path,
+                issues=issues,
+            )
+    elif isinstance(value, list):
+        for index, nested in enumerate(value):
+            _check_card_catalog_membership(
+                nested,
+                valid_card_ids=valid_card_ids,
+                path=f"{path}[{index}]",
+                issues=issues,
+            )
 
 
 def _is_terminal(row: Dict[str, Any]) -> bool:
@@ -476,6 +547,198 @@ def _check_actor_source(
             )
 
 
+def validate_v5_timestamp_contract(meta: Dict[str, Any]) -> List[str]:
+    """Validate the battle-level TimeStamp label and its input features."""
+
+    issues: List[str] = []
+    started_at = _parse_timestamp(meta.get("started_at"))
+    finished_at = _parse_timestamp(meta.get("finished_at"))
+    if started_at is None:
+        issues.append(
+            "[timestamp] meta.started_at must be a valid timezone-aware "
+            "ISO-8601 timestamp"
+        )
+    if finished_at is None:
+        issues.append(
+            "[timestamp] meta.finished_at must be a valid timezone-aware "
+            "ISO-8601 timestamp"
+        )
+    if (
+        started_at is not None
+        and finished_at is not None
+        and finished_at < started_at
+    ):
+        issues.append(
+            "[timestamp] meta.finished_at precedes meta.started_at"
+        )
+
+    duration = _finite_nonnegative(meta.get("duration_seconds"))
+    if duration is None:
+        issues.append(
+            "[timestamp] meta.duration_seconds must be finite and >= 0"
+        )
+    elif started_at is not None and finished_at is not None:
+        wall_duration = (finished_at - started_at).total_seconds()
+        tolerance = max(60.0, 0.10 * max(duration, wall_duration))
+        if abs(duration - wall_duration) > tolerance:
+            issues.append(
+                "[timestamp] meta.duration_seconds is inconsistent with "
+                "started_at/finished_at"
+            )
+
+    start_metadata = meta.get("start_metadata")
+    if (
+        not isinstance(start_metadata, dict)
+        or start_metadata.get("client_ready_anchored") is not True
+    ):
+        issues.append(
+            "[timestamp] TimeStamp start must be anchored to client_ready"
+        )
+
+    features = meta.get("timestamp_features")
+    required_features = {
+        "p1_deck_size",
+        "p2_deck_size",
+        "starting_player",
+        "duration_seconds",
+        "turns",
+    }
+    if not isinstance(features, dict):
+        issues.append(
+            "[timestamp] meta.timestamp_features must be an object"
+        )
+        return issues
+    missing = sorted(required_features - set(features))
+    if missing:
+        issues.append(
+            f"[timestamp] meta.timestamp_features missing {missing}"
+        )
+    feature_duration = _finite_nonnegative(
+        features.get("duration_seconds")
+    )
+    if (
+        duration is None
+        or feature_duration is None
+        or abs(feature_duration - duration) > 1e-3
+    ):
+        issues.append(
+            "[timestamp] timestamp_features.duration_seconds must match "
+            "meta.duration_seconds"
+        )
+    feature_turns = features.get("turns")
+    meta_turns = meta.get("turns")
+    if (
+        not isinstance(feature_turns, int)
+        or isinstance(feature_turns, bool)
+        or feature_turns < 1
+        or not isinstance(meta_turns, int)
+        or isinstance(meta_turns, bool)
+        or meta_turns != feature_turns
+    ):
+        issues.append(
+            "[timestamp] timestamp_features.turns must be a positive "
+            "integer matching meta.turns"
+        )
+    starting_player = features.get("starting_player")
+    if starting_player not in {"p1", "p2"} or (
+        meta.get("starting_player") is not None
+        and meta.get("starting_player") != starting_player
+    ):
+        issues.append(
+            "[timestamp] timestamp_features.starting_player is invalid "
+            "or inconsistent with meta.starting_player"
+        )
+    for player in ("p1", "p2"):
+        deck = meta.get(f"{player}_deck")
+        if not isinstance(deck, list) or not deck:
+            issues.append(
+                f"[timestamp] meta.{player}_deck must be non-empty"
+            )
+            continue
+        deck_size = features.get(f"{player}_deck_size")
+        if (
+            not isinstance(deck_size, int)
+            or isinstance(deck_size, bool)
+            or deck_size != len(deck)
+        ):
+            issues.append(
+                f"[timestamp] timestamp_features.{player}_deck_size "
+                f"must match meta.{player}_deck"
+            )
+    return issues
+
+
+def validate_v5_metronome_contract(
+    rows: List[Dict[str, Any]],
+) -> List[str]:
+    """Validate Metronome inputs/outputs for every automated decision."""
+
+    issues: List[str] = []
+    for row in rows:
+        seq = row.get("seq", "?")
+        missing = sorted(
+            set(_AUXILIARY_ACTION_FIELDS) - set(row)
+        )
+        if missing:
+            issues.append(
+                f"[metronome] seq={seq}: timing fields missing {missing}"
+            )
+        source = row.get("decision_source")
+        control = row.get("control_source")
+        action_type = row.get("action_type")
+        predicted = row.get("metronome_prediction_ms")
+        applied = row.get("metronome_applied_ms")
+        fallback = row.get("metronome_fallback_used")
+        raw_human = row.get("human_decision_time_raw_ms")
+
+        if raw_human is not None and _finite_nonnegative(raw_human) is None:
+            issues.append(
+                f"[metronome] seq={seq}: human_decision_time_raw_ms "
+                "must be null or finite and >= 0"
+            )
+        if source == "human" and control == "human":
+            if fallback is not None or predicted is not None or applied is not None:
+                issues.append(
+                    f"[metronome] seq={seq}: direct human action must use "
+                    "metronome null/null/null"
+                )
+            if (
+                row.get("decision_time_censored") is False
+                and raw_human is None
+            ):
+                issues.append(
+                    f"[metronome] seq={seq}: uncensored human action "
+                    "requires human_decision_time_raw_ms"
+                )
+            continue
+        if source not in {"bot", "rl", "llm"}:
+            continue
+        if control == "timeout" or action_type in _TERMINAL_TYPES:
+            continue
+        if not isinstance(fallback, bool):
+            issues.append(
+                f"[metronome] seq={seq}: automated action must record "
+                "metronome_fallback_used as bool"
+            )
+        if _finite_nonnegative(applied) is None:
+            issues.append(
+                f"[metronome] seq={seq}: automated action must record "
+                "a finite metronome_applied_ms"
+            )
+        if fallback is False and _finite_nonnegative(predicted) is None:
+            issues.append(
+                f"[metronome] seq={seq}: non-fallback automated action "
+                "must record metronome_prediction_ms"
+            )
+        if fallback is True and predicted is not None:
+            if _finite_nonnegative(predicted) is None:
+                issues.append(
+                    f"[metronome] seq={seq}: fallback prediction must be "
+                    "null or finite and >= 0"
+                )
+    return issues
+
+
 def _check_timing_and_outcome(
     rows: List[Dict[str, Any]],
     issues: List[str],
@@ -813,6 +1076,11 @@ def _check_correspondence(
     rows: List[Dict[str, Any]], battle_log_path: Path, issues: List[str]
 ) -> None:
     """(4) battle_log actions 1:1 (по порядку) с не-терминальными trace-строками."""
+    if battle_log_path.is_symlink():
+        issues.append(
+            "[correspondence] unsafe battle_log symlink"
+        )
+        return
     if not battle_log_path.exists():
         issues.append(
             f"[correspondence] battle_log missing: {battle_log_path.name} — "
@@ -863,6 +1131,10 @@ def _check_correspondence(
 def validate_v5_trace(
     v5_dir: Path,
     battle_log_path: Optional[Path] = None,
+    *,
+    expected_catalog_hash: Optional[str] = None,
+    expected_card_count: Optional[int] = None,
+    require_auxiliary_contracts: bool = False,
 ) -> Dict[str, Any]:
     """Валидирует один V5-trace (директория ``battles/<bid>/v5``).
 
@@ -874,16 +1146,38 @@ def validate_v5_trace(
     чтобы MCP-хендлер мог делегировать полностью.
     """
     issues: List[str] = []
+    if v5_dir.is_symlink():
+        return {
+            "ok": False,
+            "issues": ["unsafe v5 trace directory symlink"],
+            "checks": {
+                "rows": 0,
+                "turns": 0,
+                "accepted_training_rows": 0,
+            },
+        }
 
     # --- структурные: наличие + непустота ---
     meta_path = v5_dir / "meta.json"
     turns_path = v5_dir / "turns.jsonl"
     actions_path = v5_dir / "actions.jsonl"
     for need, p in (("meta.json", meta_path), ("turns.jsonl", turns_path), ("actions.jsonl", actions_path)):
-        if not p.exists():
+        if p.is_symlink():
+            issues.append(f"unsafe symlink {need}")
+        elif not p.exists():
             issues.append(f"missing {need}")
         elif need.endswith(".jsonl") and p.stat().st_size == 0:
             issues.append(f"empty {need}")
+    if any(issue.startswith("unsafe symlink") for issue in issues):
+        return {
+            "ok": False,
+            "issues": issues,
+            "checks": {
+                "rows": 0,
+                "turns": 0,
+                "accepted_training_rows": 0,
+            },
+        }
 
     # meta
     meta: Dict[str, Any] = {}
@@ -912,16 +1206,142 @@ def validate_v5_trace(
     if issues:
         # структурные проблемы (missing/empty/invalid files) → глубокие проверки
         # бессмысленны/небезопасны.
-        return {"ok": False, "issues": issues, "checks": {"rows": len(rows), "turns": len(turns)}}
+        return {
+            "ok": False,
+            "issues": issues,
+            "checks": {
+                "rows": len(rows),
+                "turns": len(turns),
+                "accepted_training_rows": 0,
+            },
+        }
 
     # --- meta required fields (cross-meta инварианты actor/source, terminal↔meta) ---
     missing_meta = [f for f in _REQUIRED_META_FIELDS if f not in meta]
     if missing_meta:
         issues.append(f"[meta] missing required fields {missing_meta}")
 
+    # A structurally valid trace from an older cards.json is still unsafe for a
+    # current campaign.  The caller opts into this gate by supplying the
+    # current catalog hash/card count; standalone legacy validation remains
+    # backward-compatible.
+    catalog_hash = meta.get("catalog_hash")
+    catalog_card_ids: set[str] | None = None
+    if (
+        expected_catalog_hash is not None
+        and (
+            not isinstance(catalog_hash, str)
+            or len(catalog_hash) < 16
+            or not str(expected_catalog_hash).lower().startswith(
+                catalog_hash.lower()
+            )
+        )
+    ):
+        issues.append(
+            f"[ruleset] catalog_hash={catalog_hash!r} != "
+            f"current={expected_catalog_hash!r}"
+        )
+    catalog_rel = meta.get("catalog_path")
+    if expected_catalog_hash is not None or expected_card_count is not None:
+        if not isinstance(catalog_rel, str) or not catalog_rel:
+            issues.append("[ruleset] meta.catalog_path is required")
+        else:
+            group_dir = v5_dir.parents[2]
+            catalog_path = group_dir / catalog_rel
+            if any(
+                component.is_symlink()
+                for component in (
+                    group_dir / part
+                    for part in Path(catalog_rel).parts
+                )
+            ):
+                issues.append(
+                    f"[ruleset] catalog path crosses symlink: {catalog_rel!r}"
+                )
+            try:
+                resolved_catalog = catalog_path.resolve()
+                resolved_catalog.relative_to(group_dir.resolve())
+            except (OSError, ValueError):
+                issues.append(
+                    f"[ruleset] unsafe catalog path: {catalog_rel!r}"
+                )
+            else:
+                if not resolved_catalog.is_file():
+                    issues.append(
+                        f"[ruleset] catalog file missing: {catalog_rel}"
+                    )
+                else:
+                    try:
+                        catalog_payload = json.loads(
+                            resolved_catalog.read_text(encoding="utf-8")
+                        )
+                    except (OSError, json.JSONDecodeError) as exc:
+                        issues.append(
+                            f"[ruleset] invalid catalog.json: {exc}"
+                        )
+                    else:
+                        payload_hash = catalog_payload.get("catalog_hash")
+                        if (
+                            not isinstance(payload_hash, str)
+                            or not isinstance(catalog_hash, str)
+                            or len(catalog_hash) < 16
+                            or not payload_hash.lower().startswith(
+                                catalog_hash.lower()
+                            )
+                        ):
+                            issues.append(
+                                "[ruleset] catalog.json hash does not match "
+                                "meta.catalog_hash"
+                            )
+                        if (
+                            expected_catalog_hash is not None
+                            and payload_hash != expected_catalog_hash
+                        ):
+                            issues.append(
+                                "[ruleset] catalog.json hash does not match "
+                                "current catalog"
+                            )
+                        cards = catalog_payload.get("cards")
+                        if not isinstance(cards, dict):
+                            issues.append(
+                                "[ruleset] catalog.json cards is not an object"
+                            )
+                        elif (
+                            expected_card_count is not None
+                            and len(cards) != int(expected_card_count)
+                        ):
+                            issues.append(
+                                f"[ruleset] catalog card count={len(cards)} != "
+                                f"current={int(expected_card_count)}"
+                            )
+                        else:
+                            catalog_card_ids = {
+                                str(card_id).strip()
+                                for card_id in cards
+                            }
+
+    if catalog_card_ids:
+        _check_card_catalog_membership(
+            {
+                "p1_deck": meta.get("p1_deck"),
+                "p2_deck": meta.get("p2_deck"),
+                "turns": turns,
+                "actions": rows,
+            },
+            valid_card_ids=catalog_card_ids,
+            path="trace",
+            issues=issues,
+        )
+
     # --- требуемые поля каждой action-строки + bool accepted ---
     for r in rows:
         missing = [f for f in _REQUIRED_ACTION_FIELDS if f not in r]
+        if require_auxiliary_contracts:
+            missing.extend(
+                field
+                for field in _AUXILIARY_ACTION_FIELDS
+                if field not in r
+            )
         if missing:
             issues.append(f"[schema] seq={r.get('seq','?')}: missing fields {missing}")
         if "accepted" in r and not isinstance(r["accepted"], bool):
@@ -938,6 +1358,9 @@ def validate_v5_trace(
     # Глубокие инварианты запускаем при наличии строк (schema-проблемы не глушат их —
     # больше сигнала; проверки None-guarded и не падают на порченных строках).
     if rows:
+        if require_auxiliary_contracts:
+            issues.extend(validate_v5_timestamp_contract(meta))
+            issues.extend(validate_v5_metronome_contract(rows))
         _check_legal_action_index(rows, issues)
         _check_actor_source(rows, meta, issues)
         _check_timing_and_outcome(rows, issues)
@@ -947,6 +1370,15 @@ def validate_v5_trace(
             _check_correspondence(rows, battle_log_path, issues)
 
     terminal_rows = sum(1 for r in rows if _is_terminal(r))
+    accepted_training_rows = sum(
+        1
+        for row in rows
+        if (
+            not _is_terminal(row)
+            and row.get("accepted") is True
+            and row.get("legal_action_index") is not None
+        )
+    )
     return {
         "ok": not issues,
         "issues": issues,
@@ -954,8 +1386,13 @@ def validate_v5_trace(
             "rows": len(rows),
             "turns": len(turns),
             "terminal_rows": terminal_rows,
+            "accepted_training_rows": accepted_training_rows,
         },
     }
 
 
-__all__ = ["validate_v5_trace"]
+__all__ = [
+    "validate_v5_metronome_contract",
+    "validate_v5_timestamp_contract",
+    "validate_v5_trace",
+]

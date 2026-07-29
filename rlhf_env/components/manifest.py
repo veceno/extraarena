@@ -136,6 +136,8 @@ class ManifestWriter:
         p1_actor_type: Optional[str] = None,
         v5_trace_ok: Optional[bool] = None,
         agent_name: Optional[str] = None,
+        policy_warnings: Optional[List[str]] = None,
+        degraded: Optional[bool] = None,
     ) -> None:
         """Добавляет результат одного боя и обновляет агрегаты."""
         result = {
@@ -161,6 +163,14 @@ class ManifestWriter:
             result["v5_trace_ok"] = bool(v5_trace_ok)
         if agent_name is not None:
             result["agent_name"] = agent_name
+        if policy_warnings is not None:
+            result["policy_warnings"] = [
+                str(warning)
+                for warning in policy_warnings
+                if str(warning).strip()
+            ]
+        if degraded is not None:
+            result["degraded"] = bool(degraded)
         if decks_cache is not None:
             # ДЕНОРАЛИЗОВАННЫЙ кэш колод для быстрого lookup при батч-обучении;
             # АВТОРИТАТИВНЫЕ resolved-колоды лежат в v5/meta.json, а в manifest.spec

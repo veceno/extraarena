@@ -34,6 +34,7 @@ import subprocess
 import sys
 import tempfile
 from typing import Any, Iterable, Mapping, Sequence
+from uuid import UUID, uuid4
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -42,8 +43,11 @@ if str(REPO_ROOT) not in sys.path:
 
 from core.nemesis_dataset import (  # noqa: E402
     NEMESIS_EXPORT_FORMAT,
+    NEMESIS_PSEUDONYMIZED_PLAYER_GROUP_SCHEME,
+    NEMESIS_PSEUDONYMIZED_RECORD_ID_SCHEME,
     NEMESIS_SCHEMA,
     NemesisBattleCollector,
+    pseudonymize_nemesis_record,
     validate_nemesis_record,
 )
 
@@ -298,6 +302,7 @@ def convert_source_row(
     campaign: Campaign,
     catalog: Catalog,
     ruleset: str,
+    record_id_namespace: UUID | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any], int]:
     """Convert one audited legacy row and return record, metadata, fix count."""
 
@@ -373,20 +378,23 @@ def convert_source_row(
         duration_seconds=None,
         turns_count=int(terminal["turns_count"]),
     )
-    record["privacy"] = {
-        "identity_scheme": "side_pseudonyms_p1_1_p2_2",
-        "include_players": False,
-    }
-    canonical = validate_nemesis_record(record, require_terminal=True)
+    canonical = pseudonymize_nemesis_record(
+        record,
+        record_id_namespace=record_id_namespace,
+    )
+    canonical = validate_nemesis_record(canonical, require_terminal=True)
+    exported_battle_id = str(canonical["battle_id"])
     group_id = str(canonical["provenance"]["split_group"])
     metadata = {
         "schema": TRAINING_METADATA_SCHEMA,
-        "battle_id": battle_id,
+        "battle_id": exported_battle_id,
         "matchup_group_id": group_id,
         "suggested_split": _suggested_split(group_id),
         "sample_weight": 1.0,
         "source_campaign_id": campaign.campaign_id,
-        "source_battle_id": source_battle_id,
+        # The private sidecar must not reintroduce a raw/user-bearing source
+        # identifier after the canonical record was pseudonymized.
+        "source_battle_id": exported_battle_id,
         "source_global_index": int(row["global_index"]),
         "source_cell_id": str(row["cell_id"]),
         "source_repeat": int(row["repeat"]),
@@ -656,6 +664,7 @@ def build_preview(
     metadata_rows: list[dict[str, Any]] = []
     seen_battle_ids: set[str] = set()
     normalization_by_campaign: dict[str, int] = {}
+    record_id_namespace = uuid4()
     for campaign in sorted(campaigns, key=lambda item: item.campaign_id):
         normalized_levels = 0
         for row in selected[campaign.campaign_id]:
@@ -664,6 +673,7 @@ def build_preview(
                 campaign=campaign,
                 catalog=catalog,
                 ruleset=ruleset,
+                record_id_namespace=record_id_namespace,
             )
             battle_id = str(record["battle_id"])
             if battle_id in seen_battle_ids:
@@ -691,6 +701,8 @@ def build_preview(
         "battle_count": len(records),
         "identity_scheme": "side_pseudonyms_p1_1_p2_2",
         "include_players": False,
+        "player_group_scheme": NEMESIS_PSEUDONYMIZED_PLAYER_GROUP_SCHEME,
+        "record_id_scheme": NEMESIS_PSEUDONYMIZED_RECORD_ID_SCHEME,
     }
     records_count, records_sha = _atomic_stream(
         records_path,
@@ -781,6 +793,7 @@ def build_preview(
             "header_rows": 1,
             "schema_version": NEMESIS_SCHEMA,
             "format": NEMESIS_EXPORT_FORMAT,
+            "record_id_scheme": NEMESIS_PSEUDONYMIZED_RECORD_ID_SCHEME,
         },
         "sources": [
             {
@@ -813,7 +826,8 @@ def build_preview(
             ),
             (
                 "Legacy source battle IDs overlap across campaigns; output IDs "
-                "are namespaced by campaign and checkpoint hash."
+                "use export-local opaque aliases, while collision-safe source "
+                "namespacing remains private to conversion."
             ),
         ],
     }

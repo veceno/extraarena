@@ -34,6 +34,10 @@ import onnxruntime as ort
 
 from core.actions import BaseAction
 from core.state import GameState
+from core.v5_dataset import (
+    V5_POLICY_FAILURE_PREFIX,
+    v5_policy_failure_error,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -713,15 +717,12 @@ class BerserkInference:
         method decodes the 601-best candidate and matches it against
         ``legal_actions``.
 
-        Exception handling: any UNEXPECTED exception (encoder/decoder/match
-        failure) degrades to ``_legal_fallback`` (the V4 silent-fallback
-        behavior). The ONNX fallback guard ``RuntimeError`` is NOT swallowed
-        -- it MUST propagate out of ``_get_action_v5`` (a malformed V5 ONNX is
-        the last-resort prod safety, NOT a silent rule-based fallback).
+        Every malformed output, codec mismatch and unexpected failure raises a
+        stable ``v5_policy_failure:*`` RuntimeError. Production may safely end
+        the turn, but it must never disguise a V5 failure as a policy action.
         """
         if not legal_actions:
-            logger.warning("[BerserkInference] V5: нет доступных действий, возврат 0")
-            return 0
+            raise v5_policy_failure_error("empty_legal_actions")
 
         # Lazy-import the V5 encoder set + the V4 codec helpers + ManaDrawAction
         # so prod does NOT pay the import cost when only V4 is loaded (mirrors
@@ -788,61 +789,81 @@ class BerserkInference:
                 mask=mask,
             ).reshape(1, max_candidate_actions, action_feature_dim).astype(np.float32)
 
-            obs_name, af_name, output_names = self._resolve_train_v2_io_names(profile)
-            if output_names is None or "mana_draw_logit" not in output_names:
-                # V5 contract requires the 3-tuple; fall back to the explicit
-                # output list if _resolve_train_v2_io_names dropped mana_draw_logit
-                # (it only knows the V4 2-tuple logits+value).
-                obs_name = "observation" if not obs_name or "observation" not in (output_names or []) else obs_name
-                af_name = "action_features" if not af_name else af_name
-                output_names = ["logits", "value", "mana_draw_logit"]
+            input_names = profile.get("input_names")
+            output_names = profile.get("output_names")
+            if (
+                not isinstance(input_names, (list, tuple))
+                or not {"observation", "action_features"}.issubset(input_names)
+                or not isinstance(output_names, (list, tuple))
+                or not {"logits", "value", "mana_draw_logit"}.issubset(output_names)
+            ):
+                raise v5_policy_failure_error("invalid_io_contract")
 
-            outputs = session.run(output_names, {"observation": obs, "action_features": af})
-            logits = outputs[0][0]  # shape [601]
-            value = outputs[1]  # noqa: F841 -- V5 value head (unused for action selection)
-            mana_draw_logit = float(outputs[2][0][0])  # scalar
+            outputs = session.run(
+                ["logits", "value", "mana_draw_logit"],
+                {"observation": obs, "action_features": af},
+            )
+            if not isinstance(outputs, (list, tuple)) or len(outputs) != 3:
+                raise v5_policy_failure_error("invalid_output_contract")
+            try:
+                logits = np.asarray(outputs[0], dtype=np.float32)
+                value_output = np.asarray(outputs[1], dtype=np.float32)
+                mana_output = np.asarray(outputs[2], dtype=np.float32).reshape(-1)
+            except (TypeError, ValueError) as exc:
+                raise v5_policy_failure_error("invalid_output_contract") from exc
+            if value_output.size == 0 or not np.all(np.isfinite(value_output)):
+                raise v5_policy_failure_error("invalid_output_contract")
+            if mana_output.size != 1:
+                raise v5_policy_failure_error("invalid_output_contract")
+            mana_draw_logit = float(mana_output[0])
+            if not np.isfinite(mana_draw_logit):
+                raise v5_policy_failure_error("non_finite_mana_logit")
 
             # ONNX FALLBACK GUARD (SPEC :174) -- last-resort prod safety.
             # Raises RuntimeError on NaN/inf logits OR no-legal-candidate.
             # This RuntimeError MUST propagate (NOT swallowed into _legal_fallback).
-            action_id = _assert_v5_logits_finite_legal(logits, mask)
+            try:
+                action_id = _assert_v5_logits_finite_legal(logits, mask)
+            except RuntimeError as exc:
+                code = (
+                    "non_finite_logits"
+                    if "non-finite logits" in str(exc)
+                    else "no_legal_candidate"
+                )
+                raise v5_policy_failure_error(code) from exc
+            except (TypeError, ValueError) as exc:
+                raise v5_policy_failure_error("invalid_output_contract") from exc
 
             # mana_draw decision (spec §6.186): mana_draw is a PARALLEL BINARY
             # HEAD. When select_includes_mana_draw fires AND legal, return the
             # ManaDrawAction index (the engine emits it into legal_actions at
             # engine.py:1345-1347 when player.mana >= mana_draw_cost).
             mana_draw_legal = mana_draw_legal_mask(game_state, player_id)
-            best_candidate_logit = float(logits[action_id])
+            mana_indices = [
+                i
+                for i, action in enumerate(legal_actions)
+                if isinstance(action, ManaDrawAction)
+            ]
+            if bool(mana_draw_legal) != bool(mana_indices) or len(mana_indices) > 1:
+                raise v5_policy_failure_error("mana_surface_mismatch")
+            flat_logits = np.asarray(logits, dtype=np.float32).reshape(-1)
+            best_candidate_logit = float(flat_logits[action_id])
             if select_includes_mana_draw(mana_draw_logit, best_candidate_logit, mana_draw_legal):
-                for i, action in enumerate(legal_actions):
-                    if isinstance(action, ManaDrawAction):
-                        logger.debug(
-                            f"[BerserkInference] V5 player={player_id}, difficulty={difficulty}, "
-                            f"mana_draw_logit={mana_draw_logit:.3f} > best_candidate={best_candidate_logit:.3f} "
-                            f"-> mana_draw legal_idx={i}"
-                        )
-                        return i
-                # select_includes_mana_draw said legal but no ManaDrawAction in
-                # legal_actions -- engine/encoder mismatch; fall through to the
-                # 601-candidate decode (defensive).
-                logger.warning(
-                    "[BerserkInference] V5: select_includes_mana_draw fired but no "
-                    "ManaDrawAction in legal_actions; falling back to 601-candidate"
+                mana_index = mana_indices[0]
+                logger.debug(
+                    f"[BerserkInference] V5 player={player_id}, difficulty={difficulty}, "
+                    f"mana_draw_logit={mana_draw_logit:.3f} > best_candidate={best_candidate_logit:.3f} "
+                    f"-> mana_draw legal_idx={mana_index}"
                 )
+                return mana_index
 
             decoded = decode_action(game_state, player_id, action_id)
             if decoded is None:
-                logger.warning(
-                    f"[BerserkInference] V5 action_id={action_id} decode_action returned None, fallback"
-                )
-                return _legal_fallback(legal_actions)
+                raise v5_policy_failure_error("decode_failed")
 
             idx = self._find_matching_legal_action_index(decoded, legal_actions)
             if idx is None:
-                logger.warning(
-                    f"[BerserkInference] V5 action_id={action_id} decoded={decoded.to_dict()} not found in legal_actions, fallback"
-                )
-                return _legal_fallback(legal_actions)
+                raise v5_policy_failure_error("legal_mapping_failed")
 
             logger.debug(
                 f"[BerserkInference] V5 player={player_id}, difficulty={difficulty}, "
@@ -850,17 +871,12 @@ class BerserkInference:
                 f"mana_draw_logit={mana_draw_logit:.3f}, mana_draw_legal={mana_draw_legal}"
             )
             return idx
-        except RuntimeError:
-            # The ONNX fallback guard RuntimeError MUST propagate -- a malformed
-            # V5 ONNX is the last-resort prod safety, NOT a silent _legal_fallback.
-            raise
+        except RuntimeError as exc:
+            if str(exc).startswith(V5_POLICY_FAILURE_PREFIX):
+                raise
+            raise v5_policy_failure_error("unexpected_failure") from exc
         except Exception as exc:
-            # Any OTHER unexpected exception (encoder/decoder/match failure)
-            # degrades to _legal_fallback (mirrors the V4 silent-fallback path).
-            logger.warning(
-                "[BerserkInference] V5 unexpected exception: %s, fallback", exc, exc_info=True
-            )
-            return _legal_fallback(legal_actions)
+            raise v5_policy_failure_error("unexpected_failure") from exc
 
 def _legal_fallback(legal_actions: list) -> int:
     for i, action in enumerate(legal_actions):

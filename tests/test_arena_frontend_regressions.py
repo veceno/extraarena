@@ -1693,6 +1693,153 @@ def test_daily_login_claimed_next_preview_uses_stored_cycle_not_one_more_day():
     assert "status?.next_reward_amount ?? status?.reward_amount" not in block
 
 
+def test_analytics_v2_start_captures_returnclock_launch_context():
+    source = Path("webapp/index.html").read_text(encoding="utf-8")
+    block = source.split("const AnalyticsController = (() => {", 1)[1].split(
+        "window.__analytics = AnalyticsController;",
+        1,
+    )[0]
+    launch_context = block.split("const _readLaunchContext = () => {", 1)[1].split(
+        "const _launchContext = _readLaunchContext();",
+        1,
+    )[0]
+    start_block = block.split("const _startCurrentSession = () => {", 1)[1].split(
+        "const _startFreshSession = () => {",
+        1,
+    )[0]
+
+    assert "const ANALYTICS_VERSION = 2;" in block
+    assert "params?.get(name)" in launch_context
+    assert "cleanParam('ea_platform', 64)" in launch_context
+    assert "source: platform || (window.Telegram?.WebApp?.initData ? 'telegram_webapp' : 'web')" in launch_context
+    assert "Intl.DateTimeFormat().resolvedOptions().timeZone" in launch_context
+    assert "entrypoint: cleanParam('entrypoint', 128)" in launch_context
+    assert "cleanParam('rc_decision_id', 128) || cleanParam('returnclock_decision_id', 128) || cleanParam('decision_id', 128)" in launch_context
+    assert "returnclockDeliveryId: cleanParam('delivery_id', 128) || cleanParam('notification_id', 128)" in launch_context
+    assert "notificationId: cleanParam('notification_id', 128)" in launch_context
+    assert "analytics_version: ANALYTICS_VERSION" in start_block
+    assert "source: _launchContext.source" in start_block
+    assert "timezone: _launchContext.timezone" in start_block
+    assert "utc_offset_minutes: -new Date().getTimezoneOffset()" in start_block
+    assert "const includeLaunchAttribution = !_launchAttributionConsumed;" in start_block
+    assert "_launchAttributionConsumed = true;" in start_block
+    assert start_block.index("_postJSONChecked('/api/analytics/session/start'") < start_block.index("_launchAttributionConsumed = true;")
+    assert "_clearLaunchAttributionFromUrl();" in start_block
+    assert "entrypoint: includeLaunchAttribution ? _launchContext.entrypoint : null" in start_block
+    assert "returnclock_decision_id: includeLaunchAttribution ? _launchContext.returnclockDecisionId : null" in start_block
+    assert "returnclock_delivery_id: includeLaunchAttribution ? _launchContext.returnclockDeliveryId : null" in start_block
+    assert "notification_id: includeLaunchAttribution ? _launchContext.notificationId : null" in start_block
+    assert "source: 'telegram_webapp'" not in start_block
+
+
+def test_analytics_v2_session_lifecycle_preserves_short_backgrounding_and_splits_inactivity():
+    source = Path("webapp/index.html").read_text(encoding="utf-8")
+    block = source.split("const AnalyticsController = (() => {", 1)[1].split(
+        "window.__analytics = AnalyticsController;",
+        1,
+    )[0]
+    visibility_block = block.split("document.addEventListener('visibilitychange', () => {", 1)[1].split(
+        "});",
+        1,
+    )[0]
+    visible_block = block.split("const _handleVisible = () => {", 1)[1].split(
+        "// lifecycle",
+        1,
+    )[0]
+    end_block = block.split(
+        "const _sendEnd = (endedAtMs = null, endReason = null) => {",
+        1,
+    )[1].split(
+        "const _startCurrentSession = () => {",
+        1,
+    )[0]
+    fresh_block = block.split("const _startFreshSession = () => {", 1)[1].split(
+        "const _handleVisible = () => {",
+        1,
+    )[0]
+
+    assert "const SESSION_INACTIVITY_MS = 30 * 60 * 1000;" in block
+    assert "_hiddenAt = Date.now();" in visibility_block
+    assert "_flushUpdate();" in visibility_block
+    assert "_sendEnd();" not in visibility_block
+    assert "hiddenFor >= SESSION_INACTIVITY_MS" in visible_block
+    assert "_sendEnd(hiddenStartedAt, 'background_inactivity');" in visible_block
+    assert "_startFreshSession();" in visible_block
+    assert "const _handlePageExit = () => _sendEnd(" in block
+    assert "Number.isFinite(_hiddenAt) ? _hiddenAt : Date.now()" in block
+    assert "window.addEventListener('pagehide', _handlePageExit)" in block
+    assert "window.addEventListener('beforeunload', _handlePageExit)" in block
+    assert "window.addEventListener('pageshow', _handleVisible)" in block
+    assert "if (_ended || !_started) return;" in end_block
+    assert "ended_at: new Date(clientEndedAt).toISOString()" in end_block
+    assert "metadata: endReason ? { end_reason: endReason } : {}" in end_block
+    assert "if (startWasConfirmed)" in end_block
+    assert "else if (pendingStart)" in end_block
+    assert "pendingStart.then((result) => {" in end_block
+    assert "if (result?.started) _dispatchEnd(url, payload);" in end_block
+    assert "if (!navigator.sendBeacon(url, blob))" in block
+    assert "const beaconSafe = /(?:[?&])(?:_auth|user_id)=/.test(url);" in block
+    assert "if (beaconSafe && typeof navigator.sendBeacon === 'function')" in block
+    assert "_forgetSessionId(sessionId);" in end_block
+    assert "_screens = currentScreen ? [{ screen: currentScreen, ts: Date.now() }] : [];" in fresh_block
+    assert "_battlesPlayed = 0;" in fresh_block
+    assert "_casesOpened = 0;" in fresh_block
+
+
+def test_analytics_v2_fresh_session_does_not_reuse_launch_attribution():
+    source = Path("webapp/index.html").read_text(encoding="utf-8")
+    block = source.split("const AnalyticsController = (() => {", 1)[1].split(
+        "window.__analytics = AnalyticsController;",
+        1,
+    )[0]
+    start_block = block.split("const _startCurrentSession = () => {", 1)[1].split(
+        "const _startFreshSession = () => {",
+        1,
+    )[0]
+    fresh_block = block.split("const _startFreshSession = () => {", 1)[1].split(
+        "const _handleVisible = () => {",
+        1,
+    )[0]
+
+    assert "let _launchAttributionConsumed = false;" in block
+    assert "const includeLaunchAttribution = !_launchAttributionConsumed;" in start_block
+    assert "_launchAttributionConsumed = true;" in start_block
+    assert "_clearLaunchAttributionFromUrl();" in start_block
+    assert "includeLaunchAttribution ? _launchContext.entrypoint : null" in start_block
+    assert "includeLaunchAttribution ? _launchContext.returnclockDecisionId : null" in start_block
+    assert "includeLaunchAttribution ? _launchContext.returnclockDeliveryId : null" in start_block
+    assert "includeLaunchAttribution ? _launchContext.notificationId : null" in start_block
+    assert "_launchAttributionConsumed = false" not in fresh_block
+
+
+def test_analytics_v2_start_is_idempotent_and_screen_events_remain_ordered():
+    source = Path("webapp/index.html").read_text(encoding="utf-8")
+    block = source.split("const AnalyticsController = (() => {", 1)[1].split(
+        "window.__analytics = AnalyticsController;",
+        1,
+    )[0]
+    start_block = block.split("const _startCurrentSession = () => {", 1)[1].split(
+        "const _startFreshSession = () => {",
+        1,
+    )[0]
+    session_id_block = block.split("const _getSessionId = () => {", 1)[1].split(
+        "const _forgetSessionId = (sessionId) => {",
+        1,
+    )[0]
+    public_api = block.split("return {", 1)[1]
+
+    assert "if (_started && !_ended) return _startRequest;" in start_block
+    assert "_startRequest = _postJSONChecked('/api/analytics/session/start', payload)" in start_block
+    assert "if (!result?.started) throw new Error('analytics_session_not_started');" in start_block
+    assert "_startRetryTimer = setTimeout(_startCurrentSession, 5000);" in start_block
+    assert "start: _startCurrentSession" in public_api
+    assert "_screens.push({ screen: name, ts: Date.now() });" in public_api
+    assert "_screens.slice(-200)" in block
+    assert "if (_screens.length > 250) _screens = _screens.slice(-200);" in public_api
+    assert "sessionStorage.getItem('ea_session_id')" not in session_id_block
+    assert "if (_ended || !_started || !_startConfirmed) return;" in block
+
+
 def test_clean_arena_sfx_are_registered_and_triggered():
     source = Path("webapp/arena.js").read_text(encoding="utf-8")
     markup = Path("webapp/arena.html").read_text(encoding="utf-8")

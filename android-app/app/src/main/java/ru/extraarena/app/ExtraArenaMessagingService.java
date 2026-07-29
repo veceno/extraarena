@@ -81,6 +81,13 @@ public class ExtraArenaMessagingService extends FirebaseMessagingService {
         String section = data == null ? null : data.get("section");
         String inviteId = data == null ? null : data.get("invite_id");
         String inviteAction = data == null ? null : data.get("invite_action");
+        String decisionId = data == null ? null : data.get("rc_decision_id");
+        if ((decisionId == null || decisionId.trim().isEmpty()) && data != null) {
+            decisionId = data.get("decision_id");
+        }
+        String outboxNotificationId = data == null ? null : data.get("notification_id");
+        String deliveryId = data == null ? null : data.get("delivery_id");
+        String entrypoint = data == null ? null : data.get("entrypoint");
         String category = data == null ? null : data.get("category");
         Intent intent = new Intent(this, MainActivity.class);
         intent.setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
@@ -94,6 +101,18 @@ public class ExtraArenaMessagingService extends FirebaseMessagingService {
         }
         if (inviteAction != null && !inviteAction.trim().isEmpty()) {
             intent.putExtra("invite_action", inviteAction);
+        }
+        if (decisionId != null && !decisionId.trim().isEmpty()) {
+            intent.putExtra("rc_decision_id", decisionId);
+        }
+        if (outboxNotificationId != null && !outboxNotificationId.trim().isEmpty()) {
+            intent.putExtra("notification_id", outboxNotificationId);
+        }
+        if (deliveryId != null && !deliveryId.trim().isEmpty()) {
+            intent.putExtra("delivery_id", deliveryId);
+        }
+        if ("notification".equals(entrypoint)) {
+            intent.putExtra("entrypoint", "notification");
         }
         int notificationId = makeGameNotificationId(title, body, section, category);
         PendingIntent pendingIntent = PendingIntent.getActivity(

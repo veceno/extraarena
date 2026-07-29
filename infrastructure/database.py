@@ -11,7 +11,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Optional, Dict, TYPE_CHECKING
+from typing import Any, Optional, Dict, Mapping, TYPE_CHECKING
 
 # asyncpg требуется только для реальной работы с БД.
 # В юнит-тестах модуль может отсутствовать, поэтому подменяем импорт,
@@ -50,9 +50,16 @@ from infrastructure.notifications import (
 
 
 # Версию схемы повышаем при изменении структуры таблиц
-SCHEMA_VERSION = 49
+SCHEMA_VERSION = 50
 RLHF_V5_STORAGE_SCHEMA = "rlhf_v5_storage_v1"
 EXTRAARENA_V5_DATASET_EXPORT_SCHEMA = "extraarena_v5_dataset_export_v1"
+V5_PSEUDONYMIZED_RECORD_ID_SCHEME = "random_per_export_record_ids_v1"
+V5_RAW_RECORD_ID_SCHEME = "raw_record_ids"
+V5_PSEUDONYMIZED_PLAYER_GROUP_SCHEME = (
+    "random_per_export_player_groups_v1"
+)
+RETURNCLOCK_DATASET_SCHEMA = "returnclock_dataset_raw_v1"
+RETURNCLOCK_ANALYTICS_VERSION = 2
 V5_TERMINAL_STATUSES = frozenset({"p1_win", "p2_win", "draw", "stalemate"})
 V5_TRACE_ACTION_REQUIRED_FIELDS = frozenset(
     {
@@ -582,10 +589,113 @@ def _pseudonymize_v5_player_ids(value: Any, mapping: dict[int, int]) -> Any:
     return value
 
 
+def _pseudonymize_v5_record_ids(
+    value: Any,
+    *,
+    namespace: uuid.UUID,
+) -> Any:
+    """Replace structurally declared battle/match IDs with export-local aliases."""
+
+    aliases: dict[str, str] = {}
+
+    def alias(raw_value: Any) -> Any:
+        if raw_value is None:
+            return None
+        raw = str(raw_value)
+        if not raw:
+            return raw
+        existing = aliases.get(raw)
+        if existing is not None:
+            return existing
+        generated = f"record_{uuid.uuid5(namespace, raw).hex}"
+        aliases[raw] = generated
+        return generated
+
+    def walk(nested: Any) -> Any:
+        if isinstance(nested, dict):
+            result: dict[str, Any] = {}
+            for raw_key, item in nested.items():
+                key = str(raw_key)
+                normalized_key = re.sub(
+                    r"[^a-z0-9]",
+                    "",
+                    key.strip().lower(),
+                )
+                if normalized_key.endswith(("battleid", "matchid")):
+                    result[key] = alias(item)
+                elif normalized_key.endswith(("battleids", "matchids")):
+                    if isinstance(item, list):
+                        result[key] = [alias(entry) for entry in item]
+                    else:
+                        result[key] = item
+                else:
+                    result[key] = walk(item)
+            return result
+        if isinstance(nested, list):
+            return [walk(item) for item in nested]
+        return nested
+
+    return walk(value)
+
+
+def _attach_v5_nested_nemesis_privacy(
+    value: Any,
+    *,
+    namespace: uuid.UUID,
+    p1_user_id: int,
+    p2_user_id: int,
+) -> Any:
+    """Attach grouping-only player aliases to embedded Nemesis records."""
+
+    aliases = {
+        "p1": (
+            "player_"
+            + uuid.uuid5(
+                namespace,
+                f"player-group:{p1_user_id}",
+            ).hex
+        ),
+        "p2": (
+            "player_"
+            + uuid.uuid5(
+                namespace,
+                f"player-group:{p2_user_id}",
+            ).hex
+        ),
+    }
+
+    def walk(nested: Any) -> Any:
+        if isinstance(nested, dict):
+            result = {
+                str(key): walk(item)
+                for key, item in nested.items()
+            }
+            nemesis = result.get("nemesis_record")
+            if isinstance(nemesis, dict):
+                nemesis["privacy"] = {
+                    "identity_scheme": "side_pseudonyms_p1_1_p2_2",
+                    "include_players": False,
+                    "player_group_aliases": dict(aliases),
+                    "player_group_scheme": (
+                        V5_PSEUDONYMIZED_PLAYER_GROUP_SCHEME
+                    ),
+                    "record_id_scheme": (
+                        V5_PSEUDONYMIZED_RECORD_ID_SCHEME
+                    ),
+                }
+            return result
+        if isinstance(nested, list):
+            return [walk(item) for item in nested]
+        return nested
+
+    return walk(value)
+
+
 def _build_v5_export_bundle(
     raw_row: Any,
     *,
     include_players: bool,
+    record_id_namespace: uuid.UUID | None = None,
 ) -> dict[str, Any] | None:
     """Validate and detach one complete terminal bundle for export.
 
@@ -680,12 +790,23 @@ def _build_v5_export_bundle(
         "actions": normalized_actions,
     }
     if not include_players:
+        namespace = record_id_namespace or uuid.uuid4()
         bundle = _pseudonymize_v5_player_ids(
             bundle,
             {
                 header_p1_user_id: 1,
                 header_p2_user_id: 2,
             },
+        )
+        bundle = _pseudonymize_v5_record_ids(
+            bundle,
+            namespace=namespace,
+        )
+        bundle = _attach_v5_nested_nemesis_privacy(
+            bundle,
+            namespace=namespace,
+            p1_user_id=header_p1_user_id,
+            p2_user_id=header_p2_user_id,
         )
     return bundle
 
@@ -984,6 +1105,75 @@ def _json_safe(value: Any) -> Any:
     if isinstance(value, list):
         return [_json_safe(item) for item in value]
     return value
+
+
+def _normalize_session_battle_ids(
+    value: Optional[list[str]],
+) -> Optional[list[str]]:
+    """Validate and deduplicate terminal battle IDs sent by analytics clients."""
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        raise ValueError("battle_ids must be a list")
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw in value[:1000]:
+        if not isinstance(raw, str):
+            raise ValueError("battle_ids must contain strings")
+        battle_id = raw.strip()
+        if not battle_id or len(battle_id) > 128:
+            raise ValueError("battle_ids contain an invalid identifier")
+        if battle_id in seen:
+            continue
+        seen.add(battle_id)
+        normalized.append(battle_id)
+    return normalized
+
+
+def _normalize_idempotency_value(value: Any) -> Any:
+    """Canonicalize asyncpg/JSON values for immutable-envelope comparisons."""
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, datetime):
+        aware = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+        return aware.astimezone(timezone.utc).isoformat()
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.startswith(("{", "[")):
+            try:
+                return _normalize_idempotency_value(json.loads(stripped))
+            except json.JSONDecodeError:
+                pass
+        return value
+    if isinstance(value, dict):
+        return {
+            str(key): _normalize_idempotency_value(item)
+            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+        }
+    if isinstance(value, (list, tuple)):
+        return [_normalize_idempotency_value(item) for item in value]
+    return value
+
+
+def _assert_idempotent_payload(
+    row: Mapping[str, Any],
+    expected: Mapping[str, Any],
+    *,
+    error_code: str,
+    ignore_none: frozenset[str] = frozenset(),
+) -> None:
+    """Reject an idempotency-key replay whose immutable payload diverges."""
+    for field, expected_value in expected.items():
+        if field not in row:
+            # Lightweight test doubles can return a partial projection. Real
+            # RETURNING * rows contain every field and are checked completely.
+            continue
+        if field in ignore_none and expected_value is None:
+            continue
+        if _normalize_idempotency_value(row[field]) != _normalize_idempotency_value(
+            expected_value
+        ):
+            raise ValueError(f"{error_code}:{field}")
 
 
 MCP_REDACTED_VALUE = "[REDACTED]"
@@ -1925,6 +2115,7 @@ class Database:
         generator_changed = await self._ensure_generator_state_table()
         economy_events_changed = await self._ensure_economy_events_table()
         user_sessions_changed = await self._ensure_user_sessions_table()
+        returnclock_changed = await self._ensure_returnclock_tables()
         user_onboarding_changed = await self._ensure_user_onboarding_table()
         onboarding_events_changed = await self._ensure_onboarding_events_table()
         battle_summary_changed = await self._ensure_battle_summary_table()
@@ -1989,6 +2180,7 @@ class Database:
             or generator_changed
             or economy_events_changed
             or user_sessions_changed
+            or returnclock_changed
             or user_onboarding_changed
             or onboarding_events_changed
             or battle_summary_changed
@@ -5051,9 +5243,15 @@ class Database:
                     dedupe_key TEXT NOT NULL UNIQUE,
                     status TEXT NOT NULL DEFAULT 'pending',
                     attempts INTEGER NOT NULL DEFAULT 0,
+                    last_attempt_at TIMESTAMPTZ,
                     not_before_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                    sent_at TIMESTAMPTZ
+                    sent_at TIMESTAMPTZ,
+                    returnclock_decision_id TEXT,
+                    returnclock_delivery_id TEXT,
+                    is_discretionary BOOLEAN NOT NULL DEFAULT FALSE,
+                    cancelled_at TIMESTAMPTZ,
+                    cancellation_reason TEXT
                 )
                 """
             )
@@ -5067,11 +5265,26 @@ class Database:
         changed |= await self._add_column_if_missing("notification_outbox", columns, "dedupe_key TEXT NOT NULL DEFAULT ''")
         changed |= await self._add_column_if_missing("notification_outbox", columns, "status TEXT NOT NULL DEFAULT 'pending'")
         changed |= await self._add_column_if_missing("notification_outbox", columns, "attempts INTEGER NOT NULL DEFAULT 0")
+        changed |= await self._add_column_if_missing("notification_outbox", columns, "last_attempt_at TIMESTAMPTZ")
         changed |= await self._add_column_if_missing("notification_outbox", columns, "not_before_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
         changed |= await self._add_column_if_missing("notification_outbox", columns, "created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
         changed |= await self._add_column_if_missing("notification_outbox", columns, "sent_at TIMESTAMPTZ")
+        changed |= await self._add_column_if_missing("notification_outbox", columns, "returnclock_decision_id TEXT")
+        changed |= await self._add_column_if_missing("notification_outbox", columns, "returnclock_delivery_id TEXT")
+        changed |= await self._add_column_if_missing(
+            "notification_outbox", columns, "is_discretionary BOOLEAN NOT NULL DEFAULT FALSE"
+        )
+        changed |= await self._add_column_if_missing("notification_outbox", columns, "cancelled_at TIMESTAMPTZ")
+        changed |= await self._add_column_if_missing("notification_outbox", columns, "cancellation_reason TEXT")
         await self.execute("CREATE UNIQUE INDEX IF NOT EXISTS notification_outbox_dedupe_key_idx ON notification_outbox(dedupe_key)")
         await self.execute("CREATE INDEX IF NOT EXISTS notification_outbox_pending_due_idx ON notification_outbox(status, not_before_at, created_at)")
+        await self.execute(
+            """
+            CREATE INDEX IF NOT EXISTS notification_outbox_returnclock_pending_idx
+            ON notification_outbox(user_id, not_before_at)
+            WHERE is_discretionary = TRUE AND status = 'pending'
+            """
+        )
         return changed
 
     async def _ensure_notification_schedules_table(self) -> bool:
@@ -5358,33 +5571,130 @@ class Database:
         event_type: str,
         payload: dict[str, Any] | None = None,
         dedupe_key: str | None = None,
+        returnclock_decision_id: str | None = None,
+        returnclock_delivery_id: str | None = None,
+        is_discretionary: bool = False,
     ) -> bool:
         """Поставить личное уведомление в очередь с учетом настроек пользователя."""
         if not self._pool:
             raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
         if not await self.is_notification_enabled(user_id, category):
             return False
-        payload = payload or {}
+        payload = dict(payload or {})
         if dedupe_key is None:
             raw = json.dumps(payload, ensure_ascii=False, sort_keys=True)
             dedupe_key = f"{user_id}:{category}:{event_type}:{raw}"
+        dedupe_key = str(dedupe_key)
+        if not returnclock_decision_id:
+            # Every notification is a potential return-time confounder, even
+            # when ReturnClock did not schedule it. Give legacy/event-driven
+            # sends an observational envelope so provider/open telemetry is
+            # complete and natural-return labels stay uncontaminated.
+            digest = hashlib.sha256(
+                f"{int(user_id)}:{dedupe_key}".encode("utf-8")
+            ).hexdigest()[:32]
+            returnclock_decision_id = f"notification-observational:{digest}"
+            returnclock_delivery_id = (
+                str(returnclock_delivery_id)
+                if returnclock_delivery_id
+                else str(
+                    uuid.uuid5(
+                        uuid.NAMESPACE_URL,
+                        f"extraarena:returnclock:{returnclock_decision_id}:{dedupe_key}",
+                    )
+                )
+            )
+            await self.create_returnclock_decision(
+                user_id,
+                decision_id=returnclock_decision_id,
+                decision="send",
+                schedule_type=str(category),
+                decision_source="notification_system",
+                policy_version="notification-observational-v1",
+                treatment_arm="observational",
+                assignment_probability=1.0,
+                eligible_actions=[{"action": "send_now"}],
+                context={
+                    "category": str(category),
+                    "event_type": str(event_type),
+                },
+                reason_code="event_or_legacy_notification",
+            )
+        elif not returnclock_delivery_id:
+            returnclock_delivery_id = str(
+                uuid.uuid5(
+                    uuid.NAMESPACE_URL,
+                    f"extraarena:returnclock:{returnclock_decision_id}:{dedupe_key}",
+                )
+            )
         row = await self.fetchrow(
             """
-            INSERT INTO notification_outbox (user_id, category, event_type, payload, dedupe_key)
-            VALUES ($1, $2, $3, $4::jsonb, $5)
-            ON CONFLICT (dedupe_key) DO NOTHING
-            RETURNING id
+            WITH inserted AS (
+                INSERT INTO notification_outbox (
+                    user_id, category, event_type, payload, dedupe_key,
+                    returnclock_decision_id, returnclock_delivery_id,
+                    is_discretionary
+                )
+                VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8)
+                ON CONFLICT (dedupe_key) DO NOTHING
+                RETURNING *, TRUE AS created
+            )
+            SELECT *, created FROM inserted
+            UNION ALL
+            SELECT notification_outbox.*, FALSE AS created
+            FROM notification_outbox
+            WHERE dedupe_key = $5
+            LIMIT 1
             """,
             user_id,
             category,
             event_type,
             json.dumps(payload, ensure_ascii=False),
             dedupe_key,
+            (str(returnclock_decision_id) if returnclock_decision_id else None),
+            (str(returnclock_delivery_id) if returnclock_delivery_id else None),
+            bool(is_discretionary),
         )
         if row is None:
-            return False
+            raise RuntimeError("notification_outbox_insert_failed")
+        existing = dict(row)
+        existing_payload = existing.get("payload")
+        if isinstance(existing_payload, str):
+            try:
+                existing_payload = json.loads(existing_payload)
+            except json.JSONDecodeError:
+                existing_payload = None
+        existing_for_assert = {
+            **existing,
+            "payload": existing_payload,
+        }
+        _assert_idempotent_payload(
+            existing_for_assert,
+            {
+                "user_id": int(user_id),
+                "category": str(category),
+                "event_type": str(event_type),
+                "payload": _json_safe(payload),
+                "dedupe_key": dedupe_key,
+                "returnclock_decision_id": str(returnclock_decision_id),
+                "returnclock_delivery_id": str(returnclock_delivery_id),
+                "is_discretionary": bool(is_discretionary),
+            },
+            error_code="notification_dedupe_idempotency_conflict",
+        )
+        if existing_payload != _json_safe(payload):
+            raise ValueError("notification_dedupe_idempotency_conflict:payload")
+        if returnclock_decision_id:
+            linked = await self.update_returnclock_decision(
+                int(user_id),
+                str(returnclock_decision_id),
+                status="queued",
+                outbox_id=int(row["id"]),
+            )
+            if linked is None:
+                raise RuntimeError("notification_returnclock_link_failed")
 
-        return True
+        return bool(row.get("created"))
 
     async def _create_mail_from_notification(
         self,
@@ -5454,7 +5764,18 @@ class Database:
         """Забрать пачку pending-уведомлений для отправки."""
         rows = await self.fetch(
             """
-            WITH picked AS (
+            WITH recovered AS (
+                UPDATE notification_outbox
+                SET status = CASE
+                        WHEN attempts >= 5 THEN 'failed'
+                        ELSE 'pending'
+                    END
+                WHERE status = 'sending'
+                  AND COALESCE(last_attempt_at, created_at)
+                      < NOW() - INTERVAL '10 minutes'
+                RETURNING id
+            ),
+            picked AS (
                 SELECT id
                 FROM notification_outbox
                 WHERE status = 'pending'
@@ -5465,10 +5786,15 @@ class Database:
                 FOR UPDATE SKIP LOCKED
             )
             UPDATE notification_outbox n
-            SET status = 'sending', attempts = attempts + 1
+            SET status = 'sending',
+                attempts = attempts + 1,
+                last_attempt_at = NOW()
             FROM picked
             WHERE n.id = picked.id
-            RETURNING n.id, n.user_id, n.category, n.event_type, n.payload, n.attempts
+            RETURNING
+                n.id, n.user_id, n.category, n.event_type, n.payload, n.attempts,
+                n.returnclock_decision_id, n.returnclock_delivery_id,
+                n.is_discretionary
             """,
             limit,
         )
@@ -5612,6 +5938,8 @@ class Database:
         reminder_rows = await self.fetch(
             """
             SELECT u.user_id, u.trophies, u.squad_id, u.extra_pass,
+                   u.created_at AS user_created_at,
+                   ns.next_send_at AS schedule_due_at,
                    COALESCE(us.wins_since_last_case, 0) AS wins_since_last_case
             FROM users u
             JOIN user_settings us ON us.user_id = u.user_id
@@ -5628,13 +5956,77 @@ class Database:
         )
         for row in reminder_rows:
             user_id = int(row["user_id"])
-            payload = choose_reminder_payload(dict(row))
+            due_at = (
+                row.get("schedule_due_at")
+                or row.get("user_created_at")
+            )
+            if not isinstance(due_at, datetime):
+                due_at = now.replace(
+                    hour=0,
+                    minute=0,
+                    second=0,
+                    microsecond=0,
+                )
+            elif due_at.tzinfo is None:
+                due_at = due_at.replace(tzinfo=timezone.utc)
+            else:
+                due_at = due_at.astimezone(timezone.utc)
+            cycle_date = due_at.date().isoformat()
+            decision_id = (
+                f"legacy-daily-reminder:{user_id}:{cycle_date}"
+            )
+            reminder_seed = int.from_bytes(
+                hashlib.sha256(
+                    decision_id.encode("utf-8")
+                ).digest()[:8],
+                "big",
+            )
+            payload = choose_reminder_payload(
+                dict(row),
+                rng=random.Random(reminder_seed),
+            )
+            delivery_id = str(
+                uuid.uuid5(
+                    uuid.NAMESPACE_URL,
+                    f"extraarena:{decision_id}:delivery",
+                )
+            )
+            await self.create_returnclock_decision(
+                user_id,
+                decision_id=decision_id,
+                decision="send",
+                policy_version="legacy-24h-jitter-v1",
+                decision_source="legacy_scheduler",
+                treatment_arm="observational",
+                assignment_probability=1.0,
+                eligible_at=due_at,
+                planned_send_at=due_at,
+                eligible_actions=[
+                    {"action": "send_now"},
+                    {"action": "skip"},
+                ],
+                context={
+                    "schedule_type": "daily_reminder",
+                    "template": payload.get("template"),
+                    "legacy_interval_hours": 24,
+                },
+                reason_code="legacy_schedule_due",
+            )
+            payload = {
+                **payload,
+                "rc_decision_id": decision_id,
+                "delivery_id": delivery_id,
+                "entrypoint": "notification",
+            }
             if await self.enqueue_notification(
                 user_id,
                 category="reminders",
                 event_type="daily_reminder",
                 payload=payload,
-                dedupe_key=f"daily_reminder:{user_id}:{now.date().isoformat()}",
+                dedupe_key=f"daily_reminder:{user_id}:{cycle_date}",
+                returnclock_decision_id=decision_id,
+                returnclock_delivery_id=delivery_id,
+                is_discretionary=True,
             ):
                 created += 1
             await self._upsert_notification_schedule(user_id, "daily_reminder", now, payload)
@@ -13170,7 +13562,20 @@ class Database:
                     duration_seconds INTEGER,
                     screens_visited JSONB NOT NULL DEFAULT '[]',
                     battles_played INTEGER NOT NULL DEFAULT 0,
-                    cases_opened INTEGER NOT NULL DEFAULT 0
+                    battle_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    cases_opened INTEGER NOT NULL DEFAULT 0,
+                    analytics_version INTEGER NOT NULL DEFAULT 1,
+                    timezone TEXT,
+                    utc_offset_minutes INTEGER,
+                    entrypoint TEXT,
+                    returnclock_decision_id TEXT,
+                    returnclock_delivery_id TEXT,
+                    last_heartbeat_at TIMESTAMPTZ,
+                    last_resumed_at TIMESTAMPTZ,
+                    resume_count INTEGER NOT NULL DEFAULT 0,
+                    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
                 """
             )
@@ -13185,8 +13590,242 @@ class Database:
         changed |= await self._add_column_if_missing("user_sessions", columns, "duration_seconds INTEGER")
         changed |= await self._add_column_if_missing("user_sessions", columns, "screens_visited JSONB NOT NULL DEFAULT '[]'")
         changed |= await self._add_column_if_missing("user_sessions", columns, "battles_played INTEGER NOT NULL DEFAULT 0")
+        changed |= await self._add_column_if_missing(
+            "user_sessions",
+            columns,
+            "battle_ids JSONB NOT NULL DEFAULT '[]'::jsonb",
+        )
         changed |= await self._add_column_if_missing("user_sessions", columns, "cases_opened INTEGER NOT NULL DEFAULT 0")
+        changed |= await self._add_column_if_missing(
+            "user_sessions", columns, "analytics_version INTEGER NOT NULL DEFAULT 1"
+        )
+        changed |= await self._add_column_if_missing("user_sessions", columns, "timezone TEXT")
+        changed |= await self._add_column_if_missing("user_sessions", columns, "utc_offset_minutes INTEGER")
+        changed |= await self._add_column_if_missing("user_sessions", columns, "entrypoint TEXT")
+        changed |= await self._add_column_if_missing("user_sessions", columns, "returnclock_decision_id TEXT")
+        changed |= await self._add_column_if_missing("user_sessions", columns, "returnclock_delivery_id TEXT")
+        changed |= await self._add_column_if_missing("user_sessions", columns, "last_heartbeat_at TIMESTAMPTZ")
+        changed |= await self._add_column_if_missing("user_sessions", columns, "last_resumed_at TIMESTAMPTZ")
+        changed |= await self._add_column_if_missing(
+            "user_sessions", columns, "resume_count INTEGER NOT NULL DEFAULT 0"
+        )
+        changed |= await self._add_column_if_missing(
+            "user_sessions", columns, "metadata JSONB NOT NULL DEFAULT '{}'::jsonb"
+        )
+        changed |= await self._add_column_if_missing(
+            "user_sessions",
+            columns,
+            "created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()",
+        )
         changed |= await self._add_column_if_missing("user_sessions", columns, "updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
+
+        session_indexes = {
+            "user_sessions_started_global_idx": (
+                "CREATE INDEX user_sessions_started_global_idx "
+                "ON user_sessions(started_at, id)"
+            ),
+            "user_sessions_user_started_idx": (
+                "CREATE INDEX user_sessions_user_started_idx "
+                "ON user_sessions(user_id, started_at DESC)"
+            ),
+            "user_sessions_open_heartbeat_idx": (
+                "CREATE INDEX user_sessions_open_heartbeat_idx "
+                "ON user_sessions(last_heartbeat_at) WHERE ended_at IS NULL"
+            ),
+            "user_sessions_returnclock_decision_idx": (
+                "CREATE INDEX user_sessions_returnclock_decision_idx "
+                "ON user_sessions(returnclock_decision_id) "
+                "WHERE returnclock_decision_id IS NOT NULL"
+            ),
+            "user_sessions_returnclock_delivery_idx": (
+                "CREATE INDEX user_sessions_returnclock_delivery_idx "
+                "ON user_sessions(returnclock_delivery_id) "
+                "WHERE returnclock_delivery_id IS NOT NULL"
+            ),
+        }
+        for index_name, create_sql in session_indexes.items():
+            index_exists = await self.fetchval(
+                "SELECT 1 FROM pg_indexes WHERE tablename = 'user_sessions' AND indexname = $1",
+                index_name,
+            )
+            if not index_exists:
+                await self.execute(create_sql)
+                changed = True
+
+        return changed
+
+    async def _ensure_returnclock_tables(self) -> bool:
+        """Create append-friendly ReturnClock decision and delivery telemetry."""
+        changed = False
+
+        decisions_exists = await self.fetchval(
+            "SELECT to_regclass('public.returnclock_decisions')"
+        )
+        if not decisions_exists:
+            await self.execute(
+                """
+                CREATE TABLE returnclock_decisions (
+                    decision_id TEXT PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    schedule_type TEXT NOT NULL DEFAULT 'daily_reminder',
+                    decision TEXT NOT NULL,
+                    decision_source TEXT NOT NULL DEFAULT 'policy',
+                    policy_version TEXT NOT NULL,
+                    model_version TEXT,
+                    experiment_id TEXT,
+                    treatment_arm TEXT NOT NULL DEFAULT 'observational',
+                    assignment_probability DOUBLE PRECISION,
+                    eligible_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    planned_send_at TIMESTAMPTZ,
+                    expires_at TIMESTAMPTZ,
+                    eligible_actions JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    prediction JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    context JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    reason_code TEXT,
+                    source_session_id TEXT,
+                    outbox_id BIGINT,
+                    status TEXT NOT NULL DEFAULT 'created',
+                    cancelled_at TIMESTAMPTZ,
+                    cancellation_reason TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            changed = True
+
+        decision_columns = await self._get_columns("returnclock_decisions")
+        decision_definitions = (
+            "decision_id TEXT NOT NULL DEFAULT ''",
+            "user_id BIGINT NOT NULL DEFAULT 0",
+            "schedule_type TEXT NOT NULL DEFAULT 'daily_reminder'",
+            "decision TEXT NOT NULL DEFAULT 'skip'",
+            "decision_source TEXT NOT NULL DEFAULT 'policy'",
+            "policy_version TEXT NOT NULL DEFAULT 'unknown'",
+            "model_version TEXT",
+            "experiment_id TEXT",
+            "treatment_arm TEXT NOT NULL DEFAULT 'observational'",
+            "assignment_probability DOUBLE PRECISION",
+            "eligible_at TIMESTAMPTZ NOT NULL DEFAULT NOW()",
+            "planned_send_at TIMESTAMPTZ",
+            "expires_at TIMESTAMPTZ",
+            "eligible_actions JSONB NOT NULL DEFAULT '[]'::jsonb",
+            "prediction JSONB NOT NULL DEFAULT '{}'::jsonb",
+            "context JSONB NOT NULL DEFAULT '{}'::jsonb",
+            "reason_code TEXT",
+            "source_session_id TEXT",
+            "outbox_id BIGINT",
+            "status TEXT NOT NULL DEFAULT 'created'",
+            "cancelled_at TIMESTAMPTZ",
+            "cancellation_reason TEXT",
+            "created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()",
+            "updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()",
+        )
+        for definition in decision_definitions:
+            changed |= await self._add_column_if_missing(
+                "returnclock_decisions", decision_columns, definition
+            )
+
+        events_exists = await self.fetchval(
+            "SELECT to_regclass('public.returnclock_delivery_events')"
+        )
+        if not events_exists:
+            await self.execute(
+                """
+                CREATE TABLE returnclock_delivery_events (
+                    id BIGSERIAL PRIMARY KEY,
+                    event_id TEXT NOT NULL UNIQUE,
+                    decision_id TEXT NOT NULL
+                        REFERENCES returnclock_decisions(decision_id) ON DELETE CASCADE,
+                    user_id BIGINT NOT NULL,
+                    outbox_id BIGINT,
+                    delivery_id TEXT,
+                    provider_message_id TEXT,
+                    channel TEXT,
+                    event_type TEXT NOT NULL,
+                    event_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    client_event_at TIMESTAMPTZ,
+                    session_id TEXT,
+                    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            changed = True
+
+        event_columns = await self._get_columns("returnclock_delivery_events")
+        event_definitions = (
+            "event_id TEXT NOT NULL DEFAULT ''",
+            "decision_id TEXT NOT NULL DEFAULT ''",
+            "user_id BIGINT NOT NULL DEFAULT 0",
+            "outbox_id BIGINT",
+            "delivery_id TEXT",
+            "provider_message_id TEXT",
+            "channel TEXT",
+            "event_type TEXT NOT NULL DEFAULT 'unknown'",
+            "event_at TIMESTAMPTZ NOT NULL DEFAULT NOW()",
+            "client_event_at TIMESTAMPTZ",
+            "session_id TEXT",
+            "metadata JSONB NOT NULL DEFAULT '{}'::jsonb",
+            "created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()",
+        )
+        for definition in event_definitions:
+            changed |= await self._add_column_if_missing(
+                "returnclock_delivery_events", event_columns, definition
+            )
+
+        returnclock_indexes = {
+            "returnclock_decisions_id_uniq": (
+                "CREATE UNIQUE INDEX returnclock_decisions_id_uniq "
+                "ON returnclock_decisions(decision_id)"
+            ),
+            "returnclock_decisions_user_time_idx": (
+                "CREATE INDEX returnclock_decisions_user_time_idx "
+                "ON returnclock_decisions(user_id, created_at DESC)"
+            ),
+            "returnclock_decisions_created_global_idx": (
+                "CREATE INDEX returnclock_decisions_created_global_idx "
+                "ON returnclock_decisions(created_at, decision_id)"
+            ),
+            "returnclock_decisions_experiment_idx": (
+                "CREATE INDEX returnclock_decisions_experiment_idx "
+                "ON returnclock_decisions(experiment_id, treatment_arm, created_at) "
+                "WHERE experiment_id IS NOT NULL"
+            ),
+            "returnclock_delivery_events_id_uniq": (
+                "CREATE UNIQUE INDEX returnclock_delivery_events_id_uniq "
+                "ON returnclock_delivery_events(event_id)"
+            ),
+            "returnclock_delivery_events_decision_time_idx": (
+                "CREATE INDEX returnclock_delivery_events_decision_time_idx "
+                "ON returnclock_delivery_events(decision_id, event_at)"
+            ),
+            "returnclock_delivery_events_user_time_idx": (
+                "CREATE INDEX returnclock_delivery_events_user_time_idx "
+                "ON returnclock_delivery_events(user_id, event_at)"
+            ),
+            "returnclock_delivery_events_time_global_idx": (
+                "CREATE INDEX returnclock_delivery_events_time_global_idx "
+                "ON returnclock_delivery_events(event_at, id)"
+            ),
+            "returnclock_delivery_events_delivery_idx": (
+                "CREATE INDEX returnclock_delivery_events_delivery_idx "
+                "ON returnclock_delivery_events(delivery_id, event_at) "
+                "WHERE delivery_id IS NOT NULL"
+            ),
+        }
+        for index_name, create_sql in returnclock_indexes.items():
+            index_exists = await self.fetchval(
+                """
+                SELECT 1 FROM pg_indexes
+                WHERE tablename IN ('returnclock_decisions', 'returnclock_delivery_events')
+                  AND indexname = $1
+                """,
+                index_name,
+            )
+            if not index_exists:
+                await self.execute(create_sql)
+                changed = True
 
         return changed
 
@@ -20377,89 +21016,1007 @@ class Database:
         user_id: int,
         session_id: str,
         source: str = "webapp",
-    ) -> None:
+        *,
+        analytics_version: int = 1,
+        timezone_name: str | None = None,
+        utc_offset_minutes: int | None = None,
+        entrypoint: str | None = None,
+        returnclock_decision_id: str | None = None,
+        returnclock_delivery_id: str | None = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        resumed: bool = False,
+        return_status: bool = False,
+    ) -> bool | dict[str, Any]:
         if not self._pool:
-            return
+            return False
+        safe_offset = int(utc_offset_minutes) if utc_offset_minutes is not None else None
+        if safe_offset is not None and not -840 <= safe_offset <= 840:
+            raise ValueError("utc_offset_minutes must be between -840 and 840")
+        safe_analytics_version = max(1, int(analytics_version or 1))
+        safe_metadata = _json_safe(metadata) if metadata else {}
         try:
-            await self.execute(
+            row = await self.fetchrow(
                 """
-                INSERT INTO user_sessions (user_id, session_id, source)
-                VALUES ($1, $2, $3)
-                ON CONFLICT DO NOTHING
+                WITH inserted AS (
+                    INSERT INTO user_sessions (
+                        user_id, session_id, source, analytics_version,
+                        timezone, utc_offset_minutes, entrypoint,
+                        returnclock_decision_id, returnclock_delivery_id,
+                        metadata, last_heartbeat_at, last_resumed_at,
+                        resume_count
+                    )
+                    VALUES (
+                        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb,
+                        NOW(), CASE WHEN $11 THEN NOW() ELSE NULL END,
+                        CASE WHEN $11 THEN 1 ELSE 0 END
+                    )
+                    ON CONFLICT (session_id) DO NOTHING
+                    RETURNING
+                        id,
+                        TRUE AS created,
+                        TRUE AS active,
+                        entrypoint,
+                        returnclock_decision_id,
+                        returnclock_delivery_id,
+                        metadata
+                )
+                SELECT
+                    id,
+                    created,
+                    active,
+                    entrypoint,
+                    returnclock_decision_id,
+                    returnclock_delivery_id,
+                    metadata
+                FROM inserted
+                UNION ALL
+                SELECT
+                    id,
+                    FALSE AS created,
+                    ended_at IS NULL AS active,
+                    entrypoint,
+                    returnclock_decision_id,
+                    returnclock_delivery_id,
+                    metadata
+                FROM user_sessions
+                WHERE user_id = $1 AND session_id = $2
+                LIMIT 1
                 """,
-                user_id, session_id, source,
+                int(user_id),
+                str(session_id),
+                str(source or "webapp"),
+                safe_analytics_version,
+                (str(timezone_name).strip()[:128] if timezone_name else None),
+                safe_offset,
+                (str(entrypoint).strip()[:128] if entrypoint else None),
+                (str(returnclock_decision_id) if returnclock_decision_id else None),
+                (str(returnclock_delivery_id) if returnclock_delivery_id else None),
+                json.dumps(safe_metadata, ensure_ascii=False),
+                bool(resumed),
             )
+            status = {
+                "ok": row is not None,
+                "created": bool(row and row.get("created")),
+                "active": bool(row and row.get("active")),
+                "entrypoint": (
+                    str(row.get("entrypoint"))
+                    if row and row.get("entrypoint")
+                    else None
+                ),
+                "returnclock_decision_id": (
+                    str(row.get("returnclock_decision_id"))
+                    if row and row.get("returnclock_decision_id")
+                    else None
+                ),
+                "returnclock_delivery_id": (
+                    str(row.get("returnclock_delivery_id"))
+                    if row and row.get("returnclock_delivery_id")
+                    else None
+                ),
+                "returnclock_attribution_verified": bool(
+                    row
+                    and isinstance(row.get("metadata"), Mapping)
+                    and row["metadata"].get(
+                        "returnclock_attribution_verified"
+                    )
+                    is True
+                ),
+            }
+            return status if return_status else status["ok"]
         except Exception:
-            import logging
             logging.getLogger(__name__).error(
                 "start_user_session failed: user_id=%s session_id=%s",
                 user_id, session_id, exc_info=True,
             )
+            return (
+                {
+                    "ok": False,
+                    "created": False,
+                    "active": False,
+                    "entrypoint": None,
+                    "returnclock_decision_id": None,
+                    "returnclock_delivery_id": None,
+                    "returnclock_attribution_verified": False,
+                }
+                if return_status
+                else False
+            )
 
     async def finish_user_session(
         self,
+        user_id: int,
         session_id: str,
+        *,
         screens_visited: Optional[list] = None,
         battles_played: int = 0,
+        battle_ids: Optional[list[str]] = None,
         cases_opened: int = 0,
-    ) -> None:
+        ended_at: datetime | None = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
         if not self._pool:
-            return
+            return False
+        screens_json = (
+            json.dumps(_json_safe(screens_visited), ensure_ascii=False)
+            if screens_visited is not None
+            else None
+        )
+        metadata_json = json.dumps(
+            _json_safe(metadata) if metadata else {},
+            ensure_ascii=False,
+        )
+        normalized_battle_ids = _normalize_session_battle_ids(battle_ids)
+        battle_ids_json = (
+            json.dumps(normalized_battle_ids, ensure_ascii=False)
+            if normalized_battle_ids is not None
+            else None
+        )
         try:
-            await self.execute(
+            row = await self.fetchrow(
                 """
-                UPDATE user_sessions
-                SET ended_at = NOW(),
-                    duration_seconds = EXTRACT(EPOCH FROM (NOW() - started_at))::INT,
-                    screens_visited = $1::jsonb,
-                    battles_played = $2,
-                    cases_opened = $3,
+                WITH target AS (
+                    SELECT
+                        sessions.id,
+                        COALESCE(
+                            (
+                                SELECT jsonb_agg(value ORDER BY first_ordinal)
+                                FROM (
+                                    SELECT value, MIN(ordinality) AS first_ordinal
+                                    FROM jsonb_array_elements_text(
+                                        COALESCE(sessions.battle_ids, '[]'::jsonb)
+                                        || COALESCE($8::jsonb, '[]'::jsonb)
+                                    ) WITH ORDINALITY AS item(value, ordinality)
+                                    GROUP BY value
+                                    ORDER BY MIN(ordinality)
+                                    LIMIT 1000
+                                ) deduplicated
+                            ),
+                            '[]'::jsonb
+                        ) AS merged_battle_ids
+                    FROM user_sessions AS sessions
+                    WHERE sessions.user_id = $1
+                      AND sessions.session_id = $2
+                      AND sessions.ended_at IS NULL
+                    FOR UPDATE
+                )
+                UPDATE user_sessions AS sessions
+                SET ended_at = COALESCE(
+                        sessions.ended_at,
+                        GREATEST(
+                            sessions.started_at,
+                            LEAST(NOW(), COALESCE($6, NOW()))
+                        )
+                    ),
+                    duration_seconds = CASE
+                        WHEN sessions.ended_at IS NULL
+                        THEN EXTRACT(
+                            EPOCH FROM (
+                                GREATEST(
+                                    sessions.started_at,
+                                    LEAST(NOW(), COALESCE($6, NOW()))
+                                ) - sessions.started_at
+                            )
+                        )::INT
+                        ELSE sessions.duration_seconds
+                    END,
+                    screens_visited = COALESCE(
+                        $3::jsonb,
+                        sessions.screens_visited
+                    ),
+                    battle_ids = CASE
+                        WHEN $8::jsonb IS NULL THEN sessions.battle_ids
+                        ELSE target.merged_battle_ids
+                    END,
+                    battles_played = CASE
+                        WHEN $8::jsonb IS NULL
+                        THEN GREATEST(sessions.battles_played, $4)
+                        ELSE jsonb_array_length(target.merged_battle_ids)
+                    END,
+                    cases_opened = GREATEST(sessions.cases_opened, $5),
+                    metadata = sessions.metadata || $7::jsonb,
+                    last_heartbeat_at = NOW(),
                     updated_at = NOW()
-                WHERE session_id = $4
-                  AND ended_at IS NULL
+                FROM target
+                WHERE sessions.id = target.id
+                RETURNING sessions.id
                 """,
-                json.dumps(screens_visited or [], ensure_ascii=False),
-                battles_played,
-                cases_opened,
-                session_id,
+                int(user_id),
+                str(session_id),
+                screens_json,
+                max(0, int(battles_played or 0)),
+                max(0, int(cases_opened or 0)),
+                ended_at,
+                metadata_json,
+                battle_ids_json,
             )
+            return row is not None
         except Exception:
-            import logging
             logging.getLogger(__name__).error(
-                "finish_user_session failed: session_id=%s", session_id, exc_info=True,
+                "finish_user_session failed: user_id=%s session_id=%s",
+                user_id, session_id, exc_info=True,
             )
+            return False
 
     async def update_user_session(
         self,
+        user_id: int,
         session_id: str,
+        *,
         screens_visited: Optional[list] = None,
         battles_played: int = 0,
+        battle_ids: Optional[list[str]] = None,
         cases_opened: int = 0,
-    ) -> None:
+        timezone_name: str | None = None,
+        utc_offset_minutes: int | None = None,
+        heartbeat: bool = True,
+        resumed: bool = False,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
         if not self._pool:
-            return
+            return False
+        safe_offset = int(utc_offset_minutes) if utc_offset_minutes is not None else None
+        if safe_offset is not None and not -840 <= safe_offset <= 840:
+            raise ValueError("utc_offset_minutes must be between -840 and 840")
+        screens_json = (
+            json.dumps(_json_safe(screens_visited), ensure_ascii=False)
+            if screens_visited is not None
+            else None
+        )
+        metadata_json = json.dumps(
+            _json_safe(metadata) if metadata else {},
+            ensure_ascii=False,
+        )
+        normalized_battle_ids = _normalize_session_battle_ids(battle_ids)
+        battle_ids_json = (
+            json.dumps(normalized_battle_ids, ensure_ascii=False)
+            if normalized_battle_ids is not None
+            else None
+        )
         try:
-            await self.execute(
+            row = await self.fetchrow(
                 """
-                UPDATE user_sessions
-                SET screens_visited = $1::jsonb,
-                    battles_played = GREATEST(battles_played, $2),
-                    cases_opened = GREATEST(cases_opened, $3),
-                    duration_seconds = EXTRACT(EPOCH FROM (NOW() - started_at))::INT,
+                WITH target AS (
+                    SELECT
+                        sessions.id,
+                        COALESCE(
+                            (
+                                SELECT jsonb_agg(value ORDER BY first_ordinal)
+                                FROM (
+                                    SELECT value, MIN(ordinality) AS first_ordinal
+                                    FROM jsonb_array_elements_text(
+                                        COALESCE(sessions.battle_ids, '[]'::jsonb)
+                                        || COALESCE($11::jsonb, '[]'::jsonb)
+                                    ) WITH ORDINALITY AS item(value, ordinality)
+                                    GROUP BY value
+                                    ORDER BY MIN(ordinality)
+                                    LIMIT 1000
+                                ) deduplicated
+                            ),
+                            '[]'::jsonb
+                        ) AS merged_battle_ids
+                    FROM user_sessions AS sessions
+                    WHERE sessions.user_id = $1
+                      AND sessions.session_id = $2
+                      AND sessions.ended_at IS NULL
+                    FOR UPDATE
+                )
+                UPDATE user_sessions AS sessions
+                SET screens_visited = COALESCE(
+                        $3::jsonb,
+                        sessions.screens_visited
+                    ),
+                    battle_ids = CASE
+                        WHEN $11::jsonb IS NULL THEN sessions.battle_ids
+                        ELSE target.merged_battle_ids
+                    END,
+                    battles_played = CASE
+                        WHEN $11::jsonb IS NULL
+                        THEN GREATEST(sessions.battles_played, $4)
+                        ELSE jsonb_array_length(target.merged_battle_ids)
+                    END,
+                    cases_opened = GREATEST(sessions.cases_opened, $5),
+                    timezone = COALESCE($6, sessions.timezone),
+                    utc_offset_minutes = COALESCE(
+                        $7,
+                        sessions.utc_offset_minutes
+                    ),
+                    last_heartbeat_at = CASE
+                        WHEN $8 THEN NOW()
+                        ELSE sessions.last_heartbeat_at
+                    END,
+                    last_resumed_at = CASE
+                        WHEN $9 THEN NOW()
+                        ELSE sessions.last_resumed_at
+                    END,
+                    resume_count = sessions.resume_count
+                        + CASE WHEN $9 THEN 1 ELSE 0 END,
+                    duration_seconds = EXTRACT(
+                        EPOCH FROM (NOW() - sessions.started_at)
+                    )::INT,
+                    metadata = sessions.metadata || $10::jsonb,
                     updated_at = NOW()
-                WHERE session_id = $4
-                  AND ended_at IS NULL
+                FROM target
+                WHERE sessions.id = target.id
+                RETURNING sessions.id
                 """,
-                json.dumps(screens_visited or [], ensure_ascii=False),
-                battles_played,
-                cases_opened,
-                session_id,
+                int(user_id),
+                str(session_id),
+                screens_json,
+                max(0, int(battles_played or 0)),
+                max(0, int(cases_opened or 0)),
+                (str(timezone_name).strip()[:128] if timezone_name else None),
+                safe_offset,
+                bool(heartbeat),
+                bool(resumed),
+                metadata_json,
+                battle_ids_json,
             )
+            return row is not None
         except Exception:
-            import logging
             logging.getLogger(__name__).error(
-                "update_user_session failed: session_id=%s", session_id, exc_info=True,
+                "update_user_session failed: user_id=%s session_id=%s",
+                user_id, session_id, exc_info=True,
             )
+            return False
+
+    async def create_returnclock_decision(
+        self,
+        user_id: int,
+        *,
+        decision: str,
+        policy_version: str,
+        decision_id: str | None = None,
+        schedule_type: str = "daily_reminder",
+        decision_source: str = "policy",
+        model_version: str | None = None,
+        experiment_id: str | None = None,
+        treatment_arm: str = "observational",
+        assignment_probability: float | None = None,
+        eligible_at: datetime | None = None,
+        planned_send_at: datetime | None = None,
+        expires_at: datetime | None = None,
+        eligible_actions: Optional[list] = None,
+        prediction: Optional[Dict[str, Any]] = None,
+        context: Optional[Dict[str, Any]] = None,
+        reason_code: str | None = None,
+        source_session_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Persist one immutable assignment envelope for causal attribution."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+        if assignment_probability is not None:
+            assignment_probability = float(assignment_probability)
+            if not 0.0 <= assignment_probability <= 1.0:
+                raise ValueError("assignment_probability must be between 0 and 1")
+        safe_decision_id = str(decision_id or uuid.uuid4())
+        if not safe_decision_id:
+            raise ValueError("decision_id is required")
+
+        row = await self.fetchrow(
+            """
+            WITH inserted AS (
+                INSERT INTO returnclock_decisions (
+                    decision_id, user_id, schedule_type, decision, decision_source,
+                    policy_version, model_version, experiment_id, treatment_arm,
+                    assignment_probability, eligible_at, planned_send_at, expires_at,
+                    eligible_actions, prediction, context, reason_code, source_session_id
+                )
+                VALUES (
+                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+                    COALESCE($11, NOW()), $12, $13,
+                    $14::jsonb, $15::jsonb, $16::jsonb, $17, $18
+                )
+                ON CONFLICT (decision_id) DO NOTHING
+                RETURNING *
+            )
+            SELECT * FROM inserted
+            UNION ALL
+            SELECT *
+            FROM returnclock_decisions
+            WHERE decision_id = $1
+            LIMIT 1
+            """,
+            safe_decision_id,
+            int(user_id),
+            str(schedule_type or "daily_reminder"),
+            str(decision),
+            str(decision_source or "policy"),
+            str(policy_version),
+            (str(model_version) if model_version else None),
+            (str(experiment_id) if experiment_id else None),
+            str(treatment_arm or "observational"),
+            assignment_probability,
+            eligible_at,
+            planned_send_at,
+            expires_at,
+            json.dumps(_json_safe(eligible_actions or []), ensure_ascii=False),
+            json.dumps(_json_safe(prediction or {}), ensure_ascii=False),
+            json.dumps(_json_safe(context or {}), ensure_ascii=False),
+            (str(reason_code) if reason_code else None),
+            (str(source_session_id) if source_session_id else None),
+        )
+        if row is None:
+            return None
+        result = dict(row)
+        _assert_idempotent_payload(
+            result,
+            {
+                "user_id": int(user_id),
+                "schedule_type": str(schedule_type or "daily_reminder"),
+                "decision": str(decision),
+                "decision_source": str(decision_source or "policy"),
+                "policy_version": str(policy_version),
+                "model_version": (str(model_version) if model_version else None),
+                "experiment_id": (
+                    str(experiment_id) if experiment_id else None
+                ),
+                "treatment_arm": str(treatment_arm or "observational"),
+                "assignment_probability": assignment_probability,
+                "eligible_at": eligible_at,
+                "planned_send_at": planned_send_at,
+                "expires_at": expires_at,
+                "eligible_actions": _json_safe(eligible_actions or []),
+                "prediction": _json_safe(prediction or {}),
+                "context": _json_safe(context or {}),
+                "reason_code": (str(reason_code) if reason_code else None),
+                "source_session_id": (
+                    str(source_session_id) if source_session_id else None
+                ),
+            },
+            error_code="returnclock_decision_idempotency_conflict",
+            ignore_none=frozenset({"eligible_at"}),
+        )
+        return result
+
+    async def validate_returnclock_attribution(
+        self,
+        user_id: int,
+        decision_id: str,
+        *,
+        delivery_id: str | None = None,
+        outbox_id: int | None = None,
+    ) -> bool:
+        """Require both an owned send-decision and any supplied delivery binding."""
+        validation = await self.get_returnclock_attribution_validation(
+            user_id,
+            decision_id,
+            delivery_id=delivery_id,
+            outbox_id=outbox_id,
+        )
+        return bool(
+            validation["decision_valid"]
+            and validation["delivery_binding_valid"]
+        )
+
+    async def get_returnclock_attribution_validation(
+        self,
+        user_id: int,
+        decision_id: str,
+        *,
+        delivery_id: str | None = None,
+        outbox_id: int | None = None,
+    ) -> dict[str, bool]:
+        """Validate ownership separately from a best-effort delivery binding."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+        row = await self.fetchrow(
+            """
+            SELECT
+            EXISTS (
+                SELECT 1
+                FROM returnclock_decisions AS decision
+                WHERE decision.user_id = $1
+                  AND decision.decision_id = $2
+                  AND LOWER(decision.decision)
+                      NOT IN ('', 'skip', 'no_send', 'control')
+                  AND decision.status <> 'cancelled'
+            ) AS decision_valid,
+            CASE
+                WHEN $3::text IS NULL AND $4::bigint IS NULL THEN TRUE
+                ELSE (
+                    EXISTS (
+                        SELECT 1
+                        FROM notification_outbox AS notification
+                        WHERE notification.user_id = $1
+                          AND notification.returnclock_decision_id = $2
+                          AND (
+                              $3::text IS NULL
+                              OR notification.returnclock_delivery_id = $3
+                          )
+                          AND (
+                              $4::bigint IS NULL
+                              OR notification.id = $4
+                          )
+                    )
+                    OR EXISTS (
+                        SELECT 1
+                        FROM returnclock_delivery_events AS event
+                        WHERE event.user_id = $1
+                          AND event.decision_id = $2
+                          AND (
+                              $3::text IS NULL
+                              OR event.delivery_id = $3
+                          )
+                          AND (
+                              $4::bigint IS NULL
+                              OR event.outbox_id = $4
+                          )
+                    )
+                )
+            END AS delivery_binding_valid
+            """,
+            int(user_id),
+            str(decision_id),
+            (str(delivery_id) if delivery_id else None),
+            (int(outbox_id) if outbox_id is not None else None),
+        )
+        return {
+            "decision_valid": bool(row and row.get("decision_valid")),
+            "delivery_binding_valid": bool(
+                row and row.get("delivery_binding_valid")
+            ),
+        }
+
+    async def update_returnclock_decision(
+        self,
+        user_id: int,
+        decision_id: str,
+        *,
+        status: str | None = None,
+        outbox_id: int | None = None,
+        cancelled_at: datetime | None = None,
+        cancellation_reason: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Update execution state without changing the assignment envelope."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+        row = await self.fetchrow(
+            """
+            UPDATE returnclock_decisions
+            SET status = COALESCE($3, status),
+                outbox_id = COALESCE($4, outbox_id),
+                cancelled_at = COALESCE($5, cancelled_at),
+                cancellation_reason = COALESCE($6, cancellation_reason),
+                updated_at = NOW()
+            WHERE user_id = $1 AND decision_id = $2
+            RETURNING *
+            """,
+            int(user_id),
+            str(decision_id),
+            (str(status) if status else None),
+            (int(outbox_id) if outbox_id is not None else None),
+            cancelled_at,
+            (str(cancellation_reason) if cancellation_reason else None),
+        )
+        return dict(row) if row is not None else None
+
+    async def record_returnclock_delivery_event(
+        self,
+        user_id: int,
+        decision_id: str,
+        *,
+        event_id: str,
+        event_type: str,
+        event_at: datetime | None = None,
+        outbox_id: int | None = None,
+        delivery_id: str | None = None,
+        provider_message_id: str | None = None,
+        channel: str | None = None,
+        client_event_at: datetime | None = None,
+        session_id: str | None = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> dict[str, Any] | None:
+        """Append an idempotent delivery/open/dismiss/deeplink outcome event."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+        if not event_id:
+            raise ValueError("event_id is required")
+        row = await self.fetchrow(
+            """
+            WITH inserted AS (
+                INSERT INTO returnclock_delivery_events (
+                    event_id, decision_id, user_id, outbox_id, delivery_id,
+                    provider_message_id, channel, event_type, event_at,
+                    client_event_at, session_id, metadata
+                )
+                SELECT
+                    $3, d.decision_id, d.user_id, $5, $6, $7, $8, $4,
+                    COALESCE($9, NOW()), $10, $11, $12::jsonb
+                FROM returnclock_decisions d
+                WHERE d.user_id = $1 AND d.decision_id = $2
+                ON CONFLICT (event_id) DO NOTHING
+                RETURNING *
+            )
+            SELECT * FROM inserted
+            UNION ALL
+            SELECT *
+            FROM returnclock_delivery_events
+            WHERE event_id = $3
+            LIMIT 1
+            """,
+            int(user_id),
+            str(decision_id),
+            str(event_id),
+            str(event_type),
+            (int(outbox_id) if outbox_id is not None else None),
+            (str(delivery_id) if delivery_id else None),
+            (str(provider_message_id) if provider_message_id else None),
+            (str(channel) if channel else None),
+            event_at,
+            client_event_at,
+            (str(session_id) if session_id else None),
+            json.dumps(_json_safe(metadata or {}), ensure_ascii=False),
+        )
+        if row is None:
+            return None
+        result = dict(row)
+        _assert_idempotent_payload(
+            result,
+            {
+                "decision_id": str(decision_id),
+                "user_id": int(user_id),
+                "outbox_id": (
+                    int(outbox_id) if outbox_id is not None else None
+                ),
+                "delivery_id": (str(delivery_id) if delivery_id else None),
+                "provider_message_id": (
+                    str(provider_message_id) if provider_message_id else None
+                ),
+                "channel": (str(channel) if channel else None),
+                "event_type": str(event_type),
+                "event_at": event_at,
+                "client_event_at": client_event_at,
+                "session_id": (str(session_id) if session_id else None),
+                "metadata": _json_safe(metadata or {}),
+            },
+            error_code="returnclock_delivery_event_idempotency_conflict",
+            ignore_none=frozenset({"event_at"}),
+        )
+        return result
+
+    async def link_returnclock_decision_to_notification(
+        self,
+        user_id: int,
+        decision_id: str,
+        notification_id: int,
+        *,
+        delivery_id: str | None = None,
+        discretionary: bool = True,
+    ) -> dict[str, Any] | None:
+        """Link an existing pending outbox row to a persisted ReturnClock decision."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+        safe_delivery_id = str(delivery_id or uuid.uuid4())
+        row = await self.fetchrow(
+            """
+            WITH linked AS (
+                UPDATE notification_outbox n
+                SET returnclock_decision_id = $2,
+                    returnclock_delivery_id = $4,
+                    is_discretionary = $5
+                WHERE n.id = $3
+                  AND n.user_id = $1
+                  AND n.status = 'pending'
+                  AND EXISTS (
+                      SELECT 1
+                      FROM returnclock_decisions d
+                      WHERE d.decision_id = $2 AND d.user_id = $1
+                  )
+                RETURNING n.id, n.returnclock_delivery_id
+            )
+            UPDATE returnclock_decisions d
+            SET outbox_id = linked.id,
+                status = 'queued',
+                updated_at = NOW()
+            FROM linked
+            WHERE d.decision_id = $2 AND d.user_id = $1
+            RETURNING d.decision_id, d.outbox_id, linked.returnclock_delivery_id
+            """,
+            int(user_id),
+            str(decision_id),
+            int(notification_id),
+            safe_delivery_id,
+            bool(discretionary),
+        )
+        return dict(row) if row is not None else None
+
+    async def cancel_stale_returnclock_notifications(
+        self,
+        user_id: int,
+        *,
+        returned_at: datetime | None = None,
+        reason: str = "user_returned",
+        categories: tuple[str, ...] = ("reminders",),
+        session_id: str | None = None,
+    ) -> list[int]:
+        """Cancel pending discretionary nudges created before a natural return."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+        safe_categories = [str(category) for category in categories if category]
+        if not safe_categories:
+            return []
+        safe_returned_at = returned_at or datetime.now(timezone.utc)
+        rows = await self.fetch(
+            """
+            WITH cancelled AS (
+                UPDATE notification_outbox n
+                SET status = 'cancelled',
+                    cancelled_at = $2,
+                    cancellation_reason = $3
+                WHERE n.user_id = $1
+                  AND n.status = 'pending'
+                  AND n.is_discretionary = TRUE
+                  AND n.created_at <= $2
+                  AND n.category = ANY($4::text[])
+                RETURNING
+                    n.id, n.user_id, n.returnclock_decision_id,
+                    n.returnclock_delivery_id
+            ),
+            updated_decisions AS (
+                UPDATE returnclock_decisions d
+                SET status = 'cancelled',
+                    cancelled_at = $2,
+                    cancellation_reason = $3,
+                    updated_at = NOW()
+                FROM cancelled c
+                WHERE d.decision_id = c.returnclock_decision_id
+                  AND d.user_id = c.user_id
+                RETURNING d.decision_id
+            ),
+            recorded_events AS (
+                INSERT INTO returnclock_delivery_events (
+                    event_id, decision_id, user_id, outbox_id, delivery_id,
+                    event_type, event_at, session_id, metadata
+                )
+                SELECT
+                    'cancel:' || c.id::text || ':' || COALESCE($5, $2::text),
+                    c.returnclock_decision_id,
+                    c.user_id,
+                    c.id,
+                    c.returnclock_delivery_id,
+                    'cancelled',
+                    $2,
+                    $5,
+                    jsonb_build_object('reason', $3)
+                FROM cancelled c
+                WHERE c.returnclock_decision_id IS NOT NULL
+                ON CONFLICT (event_id) DO NOTHING
+                RETURNING event_id
+            )
+            SELECT id FROM cancelled ORDER BY id
+            """,
+            int(user_id),
+            safe_returned_at,
+            str(reason or "user_returned"),
+            safe_categories,
+            (str(session_id) if session_id else None),
+        )
+        return [int(row["id"]) for row in rows]
+
+    async def fetch_returnclock_dataset_rows(
+        self,
+        *,
+        start_at: datetime | None = None,
+        end_at: datetime | None = None,
+        ingested_before: datetime | None = None,
+        user_id: int | None = None,
+        limit: int = 50_000,
+    ) -> dict[str, Any]:
+        """Fetch one event-time-bounded snapshot for the offline materializer.
+
+        ``end_at`` is the exclusive event-time/censoring boundary.
+        ``ingested_before`` is a later, exclusive database-ingestion watermark.
+        Keeping them separate admits late-arriving pre-boundary events without
+        dropping assignments whose mutable status changed after ``end_at``.
+        """
+        if not self._pool:
+            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+        safe_limit = max(1, min(int(limit), 1_000_000))
+        safe_user_id = int(user_id) if user_id is not None else None
+        safe_ingested_before = ingested_before or datetime.now(timezone.utc)
+        if (
+            safe_ingested_before.tzinfo is None
+            or safe_ingested_before.utcoffset() is None
+        ):
+            raise ValueError("ingested_before must include a timezone")
+        safe_ingested_before = safe_ingested_before.astimezone(timezone.utc)
+        if end_at is not None and safe_ingested_before < end_at:
+            raise ValueError("ingested_before must be >= end_at")
+
+        session_query = """
+            SELECT
+                s.id, s.user_id, s.session_id, s.source, s.analytics_version,
+                s.timezone, s.utc_offset_minutes, s.entrypoint,
+                s.returnclock_decision_id, s.returnclock_delivery_id,
+                s.started_at, s.ended_at, s.duration_seconds,
+                s.last_heartbeat_at, s.last_resumed_at, s.resume_count,
+                s.screens_visited, s.battles_played, s.battle_ids,
+                s.cases_opened,
+                s.metadata, s.created_at, s.updated_at
+            FROM user_sessions s
+            JOIN users u ON u.user_id = s.user_id
+            WHERE COALESCE(u.is_bot, FALSE) = FALSE
+              AND ($1::timestamptz IS NULL OR s.started_at >= $1)
+              AND ($2::timestamptz IS NULL OR s.started_at < $2)
+              AND s.created_at < $7
+              AND ($3::bigint IS NULL OR s.user_id = $3)
+              AND (
+                    $5::timestamptz IS NULL
+                    OR (s.started_at, s.id) > ($5, $6::bigint)
+              )
+            ORDER BY s.started_at, s.id
+            LIMIT $4
+            """
+        decision_query = """
+            SELECT d.*
+            FROM returnclock_decisions d
+            JOIN users u ON u.user_id = d.user_id
+            WHERE COALESCE(u.is_bot, FALSE) = FALSE
+              AND ($3::bigint IS NULL OR d.user_id = $3)
+              AND d.created_at < $7
+              AND (
+                    (
+                        ($1::timestamptz IS NULL OR d.created_at >= $1)
+                        AND ($2::timestamptz IS NULL OR d.created_at < $2)
+                    )
+                    OR EXISTS (
+                        SELECT 1
+                        FROM returnclock_delivery_events linked_event
+                        WHERE linked_event.decision_id = d.decision_id
+                          AND (
+                              $1::timestamptz IS NULL
+                              OR linked_event.event_at >= $1
+                          )
+                          AND (
+                              $2::timestamptz IS NULL
+                              OR linked_event.event_at < $2
+                          )
+                          AND (
+                              linked_event.created_at < $7
+                          )
+                    )
+              )
+              AND (
+                    $5::timestamptz IS NULL
+                    OR (d.created_at, d.decision_id)
+                        > ($5, $6::text)
+              )
+            ORDER BY d.created_at, d.decision_id
+            LIMIT $4
+            """
+        event_query = """
+            SELECT e.*
+            FROM returnclock_delivery_events e
+            JOIN users u ON u.user_id = e.user_id
+            WHERE COALESCE(u.is_bot, FALSE) = FALSE
+              AND ($1::timestamptz IS NULL OR e.event_at >= $1)
+              AND ($2::timestamptz IS NULL OR e.event_at < $2)
+              AND e.created_at < $7
+              AND ($3::bigint IS NULL OR e.user_id = $3)
+              AND (
+                    $5::timestamptz IS NULL
+                    OR (e.event_at, e.id) > ($5, $6::bigint)
+              )
+            ORDER BY e.event_at, e.id
+            LIMIT $4
+            """
+        page_size = min(50_000, safe_limit)
+
+        async def _read_stream(
+            fetcher,
+            query: str,
+            *,
+            cursor_time_field: str,
+            cursor_id_field: str,
+        ) -> list[Any]:
+            collected: list[Any] = []
+            cursor_time: datetime | None = None
+            cursor_id: Any = None
+            while len(collected) < safe_limit:
+                current_limit = min(
+                    page_size,
+                    safe_limit - len(collected),
+                )
+                page = await fetcher(
+                    query,
+                    start_at,
+                    end_at,
+                    safe_user_id,
+                    current_limit,
+                    cursor_time,
+                    cursor_id,
+                    safe_ingested_before,
+                )
+                collected.extend(page)
+                if len(page) < current_limit or len(collected) >= safe_limit:
+                    break
+                last = page[-1]
+                cursor_time = last[cursor_time_field]
+                cursor_id = last[cursor_id_field]
+            return collected
+
+        async def _read_streams(fetcher):
+            return (
+                await _read_stream(
+                    fetcher,
+                    session_query,
+                    cursor_time_field="started_at",
+                    cursor_id_field="id",
+                ),
+                await _read_stream(
+                    fetcher,
+                    decision_query,
+                    cursor_time_field="created_at",
+                    cursor_id_field="decision_id",
+                ),
+                await _read_stream(
+                    fetcher,
+                    event_query,
+                    cursor_time_field="event_at",
+                    cursor_id_field="id",
+                ),
+            )
+
+        # The three streams form one training snapshot. Reading them through
+        # independent pooled connections can otherwise produce impossible
+        # combinations (e.g. an event without its decision).
+        if hasattr(self._pool, "acquire"):
+            async with self._pool.acquire() as connection:
+                async with connection.transaction(
+                    isolation="repeatable_read",
+                    readonly=True,
+                ):
+                    session_rows, decision_rows, event_rows = await _read_streams(
+                        connection.fetch
+                    )
+        else:
+            # Lightweight unit-test doubles override ``fetch`` and do not
+            # expose asyncpg's pool/transaction API.
+            session_rows, decision_rows, event_rows = await _read_streams(
+                self.fetch
+            )
+        return {
+            "schema": RETURNCLOCK_DATASET_SCHEMA,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "window": {
+                "start_at": start_at.isoformat() if start_at else None,
+                "end_at": end_at.isoformat() if end_at else None,
+                "ingested_before": safe_ingested_before.isoformat(),
+                "user_id": safe_user_id,
+                "limit_per_stream": safe_limit,
+                "page_size": page_size,
+                "pagination": "keyset",
+                "ingestion_watermark": (
+                    "sessions.created_at/decisions.created_at/"
+                    "events.created_at < ingested_before; event timestamps "
+                    "< end_at"
+                ),
+                "snapshot_isolation": "repeatable_read",
+            },
+            "sessions": [dict(row) for row in session_rows],
+            "decisions": [dict(row) for row in decision_rows],
+            "delivery_events": [dict(row) for row in event_rows],
+        }
 
     async def track_onboarding_event(
         self,
@@ -21692,6 +23249,7 @@ class Database:
         *,
         battle_id: str,
         include_players: bool = False,
+        record_id_namespace: uuid.UUID | None = None,
     ) -> dict[str, Any] | None:
         """Load, validate and pseudonymize exactly one terminal battle bundle."""
         if not self._pool:
@@ -21782,6 +23340,7 @@ class Database:
         return _build_v5_export_bundle(
             row,
             include_players=bool(include_players),
+            record_id_namespace=record_id_namespace,
         )
 
     async def export_v5_battle_dataset(
@@ -21840,10 +23399,12 @@ class Database:
 
         bundles: list[dict[str, Any]] = []
         skipped_invalid = 0
+        record_id_namespace = uuid.uuid4()
         for raw_row in rows:
             bundle = _build_v5_export_bundle(
                 raw_row,
                 include_players=bool(include_players),
+                record_id_namespace=record_id_namespace,
             )
             if bundle is None:
                 skipped_invalid += 1
@@ -21859,6 +23420,11 @@ class Database:
                 "raw_player_ids" if include_players else "side_pseudonyms_p1_1_p2_2"
             ),
             "include_players": bool(include_players),
+            "record_id_scheme": (
+                V5_RAW_RECORD_ID_SCHEME
+                if include_players
+                else V5_PSEUDONYMIZED_RECORD_ID_SCHEME
+            ),
             "days": normalized_days,
             "limit_battles": bounded_limit,
             "battle_count": len(bundles),

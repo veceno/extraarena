@@ -3,6 +3,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path
+import re
 
 import pytest
 
@@ -17,6 +18,7 @@ from core.state import (
     ReplacementStatus,
 )
 from core.v5_dataset import V5DatasetRecorder
+from infrastructure.database import _build_v5_export_bundle
 from rlhf_env.components.v5_trace_validate import validate_v5_trace
 from scripts.materialize_v5_dataset_export import materialize_export
 
@@ -64,7 +66,12 @@ def _hero(card_id: int) -> CardInstance:
     )
 
 
-def _engine(*, p1_is_bot: bool = False, clock: _Clock | None = None) -> BattleEngine:
+def _engine(
+    *,
+    p1_is_bot: bool = False,
+    clock: _Clock | None = None,
+    match_id: str = "prod-v5-test",
+) -> BattleEngine:
     state = GameState(
         p1=PlayerState(
             user_id=101,
@@ -87,7 +94,7 @@ def _engine(*, p1_is_bot: bool = False, clock: _Clock | None = None) -> BattleEn
         turn_number=1,
         status=GameStatus.ONGOING,
     )
-    engine = BattleEngine(match_id="prod-v5-test", player_ids=[101, 202])
+    engine = BattleEngine(match_id=match_id, player_ids=[101, 202])
     engine._arena = ArenaEnvironment(state, apply_start_effects=False)
     engine.current_player_id = 101
     engine.turn = 1
@@ -360,6 +367,23 @@ def test_checkpoint_finalize_abort_and_snapshot_are_detached_and_shared_safe() -
     assert aborted["meta"]["abort_reason"] == "server_reload"
 
 
+def test_v5_policy_degradation_is_monotonic_and_secret_free() -> None:
+    engine = _engine()
+
+    warning = engine.mark_v5_policy_degraded("decode_failed")
+    engine.set_v5_dataset_metadata(
+        {
+            "degraded": False,
+            "policy_warnings": [],
+        }
+    )
+    snapshot = engine.get_v5_dataset_snapshot()
+
+    assert warning == "v5_policy_failure:decode_failed"
+    assert snapshot["meta"]["degraded"] is True
+    assert snapshot["meta"]["policy_warnings"] == [warning]
+
+
 def test_production_snapshot_passes_the_shared_v5_trace_validator(
     tmp_path: Path,
 ) -> None:
@@ -398,10 +422,10 @@ def test_production_snapshot_passes_the_shared_v5_trace_validator(
     assert report["ok"] is True, report["issues"]
 
 
-def test_terminal_human_vs_bot_snapshot_materializes_without_conversion(
+def test_terminal_human_vs_bot_snapshot_materializes_after_prod_pseudonymization(
     tmp_path: Path,
 ) -> None:
-    engine = _engine()
+    engine = _engine(match_id="tutorial-987654321")
     state = engine._arena.state
     state.p2.is_bot = True
     attacker = _card(13, attack=5, hp=4, ready=True)
@@ -441,23 +465,39 @@ def test_terminal_human_vs_bot_snapshot_materializes_without_conversion(
         "format_version": 1,
         "storage_schema": "rlhf_v5_storage_v1",
         "created_at": payload["meta"]["finished_at"],
-        "privacy": "raw_player_ids",
-        "include_players": True,
+        "privacy": "side_pseudonyms_p1_1_p2_2",
+        "include_players": False,
+        "record_id_scheme": "random_per_export_record_ids_v1",
         "days": 1,
         "limit_battles": 1,
         "battle_count": 1,
         "skipped_invalid": 0,
     }
-    bundle = {
-        "record_type": "battle",
+    bundle = _build_v5_export_bundle(
+        {
         "battle_id": engine.match_id,
         "storage_schema": "rlhf_v5_storage_v1",
         "status": payload["meta"]["status"],
         "finished_at": payload["meta"]["finished_at"],
-        "meta": payload["meta"],
-        "turns": payload["turns"],
-        "actions": payload["actions"],
-    }
+        "winner_user_id": payload["meta"]["winner_user_id"],
+        "p1_user_id": payload["meta"]["p1_user_id"],
+        "p2_user_id": payload["meta"]["p2_user_id"],
+        "p1_actor_type": payload["meta"]["p1_actor_type"],
+        "p2_actor_type": payload["meta"]["p2_actor_type"],
+        "action_count": len(payload["actions"]),
+        "meta_json": payload["meta"],
+        "turns_json": payload["turns"],
+        "actions_json": payload["actions"],
+        },
+        include_players=False,
+    )
+    assert bundle is not None
+    exported_battle_id = bundle["battle_id"]
+    assert re.fullmatch(r"record_[0-9a-f]{32}", exported_battle_id)
+    assert bundle["meta"]["battle_id"] == exported_battle_id
+    assert bundle["meta"]["match_id"] == exported_battle_id
+    assert "987654321" not in json.dumps(bundle, sort_keys=True)
+    bundle = {"record_type": "battle", **bundle}
     source.write_text(
         "\n".join(
             json.dumps(record, ensure_ascii=False)
@@ -474,9 +514,9 @@ def test_terminal_human_vs_bot_snapshot_materializes_without_conversion(
         group_id="production-hvb-e2e",
     )
 
-    assert manifest["battle_ids"] == [engine.match_id]
+    assert manifest["battle_ids"] == [exported_battle_id]
     assert manifest["battles_results"][0]["collection_class"] == "human-vs-bot"
     report = validate_v5_trace(
-        output / "battles" / str(engine.match_id) / "v5"
+        output / "battles" / exported_battle_id / "v5"
     )
     assert report["ok"] is True, report["issues"]

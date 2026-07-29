@@ -144,7 +144,7 @@ def test_argmax_peak_at_end_turn(tmp_path):
     assert isinstance(legal[idx], EndTurnAction)
 
 
-def test_select_action_empty_legal_returns_zero(tmp_path):
+def test_select_action_empty_legal_fails_closed(tmp_path):
     adapter = V5RlhfAdapter({"name": "v5-test", "inference": _fake_inference()})
 
     class _EmptyEngine:
@@ -153,7 +153,57 @@ def test_select_action_empty_legal_returns_zero(tmp_path):
         def get_legal_actions(self, player_id):
             return []
 
-    assert adapter.select_action(_EmptyEngine(), 1) == 0
+    with pytest.raises(
+        RuntimeError,
+        match=r"^v5_policy_failure:empty_legal_actions$",
+    ):
+        adapter.select_action(_EmptyEngine(), 1)
+
+
+def test_non_finite_logits_fail_closed_with_stable_code(tmp_path):
+    mgr = make_manager(tmp_path)
+    _, engine, _ = create_match(
+        mgr,
+        p2_model="random",
+        starting_player="p1",
+    )
+    adapter = V5RlhfAdapter(
+        {
+            "name": "v5-test",
+            "inference": _fake_inference(
+                np.full(601, np.nan, dtype=np.float32)
+            ),
+        }
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"^v5_policy_failure:non_finite_logits$",
+    ):
+        adapter.select_action(engine._arena, engine.human_user_id)
+
+
+def test_unexpected_inference_error_does_not_reflect_secret(tmp_path):
+    mgr = make_manager(tmp_path)
+    _, engine, _ = create_match(
+        mgr,
+        p2_model="random",
+        starting_player="p1",
+    )
+
+    def broken_inference(_obs, _action_features):
+        raise RuntimeError(
+            "postgresql://alice:SUPERSECRET@example.invalid/prod"
+        )
+
+    adapter = V5RlhfAdapter(
+        {"name": "v5-test", "inference": broken_inference}
+    )
+    with pytest.raises(RuntimeError) as caught:
+        adapter.select_action(engine._arena, engine.human_user_id)
+
+    assert str(caught.value) == "v5_policy_failure:unexpected_failure"
+    assert "SUPERSECRET" not in str(caught.value)
 
 
 # ----------------------------------------------------------------------------

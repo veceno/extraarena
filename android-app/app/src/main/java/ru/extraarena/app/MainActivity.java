@@ -690,6 +690,7 @@ public class MainActivity extends Activity {
         }
         if ("index.html".equals(clean)
                 || "arena.html".equals(clean)
+                || "analytics-v2.js".equals(clean)
                 || "arena.js".equals(clean)
                 || "arena-styles.css".equals(clean)
                 || "main.js".equals(clean)
@@ -1213,6 +1214,13 @@ public class MainActivity extends Activity {
         String section = intent == null ? null : intent.getStringExtra("section");
         String inviteId = intent == null ? null : intent.getStringExtra("invite_id");
         String inviteAction = intent == null ? null : intent.getStringExtra("invite_action");
+        String decisionId = intent == null ? null : intent.getStringExtra("rc_decision_id");
+        if ((decisionId == null || decisionId.trim().isEmpty()) && intent != null) {
+            decisionId = intent.getStringExtra("decision_id");
+        }
+        String outboxNotificationId = intent == null ? null : intent.getStringExtra("notification_id");
+        String deliveryId = intent == null ? null : intent.getStringExtra("delivery_id");
+        String entrypoint = intent == null ? null : intent.getStringExtra("entrypoint");
         if (section == null && intent != null && intent.getData() != null) {
             section = intent.getData().getQueryParameter("section");
         }
@@ -1222,14 +1230,92 @@ public class MainActivity extends Activity {
         if (inviteAction == null && intent != null && intent.getData() != null) {
             inviteAction = intent.getData().getQueryParameter("invite_action");
         }
-        probeAndLoadArena(section, inviteId, inviteAction);
+        if ((decisionId == null || decisionId.trim().isEmpty())
+                && intent != null
+                && intent.getData() != null) {
+            decisionId = intent.getData().getQueryParameter("rc_decision_id");
+        }
+        if ((decisionId == null || decisionId.trim().isEmpty())
+                && intent != null
+                && intent.getData() != null) {
+            decisionId = intent.getData().getQueryParameter("decision_id");
+        }
+        if (outboxNotificationId == null && intent != null && intent.getData() != null) {
+            outboxNotificationId = intent.getData().getQueryParameter("notification_id");
+        }
+        if (deliveryId == null && intent != null && intent.getData() != null) {
+            deliveryId = intent.getData().getQueryParameter("delivery_id");
+        }
+        if (entrypoint == null && intent != null && intent.getData() != null) {
+            entrypoint = intent.getData().getQueryParameter("entrypoint");
+        }
+        probeAndLoadArena(
+                section,
+                inviteId,
+                inviteAction,
+                decisionId,
+                outboxNotificationId,
+                deliveryId,
+                entrypoint,
+                intent
+        );
+    }
+
+    private void consumeReturnClockAttribution(Intent intent) {
+        if (intent == null) {
+            return;
+        }
+
+        intent.removeExtra("rc_decision_id");
+        intent.removeExtra("decision_id");
+        intent.removeExtra("notification_id");
+        intent.removeExtra("delivery_id");
+        if ("notification".equals(intent.getStringExtra("entrypoint"))) {
+            intent.removeExtra("entrypoint");
+        }
+
+        Uri data = intent.getData();
+        if (data == null || !data.isHierarchical()) {
+            return;
+        }
+
+        Uri.Builder sanitized = data.buildUpon().clearQuery();
+        boolean removedAttribution = false;
+        for (String name : data.getQueryParameterNames()) {
+            for (String value : data.getQueryParameters(name)) {
+                if (isReturnClockAttributionParameter(name, value)) {
+                    removedAttribution = true;
+                    continue;
+                }
+                sanitized.appendQueryParameter(name, value);
+            }
+        }
+        if (removedAttribution) {
+            intent.setData(sanitized.build());
+        }
+    }
+
+    private boolean isReturnClockAttributionParameter(String name, String value) {
+        return "rc_decision_id".equals(name)
+                || "decision_id".equals(name)
+                || "notification_id".equals(name)
+                || "delivery_id".equals(name)
+                || ("entrypoint".equals(name) && "notification".equals(value));
     }
 
     private String buildLaunchUrl(String section) {
-        return buildLaunchUrl(section, null, null);
+        return buildLaunchUrl(section, null, null, null, null, null, null);
     }
 
-    private String buildLaunchUrl(String section, String inviteId, String inviteAction) {
+    private String buildLaunchUrl(
+            String section,
+            String inviteId,
+            String inviteAction,
+            String decisionId,
+            String outboxNotificationId,
+            String deliveryId,
+            String entrypoint
+    ) {
         Uri.Builder builder = Uri.parse(BaseUrlStore.getBaseUrl(this)).buildUpon()
                 .appendQueryParameter("_auth", DeviceRegistrar.getAuthToken(this))
                 .appendQueryParameter("ea_platform", "android_app")
@@ -1251,13 +1337,34 @@ public class MainActivity extends Activity {
         if (inviteAction != null && !inviteAction.trim().isEmpty()) {
             query.put("invite_action", inviteAction);
         }
+        if (decisionId != null && !decisionId.trim().isEmpty()) {
+            query.put("rc_decision_id", decisionId);
+        }
+        if (outboxNotificationId != null && !outboxNotificationId.trim().isEmpty()) {
+            query.put("notification_id", outboxNotificationId);
+        }
+        if (deliveryId != null && !deliveryId.trim().isEmpty()) {
+            query.put("delivery_id", deliveryId);
+        }
+        if ("notification".equals(entrypoint)) {
+            query.put("entrypoint", "notification");
+        }
         for (Map.Entry<String, String> entry : query.entrySet()) {
             builder.appendQueryParameter(entry.getKey(), entry.getValue());
         }
         return builder.build().toString();
     }
 
-    private void probeAndLoadArena(String section, String inviteId, String inviteAction) {
+    private void probeAndLoadArena(
+            String section,
+            String inviteId,
+            String inviteAction,
+            String decisionId,
+            String outboxNotificationId,
+            String deliveryId,
+            String entrypoint,
+            Intent sourceIntent
+    ) {
         final int generation = ++arenaLoadGeneration;
         if (generation != arenaLoadGeneration || loadingPausedForProfileSwitcher) {
             return;
@@ -1292,7 +1399,17 @@ public class MainActivity extends Activity {
                         ConnectionProfileStore.selectProfile(this, finalSwitchedTo);
                         Log.w(TAG, "Selected host unreachable; fell back to profile " + finalSwitchedTo);
                     }
-                    webView.loadUrl(buildLaunchUrl(section, inviteId, inviteAction));
+                    String launchUrl = buildLaunchUrl(
+                            section,
+                            inviteId,
+                            inviteAction,
+                            decisionId,
+                            outboxNotificationId,
+                            deliveryId,
+                            entrypoint
+                    );
+                    consumeReturnClockAttribution(sourceIntent);
+                    webView.loadUrl(launchUrl);
                 } else {
                     showConnectivityError();
                 }

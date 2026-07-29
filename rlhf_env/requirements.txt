@@ -8,3 +8,9 @@ onnxruntime>=1.17.0,<2.0.0
 
 # MCP-сервер (stdio)
 mcp>=1.0.0
+
+# Optional read-only production dataset plane (V5 / Nemesis / ReturnClock).
+# Headless battle tools do not connect to PostgreSQL, but these packages keep
+# the same MCP binary ready for explicit dataset exports.
+asyncpg>=0.30.0,<1.0.0
+python-dotenv>=1.0.0,<2.0.0
