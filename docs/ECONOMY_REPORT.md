@@ -449,7 +449,7 @@ DEFAULT_STARS_MARKUP = 1.2     # наценка 20%
 
 | Система | Статус |
 |---|---|
-| **Daily rewards** | ✅ Реализовано: `/api/daily-login/status` + `/api/daily-login/claim` (`web/server.py:19708-19760`), таблица `daily_login_rewards` |
+| **Daily rewards** | ✅ Реализовано как «Квесты»: `/api/daily-quests/status` + `/api/daily-quests/claim` (`web/server.py`), таблица `daily_quests_progress` (заменила старую систему daily-login) |
 | **Рефералы** | Полностью отсутствуют |
 | **Подарки между игроками** | Частично: подарочные ExtraPass (`extrapass_gift`) и `gift_shop_set` |
 | **Dice (кубик)** | API и методы БД отсутствуют |
