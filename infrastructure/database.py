@@ -253,6 +253,9 @@ RUNTIME_FEATURE_DEFAULTS: dict[str, bool] = {
     # (per-battle is_bot/metadata filters enabled). When False, bot-vs-human
     # battles also count. Bots never become rating candidates regardless.
     "rating_human_vs_human": False,
+    # Daily Quests ("Квесты") feature. When False, get_daily_quests_status returns
+    # enabled=False (frontend hides the tile), claim/increment become no-ops.
+    "daily_quests": True,
 }
 
 RUNTIME_SETTINGS_DEFAULTS: dict[str, Any] = {
@@ -813,47 +816,113 @@ class Database:
         {"id": "win_streak_5", "title": "Выиграй 5 боев подряд",     "description": "Я в огне! Я сам огонь!",                     "target": 5, "reward_type": "case",  "reward_amount": 5, "case_tier": 1},
     )
 
+    def _daily_quests_now(self) -> datetime:
+        """Single injectable clock source for the Moscow daily-quest boundary."""
+        return datetime.now(MOSCOW_TZ)
+
+    def _daily_quests_day_window(self) -> tuple["date", datetime, int]:
+        """Return (Moscow date, next reset in UTC, seconds to reset) from one clock read."""
+        now_msk = self._daily_quests_now()
+        next_midnight = datetime.combine(now_msk.date(), time(0, 0), tzinfo=MOSCOW_TZ) + timedelta(days=1)
+        reset_seconds = max(0, int((next_midnight - now_msk).total_seconds()))
+        return now_msk.date(), next_midnight.astimezone(timezone.utc), reset_seconds
+
     def _daily_quests_today(self) -> "date":
-        return datetime.now(MOSCOW_TZ).date()
+        return self._daily_quests_now().date()
 
     def _daily_quests_reset_at(self) -> tuple[datetime, int]:
         """Вернуть (next 00:00 MSK как UTC datetime, секунд до сброса)."""
-        now_msk = datetime.now(MOSCOW_TZ)
-        next_midnight = datetime.combine(now_msk.date(), time(0, 0), tzinfo=MOSCOW_TZ) + timedelta(days=1)
-        reset_seconds = max(0, int((next_midnight - now_msk).total_seconds()))
-        return next_midnight.astimezone(timezone.utc), reset_seconds
+        _today, reset_at, reset_seconds = self._daily_quests_day_window()
+        return reset_at, reset_seconds
 
     def _quest_def(self, quest_id: str) -> "dict[str, Any] | None":
         return next((q for q in self.DAILY_QUESTS if q["id"] == quest_id), None)
+
+    async def _daily_quests_enabled_on_conn(self, conn: Any) -> bool:
+        """Read the kill switch on the same connection/transaction as the quest write."""
+        value = await conn.fetchval(
+            "SELECT value FROM game_settings WHERE key = 'feature_availability'"
+        )
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except Exception:
+                value = None
+        if isinstance(value, dict) and "daily_quests" in value:
+            return bool(value["daily_quests"])
+        return bool(RUNTIME_FEATURE_DEFAULTS["daily_quests"])
+
+    async def _apply_daily_quest_ops_on_conn(
+        self,
+        conn: Any,
+        user_id: int,
+        ops: list[tuple[str, int, bool]],
+        *,
+        reset_date: Optional["date"] = None,
+    ) -> None:
+        """Apply validated quest operations using an existing transaction."""
+        today = reset_date or self._daily_quests_today()
+        for quest_id, delta, reset_on_loss in ops:
+            quest = self._quest_def(quest_id)
+            if not quest:
+                raise ValueError(f"unknown_daily_quest:{quest_id}")
+            target = int(quest["target"])
+            delta = int(delta)
+            if delta < 0:
+                raise ValueError(f"negative_daily_quest_delta:{quest_id}")
+            if reset_on_loss:
+                await conn.execute(
+                    """INSERT INTO daily_quests_progress (user_id, quest_id, reset_date, progress)
+                       VALUES ($1, $2, $3, 0)
+                       ON CONFLICT (user_id, quest_id, reset_date)
+                       DO UPDATE SET progress = 0, updated_at = NOW()
+                       WHERE daily_quests_progress.progress < $4""",
+                    user_id, quest_id, today, target)
+            else:
+                await conn.execute(
+                    """INSERT INTO daily_quests_progress (user_id, quest_id, reset_date, progress)
+                       VALUES ($1, $2, $3, LEAST($4, $5))
+                       ON CONFLICT (user_id, quest_id, reset_date)
+                       DO UPDATE SET progress = LEAST(daily_quests_progress.progress + $4, $5),
+                                     updated_at = NOW()
+                       WHERE daily_quests_progress.progress < $5""",
+                    user_id, quest_id, today, delta, target)
 
     async def get_daily_quests_status(self, user_id: int) -> dict[str, Any]:
         """Вернуть статус ежедневных квестов для UI (лениво создаёт строки на сегодня)."""
         if not self._pool:
             raise RuntimeError("База данных не подключена.")
-        today = self._daily_quests_today()
+        today, reset_at, reset_seconds = self._daily_quests_day_window()
+        # One multi-VALUES upsert (5 rows in a single statement) instead of 5 separate
+        # INSERT round-trips. The conflict WHERE is important: without it PostgreSQL
+        # rewrites all five rows on every status poll even when the CASE keeps the same
+        # values, producing avoidable WAL and dead tuples.
+        qids = [q["id"] for q in self.DAILY_QUESTS]
+        inits = [1 if q["id"] == "login_once" else 0 for q in self.DAILY_QUESTS]
         async with self._pool.acquire() as conn:
             async with conn.transaction():
-                for q in self.DAILY_QUESTS:
-                    if q["id"] == "login_once":
-                        await conn.execute(
-                            """INSERT INTO daily_quests_progress (user_id, quest_id, reset_date, progress)
-                               VALUES ($1, $2, $3, 1)
-                               ON CONFLICT (user_id, quest_id, reset_date)
-                               DO UPDATE SET progress = 1, updated_at = NOW()
-                               WHERE daily_quests_progress.progress < 1""",
-                            user_id, q["id"], today)
-                    else:
-                        await conn.execute(
-                            """INSERT INTO daily_quests_progress (user_id, quest_id, reset_date, progress)
-                               VALUES ($1, $2, $3, 0)
-                               ON CONFLICT (user_id, quest_id, reset_date) DO NOTHING""",
-                            user_id, q["id"], today)
+                enabled = await self._daily_quests_enabled_on_conn(conn)
+                if not enabled:
+                    return {
+                        "enabled": False,
+                        "reset_at": reset_at.isoformat(),
+                        "reset_seconds": reset_seconds,
+                        "quests": [],
+                    }
+                await conn.execute(
+                    """INSERT INTO daily_quests_progress (user_id, quest_id, reset_date, progress)
+                       SELECT $1, qid, $2, init
+                       FROM unnest($3::text[], $4::int[]) AS t(qid, init)
+                       ON CONFLICT (user_id, quest_id, reset_date)
+                       DO UPDATE SET progress = 1, updated_at = NOW()
+                       WHERE daily_quests_progress.quest_id = 'login_once'
+                         AND daily_quests_progress.progress < 1""",
+                    user_id, today, qids, inits)
                 rows = await conn.fetch(
                     """SELECT quest_id, progress, claimed FROM daily_quests_progress
                        WHERE user_id = $1 AND reset_date = $2""",
                     user_id, today)
         row_map = {r["quest_id"]: r for r in rows}
-        reset_at, reset_seconds = self._daily_quests_reset_at()
         quests = []
         for q in self.DAILY_QUESTS:
             r = row_map.get(q["id"])
@@ -889,6 +958,8 @@ class Database:
         target = quest["target"]
         async with self._pool.acquire() as conn:
             async with conn.transaction():
+                if not await self._daily_quests_enabled_on_conn(conn):
+                    return {"success": False, "error": "feature_disabled"}
                 await conn.execute(
                     """INSERT INTO daily_quests_progress (user_id, quest_id, reset_date, progress)
                        VALUES ($1, $2, $3, 0)
@@ -933,30 +1004,91 @@ class Database:
         Никогда не бросает исключение наверх — используется в хуках case-claim/battle-end."""
         if not self._pool:
             return
-        quest = self._quest_def(quest_id)
-        target = quest["target"] if quest else 1
+        if not self._quest_def(quest_id):
+            logging.getLogger(__name__).warning("unknown daily quest increment quest_id=%s", quest_id)
+            return
         today = self._daily_quests_today()
         try:
             async with self._pool.acquire() as conn:
-                if reset_on_loss:
-                    await conn.execute(
-                        """INSERT INTO daily_quests_progress (user_id, quest_id, reset_date, progress)
-                           VALUES ($1, $2, $3, 0)
-                           ON CONFLICT (user_id, quest_id, reset_date)
-                           DO UPDATE SET progress = 0, updated_at = NOW()""",
-                        user_id, quest_id, today)
-                else:
-                    await conn.execute(
-                        """INSERT INTO daily_quests_progress (user_id, quest_id, reset_date, progress)
-                           VALUES ($1, $2, $3, LEAST($4, $5))
-                           ON CONFLICT (user_id, quest_id, reset_date)
-                           DO UPDATE SET progress = LEAST(daily_quests_progress.progress + $4, $5),
-                                         updated_at = NOW()""",
-                        user_id, quest_id, today, int(delta), int(target))
+                if not await self._daily_quests_enabled_on_conn(conn):
+                    return
+                await self._apply_daily_quest_ops_on_conn(
+                    conn, user_id, [(quest_id, delta, reset_on_loss)], reset_date=today
+                )
         except Exception:
             import logging
             logging.getLogger(__name__).warning(
                 "daily quest increment failed user_id=%s quest_id=%s", user_id, quest_id, exc_info=True)
+
+    async def consume_key_for_case_opening(self, user_id: int) -> Optional[int]:
+        """Consume one key and advance open_case_1 in the same transaction."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        today = self._daily_quests_today()
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                key_row = await conn.fetchrow(
+                    """
+                    UPDATE users
+                    SET keys = GREATEST(0, COALESCE(keys, 0) - 1),
+                        updated_at = NOW()
+                    WHERE user_id = $1 AND COALESCE(keys, 0) > 0
+                    RETURNING keys
+                    """,
+                    user_id,
+                )
+                if not key_row:
+                    return None
+                if await self._daily_quests_enabled_on_conn(conn):
+                    await self._apply_daily_quest_ops_on_conn(
+                        conn, user_id, [("open_case_1", 1, False)], reset_date=today
+                    )
+                return int(key_row["keys"])
+
+    async def cleanup_old_daily_quests_progress(
+        self,
+        retention_days: int = 30,
+        batch_size: int = 5000,
+    ) -> int:
+        """Delete daily_quests_progress rows older than `retention_days` Moscow-days.
+
+        Deletes in bounded batches to avoid a long-running transaction and lock spike.
+        Returns the number of rows deleted. Never raises — runs from a background task.
+        """
+        if not self._pool:
+            return 0
+        cutoff = self._daily_quests_today() - timedelta(days=retention_days)
+        batch_size = max(1, min(int(batch_size), 50_000))
+        try:
+            async with self._pool.acquire() as conn:
+                total = 0
+                while True:
+                    result = await conn.execute(
+                        """
+                        WITH doomed AS (
+                          SELECT id
+                          FROM daily_quests_progress
+                          WHERE reset_date < $1
+                          ORDER BY reset_date, id
+                          LIMIT $2
+                        )
+                        DELETE FROM daily_quests_progress AS q
+                        USING doomed
+                        WHERE q.id = doomed.id
+                        """,
+                        cutoff, batch_size)
+                    try:
+                        removed = int(result.split()[-1])
+                    except Exception:
+                        removed = 0
+                    total += removed
+                    if removed < batch_size:
+                        return total
+        except Exception:
+            import logging
+            logging.getLogger(__name__).warning(
+                "daily_quests_progress cleanup failed", exc_info=True)
+            return 0
 
     async def connect(self) -> None:
         """Создать пул подключений к БД."""
@@ -5851,28 +5983,35 @@ class Database:
         return changed
 
     async def _ensure_daily_quests_progress_table(self) -> bool:
-        """Создать таблицу ежедневных квестов, если её нет."""
+        """Создать таблицу ежедневных квестов, если её нет. Возвращает changed (как все _ensure_*)."""
         if not self._pool:
             raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
-        await self.execute(
-            """
-            CREATE TABLE IF NOT EXISTS daily_quests_progress (
-              id BIGSERIAL PRIMARY KEY,
-              user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-              quest_id TEXT NOT NULL,
-              reset_date DATE NOT NULL,
-              progress INTEGER NOT NULL DEFAULT 0,
-              claimed BOOLEAN NOT NULL DEFAULT FALSE,
-              claimed_at TIMESTAMPTZ,
-              updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-              UNIQUE(user_id, quest_id, reset_date)
+        changed = False
+        table_exists = await self.fetchval("SELECT to_regclass('public.daily_quests_progress')")
+        if not table_exists:
+            await self.execute(
+                """
+                CREATE TABLE daily_quests_progress (
+                  id BIGSERIAL PRIMARY KEY,
+                  user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                  quest_id TEXT NOT NULL,
+                  reset_date DATE NOT NULL,
+                  progress INTEGER NOT NULL DEFAULT 0,
+                  claimed BOOLEAN NOT NULL DEFAULT FALSE,
+                  claimed_at TIMESTAMPTZ,
+                  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                  UNIQUE(user_id, quest_id, reset_date)
+                )
+                """
             )
-            """
-        )
+            changed = True
         await self.execute(
             "CREATE INDEX IF NOT EXISTS idx_daily_quests_progress_user_date ON daily_quests_progress(user_id, reset_date)"
         )
-        return True
+        await self.execute(
+            "CREATE INDEX IF NOT EXISTS idx_daily_quests_progress_reset_date_id ON daily_quests_progress(reset_date, id)"
+        )
+        return changed
 
     def _rating_categories_for_scope(self, scope: str) -> tuple[dict[str, str], ...]:
         if scope == "squads":
@@ -19304,11 +19443,12 @@ class Database:
         battle_result: Optional[Dict[str, Any]] = None,
         rewards: Optional[Dict[int | str, Dict[str, Any]]] = None,
         economy_events: Optional[list[Dict[str, Any]]] = None,
+        daily_quest_ops: Optional[Dict[int | str, list[tuple[str, int, bool]]]] = None,
     ) -> Dict[str, Any]:
         """Apply the final battle summary and all balance rewards atomically.
 
         battle_summary.match_id is the idempotency gate: duplicate match_id means
-        no user balances, counters, mail, or analytics are touched.
+        no user balances, counters, quest progress, mail, or analytics are touched.
         """
         if not self._pool:
             raise RuntimeError("База данных не подключена.")
@@ -19391,6 +19531,16 @@ class Database:
                     p2_trophy_change,
                     turns_count,
                 )
+
+                if daily_quest_ops and await self._daily_quests_enabled_on_conn(conn):
+                    quest_date = self._daily_quests_today()
+                    for raw_user_id, ops in daily_quest_ops.items():
+                        await self._apply_daily_quest_ops_on_conn(
+                            conn,
+                            int(raw_user_id),
+                            list(ops or []),
+                            reset_date=quest_date,
+                        )
 
                 user_rewards = rewards or {}
                 for raw_user_id, plan in user_rewards.items():

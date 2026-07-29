@@ -5145,7 +5145,7 @@ window.loadMobileSquadsBootstrap = async function(options = {}) {
 };
 </script>
 
-<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=87f0bc12109c">
+<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=914df8ed2a2d">
 // ═══════════════════════════════════════════
 // DESIGN TOKENS
 // ═══════════════════════════════════════════
@@ -5970,7 +5970,6 @@ const SettingsScreen = ({onClose, profile}) => {
     shop:              s.notif_shop              ?? false,
     generator:         s.notif_generator         ?? true,
     reminders:         s.notif_reminders         ?? false,
-    dailyRewards:      s.notif_daily_rewards     ?? true,
     squadMemberRole:   s.notif_squad_member_role ?? true,
     squadNewMember:    s.notif_squad_new_member  ?? true,
     squadDisbanded:    s.notif_squad_disbanded   ?? true,
@@ -6002,7 +6001,6 @@ const SettingsScreen = ({onClose, profile}) => {
       shop: false,
       generator: true,
       reminders: false,
-      dailyRewards: true,
       squadMemberRole: true,
       squadNewMember: true,
       squadDisbanded: true,
@@ -6224,7 +6222,6 @@ const SettingsScreen = ({onClose, profile}) => {
           <Row label="Новое в магазине" hint="Акции и новые предметы" value={notifs.shop} onChange={v=>setNotifs(n=>({...n,shop:v}))}/>
           <Row label="Генератор ключей" hint="Готовность и важные обновления" value={notifs.generator} onChange={v=>setNotifs(n=>({...n,generator:v}))}/>
           <Row label="Напоминания" hint="Возврат к активностям" value={notifs.reminders} onChange={v=>setNotifs(n=>({...n,reminders:v}))}/>
-          <Row label="Ежедневные награды" hint="Награда за вход доступна" value={notifs.dailyRewards} onChange={v=>setNotifs(n=>({...n,dailyRewards:v}))}/>
           <Row label="Модификаторы ExtraArena" hint="Когда режим ExtraArena меняет правила" value={notifs.extraArenaModifiers} onChange={v=>setNotifs(n=>({...n,extraArenaModifiers:v}))}/>
           {canUseTelegramDelivery && <DeliveryMode/>}
         </Section>
@@ -10865,6 +10862,51 @@ const QuestsSheet = ({onClose, status, onClaimed}) => {
   const [busy, setBusy] = React.useState({});          // per-quest busy flag
   const [tick, setTick] = React.useState(0);           // 1s re-render trigger (value unused in math)
   const [pin, setPin] = React.useState(null);         // {sec, at} drift-free re-pin on each status refresh
+  const dialogRef = React.useRef(null);
+  const onCloseRef = React.useRef(onClose);
+  onCloseRef.current = onClose;
+  // Modal contract: capture/restore focus, trap Tab inside the sheet, support Escape,
+  // and stop the document behind the fixed overlay from scrolling.
+  React.useEffect(() => {
+    const node = dialogRef.current;
+    const previousFocus = document.activeElement;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    if (node && typeof node.focus === 'function') node.focus();
+    const onKey = (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        onCloseRef.current?.();
+        return;
+      }
+      if (e.key !== 'Tab' || !node) return;
+      const focusable = Array.from(node.querySelectorAll(
+        'button:not([disabled]),a[href],input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])'
+      )).filter(el => el.offsetParent !== null);
+      if (!focusable.length) {
+        e.preventDefault();
+        node.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (e.shiftKey && (document.activeElement === first || document.activeElement === node)) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      document.body.style.overflow = previousOverflow;
+      if (previousFocus && previousFocus.isConnected && typeof previousFocus.focus === 'function') {
+        previousFocus.focus();
+      }
+    };
+  }, []);
   React.useEffect(() => {
     const iv = setInterval(() => setTick(t => t + 1), 1000);
     return () => clearInterval(iv);
@@ -10904,12 +10946,38 @@ const QuestsSheet = ({onClose, status, onClaimed}) => {
         }
         if (onClaimed) await onClaimed();
       } else {
-        if (onClaimed) await onClaimed();
+        // P2: surface claim failures (was: silent onClaimed on every non-2xx).
+        const err = (data && (data.error || data.message)) || '';
+        if (err === 'already_claimed') window.showToast?.('Награда уже забрана', 'info', 2200);
+        else if (err === 'not_claimable') window.showToast?.('Квест ещё не выполнен — обновлено', 'info', 2600);
+        else if (err === 'unknown_quest') window.showToast?.('Квест не найден', 'error', 2600);
+        else if (err === 'feature_disabled') window.showToast?.('Квесты сейчас недоступны', 'info', 2600);
+        else window.showToast?.('Не удалось забрать награду', 'error', 2800);
+        if (onClaimed) await onClaimed();   // always refetch → board refreshes to today
       }
-    } catch(e) {} finally {
+    } catch(e) {
+      window.showToast?.('Ошибка сети', 'error', 2600);   // was: swallowed silently
+    } finally {
       setBusy(b => ({...b, [qid]: false}));
     }
   };
+
+  // P2: rollover refetch — the instant the drift-free resetSeconds hits 0, refetch
+  // today's board so yesterday's stale state cannot linger up to 30s past midnight.
+  // hadPinRef guards against firing before the first status ever pinned a real >0 value
+  // (e.g. status arrives already at 0 right at midnight); rolledRef fires once per rollover
+  // and re-arms when the countdown is non-zero again (next day).
+  const rolledRef = React.useRef(false);
+  const hadPinRef = React.useRef(false);
+  React.useEffect(() => {
+    if (pin && pin.sec > 0) hadPinRef.current = true;
+    if (hadPinRef.current && resetSeconds <= 0 && !rolledRef.current) {
+      rolledRef.current = true;
+      if (onClaimed) onClaimed();          // fetchQuestStatus() → today's board + fresh reset_seconds
+    } else if (resetSeconds > 0) {
+      rolledRef.current = false;            // re-arm for the next day
+    }
+  }, [resetSeconds, pin, onClaimed]);
 
   const rewardIconFor = (type, size=20) => {
     if (type === 'coins') return <IconCoin size={size}/>;
@@ -10920,10 +10988,10 @@ const QuestsSheet = ({onClose, status, onClaimed}) => {
   const compactHeight = typeof window !== 'undefined' && window.innerHeight < 760;
   const artTop = compactHeight ? 'calc(var(--ea-safe-top) + 72px)' : 'calc(var(--ea-safe-top) + 76px)';
   const artWidth = compactHeight ? 'min(116%, 430px)' : 'min(112%, 500px)';
-  const artSpacerHeight = compactHeight ? 'clamp(188px, 29dvh, 224px)' : 'clamp(226px, 32dvh, 304px)';
+  const artSpacerHeight = compactHeight ? 'clamp(212px, 33dvh, 252px)' : 'clamp(256px, 36dvh, 336px)';
 
   return (
-    <div style={{position:'fixed',inset:0,zIndex:200,overflowY:'auto',overflowX:'hidden',background:'#120b24',animation:'fadeIn 0.2s',overscrollBehaviorY:'contain',WebkitOverflowScrolling:'touch'}} >
+    <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="quests-sheet-title" aria-busy={!status} tabIndex={-1} style={{position:'fixed',inset:0,zIndex:200,overflowY:'auto',overflowX:'hidden',background:'#120b24',animation:'fadeIn 0.2s',overscrollBehaviorY:'contain',WebkitOverflowScrolling:'touch',outline:'none'}} >
       <div style={{position:'absolute',top:0,left:0,right:0,zIndex:0,height:'100%',minHeight:620,overflow:'hidden',background:'#1a0f2d',pointerEvents:'none'}}>
         <img src="/DesignAssets/Images/quests.jpg" alt="" style={{position:'absolute',top:artTop,left:'50%',width:artWidth,height:'auto',objectFit:'contain',objectPosition:'50% 0%',transform:'translateX(-50%)',filter:'saturate(1.16) contrast(1.04) drop-shadow(0 20px 30px rgba(4,2,10,0.34))'}}/>
         <div style={{position:'absolute',inset:0,background:'radial-gradient(circle at 50% 23%,rgba(124,92,191,0.14),transparent 28%),linear-gradient(180deg,rgba(9,5,23,0.32) 0%,rgba(9,5,23,0.06) 26%,rgba(18,11,36,0.14) 46%,rgba(18,11,36,0.76) 70%,#120b24 100%)'}}/>
@@ -10934,7 +11002,7 @@ const QuestsSheet = ({onClose, status, onClaimed}) => {
           <button onClick={onClose} type="button" aria-label="Назад" style={{display:'grid',placeItems:'center',width:42,height:42,border:'1px solid rgba(255,255,255,0.16)',borderRadius:8,background:'rgba(21,12,39,0.58)',color:'#fff8e8',cursor:'pointer'}}>
             <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18l-6-6 6-6" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"/></svg>
           </button>
-          <h1 style={{margin:0,fontSize:24,fontWeight:800,letterSpacing:0,lineHeight:1.05,color:'#fff8e8',textShadow:'0 2px 16px rgba(0,0,0,0.38)',fontFamily:"'Exo 2',sans-serif"}}>Квесты</h1>
+          <h1 id="quests-sheet-title" style={{margin:0,fontSize:24,fontWeight:800,letterSpacing:0,lineHeight:1.05,color:'#fff8e8',textShadow:'0 2px 16px rgba(0,0,0,0.38)',fontFamily:"'Exo 2',sans-serif"}}>Квесты</h1>
           <div aria-label="Сброс через" style={{display:'inline-grid',gridAutoFlow:'column',alignItems:'center',gap:6,minHeight:34,padding:'0 10px',border:'1px solid rgba(124,92,191,0.38)',borderRadius:8,background:'rgba(34,20,55,0.62)',color:'#fff8e8',fontSize:13,fontWeight:800,fontVariantNumeric:'tabular-nums',backdropFilter:'blur(10px)'}}>
             <span style={{fontSize:10,fontWeight:700,color:'#b9a9d3',letterSpacing:'0.06em',textTransform:'uppercase'}}>Сброс</span>
             <span>{fmtTimer(resetSeconds)}</span>
@@ -10943,10 +11011,10 @@ const QuestsSheet = ({onClose, status, onClaimed}) => {
 
         <div style={{height:artSpacerHeight}}/>
 
-        <section style={{padding:compactHeight?12:14,border:'1px solid rgba(255,233,174,0.2)',borderRadius:12,background:'linear-gradient(180deg,rgba(40,27,70,0.84),rgba(21,13,38,0.92))',boxShadow:'0 -10px 28px rgba(5,3,15,0.26),0 16px 42px rgba(5,3,15,0.34),inset 0 1px 0 rgba(255,248,232,0.08)',backdropFilter:'blur(18px)',WebkitBackdropFilter:'blur(18px)'}}>
+        <section style={{padding:compactHeight?12:14,border:'1px solid rgba(255,233,174,0.2)',borderRadius:12,background:'linear-gradient(180deg,rgba(40,27,70,0.46),rgba(21,13,38,0.66))',boxShadow:'0 -10px 28px rgba(5,3,15,0.26),0 16px 42px rgba(5,3,15,0.34),inset 0 1px 0 rgba(255,248,232,0.08)',backdropFilter:'blur(22px)',WebkitBackdropFilter:'blur(22px)'}}>
           <div style={{marginBottom:14}}>
             <p style={{margin:'0 0 4px',fontSize:11,fontWeight:700,letterSpacing:'0.1em',textTransform:'uppercase',color:'#b9a9d3'}}>Ежедневные задания</p>
-            <p style={{margin:'0 0 8px',fontSize:19,fontWeight:800,lineHeight:1.12,color:'#fff8e8',fontFamily:"'Exo 2',sans-serif"}}>Забери дневной маршрут</p>
+            <p style={{margin:'0 0 8px',fontSize:19,fontWeight:800,lineHeight:1.12,color:'#fff8e8',fontFamily:"'Exo 2',sans-serif"}}>Забери награды</p>
             <div style={{display:'flex',alignItems:'center',gap:10}}>
               <div style={{position:'relative',flex:1,height:8,borderRadius:6,overflow:'hidden',background:'rgba(255,255,255,0.08)'}}>
                 <div style={{position:'absolute',inset:0,width:`${(doneCount/5)*100}%`,background:'linear-gradient(90deg,#7c5cbf,#f4b33f)',borderRadius:6,transition:'width 0.4s'}}/>
@@ -10955,10 +11023,13 @@ const QuestsSheet = ({onClose, status, onClaimed}) => {
             </div>
           </div>
 
-          <div style={{display:'grid',gap:10}}>
+          {!status ? (
+            <div role="status" style={{minHeight:150,display:'grid',placeItems:'center',color:'#b9a9d3',fontSize:13,fontWeight:700}}>
+              Загружаем задания…
+            </div>
+          ) : <div style={{display:'grid',gap:10}}>
             {quests.map(q => {
               const pct = q.target > 0 ? Math.min(100, Math.round((q.progress/q.target)*100)) : 0;
-              const badge = q.claimed ? {t:'Забрано', c:'#4ade80'} : (q.progress >= q.target ? {t:'Готово', c:'#fbbf24'} : {t:'В процессе', c:'#b9a9d3'});
               return (
                 <div key={q.id} style={{display:'grid',gridTemplateColumns:'44px 1fr auto',alignItems:'center',gap:12,padding:'12px 12px',borderRadius:12,border:q.claimable?'1px solid rgba(251,191,36,0.4)':'1px solid rgba(255,255,255,0.08)',background:q.claimable?'rgba(251,191,36,0.08)':'rgba(255,255,255,0.03)'}}>
                   <div style={{display:'grid',placeItems:'center',width:44,height:44,borderRadius:10,border:'1px solid rgba(255,255,255,0.1)',background:'rgba(21,12,39,0.6)'}}>
@@ -10967,7 +11038,6 @@ const QuestsSheet = ({onClose, status, onClaimed}) => {
                   <div style={{minWidth:0}}>
                     <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:3}}>
                       <span style={{fontSize:14,fontWeight:800,color:'#fff8e8',fontFamily:"'Exo 2',sans-serif",overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{q.title}</span>
-                      <span style={{flexShrink:0,fontSize:10,fontWeight:800,color:badge.c,letterSpacing:'0.04em',textTransform:'uppercase'}}>{badge.t}</span>
                     </div>
                     <p style={{margin:'0 0 6px',fontSize:12,color:'#b9a9d3',lineHeight:1.3}}>{q.description}</p>
                     <div style={{display:'flex',alignItems:'center',gap:8}}>
@@ -10993,7 +11063,7 @@ const QuestsSheet = ({onClose, status, onClaimed}) => {
                 </div>
               );
             })}
-          </div>
+          </div>}
         </section>
       </div>
     </div>
@@ -18868,7 +18938,8 @@ const App = () => {
     showBattlePick, showGameMode, showMail, showNews, showCaseOpen, showInfo,
     showGloryPath, showLeagueInfo, showBattlePass, showPreBattle,
     showSupport, showInvite, showBattles, showFriends, showProfile, showExtraID,
-    onboardingBlocking, onboardingTourActive, newbiePathOpen
+    onboardingBlocking, onboardingTourActive, newbiePathOpen,
+    showQuests, pendingCaseOpen
   ]);
 
   const stopConnectionPing = React.useCallback(() => {
@@ -19302,20 +19373,38 @@ const App = () => {
 
   const fetchQuestStatus = React.useCallback(async () => {
     try {
-      const res = await fetch(apiUrl('/api/daily-quests/status'));
+      const res = await fetch(apiUrl('/api/daily-quests/status'), {cache:'no-store'});
       if (!res.ok) return;
       const data = await res.json();
-      if (data && data.enabled) setQuestsStatus(data);
+      // Persist the payload regardless of enabled so the tile hide-guard
+      // (questsStatus?.enabled !== false) can actually hide the tile when the
+      // backend returns enabled=false. Discarding disabled payloads left
+      // questsStatus null and the tile always visible — the off-switch was dead.
+      if (data) setQuestsStatus(data);
     } catch(e) {}
   }, []);
+  // P2 polling load: poll every 30s while the Quests sheet is open (live progress),
+  // but only every 5min while closed (keeps the menu badge coarse-fresh without the
+  // per-30s DB cost for every logged-in user). The immediate fetchQuestStatus() on
+  // every showQuests toggle replaces the separate on-open effect.
   React.useEffect(() => {
     fetchQuestStatus();
-    const iv = setInterval(fetchQuestStatus, 30000);
+    const intervalMs = showQuests ? 30000 : 300000;
+    const iv = setInterval(fetchQuestStatus, intervalMs);
     return () => clearInterval(iv);
-  }, [fetchQuestStatus]);
+  }, [fetchQuestStatus, showQuests]);
   React.useEffect(() => {
-    if (showQuests) fetchQuestStatus();
-  }, [showQuests, fetchQuestStatus]);
+    if (showQuests && questsStatus?.enabled === false) {
+      setShowQuests(false);
+      window.showToast?.('Квесты сейчас недоступны', 'info', 2400);
+    }
+  }, [showQuests, questsStatus?.enabled]);
+  // Expose an event-driven refetch so case-open / battle-end can refresh quest
+  // progress instantly instead of waiting up to 5min for the closed-sheet poll.
+  React.useEffect(() => {
+    window.__refreshQuestStatus = fetchQuestStatus;
+    return () => { if (window.__refreshQuestStatus === fetchQuestStatus) delete window.__refreshQuestStatus; };
+  }, [fetchQuestStatus]);
 
   const onQuestClaimed = React.useCallback(async () => {
     await fetchQuestStatus();
@@ -19667,8 +19756,8 @@ const App = () => {
       {showGameMode   && <GameModeSheet   onClose={()=>setShowGameMode(false)} runtimeStatus={runtimeStatus} onConfirm={(mode, deckId)=>{setShowGameMode(false);window._playSfx('menu-open-sound');window.startBattle(profile, deckId, mode);}}/>}
       {showMail       && <MailScreen      onClose={()=>setShowMail(false)} userId={profile?.user_id}/>}
       {showNews       && <NewsSheet       onClose={()=>setShowNews(false)} isAdmin={!!runtimeStatus?.is_admin}/>}
-      {showCaseOpen   && <CaseOpenScreen onClose={()=>setShowCaseOpen(false)} onDone={()=>{invalidateInventoryCaches();setShowCaseOpen(false);window.reloadFreshProfile().then(d=>{if(d)setProfile(d);});completeNewbieTask('open_starter_case');}} profile={profile}/>}
-      {pendingCaseOpen && <CaseOpenScreen userCaseId={pendingCaseOpen.userCaseId} initialTier={pendingCaseOpen.initialTier} onClose={()=>setPendingCaseOpen(null)} onDone={()=>{invalidateInventoryCaches();setPendingCaseOpen(null);window.reloadFreshProfile().then(d=>{if(d)setProfile(d);});}} profile={profile}/>}
+      {showCaseOpen   && <CaseOpenScreen onClose={()=>setShowCaseOpen(false)} onDone={()=>{invalidateInventoryCaches();setShowCaseOpen(false);window.reloadFreshProfile().then(d=>{if(d)setProfile(d);});completeNewbieTask('open_starter_case');window.__refreshQuestStatus?.();}} profile={profile}/>}
+      {pendingCaseOpen && <CaseOpenScreen userCaseId={pendingCaseOpen.userCaseId} initialTier={pendingCaseOpen.initialTier} onClose={()=>setPendingCaseOpen(null)} onDone={()=>{invalidateInventoryCaches();setPendingCaseOpen(null);window.reloadFreshProfile().then(d=>{if(d)setProfile(d);});window.__refreshQuestStatus?.();}} profile={profile}/>}
       {showInfo       && <InfoSheet      onClose={()=>setShowInfo(false)}/>}
       {showQuests && <QuestsSheet onClose={()=>setShowQuests(false)} status={questsStatus} onClaimed={onQuestClaimed}/>}
       {showLeagueInfo && <LeagueInfoSheet onClose={()=>setShowLeagueInfo(false)} profile={profile}/>}
@@ -20825,6 +20914,6 @@ const LeagueInfoSheet = ({onClose, onOpenGloryPath, profile}) => {
 
 ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
 </script>
-<script src="index.compiled.js?v=87f0bc12109c"></script>
+<script src="index.compiled.js?v=914df8ed2a2d"></script>
 </body>
 </html>

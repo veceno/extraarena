@@ -754,7 +754,6 @@ async function saveSettings(authData, settings) {
 function getDefaultSettings() {
   return {
     notif_cases: true,
-    notif_daily_rewards: true,
     notif_game_invites: true,
     notif_friend_requests: true,
     notif_events: true,
@@ -1223,10 +1222,6 @@ function renderSettings(settings) {
       <div class="setting-item">
         <span class="setting-label">Напоминания</span>
         <div class="toggle-switch ${mergedSettings.notif_reminders ? "active" : ""}" data-setting="notif_reminders"></div>
-      </div>
-      <div class="setting-item">
-        <span class="setting-label">Ежедневные награды</span>
-        <div class="toggle-switch ${mergedSettings.notif_daily_rewards ? "active" : ""}" data-setting="notif_daily_rewards"></div>
       </div>
       <div class="setting-item">
         <span class="setting-label">Модификаторы ExtraArena</span>

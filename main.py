@@ -354,6 +354,9 @@ async def main() -> None:
     # Запускаем фоновую задачу для очистки сгенерированных inline-карточек
     background_tasks.append(asyncio.create_task(_generated_inline_cleanup_task()))
 
+    # Запускаем фоновую задачу для очистки устаревших строк daily_quests_progress
+    background_tasks.append(asyncio.create_task(_daily_quests_cleanup_task(db)))
+
     try:
         while True:
             try:
@@ -707,6 +710,26 @@ async def _generated_inline_cleanup_task() -> None:
                 logger.info(f"Inline card cleanup: removed {removed} old PNG(s)")
         except Exception:
             pass
+
+
+async def _daily_quests_cleanup_task(db) -> None:
+    """Периодически удаляет строки daily_quests_progress старше 30 дней.
+
+    Таблица растёт на 5 строк на активного пользователя в день без встроенной экспирации.
+    Очистка использует индекс reset_date/id и ограниченные батчи, чтобы не создавать
+    длинную транзакцию. Запускается раз в 6 часов; первый прогон через 60с после старта.
+    """
+    RETENTION_DAYS = 30
+    INTERVAL_SECONDS = 6 * 3600  # 4 раза в сутки
+    await asyncio.sleep(60)
+    while True:
+        try:
+            removed = await db.cleanup_old_daily_quests_progress(RETENTION_DAYS)
+            if removed:
+                logger.info(f"Daily-quests cleanup: removed {removed} rows older than {RETENTION_DAYS}d")
+        except Exception:
+            logger.warning("Daily-quests cleanup task failed", exc_info=True)
+        await asyncio.sleep(INTERVAL_SECONDS)
 
 
 async def _notify_admin(bot: Bot, settings, schema_changed: bool) -> None:

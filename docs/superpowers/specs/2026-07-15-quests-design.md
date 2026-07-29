@@ -12,7 +12,7 @@ Replace the single-reward daily-login ("За вход") with a daily quest board
 
 1. **Reset schedule:** fixed Moscow midnight (00:00 MSK = 21:00 UTC). `reset_seconds` counts down to next 00:00 MSK. Uses `MOSCOW_TZ` (`infrastructure/database.py:59`).
 2. **Case reward tier:** fixed **T1** (basic case) for all case-reward quests. N cases = N `user_cases` rows of tier 1.
-3. **Win eligibility:** mirror existing streak rules — bot wins count, surrender/AFK wins count, draws neither count as a win nor break the streak. Exclude only `friendly`/`training` matches (consistent with `_is_ranked_streak_mode`, `database.py:3663`, and the squad/newbie hooks at `web/server.py:3095`).
+3. **Win eligibility:** mirror existing streak rules — player wins against bots count, bot accounts never earn quest progress, surrender/AFK wins count, and draws neither count as a win nor break the streak. Exclude only `friendly`/`training` matches (consistent with `_is_ranked_streak_mode`, `database.py:3663`, and the squad/newbie hooks at `web/server.py:3095`).
 4. **Assets:** `DesignAssets/Images/quests.jpg` (sheet art, 3000×3000) and `DesignAssets/MainMenu/Icons/Quests.png` (96×96 black-on-transparent RGBA) are committed into the worktree. The icon auto-renders white at runtime via the existing CSS filter `--icon-white: brightness(0) invert(1)` (`webapp/index.html:1833`, applied to every `.quiet-btn img` at `:3516`) — no manual inversion needed, consistent with `EveryDayLogin.png` and all other menu icons.
 
 ## The 5 quests (hardcoded constant `DAILY_QUESTS`)
@@ -48,6 +48,7 @@ CREATE TABLE daily_quests_progress (
   UNIQUE(user_id, quest_id, reset_date)
 );
 CREATE INDEX idx_daily_quests_progress_user_date ON daily_quests_progress(user_id, reset_date);
+CREATE INDEX idx_daily_quests_progress_reset_date_id ON daily_quests_progress(reset_date, id);
 ```
 
 `reset_date` = current date in `MOSCOW_TZ`. One row per (user, quest, day). The `UNIQUE(user_id, quest_id, reset_date)` constraint gives idempotent progress upserts; `SELECT … FOR UPDATE` on the row serializes claims.
@@ -146,5 +147,16 @@ Also run `python3 scripts/precompile_webapp_index.py --check` after edits (non-m
 ## Rollout / migration
 
 - `SCHEMA_VERSION` 48→49 + `_ensure_daily_quests_progress_table()` registered in `init_schema()` → dev auto-migrates on startup (`auto_migrate_on_start=True` in dev). Prod requires the migration step before startup (`verify_schema_ready` raises if version mismatch, `database.py:1556`).
-- The `enabled` flag in the status payload lets the feature be turned off per-user/overall (frontend hides the tile when `enabled=false`, matching the daily-login guard).
+- The DB-backed `feature_availability.daily_quests` kill switch controls status, claims, and progress writes. The status payload returns `enabled=false` and the frontend closes/hides the section when disabled.
 - Old daily-login backend removed in the same change (frontend no longer references it); old `users.daily_login_*` columns left dormant.
+
+## Production hardening
+
+The initial best-effort hook design above was strengthened during technical audit:
+
+- Battle quest operations are passed into `apply_battle_end_rewards_transaction()` and commit in the same transaction as the `battle_summary` idempotency gate and battle rewards. A quest-write failure rolls the summary back, so the battle can be retried without lost or double progress.
+- `user_cases` openings advance `open_case_1` in the same transaction as reward delivery and the guarded case-row delete. Key openings advance it in the same transaction as the guarded key decrement.
+- A completed `win_streak_5` row is terminal for that Moscow day: a later loss cannot erase an earned but unclaimed reward or create `claimed=true, progress=0`.
+- Status derives `reset_date`, `reset_at`, and `reset_seconds` from one Moscow clock snapshot. Conflict upserts update only an incomplete `login_once` row; normal polls no longer rewrite all five rows.
+- Rows older than 30 Moscow days are deleted by a six-hour background task in bounded batches using the `(reset_date, id)` cleanup index.
+- The client polls every 30 seconds only while the sheet is open and every five minutes while closed, refreshes immediately after case completion and midnight rollover, surfaces claim errors, and implements labelled modal semantics, Escape handling, a focus trap, focus restoration, and background scroll locking.

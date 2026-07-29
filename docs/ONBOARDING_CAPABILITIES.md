@@ -147,7 +147,7 @@
 Приложение управляется React-состояниями (`webapp/index.html:16723-16724`, `hasOverlay` объединяет их; декларации см. также рядом в `setShow*`/useState). Реальные имена стейтов:
 
 ```js
-squadsOpen, communityOpen, showAI, showGenerator, showDailyLogin, showMenu,
+squadsOpen, communityOpen, showAI, showGenerator, showQuests, showMenu,
 showSettings, showBattlePick, showGameMode, showMail, showNews, showCaseOpen,
 showInfo, showGloryPath, showLeagueInfo, showBattlePass, showPreBattle,
 showSupport, showInvite, showBattles, showFriends, showProfile, showExtraID,

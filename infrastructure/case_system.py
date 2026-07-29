@@ -567,6 +567,15 @@ async def _apply_case_opening_rewards(
                             "UPDATE users SET keys = GREATEST(0, COALESCE(keys, 0) - 1), updated_at = NOW() WHERE user_id = $1",
                             user_id,
                         )
+                    # The user_case deletion is the idempotency gate. Commit quest
+                    # progress in the same transaction so a successful case claim
+                    # can never lose its open_case_1 event.
+                    if await db._daily_quests_enabled_on_conn(conn):
+                        await db._apply_daily_quest_ops_on_conn(
+                            conn,
+                            user_id,
+                            [("open_case_1", 1, False)],
+                        )
             return {"success": True}
         except Exception as exc:
             return {"success": False, "error": str(exc)}
@@ -586,4 +595,5 @@ async def _apply_case_opening_rewards(
     await db.remove_user_case(user_case_id, user_id)
     if decrement_legacy_key:
         await db.decrement_user_keys(user_id, 1)
+    await db.increment_daily_quest(user_id, "open_case_1", 1)
     return {"success": True}

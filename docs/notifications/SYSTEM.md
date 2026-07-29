@@ -50,7 +50,7 @@ Squad endpoints enqueue notifications after successful join, accepted request, p
 | Task | Responsibility |
 | --- | --- |
 | `_generator_notifications_task` | Scans generator state and enqueues generator events |
-| `_scheduled_notifications_task` | Enqueues shop, reminder, daily-login and extra-arena modifier notifications when schedules are due |
+| `_scheduled_notifications_task` | Enqueues shop, reminder and extra-arena modifier notifications when schedules are due (the old daily-login enqueueing was removed with the daily-login system; daily rewards now ship via the «Квесты» feature) |
 | `_notification_outbox_task` | Sends queued messages through Android FCM first, then Telegram fallback, honoring per-user `notification_delivery_mode` (`app_then_telegram` / `app_only` / `telegram_only`) |
 
 ## Android FCM
@@ -87,7 +87,7 @@ Telegram `Forbidden` or `BadRequest` errors are treated as blocked delivery so t
 Fixed:
 - `docs/notifications/SYSTEM.md:18` — `notif_daily_rewards` default corrected from `true` to `false` (DB schema: `notif_daily_rewards BOOLEAN NOT NULL DEFAULT false`).
 - `docs/notifications/SYSTEM.md:23` — table extended with `notif_squad_weekly_tokens`, `notif_game_invites`, `notif_friend_requests` (DB columns 2821, 2822, 2832, all default `true`).
-- `docs/notifications/SYSTEM.md:50` — `_scheduled_notifications_task` row updated to mention daily-login and extra-arena modifier enqueueing (matches `main.py:458-475` + `db.enqueue_due_daily_login_notifications` / `db.enqueue_due_scheduled_notifications`).
+- `docs/notifications/SYSTEM.md:50` — `_scheduled_notifications_task` row now reflects the removal of daily-login enqueueing; daily rewards are exposed through the «Квесты» feature.
 - `docs/notifications/SYSTEM.md:51` — `_notification_outbox_task` row annotated with the per-user `notification_delivery_mode` enum (matches `main.py:524-557` and the `user_settings.notification_delivery_mode` column at `infrastructure/database.py:2843`).
 
 Not changed but verified:

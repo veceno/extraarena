@@ -2240,13 +2240,43 @@ class FailingRewardConn:
         return "OK"
 
 
+class QuestProgressConn:
+    def __init__(self, *, fail_quest_write=False):
+        self.transaction_obj = FakeTransaction()
+        self.queries = []
+        self.fail_quest_write = fail_quest_write
+
+    def transaction(self):
+        return self.transaction_obj
+
+    async def fetchrow(self, query, *args):
+        self.queries.append(("fetchrow", query, args))
+        if "INSERT INTO battle_summary" in query:
+            return {"id": 1}
+        raise AssertionError(f"unexpected fetchrow: {query}")
+
+    async def fetchval(self, query, *args):
+        self.queries.append(("fetchval", query, args))
+        if "FROM game_settings" in query:
+            return {"daily_quests": True}
+        raise AssertionError(f"unexpected fetchval: {query}")
+
+    async def execute(self, query, *args):
+        self.queries.append(("execute", query, args))
+        if self.fail_quest_write and "INSERT INTO daily_quests_progress" in query:
+            raise RuntimeError("quest write failed")
+        return "OK"
+
+
 @pytest.mark.asyncio(loop_scope="function")
 async def test_battle_end_transaction_duplicate_summary_skips_balance_writes():
     conn = DuplicateSummaryConn()
     db = Database.__new__(Database)
     db._pool = FakePool(conn)
+    payload = _battle_transaction_payload()
+    payload["daily_quest_ops"] = {101: [("win_battle_1", 1, False)]}
 
-    result = await db.apply_battle_end_rewards_transaction(**_battle_transaction_payload())
+    result = await db.apply_battle_end_rewards_transaction(**payload)
 
     assert result == {"applied": False, "reason": "duplicate_summary"}
     assert conn.transaction_obj.exit_exc_type is None
@@ -2266,6 +2296,52 @@ async def test_battle_end_transaction_rolls_back_when_reward_write_fails():
     assert conn.transaction_obj.exit_exc_type is RuntimeError
     assert any("INSERT INTO battle_summary" in query for _, query, _ in conn.queries)
     assert any("UPDATE users" in query and "trophies" in query for _, query, _ in conn.queries)
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_battle_end_transaction_commits_daily_quests_behind_summary_gate():
+    conn = QuestProgressConn()
+    db = Database.__new__(Database)
+    db._pool = FakePool(conn)
+    payload = _battle_transaction_payload("quest-progress")
+    payload["rewards"] = {}
+    payload["economy_events"] = []
+    payload["daily_quest_ops"] = {
+        101: [
+            ("win_battle_1", 1, False),
+            ("win_battle_5", 1, False),
+            ("win_streak_5", 1, False),
+        ],
+        202: [("win_streak_5", 0, True)],
+    }
+
+    result = await db.apply_battle_end_rewards_transaction(**payload)
+
+    assert result["applied"] is True
+    quest_writes = [
+        args for kind, query, args in conn.queries
+        if kind == "execute" and "INSERT INTO daily_quests_progress" in query
+    ]
+    assert len(quest_writes) == 4
+    assert {args[0] for args in quest_writes} == {101, 202}
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_battle_end_transaction_rolls_back_summary_when_quest_write_fails():
+    conn = QuestProgressConn(fail_quest_write=True)
+    db = Database.__new__(Database)
+    db._pool = FakePool(conn)
+    payload = _battle_transaction_payload("quest-progress-failure")
+    payload["rewards"] = {}
+    payload["economy_events"] = []
+    payload["daily_quest_ops"] = {101: [("win_battle_1", 1, False)]}
+
+    with pytest.raises(RuntimeError, match="quest write failed"):
+        await db.apply_battle_end_rewards_transaction(**payload)
+
+    assert conn.transaction_obj.exit_exc_type is RuntimeError
+    assert any("INSERT INTO battle_summary" in query for _, query, _ in conn.queries)
+    assert any("INSERT INTO daily_quests_progress" in query for _, query, _ in conn.queries)
 
 
 class AntiFraudDB:

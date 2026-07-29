@@ -2775,6 +2775,47 @@ def _resolve_match_game_mode(app: web.Application, match_id: str, engine: Any) -
     ).mode_id
 
 
+def _daily_quest_battle_end_ops(
+    *,
+    eligible_mode: bool,
+    winner_id_int: Optional[int],
+    p1_id_int: int,
+    p2_id_int: int,
+    p1_is_bot: bool,
+    p2_is_bot: bool,
+) -> dict[int, list[tuple[str, int, bool]]]:
+    """Build daily-quest operations to commit with the battle summary.
+
+    Human winner: +1 win_battle_1, win_battle_5, win_streak_5. Human loser: win_streak_5 reset
+    to 0. Draws (winner_id_int is None) skip BOTH — draws neither count as a win nor break the
+    streak (mirrors _streak_result_for_row, database.py:3669, and the scan skip at :3766).
+    Skipped entirely for training/friendly (eligible_mode=False). Duplicate matches are
+    rejected by the battle_summary idempotency gate before these operations are applied.
+    Bot winners are not counted.
+    Surrender/AFK wins COUNT (the quest block intentionally does NOT gate on did_surrender/
+    did_afk, unlike the squad-CBRP and newbie blocks above).
+    """
+    if (
+        not eligible_mode
+        or winner_id_int is None
+        or winner_id_int not in (p1_id_int, p2_id_int)
+    ):
+        return {}
+    result: dict[int, list[tuple[str, int, bool]]] = {}
+    winner_is_human = (winner_id_int == p1_id_int and not p1_is_bot) or (winner_id_int == p2_id_int and not p2_is_bot)
+    if winner_is_human:
+        result[winner_id_int] = [
+            ("win_battle_1", 1, False),
+            ("win_battle_5", 1, False),
+            ("win_streak_5", 1, False),
+        ]
+    loser_id_int = p2_id_int if winner_id_int == p1_id_int else p1_id_int
+    loser_is_human = (loser_id_int == p1_id_int and not p1_is_bot) or (loser_id_int == p2_id_int and not p2_is_bot)
+    if loser_is_human:
+        result[loser_id_int] = [("win_streak_5", 0, True)]
+    return result
+
+
 async def _process_battle_end(
     app: web.Application,
     match_id: str,
@@ -2838,6 +2879,7 @@ async def _process_battle_end(
     game_mode = _resolve_match_game_mode(app, match_id, engine)
     mode_config = resolve_mode_config(game_mode)
     rewards = mode_config.rewards
+    eligible_mode = str(game_mode or "").lower() not in ("training", "friendly")
 
     loser_id = None
     if winner_id_int is not None:
@@ -3059,6 +3101,14 @@ async def _process_battle_end(
             },
             rewards=reward_plans,
             economy_events=economy_events,
+            daily_quest_ops=_daily_quest_battle_end_ops(
+                eligible_mode=eligible_mode,
+                winner_id_int=winner_id_int,
+                p1_id_int=p1_id_int,
+                p2_id_int=p2_id_int,
+                p1_is_bot=p1_is_bot,
+                p2_is_bot=p2_is_bot,
+            ),
         )
     except Exception as exc:
         logger.error("Battle end transaction failed for match %s: %s", match_id, exc, exc_info=True)
@@ -3092,7 +3142,6 @@ async def _process_battle_end(
 
     try:
         try:
-            eligible_mode = str(game_mode or "").lower() not in ("training", "friendly")
             if tx_result.get("applied") and eligible_mode and not did_surrender and not did_afk:
                 battle_meta = {
                     "match_id": match_id,
@@ -3127,20 +3176,6 @@ async def _process_battle_end(
                     await db.mark_newbie_path_task(p2_id_int, "play_regular_battle", claimed=False)
         except Exception:
             logger.debug("newbie path battle completion failed for match %s", match_id, exc_info=True)
-
-        try:
-            if tx_result.get("applied") and eligible_mode and winner_id_int is not None:
-                winner_is_human = (winner_id_int == p1_id_int and not p1_is_bot) or (winner_id_int == p2_id_int and not p2_is_bot)
-                if winner_is_human:
-                    await db.increment_daily_quest(winner_id_int, "win_battle_1", 1)
-                    await db.increment_daily_quest(winner_id_int, "win_battle_5", 1)
-                    await db.increment_daily_quest(winner_id_int, "win_streak_5", 1)
-                loser_id_int = p2_id_int if winner_id_int == p1_id_int else p1_id_int
-                loser_is_human = (loser_id_int == p1_id_int and not p1_is_bot) or (loser_id_int == p2_id_int and not p2_is_bot)
-                if loser_is_human:
-                    await db.increment_daily_quest(loser_id_int, "win_streak_5", 0, reset_on_loss=True)
-        except Exception:
-            logger.debug("daily quest battle increment failed for match %s", match_id, exc_info=True)
 
         if not getattr(engine, "_analytics_flushed", False):
             actions = getattr(engine, "_analytics_actions", []) or []
@@ -9445,11 +9480,6 @@ def create_web_app(
         except Exception:
             logging.getLogger(__name__).debug("newbie path key-case completion failed", exc_info=True)
 
-        try:
-            await db.increment_daily_quest(user_id, "open_case_1", 1)
-        except Exception:
-            logging.getLogger(__name__).debug("daily quest open_case_1 increment failed", exc_info=True)
-
         for token, reroll in list(CASE_KEY_REROLL_ROLLS.items()):
             if reroll.get("opening_token") == opening_token:
                 CASE_KEY_REROLL_ROLLS.pop(token, None)
@@ -9553,11 +9583,6 @@ def create_web_app(
             await db.mark_newbie_path_task(user_id, "open_starter_case", claimed=False)
         except Exception:
             logging.getLogger(__name__).debug("newbie path user_case completion failed", exc_info=True)
-
-        try:
-            await db.increment_daily_quest(user_id, "open_case_1", 1)
-        except Exception:
-            logging.getLogger(__name__).debug("daily quest open_case_1 increment failed", exc_info=True)
 
         for token, reroll in list(CASE_USER_REROLL_ROLLS.items()):
             if reroll.get("opening_token") == opening_token:
@@ -9713,19 +9738,9 @@ def create_web_app(
                         "reserved": True,
                     })
 
-            key_row = await db.fetchrow(
-                """
-                UPDATE users
-                SET keys = GREATEST(0, COALESCE(keys, 0) - 1),
-                    updated_at = NOW()
-                WHERE user_id = $1 AND COALESCE(keys, 0) > 0
-                RETURNING keys
-                """,
-                user_id,
-            )
-            if not key_row:
+            remaining_keys = await db.consume_key_for_case_opening(user_id)
+            if remaining_keys is None:
                 return web.json_response({"success": False, "error": "no_keys", "message": "Нет ключей"}, status=400)
-            remaining_keys = key_row["keys"]
 
             extra_pass = await get_user_case_pass_status(db, user_id)
             tap_results = simulate_case_tap_results(1, extra_pass, await _case_config_safe(db))
@@ -9780,19 +9795,10 @@ def create_web_app(
                 base_tier = int(stored_roll.get("base_tier") or 1)
                 CASE_KEY_ROLLS.pop(roll_token, None)
             else:
-                key_row = await db.fetchrow(
-                    """
-                    UPDATE users
-                    SET keys = GREATEST(0, COALESCE(keys, 0) - 1),
-                        updated_at = NOW()
-                    WHERE user_id = $1 AND COALESCE(keys, 0) > 0
-                    RETURNING keys
-                    """,
-                    user_id,
-                )
-                if not key_row:
+                remaining_keys = await db.consume_key_for_case_opening(user_id)
+                if remaining_keys is None:
                     return web.json_response({"success": False, "error": "no_keys", "message": "Нет ключей"}, status=400)
-                new_keys = key_row["keys"]
+                new_keys = remaining_keys
                 extra_pass = await get_user_case_pass_status(db, user_id)
                 tap_results = simulate_case_tap_results(1, extra_pass, case_config)
                 final_tier = tap_results[-1] if tap_results else 1
@@ -20127,7 +20133,7 @@ def create_web_app(
         try:
             user_id = await require_user_id(request)
             data = await db.get_daily_quests_status(int(user_id))
-            return web.json_response(data)
+            return web.json_response(data, headers=NO_STORE_CACHE_HEADERS)
         except web.HTTPException:
             raise
         except Exception as e:
@@ -20136,7 +20142,7 @@ def create_web_app(
             return web.json_response({
                 "error": "internal_server_error",
                 "message": "Не удалось получить статус квестов",
-            }, status=500)
+            }, status=500, headers=NO_STORE_CACHE_HEADERS)
 
     async def daily_quests_claim_handler(request: web.Request) -> web.Response:
         """POST /api/daily-quests/claim — забрать награду за квест {quest_id}."""
@@ -20153,16 +20159,20 @@ def create_web_app(
             data = await db.claim_daily_quest_reward(int(user_id), quest_id)
             if not data.get("success"):
                 error = data.get("error")
-                status = 409 if error == "already_claimed" else 400
-                return web.json_response({"error": error, "message": data.get("error", error)}, status=status)
-            return web.json_response(data)
+                status = 503 if error == "feature_disabled" else (409 if error == "already_claimed" else 400)
+                return web.json_response(
+                    {"error": error, "message": data.get("error", error)},
+                    status=status,
+                    headers=NO_STORE_CACHE_HEADERS,
+                )
+            return web.json_response(data, headers=NO_STORE_CACHE_HEADERS)
         except Exception as e:
             import logging
             logging.getLogger(__name__).error("Ошибка клейма квеста: %s", e, exc_info=True)
             return web.json_response({
                 "error": "internal_server_error",
                 "message": "Не удалось забрать награду за квест",
-            }, status=500)
+            }, status=500, headers=NO_STORE_CACHE_HEADERS)
 
     async def season_current_handler(request: web.Request) -> web.Response:
         """GET /api/season/current — возвращает активный сезон."""
