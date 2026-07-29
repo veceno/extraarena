@@ -11,6 +11,11 @@ from PIL import Image
 
 from bot.constants import ADMIN_ID
 from infrastructure.config import get_settings
+from infrastructure.case_config import (
+    build_default_case_config,
+    merge_case_config_patch,
+    validate_case_config,
+)
 from web import mcp_admin_tools
 from web import server as web_server
 
@@ -43,6 +48,7 @@ class WorkflowExtraIDDB:
 
 class AdminWorkflowDB:
     def __init__(self):
+        self.case_config = build_default_case_config()
         self.sets = {}
         self.next_set_id = 1
         self.products = {}
@@ -120,6 +126,18 @@ class AdminWorkflowDB:
             "feature_availability": {},
             "disabled_card_ids": [],
         }
+
+    async def get_case_config(self):
+        import copy as _copy
+        return _copy.deepcopy(self.case_config)
+
+    async def set_case_config(self, *, patch=None):
+        if not isinstance(patch, dict) or not patch:
+            raise ValueError("empty_case_config_patch")
+        merged = merge_case_config_patch(self.case_config, patch)
+        validate_case_config(merged)
+        self.case_config = merged
+        return merged
 
     async def get_match_mode_overrides(self):
         return []
@@ -1140,6 +1158,54 @@ async def test_admin_configs_summary_returns_partial_payload_when_blocks_fail(mo
         assert body["data"]["promocodes_count"] == 0
         assert "cards" in body["data"]["errors"]
         assert "squads" in body["data"]["errors"]
+    finally:
+        await client.close()
+        get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_admin_case_config_http_read_and_patch_live(monkeypatch):
+    """POST /api/admin/case-config применяет partial-патч в реальном времени.
+
+    КРИТИЧНО: partial base_particles патч сохраняет остальные редкости (deep-merge),
+    иначе fix limited-base был бы потерян при следующей правке админкой.
+    """
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    get_settings.cache_clear()
+    db = AdminWorkflowDB()
+    client, token = await _client(db)
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        # GET — дефолты заполнены
+        read = await client.get("/api/admin/case-config", headers=headers)
+        read_body = await read.json()
+        assert read.status == 200
+        assert read_body["status"] == "ok"
+        assert read_body["data"]["base_particles_by_rarity"]["limited"] == 150
+
+        # POST partial base_particles patch
+        patch = await client.post(
+            "/api/admin/case-config",
+            headers=headers,
+            json={"patch": {"base_particles_by_rarity": {"limited": 777}}},
+        )
+        patch_body = await patch.json()
+        assert patch.status == 200
+        bpr = patch_body["data"]["base_particles_by_rarity"]
+        assert bpr["limited"] == 777
+        # остальные редкости сохранены (deep-merge, а не shallow replace)
+        assert bpr["common"] == 2
+        assert bpr["divine"] == 100
+
+        # Невалидный патч → 400
+        bad = await client.post(
+            "/api/admin/case-config",
+            headers=headers,
+            json={"patch": {"tier_rarity_probabilities": {1: {"common": 0.1, "rare": 0.1}}}},
+        )
+        assert bad.status == 400
+        bad_body = await bad.json()
+        assert "invalid_tier_rarity_sum" in bad_body["error"]
     finally:
         await client.close()
         get_settings.cache_clear()

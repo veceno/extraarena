@@ -24,6 +24,7 @@ from infrastructure.case_config import (
     TIER_UPGRADE_CHANCES,
     LIMITED_EVENT_ACTIVE,
     LIMITED_EVENT_PROBABILITY,
+    resolve_case_config,
 )
 
 MAX_TAP_NUMBER = max(TIER_UPGRADE_CHANCES.keys(), default=4)
@@ -80,7 +81,7 @@ async def get_user_case_pass_status(db, user_id: int) -> str:
     )
 
 
-def roll_tier_upgrade(current_tier: int, tap_number: int, extra_pass: str = "inactive") -> int:
+def roll_tier_upgrade(current_tier: int, tap_number: int, extra_pass: str = "inactive", case_config: dict = None) -> int:
     """
     Проверить и выполнить апгрейд тира кейса на определенном тапе.
 
@@ -91,20 +92,22 @@ def roll_tier_upgrade(current_tier: int, tap_number: int, extra_pass: str = "ina
     Returns:
         Новый тир кейса (может остаться прежним, если апгрейд не произошел)
     """
+    cc = resolve_case_config(case_config)
     if current_tier >= 5:
         return current_tier  # Максимальный тир достигнут
 
-    if tap_number not in TIER_UPGRADE_CHANCES:
+    tier_upgrade_chances = cc["tier_upgrade_chances"]
+    if tap_number not in tier_upgrade_chances:
         return current_tier
 
-    upgrade_chance = TIER_UPGRADE_CHANCES[tap_number]
+    upgrade_chance = tier_upgrade_chances[tap_number]
     if random.random() < upgrade_chance:
         return min(current_tier + 1, 5)
 
     return current_tier
 
 
-def simulate_case_tap_results(initial_tier: int = 1, extra_pass: str = "inactive") -> List[int]:
+def simulate_case_tap_results(initial_tier: int = 1, extra_pass: str = "inactive", case_config: dict = None) -> List[int]:
     """Сгенерировать серверную последовательность тиров для полного открытия кейса."""
     extra_pass = normalize_extra_pass_status(extra_pass)
     try:
@@ -115,12 +118,17 @@ def simulate_case_tap_results(initial_tier: int = 1, extra_pass: str = "inactive
 
     tap_results: List[int] = []
     for tap_number in range(1, MAX_TAP_NUMBER + 1):
-        current_tier = roll_tier_upgrade(current_tier, tap_number, extra_pass)
+        # 3-arg call preserves existing 3-param roll_tier_upgrade test fakes;
+        # do not collapse to always-4-arg.
+        if case_config is not None:
+            current_tier = roll_tier_upgrade(current_tier, tap_number, extra_pass, case_config)
+        else:
+            current_tier = roll_tier_upgrade(current_tier, tap_number, extra_pass)
         tap_results.append(current_tier)
     return tap_results
 
 
-def select_rarity(tier: int, extra_pass: str = "inactive") -> str:
+def select_rarity(tier: int, extra_pass: str = "inactive", case_config: dict = None) -> str:
     """
     Выбрать редкость карты для заданного тира кейса.
 
@@ -130,16 +138,21 @@ def select_rarity(tier: int, extra_pass: str = "inactive") -> str:
     Returns:
         Название редкости
     """
-    probabilities = TIER_RARITY_PROBABILITIES.get(tier, {})
+    cc = resolve_case_config(case_config)
+    tier_rarity_probabilities = cc["tier_rarity_probabilities"]
+    probabilities = tier_rarity_probabilities.get(tier, {})
+
+    limited_event_active = cc["limited_event_active"]
+    limited_event_probability = cc["limited_event_probability"]
 
     # Если тир 5 и активено событие, добавляем шанс на лимитированную
-    if tier == 5 and LIMITED_EVENT_ACTIVE:
+    if tier == 5 and limited_event_active:
         probabilities = probabilities.copy()
-        probabilities["limited"] = LIMITED_EVENT_PROBABILITY
+        probabilities["limited"] = limited_event_probability
         # Нормализуем остальные вероятности
         total_without_limited = sum(p for r, p in probabilities.items() if r != "limited")
         if total_without_limited > 0:
-            scale = (1.0 - LIMITED_EVENT_PROBABILITY) / total_without_limited
+            scale = (1.0 - limited_event_probability) / total_without_limited
             for rarity in probabilities:
                 if rarity != "limited":
                     probabilities[rarity] *= scale
@@ -161,7 +174,7 @@ def select_rarity(tier: int, extra_pass: str = "inactive") -> str:
     return "common"
 
 
-def check_start_rarity_replacement(selected_rarity: str) -> str:
+def check_start_rarity_replacement(selected_rarity: str, case_config: dict = None) -> str:
     """
     Проверить, нужно ли заменить редкость на Стартовую (Юни).
 
@@ -171,24 +184,39 @@ def check_start_rarity_replacement(selected_rarity: str) -> str:
     Returns:
         Финальная редкость (может быть заменена на "start")
     """
-    if selected_rarity in START_RARITY_REPLACEMENT:
-        replacement_chance = START_RARITY_REPLACEMENT[selected_rarity]
+    cc = resolve_case_config(case_config)
+    start_rarity_replacement = cc["start_rarity_replacement"]
+    if selected_rarity in start_rarity_replacement:
+        replacement_chance = start_rarity_replacement[selected_rarity]
         if random.random() < replacement_chance:
             return "start"
 
     return selected_rarity
 
 
-def get_available_rarities_for_tier(tier: int) -> List[str]:
-    """Получить список доступных редкостей для тира."""
-    max_rarity = MAX_RARITY_BY_TIER.get(tier, "common")
+def get_available_rarities_for_tier(tier: int, case_config: dict = None) -> List[str]:
+    """Получить список доступных редкостей для тира.
+
+    Для T5 при активном limited-событии добавляем 'limited' в конец — иначе
+    select_card_by_rarity понизит свёрнутую 'limited' редкость до 'divine', и
+    лимитированные карты никогда не будут выпадать (баг: limited-event не доставлял
+    limited-карты, а дубликаты divine получали limited-частицы). С событием limited
+    остаётся в available_rarities → get_cards_by_rarity('limited') выбирает реальную
+    limited-карту, и calculate_particles_for_duplicate('limited',...) считает 150×mult.
+    """
+    cc = resolve_case_config(case_config)
+    max_rarity = cc["max_rarity_by_tier"].get(tier, "common")
     rarity_order = ["common", "rare", "start", "superrare", "epic", "legendary", "mythic", "divine", "limited"]
 
     max_index = rarity_order.index(max_rarity) if max_rarity in rarity_order else 0
-    return rarity_order[:max_index + 1]
+    available = list(rarity_order[:max_index + 1])
+    # limited доступна только на T5 и только при активном событии (см. select_rarity).
+    if tier == 5 and cc.get("limited_event_active") and "limited" not in available:
+        available.append("limited")
+    return available
 
 
-async def select_card_by_rarity(db, rarity: str, tier: int) -> Optional[Dict[str, Any]]:
+async def select_card_by_rarity(db, rarity: str, tier: int, case_config: dict = None) -> Optional[Dict[str, Any]]:
     """
     Выбрать конкретную карту по редкости из доступных в БД.
 
@@ -201,7 +229,7 @@ async def select_card_by_rarity(db, rarity: str, tier: int) -> Optional[Dict[str
         Словарь с данными карты или None
     """
     # Получаем доступные редкости для тира
-    available_rarities = get_available_rarities_for_tier(tier)
+    available_rarities = get_available_rarities_for_tier(tier, case_config)
 
     # Если выбранная редкость недоступна для тира, понижаем до максимально доступной
     if rarity not in available_rarities:
@@ -235,7 +263,7 @@ async def select_card_by_rarity(db, rarity: str, tier: int) -> Optional[Dict[str
     return random.choice(cards)
 
 
-def calculate_particles_for_duplicate(rarity: str, tier: int, is_t5_common: bool = False) -> int:
+def calculate_particles_for_duplicate(rarity: str, tier: int, is_t5_common: bool = False, case_config: dict = None) -> int:
     """
     Рассчитать количество частиц за дубликат карты.
 
@@ -247,17 +275,24 @@ def calculate_particles_for_duplicate(rarity: str, tier: int, is_t5_common: bool
     Returns:
         Количество частиц
     """
+    cc = resolve_case_config(case_config)
     # Джекпот для обычной карты из T5
     if is_t5_common and tier == 5 and rarity == "common":
-        return T5_COMMON_JACKPOT_PARTICLES
+        return cc["t5_common_jackpot_particles"]
 
     # Базовое количество частиц
-    base_particles = BASE_PARTICLES_BY_RARITY.get(rarity, 0)
+    base_particles = cc["base_particles_by_rarity"].get(rarity, 0)
 
     # Множитель от тира
-    multiplier = TIER_PARTICLES_MULTIPLIER.get(tier, 1.0)
+    multiplier = cc["tier_particles_multiplier"].get(tier, 1.0)
 
-    return int(base_particles * multiplier)
+    amount = int(base_particles * multiplier)
+    # Гарантируем >=1 частицу для дубликата ненулевой базы: защита от int()-усечения
+    # в ноль при будущей правке множителей через live-config (регрессия 960a5e8e).
+    # Явный ноль от администратора (base==0) сохраняется.
+    if base_particles > 0 and amount < 1:
+        amount = 1
+    return amount
 
 
 def get_case_reroll_attempts(extra_pass: str) -> int:
@@ -289,6 +324,7 @@ async def _generate_single_case_rewards(
     user_id: int,
     user_card_ids: set[int],
     extra_pass: str = "inactive",
+    case_config: dict = None,
 ) -> Dict[str, Any]:
     """
     Сгенерировать награды для кейса на основе финального тира.
@@ -309,6 +345,7 @@ async def _generate_single_case_rewards(
             "jackpot": bool (если был джекпот частиц)
         }
     """
+    cc = resolve_case_config(case_config)
     rewards = {
         "coins": 0,
         "cards": [],
@@ -317,7 +354,8 @@ async def _generate_single_case_rewards(
         "jackpot": False,
     }
 
-    tier_config = TIER_REWARDS_COUNT.get(tier, TIER_REWARDS_COUNT[1])
+    tier_rewards_count = cc["tier_rewards_count"]
+    tier_config = tier_rewards_count.get(tier, tier_rewards_count[1])
 
     # Генерируем монеты
     coins_range = tier_config["coins"]
@@ -329,13 +367,13 @@ async def _generate_single_case_rewards(
 
     for _ in range(num_cards):
         # Выбираем редкость
-        rarity = select_rarity(tier, extra_pass)
+        rarity = select_rarity(tier, extra_pass, case_config)
 
         # Проверяем замену на стартовую
-        rarity = check_start_rarity_replacement(rarity)
+        rarity = check_start_rarity_replacement(rarity, case_config)
 
         # Выбираем конкретную карту по редкости
-        card = await select_card_by_rarity(db, rarity, tier)
+        card = await select_card_by_rarity(db, rarity, tier, case_config)
 
         if not card:
             # Если карта не найдена, пропускаем
@@ -347,7 +385,7 @@ async def _generate_single_case_rewards(
         if is_duplicate:
             # Генерируем частицы
             is_t5_common_jackpot = (tier == 5 and rarity == "common")
-            particles = calculate_particles_for_duplicate(rarity, tier, is_t5_common_jackpot)
+            particles = calculate_particles_for_duplicate(rarity, tier, is_t5_common_jackpot, case_config)
 
             rewards["particles"].append({
                 "card_id": card_id,
@@ -385,6 +423,7 @@ async def generate_case_rewards(
     user_id: int,
     user_card_ids: set[int],
     extra_pass: str = "inactive",
+    case_config: dict = None,
 ) -> Dict[str, Any]:
     """
     Сгенерировать награды для кейса на основе финального тира.
@@ -400,6 +439,7 @@ async def generate_case_rewards(
         user_id,
         set(user_card_ids),
         extra_pass,
+        case_config,
     )
 
     if extra_pass == "ultra":
@@ -416,6 +456,7 @@ async def process_case_opening(
     db,
     user_id: int,
     user_case_id: int,
+    case_config: dict = None,
 ) -> Dict[str, Any]:
     """
     Подготовить pending opening для user_cases flow (без применения наград).
@@ -453,7 +494,7 @@ async def process_case_opening(
     user_card_ids = {card["id"] for card in user_cards}
 
     extra_pass = await get_user_case_pass_status(db, user_id)
-    rewards = await generate_case_rewards(db, final_tier, user_id, user_card_ids, extra_pass)
+    rewards = await generate_case_rewards(db, final_tier, user_id, user_card_ids, extra_pass, case_config)
 
     return {
         "success": True,

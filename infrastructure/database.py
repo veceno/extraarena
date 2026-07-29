@@ -28,12 +28,17 @@ except ModuleNotFoundError:
 
 from infrastructure.config import DECK_SIZE, MAX_FREE_DECK_PRESETS, MAX_TOTAL_DECK_PRESETS, DatabaseSettings, get_league_by_trophies_fn, LEAGUE_CONFIG
 from infrastructure.case_config import (
+    CASE_CONFIG_KEY,
     PARTICLES_FALLBACK_COIN_CAP,
     PARTICLES_FALLBACK_RARITY_MULTIPLIER,
     RARITY_ORDER,
     UNI_CARD_ID,
+    build_default_case_config,
     fallback_coins_for_particles,
     fallback_coins_for_rarity,
+    fill_case_config_defaults,
+    merge_case_config_patch,
+    validate_case_config,
 )
 from infrastructure.notifications import (
     NOTIFICATION_DEFAULTS,
@@ -6643,8 +6648,19 @@ class Database:
                 json.dumps(value, ensure_ascii=False),
                 "Game runtime setting",
             )
+        await self.execute(
+            """
+            INSERT INTO game_settings (key, value, description)
+            VALUES ($1, $2::jsonb, $3)
+            ON CONFLICT (key) DO NOTHING
+            """,
+            CASE_CONFIG_KEY,
+            json.dumps(build_default_case_config(), ensure_ascii=False),
+            "Case roll configuration",
+        )
         await self._merge_squad_runtime_defaults()
         await self._merge_runtime_defaults()
+        await self._merge_case_config_defaults()
         return changed
 
     async def _merge_runtime_defaults(self) -> None:
@@ -6675,6 +6691,25 @@ class Database:
         disabled_cards = await self.get_game_setting("disabled_card_ids", [])
         if not isinstance(disabled_cards, list):
             await self.set_game_setting("disabled_card_ids", [], "Game runtime setting")
+
+    async def _merge_case_config_defaults(self) -> None:
+        """Fill newly-introduced case-config keys/tiers from defaults without clobbering admin edits.
+
+        Сравнение через JSON-форму учитывает str/int ключи тиров (json.dumps
+        приводит int-ключи к строкам) — write происходит только если fill реально
+        добавил отсутствующие ключи/тиры, а не из-за разницы типов ключей.
+        """
+        stored = await self.get_game_setting(CASE_CONFIG_KEY, None)
+        if not isinstance(stored, dict):
+            return
+        try:
+            filled = fill_case_config_defaults(stored)
+        except Exception:
+            filled = build_default_case_config()
+        if json.dumps(filled, ensure_ascii=False, sort_keys=True) != json.dumps(
+            stored, ensure_ascii=False, sort_keys=True
+        ):
+            await self.set_game_setting(CASE_CONFIG_KEY, filled, "Case roll configuration")
 
     async def _merge_squad_runtime_defaults(self) -> None:
         """Add newly introduced squad config entries without clobbering admin edits."""
@@ -7926,6 +7961,33 @@ class Database:
     async def get_disabled_card_ids(self) -> list[int]:
         config = await self.get_runtime_config()
         return list(config.get("disabled_card_ids") or [])
+
+    async def get_case_config(self) -> dict[str, Any]:
+        """Вернуть конфигурацию кейсов (DB-backed, real-time).
+
+        При отсутствии/невалидности строки — дефолт из module constants.
+        Прозрачный fallback для БД без миграции (case_config ещё не seeded).
+        """
+        raw = await self.get_game_setting(CASE_CONFIG_KEY, None)
+        if not isinstance(raw, dict):
+            return build_default_case_config()
+        try:
+            return fill_case_config_defaults(raw)
+        except Exception:
+            return build_default_case_config()
+
+    async def set_case_config(self, *, patch: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Структурно смержить partial-патч в конфигурацию кейсов, провалидировать, сохранить.
+
+        Возвращает итоговый (полный) blob. Поднимает ValueError при пустом/невалидном патче.
+        """
+        if not isinstance(patch, dict) or not patch:
+            raise ValueError("empty_case_config_patch")
+        current = await self.get_case_config()
+        merged = merge_case_config_patch(current, patch)
+        validate_case_config(merged)
+        await self.set_game_setting(CASE_CONFIG_KEY, merged, "Case roll configuration")
+        return merged
 
     async def get_squad_runtime_config(self) -> dict[str, Any]:
         rows = await self.fetch(

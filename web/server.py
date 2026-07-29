@@ -6546,6 +6546,19 @@ def create_web_app(
                 "disabled_card_ids": [],
             }
 
+    async def _case_config_safe(db_instance: Database) -> dict[str, Any] | None:
+        """Читать live-конфигурацию кейсов; None → roll-функции используют module-globals.
+
+        Возвращает None при любой ошибке БД/чтения, чтобы открыть кейс всегда
+        можно было (деградация к захардкоженным константам). Возвращает dict с
+        заполненными дефолтами при успехе (deep-fill в Database.get_case_config).
+        """
+        try:
+            return await db_instance.get_case_config()
+        except Exception as exc:
+            logging.getLogger(__name__).warning("case config fallback: %s", exc)
+            return None
+
     async def _is_runtime_feature_enabled(db_instance: Database, feature: str) -> bool:
         config = await _runtime_config_safe(db_instance)
         availability = config.get("feature_availability") or {}
@@ -9901,7 +9914,7 @@ def create_web_app(
             if not user_case:
                 return web.json_response({"success": False, "error": "case_not_found", "message": "Кейс не найден"}, status=404)
 
-            result = await process_case_opening(db, user_id, user_case_id)
+            result = await process_case_opening(db, user_id, user_case_id, await _case_config_safe(db))
             if not result.get("success"):
                 return web.json_response(result, status=400)
 
@@ -10329,7 +10342,7 @@ def create_web_app(
             extra_pass = str(reroll_roll.get("extra_pass") or "inactive")
             user_cards = await db.get_user_cards(user_id)
             user_card_ids = {card["id"] for card in (user_cards or [])}
-            rewards = await generate_case_rewards(db, final_tier, user_id, user_card_ids, extra_pass)
+            rewards = await generate_case_rewards(db, final_tier, user_id, user_card_ids, extra_pass, await _case_config_safe(db))
             if opening.get("claimed"):
                 CASE_USER_REROLL_ROLLS.pop(reroll_token, None)
                 return web.json_response({"success": False, "error": "opening_claimed", "message": "Награды уже забраны"}, status=400)
@@ -10395,7 +10408,7 @@ def create_web_app(
             remaining_keys = key_row["keys"]
 
             extra_pass = await get_user_case_pass_status(db, user_id)
-            tap_results = simulate_case_tap_results(1, extra_pass)
+            tap_results = simulate_case_tap_results(1, extra_pass, await _case_config_safe(db))
             final_tier = tap_results[-1] if tap_results else 1
             roll_token = uuid.uuid4().hex
             CASE_KEY_ROLLS[roll_token] = {
@@ -10437,6 +10450,7 @@ def create_web_app(
             if completed_opening and completed_opening.get("user_id") == user_id:
                 return web.json_response(completed_opening["response"])
 
+            case_config = await _case_config_safe(db)
             stored_roll = CASE_KEY_ROLLS.get(roll_token) if roll_token else None
             if stored_roll and stored_roll.get("user_id") == user_id:
                 tap_results = list(stored_roll.get("tap_results") or [])
@@ -10460,7 +10474,7 @@ def create_web_app(
                     return web.json_response({"success": False, "error": "no_keys", "message": "Нет ключей"}, status=400)
                 new_keys = key_row["keys"]
                 extra_pass = await get_user_case_pass_status(db, user_id)
-                tap_results = simulate_case_tap_results(1, extra_pass)
+                tap_results = simulate_case_tap_results(1, extra_pass, case_config)
                 final_tier = tap_results[-1] if tap_results else 1
                 base_tier = 1
 
@@ -10471,7 +10485,7 @@ def create_web_app(
             user_card_ids = {card["id"] for card in (user_cards or [])}
 
             # Генерируем награды
-            rewards = await generate_case_rewards(db, final_tier, user_id, user_card_ids, extra_pass)
+            rewards = await generate_case_rewards(db, final_tier, user_id, user_card_ids, extra_pass, case_config)
 
             opening_seed = f"{user_id}:{int(new_keys or 0)}:{final_tier}:{','.join(str(t) for t in tap_results)}"
             opening_id = roll_token or hashlib.sha256(opening_seed.encode("utf-8")).hexdigest()[:32]
@@ -10536,7 +10550,7 @@ def create_web_app(
 
             extra_pass = str(opening.get("extra_pass") or "inactive")
             base_tier = max(1, min(int(opening.get("base_tier") or 1), 5))
-            tap_results = simulate_case_tap_results(base_tier, extra_pass)
+            tap_results = simulate_case_tap_results(base_tier, extra_pass, await _case_config_safe(db))
             final_tier = tap_results[-1] if tap_results else base_tier
             reroll_token = uuid.uuid4().hex
             opening["reroll_used"] = True
@@ -10590,7 +10604,7 @@ def create_web_app(
             extra_pass = str(reroll_roll.get("extra_pass") or "inactive")
             user_cards = await db.get_user_cards(user_id)
             user_card_ids = {card["id"] for card in (user_cards or [])}
-            rewards = await generate_case_rewards(db, final_tier, user_id, user_card_ids, extra_pass)
+            rewards = await generate_case_rewards(db, final_tier, user_id, user_card_ids, extra_pass, await _case_config_safe(db))
             if opening.get("claimed"):
                 CASE_KEY_REROLL_ROLLS.pop(reroll_token, None)
                 return web.json_response({"success": False, "error": "opening_claimed", "message": "Награды уже забраны"}, status=400)
@@ -14519,6 +14533,7 @@ def create_web_app(
         shop_sets = await section("shop_sets", [], lambda: db.get_shop_sets(active_only=False))
         ruble_products = await section("ruble_products", [], lambda: db.get_ruble_products(active_only=False))
         runtime_config = await section("runtime_config", await _runtime_config_safe(db), lambda: db.get_runtime_config())
+        case_config = await section("case_config", None, lambda: db.get_case_config())
         cards = await section(
             "cards",
             [],
@@ -14534,6 +14549,7 @@ def create_web_app(
             "shop_sets": shop_sets or [],
             "ruble_products": ruble_products or [],
             "runtime_config": runtime_config,
+            "case_config": case_config,
             "cards": [_admin_card_payload(card) for card in (cards or [])],
             "squads": squads or _empty_admin_squads_analytics(),
             "excluded": [],
@@ -14585,6 +14601,30 @@ def create_web_app(
             return web.json_response({"status": "ok", "data": config})
         except Exception as e:
             logging.getLogger(__name__).error("admin_runtime_config_handler error: %s", e, exc_info=True)
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def admin_case_config_handler(request: web.Request) -> web.Response:
+        """Читать/патчить конфигурацию кейсов в реальном времени (без рестарта).
+
+        GET  → {"status":"ok","data": <filled case_config>}
+        POST → body {"patch": {…partial…}}; применяет структурный deep-merge,
+               валидирует, персистит в game_settings.case_config и возвращает
+               обновлённый полный blob. ValueError (валидация) → 400.
+        """
+        user_id = await require_user_id(request)
+        if not await _is_admin_user(db, user_id):
+            return web.json_response({"error": "admin_access_required"}, status=403)
+        try:
+            if request.method == "GET":
+                return web.json_response({"status": "ok", "data": await db.get_case_config()})
+            body = await request.json()
+            patch = body.get("patch") if isinstance(body, dict) else None
+            applied = await db.set_case_config(patch=patch)
+            return web.json_response({"status": "ok", "data": applied})
+        except ValueError as e:
+            return web.json_response({"error": str(e)}, status=400)
+        except Exception as e:
+            logging.getLogger(__name__).error("admin_case_config_handler error: %s", e, exc_info=True)
             return web.json_response({"error": str(e)}, status=500)
 
     def _parse_admin_season_datetime(value: Any) -> datetime | None:
@@ -15052,6 +15092,8 @@ def create_web_app(
     app.router.add_get("/api/admin/configs", admin_configs_summary_handler)
     app.router.add_get("/api/admin/runtime-config", admin_runtime_config_handler)
     app.router.add_post("/api/admin/runtime-config", admin_runtime_config_handler)
+    app.router.add_get("/api/admin/case-config", admin_case_config_handler)
+    app.router.add_post("/api/admin/case-config", admin_case_config_handler)
     app.router.add_get("/api/admin/season", admin_season_handler)
     app.router.add_post("/api/admin/season", admin_season_handler)
     app.router.add_get("/api/admin/seasons", admin_seasons_handler)
