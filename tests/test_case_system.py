@@ -31,6 +31,7 @@ class _CaseRouteDB:
         self.removed_user_cases: list[tuple[int, int]] = []
         self.legacy_case_id = None
         self.reward_counter = {"coins": 0}
+        self.daily_quest_increments = []
 
     async def get_runtime_config(self):
         return {
@@ -112,6 +113,24 @@ class _CaseRouteDB:
             return {"keys": self.keys[user_id]}
         return None
 
+    async def consume_key_for_case_opening(self, user_id):
+        row = await self.fetchrow(
+            """
+            UPDATE users
+            SET keys = GREATEST(0, COALESCE(keys, 0) - 1)
+            WHERE user_id = $1 AND COALESCE(keys, 0) > 0
+            RETURNING keys
+            """,
+            user_id,
+        )
+        if not row:
+            return None
+        await self.increment_daily_quest(user_id, "open_case_1", 1)
+        return int(row["keys"])
+
+    async def increment_daily_quest(self, user_id, quest_id, delta, **_kwargs):
+        self.daily_quest_increments.append((int(user_id), str(quest_id), int(delta)))
+
     async def get_user_case(self, user_case_id, user_id):
         row = self.user_cases.get(int(user_case_id))
         if row and row.get("user_id") == user_id:
@@ -186,6 +205,111 @@ class _UniLookupDB:
 
     async def get_cards_by_rarity(self, rarity):
         raise AssertionError("start rarity must use deterministic get_uni_card lookup")
+
+
+@pytest.mark.asyncio
+async def test_user_case_rewards_and_quest_progress_share_transaction():
+    class Tx:
+        def __init__(self):
+            self.exit_exc_type = None
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, exc_type, _exc, _tb):
+            self.exit_exc_type = exc_type
+            return False
+
+    class Acquire:
+        def __init__(self, conn):
+            self.conn = conn
+        async def __aenter__(self):
+            return self.conn
+        async def __aexit__(self, *_args):
+            return False
+
+    class Conn:
+        def __init__(self):
+            self.tx = Tx()
+        def transaction(self):
+            return self.tx
+        async def execute(self, *_args):
+            return "OK"
+        async def fetchval(self, query, *_args):
+            if "DELETE FROM user_cases" in query:
+                return 1
+            return None
+
+    class DB:
+        def __init__(self, conn):
+            self._pool = type("Pool", (), {"acquire": lambda _self: Acquire(conn)})()
+            self.quest_calls = []
+        async def _daily_quests_enabled_on_conn(self, _conn):
+            return True
+        async def _apply_daily_quest_ops_on_conn(self, conn, user_id, ops):
+            self.quest_calls.append((conn, user_id, ops))
+
+    conn = Conn()
+    db = DB(conn)
+    result = await case_system._apply_case_opening_rewards(
+        db,
+        user_id=1001,
+        user_case_id=77,
+        rewards={"coins": 0, "cards": [], "particles": [], "gems": 0},
+        decrement_legacy_key=False,
+    )
+
+    assert result == {"success": True}
+    assert db.quest_calls == [(conn, 1001, [("open_case_1", 1, False)])]
+    assert conn.tx.exit_exc_type is None
+
+
+@pytest.mark.asyncio
+async def test_user_case_transaction_rolls_back_when_quest_write_fails():
+    class Tx:
+        def __init__(self):
+            self.exit_exc_type = None
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, exc_type, _exc, _tb):
+            self.exit_exc_type = exc_type
+            return False
+
+    class Conn:
+        def __init__(self):
+            self.tx = Tx()
+        def transaction(self):
+            return self.tx
+        async def execute(self, *_args):
+            return "OK"
+        async def fetchval(self, query, *_args):
+            return 1 if "DELETE FROM user_cases" in query else None
+
+    class Acquire:
+        def __init__(self, conn):
+            self.conn = conn
+        async def __aenter__(self):
+            return self.conn
+        async def __aexit__(self, *_args):
+            return False
+
+    conn = Conn()
+
+    class DB:
+        _pool = type("Pool", (), {"acquire": lambda _self: Acquire(conn)})()
+        async def _daily_quests_enabled_on_conn(self, _conn):
+            return True
+        async def _apply_daily_quest_ops_on_conn(self, *_args, **_kwargs):
+            raise RuntimeError("quest write failed")
+
+    result = await case_system._apply_case_opening_rewards(
+        DB(),
+        user_id=1001,
+        user_case_id=77,
+        rewards={"coins": 0, "cards": [], "particles": [], "gems": 0},
+        decrement_legacy_key=False,
+    )
+
+    assert result == {"success": False, "error": "quest write failed"}
+    assert conn.tx.exit_exc_type is RuntimeError
 
 
 def test_simulate_case_tap_results_uses_server_rolls(monkeypatch):

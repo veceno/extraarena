@@ -1676,21 +1676,143 @@ def test_squad_wars_beta_tab_is_hidden_behind_disabled_flag():
     assert "SQUAD_WARS_BETA_ENABLED && clan && tab === 'wars'" in block
 
 
-def test_daily_login_claimed_next_preview_uses_stored_cycle_not_one_more_day():
+def test_quests_sheet_replaces_daily_login_with_drift_free_countdown():
+    # Replaces the old test_daily_login_claimed_next_preview_* guard. The daily-login
+    # DailyLoginSheet was removed (commit 8401464d); QuestsSheet is its replacement.
     source = Path("webapp/index.html").read_text(encoding="utf-8")
-    block = source.split("const DailyLoginSheet = ({onClose, profile, status, onClaimed}) => {", 1)[1].split(
-        "const DailyLoginHelpSheet",
+    # DailyLoginSheet must be gone (no orphan references).
+    assert "const DailyLoginSheet = " not in source
+    assert "DailyLoginHelpSheet" not in source
+    block = source.split("const QuestsSheet = ({onClose, status, onClaimed}) => {", 1)[1].split(
+        "const CardArtLightbox",
         1,
     )[0]
+    # Fixed full-viewport overlay above the main menu but below toasts (z=200, mirroring the old sheet).
+    assert "position:'fixed',inset:0,zIndex:200" in block
+    # Art background uses the quests.jpg asset.
+    assert "/DesignAssets/Images/quests.jpg" in block
+    # Sticky glass header with a "Сброс" countdown chip.
+    assert ">Сброс<" in block and "fmtTimer(resetSeconds)" in block
+    # Summary block: eyebrow + h2 + "Выполнено X/5" score chip.
+    # Fresher mockup (2026-07-16): "дневного маршрута" headline dropped → "Забери награды".
+    assert "Ежедневные задания" in block
+    assert "Забери награды" in block
+    assert "Забери дневной маршрут" not in block
+    assert "Выполнено {doneCount}/5" in block
+    # Drift-free reset countdown: re-pinned {sec, at: Date.now()} on each status refresh
+    # (NOT the naive `status.reset_seconds - tick` that double-counts — see daily-quests-feature memory).
+    assert "setPin({sec: status.reset_seconds, at: Date.now()})" in block
+    assert "pin.sec - (Date.now() - pin.at) / 1000" in block
+    assert "status.reset_seconds - tick" not in block
+    assert "reset_seconds - genTick" not in block
+    # Fresher mockup (2026-07-16): per-quest status chips ("В процессе"/"Готово"/"Забрано")
+    # removed — the action buttons (Забрать / Ждёт / ✓ Забрано) already encode state.
+    assert "{t:'В процессе'" not in block
+    assert "const badge = " not in block
+    assert "'Забрать'" in block
+    assert ">Ждёт<" in block
+    assert "✓ Забрано" in block
+    # Claim posts to the new endpoint.
+    assert "/api/daily-quests/claim" in block
 
-    assert "const storedCycleDay = Number(status?.streak_day || 0);" in block
-    assert "const storedCycleMultiplier = Number(status?.multiplier || 1);" in block
-    assert "const storedCycleIsSpecial = storedCycleMultiplier === 3 || (storedCycleDay > 0 && storedCycleDay % 3 === 0);" in block
-    assert "const nextAmount    = alreadyClaimed ? (status?.reward_amount ?? status?.base_amount ?? status?.next_reward_amount ?? 0) : null;" in block
-    assert "if (alreadyClaimed && storedCycleIsSpecial)" in block
-    assert "const nextIsSpecial = alreadyClaimed ? storedCycleIsSpecial : !!status?.next_is_special;" in block
-    assert "alreadyClaimed && status?.next_is_special" not in block
-    assert "status?.next_reward_amount ?? status?.reward_amount" not in block
+
+def test_back_handler_deps_include_quests_and_pending_case_open():
+    # P2 stale-closure guard: the backHandler useEffect uses `showQuests` and
+    # `pendingCaseOpen` in its body (to close the Quests sheet and the pending
+    # case-open modal), so both MUST appear in its dependency array — else the
+    # installed window.ExtraArenaAppBack closes over stale flags and the system
+    # Back button stops closing those overlays. Source-level guard so a future
+    # edit that drops either dep is caught.
+    import re
+    source = Path("webapp/index.html").read_text(encoding="utf-8")
+    # Isolate the backHandler useEffect block: from the `const backHandler =` decl
+    # to the end of its `]);` deps array.
+    start = source.index("const backHandler = () => {")
+    # find the closing `]);` of this useEffect — the first `]);` after the decl.
+    end = source.index("]);", start)
+    block = source[start:end]
+    assert "if (pendingCaseOpen)" in block
+    assert "if (showQuests)" in block
+    # The deps array is the text after `}, [` up to the end marker.
+    assert "showQuests" in block, "showQuests must be in backHandler deps (used in body)"
+    assert "pendingCaseOpen" in block, "pendingCaseOpen must be in backHandler deps (used in body)"
+
+
+def test_quests_sheet_surfaces_claim_errors_and_rollover_refetch():
+    # P2: claim failures must surface a user-visible toast (was: silent onClaimed on every
+    # non-2xx, network errors swallowed). And a rollover-refetch effect must refetch the
+    # instant the drift-free resetSeconds hits 0 so yesterday's board cannot linger.
+    source = Path("webapp/index.html").read_text(encoding="utf-8")
+    block = source.split("const QuestsSheet = ({onClose, status, onClaimed}) => {", 1)[1].split(
+        "const CardArtLightbox", 1
+    )[0]
+    # Per-error-code toasts on the failure path.
+    assert "already_claimed" in block and "Награда уже забрана" in block
+    assert "not_claimable" in block and "Квест ещё не выполнен" in block
+    assert "unknown_quest" in block
+    assert "feature_disabled" in block and "Квесты сейчас недоступны" in block
+    # Generic failure + network-error toast (was swallowed by `catch(e) {}`).
+    assert "Не удалось забрать награду" in block
+    assert "Ошибка сети" in block
+    # The catch must now invoke showToast, not be empty.
+    assert "catch(e) {" not in block or block.count("window.showToast") >= 4
+    # Rollover-refetch effect: re-fetches when resetSeconds hits 0.
+    assert "rolledRef" in block and "hadPinRef" in block
+    assert "resetSeconds <= 0" in block
+    assert "rolledRef.current = true" in block
+
+
+def test_quests_polling_is_gated_on_sheet_open_and_exposes_refresh_hook():
+    # P2 polling load: the 30s interval must gate on showQuests (30s open / 5min closed)
+    # so closed sheets don't hammer the DB per-30s. Plus an event-driven refresh hook is
+    # exposed so case-open can refetch quest progress instantly.
+    source = Path("webapp/index.html").read_text(encoding="utf-8")
+    block = source.split("const fetchQuestStatus = React.useCallback", 1)[1].split(
+        "const onQuestClaimed = React.useCallback", 1
+    )[0]
+    # Interval picks 30s while open, 5min while closed (not a fixed 30000).
+    assert "const intervalMs = showQuests ? 30000 : 300000" in block
+    assert "setInterval(fetchQuestStatus, intervalMs)" in block
+    # The effect re-runs on showQuests (so the interval re-arms on open/close).
+    assert "[fetchQuestStatus, showQuests]" in block
+    # Global refresh hook exposed for event-driven refetch.
+    assert "window.__refreshQuestStatus = fetchQuestStatus" in block
+    # Case-open onDone calls the hook (event-driven refetch of open_case_1 progress).
+    assert "window.__refreshQuestStatus?.()" in source
+
+
+def test_quests_sheet_has_dialog_a11y_and_esc_to_close():
+    # QuestsSheet is a real modal: labelled dialog semantics, focus capture/restore,
+    # Tab trap, Escape close, and background scroll lock.
+    source = Path("webapp/index.html").read_text(encoding="utf-8")
+    block = source.split("const QuestsSheet = ({onClose, status, onClaimed}) => {", 1)[1].split(
+        "const CardArtLightbox", 1
+    )[0]
+    assert 'role="dialog"' in block and 'aria-modal="true"' in block
+    assert 'aria-labelledby="quests-sheet-title"' in block
+    assert 'id="quests-sheet-title"' in block
+    assert "dialogRef" in block and "Ref.current" in block
+    assert "Escape" in block and "onClose" in block
+    assert "e.key !== 'Tab'" in block
+    assert "previousFocus.focus()" in block
+    assert "document.body.style.overflow = 'hidden'" in block
+    # Outer container carries the ref + role.
+    assert 'ref={dialogRef} role="dialog"' in block
+
+
+def test_orphaned_daily_rewards_notif_toggle_removed():
+    # P3: the "Ежедневные награды" / notif_daily_rewards settings toggle was dead UI
+    # (its sole producer, the daily-login scheduler, was removed). The toggle must be
+    # gone from both the React settings sheet and the legacy main.js settings UI, and
+    # from the notifs state/default. Server-side persistence + notifications.py maps
+    # are intentionally kept dormant (column-drop is riskier).
+    source = Path("webapp/index.html").read_text(encoding="utf-8")
+    assert "dailyRewards" not in source
+    assert "notif_daily_rewards" not in source
+    assert 'Ежедневные награды' not in source
+    main_js = Path("webapp/main.js").read_text(encoding="utf-8")
+    assert "notif_daily_rewards" not in main_js
+    assert 'Ежедневные награды' not in main_js
 
 
 def test_analytics_v2_start_captures_returnclock_launch_context():
