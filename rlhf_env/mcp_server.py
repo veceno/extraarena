@@ -506,6 +506,152 @@ def _compact_state(
     return result
 
 
+def _wilson_lower_bound(wins: int, games: int, z: float = 1.96) -> float:
+    if games <= 0:
+        return 0.0
+    p = wins / games
+    denom = 1.0 + z * z / games
+    centre = p + z * z / (2.0 * games)
+    margin = z * math.sqrt((p * (1.0 - p) + z * z / (4.0 * games)) / games)
+    return max(0.0, (centre - margin) / denom)
+
+
+def _semi_synthetic_quality(gdir: Path, results: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Behavioral gate for LLM traces; structural validity alone is not enough."""
+    llm_results = [
+        r for r in results if str(r.get("battle_tag") or "").startswith("llm-vs-")
+    ]
+    games = len(llm_results)
+    wins = sum(1 for r in llm_results if str(r.get("status", "")).upper() == "P1_WIN")
+    decisions = rejected = end_turn = end_turn_attack = end_turn_play = mana_draw = 0
+    degraded = 0
+    for r in llm_results:
+        degraded += int(bool(r.get("degraded") or r.get("policy_warnings")))
+        apath = gdir / "battles" / str(r.get("battle_id")) / "v5" / "actions.jsonl"
+        if not apath.exists():
+            continue
+        for line in apath.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            if row.get("decision_source") != "llm":
+                continue
+            decisions += 1
+            rejected += int(row.get("accepted") is not True or bool(row.get("error")))
+            action_type = row.get("action_type")
+            mana_draw += int(action_type == "mana_draw")
+            if action_type == "end_turn":
+                end_turn += 1
+                legal_types = {a.get("type") for a in (row.get("legal_actions") or []) if isinstance(a, dict)}
+                end_turn_attack += int("attack" in legal_types)
+                end_turn_play += int("play_card" in legal_types)
+    win_rate = wins / games if games else 0.0
+    lower = _wilson_lower_bound(wins, games)
+    rejection_rate = rejected / decisions if decisions else 0.0
+    # A campaign is promotable only after a bounded 50-game smoke and a
+    # statistically conservative lower bound above the user's 3% floor.
+    usable = bool(
+        games >= 50
+        and decisions > 0
+        and degraded == 0
+        and rejected == 0
+        and lower > 0.03
+    )
+    return {
+        "llm_battles": games,
+        "llm_wins": wins,
+        "p1_win_rate": win_rate,
+        "p1_win_rate_wilson_lower_95": lower,
+        "llm_decisions": decisions,
+        "rejected_or_error_decisions": rejected,
+        "rejection_rate": rejection_rate,
+        "degraded_battles": degraded,
+        "mana_draw_decisions": mana_draw,
+        "end_turn_decisions": end_turn,
+        "end_turn_with_attack_legal": end_turn_attack,
+        "end_turn_with_play_legal": end_turn_play,
+        "minimum_battles": 50,
+        "minimum_wilson_lower_bound": 0.03,
+        "semi_synthetic_usable": usable,
+    }
+
+
+def _aggregate_quality_reports(reports: List[Dict[str, Any]]) -> Dict[str, Any]:
+    additive = (
+        "llm_battles", "llm_wins", "llm_decisions",
+        "rejected_or_error_decisions", "degraded_battles",
+        "mana_draw_decisions", "end_turn_decisions",
+        "end_turn_with_attack_legal", "end_turn_with_play_legal",
+    )
+    total = {k: sum(int(r.get(k, 0) or 0) for r in reports) for k in additive}
+    games = total["llm_battles"]
+    decisions = total["llm_decisions"]
+    total["p1_win_rate"] = total["llm_wins"] / games if games else 0.0
+    total["p1_win_rate_wilson_lower_95"] = _wilson_lower_bound(total["llm_wins"], games)
+    total["rejection_rate"] = (
+        total["rejected_or_error_decisions"] / decisions if decisions else 0.0
+    )
+    total["minimum_battles"] = 50
+    total["minimum_wilson_lower_bound"] = 0.03
+    total["semi_synthetic_usable"] = bool(
+        games >= 50
+        and decisions > 0
+        and total["degraded_battles"] == 0
+        and total["rejected_or_error_decisions"] == 0
+        and total["p1_win_rate_wilson_lower_95"] > 0.03
+    )
+    return total
+
+
+def _compact_state(state: Dict[str, Any], *, history_limit: int = 8) -> Dict[str, Any]:
+    """Decision-complete, token-bounded view for LLM player loops."""
+    card_keys = (
+        "instance_id", "card_id", "name", "description", "card_type",
+        "mana_cost", "attack", "hp", "max_hp", "mechanics", "is_ready",
+        "can_attack", "is_frozen", "level",
+    )
+
+    def card(c: Any) -> Dict[str, Any]:
+        return {k: c[k] for k in card_keys if isinstance(c, dict) and k in c}
+
+    def side(raw: Any, *, include_hand: bool) -> Dict[str, Any]:
+        raw = raw if isinstance(raw, dict) else {}
+        out = {
+            "user_id": raw.get("user_id"),
+            "mana": raw.get("mana"),
+            "max_mana": raw.get("max_mana"),
+            "mana_draw_count_this_turn": raw.get("mana_draw_count_this_turn", 0),
+            "hero": card(raw.get("hero")),
+            "board": [card(c) for c in (raw.get("board") or [])],
+            "hand_count": raw.get("hand_count", len(raw.get("hand") or [])),
+            "deck_count": raw.get("deck_count"),
+        }
+        if include_hand:
+            out["hand"] = [card(c) for c in (raw.get("hand") or [])]
+        return out
+
+    top_keys = (
+        "match_id", "turn", "current_player_id", "is_my_turn", "is_ended",
+        "game_over", "winner_id", "ruleset", "sudden_death",
+    )
+    out = {k: state.get(k) for k in top_keys if k in state}
+    out["player"] = side(state.get("player"), include_hand=True)
+    out["opponent"] = side(state.get("opponent"), include_hand=False)
+    # Long UUIDs are deliberately kept for inspection, but LLM players should
+    # submit the stable per-state index instead of transcribing them. Small
+    # models were observed mutating one or two UUID characters, turning an
+    # otherwise sound choice into a rejected action.
+    out["legal_actions"] = [
+        {"legal_action_index": idx, **dict(action)}
+        for idx, action in enumerate(state.get("legal_actions") or [])
+        if isinstance(action, dict)
+    ]
+    history = list(state.get("action_history") or [])
+    out["action_history"] = history[-max(0, min(int(history_limit), 20)):]
+    out["compact"] = True
+    return out
+
+
 def _policy_info(policy: Any) -> Optional[Dict[str, Any]]:
     """Лёгкое provenance-описание политики: {name,kind,model_path,weights_hash,weights_version}.
 
@@ -1751,6 +1897,16 @@ class MCPServer:
                     for row in results
                 ],
                 "battles_finished": len(results),
+                "battle_ids": [str(r.get("battle_id")) for r in results if r.get("battle_id")],
+                "battles": [
+                    {
+                        "battle_id": r.get("battle_id"),
+                        "policy_warnings": list(r.get("policy_warnings") or []),
+                        "degraded": bool(r.get("degraded")),
+                        "v5_trace_ok": bool(r.get("v5_trace_ok")),
+                    }
+                    for r in results
+                ],
                 "v5_trace_ok_count": v5_ok,
                 "manifest_v5_trace_ok_count": manifest_v5_ok,
                 "deep_validated": True,

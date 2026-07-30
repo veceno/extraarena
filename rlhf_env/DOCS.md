@@ -148,6 +148,11 @@ flowchart TD
 `run_bot_turn(player_id=p1, policy=match.p1_policy)` (model-vs-model, без
 `submit_action`). `battle_tag = {p1}-vs-{bot|rl}` зависит только от kind-а p2.
 
+Для браузерного `p1_actor_type=human` каждая action-row также несёт
+`human_decision_time_ms`: наблюдаемую сервером паузу от выдачи человеку
+управляемого state до следующего action request. Для `llm|rl|bot` поле
+всегда `null`.
+
 ### 2.2. Поток данных (один бой)
 
 ```

@@ -80,15 +80,27 @@ class V5ActionConditionedPolicy(nn.Module):
         )
         self.action_encoder = nn.Linear(action_feature_dim, action_hidden_dim)
         self.candidate_scorer = nn.Linear(hidden_dim + action_hidden_dim, 1)
-        # The legacy scorer is additively separable, so its state contribution
-        # cancels between candidates. These gated residuals supply genuine
-        # state/action compatibility while remaining exactly zero for older
-        # checkpoints.
+        # The legacy linear scorer is additively separable:
+        #   w_s * state + w_a * action + b
+        # so its state term is identical for every candidate and cancels from
+        # the softmax/argmax. This branch adds a genuine state-action
+        # compatibility residual while its zero-initialized gate preserves
+        # legacy logits exactly at initialization and when loading a
+        # pre-interaction V5 checkpoint. Zero-initializing the whole query is
+        # intentionally avoided because it is unsafe with
+        # Adam: thousands of weights can move in lockstep and make the residual
+        # explode within a few dozen updates. Instead the query keeps its
+        # normal initialization and a single zero-initialized scalar gate opens
+        # the bounded compatibility residual gradually.
         self.state_action_query = nn.Linear(hidden_dim, action_hidden_dim)
         import mlx.core as mx
 
         self.state_action_gate = nn.Linear(1, 1, bias=False)
         self.state_action_gate.weight = mx.zeros_like(self.state_action_gate.weight)
+        # The V1 path is deliberately tiny and cannot move a multi-logit hard
+        # decision boundary.  V2 starts at an exact zero residual so loading an
+        # old checkpoint preserves every logit, but its bounded range is large
+        # enough for state-specific recovery decisions once trained.
         self.state_action_query_v2 = nn.Linear(hidden_dim, action_hidden_dim)
         self.state_action_key_v2 = nn.Linear(action_hidden_dim, action_hidden_dim)
         self.state_action_gate_v2 = nn.Linear(1, 1, bias=False)
@@ -105,6 +117,8 @@ class V5ActionConditionedPolicy(nn.Module):
         # fused state_emb as value_head; its logit is gated by the legal mask
         # from mana_draw_head_v5.mana_draw_legal_mask (illegal → -inf).
         self.mana_draw_head = nn.Linear(hidden_dim, 1)
+        # Pre-B recovery must not alter the accepted first-start draw policy.
+        # This zero-initialized residual is hard-gated by initiative below.
         self.mana_draw_recovery_head = nn.Linear(hidden_dim, 1)
         self.mana_draw_recovery_head.weight = mx.zeros_like(
             self.mana_draw_recovery_head.weight
@@ -187,11 +201,13 @@ class V5ActionConditionedPolicy(nn.Module):
             mx.expand_dims(state_query_v2, axis=1) * action_key_v2,
             axis=-1,
         ) * self.state_action_interaction_scale * interaction_gate_v2
-        # V2 is the dedicated second-start recovery lane.
+        # V2 is the explicit second-start recovery lane.  The persistent
+        # am_first_player bit lives at V5 global offset 16; hard-gating here
+        # guarantees the accepted first-start policy is byte-for-behavior
+        # unchanged rather than merely KL-encouraged to stay close.
         am_first_player = mx.clip(obs[:, OBS_V1_DIM + 16], 0.0, 1.0)
-        interaction_logits_v2 = interaction_logits_v2 * mx.expand_dims(
-            1.0 - am_first_player, axis=1
-        )
+        second_start_gate = mx.expand_dims(1.0 - am_first_player, axis=1)
+        interaction_logits_v2 = interaction_logits_v2 * second_start_gate
         logits = legacy_logits + interaction_logits + interaction_logits_v2
         value = self.value_head(state_emb).squeeze(-1)
         # Parallel binary mana_draw head on the fused state_emb (same input as

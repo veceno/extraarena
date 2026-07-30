@@ -976,6 +976,15 @@ pub unsafe extern "C" fn trainv3_worker_reset(worker: *mut FfiWorker) -> i32 {
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn trainv3_worker_use_chacha_rng(worker: *mut FfiWorker) -> i32 {
+    let Some(worker) = worker_mut(worker) else {
+        return -1;
+    };
+    worker.worker.use_chacha_rng();
+    0
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn trainv3_worker_reset_indices(
     worker: *mut FfiWorker,
     indices_ptr: *const usize,
@@ -998,6 +1007,35 @@ pub unsafe extern "C" fn trainv3_worker_reset_indices(
             worker.set_last(output);
             0
         }
+        Err(_) => -3,
+    }
+}
+
+/// Reset selected lanes without materialising a new full-batch observation.
+///
+/// A live PPO collector may reset several terminal lanes during one batched
+/// step.  Encoding after every individual reset turns that into O(resets *
+/// env_count) observation work; the caller can invoke `trainv3_worker_encode`
+/// once after all resets instead.
+#[no_mangle]
+pub unsafe extern "C" fn trainv3_worker_reset_indices_deferred(
+    worker: *mut FfiWorker,
+    indices_ptr: *const usize,
+    indices_len: usize,
+) -> i32 {
+    let Some(worker) = worker_mut(worker) else {
+        return -1;
+    };
+    if indices_len > 0 && indices_ptr.is_null() {
+        return -2;
+    }
+    let indices = if indices_len == 0 {
+        &[]
+    } else {
+        unsafe { slice::from_raw_parts(indices_ptr, indices_len) }
+    };
+    match worker.worker.reset_indices(indices) {
+        Ok(()) => 0,
         Err(_) => -3,
     }
 }
@@ -1566,6 +1604,20 @@ pub unsafe extern "C" fn trainv3_worker_rewards_len(worker: *const FfiWorker) ->
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn trainv3_worker_counterparty_rewards_ptr(
+    worker: *const FfiWorker,
+) -> *const f32 {
+    float_ptr(worker, |w| &w.last.counterparty_rewards)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn trainv3_worker_counterparty_rewards_len(
+    worker: *const FfiWorker,
+) -> usize {
+    float_len(worker, |w| &w.last.counterparty_rewards)
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn trainv3_worker_episode_returns_ptr(
     worker: *const FfiWorker,
 ) -> *const f32 {
@@ -1711,7 +1763,10 @@ pub unsafe extern "C" fn trainv3_worker_step_mana_draw(
             worker.set_last(output);
             0
         }
-        Err(_) => -3,
+        Err(err) => {
+            eprintln!("trainv3_worker_step_mana_draw failed: {err}");
+            -3
+        }
     }
 }
 

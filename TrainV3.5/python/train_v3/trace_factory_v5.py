@@ -49,9 +49,9 @@ class V5TraceScenario:
         {
             "own_hand_identity_known": True,
             "own_deck_known": True,
-            "enemy_hand_known": False,
-            "enemy_deck_known": False,
-            "enemy_deck_order_known": False,
+            "enemy_hand_known": True,
+            "enemy_deck_known": True,
+            "enemy_deck_order_known": True,
         },
     )
     draw_assist_modes: tuple[dict[str, Any], ...] = (
@@ -202,9 +202,9 @@ def _info_mode(strength: float, visibility: dict[str, Any], draw_assist: dict[st
         adaptive_strength=float(strength),
         own_hand_identity_known=bool(visibility.get("own_hand_identity_known", True)),
         own_deck_known=bool(visibility.get("own_deck_known", True)),
-        enemy_hand_known=bool(visibility.get("enemy_hand_known", False)),
-        enemy_deck_known=bool(visibility.get("enemy_deck_known", False)),
-        enemy_deck_order_known=bool(visibility.get("enemy_deck_order_known", False)),
+        enemy_hand_known=bool(visibility.get("enemy_hand_known", True)),
+        enemy_deck_known=bool(visibility.get("enemy_deck_known", True)),
+        enemy_deck_order_known=bool(visibility.get("enemy_deck_order_known", True)),
         draw_assist_enabled=bool(draw_assist.get("draw_assist_enabled", False)),
         draw_assist_strength=float(draw_assist.get("draw_assist_strength", 0.0) or 0.0),
     )

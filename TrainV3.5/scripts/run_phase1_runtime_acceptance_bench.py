@@ -244,7 +244,8 @@ def select_v5_action(model: Any, env: TrainV3ClassicEnv, player_id: int) -> tupl
     obs = env.observe(player_id).astype(np.float32)
     mask = env.action_mask(player_id).astype(np.float32)
     action_features = env.action_features(player_id, include_preview=False).astype(np.float32)
-    logits, _value = model(mx.array(obs[None, :]), mx.array(action_features[None, :, :]))
+    output = model(mx.array(obs[None, :]), mx.array(action_features[None, :, :]))
+    logits = output[0] if isinstance(output, tuple) else output
     mx.eval(logits)
     logits_np = np.array(logits, dtype=np.float32)[0]
     masked = np.where(mask.astype(bool), logits_np, -1.0e9)
@@ -745,7 +746,13 @@ def _checkpoint_update(path: Path) -> int:
     marker = "update_"
     if marker not in stem:
         return 0
-    return int(stem.rsplit(marker, 1)[1])
+    suffix = stem.rsplit(marker, 1)[1]
+    digits = []
+    for char in suffix:
+        if not char.isdigit():
+            break
+        digits.append(char)
+    return int("".join(digits)) if digits else 0
 
 
 if __name__ == "__main__":

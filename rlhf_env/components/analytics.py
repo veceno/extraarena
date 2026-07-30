@@ -41,7 +41,7 @@ from core.state import GameStatus  # noqa: F401  (типы)
 
 logger = logging.getLogger(__name__)
 
-RECORDER_VERSION = "rlhf-analytics-1.0"
+RECORDER_VERSION = "rlhf-analytics-1.1"
 CARD_PARAMS_SCHEMA = "train_v3_card_params_v1"
 ACTION_CONTEXT_SCHEMA = "train_v3_action_context_v1"
 DECK_PARAMS_SCHEMA = "train_v3_deck_params_v1"
@@ -283,7 +283,14 @@ class AnalyticsRecorder:
     # ------------------------------------------------------------------
     # хуки (вызывает match_runner)
     # ------------------------------------------------------------------
-    def before_action(self, user_id: int, action_json: Dict[str, Any], decision_source: str) -> int:
+    def before_action(
+        self,
+        user_id: int,
+        action_json: Dict[str, Any],
+        decision_source: str,
+        *,
+        human_decision_time_ms: Optional[int] = None,
+    ) -> int:
         st = self.engine._arena.state
         acting_player = 1 if user_id == st.p1.user_id else 2
         try:
@@ -315,6 +322,15 @@ class AnalyticsRecorder:
             "won": None,                   # F08
             "accepted": None,              # F02: проставляется в after_action
             "decision_source": decision_source,  # F02/F03
+            # Server-observed interval from the moment an actionable state was
+            # exposed to the browser until the next request arrived.  Deliberately
+            # null for llm/rl/bot actors so synthetic pacing never contaminates the
+            # future humanisation dataset.
+            "human_decision_time_ms": (
+                int(human_decision_time_ms)
+                if decision_source == "human" and human_decision_time_ms is not None
+                else None
+            ),
             "action_seq": self._action_seq,
             "timestamp_ms": int(time.monotonic() * 1000),
             "state_json": state_json,

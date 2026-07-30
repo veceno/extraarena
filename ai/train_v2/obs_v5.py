@@ -57,7 +57,7 @@ def encode_observation_v5(
     me, _ = _get_me_enemy(state, player_id)
     gbase = OBS_V1_DIM
     _encode_globals_v5(
-        out[gbase : gbase + V5_GLOBAL_DIM], info_mode, assist_mode, history_events, me
+        out[gbase : gbase + V5_GLOBAL_DIM], info_mode, assist_mode, history_events, me, state, player_id
     )
 
     pbase = gbase + V5_GLOBAL_DIM
@@ -74,6 +74,8 @@ def _encode_globals_v5(
     assist_mode: AssistModeV5,
     history_events,
     me,
+    state,
+    player_id: int,
 ) -> None:
     dst[0] = info_mode.clipped_strength()
     dst[1] = float(info_mode.own_hand_identity_known)
@@ -96,6 +98,28 @@ def _encode_globals_v5(
     # MANA_DRAW_COUNT_NORMALIZER (5.0) and clipped to [0, 1]; matches the Rust
     # kernel `norm(mana_draw_count_this_turn, MANA_DRAW_COUNT_NORMALIZER)`.
     dst[15] = min(float(me.mana_draw_count_this_turn) / MANA_DRAW_COUNT_NORMALIZER, 1.0)
+    # Persistent turn-order channel. This must stay byte-identical to the
+    # TrainV3.5 encoder so inference sees the same first/second-start context
+    # as the PPO rollout kernel.
+    dst[16] = float(_starting_player_id(state) == int(player_id))
+
+
+def _starting_player_id(state) -> int | None:
+    explicit = getattr(state, "starting_player_id", None)
+    if explicit in (getattr(state.p1, "user_id", 1), getattr(state.p2, "user_id", 2)):
+        return int(explicit)
+    if int(getattr(state, "turn_number", 0) or 0) == 1:
+        p1_mana = int(getattr(state.p1, "max_mana", 0) or 0)
+        p2_mana = int(getattr(state.p2, "max_mana", 0) or 0)
+        if p1_mana != p2_mana:
+            return int(state.p1.user_id if p1_mana > p2_mana else state.p2.user_id)
+        return int(getattr(state, "current_turn_owner_id", 0) or 0)
+    current = int(getattr(state, "current_turn_owner_id", 0) or 0)
+    if int(getattr(state, "turn_number", 0) or 0) % 2 == 1:
+        return current
+    if current == int(state.p1.user_id):
+        return int(state.p2.user_id)
+    return int(state.p1.user_id)
 
 
 def _encode_private_info(dst: np.ndarray, state, player_id: int, info_mode: InfoModeV5) -> None:

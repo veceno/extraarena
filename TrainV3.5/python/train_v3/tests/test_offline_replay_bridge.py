@@ -58,6 +58,7 @@ import numpy as np
 import pytest
 
 from ai.train_v2.classic_actions_v1 import (
+    ACTION_FEATURE_DIM,
     MAX_CANDIDATE_ACTIONS,
     decode_action,
 )
@@ -71,7 +72,7 @@ from core.state import GameStatus
 from rlhf_env.components.arena_engine import RlhfBattleEngine
 from rlhf_env.components.v5_trace import V5TraceRecorder
 from train_v3 import offline_replay_bridge as orb
-from train_v3.contracts import AssistModeV5, InfoModeV5
+from train_v3.contracts import AssistModeV5, InfoModeV5, OBS_V5_DIM
 from train_v3.offline_replay_bridge import (
     build_offline_replay_batch,
     make_policy_fn_from_checkpoint,
@@ -158,7 +159,9 @@ def _write_real_trace_bc(
             "seq": seq, "battle_id": battle_id,
             "turn_number": int(pre_snap["turn_number"]),
             "actor_user_id": int(actor), "actor_player": actor_player,
-            "decision_source": decision_source,
+            # Phase-C production topology is one human (p1) versus a bot.
+            # Marking both actors human hides cross-turn filtering defects.
+            "decision_source": decision_source if actor_player == 1 else "bot",
             "legal_action_index": idx, "action_type": action_type,
             "action_json": action_native, "action_native": action_native,
             "source_card": None, "target_card": None,
@@ -361,14 +364,48 @@ def test_human_filter_excludes_bot_and_rejected_rows(tmp_path):
     ]
 
 
+def test_rejected_eligible_rows_are_not_training_targets(tmp_path):
+    """Rejected LLM/human attempts remain auditable but are filtered from replay."""
+    snap, _ = _minimal_state_snapshot(p1_hand=2, p1_mana=5, owner=1)
+    p1_uid = int(snap["p1"]["user_id"])
+
+    def _row(seq: int, *, accepted: bool):
+        return {
+            "seq": seq, "battle_id": "b_rejected", "turn_number": int(snap["turn_number"]),
+            "actor_user_id": p1_uid, "actor_player": 1, "decision_source": "llm",
+            "legal_action_index": 0, "action_type": "end_turn",
+            "action_json": {"type": "end_turn"}, "action_native": {"type": "end_turn"},
+            "source_card": None, "target_card": None, "legal_actions": [{"type": "end_turn"}],
+            "legal_action_count": 1, "pre_state": snap, "post_state": snap,
+            "deltas": None, "accepted": accepted,
+            "error": None if accepted else "illegal_action",
+            "timestamp_ms": 0, "visibility": "omniscient_offline_only",
+        }
+
+    rows = [_row(1, accepted=False), _row(2, accepted=True)]
+    rec = _write_battle_index(
+        tmp_path, "b_rejected", meta_status="p2_win", v5_trace_ok=True, rows=rows,
+    )
+    _write_manifest(tmp_path, [rec])
+
+    out = build_offline_replay_batch(
+        _fake_policy,
+        group_dirs=tmp_path,
+        accepted_decision_sources=("llm",),
+    )
+    assert out.num_games == 1
+    assert out.num_rows == 1
+    assert out.skipped_rows == 0
+    assert out.target_tcodes[0, 0] == 0
+
+
 # ---------------------------------------------------------------------------
 # (2) D11 omniscient InfoModeV5 passed to iter_offline_transitions
 # ---------------------------------------------------------------------------
 
 
-def test_omniscient_info_mode_passed(tmp_path):
-    """The bridge calls iter_offline_transitions with an omniscient InfoModeV5
-    (enemy_hand_known=True, enemy_deck_known=True). Spy on the loader call."""
+def test_training_visibility_info_mode_passed(tmp_path):
+    """The bridge matches the omniscient A/B and production contract."""
     _write_real_trace_bc(tmp_path, "b_omni", n_steps=20, seed=21, meta_status="p2_win")
 
     captured: dict[str, InfoModeV5] = {}
@@ -392,12 +429,8 @@ def test_omniscient_info_mode_passed(tmp_path):
     assert "info_mode" in captured, "bridge did not call iter_offline_transitions"
     im = captured["info_mode"]
     assert im is not None, "bridge passed info_mode=None to the loader"
-    assert im.enemy_hand_known is True, (
-        "D11: bridge must pass enemy_hand_known=True (omniscient)"
-    )
-    assert im.enemy_deck_known is True, (
-        "D11: bridge must pass enemy_deck_known=True (omniscient)"
-    )
+    assert im.enemy_hand_known is True
+    assert im.enemy_deck_known is True
 
 
 # ---------------------------------------------------------------------------
@@ -482,13 +515,13 @@ def test_old_log_prob_and_value_from_current_policy(tmp_path):
         ), f"step={step}: value must equal obs[0] for every row (D-C10)"
         tc = int(out.target_tcodes[step, 0])
         is_md = bool(out.is_mana_draw[step, 0])
-        if is_md or tc == -1:
-            # mana_draw / terminal: old_log_prob = 0.0 (no 601 action).
-            assert out.batch.log_probs[step, 0] == 0.0, (
-                f"step={step}: mana_draw/terminal old_log_prob must be 0.0"
-            )
+        if is_md:
+            assert out.batch.log_probs[step, 0] == pytest.approx(np.log(0.5), abs=1e-5)
+        elif tc == -1:
+            assert out.batch.log_probs[step, 0] == 0.0
         else:
-            expected = float(np.log(1.0 / count_legal + 1.0e-10))
+            gate = np.log(0.5) if bool(out.mana_draw_legal[step, 0]) else 0.0
+            expected = float(gate + np.log(1.0 / count_legal + 1.0e-10))
             assert out.batch.log_probs[step, 0] == pytest.approx(
                 expected, abs=1e-5
             ), (
@@ -799,7 +832,7 @@ def test_mana_draw_rows_carry_head_fields(tmp_path):
         "mana_draw was legal on this pre_state -> mana_draw_legal=True"
     )
     assert out.target_tcodes[0, 0] == -1, "mana_draw -> target_tcode=None (-1)"
-    assert out.batch.log_probs[0, 0] == 0.0, "mana_draw old_log_prob=0 (no 601 action)"
+    assert out.batch.log_probs[0, 0] == pytest.approx(np.log(0.5), abs=1e-6)
     # value STILL populated (GAE needs V(s_t) for every step, D-C10).
     assert out.batch.values[0, 0] == pytest.approx(
         float(out.batch.observations[0, 0, 0]), abs=1e-6
@@ -807,7 +840,54 @@ def test_mana_draw_rows_carry_head_fields(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# (11) checkpoint loader skip-gate (A2 pattern; MLX-free gate test)
+# (11) opponent-turn terminal outcome is preserved by macro transitions
+# ---------------------------------------------------------------------------
+
+
+def test_bot_turn_loss_backfills_human_terminal_reward(tmp_path):
+    snap, _ = _minimal_state_snapshot(p1_hand=2, p1_mana=5, owner=1)
+    human_uid = int(snap["p1"]["user_id"])
+    bot_uid = int(snap["p2"]["user_id"])
+    after_human = copy.deepcopy(snap)
+    after_bot = copy.deepcopy(snap)
+    after_bot["status"] = "p2_win"
+    after_bot["p1"]["hero"]["hp"] = 0
+
+    rows = [
+        {
+            "seq": 1, "battle_id": "b_bot_lethal", "turn_number": 1,
+            "actor_user_id": human_uid, "actor_player": 1,
+            "decision_source": "human", "legal_action_index": 0,
+            "action_type": "end_turn", "action_json": {"type": "end_turn"},
+            "action_native": {"type": "end_turn"}, "legal_actions": [],
+            "legal_action_count": 0, "pre_state": snap, "post_state": after_human,
+            "accepted": True, "error": None,
+        },
+        {
+            "seq": 2, "battle_id": "b_bot_lethal", "turn_number": 1,
+            "actor_user_id": bot_uid, "actor_player": 2,
+            "decision_source": "bot", "legal_action_index": 0,
+            "action_type": "attack", "action_json": {"type": "attack"},
+            "action_native": {"type": "attack"}, "legal_actions": [],
+            "legal_action_count": 0, "pre_state": after_human, "post_state": after_bot,
+            "accepted": True, "error": None,
+        },
+    ]
+    rec = _write_battle_index(
+        tmp_path, "b_bot_lethal", meta_status="p2_win", v5_trace_ok=True, rows=rows,
+    )
+    _write_manifest(tmp_path, [rec])
+
+    loader_rows = list(iter_offline_transitions(tmp_path))
+    assert loader_rows[0].terminal is False and loader_rows[0].reward == 0.0
+    out = build_offline_replay_batch(_fake_policy, group_dirs=tmp_path)
+    assert out.num_rows == 1
+    assert bool(out.batch.terminated[0, 0]) is True
+    assert float(out.batch.rewards[0, 0]) == pytest.approx(-1.0)
+
+
+# ---------------------------------------------------------------------------
+# (12) checkpoint loader skip-gate (A2 pattern; MLX-free gate test)
 # ---------------------------------------------------------------------------
 
 
@@ -825,3 +905,25 @@ def test_checkpoint_loader_skip_gate(tmp_path):
     bogus = tmp_path / "does_not_exist.npz"
     with pytest.raises(FileNotFoundError):
         make_policy_fn_from_checkpoint(bogus)
+
+
+def test_checkpoint_loader_infers_v5_widths(tmp_path):
+    """A 256-wide post-B checkpoint must not be restored into the old 128-wide
+    bridge default.  The regression is observable only on the first forward
+    pass because the checkpoint loader is intentionally permissive."""
+    pytest.importorskip("mlx.core")
+    from ai.train_v2.model_mlx import save_checkpoint
+    from train_v3.v5_policy import create_v5_policy
+
+    checkpoint = tmp_path / "wide_v5.npz"
+    model = create_v5_policy(hidden_dim=256, action_hidden_dim=96)
+    save_checkpoint(str(checkpoint), model)
+
+    policy_fn = make_policy_fn_from_checkpoint(checkpoint)
+    logits, values, mana_draw = policy_fn(
+        np.zeros((2, OBS_V5_DIM), dtype=np.float32),
+        np.zeros((2, MAX_CANDIDATE_ACTIONS, ACTION_FEATURE_DIM), dtype=np.float32),
+    )
+    assert logits.shape == (2, MAX_CANDIDATE_ACTIONS)
+    assert values.shape == (2,)
+    assert mana_draw.shape == (2,)

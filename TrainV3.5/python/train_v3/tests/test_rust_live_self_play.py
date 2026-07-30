@@ -4,7 +4,8 @@ Verifies the missing live-self-play entry point:
   * dispatch split (verifier finding 2a blocker): 6 rule-agent identities via the Rust
     ``select_rule_action_for_state`` codes 0-7 (worker.rs:1285) + 4 policy-opponent
     identities via the Python loop (rollout_worker.py:211-230);
-  * learner-only reward (fix #1): opponent-actor steps record ZERO reward;
+  * learner-perspective reward (fix #1): opponent-actor response rewards are folded
+    into the previous learner row with the learner sign;
   * max_turns threading (fix #2): ``from_live(max_turns=120)`` threads into
     ``KernelConfig`` (kernel.rs:660) — NOT the serde default 80 (kernel.rs:624);
   * decisive-state early-end (D-A6);
@@ -26,7 +27,9 @@ Run:
 """
 from __future__ import annotations
 
+import hashlib
 import os
+from dataclasses import replace
 from typing import Any
 
 import numpy as np
@@ -156,12 +159,45 @@ class TestDispatchSplit:
         assert 7 not in rls.RULE_AGENT_CODES.values()
 
 
+class TestGreedyFaceOpponentParity:
+    @pytest.mark.parametrize(
+        "legal",
+        [
+            [0],
+            [0, 545, 552],
+            [0, 545, 1, 18],
+            [0, 545, 2],
+            [0, 545, 546],
+            [18, 35, 552, 560],
+        ],
+    )
+    def test_packed_default_matches_train_v2_benchmark_policy(self, legal):
+        from ai.train_v2.policies import GreedyFacePolicy
+
+        class _LegalOnlyEnv:
+            def legal_action_ids(self, _player_id):
+                return list(legal)
+
+        ctx = rls.OpponentCtx(
+            env_idx=0,
+            actor_id=2,
+            observation_v5=np.zeros(8, dtype=np.float32),
+            legal_action_ids=np.asarray(legal, dtype=np.intp),
+            legal_action_features=None,
+            legal_action_counts=len(legal),
+            mana_draw_legal=False,
+        )
+        expected = GreedyFacePolicy().select_action(_LegalOnlyEnv(), 2)
+        assert rls.GreedyFaceOpponent().select(0, ctx) == expected
+
+
 # ===========================================================================
 # FakeWorker + composition tests (deterministic, no Rust lib)
 # ===========================================================================
 class _FakeWorkerScriptEntry:
     """One transition in a FakeWorker script: pre-state (actor/mana_draw_legal/legal_counts)
-    + the outcome of acting in that pre-state (reward/terminated/truncated/hero_hp)."""
+    + the outcome of acting in that pre-state (actor/counterparty reward,
+    terminated/truncated/hero_hp)."""
 
     def __init__(
         self,
@@ -170,6 +206,7 @@ class _FakeWorkerScriptEntry:
         mana_draw_legal: bool = False,
         legal_counts: int = 3,
         reward: float = 0.0,
+        counterparty_reward: float | None = None,
         terminated: bool = False,
         truncated: bool = False,
         hero_hp: tuple[int, int, int, int] = (45, 45, 45, 45),
@@ -178,6 +215,7 @@ class _FakeWorkerScriptEntry:
         self.mana_draw_legal = bool(mana_draw_legal)
         self.legal_counts = int(legal_counts)
         self.reward = float(reward)
+        self.counterparty_reward = float(-reward if counterparty_reward is None else counterparty_reward)
         self.terminated = bool(terminated)
         self.truncated = bool(truncated)
         self.hero_hp = tuple(int(x) for x in hero_hp)
@@ -207,6 +245,7 @@ def _make_arrays(env_count: int, entries: list[_FakeWorkerScriptEntry]) -> dict[
         "legal_action_ids": legal_ids,
         "legal_action_features": legal_features,
         "rewards": np.zeros(env_count, dtype=np.float32),
+        "counterparty_rewards": np.zeros(env_count, dtype=np.float32),
         "terminated": np.zeros(env_count, dtype=np.bool_),
         "reset_flags": None,
         "terminal_observation_v5": None,
@@ -247,6 +286,9 @@ class FakeWorker:
     def arrays(self, *, copy: bool = False) -> dict[str, np.ndarray]:
         return _make_arrays(self.env_count, self._current_entries())
 
+    def encode(self, *, copy: bool = False) -> dict[str, np.ndarray]:
+        return self.arrays(copy=copy)
+
     def current_actor_ids(self) -> np.ndarray:
         return np.array([e.actor for e in self._current_entries()], dtype=np.int32)
 
@@ -270,6 +312,7 @@ class FakeWorker:
         # The outcome of acting in the CURRENT pre-state (entry[ptr]).
         entries = self._current_entries()
         rewards = np.array([e.reward for e in entries], dtype=np.float32)
+        counterparty_rewards = np.array([e.counterparty_reward for e in entries], dtype=np.float32)
         terminated = np.array([e.terminated for e in entries], dtype=np.bool_)
         self.last_outcome = list(entries)
         # advance pointers (post-state = next entry).
@@ -278,6 +321,7 @@ class FakeWorker:
                 self.ptr[i] += 1
         out = _make_arrays(self.env_count, self._current_entries())
         out["rewards"] = rewards
+        out["counterparty_rewards"] = counterparty_rewards
         out["terminated"] = terminated
         return out
 
@@ -316,9 +360,9 @@ def _script_alternating(learner_actor: int, *, opponent_actor: int, n_learner: i
                         terminal_at: int | None = None) -> list[_FakeWorkerScriptEntry]:
     """Build a per-env script that alternates opponent/learner turns. Each learner turn
     yields one learner transition; ``n_learner`` learner turns are produced. Opponent
-    turns carry ``reward_opponent`` (must be ZEROED by learner-only attribution) and
-    learner turns carry ``reward_learner`` (kept). If ``terminal_at`` is set, the
-    learner turn at that 1-based learner-turn index is marked terminated."""
+    turns carry ``reward_opponent`` (folded into the previous learner transition with
+    learner sign) and learner turns carry ``reward_learner`` (kept). If ``terminal_at``
+    is set, the learner turn at that 1-based learner-turn index is marked terminated."""
     out: list[_FakeWorkerScriptEntry] = []
     li = 0
     # pattern: opponent, learner, opponent, learner, ... (start at opponent so the first
@@ -409,12 +453,19 @@ class TestCompositionDispatch:
             assert 999 in stepped, f"{identity}: policy sentinel 999 never stepped; got {stepped}"
 
 
-class TestLearnerOnlyReward:
-    """test_opponent_steps_zero_reward — opponent-actor steps record ZERO reward
-    (learner-only, fix #1; regression guard for run_phase26:490)."""
+class TestLearnerPerspectiveReward:
+    """Opponent-actor response rewards are assigned to the previous learner row.
 
-    def test_opponent_steps_zeroed_in_collected_tape(self):
-        # Single env; opponent turns carry reward 5.0 (must be zeroed), learner turns 1.0 (kept).
+    This preserves TrainV2 / rule-only macro-step semantics: a good opponent response is
+    bad for the learner, so the acting-player opponent reward is subtracted from the
+    latest learner transition instead of disappearing.
+    """
+
+    def test_opponent_response_reward_is_folded_into_previous_learner_row(self):
+        # Single env; opponent turns carry actor reward 5.0 / counterparty reward
+        # -5.0 and learner turns carry reward 1.0.  The opening opponent transition
+        # precedes every learner action and must be dropped; later opponent responses
+        # attach to the preceding learner row.
         learner_actor = 1
         script = _script_alternating(
             learner_actor, opponent_actor=2, n_learner=4,
@@ -429,15 +480,87 @@ class TestLearnerOnlyReward:
             config=config, steps=4,
         )
         rewards = np.asarray(rollout.transitions.rewards, dtype=np.float32).reshape(-1)
-        # Every recorded transition is a LEARNER step (opponent steps are not recorded).
-        # Learner rewards were 1.0 each -> the tape must contain only 1.0 values (the 5.0
-        # opponent-step rewards were dropped/zeroed by learner-only attribution).
         assert rewards.size > 0, "no learner transitions collected"
-        assert np.all(rewards == 1.0), (
-            f"opponent reward leaked into learner tape: {rewards} (expected all 1.0)"
+        assert rewards.tolist() == [-4.0, -4.0, -4.0, 1.0], (
+            f"opener was attributed or response reward was not folded correctly: {rewards}"
         )
-        # No recorded reward equals the opponent reward 5.0.
-        assert not np.any(rewards == 5.0), f"opponent reward 5.0 leaked: {rewards}"
+
+    def test_response_uses_exact_counterparty_reward_not_actor_negation(self):
+        learner_actor = 2
+        script = _script_alternating(
+            learner_actor, opponent_actor=1, n_learner=2,
+            reward_learner=1.0, reward_opponent=5.0,
+        )
+        # The fake's default counterparty reward is -actor reward. Replace it
+        # with the non-zero-sum dense-reward value that the Rust surface exposes.
+        for entry in script:
+            if entry.actor == 1:
+                entry.counterparty_reward = -0.05
+        worker = FakeWorker([script])
+        rollout = rls.collect_rust_live_rollout(
+            worker, _FakeLearner(), {"end_turn": _EndTurnPolicy()},
+            learner_actor_ids=np.array([learner_actor], dtype=np.int32),
+            opponent_identities=["end_turn"], config=_tiny_config(), steps=2,
+        )
+        rewards = np.asarray(rollout.transitions.rewards, dtype=np.float32).reshape(-1)
+        assert rewards.tolist() == pytest.approx([0.95, 1.0])
+
+    def test_second_mover_reward_bonus_does_not_apply_per_transition(self):
+        learner_actor = 1
+        script = _script_alternating(
+            learner_actor, opponent_actor=2, n_learner=2,
+            reward_learner=1.0, reward_opponent=5.0,
+        )
+        worker = FakeWorker([script])
+        config = _tiny_config(second_mover_reward_bonus=0.25)
+        rollout = rls.collect_rust_live_rollout(
+            worker, _FakeLearner(), {"end_turn": _EndTurnPolicy()},
+            learner_actor_ids=np.array([learner_actor], dtype=np.int32),
+            opponent_identities=["end_turn"],
+            config=config, steps=2,
+        )
+        rewards = np.asarray(rollout.transitions.rewards, dtype=np.float32).reshape(-1)
+        assert rewards.tolist() == pytest.approx([-4.0, 1.0])
+
+    def test_second_mover_reward_bonus_applies_only_to_terminal_win(self):
+        learner_actor = 1
+        script = _script_alternating(
+            learner_actor, opponent_actor=2, n_learner=2,
+            reward_learner=1.0, reward_opponent=5.0, terminal_at=2,
+        )
+        worker = FakeWorker([script])
+        config = _tiny_config(second_mover_reward_bonus=0.25)
+        rollout = rls.collect_rust_live_rollout(
+            worker, _FakeLearner(), {"end_turn": _EndTurnPolicy()},
+            learner_actor_ids=np.array([learner_actor], dtype=np.int32),
+            opponent_identities=["end_turn"],
+            config=config, steps=2,
+        )
+        rewards = np.asarray(rollout.transitions.rewards, dtype=np.float32).reshape(-1)
+        assert rewards.tolist() == pytest.approx([-4.0, 1.25])
+
+    def test_p2_second_mover_gets_identical_reward_attribution_and_bonus(self):
+        """Seat p2 must not lose the opener fold or terminal second-mover bonus.
+
+        The previous test exercises a learner in seat p1 that moves second.  The
+        production V4-max problem is predominantly the other orientation: the
+        learner is p2 and p1 opens.  Keep this as an explicit regression guard
+        for the pending-opener attribution path.
+        """
+        learner_actor = 2
+        script = _script_alternating(
+            learner_actor, opponent_actor=1, n_learner=2,
+            reward_learner=1.0, reward_opponent=5.0, terminal_at=2,
+        )
+        worker = FakeWorker([script])
+        rollout = rls.collect_rust_live_rollout(
+            worker, _FakeLearner(), {"end_turn": _EndTurnPolicy()},
+            learner_actor_ids=np.array([learner_actor], dtype=np.int32),
+            opponent_identities=["end_turn"],
+            config=_tiny_config(second_mover_reward_bonus=0.25), steps=2,
+        )
+        rewards = np.asarray(rollout.transitions.rewards, dtype=np.float32).reshape(-1)
+        assert rewards.tolist() == pytest.approx([-4.0, 1.25])
 
     def test_reward_attribution_directly(self):
         # The A3 helper the trainer uses: zero non-learner-actor steps.
@@ -448,6 +571,44 @@ class TestLearnerOnlyReward:
         assert got.tolist() == [1.0, 0.0, 1.0, 0.0], (
             "learner-only attribution must zero opponent-actor (actor=2) steps"
         )
+
+
+class TestManaDrawExecution:
+    def test_legal_mana_draw_reaches_worker_and_rollout(self):
+        class AlwaysManaDrawLearner:
+            def select(self, ctx):
+                envs = np.asarray(ctx.env_indices, dtype=np.intp)
+                counts = np.asarray(ctx.legal_action_counts, dtype=np.intp)
+                offsets = np.asarray(ctx.legal_action_offsets, dtype=np.intp)
+                ids = np.asarray(ctx.legal_action_ids, dtype=np.uintp)
+                actions = np.asarray(
+                    [ids[int(offsets[env])] for env in envs], dtype=np.uintp
+                )
+                return (
+                    actions,
+                    np.zeros(len(envs), dtype=np.float32),
+                    np.zeros(len(envs), dtype=np.float32),
+                    np.zeros(len(envs), dtype=np.int32),
+                    np.asarray(ctx.mana_draw_legal, dtype=np.bool_)[envs],
+                )
+
+        worker = FakeWorker([[
+            _FakeWorkerScriptEntry(actor=1, mana_draw_legal=True),
+            _FakeWorkerScriptEntry(actor=1, mana_draw_legal=False),
+        ]])
+        rollout = rls.collect_rust_live_rollout(
+            worker,
+            AlwaysManaDrawLearner(),
+            {},
+            learner_actor_ids=np.array([1], dtype=np.int32),
+            opponent_identities=["random"],
+            config=_tiny_config(env_count=1),
+            steps=2,
+        )
+        assert bool(rollout.mana_draw_legal[0, 0]) is True
+        assert bool(rollout.mana_draw_taken[0, 0]) is True
+        assert any(bool(flags[0]) for _actions, flags in worker.step_mana_draw_calls)
+        assert bool(rollout.mana_draw_taken[1, 0]) is False
 
 
 class TestDecisiveEarlyEnd:
@@ -472,7 +633,7 @@ class TestDecisiveEarlyEnd:
 
         assert _ids(Snap2(), threshold=0.6) is False  # |0.75-0.625|=0.125 < 0.6
 
-    def test_decisive_state_terminates_episode_early(self):
+    def test_decisive_state_truncates_episode_early(self):
         # Script: learner turn at index 1 (1st learner transition) leads to a decisive
         # hero_hp (40/40 vs 5/40) -> the episode must be terminated early + the env reset.
         learner_actor = 1
@@ -492,9 +653,11 @@ class TestDecisiveEarlyEnd:
             config=config, steps=2,
         )
         term = np.asarray(rollout.transitions.terminated, dtype=np.bool_).reshape(-1)
-        # The first learner transition (row 0) must be marked terminated (decisive early-end).
-        assert bool(term[0]) is True, (
-            f"decisive early-end did not terminate the learner transition: {term}"
+        trunc = np.asarray(rollout.transitions.truncated, dtype=np.bool_).reshape(-1)
+        # Decisive early-end is artificial truncation, not a real terminal death.
+        assert bool(term[0]) is False, f"decisive early-end must not set terminal: {term}"
+        assert bool(trunc[0]) is True, (
+            f"decisive early-end did not truncate the learner transition: {trunc}"
         )
         # The env must have been reset (reset_indices called) to start a new episode.
         assert len(worker.reset_indices_calls) >= 1, (
@@ -578,18 +741,60 @@ class TestSecondStartOversampling:
         n2 = int(np.sum(sides == 2))
         assert abs(n1 - n2) < 200, f"no-breach should be ~50/50, got p1={n1} p2={n2}"
 
+    def test_fixed_p2_weight_uses_exact_env_split(self):
+        sides, scheme = rls.sample_learner_sides(
+            128,
+            p1_score_rate=0.8,
+            p2_score_rate=0.2,
+            oversampling={"policy": "fixed_p2_weight", "p2_weight": 0.625},
+            rng=np.random.default_rng(7),
+        )
+        assert int(np.sum(sides == 1)) == 48
+        assert int(np.sum(sides == 2)) == 80
+        assert scheme["policy"] == "fixed_p2_weight"
+        assert scheme["p1_weight"] == 0.375
+        assert scheme["p2_weight"] == 0.625
+        assert scheme["oversampled_side"] == "p2"
+
+    def test_fixed_second_start_weight_uses_actual_initiative(self):
+        starts = np.tile(np.array([1, 2], dtype=np.int32), 64)
+        sides, scheme = rls.sample_learner_sides_for_starts(
+            starts,
+            second_start_weight=0.75,
+            rng=np.random.default_rng(11),
+            exact=True,
+        )
+        second = sides != starts
+        assert int(np.count_nonzero(second)) == 96
+        assert int(np.count_nonzero(~second)) == 32
+        assert set(sides.tolist()) == {1, 2}
+        assert scheme["second_start_fraction"] == 0.75
+
+    def test_start_second_binding_is_opposite_every_reset(self):
+        starts = np.array([1, 2, 2, 1], dtype=np.int32)
+        sides, scheme = rls.sample_learner_sides_for_starts(
+            starts,
+            second_start_weight=1.0,
+            rng=np.random.default_rng(12),
+            exact=False,
+        )
+        assert np.array_equal(sides, 3 - starts)
+        assert scheme["second_start_count"] == starts.size
+
 
 # --- helpers used by the composition tests -----------------------------------
 def _tiny_config(
     max_turns: int = PHASE_A_MAX_TURNS,
     env_count: int = 1,
     decisive_early_end: bool = False,
+    second_mover_reward_bonus: float = 0.0,
 ) -> PhaseAPPOConfig:
     return PhaseAPPOConfig(
         max_turns=int(max_turns),
         env_count=int(env_count),
         steps_per_update=4,
         decisive_early_end=bool(decisive_early_end),
+        turn_order_second_mover_reward_bonus=float(second_mover_reward_bonus),
         # Use a rule-only mix for composition tests by default (overridden per-test).
         opponent_mix=build_phase_a_opponent_mix_string(
             {"random": 0.5, "face_rush": 0.5},
@@ -703,6 +908,26 @@ class TestRealFFISmoke:
         finally:
             worker.close()
 
+    def test_start_second_rebind_survives_real_episode_resets(self):
+        config = replace(
+            _tiny_config(env_count=4, max_turns=8),
+            steps_per_update=16,
+            second_start_oversampling={"policy": "start_second"},
+        )
+
+        metrics = rls.run_live_self_play_update(
+            config,
+            rls.ArgmaxRandomLearner(seed=29),
+            {},
+            seed=29,
+            steps=16,
+        )
+
+        assert metrics["first_start_learner_steps"] == 0
+        assert metrics["second_start_learner_steps"] == 64
+        assert metrics["second_start_learner_fraction"] == 1.0
+        assert max(metrics["episode_counts"]) > 1, "test must cross a real reset boundary"
+
     def test_max_turns_threaded_into_worker(self):
         # from_live(max_turns=120) must construct without raising (the defensive assert
         # at rust_ffi.py:1288 checks env_config.max_turns==120) AND the truncation
@@ -736,6 +961,55 @@ class TestRealFFISmoke:
             f"max_turns not respected/threaded: steps_to_truncate(12)={s12} <= "
             f"steps_to_truncate(6)={s6} (expected more turns for larger max_turns)"
         )
+
+    def test_live_constructor_accepts_large_gate_seed(self):
+        # Block-B side-stratified gates derive seeds as run_seed * 1_000_003.
+        # Keep that deterministic route inside the Rust live-constructor range.
+        from train_v3.rust_ffi import RustBatchWorker
+
+        worker = RustBatchWorker.from_live(
+            seed=719_014 * 1_000_003,
+            env_count=1,
+            max_turns=120,
+            diagnostic_mode="none",
+        )
+        try:
+            assert worker.current_actor_ids().shape == (1,)
+        finally:
+            worker.close()
+
+    def test_live_constructor_diversifies_slots_and_resets(self):
+        # Regression guard for V5 league collapse: live self-play must not train on
+        # one cloned GoldenTrace per whole update. Slots should start from different
+        # seed/deck states, and reset_indices should cycle to a different seed state.
+        from train_v3.rust_ffi import RustBatchWorker
+
+        def _row_hashes(rows: np.ndarray) -> set[str]:
+            return {
+                hashlib.sha256(np.ascontiguousarray(row).tobytes()).hexdigest()
+                for row in np.asarray(rows)
+            }
+
+        worker = RustBatchWorker.from_live(
+            seed=123456,
+            env_count=8,
+            max_turns=20,
+            action_features_mode="legal_only",
+            observation_mode="v5_only",
+            action_mask_mode="legal_only",
+            terminal_observation_mode="none",
+            diagnostic_mode="none",
+        )
+        try:
+            initial = worker.encode(copy=True)["observation_v5"]
+            worker.reset_indices(np.arange(8, dtype=np.uintp), copy=True)
+            after_reset = worker.encode(copy=True)["observation_v5"]
+        finally:
+            worker.close()
+
+        assert len(_row_hashes(initial)) > 1
+        assert len(_row_hashes(after_reset)) > 1
+        assert any(not np.array_equal(initial[idx], after_reset[idx]) for idx in range(8))
 
     def test_learner_only_reward_on_real_run(self):
         # On a real short run with a rule-opponent, opponent-actor step rewards must be

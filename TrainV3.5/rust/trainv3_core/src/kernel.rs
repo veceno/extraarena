@@ -40,6 +40,15 @@ pub const GAME_BOARD_CAP: usize = 5;
 // N-th mana draw in a turn costs `MANA_DRAW_BASE * (count + 1)` (2, 4, 6, ...).
 const MANA_DRAW_BASE: i32 = 2;
 
+// `compute_trainv2_reward` contains a generic dense bonus for mana spent.
+// That bonus is useful for normal card actions because spending mana has an
+// immediate board/attack meaning. A mana draw already pays its opportunity
+// cost in the game state, however: it consumes mana and can prevent a card
+// play. It must receive neither the generic spend bonus nor a hand-tuned
+// extra penalty. Otherwise PPO learns the reward designer's preferred draw
+// frequency instead of learning whether the resulting card improves the
+// eventual game outcome.
+
 // Normalizer for the mana_draw_count_this_turn V5 global channel (spec §6.184).
 // Grounded in the ruleset: max_mana is capped at 10 (core/engine.py:695) and
 // each mana draw costs MANA_DRAW_BASE * (count + 1), so the mana pool holds
@@ -694,7 +703,13 @@ pub struct KernelSnapshotOutput {
 #[derive(Debug, Clone)]
 pub struct KernelStepOutput {
     pub state: KernelState,
+    /// Reward for the acting player.
     pub reward: f32,
+    /// Exact reward for the other player on the same pre/post transition.
+    ///
+    /// V5 shaping is perspective-dependent and is intentionally not zero-sum,
+    /// so callers must not derive this value by negating `reward`.
+    pub counterparty_reward: f32,
     pub terminated: bool,
     /// Truncation flag (WD-2): true when `state.turn_number > max_turns`,
     /// mirroring `ai/train_v2/classic_rl_env.py::ClassicRLEnv.step`
@@ -786,10 +801,11 @@ impl RolloutKernel {
         // decoding `action_id`. Legality is verified via `mana_draw_legal_for`
         // (separate from the 601 action_mask). The 601 codec layout is frozen.
         if mana_draw_flag {
-            let (actor, _opponent) = state.players_for(player_id);
+            let (actor, opponent) = state.players_for(player_id);
             if !mana_draw_legal_for(actor) {
                 return Err("illegal_action".to_string());
             }
+            let counterparty_id = opponent.user_id;
             let mut next = state.clone();
             let overdraw_to_discard = self.config.overdraw_to_discard;
             let (player, _opponent) = next.players_for_mut(player_id)?;
@@ -798,16 +814,37 @@ impl RolloutKernel {
             check_game_over(&mut next);
             let base_reward = compute_trainv2_reward(state, &next, player_id);
             let reward_components_v5 = compute_reward_components_v5(state, &next, player_id);
-            let reward = if self.config.v5_weighted_reward {
+            let reward_before_draw_bonus_cancel = if self.config.v5_weighted_reward {
                 compute_weighted_reward_v5(base_reward, reward_components_v5, self.config.info_mode)
             } else {
                 base_reward
+            };
+            // Remove only the generic mana-spend shaping already included in
+            // `base_reward`. Do not add a draw reward or a draw penalty here:
+            // the engine's mana deduction is the opportunity cost and the
+            // policy should learn the card's value from future returns.
+            let reward =
+                reward_before_draw_bonus_cancel - mana_spend_dense_bonus(state, &next, player_id);
+            // The other player did not spend mana, so no draw-spend
+            // cancellation applies to their perspective.
+            let counterparty_base_reward = compute_trainv2_reward(state, &next, counterparty_id);
+            let counterparty_components_v5 =
+                compute_reward_components_v5(state, &next, counterparty_id);
+            let counterparty_reward = if self.config.v5_weighted_reward {
+                compute_weighted_reward_v5(
+                    counterparty_base_reward,
+                    counterparty_components_v5,
+                    self.config.info_mode,
+                )
+            } else {
+                counterparty_base_reward
             };
             let terminated = next.status != "ongoing";
             let truncated = next.turn_number > self.config.max_turns;
             return Ok(KernelStepOutput {
                 reward_components_v5,
                 reward,
+                counterparty_reward,
                 terminated,
                 truncated,
                 state: next,
@@ -858,6 +895,8 @@ impl RolloutKernel {
         action_id: usize,
         draw_rng: &mut DrawRng,
     ) -> Result<KernelStepOutput, String> {
+        let (_actor, counterparty) = state.players_for(player_id);
+        let counterparty_id = counterparty.user_id;
         let mut next = state.clone();
         let overdraw_to_discard = self.config.overdraw_to_discard;
         match decode_action_id(action_id) {
@@ -901,12 +940,25 @@ impl RolloutKernel {
         } else {
             base_reward
         };
+        let counterparty_base_reward = compute_trainv2_reward(state, &next, counterparty_id);
+        let counterparty_components_v5 =
+            compute_reward_components_v5(state, &next, counterparty_id);
+        let counterparty_reward = if self.config.v5_weighted_reward {
+            compute_weighted_reward_v5(
+                counterparty_base_reward,
+                counterparty_components_v5,
+                self.config.info_mode,
+            )
+        } else {
+            counterparty_base_reward
+        };
         let terminated = next.status != "ongoing";
         let truncated = next.turn_number > self.config.max_turns;
 
         Ok(KernelStepOutput {
             reward_components_v5,
             reward,
+            counterparty_reward,
             terminated,
             truncated,
             state: next,
@@ -1169,10 +1221,13 @@ fn apply_placement_mode(mask: &mut [f32], me: &KernelPlayer, placement_mode: Pla
 }
 
 /// Whether mana_draw is a legal action for `player` this turn — mirrors
-/// `core/engine.py` legal-actions generation (hand not full AND mana covers
-/// the next cost step `MANA_DRAW_BASE * (count + 1)`). Phase 2: MD-3.
+/// `core/engine.py` legal-actions generation (hand not full, mana covers the
+/// next cost step, and deck/graveyard has a drawable card). Phase 2: MD-3.
 pub fn mana_draw_legal_for(player: &KernelPlayer) -> bool {
     if player.hand.len() >= HAND_CAP {
+        return false;
+    }
+    if player.deck.is_empty() && player.graveyard.is_empty() {
         return false;
     }
     let cost = MANA_DRAW_BASE * (player.mana_draw_count_this_turn + 1);
@@ -2441,6 +2496,7 @@ fn encode_observation_v5_from_v1(
     // clipped to [0, 1] via `norm`; matches Python obs_v5._encode_globals_v5
     // dst[15] byte-for-byte.
     out[global_base + 15] = norm(me.mana_draw_count_this_turn as f32, MANA_DRAW_COUNT_NORMALIZER);
+    out[global_base + 16] = bool_f32(infer_starting_player_id(state) == player_id);
 
     let private_base = global_base + V5_GLOBAL_DIM;
     encode_private_info_v5(
@@ -2453,6 +2509,18 @@ fn encode_observation_v5_from_v1(
     debug_assert_eq!(out[history_base..].len(), HISTORY_DIM);
     encode_history_v5(&mut out[history_base..], player_id, history_events);
     out
+}
+
+fn infer_starting_player_id(state: &KernelState) -> i32 {
+    let current = state.current_turn_owner_id;
+    if state.turn_number % 2 != 0 {
+        return current;
+    }
+    if current == state.p1.user_id {
+        state.p2.user_id
+    } else {
+        state.p1.user_id
+    }
 }
 
 fn encode_private_info_v5(
@@ -2538,6 +2606,10 @@ fn encode_one_history_event_v5(out: &mut [f32], player_id: i32, event: &KernelHi
     out[10] = signed_norm(event.enemy_board_count_delta as f32, 7.0);
     out[11] = norm(event.turn_number as f32, 50.0);
     out[12] = signed_norm(event.board_power_delta, 200.0);
+    // Mana draw is a legal parallel action outside the frozen 601 candidate
+    // ids. Reserve metadata slot 13 so it cannot be confused with its ignored
+    // candidate-id placeholder.
+    out[13] = bool_f32(event.action_type == "mana_draw");
     if let Some(card) = &event.source_card {
         let shape = card.shape_v5(None, None, None);
         out[HISTORY_EVENT_SOURCE_OFFSET..HISTORY_EVENT_SOURCE_OFFSET + CARD_SHAPE_DIM_V5]
@@ -2598,22 +2670,46 @@ pub fn build_history_event_v5(
     action_type: String,
 ) -> KernelHistoryEvent {
     let turn_number = post.turn_number;
-    let pre = RewardSnapshotV5::from_state(pre, player_id);
-    let post = RewardSnapshotV5::from_state(post, player_id);
-    let pre_board_delta = pre.my_board_power - pre.enemy_board_power;
-    let post_board_delta = post.my_board_power - post.enemy_board_power;
+    let (source_card, target_card) = if action_type == "mana_draw" {
+        (None, None)
+    } else {
+        history_cards_for_action(pre, player_id, action_id)
+    };
+    let pre_snapshot = RewardSnapshotV5::from_state(pre, player_id);
+    let post_snapshot = RewardSnapshotV5::from_state(post, player_id);
+    let pre_board_delta = pre_snapshot.my_board_power - pre_snapshot.enemy_board_power;
+    let post_board_delta = post_snapshot.my_board_power - post_snapshot.enemy_board_power;
     KernelHistoryEvent {
         actor_id: player_id,
         action_id,
         action_type,
-        enemy_hero_hp_delta: pre.enemy_hero_hp - post.enemy_hero_hp,
-        own_hero_hp_delta: pre.my_hero_hp - post.my_hero_hp,
-        my_board_count_delta: post.my_board_count - pre.my_board_count,
-        enemy_board_count_delta: post.enemy_board_count - pre.enemy_board_count,
+        enemy_hero_hp_delta: pre_snapshot.enemy_hero_hp - post_snapshot.enemy_hero_hp,
+        own_hero_hp_delta: pre_snapshot.my_hero_hp - post_snapshot.my_hero_hp,
+        my_board_count_delta: post_snapshot.my_board_count - pre_snapshot.my_board_count,
+        enemy_board_count_delta: post_snapshot.enemy_board_count - pre_snapshot.enemy_board_count,
         board_power_delta: post_board_delta - pre_board_delta,
         turn_number,
-        source_card: None,
-        target_card: None,
+        source_card,
+        target_card,
+    }
+}
+
+fn history_cards_for_action(
+    state: &KernelState,
+    player_id: i32,
+    action_id: usize,
+) -> (Option<KernelCard>, Option<KernelCard>) {
+    let (me, enemy) = state.players_for(player_id);
+    match decode_action_id(action_id) {
+        Some(CandidateAction::PlayCard { hand_index, target_code, .. }) => (
+            me.hand.get(hand_index).cloned(),
+            resolve_target_card(me, enemy, target_code, false).0.cloned(),
+        ),
+        Some(CandidateAction::Attack { attacker_index, target_code }) => (
+            me.board.get(attacker_index).cloned(),
+            resolve_target_card(me, enemy, target_code, true).0.cloned(),
+        ),
+        _ => (None, None),
     }
 }
 
@@ -2696,12 +2792,25 @@ pub fn compute_trainv2_reward(pre: &KernelState, post: &KernelState, actor_id: i
         reward -= 0.02 * own_killed as f32;
     }
 
-    let mana_spent = pre_me.mana - post_me.mana;
-    if mana_spent > 0 {
-        reward += (0.005 * mana_spent as f32).min(0.02);
-    }
+    reward += mana_spend_dense_bonus(pre, post, actor_id);
 
     reward
+}
+
+/// Positive dense shaping for mana spent by an ordinary action.
+///
+/// Mana draw explicitly cancels this term after calling
+/// [`compute_trainv2_reward`]: its cost is already represented by the game
+/// state and must not become an additional reward-shaping target.
+fn mana_spend_dense_bonus(pre: &KernelState, post: &KernelState, actor_id: i32) -> f32 {
+    let (pre_me, _pre_enemy) = pre.players_for(actor_id);
+    let (post_me, _post_enemy) = post.players_for(actor_id);
+    let mana_spent = pre_me.mana - post_me.mana;
+    if mana_spent > 0 {
+        (0.005 * mana_spent as f32).min(0.02)
+    } else {
+        0.0
+    }
 }
 
 pub fn action_type_for_id(action_id: usize) -> &'static str {
@@ -3664,6 +3773,66 @@ mod draw_tests {
         assert_eq!(p.mana_draw_count_this_turn, 3);
     }
 
+    #[test]
+    fn mana_draw_reward_is_neutral_at_each_legal_cost() {
+        // A mana draw consumes real mana, so it already incurs an opportunity
+        // cost in the game state. It must not also receive either the generic
+        // +mana-spent bonus or an arbitrary draw-specific shaping penalty.
+        // Check costs 2, 4 and 6; the latter also exercises the spend-bonus cap.
+        for (draw_count, mana) in [(0, 5), (1, 6), (2, 8)] {
+            let mut state = v5_state_with_mana_draw_count(draw_count);
+            state.p1.mana = mana;
+            state.p1.hand = vec![card(20, 3, 1, 1)];
+            state.p1.deck = vec![card(99, 1, 1, 1)];
+            let kernel = RolloutKernel::new(KernelConfig::default());
+            let mut rng = crate::worker::WorkerRng::Deterministic;
+            let mut draw_rng = DrawRng::live(&mut rng);
+            let out = kernel
+                .apply_action(&state, 1, 0, true, &mut draw_rng)
+                .expect("legal mana draw");
+            assert!(
+                out.reward.abs() < 1.0e-6,
+                "count={draw_count}, reward={}",
+                out.reward
+            );
+            assert!(
+                out.counterparty_reward.abs() < 1.0e-6,
+                "count={draw_count}, counterparty_reward={}",
+                out.counterparty_reward
+            );
+        }
+    }
+
+    #[test]
+    fn step_output_carries_exact_non_zero_sum_counterparty_reward() {
+        let mut state = v5_state_with_mana_draw_count(0);
+        let mut attacker = card(55, 0, 5, 5);
+        attacker.is_ready = true;
+        state.p1.board = vec![attacker];
+        state.p2.board.clear();
+
+        let mut config = KernelConfig::default();
+        config.v5_weighted_reward = true;
+        let kernel = RolloutKernel::new(config);
+        let mut rng = crate::worker::WorkerRng::Deterministic;
+        let mut draw_rng = DrawRng::live(&mut rng);
+        let out = kernel
+            .apply_action(&state, 1, ATTACK_BASE + 7, false, &mut draw_rng)
+            .expect("face attack is legal");
+
+        let expected_base = compute_trainv2_reward(&state, &out.state, 2);
+        let expected_components = compute_reward_components_v5(&state, &out.state, 2);
+        let expected =
+            compute_weighted_reward_v5(expected_base, expected_components, config.info_mode);
+        assert!((out.counterparty_reward - expected).abs() < 1.0e-6);
+        assert!(
+            (out.counterparty_reward + out.reward).abs() > 1.0e-4,
+            "V5 rewards are intentionally non-zero-sum: actor={} counterparty={}",
+            out.reward,
+            out.counterparty_reward
+        );
+    }
+
     // ---- Block 0 component 2: V5 global mana_draw_count channel (spec §6.184) ----
 
     fn v5_state_with_mana_draw_count(count: i32) -> KernelState {
@@ -3733,6 +3902,77 @@ mod draw_tests {
         let out =
             encode_observation_v5(&state, 1, InfoModeV5::default(), AssistModeV5::default(), &[]);
         assert_eq!(out[OBS_DIM_V1 + 15], 0.0);
+    }
+
+    #[test]
+    fn v5_global_am_first_player_channel_at_offset_16() {
+        let mut state = v5_state_with_mana_draw_count(0);
+        state.current_turn_owner_id = 2;
+        state.turn_number = 2;
+        let p1 = encode_observation_v5(
+            &state,
+            1,
+            InfoModeV5::default(),
+            AssistModeV5::default(),
+            &[],
+        );
+        let p2 = encode_observation_v5(
+            &state,
+            2,
+            InfoModeV5::default(),
+            AssistModeV5::default(),
+            &[],
+        );
+        assert_eq!(p1[OBS_DIM_V1 + 16], 1.0);
+        assert_eq!(p2[OBS_DIM_V1 + 16], 0.0);
+    }
+
+    #[test]
+    fn v5_history_keeps_last_twenty_and_marks_mana_draw() {
+        let state = v5_state_with_mana_draw_count(0);
+        let events: Vec<KernelHistoryEvent> = (0..25)
+            .map(|turn| KernelHistoryEvent {
+                actor_id: 1,
+                action_id: if turn == 24 { MAX_CANDIDATE_ACTIONS } else { 0 },
+                action_type: if turn == 24 { "mana_draw" } else { "end_turn" }.to_string(),
+                enemy_hero_hp_delta: 0,
+                own_hero_hp_delta: 0,
+                my_board_count_delta: 0,
+                enemy_board_count_delta: 0,
+                board_power_delta: 0.0,
+                turn_number: turn,
+                source_card: None,
+                target_card: None,
+            })
+            .collect();
+        let out = encode_observation_v5(
+            &state,
+            1,
+            InfoModeV5::default(),
+            AssistModeV5::default(),
+            &events,
+        );
+        let history_base = OBS_DIM_V1 + V5_GLOBAL_DIM + PRIVATE_INFO_DIM;
+        // 25 supplied events -> the first retained slot is turn 5, not turn 0.
+        assert_eq!(out[history_base], 1.0);
+        assert_eq!(out[history_base + 11], 5.0 / 50.0);
+        let last = history_base + (HISTORY_EVENTS - 1) * HISTORY_EVENT_DIM;
+        assert_eq!(out[last + 13], 1.0, "mana_draw reserved metadata bit");
+    }
+
+    #[test]
+    fn v5_history_captures_pre_action_source_card() {
+        let state = KernelState {
+            current_turn_owner_id: 1,
+            turn_number: 1,
+            status: "ongoing".to_string(),
+            p1: player_with(Vec::new(), vec![card(37, 2, 3, 4)]),
+            p2: player_with(Vec::new(), Vec::new()),
+            ..Default::default()
+        };
+        let (source, target) = history_cards_for_action(&state, 1, PLAY_BASE);
+        assert_eq!(source.expect("play source").card_id, 37);
+        assert!(target.is_none());
     }
 
     // ---- Phase 3: rebirth (REBIRTH-1) ----

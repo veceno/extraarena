@@ -13,6 +13,8 @@ Covers:
 """
 from __future__ import annotations
 
+import sys
+import types
 from pathlib import Path
 
 import numpy as np
@@ -75,6 +77,35 @@ def test_default_registry_build_v5_returns_real_adapter_not_stub():
     p = default_registry().build(spec)
     assert isinstance(p, V5RlhfAdapter)
     assert not isinstance(p, V5StubAdapter)
+
+
+def test_real_onnx_wrapper_accepts_batched_scalar_heads(monkeypatch):
+    """Production ONNX exports return value and mana heads as shape [1, 1]."""
+    class FakeSession:
+        def __init__(self, path, providers):
+            assert providers == ["CPUExecutionProvider"]
+
+        def run(self, output_names, feed):
+            assert output_names == ["logits", "value", "mana_draw_logit"]
+            return [
+                np.zeros((1, 601), dtype=np.float32),
+                np.asarray([[0.25]], dtype=np.float32),
+                np.asarray([[-0.75]], dtype=np.float32),
+            ]
+
+    monkeypatch.setitem(
+        sys.modules,
+        "onnxruntime",
+        types.SimpleNamespace(InferenceSession=FakeSession),
+    )
+    infer = V5RlhfAdapter._build_onnx_inference("fake.onnx")
+    logits, value, mana_draw_logit = infer(
+        np.zeros(7128, dtype=np.float32),
+        np.zeros((601, 171), dtype=np.float32),
+    )
+    assert logits.shape == (601,)
+    assert value == pytest.approx(0.25)
+    assert mana_draw_logit == pytest.approx(-0.75)
 
 
 def test_fresh_registry_resolves_registered_real_factory():
@@ -206,13 +237,40 @@ def test_unexpected_inference_error_does_not_reflect_secret(tmp_path):
     assert "SUPERSECRET" not in str(caught.value)
 
 
+@pytest.mark.parametrize(("bad_logits", "failure_code"), [
+    (np.full(601, np.nan, dtype=np.float32), "non_finite_logits"),
+    (np.zeros(600, dtype=np.float32), "invalid_output_contract"),
+])
+def test_v5_rejects_invalid_logits_instead_of_silent_end_turn(
+    tmp_path,
+    bad_logits,
+    failure_code,
+):
+    mgr = make_manager(tmp_path)
+    _match, engine, _runner = create_match(mgr, p2_model="random", starting_player="p1")
+    adapter = V5RlhfAdapter({"name": "broken-v5", "inference": _fake_inference(bad_logits)})
+    with pytest.raises(RuntimeError, match=f"v5_policy_failure:{failure_code}"):
+        adapter.select_action(engine._arena, engine.human_user_id)
+
+
+def test_v5_rejects_non_finite_mana_draw_logit(tmp_path):
+    mgr = make_manager(tmp_path)
+    _match, engine, _runner = create_match(mgr, p2_model="random", starting_player="p1")
+
+    def broken_draw(obs, action_features):
+        return np.zeros(601, dtype=np.float32), 0.0, np.nan
+
+    adapter = V5RlhfAdapter({"name": "broken-v5", "inference": broken_draw})
+    with pytest.raises(RuntimeError, match="v5_policy_failure:non_finite_mana_logit"):
+        adapter.select_action(engine._arena, engine.human_user_id)
+
+
 # ----------------------------------------------------------------------------
 # 3. D11 omniscient InfoModeV5 explicit
 # ----------------------------------------------------------------------------
 
-def test_d11_omniscient_info_mode_explicit(tmp_path, monkeypatch):
-    """select_action must build the obs with InfoModeV5(enemy_hand_known=True,
-    enemy_deck_known=True) — NOT the SELF-VISIBLE default."""
+def test_v5_uses_training_self_visible_info_mode(tmp_path, monkeypatch):
+    """C2 inference must use the same private-information contract as A/B."""
     from train_v3.contracts import OBS_V5_DIM
     import train_v3.obs_v5 as obs_v5_mod
 
@@ -236,13 +294,13 @@ def test_d11_omniscient_info_mode_explicit(tmp_path, monkeypatch):
 
     im = captured["info_mode"]
     assert im is not None
-    assert im.enemy_hand_known is True, "D11: enemy_hand_known must be True"
-    assert im.enemy_deck_known is True, "D11: enemy_deck_known must be True"
-    # Sanity: the default InfoModeV5() has both False — verify we did NOT pass
-    # a default by checking the values are genuinely True.
+    assert im.enemy_hand_known is True
+    assert im.enemy_deck_known is True
+    # The global default is also omniscient; keep an explicit adapter setting so
+    # an unrelated default change cannot silently create deploy/train drift.
     from train_v3.contracts import InfoModeV5
-    assert InfoModeV5().enemy_hand_known is False
-    assert InfoModeV5().enemy_deck_known is False
+    assert InfoModeV5().enemy_hand_known is True
+    assert InfoModeV5().enemy_deck_known is True
 
 
 def test_history_events_reads_dedicated_v5_ring(tmp_path, monkeypatch):

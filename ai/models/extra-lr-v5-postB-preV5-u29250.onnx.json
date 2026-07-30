@@ -1,0 +1,22 @@
+{
+  "model_version": "v5_split_encoder_onnx_v1",
+  "source_checkpoint": "/Users/laveqox/Documents/ExtraArenaRaS/.claude/worktrees/glm-TrainV3.5Prep/TrainV3.5/runs/blockB_from_phaseA_p2accepted100_parallel_20260714_210400/checkpoints/extra_lr_v5_blockB_league_update_29250.npz",
+  "obs_dim": 7128,
+  "action_feature_dim": 171,
+  "max_candidate_actions": 601,
+  "placement_mode": "append_only",
+  "inputs": [
+    "observation",
+    "action_features"
+  ],
+  "outputs": [
+    "logits",
+    "value",
+    "mana_draw_logit"
+  ],
+  "mana_draw_head": true,
+  "state_action_interaction": "gated_bilinear_query_cap01_v1+gated_bilinear_key_cap2_v2",
+  "format": "v5",
+  "card_shape_version": "v5_card_shape_v1",
+  "config": {}
+}

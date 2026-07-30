@@ -121,7 +121,14 @@ class V5RlhfAdapter:
                 {"observation": obs_batch, "action_features": af_batch},
             )
             # Un-batch: logits -> [601], value -> scalar, mana_draw_logit -> scalar.
-            return outputs[0][0], float(outputs[1][0]), float(outputs[2][0])
+            # Real exports return value/mana heads as [batch, 1].  NumPy 2.x
+            # rejects float(array([x])), so flatten explicitly before scalar
+            # conversion instead of relying on the old implicit conversion.
+            value = float(np.asarray(outputs[1], dtype=np.float32).reshape(-1)[0])
+            mana_draw_logit = float(
+                np.asarray(outputs[2], dtype=np.float32).reshape(-1)[0]
+            )
+            return outputs[0][0], value, mana_draw_logit
 
         return _infer
 

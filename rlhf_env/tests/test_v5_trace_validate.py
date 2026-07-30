@@ -20,7 +20,10 @@ from typing import Any, Dict, List
 
 import pytest
 
-from rlhf_env.components.v5_trace_validate import validate_v5_trace
+from rlhf_env.components.v5_trace_validate import (
+    _check_actor_source,
+    validate_v5_trace,
+)
 from rlhf_env.tests._v5_helpers import create_match, make_manager, read_jsonl, v5_dir_for
 
 
@@ -190,6 +193,31 @@ def test_mutation_acted_out_of_turn(tmp_path):
     _save_actions(dst_v5, rows)
     rep = validate_v5_trace(dst_v5, battle_log_path=dst_blog)
     assert not rep["ok"] and _has_issue(rep, "acted out of turn"), rep["issues"]
+
+
+def test_rejected_out_of_turn_attempt_is_valid_audit_row():
+    """Отклонённая stale UI-попытка не должна карантинить весь корректный бой."""
+    rows = [{
+        "seq": 1,
+        "actor_user_id": 1000,
+        "actor_player": 1,
+        "decision_source": "human",
+        "accepted": False,
+        "pre_state": {"current_turn_owner_id": 2000},
+    }]
+    meta = {
+        "p1_user_id": 1000,
+        "p2_user_id": 2000,
+        "p1_actor_type": "human",
+        "p2_actor_type": "bot",
+        "p1_is_bot": False,
+        "p2_is_bot": True,
+    }
+    issues = []
+
+    _check_actor_source(rows, meta, issues)
+
+    assert not issues
 
 
 def test_mutation_continuity_post_ne_next_pre(tmp_path):

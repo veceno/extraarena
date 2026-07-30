@@ -199,8 +199,8 @@ def test_d_c6_stall_plateau_exit_to_d():
     assert manifest.stall_count == 2
     assert manifest.n_iterations_run == 3  # did NOT run a 4th iteration
     # best_ever_path carried == pool.best_ever.path
-    assert pool.best_ever is not None
-    assert manifest.best_ever_path == pool.best_ever.path
+    assert pool.best_ever is None
+    assert manifest.best_ever_path is None
     assert len(manifest.aggregate_history) == 3
 
 
@@ -373,12 +373,10 @@ def test_composition_call_order():
     # The candidate measured == the C3 new path == save_path.
     measured_path, _seed = runner.calls[0]
     assert measured_path == "ckpt_0001.npz"
-    # The pool received that path as the seed anchor (first snapshot).
-    assert pool.seed_anchor is not None
-    assert pool.seed_anchor.path == "ckpt_0001.npz"
-    assert pool.best_ever is not None
-    assert pool.best_ever.path == "ckpt_0001.npz"
-    assert manifest.best_ever_path == "ckpt_0001.npz"
+    # This synthetic measurement fails the full gate; it must not poison the pool.
+    assert pool.seed_anchor is None
+    assert pool.best_ever is None
+    assert manifest.best_ever_path is None
 
 
 def test_skip_gates_continue_no_stall_increment():

@@ -252,7 +252,7 @@ def test_manifest_roundtrip():
     pool.set_seed_anchor(_entry(0, 0.55, "seed.npz", gap=0.05, eligible=True))
     pool.add_snapshot(_entry(200, 0.58, "snap_200.npz", gap=0.08, eligible=True))
     pool.add_snapshot(_entry(400, 0.60, "snap_400.npz", gap=0.10, eligible=False))
-    pool.maybe_update_best_ever(_entry(400, 0.60, "snap_400.npz", gap=0.10, eligible=False))
+    assert not pool.maybe_update_best_ever(_entry(400, 0.60, "snap_400.npz", gap=0.10, eligible=False))
 
     with tempfile.TemporaryDirectory() as td:
         path = os.path.join(td, "pool_manifest.json")
@@ -266,7 +266,9 @@ def test_manifest_roundtrip():
     # Config round-trips.
     assert reloaded.target_non_anchor_count == 4
     assert reloaded.best_ever_strict_threshold == pytest.approx(0.5)
-    assert reloaded.frozen_non_self_share == pytest.approx(0.95)
+    # The audited Block-B composition reserves 25% for self snapshots: V4-orig
+    # is pressure, not the dominant frozen distribution.
+    assert reloaded.frozen_non_self_share == pytest.approx(0.75)
     assert reloaded.prevalence_pool_target == 6
 
     # Seed anchor round-trips (paths + metadata intact).
@@ -280,8 +282,8 @@ def test_manifest_roundtrip():
 
     # Best-ever round-trips.
     assert reloaded.best_ever is not None
-    assert reloaded.best_ever.update_number == 400
-    assert reloaded.best_ever.path == "snap_400.npz"
+    assert reloaded.best_ever.update_number == 0
+    assert reloaded.best_ever.path == "seed.npz"
     assert reloaded.best_ever.role == BEST_EVER_ROLE
 
     # Rolling round-trips (paths + metadata + order intact).

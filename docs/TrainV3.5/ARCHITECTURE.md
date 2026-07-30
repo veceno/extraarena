@@ -25,12 +25,18 @@ The full pipeline implemented here is the **V5-Max pipeline**, organised into bl
 
 ```
 Block -1  ->  Block 0  ->  Block A  ->  Block B  ->  Block C  ->  Block D  ->  Block E1
-(Rust       (V5 card-   (Pilot/BC/   (League on    (RLHF loop   (League-2     (Tournament
- ArenaEnv   shape 73 +   redesigned   Rust         C2->C3,      consolidation  + ship, the
- parity     foundation   PPO, A-gate) ArenaEnv)    AWAC/CRR     + D->E1       FINAL stage)
- port)      warm-start)               offline      handoff)
+(Rust       (V5 card-   (random-     (League on    (RLHF loop   (League-2     (Tournament
+ ArenaEnv   shape 73 +   heavy Rust   Rust         C2->C3,      consolidation  + ship, the
+ parity     foundation   ArenaEnv     ArenaEnv)    AWAC/CRR     + D->E1       FINAL stage)
+ port)      warm-start)  PPO, A-gate)              offline      handoff)
                                                   replay)
 ```
+
+As of 2026-07-05, Block A's first bootstrap is **teacher-free random-heavy Rust
+ArenaEnv PPO** (`scripts/run_phaseA_random_bootstrap.py`, target 98%+ vs random).
+The earlier Phase-A semi-synthetic ExtraRLHF/LLM/V4Max distillation path is disabled;
+V4Max warm-start is not used by default for this first bootstrap. Block-B league
+and Block-C human-vs-preV5 still follow afterward.
 
 Each block has a `BLOCK_<X>_PLAN.md` + `BLOCK_<X>_COMPLETION.md` pair in `TrainV3.5/`
 (the plan is the design, the completion log records what shipped + the test/commit

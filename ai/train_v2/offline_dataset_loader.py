@@ -201,6 +201,10 @@ class OfflineTransition:
             as the JSON-friendly snapshot (not the mutable ``GameState``) so
             the transition stays serializable-ish and BC reconstruction is
             spec-literal (``reconstruct_gamestate(snapshot)``).
+        post_state_snapshot: the matching raw ``post_state`` snapshot.  The
+            Phase-C replay bridge uses it to construct a human-perspective
+            macro transition across intervening bot actions, including a
+            terminal loss that happens on the bot's turn.
     """
 
     obs: np.ndarray
@@ -215,6 +219,7 @@ class OfflineTransition:
     # untouched; they only read the legacy fields above).
     action_native: Optional[Dict[str, Any]] = None
     pre_state_snapshot: Optional[Dict[str, Any]] = None
+    post_state_snapshot: Optional[Dict[str, Any]] = None
 
 
 # ---------------------------------------------------------------------------
@@ -522,6 +527,8 @@ def compute_offline_reward(
     post: Dict[str, Any],
     accepted: Optional[bool],
     status: str,
+    *,
+    is_mana_draw: bool = False,
 ) -> float:
     """Mirror ``classic_rl_env._compute_reward`` (classic_rl_env.py:383-421)
     EXACTLY.
@@ -600,7 +607,9 @@ def compute_offline_reward(
         reward -= 0.02 * own_killed
 
     mana_spent = _coerce_int(pre.get("my_mana")) - _coerce_int(post.get("my_mana"))
-    if mana_spent > 0:
+    # Mana draw spends mana but does not deserve the generic card-play spend
+    # bonus. Keep C replay reward byte-aligned with the fixed Rust online path.
+    if mana_spent > 0 and not is_mana_draw:
         reward += min(0.02, 0.005 * mana_spent)
 
     return reward
@@ -755,6 +764,7 @@ def iter_offline_transitions(
             reward = compute_offline_reward(
                 actor_user_id, pre_view, post_view,
                 row.get("accepted"), resolved_status,
+                is_mana_draw=str(row.get("action_type", "")) == "mana_draw",
             )
 
             # Reconstruct pre_state -> obs + action_features + mana_draw mask.
@@ -827,6 +837,7 @@ def iter_offline_transitions(
                 # terminal synthetic rows (surrender/draw/stalemate).
                 action_native=row.get("action_native"),
                 pre_state_snapshot=pre_snap,
+                post_state_snapshot=post_snap,
             )
 
 

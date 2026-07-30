@@ -7,6 +7,7 @@ from typing import Any
 
 import numpy as np
 
+from .contracts import OBS_V1_DIM
 from .rust_ffi import (
     compute_rust_compact_argmax_actions,
     compute_rust_dense_argmax_actions,
@@ -28,6 +29,9 @@ class PaddedLegalActionScores:
     padded_logits: Any
     legal_mask: Any
     values: Any
+    # The legal mana-draw action lives outside the 601 candidate action space.
+    # Keep its raw Bernoulli-gate logit beside the conditional candidate logits.
+    mana_draw_logits: Any | None = None
     profile: dict[str, float] | None = None
 
 
@@ -91,6 +95,40 @@ def score_compact_legal_actions(
     action_emb = model.action_encoder(features)
     joint = mx.concatenate([state_rows, action_emb], axis=-1)
     legal_logits = model.candidate_scorer(joint).squeeze(-1)
+    state_action_query = getattr(model, "state_action_query", None)
+    state_action_gate = getattr(model, "state_action_gate", None)
+    if state_action_query is not None and state_action_gate is not None:
+        query_rows = mx.tanh(state_action_query(state_emb))[env_indices]
+        interaction_scale = float(
+            getattr(model, "state_action_interaction_scale", int(model.action_hidden_dim) ** -0.5)
+        )
+        interaction_gate = float(getattr(model, "state_action_gate_cap", 0.1)) * mx.tanh(
+            state_action_gate.weight[0, 0]
+        )
+        legal_logits = legal_logits + mx.sum(
+            query_rows * mx.tanh(action_emb), axis=-1
+        ) * interaction_scale * interaction_gate
+    state_action_query_v2 = getattr(model, "state_action_query_v2", None)
+    state_action_key_v2 = getattr(model, "state_action_key_v2", None)
+    state_action_gate_v2 = getattr(model, "state_action_gate_v2", None)
+    if (
+        state_action_query_v2 is not None
+        and state_action_key_v2 is not None
+        and state_action_gate_v2 is not None
+    ):
+        query_rows_v2 = mx.tanh(state_action_query_v2(state_emb))[env_indices]
+        key_rows_v2 = mx.tanh(state_action_key_v2(action_emb))
+        interaction_scale = float(
+            getattr(model, "state_action_interaction_scale", int(model.action_hidden_dim) ** -0.5)
+        )
+        interaction_gate_v2 = float(getattr(model, "state_action_v2_gate_cap", 2.0)) * mx.tanh(
+            state_action_gate_v2.weight[0, 0]
+        )
+        legal_logits = legal_logits + mx.sum(
+            query_rows_v2 * key_rows_v2, axis=-1
+        ) * interaction_scale * interaction_gate_v2 * (
+            1.0 - mx.clip(obs[:, OBS_V1_DIM + 16], 0.0, 1.0)
+        )[env_indices]
     values = model.value_head(state_emb).squeeze(-1)
     return CompactLegalActionScores(legal_logits=legal_logits, values=values)
 
@@ -137,6 +175,7 @@ def score_padded_legal_actions(
             padded_logits=scores.padded_logits,
             legal_mask=scores.legal_mask,
             values=scores.values,
+            mana_draw_logits=scores.mana_draw_logits,
             profile=profile,
         )
     return scores
@@ -265,17 +304,64 @@ def score_padded_legal_action_inputs(
         joint = mx.reshape(joint, (batch_size * max_legal, model.hidden_dim + model.action_hidden_dim))
         raw_logits = model.candidate_scorer(joint)
         padded_logits = mx.reshape(raw_logits, (batch_size, max_legal))
+    state_action_query = getattr(model, "state_action_query", None)
+    state_action_gate = getattr(model, "state_action_gate", None)
+    if state_action_query is not None and state_action_gate is not None:
+        query = mx.tanh(state_action_query(state_emb))
+        interaction_scale = float(
+            getattr(model, "state_action_interaction_scale", int(model.action_hidden_dim) ** -0.5)
+        )
+        interaction_gate = float(getattr(model, "state_action_gate_cap", 0.1)) * mx.tanh(
+            state_action_gate.weight[0, 0]
+        )
+        padded_logits = padded_logits + mx.sum(
+            mx.expand_dims(query, axis=1) * mx.tanh(action_emb),
+            axis=-1,
+        ) * interaction_scale * interaction_gate
+    state_action_query_v2 = getattr(model, "state_action_query_v2", None)
+    state_action_key_v2 = getattr(model, "state_action_key_v2", None)
+    state_action_gate_v2 = getattr(model, "state_action_gate_v2", None)
+    if (
+        state_action_query_v2 is not None
+        and state_action_key_v2 is not None
+        and state_action_gate_v2 is not None
+    ):
+        query_v2 = mx.tanh(state_action_query_v2(state_emb))
+        key_v2 = mx.tanh(state_action_key_v2(action_emb))
+        interaction_scale = float(
+            getattr(model, "state_action_interaction_scale", int(model.action_hidden_dim) ** -0.5)
+        )
+        interaction_gate_v2 = float(getattr(model, "state_action_v2_gate_cap", 2.0)) * mx.tanh(
+            state_action_gate_v2.weight[0, 0]
+        )
+        padded_logits = padded_logits + mx.sum(
+            mx.expand_dims(query_v2, axis=1) * key_v2,
+            axis=-1,
+        ) * interaction_scale * interaction_gate_v2 * mx.expand_dims(
+            1.0 - mx.clip(obs[:, OBS_V1_DIM + 16], 0.0, 1.0), axis=1
+        )
     if mask_invalid_logits:
         padded_logits = mx.where(legal_mask, padded_logits, mx.array(-1e9, dtype=padded_logits.dtype))
     values = model.value_head(state_emb).squeeze(-1)
+    mana_draw_head = getattr(model, "mana_draw_head", None)
+    mana_draw_logits = None if mana_draw_head is None else mana_draw_head(state_emb).squeeze(-1)
+    mana_draw_recovery_head = getattr(model, "mana_draw_recovery_head", None)
+    if mana_draw_logits is not None and mana_draw_recovery_head is not None:
+        mana_draw_logits = mana_draw_logits + mana_draw_recovery_head(state_emb).squeeze(-1) * (
+            1.0 - mx.clip(obs[:, OBS_V1_DIM + 16], 0.0, 1.0)
+        )
     profile = None
     if profile_policy:
-        mx.eval(padded_logits, values)
+        if mana_draw_logits is None:
+            mx.eval(padded_logits, values)
+        else:
+            mx.eval(padded_logits, values, mana_draw_logits)
         profile = {"policy_model_seconds": time.perf_counter() - model_start}
     return PaddedLegalActionScores(
         padded_logits=padded_logits,
         legal_mask=legal_mask,
         values=values,
+        mana_draw_logits=mana_draw_logits,
         profile=profile,
     )
 

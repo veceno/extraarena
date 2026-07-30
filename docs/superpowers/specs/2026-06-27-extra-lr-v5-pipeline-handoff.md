@@ -13,6 +13,21 @@ Design spec **written + committed + self-reviewed**, **awaiting user review + op
 
 > **Project memory (cross-session recall):** this work is also recorded as a memory entry — `~/.claude/projects/-Users-laveqox-Documents-ExtraArenaRaS/memory/extra-lr-v5-pipeline.md` — indexed under the “RLHF training environment” section of that project’s `MEMORY.md`. Future sessions auto-load `MEMORY.md`, so the V5-Max pointer surfaces on resume even before this handoff is opened.
 
+**2026-07-05 override:** this handoff is historical for the initial design. Phase A's
+first bootstrap is now random-heavy Rust ArenaEnv PPO
+(`TrainV3.5/scripts/run_phaseA_random_bootstrap.py`, target 98%+ vs random), not
+semi-synthetic ExtraRLHF LLM/V4Max distillation, not V4Max warm-start by default,
+and not mandatory pilot→BC first.
+Later Block-B league and Block-C human-vs-preV5 remain in the pipeline.
+
+**2026-07-17 auxiliary-model override:** D8 is superseded. The pipeline now
+confirms **ExtraLR Assembler V1**, **ExtraLR CardOptimum V1**, **ExtraLR
+Metronome V1**, and **ExtraLR TimeStamp V1 Mono**; TimeStamp Duo is optional.
+Post-audit code already contains heuristic/data-plumbing precursors for
+Assembler and CardOptimum (`assembler` and legacy `desirerer`), but not trained
+production artifacts. Metronome and TimeStamp are new. The companion design
+spec is authoritative for their contracts, datasets, migration, and gates.
+
 ---
 
 ## 2. Decision ledger (frozen — do not re-derive)
@@ -21,19 +36,20 @@ Design spec **written + committed + self-reviewed**, **awaiting user review + op
 |---|---|
 | D1 | RLHF data → **offline-bridge** (reconstruct `GameState` from `v5_trace.pre_state` → offline-PPO replay). |
 | D2 | **Hybrid stack**: Rust kernel (TrainV3) rollouts/self-play/league/acceptance; Python offline-bridge + replay consumer; rlhf_env (8090) for fresh human collection. |
-| D3 | Phase A seed = **fresh pilot → BC** (post-rebalance). Existing archive **dropped** (stale, no mana_draw). |
+| D3 | Phase A seed = **random-heavy Rust ArenaEnv PPO bootstrap**. The older pilot→BC idea is optional/deferred; semi-synthetic LLM/V4Max distillation is disabled for Phase A. |
 | γ | **Frozen v1 codec**: `classic_obs_v1`/`classic_actions_v1`/`classic_card_shape_v1` byte-frozen → V4-orig ONNX runs unchanged (pristine, zero adapter). V5 uses new `v5_card_shape_v1` + `encode_observation_v5` + **parallel `mana_draw` binary head** (not a 602nd candidate). V5 601-scorer + base-1456 path **warm-starts from V4-Max** (`update_1190.npz`). |
 | D6 | **V4’ fine-tune removed.** V4 frozen. Benchmark = best self-snapshot + human-QA (+ decisive H2H vs V4-orig as asymmetric legacy ref). |
 | D7 | **C1 archive replay dropped.** RLHF loop = C2 (collect) → C3 (replay). |
-| D8 | **Sub-models deferred** (CardOptimum/Assembler — future). |
+| D8 (superseded) | ~~Sub-models deferred.~~ Superseded by D14 on 2026-07-17. |
 | D9 | C-phase mechanism = **AWAC/CRR offline-PPO replay** (not pure BC / DPO). |
 | D10 | **Acceptance stays on Rust** (TrainV3 `gauntlet_v5`/`run_v5_acceptance`); rule agents not ported. `model_benchmark` keeps legacy-H2H role only (no V5 adapter). |
 | D11 | Encoder = **omniscient always** (server-side bot). No perspective/aux split. |
 | D12 | History **mandatory**, window 20. |
 | D13 | **Early-stop K=2** in the RLHF loop. |
+| D14 | **Four auxiliary models confirmed:** ExtraLR Assembler V1, CardOptimum V1, Metronome V1, and TimeStamp V1 Mono; TimeStamp Duo optional. Separate datasets/artifacts/gates; no-assist V5 acceptance remains independent. |
 | — | V5-Lite **out of scope** (separate TrainV2-arch effort). |
 
-Pipeline: `Block -1 (freeze + Rust parity) → 0 (foundation) → A (pilot→BC→short redesign Phase A) → B (league) → C (C2→C3, early-stop K=2) → D (league-2) → E1 (tournament + ship)`.
+Pipeline: `Block -1 (freeze + Rust parity) → 0 (foundation) → A (random-heavy Rust PPO bootstrap) → B (league) → C (C2→C3, early-stop K=2) → D (league-2) → E1 (tournament + ship)`.
 
 ---
 
@@ -94,7 +110,7 @@ Resume prompt the user can paste:
 - `TrainV3/scripts/run_phase26_noassist_easy_gate.py` — Phase 26/A (the stall; `step_rewards=learner+opponent`:490, `opponent_mix` 0.55 random).
 
 **Codec / encoder (FROZEN under γ — do not modify):**
-- `ai/train_v2/classic_actions_v1.py:46` — `MAX_CANDIDATE_ACTIONS=601`, `build_action_mask`, `encode_action_features`, `_fill_preview_delta`:596 (preview channels 142–170; reusable for future CardOptimum).
+- `ai/train_v2/classic_actions_v1.py:46` — `MAX_CANDIDATE_ACTIONS=601`, `build_action_mask`, `encode_action_features`, `_fill_preview_delta`:596 (preview channels 142–170; reusable for the confirmed CardOptimum track).
 - `ai/train_v2/classic_obs_v1.py:28` — `encode_observation` (1456; `_NUM_HAND=4` cap, zone-summary deck, ignores history).
 - `ai/train_v2/classic_card_shape_v1.py:106` — `encode_card_shape` (64-float; **overlap bug** index 47).
 
@@ -112,6 +128,19 @@ Resume prompt the user can paste:
 - `rlhf_env/components/match_runner.py` — battle loop (`execute_human_action`, `run_bot_turn`, Ничья-fix ordering `state_changed` before `_finalize`).
 - `rlhf_env/components/policy_registry.py:94` — `scan`; uncommitted `_derive_kind_from_sidecar` (classifies ONNX without the benchmark inspector).
 - `rlhf_env/components/policy_factory.py` — `build_policy` (`BOT_MAX_DIFFICULTY='max'`, argmax; integrity `RuntimeError` on rule-based fallback).
+
+**Auxiliary-model precursors / new work:**
+- `TrainV3.5/python/train_v3/aux_models.py` — current heuristic Assembler +
+  `desirerer` dataset/scorer plumbing. `extra-sublr-desirerer-v1` migrates to
+  the public ExtraLR CardOptimum V1 concept; its current first-deck-card /
+  immediate-reward label is smoke-only, not a valid final target.
+- `TrainV3.5/scripts/run_phase5_aux_models.py` — builds/evaluates the two
+  precursor datasets; it does not train the confirmed learned artifacts.
+- Metronome consumes accepted human `human_decision_time_ms` rows after a
+  human-visible feature projection and censor filtering.
+- TimeStamp Mono/Duo require new completed-battle duration datasets; simulator
+  pretraining plus human calibration is mandatory because real C2 volume is
+  expected to be 100–300 battles (500 optimistic).
 
 **Benchmark harness (legacy role only for V5):**
 - `ai/model_benchmark/policies.py:24` — `BenchmarkPolicy` Protocol; `ActionConditionedOnnxPolicy`:61 (V4 adapter; temperature/sample native); `LegacyOnnxPolicy`:128 + `legacy_codec.py` (V3 adapter).
@@ -131,6 +160,7 @@ Resume prompt the user can paste:
 
 ## 8. Out-of-scope reminders
 - **V5-Lite** — separate TrainV2-architecture effort (new cards/mechanics); not this pipeline.
-- **Sub-models** (Extra-SubRL-CardOptimum-V1, Extra-SubRL-Assembler-V1) — deferred to a future enhancement.
+- **Auxiliary models are no longer out of scope.** Assembler, CardOptimum,
+  Metronome, and TimeStamp Mono are confirmed; TimeStamp Duo remains optional.
 - Do **not** modify frozen `classic_obs_v1` / `classic_actions_v1` / `classic_card_shape_v1` — V4-orig ONNX depends on them byte-identically. Bugfixes + new flags go in the new `v5_*` files.
 - Do **not** invoke implementation skills after spec approval — only `superpowers:writing-plans`.

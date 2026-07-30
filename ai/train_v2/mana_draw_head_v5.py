@@ -91,7 +91,8 @@ def mana_draw_legal_mask(state: GameState, player_id: int) -> bool:
         (engine.py:1344 + hand_full guard :781-782).
       * ``player.mana < MANA_DRAW_BASE * (mana_draw_count_this_turn + 1)``
         → False (engine.py:1345-1346 + insufficient_mana guard :785-786).
-      * otherwise → True (engine.py:1347 emits ManaDrawAction).
+      * deck or graveyard must contain a drawable card; otherwise the engine
+        does not emit a non-executable ManaDrawAction.
     """
     # engine.py:1206-1207 — game over → get_legal_actions returns [].
     if state.status != GameStatus.ONGOING:
@@ -109,6 +110,8 @@ def mana_draw_legal_mask(state: GameState, player_id: int) -> bool:
     # engine.py:1345-1346 + _handle_mana_draw insufficient_mana guard (:785-786).
     if player.mana < mana_draw_cost(player.mana_draw_count_this_turn):
         return False
+    if not player.deck and not player.graveyard:
+        return False
     # engine.py:1347 — ManaDrawAction emitted.
     return True
 
@@ -120,14 +123,15 @@ def select_includes_mana_draw(
 ) -> bool:
     """Selection helper: whether the policy takes the mana_draw action this step.
 
-    Spec §6.186 — "selection combines 601-candidate-best vs mana_draw logit
-    correctly". ``mana_draw`` is taken iff it is LEGAL and its logit STRICTLY
-    exceeds the best 601-candidate logit. Ties favor the candidate (the 601 path
-    is the default action space — deterministic). When ``mana_draw_legal`` is
-    False the result is False regardless of the logit: the legal mask DOMINATES
-    the head output (an illegal action is never selectable, mirroring the
-    engine which never emits it).
+    The parallel head is a Bernoulli gate, trained as ``P(draw)=sigmoid(logit)``.
+    It must not be numerically compared to an individual candidate logit.
+    Deterministic inference chooses draw exactly when its probability exceeds
+    one half (raw logit > 0). ``best_candidate_logit`` remains in the public
+    signature for existing ONNX callers, but is intentionally not used by the
+    factorized decision rule. When ``mana_draw_legal`` is False the legal mask
+    dominates the head output.
     """
     if not mana_draw_legal:
         return False
-    return float(mana_draw_logit) > float(best_candidate_logit)
+    del best_candidate_logit
+    return float(mana_draw_logit) > 0.0

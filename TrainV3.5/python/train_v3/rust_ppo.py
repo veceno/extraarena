@@ -42,6 +42,11 @@ class RustPPOBatch:
     advantages: np.ndarray
     returns: np.ndarray
     selected_local_indices: np.ndarray | None = None
+    # Parallel action channel outside the frozen 601-candidate codec. When
+    # present, PPO evaluates a binary mana-draw gate followed by the
+    # conditional candidate-action distribution.
+    mana_draw_legal: np.ndarray | None = None
+    mana_draw_taken: np.ndarray | None = None
 
     def flatten(self) -> dict[str, np.ndarray | None]:
         steps, env_count = self.actions.shape
@@ -73,6 +78,16 @@ class RustPPOBatch:
                 None
                 if self.selected_local_indices is None
                 else self.selected_local_indices.reshape((steps * env_count,))
+            ),
+            "mana_draw_legal": (
+                None
+                if self.mana_draw_legal is None
+                else self.mana_draw_legal.reshape((steps * env_count,))
+            ),
+            "mana_draw_taken": (
+                None
+                if self.mana_draw_taken is None
+                else self.mana_draw_taken.reshape((steps * env_count,))
             ),
         }
 
@@ -121,6 +136,7 @@ def train_rust_ppo_minibatch(
     value_coef: float = 0.5,
     entropy_coef: float = 0.01,
     max_grad_norm: float | None = None,
+    target_kl: float | None = None,
     shuffle: bool = True,
     seed: int | None = None,
     legal_row_pack_backend: str = "auto",
@@ -140,6 +156,7 @@ def train_rust_ppo_minibatch(
         value_coef=value_coef,
         entropy_coef=entropy_coef,
         max_grad_norm=max_grad_norm,
+        target_kl=target_kl,
         shuffle=shuffle,
         seed=seed,
         legal_row_pack_backend=legal_row_pack_backend,
@@ -160,6 +177,7 @@ def train_dense_rust_ppo_minibatch(
     value_coef: float = 0.5,
     entropy_coef: float = 0.01,
     max_grad_norm: float | None = None,
+    target_kl: float | None = None,
     shuffle: bool = True,
     seed: int | None = None,
     legal_row_pack_backend: str = "auto",
@@ -181,6 +199,7 @@ def train_dense_rust_ppo_minibatch(
         value_coef=value_coef,
         entropy_coef=entropy_coef,
         max_grad_norm=max_grad_norm,
+        target_kl=target_kl,
         shuffle=shuffle,
         seed=seed,
         legal_row_pack_backend=legal_row_pack_backend,
@@ -202,6 +221,7 @@ def _train_rust_ppo_minibatch_with_evaluator(
     value_coef: float,
     entropy_coef: float,
     max_grad_norm: float | None,
+    target_kl: float | None,
     shuffle: bool,
     seed: int | None,
     legal_row_pack_backend: str,
@@ -222,6 +242,8 @@ def _train_rust_ppo_minibatch_with_evaluator(
         raise ValueError("legal_row_pack_backend must be python, rust, or auto")
     if minibatch_plan not in {"contiguous", "legal_count_sorted"}:
         raise ValueError("minibatch_plan must be contiguous or legal_count_sorted")
+    if target_kl is not None and float(target_kl) <= 0.0:
+        raise ValueError("target_kl must be positive when provided")
 
     flat = batch.flatten()
     row_count = int(flat["actions"].shape[0])
@@ -319,7 +341,7 @@ def _train_rust_ppo_minibatch_with_evaluator(
     def apply_minibatch(
         mini: RustPPOBatch,
         padded_cache: PaddedLegalActionInputs | None = None,
-    ) -> None:
+    ) -> float:
         current_batch[0] = mini
         current_padded_cache[0] = padded_cache
         (loss_value, aux), grads = value_and_grad(model)
@@ -331,7 +353,10 @@ def _train_rust_ppo_minibatch_with_evaluator(
         metric_values["loss"].append(float(loss_value.item()))
         for name, value in aux.items():
             metric_values[name].append(float(value.item()))
+        return float(aux["approx_kl"].item())
 
+    early_stopped_by_kl = False
+    epochs_completed = 0
     for _epoch in range(epochs):
         if shuffle:
             if indices is None:
@@ -340,10 +365,19 @@ def _train_rust_ppo_minibatch_with_evaluator(
         if contiguous_plan is not None:
             if padded_cache_plan is None:
                 for mini in contiguous_plan.batches:
-                    apply_minibatch(mini)
+                    latest_kl = apply_minibatch(mini)
+                    if target_kl is not None and latest_kl > float(target_kl):
+                        early_stopped_by_kl = True
+                        break
             else:
                 for mini, padded_cache in zip(contiguous_plan.batches, padded_cache_plan, strict=True):
-                    apply_minibatch(mini, padded_cache)
+                    latest_kl = apply_minibatch(mini, padded_cache)
+                    if target_kl is not None and latest_kl > float(target_kl):
+                        early_stopped_by_kl = True
+                        break
+            epochs_completed += 1
+            if early_stopped_by_kl:
+                break
             continue
 
         if indices is None:
@@ -357,7 +391,13 @@ def _train_rust_ppo_minibatch_with_evaluator(
                 legal_row_pack_backend=legal_row_pack_backend,
                 library_path=library_path,
             )
-            apply_minibatch(current_batch[0])
+            latest_kl = apply_minibatch(current_batch[0])
+            if target_kl is not None and latest_kl > float(target_kl):
+                early_stopped_by_kl = True
+                break
+        epochs_completed += 1
+        if early_stopped_by_kl:
+            break
 
     current_batch[0] = None
     current_padded_cache[0] = None
@@ -385,6 +425,9 @@ def _train_rust_ppo_minibatch_with_evaluator(
         "updates": len(metric_values["loss"]),
         "rows": row_count,
         "epochs": epochs,
+        "epochs_completed": epochs_completed,
+        "target_kl": None if target_kl is None else float(target_kl),
+        "early_stopped_by_kl": early_stopped_by_kl,
         "minibatch_size": minibatch_size,
         "dense_action_features": batch.action_features is not None,
         "legal_row_pack_backend": legal_row_pack_backend,
@@ -451,6 +494,8 @@ def prepare_rust_ppo_batch(
     advantage_backend: str = "python",
     selected_local_backend: str = "python",
     prepare_backend: str = "separate",
+    mana_draw_legal: np.ndarray | None = None,
+    mana_draw_taken: np.ndarray | None = None,
     library_path: str | Path | None = None,
 ) -> RustPPOBatch:
     """Compute GAE/returns for a Rust vectorized rollout batch."""
@@ -472,6 +517,15 @@ def prepare_rust_ppo_batch(
         raise ValueError("truncated must match rewards shape")
 
     steps, env_count = rewards.shape
+    if (mana_draw_legal is None) != (mana_draw_taken is None):
+        raise ValueError("mana_draw_legal and mana_draw_taken must be provided together")
+    if mana_draw_legal is not None:
+        mana_draw_legal = np.asarray(mana_draw_legal, dtype=np.bool_)
+        mana_draw_taken = np.asarray(mana_draw_taken, dtype=np.bool_)
+        if mana_draw_legal.shape != rewards.shape or mana_draw_taken.shape != rewards.shape:
+            raise ValueError("mana-draw arrays must match rollout (steps, env_count) shape")
+        if np.any(mana_draw_taken & ~mana_draw_legal):
+            raise ValueError("mana_draw_taken requires mana_draw_legal")
     if prepare_backend not in {"separate", "rust_fused"}:
         raise ValueError("prepare_backend must be separate or rust_fused")
     if advantage_backend not in {"python", "rust"}:
@@ -575,6 +629,8 @@ def prepare_rust_ppo_batch(
         advantages=advantages.astype(np.float32, copy=False),
         returns=returns.astype(np.float32, copy=False),
         selected_local_indices=selected_local_indices.astype(np.int32, copy=False),
+        mana_draw_legal=mana_draw_legal,
+        mana_draw_taken=mana_draw_taken,
     )
 
 
@@ -657,10 +713,56 @@ def evaluate_rust_ppo_batch(
             flat["obs"],
             padded_legal_action_cache,
         )
-    probs = nn.softmax(scores.padded_logits, axis=-1)
+    mana_draw_legal = flat["mana_draw_legal"]
+    mana_draw_taken = flat["mana_draw_taken"]
+    if (mana_draw_legal is None) != (mana_draw_taken is None):
+        raise ValueError("mana-draw rollout fields must be present together")
+    candidate_probs = nn.softmax(scores.padded_logits, axis=-1)
     selected = mx.array(selected_local, dtype=mx.int32)
-    action_probs = _gather_selected_action_probs(probs, selected)
-    new_log_probs = mx.log(action_probs + 1.0e-10)
+    selected_candidate_probs = _gather_selected_action_probs(candidate_probs, selected)
+    candidate_log_probs = mx.log(selected_candidate_probs + 1.0e-10)
+    candidate_entropy = -mx.sum(
+        candidate_probs * mx.log(candidate_probs + 1.0e-10), axis=-1
+    )
+    if mana_draw_legal is None:
+        new_log_probs = candidate_log_probs
+        entropy_per_row = candidate_entropy
+    else:
+        md_legal_np = np.asarray(mana_draw_legal, dtype=np.bool_)
+        md_taken_np = np.asarray(mana_draw_taken, dtype=np.bool_)
+        if scores.mana_draw_logits is None:
+            if bool(np.any(md_taken_np)):
+                raise ValueError("mana-draw transition requires model.mana_draw_head")
+            new_log_probs = candidate_log_probs
+            entropy_per_row = candidate_entropy
+        else:
+            # Factorized policy: P(draw)=sigmoid(gate), and P(card_i) is the
+            # conditional candidate softmax.  Appending the gate to the card
+            # vector makes deterministic argmax compare a draw option to each
+            # individual card while sampling compares it to their aggregate.
+            md_legal = mx.array(md_legal_np)
+            md_taken = mx.array(md_taken_np)
+            raw_draw_probability = mx.sigmoid(scores.mana_draw_logits)
+            draw_probability = mx.where(
+                md_legal,
+                raw_draw_probability,
+                mx.zeros_like(raw_draw_probability),
+            )
+            draw_log_prob = mx.log(draw_probability + 1.0e-10)
+            no_draw_probability = 1.0 - draw_probability
+            no_draw_log_prob = mx.log(no_draw_probability + 1.0e-10)
+            gate_log_probs = mx.where(md_taken, draw_log_prob, no_draw_log_prob)
+            new_log_probs = gate_log_probs + mx.where(
+                md_taken,
+                mx.zeros_like(candidate_log_probs),
+                candidate_log_probs,
+            )
+            gate_entropy = -(
+                draw_probability * draw_log_prob
+                + no_draw_probability * no_draw_log_prob
+            )
+            # H(draw, card) = H(draw) + P(no draw) * H(card | no draw).
+            entropy_per_row = gate_entropy + no_draw_probability * candidate_entropy
 
     old_log_probs = mx.array(flat["old_log_probs"])
     advantages = mx.array(flat["advantages"])
@@ -671,7 +773,7 @@ def evaluate_rust_ppo_batch(
     surr2 = mx.clip(ratios, 1.0 - clip_epsilon, 1.0 + clip_epsilon) * advantages
     policy_loss = -mx.mean(mx.minimum(surr1, surr2))
     value_loss = value_coef * mx.mean((returns - scores.values) ** 2)
-    entropy = mx.mean(-mx.sum(probs * mx.log(probs + 1.0e-10), axis=-1))
+    entropy = mx.mean(entropy_per_row)
     clip_fraction = mx.mean(
         mx.where(
             ratios < 1.0 - clip_epsilon,
@@ -994,6 +1096,8 @@ def _take_flat_rows(
         advantages=selected_scalars("advantages").astype(batch.advantages.dtype, copy=False),
         returns=selected_scalars("returns").astype(batch.returns.dtype, copy=False),
         selected_local_indices=selected_local,
+        mana_draw_legal=selected_optional_scalars("mana_draw_legal"),
+        mana_draw_taken=selected_optional_scalars("mana_draw_taken"),
     )
 
 
@@ -1084,6 +1188,8 @@ def _take_flat_row_range(
         advantages=selected_scalars("advantages").astype(batch.advantages.dtype, copy=False),
         returns=selected_scalars("returns").astype(batch.returns.dtype, copy=False),
         selected_local_indices=selected_local,
+        mana_draw_legal=selected_optional_scalars("mana_draw_legal"),
+        mana_draw_taken=selected_optional_scalars("mana_draw_taken"),
     )
 
 

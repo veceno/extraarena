@@ -707,15 +707,11 @@ class BerserkInference:
         safety -- raises RuntimeError on NaN/inf OR no-legal-candidate, NOT a
         silent _legal_fallback), then wires the mana_draw parallel binary head.
 
-        mana_draw decision (SPEC :174 / spec §6.186): ``mana_draw`` is a
-        PARALLEL BINARY HEAD, NOT a 602nd candidate. When
-        ``select_includes_mana_draw(mana_draw_logit, best_candidate_logit,
-        mana_draw_legal)`` fires AND mana_draw is legal, the method returns the
-        index of the ``ManaDrawAction`` in ``legal_actions`` (the engine emits
-        it into the legal-action set at engine.py:1345-1347 when
-        ``player.mana >= mana_draw_cost``). When the head does NOT fire, the
-        method decodes the 601-best candidate and matches it against
-        ``legal_actions``.
+        mana_draw decision: ``mana_draw`` is a PARALLEL BINARY GATE, NOT a
+        602nd candidate. When its legal-gated sigmoid probability exceeds 0.5,
+        the method returns the ``ManaDrawAction`` index in ``legal_actions``.
+        Otherwise it decodes the conditional 601-best candidate and matches it
+        against ``legal_actions``.
 
         Every malformed output, codec mismatch and unexpected failure raises a
         stable ``v5_policy_failure:*`` RuntimeError. Production may safely end
@@ -834,10 +830,8 @@ class BerserkInference:
             except (TypeError, ValueError) as exc:
                 raise v5_policy_failure_error("invalid_output_contract") from exc
 
-            # mana_draw decision (spec §6.186): mana_draw is a PARALLEL BINARY
-            # HEAD. When select_includes_mana_draw fires AND legal, return the
-            # ManaDrawAction index (the engine emits it into legal_actions at
-            # engine.py:1345-1347 when player.mana >= mana_draw_cost).
+            # Factorized decision: mana_draw is a legal-gated binary policy,
+            # not a scalar to compare with an individual card logit.
             mana_draw_legal = mana_draw_legal_mask(game_state, player_id)
             mana_indices = [
                 i

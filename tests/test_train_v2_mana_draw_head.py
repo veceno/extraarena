@@ -78,6 +78,7 @@ def _player(user_id: int, *, hand_size: int = 0, mana: int = 10,
         max_mana=max(mana, 10),
         mana_draw_count_this_turn=mana_draw_count_this_turn,
         hand=[_card(100 + i) for i in range(hand_size)],
+        deck=[_card(500 + user_id)],
     )
 
 
@@ -301,25 +302,20 @@ class TestGoldenTraceByteParity:
         state = _state(me_hand_size=2, me_mana=10, me_count=0)
         assert mana_draw_legal_mask(state, 999) == _oracle(state, 999)  # False == False
 
-    def test_mask_matches_oracle_deck_empty_still_legal(self):
-        """mana_draw is LEGAL even with an empty deck: get_legal_actions
-        (engine.py:1344-1347) only checks hand<cap and mana>=cost — the deck
-        check lives on the APPLY path (_handle_mana_draw returns
-        'no_cards_to_draw', engine.py:797-801), NOT the legal-actions path.
-        So the oracle emits ManaDrawAction and the mask must agree True.
-        (Player built with no deck → empty deck; ArenaEnvironment constructed
-        without one.)"""
+    def test_mask_matches_oracle_deck_empty_is_not_executable(self):
+        """An empty deck+graveyard must not expose a mana draw that would
+        immediately fail with no_cards_to_draw in the engine apply path."""
         p1 = PlayerState(
             user_id=1, hero=_hero(1), mana=10, max_mana=10,
             mana_draw_count_this_turn=0, hand=[_card(11)], deck=[],
         )
         p2 = _player(2)
         state = GameState(p1=p1, p2=p2, current_turn_owner_id=1, turn_number=1)
-        assert mana_draw_legal_mask(state, 1) == _oracle(state, 1) is True
+        assert mana_draw_legal_mask(state, 1) == _oracle(state, 1) is False
 
 
 # ============================================================================
-# Selection helper (spec §6.186)
+# Selection helper (factorized Bernoulli gate)
 # ============================================================================
 class TestSelectIncludesManaDraw:
     def test_illegal_never_selected_even_if_logit_higher(self):
@@ -327,17 +323,14 @@ class TestSelectIncludesManaDraw:
         logit (the engine never emits the action, so it can never be taken)."""
         assert select_includes_mana_draw(9.0, 1.0, False) is False
 
-    def test_legal_and_higher_logit_selected(self):
-        assert select_includes_mana_draw(2.0, 1.0, True) is True
+    def test_legal_positive_gate_selected(self):
+        assert select_includes_mana_draw(0.1, 99.0, True) is True
 
-    def test_legal_and_lower_logit_not_selected(self):
-        assert select_includes_mana_draw(1.0, 2.0, True) is False
+    def test_legal_negative_gate_not_selected(self):
+        assert select_includes_mana_draw(-0.1, -99.0, True) is False
 
-    def test_tie_favors_candidate(self):
-        """mana_draw logit == best candidate logit → NOT selected (the 601 path
-        is the default action space; ties deterministically favor the
-        candidate)."""
-        assert select_includes_mana_draw(1.0, 1.0, True) is False
+    def test_zero_gate_ties_to_no_draw(self):
+        assert select_includes_mana_draw(0.0, -999.0, True) is False
 
     def test_legal_mask_dominates_all_logit_combos(self):
         """For any logit pair, illegal → False (mask wins)."""

@@ -25,7 +25,7 @@
     "mask_sha256_f32_le": "69ba8d7d0d3cac51fbe340c31cde59ea84f03bca452faf27ab3a56855622f432",
     "obs_sha256_f32_le": "7f46c1eca407f5dcd5745e521c04b54a8c14e38efe94d2a614b42ba1c2a6f99d",
     "obs_v5_dim": 7128,
-    "obs_v5_sha256_f32_le": "c1e881191beb14980651269fe3b64f47efacba666f689c0db6516d5daa03e7ff",
+    "obs_v5_sha256_f32_le": "d008448e005fc2e2f052a17c10f8cbf2280e1f89db6f4ddd7bd4d43a25098a98",
     "state": {
       "current_turn_owner_id": 1,
       "p1": {
@@ -115,7 +115,9 @@
             "enemy_hero_hp_delta": 0,
             "my_board_count_delta": 0,
             "own_hero_hp_delta": 0,
-            "turn_number": 2
+            "turn_number": 2,
+            "source_card": null,
+            "target_card": null
           }
         ],
         "legal_ids": [
@@ -198,7 +200,7 @@
         "mask_sha256_f32_le": "69ba8d7d0d3cac51fbe340c31cde59ea84f03bca452faf27ab3a56855622f432",
         "obs_sha256_f32_le": "7f46c1eca407f5dcd5745e521c04b54a8c14e38efe94d2a614b42ba1c2a6f99d",
         "obs_v5_dim": 7128,
-        "obs_v5_sha256_f32_le": "c1e881191beb14980651269fe3b64f47efacba666f689c0db6516d5daa03e7ff",
+        "obs_v5_sha256_f32_le": "d008448e005fc2e2f052a17c10f8cbf2280e1f89db6f4ddd7bd4d43a25098a98",
         "state": {
           "current_turn_owner_id": 1,
           "p1": {
@@ -302,7 +304,9 @@
             "enemy_hero_hp_delta": 0,
             "my_board_count_delta": 0,
             "own_hero_hp_delta": 0,
-            "turn_number": 2
+            "turn_number": 2,
+            "source_card": null,
+            "target_card": null
           },
           {
             "action_id": 0,
@@ -313,7 +317,9 @@
             "enemy_hero_hp_delta": 0,
             "my_board_count_delta": 0,
             "own_hero_hp_delta": 0,
-            "turn_number": 3
+            "turn_number": 3,
+            "source_card": null,
+            "target_card": null
           }
         ],
         "legal_ids": [
@@ -323,7 +329,7 @@
         "mask_sha256_f32_le": "598c7139205cda5fecb388a0f5f7d6b3e153fe7bf6ec4d200127f7bfb3a30dc4",
         "obs_sha256_f32_le": "372ec452b36991f78dc041044fad2ddca0fe92eacda165e344d9eda0318169d2",
         "obs_v5_dim": 7128,
-        "obs_v5_sha256_f32_le": "26d54b1a4046a00c51e5ddc186549c04993b4e5294b0ad7974fec7be04250f04",
+        "obs_v5_sha256_f32_le": "566068cf04a9bb13cddd6e8ab27437c03299c088222d3407a2510df648d3a308",
         "state": {
           "current_turn_owner_id": 1,
           "p1": {
@@ -400,7 +406,9 @@
             "enemy_hero_hp_delta": 0,
             "my_board_count_delta": 0,
             "own_hero_hp_delta": 0,
-            "turn_number": 2
+            "turn_number": 2,
+            "source_card": null,
+            "target_card": null
           }
         ],
         "legal_ids": [
@@ -513,7 +521,9 @@
             "enemy_hero_hp_delta": 0,
             "my_board_count_delta": 0,
             "own_hero_hp_delta": 0,
-            "turn_number": 2
+            "turn_number": 2,
+            "source_card": null,
+            "target_card": null
           },
           {
             "action_id": 0,
@@ -524,7 +534,9 @@
             "enemy_hero_hp_delta": 0,
             "my_board_count_delta": 0,
             "own_hero_hp_delta": 0,
-            "turn_number": 3
+            "turn_number": 3,
+            "source_card": null,
+            "target_card": null
           },
           {
             "action_id": 9,
@@ -535,7 +547,47 @@
             "enemy_hero_hp_delta": 1,
             "my_board_count_delta": 0,
             "own_hero_hp_delta": 0,
-            "turn_number": 3
+            "turn_number": 3,
+            "source_card": {
+              "card_id": 8,
+              "type": "potion",
+              "mana_cost": 1,
+              "attack": 0,
+              "hp": 0,
+              "max_hp": 0,
+              "mechanics": [
+                "damage_1"
+              ],
+              "is_ready": false,
+              "is_frozen": false,
+              "level": 1,
+              "skip_count": 0,
+              "base_attack": 0,
+              "base_hp": 0,
+              "base_max_hp": 0,
+              "base_mana_cost": 0,
+              "base_mechanics": [],
+              "base_snapshot_set": false
+            },
+            "target_card": {
+              "card_id": 1,
+              "type": "hero",
+              "mana_cost": 0,
+              "attack": 0,
+              "hp": 35,
+              "max_hp": 35,
+              "mechanics": [],
+              "is_ready": false,
+              "is_frozen": false,
+              "level": 1,
+              "skip_count": 0,
+              "base_attack": 0,
+              "base_hp": 0,
+              "base_max_hp": 0,
+              "base_mana_cost": 0,
+              "base_mechanics": [],
+              "base_snapshot_set": false
+            }
           }
         ],
         "legal_ids": [
@@ -544,7 +596,7 @@
         "mask_sha256_f32_le": "69ba8d7d0d3cac51fbe340c31cde59ea84f03bca452faf27ab3a56855622f432",
         "obs_sha256_f32_le": "d971eebdd3e8fe55ae2adad000e742c1bb1605d28b12b77f4ec98b63bce1b3bc",
         "obs_v5_dim": 7128,
-        "obs_v5_sha256_f32_le": "6c24c6493a80d09700c70e096f63885a769610aed4f9f207b629aa3e52ef2a59",
+        "obs_v5_sha256_f32_le": "a678d206d87dec72a1b3d34ee829ec35f5be1d3ff4117035614b63e39ea74c3b",
         "state": {
           "current_turn_owner_id": 1,
           "p1": {
@@ -621,7 +673,9 @@
             "enemy_hero_hp_delta": 0,
             "my_board_count_delta": 0,
             "own_hero_hp_delta": 0,
-            "turn_number": 2
+            "turn_number": 2,
+            "source_card": null,
+            "target_card": null
           },
           {
             "action_id": 0,
@@ -632,7 +686,9 @@
             "enemy_hero_hp_delta": 0,
             "my_board_count_delta": 0,
             "own_hero_hp_delta": 0,
-            "turn_number": 3
+            "turn_number": 3,
+            "source_card": null,
+            "target_card": null
           }
         ],
         "legal_ids": [
@@ -642,7 +698,7 @@
         "mask_sha256_f32_le": "598c7139205cda5fecb388a0f5f7d6b3e153fe7bf6ec4d200127f7bfb3a30dc4",
         "obs_sha256_f32_le": "372ec452b36991f78dc041044fad2ddca0fe92eacda165e344d9eda0318169d2",
         "obs_v5_dim": 7128,
-        "obs_v5_sha256_f32_le": "26d54b1a4046a00c51e5ddc186549c04993b4e5294b0ad7974fec7be04250f04",
+        "obs_v5_sha256_f32_le": "566068cf04a9bb13cddd6e8ab27437c03299c088222d3407a2510df648d3a308",
         "state": {
           "current_turn_owner_id": 1,
           "p1": {

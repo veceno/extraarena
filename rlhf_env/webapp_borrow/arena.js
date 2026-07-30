@@ -119,7 +119,7 @@ const ARENA_SFX = {
   onboardingVictory: 'arena-sfx-onboarding-victory',
   onboardingBlocked: 'arena-sfx-onboarding-blocked'
 };
-const CARD_SFX_CONFIG_URL = '/assets/audio/characters/card_sfx_config.json';
+const CARD_SFX_CONFIG_URL = '/DesignAssets/Sounds/arena/card_sfx_config.json';
 const CARD_SFX_CONFIG_DEFAULT = {
   version: 1,
   cards: {
@@ -155,17 +155,17 @@ const CARD_SFX_CONFIG_DEFAULT = {
       name: 'П.Е.К.К.А.',
       sounds: {
         deploy: {
-          src: '/assets/audio/characters/018_pekka/pekka_deploy.mp3',
+          src: '/DesignAssets/Sounds/arena/characters/018_pekka/pekka_deploy.mp3',
           basePolicy: 'replace',
           volume: 0.82
         },
         attack: {
-          src: '/assets/audio/characters/018_pekka/pekka_hit.mp3',
+          src: '/DesignAssets/Sounds/arena/characters/018_pekka/pekka_hit.mp3',
           basePolicy: 'replace',
           volume: 0.82
         },
         damage: {
-          src: '/assets/audio/characters/018_pekka/pekka_hit.mp3',
+          src: '/DesignAssets/Sounds/arena/characters/018_pekka/pekka_hit.mp3',
           basePolicy: 'replace',
           volume: 0.82
         }
@@ -286,17 +286,17 @@ const CARD_SFX_CONFIG_DEFAULT = {
       name: 'Скелет',
       sounds: {
         deploy: {
-          src: '/assets/audio/characters/027_skeleton/skeleton_ambient.mp3',
+          src: '/DesignAssets/Sounds/arena/characters/027_skeleton/skeleton_ambient.mp3',
           basePolicy: 'replace',
           volume: 0.82
         },
         damage: {
-          src: '/assets/audio/characters/027_skeleton/skeleton_hurt.mp3',
+          src: '/DesignAssets/Sounds/arena/characters/027_skeleton/skeleton_hurt.mp3',
           basePolicy: 'replace',
           volume: 0.82
         },
         death: {
-          src: '/assets/audio/characters/027_skeleton/skeleton_death.mp3',
+          src: '/DesignAssets/Sounds/arena/characters/027_skeleton/skeleton_death.mp3',
           basePolicy: 'replace',
           volume: 0.82
         }
@@ -314,12 +314,12 @@ const CARD_SFX_CONFIG_DEFAULT = {
       name: 'Штурмовик',
       sounds: {
         attack: {
-          src: '/assets/audio/characters/029_stormtrooper/stormtrooper_e11_blaster.mp3',
+          src: '/DesignAssets/Sounds/arena/characters/029_stormtrooper/stormtrooper_e11_blaster.mp3',
           basePolicy: 'replace',
           volume: 0.82
         },
         death: {
-          src: '/assets/audio/characters/029_stormtrooper/stormtrooper_death.mp3',
+          src: '/DesignAssets/Sounds/arena/characters/029_stormtrooper/stormtrooper_death.mp3',
           basePolicy: 'replace',
           volume: 0.82
         }
@@ -361,17 +361,17 @@ const CARD_SFX_CONFIG_DEFAULT = {
       name: 'Крипер',
       sounds: {
         deploy: {
-          src: '/assets/audio/characters/creeper/creeper_spawn_hiss.mp3',
+          src: '/DesignAssets/Sounds/arena/characters/creeper/creeper_spawn_hiss.mp3',
           basePolicy: 'replace',
           volume: 0.82
         },
         death: {
-          src: '/assets/audio/characters/creeper/creeper_death_explosion.mp3',
+          src: '/DesignAssets/Sounds/arena/characters/creeper/creeper_death_explosion.mp3',
           basePolicy: 'replace',
           volume: 0.82
         },
         'mechanic:deathrattle_aoe_damage_2': {
-          src: '/assets/audio/characters/creeper/creeper_death_explosion.mp3',
+          src: '/DesignAssets/Sounds/arena/characters/creeper/creeper_death_explosion.mp3',
           basePolicy: 'replace',
           volume: 0.82
         }
@@ -459,7 +459,7 @@ const CARD_SFX_CONFIG_DEFAULT = {
       name: 'Солдатик',
       sounds: {
         deploy: {
-          src: '/assets/audio/characters/047_soldier/soldier_deploy.mp3',
+          src: '/DesignAssets/Sounds/arena/characters/047_soldier/soldier_deploy.mp3',
           basePolicy: 'replace',
           volume: 0.82
         }
@@ -478,7 +478,7 @@ const CARD_SFX_CONFIG_DEFAULT = {
       name: 'Соул Гудман',
       sounds: {
         deploy: {
-          src: '/assets/audio/characters/048_saul_goodman/saul_goodman_deploy.mp3',
+          src: '/DesignAssets/Sounds/arena/characters/048_saul_goodman/saul_goodman_deploy.mp3',
           basePolicy: 'replace',
           volume: 0.82
         }
@@ -942,7 +942,11 @@ function isValidArenaCardSfxConfig(config) {
 
 function isValidArenaCardSoundConfig(sound) {
   if (!isPlainArenaFeedbackObject(sound)) return false;
-  if (typeof sound.src !== 'string' || !sound.src.startsWith('/assets/audio/characters/')) return false;
+  if (typeof sound.src !== 'string') return false;
+  if (
+    !sound.src.startsWith('/assets/audio/characters/') &&
+    !sound.src.startsWith('/DesignAssets/Sounds/arena/characters/')
+  ) return false;
   if (sound.basePolicy != null && sound.basePolicy !== 'replace') return false;
   if (sound.volume != null) {
     const volume = Number(sound.volume);
@@ -2203,9 +2207,16 @@ function createArenaSoundSnapshot(playerState, opponentState) {
     });
   });
 
+  const playerHero = playerState?.hero || null;
+  const opponentHero = opponentState?.hero || null;
+
   return {
     playerHeroHp: getArenaHeroHp(playerState),
     opponentHeroHp: getArenaHeroHp(opponentState),
+    playerHeroCardId: getArenaCatalogCardId(playerHero),
+    opponentHeroCardId: getArenaCatalogCardId(opponentHero),
+    playerHeroMechanics: Array.isArray(playerHero?.mechanics) ? playerHero.mechanics.slice() : [],
+    opponentHeroMechanics: Array.isArray(opponentHero?.mechanics) ? opponentHero.mechanics.slice() : [],
     units
   };
 }
@@ -2267,6 +2278,46 @@ function processArenaStateSfx(playerState, opponentState) {
       }
     }
   });
+
+  // Достоевский (hero, card 49): crime_and_punishment_N — when an opponent kills
+  // one of this side's units, the opponent hero takes damage. Detect via diff:
+  // a unit of <side> died (present in prev, absent in next) AND the opposing hero
+  // hp decreased. No server event exists for this passive, so fire client-side.
+  detectCrimeAndPunishmentFeedback(prev, next, 'player');
+  detectCrimeAndPunishmentFeedback(prev, next, 'opponent');
+}
+
+function findCrimeMechanic(mechanics) {
+  if (!Array.isArray(mechanics)) return null;
+  for (const m of mechanics) {
+    if (typeof m === 'string' && m.startsWith('crime_and_punishment_')) return m;
+  }
+  return null;
+}
+
+function detectCrimeAndPunishmentFeedback(prev, next, side) {
+  const heroCardId = side === 'player' ? next.playerHeroCardId : next.opponentHeroCardId;
+  if (!heroCardId) return;
+  const heroMechanics = side === 'player' ? next.playerHeroMechanics : next.opponentHeroMechanics;
+  const crimeMechanic = findCrimeMechanic(heroMechanics);
+  if (!crimeMechanic) return;
+
+  // Did at least one unit of this side die this tick?
+  const sideUnitDied = Object.entries(prev.units).some(([id, oldUnit]) => {
+    return oldUnit.side === side && oldUnit.hp > 0 && !next.units[id];
+  });
+  if (!sideUnitDied) return;
+
+  // Did the opposing hero take damage?
+  const prevOppHp = side === 'player' ? prev.opponentHeroHp : prev.playerHeroHp;
+  const nextOppHp = side === 'player' ? next.opponentHeroHp : next.playerHeroHp;
+  if (!(nextOppHp < prevOppHp)) return;
+
+  const heroSnapshot = { card_id: heroCardId, cardId: heroCardId };
+  if (!shouldSkipRecentArenaExplicitSfx('mechanic', heroSnapshot, crimeMechanic)) {
+    playResolvedCardFeedback('mechanic', heroSnapshot, null, { mechanic: crimeMechanic });
+    rememberRelatedArenaExplicitSfx('mechanic', heroSnapshot, crimeMechanic);
+  }
 }
 
 /**
@@ -2537,7 +2588,10 @@ function getOnboardingAllowedAction() {
 
 function getOnboardingCoachPlacement(tutorial) {
   const allowed = tutorial?.allowed || {};
-  if (allowed.type === 'end_turn') return 'top';
+  // play_card/end_turn steps act on the BOTTOM of the board (hand + own board),
+  // so the Midoria bubble rides on TOP to avoid covering the cards the player
+  // must tap. Attack/continue beats stay at the bottom (target is up top).
+  if (allowed.type === 'end_turn' || allowed.type === 'play_card') return 'top';
   return 'bottom';
 }
 
@@ -2667,6 +2721,17 @@ function getOnboardingSpotlightElement() {
     if (interactionMode.type !== 'ATTACK') {
       return document.querySelector(getOnboardingBoardSelector(allowed.attacker_card_id));
     }
+    // choose_target step: opponent also offers a minion target (a board unit the
+    // engine marked .targetable-enemy). The spotlight's dark overlay (box-shadow
+    // spread 9999px) covers everything outside the spotlight rect, so a minion on
+    // #opponent-board-zone — which sits OUTSIDE .opponent-panel-root — would be
+    // blacked out and read as "unavailable". Spotlight .arena-zone-top instead:
+    // it wraps BOTH the hero panel and the opponent board, so the minion is lit.
+    // The yellow target pulse is then applied to the actual tap targets (hero +
+    // each minion) by getOnboardingPulseTargets, not to the zone itself.
+    if (document.querySelector('#opponent-board-zone .board-unit-card.targetable-enemy')) {
+      return document.querySelector('.arena-zone-top');
+    }
     return document.querySelector('.opponent-panel-root') || document.getElementById('opponent-hp-block');
   }
 
@@ -2689,9 +2754,18 @@ function getOnboardingAllowedClickSelectors() {
     return selectedCard ? ['#player-board-zone .board-slot'] : [getOnboardingHandSelector(allowed.card_id)];
   }
   if (allowed.type === 'attack') {
-    return interactionMode.type === 'ATTACK'
-      ? ['.opponent-panel-root', '#opponent-hp-block']
-      : [getOnboardingBoardSelector(allowed.attacker_card_id)];
+    if (interactionMode.type === 'ATTACK') {
+      const sel = ['.opponent-panel-root', '#opponent-hp-block'];
+      // Allow tapping any opponent minion the engine already marked as a valid attack
+      // target (targetable-enemy). Lets a "choose your target" tutorial step offer a
+      // wrong minion to tap: the server returns tutorial_wrong_action with a custom
+      // redirect message and the player retries by tapping the hero.
+      if (document.querySelector('#opponent-board-zone .board-unit-card.targetable-enemy')) {
+        sel.push('#opponent-board-zone .board-unit-card.targetable-enemy');
+      }
+      return sel;
+    }
+    return [getOnboardingBoardSelector(allowed.attacker_card_id)];
   }
   if (allowed.type === 'end_turn') return ['#end-turn-button'];
   if (allowed.type === 'complete') return ['.arena-onboarding-victory-action'];
@@ -2707,6 +2781,22 @@ function targetMatchesOnboardingSelectors(target, selectors) {
       return false;
     }
   });
+}
+
+function getOnboardingPulseTargets(spotlightEl) {
+  // Элементы, на которые вешается жёлтый target-pulse (glow + подъём над оверлеем).
+  // По умолчанию пульсация идёт на сам подсвеченный элемент. Но на шаге choose_target
+  // подсветка охватывает всю зону .arena-zone-top (герой + доска), чтобы миньон не
+  // был затемнён оверлеем — там пульс должен отмечать реальные цели тапа: героя и
+  // каждого .targetable-enemy миньона, а не контейнер зоны.
+  if (spotlightEl && spotlightEl.classList.contains('arena-zone-top')
+      && document.querySelector('#opponent-board-zone .board-unit-card.targetable-enemy')) {
+    const targets = [document.querySelector('.opponent-panel-root')];
+    document.querySelectorAll('#opponent-board-zone .board-unit-card.targetable-enemy')
+      .forEach(m => targets.push(m));
+    return targets.filter(Boolean);
+  }
+  return spotlightEl ? [spotlightEl] : [];
 }
 
 function positionOnboardingSpotlight() {
@@ -2735,7 +2825,7 @@ function positionOnboardingSpotlight() {
   spotlight.style.setProperty('--spotlight-top', Math.max(8, rect.top - 8) + 'px');
   spotlight.style.setProperty('--spotlight-width', (rect.width + 16) + 'px');
   spotlight.style.setProperty('--spotlight-height', (rect.height + 16) + 'px');
-  target.classList.add('arena-onboarding-target-pulse');
+  getOnboardingPulseTargets(target).forEach(el => el.classList.add('arena-onboarding-target-pulse'));
 }
 
 function setOnboardingLayerActive(active) {
@@ -2909,7 +2999,12 @@ function renderOnboardingTutorialLayer() {
     status.className = 'arena-onboarding-status';
     status.textContent = 'Ход противника...';
     bubble.appendChild(status);
-  } else if (stepIndex === 0 || stepIndex >= finalStep) {
+  } else if (stepIndex === 0 || stepIndex >= finalStep || (tutorial.allowed && tutorial.allowed.type === 'continue')) {
+    // "Понятно" on the opening beat (step0) AND on any mid-flow `continue` beat
+    // (e.g. an explanatory Midoria note on the player's turn) so the player can
+    // read at their own pace and ack to proceed. The final/victory step renders
+    // its own modal with a "В меню" button (early return above), so the finalStep
+    // branch here is just a defensive fallback.
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'arena-onboarding-action';
@@ -3600,7 +3695,11 @@ function initSocketIO() {
     const timerText = document.getElementById('turn-timer-text');
     if (timerText) {
       const state = data.state || data.state_p1 || currentState || {};
-      timerText.textContent = String(Math.ceil(state.turn_duration || getClassicModeParams(state).turn_duration_seconds || 25));
+      if (isOnboardingTutorialState(state)) {
+        timerText.textContent = '∞';
+      } else {
+        timerText.textContent = String(Math.ceil(state.turn_duration || getClassicModeParams(state).turn_duration_seconds || 25));
+      }
     }
     
     handleStateChanged(data);
@@ -4521,22 +4620,22 @@ function renderHand(handCards) {
     return;
   }
   
-  // Очищаем руку
-  handZone.innerHTML = '';
-  
   // Нормализуем: даже при пустой руке добор-плитка должна рендериться,
   // поэтому раннего возврата здесь быть не должно.
   handCards = Array.isArray(handCards) ? handCards : [];
+
+  // Очищаем руку
+  handZone.innerHTML = '';
 
   if (handCards.length === 0) {
     console.log('[ARENA] Рука пуста');
   } else {
     console.log('[ARENA] Рендеринг руки:', handCards);
   }
-  
+
   // Лимит вывода: только первые 5 карт
   const cardsToRender = handCards.slice(0, 5);
-  
+
   cardsToRender.forEach((card, index) => {
     const cardEl = createHandCardElement(card, index);
     handZone.appendChild(cardEl);
@@ -5120,6 +5219,16 @@ function updateTurnTimer(state) {
     clearInterval(timerInterval);
     timerInterval = null;
   }
+
+  // Онбординг-туториал: ход без ограничения по времени. Показываем знак
+  // бесконечности вместо обратного отсчёта 99→98→… (никакого interval'а,
+  // без warning/critical — реальный таймер в обычных боях не трогаем).
+  if (isOnboardingTutorialState(state)) {
+    timerText.textContent = '∞';
+    timerContainer.classList.remove('timer-warning', 'timer-critical');
+    if (activeBattleModal === 'timer') renderTurnTimerModal(state);
+    return;
+  }
   
   const turnDuration = state.turn_duration || 25;
   let timeRemaining = state.turn_time_remaining !== undefined ? state.turn_time_remaining : turnDuration;
@@ -5592,25 +5701,33 @@ function highlightAttackTargets(attackerId) {
     }
   });
   
-  // Подсвечиваем существ
+  // Подсвечиваем существ + затемняем недоступные (taunt / bypass_taunt)
   opponentUnits.forEach(unit => {
     const instanceId = unit.dataset.instanceId;
     if (validTargets.has(instanceId)) {
       unit.classList.add('attack-target', 'targetable-enemy', 'status-attack-target');
-      
+      unit.classList.remove('attack-target-disabled');
+
       // Предпросмотр
       unit.onmouseenter = () => showDamagePreview(unit, false, targets.find(a => a.target_id === instanceId));
       unit.onmouseleave = () => hideDamagePreview(unit, false);
+    } else {
+      unit.classList.add('attack-target-disabled');
     }
   });
-  
-  // Подсвечиваем героя
-  if (heroTargetable && opponentPanel) {
-    opponentPanel.classList.add('attack-target-hero', 'targetable-enemy');
 
-    // Предпросмотр
-    opponentPanel.onmouseenter = () => showDamagePreview(opponentPanel, true, targets.find(a => a.target_is_hero));
-    opponentPanel.onmouseleave = () => hideDamagePreview(opponentPanel, true);
+  // Подсвечиваем героя (или затемняем, если герой не таргетабелен)
+  if (opponentPanel) {
+    if (heroTargetable) {
+      opponentPanel.classList.add('attack-target-hero', 'targetable-enemy');
+      opponentPanel.classList.remove('attack-target-disabled-hero');
+
+      // Предпросмотр
+      opponentPanel.onmouseenter = () => showDamagePreview(opponentPanel, true, targets.find(a => a.target_is_hero));
+      opponentPanel.onmouseleave = () => hideDamagePreview(opponentPanel, true);
+    } else {
+      opponentPanel.classList.add('attack-target-disabled-hero');
+    }
   }
 }
 
@@ -5622,14 +5739,14 @@ function clearAttackTargets() {
   const opponentPanel = document.querySelector('.opponent-panel-root');
   
   opponentUnits.forEach(unit => {
-    unit.classList.remove('attack-target', 'targetable-enemy', 'status-attack-target');
+    unit.classList.remove('attack-target', 'targetable-enemy', 'status-attack-target', 'attack-target-disabled');
     unit.onmouseenter = null;
     unit.onmouseleave = null;
     hideDamagePreview(unit, false);
   });
-  
+
   if (opponentPanel) {
-    opponentPanel.classList.remove('attack-target-hero', 'targetable-enemy');
+    opponentPanel.classList.remove('attack-target-hero', 'targetable-enemy', 'attack-target-disabled-hero');
     opponentPanel.onmouseenter = null;
     opponentPanel.onmouseleave = null;
     hideDamagePreview(opponentPanel, true);
@@ -7785,6 +7902,18 @@ function openTurnTimerModal() {
 
 function renderTurnTimerModal(state) {
   const turnDuration = Number(state.turn_duration || getClassicModeParams(state).turn_duration_seconds || 25);
+  // Онбординг: ход без ограничения времени — в модалке тоже бесконечность.
+  if (isOnboardingTutorialState(state)) {
+    const isMyTurn = !!state.is_my_turn;
+    setText('turn-timer-modal-meta', 'Ход ' + (state.turn || currentTurnCount || 0));
+    setText('turn-timer-modal-remaining', '∞');
+    setText('turn-timer-modal-owner', isMyTurn ? 'Ваш ход' : 'Ход противника');
+    setText('turn-timer-modal-summary', 'Обучение — без ограничения времени');
+    const ring = document.getElementById('turn-timer-ring');
+    if (ring) ring.style.setProperty('--timer-progress', '0deg');
+    renderTurnTimerHistory(state.turn_time_history || []);
+    return;
+  }
   const remaining = Math.max(0, Number(state.turn_time_remaining ?? turnDuration));
   const elapsed = Math.max(0, turnDuration - remaining);
   const progress = turnDuration > 0 ? Math.min(360, Math.max(0, (elapsed / turnDuration) * 360)) : 0;
@@ -8085,6 +8214,43 @@ function bindUIHandlers() {
         e.stopPropagation();
         handleGlobalTargetClick(null, true, e);
       }
+    });
+  }
+
+  // Feature A: отмена выбора карты / атаки тапом по пустой области зоны руки.
+  // Работает для любого активного режима (TARGETING / ATTACK) И для выбранной
+  // обычной карты (selectedCard, interactionMode === NONE — у таких карт нет
+  // режима цели, только подсветка слотов) независимо от того, где находится
+  // выбранная карта (рука/поле/ещё где-то). Тапы по самим картам (.hand-card)
+  // пропускаем — их обрабатывает handleCardClick; плитка добора помечена
+  // .hand-card, но имеет свой stopPropagation в клик-хендлере, так что сюда не
+  // всплывает.
+  const handZone = document.getElementById('player-hand-zone');
+  if (handZone) {
+    handZone.addEventListener('click', (e) => {
+      if (interactionMode.type === 'NONE' && !selectedAttacker && !selectedCard) return; // нечего отменять
+      if (e.target.closest('.hand-card')) return;                        // тап по карте — не отмена
+      resetInteractionMode();
+    });
+  }
+
+  // Feature A (расширение): отмена выбора тапом по пустой области поля игрока.
+  // «Пустая область» = зазоры/внешние поля контейнера И пустые слоты без существа,
+  // НЕ отмеченные как .droppable (.droppable-слоты — это места розыгрыша обычной
+  // карты, их тап проигрывает карту через slot.onclick). Тап по существу уходит в
+  // его собственный хендлер. Так отмена работает и для TARGETING/ATTACK (где
+  // пустые слоты не droppable — тап по ним отменяет), и для обычной карты (тап по
+  // droppable-слоту = розыгрыш, тап по зазору/пустому не-droppable слоту = отмена).
+  // clearAllCardSelections (из resetInteractionMode) снимает .droppable и
+  // slot.onclick — поэтому класс всегда свежий при каждом выборе.
+  const boardZone = document.getElementById('player-board-zone');
+  if (boardZone) {
+    boardZone.addEventListener('click', (e) => {
+      if (interactionMode.type === 'NONE' && !selectedAttacker && !selectedCard) return; // нечего отменять
+      if (e.target.closest('.board-unit-card')) return;              // существо — своя логика
+      const slot = e.target.closest('.board-slot');
+      if (slot && slot.classList.contains('droppable')) return;      // место розыгрыша — играет карта
+      resetInteractionMode();
     });
   }
   

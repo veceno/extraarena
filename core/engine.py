@@ -1372,9 +1372,12 @@ class ArenaEnvironment:
         # 3. Всегда можно завершить ход
         actions.append(EndTurnAction())
 
-        # 4. Добор карт за ману — доступен, пока рука не заполнена и маны
-        # хватает на следующую ступень стоимости (MANA_DRAW_BASE * (count+1)).
-        if len(player.hand) < HAND_CAP:
+        # 4. Добор карт за ману — доступен только когда действие действительно
+        # исполнимо: рука не заполнена, есть мана и есть карта в deck/graveyard.
+        # Раньше здесь выдавался ManaDrawAction при пустых deck+graveyard, хотя
+        # step() неизбежно возвращал no_cards_to_draw; это делало V5 policy
+        # выбирать формально legal, но фактически неисполняемое действие.
+        if len(player.hand) < HAND_CAP and (player.deck or player.graveyard):
             mana_draw_cost = MANA_DRAW_BASE * (player.mana_draw_count_this_turn + 1)
             if player.mana >= mana_draw_cost:
                 actions.append(ManaDrawAction())

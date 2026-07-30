@@ -495,6 +495,7 @@ def _clone_state_for_preview(state: GameState) -> GameState:
         turn_number=state.turn_number,
         history=[dict(item) for item in state.history],
         action_history=list(state.action_history),
+        v5_history_events=list(getattr(state, "v5_history_events", ())),
         status=state.status,
         sudden_death_turns_by_player=dict(state.sudden_death_turns_by_player),
         sudden_death_last_applied_turn_by_player=dict(state.sudden_death_last_applied_turn_by_player),

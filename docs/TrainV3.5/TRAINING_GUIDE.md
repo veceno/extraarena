@@ -71,6 +71,29 @@ artifacts (`battles/<bid>/v5/{meta,turns,actions}.jsonl`) via an MCP client on
 | **RLHF offline replay — Block C** | `train_v3.c_loop_driver.CLoopDriver.run` | programmatic (needs rlhf_env) |
 | **Tournament + ship — Block E1** | `train_v3.block_e1_runner.main` | CLI: `python3 -m train_v3.block_e1_runner ...` |
 
+### 2.1 Current Phase-A bootstrap
+
+For the first V5 ExtraLR phase, use the random-heavy Rust ArenaEnv runner instead of
+semi-synthetic ExtraRLHF / LLM / V4Max distillation:
+
+```bash
+export PYTHONPATH="$PWD:$PWD/TrainV3.5/python"
+export TRAINV3_CORE_LIB="$PWD/TrainV3.5/target/release/libtrainv3_core.dylib"
+python3 TrainV3.5/scripts/run_phaseA_random_bootstrap.py \
+  --updates 2000 \
+  --env-count 128 \
+  --steps-per-update 24 \
+  --checkpoint-every 10 \
+  --target-random-score 0.98
+```
+
+This uses `build_phase_a_random_bootstrap_config()`:
+`legal_random 0.70, end_turn 0.05, greedy_face 0.10, face_rush 0.05,
+board_control 0.05, greedy_trade 0.05`. It is teacher-free for Phase A: no LLM
+teacher data, no V4Max distillation, no V4Max warm-start by default, no
+previous-self snapshot. Later Block-B league and Block-C human-vs-preV5 remain
+separate.
+
 The recommended first end-to-end run is the **`train_v5_adaptive` CLI** (it wraps the
 PPO trace-pool path end-to-end and also derives the aux datasets). The worked example
 in §6 used exactly this entry on a tiny garbage config.

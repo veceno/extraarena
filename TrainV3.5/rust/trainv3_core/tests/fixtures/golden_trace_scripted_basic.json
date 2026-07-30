@@ -27,7 +27,7 @@
     "mask_sha256_f32_le": "46f125412a34a515cc1d8bb1dc1e14901bd6b24087fd92659141aeaed1d4e70a",
     "obs_sha256_f32_le": "d4b1bb5ca9111cc8fa03a937f28f118255d67d3a0eb167b1d66f6ed5292a990f",
     "obs_v5_dim": 7128,
-    "obs_v5_sha256_f32_le": "22f22626293574eb19589aec543ebbee7bea322d4c66d1e5106ffd6c9ba03546",
+    "obs_v5_sha256_f32_le": "6fab9c76a0688aa5f92219b31a2d22dfc462de040a2b7f2d124151d45bdd5ae0",
     "state": {
       "current_turn_owner_id": 1,
       "p1": {
@@ -298,7 +298,27 @@
             "enemy_hero_hp_delta": 0,
             "my_board_count_delta": 1,
             "own_hero_hp_delta": 0,
-            "turn_number": 1
+            "turn_number": 1,
+            "source_card": {
+              "card_id": 37,
+              "type": "warrior",
+              "mana_cost": 1,
+              "attack": 1,
+              "hp": 2,
+              "max_hp": 2,
+              "mechanics": [],
+              "is_ready": false,
+              "is_frozen": false,
+              "level": 1,
+              "skip_count": 0,
+              "base_attack": 0,
+              "base_hp": 0,
+              "base_max_hp": 0,
+              "base_mana_cost": 0,
+              "base_mechanics": [],
+              "base_snapshot_set": false
+            },
+            "target_card": null
           }
         ],
         "legal_ids": [
@@ -307,7 +327,7 @@
         "mask_sha256_f32_le": "69ba8d7d0d3cac51fbe340c31cde59ea84f03bca452faf27ab3a56855622f432",
         "obs_sha256_f32_le": "c63a0ea6fd1f349aaa5f5032074a16add638bc167faa8cc3150f02fdfb8ac95c",
         "obs_v5_dim": 7128,
-        "obs_v5_sha256_f32_le": "ed99c5e20e57dc0b7ea710aead1c2e96ee1d04d03190d1044aca1ccef5ad99f1",
+        "obs_v5_sha256_f32_le": "08c9514612c94fcdaa8055fdecb75d178dcd34bbf14e33d795e531092c0aba26",
         "state": {
           "current_turn_owner_id": 1,
           "p1": {
@@ -565,7 +585,7 @@
         "mask_sha256_f32_le": "46f125412a34a515cc1d8bb1dc1e14901bd6b24087fd92659141aeaed1d4e70a",
         "obs_sha256_f32_le": "d4b1bb5ca9111cc8fa03a937f28f118255d67d3a0eb167b1d66f6ed5292a990f",
         "obs_v5_dim": 7128,
-        "obs_v5_sha256_f32_le": "22f22626293574eb19589aec543ebbee7bea322d4c66d1e5106ffd6c9ba03546",
+        "obs_v5_sha256_f32_le": "6fab9c76a0688aa5f92219b31a2d22dfc462de040a2b7f2d124151d45bdd5ae0",
         "state": {
           "current_turn_owner_id": 1,
           "p1": {
@@ -850,7 +870,27 @@
             "enemy_hero_hp_delta": 0,
             "my_board_count_delta": 1,
             "own_hero_hp_delta": 0,
-            "turn_number": 1
+            "turn_number": 1,
+            "source_card": {
+              "card_id": 37,
+              "type": "warrior",
+              "mana_cost": 1,
+              "attack": 1,
+              "hp": 2,
+              "max_hp": 2,
+              "mechanics": [],
+              "is_ready": false,
+              "is_frozen": false,
+              "level": 1,
+              "skip_count": 0,
+              "base_attack": 0,
+              "base_hp": 0,
+              "base_max_hp": 0,
+              "base_mana_cost": 0,
+              "base_mechanics": [],
+              "base_snapshot_set": false
+            },
+            "target_card": null
           },
           {
             "action_id": 0,
@@ -861,7 +901,9 @@
             "enemy_hero_hp_delta": 0,
             "my_board_count_delta": 0,
             "own_hero_hp_delta": 0,
-            "turn_number": 2
+            "turn_number": 2,
+            "source_card": null,
+            "target_card": null
           }
         ],
         "legal_ids": [
@@ -872,7 +914,7 @@
         "mask_sha256_f32_le": "46f125412a34a515cc1d8bb1dc1e14901bd6b24087fd92659141aeaed1d4e70a",
         "obs_sha256_f32_le": "321136f1ebf023da7e981353ea10c96c5e5eb61e409941acb165a50bcf93f993",
         "obs_v5_dim": 7128,
-        "obs_v5_sha256_f32_le": "5c987c640fee2c251af8c890889ddba082bce2cb6628b94e098680465cd9367c",
+        "obs_v5_sha256_f32_le": "208bda1d1b4ad1f91d5f910f465cfdb97ade373f83dc71113e27b9745211ab6c",
         "state": {
           "current_turn_owner_id": 2,
           "p1": {
@@ -1131,7 +1173,27 @@
             "enemy_hero_hp_delta": 0,
             "my_board_count_delta": 1,
             "own_hero_hp_delta": 0,
-            "turn_number": 1
+            "turn_number": 1,
+            "source_card": {
+              "card_id": 37,
+              "type": "warrior",
+              "mana_cost": 1,
+              "attack": 1,
+              "hp": 2,
+              "max_hp": 2,
+              "mechanics": [],
+              "is_ready": false,
+              "is_frozen": false,
+              "level": 1,
+              "skip_count": 0,
+              "base_attack": 0,
+              "base_hp": 0,
+              "base_max_hp": 0,
+              "base_mana_cost": 0,
+              "base_mechanics": [],
+              "base_snapshot_set": false
+            },
+            "target_card": null
           }
         ],
         "legal_ids": [
@@ -1140,7 +1202,7 @@
         "mask_sha256_f32_le": "69ba8d7d0d3cac51fbe340c31cde59ea84f03bca452faf27ab3a56855622f432",
         "obs_sha256_f32_le": "c63a0ea6fd1f349aaa5f5032074a16add638bc167faa8cc3150f02fdfb8ac95c",
         "obs_v5_dim": 7128,
-        "obs_v5_sha256_f32_le": "ed99c5e20e57dc0b7ea710aead1c2e96ee1d04d03190d1044aca1ccef5ad99f1",
+        "obs_v5_sha256_f32_le": "08c9514612c94fcdaa8055fdecb75d178dcd34bbf14e33d795e531092c0aba26",
         "state": {
           "current_turn_owner_id": 1,
           "p1": {
@@ -1426,7 +1488,27 @@
             "enemy_hero_hp_delta": 0,
             "my_board_count_delta": 1,
             "own_hero_hp_delta": 0,
-            "turn_number": 1
+            "turn_number": 1,
+            "source_card": {
+              "card_id": 37,
+              "type": "warrior",
+              "mana_cost": 1,
+              "attack": 1,
+              "hp": 2,
+              "max_hp": 2,
+              "mechanics": [],
+              "is_ready": false,
+              "is_frozen": false,
+              "level": 1,
+              "skip_count": 0,
+              "base_attack": 0,
+              "base_hp": 0,
+              "base_max_hp": 0,
+              "base_mana_cost": 0,
+              "base_mechanics": [],
+              "base_snapshot_set": false
+            },
+            "target_card": null
           },
           {
             "action_id": 0,
@@ -1437,7 +1519,9 @@
             "enemy_hero_hp_delta": 0,
             "my_board_count_delta": 0,
             "own_hero_hp_delta": 0,
-            "turn_number": 2
+            "turn_number": 2,
+            "source_card": null,
+            "target_card": null
           },
           {
             "action_id": 1,
@@ -1448,7 +1532,27 @@
             "enemy_hero_hp_delta": 0,
             "my_board_count_delta": 1,
             "own_hero_hp_delta": 0,
-            "turn_number": 2
+            "turn_number": 2,
+            "source_card": {
+              "card_id": 37,
+              "type": "warrior",
+              "mana_cost": 1,
+              "attack": 1,
+              "hp": 2,
+              "max_hp": 2,
+              "mechanics": [],
+              "is_ready": false,
+              "is_frozen": false,
+              "level": 1,
+              "skip_count": 0,
+              "base_attack": 0,
+              "base_hp": 0,
+              "base_max_hp": 0,
+              "base_mana_cost": 0,
+              "base_mechanics": [],
+              "base_snapshot_set": false
+            },
+            "target_card": null
           }
         ],
         "legal_ids": [
@@ -1457,7 +1561,7 @@
         "mask_sha256_f32_le": "69ba8d7d0d3cac51fbe340c31cde59ea84f03bca452faf27ab3a56855622f432",
         "obs_sha256_f32_le": "1af34d75e441d5a81d644b04dd38c1d028c22207ebc847efe4832ca94a91ce31",
         "obs_v5_dim": 7128,
-        "obs_v5_sha256_f32_le": "ce72d42a46b67cfd74cee7b21a5578b2c85142b26a5c53a4715c9137de127b73",
+        "obs_v5_sha256_f32_le": "50693dc23dda276e951044d711698b79d76df1f76d0e1218f12816b83f9b21e9",
         "state": {
           "current_turn_owner_id": 2,
           "p1": {
@@ -1717,7 +1821,27 @@
             "enemy_hero_hp_delta": 0,
             "my_board_count_delta": 1,
             "own_hero_hp_delta": 0,
-            "turn_number": 1
+            "turn_number": 1,
+            "source_card": {
+              "card_id": 37,
+              "type": "warrior",
+              "mana_cost": 1,
+              "attack": 1,
+              "hp": 2,
+              "max_hp": 2,
+              "mechanics": [],
+              "is_ready": false,
+              "is_frozen": false,
+              "level": 1,
+              "skip_count": 0,
+              "base_attack": 0,
+              "base_hp": 0,
+              "base_max_hp": 0,
+              "base_mana_cost": 0,
+              "base_mechanics": [],
+              "base_snapshot_set": false
+            },
+            "target_card": null
           },
           {
             "action_id": 0,
@@ -1728,7 +1852,9 @@
             "enemy_hero_hp_delta": 0,
             "my_board_count_delta": 0,
             "own_hero_hp_delta": 0,
-            "turn_number": 2
+            "turn_number": 2,
+            "source_card": null,
+            "target_card": null
           }
         ],
         "legal_ids": [
@@ -1739,7 +1865,7 @@
         "mask_sha256_f32_le": "46f125412a34a515cc1d8bb1dc1e14901bd6b24087fd92659141aeaed1d4e70a",
         "obs_sha256_f32_le": "321136f1ebf023da7e981353ea10c96c5e5eb61e409941acb165a50bcf93f993",
         "obs_v5_dim": 7128,
-        "obs_v5_sha256_f32_le": "5c987c640fee2c251af8c890889ddba082bce2cb6628b94e098680465cd9367c",
+        "obs_v5_sha256_f32_le": "208bda1d1b4ad1f91d5f910f465cfdb97ade373f83dc71113e27b9745211ab6c",
         "state": {
           "current_turn_owner_id": 2,
           "p1": {
@@ -2025,7 +2151,27 @@
             "enemy_hero_hp_delta": 0,
             "my_board_count_delta": 1,
             "own_hero_hp_delta": 0,
-            "turn_number": 1
+            "turn_number": 1,
+            "source_card": {
+              "card_id": 37,
+              "type": "warrior",
+              "mana_cost": 1,
+              "attack": 1,
+              "hp": 2,
+              "max_hp": 2,
+              "mechanics": [],
+              "is_ready": false,
+              "is_frozen": false,
+              "level": 1,
+              "skip_count": 0,
+              "base_attack": 0,
+              "base_hp": 0,
+              "base_max_hp": 0,
+              "base_mana_cost": 0,
+              "base_mechanics": [],
+              "base_snapshot_set": false
+            },
+            "target_card": null
           },
           {
             "action_id": 0,
@@ -2036,7 +2182,9 @@
             "enemy_hero_hp_delta": 0,
             "my_board_count_delta": 0,
             "own_hero_hp_delta": 0,
-            "turn_number": 2
+            "turn_number": 2,
+            "source_card": null,
+            "target_card": null
           },
           {
             "action_id": 1,
@@ -2047,7 +2195,27 @@
             "enemy_hero_hp_delta": 0,
             "my_board_count_delta": 1,
             "own_hero_hp_delta": 0,
-            "turn_number": 2
+            "turn_number": 2,
+            "source_card": {
+              "card_id": 37,
+              "type": "warrior",
+              "mana_cost": 1,
+              "attack": 1,
+              "hp": 2,
+              "max_hp": 2,
+              "mechanics": [],
+              "is_ready": false,
+              "is_frozen": false,
+              "level": 1,
+              "skip_count": 0,
+              "base_attack": 0,
+              "base_hp": 0,
+              "base_max_hp": 0,
+              "base_mana_cost": 0,
+              "base_mechanics": [],
+              "base_snapshot_set": false
+            },
+            "target_card": null
           },
           {
             "action_id": 0,
@@ -2058,7 +2226,9 @@
             "enemy_hero_hp_delta": 0,
             "my_board_count_delta": 0,
             "own_hero_hp_delta": 0,
-            "turn_number": 3
+            "turn_number": 3,
+            "source_card": null,
+            "target_card": null
           }
         ],
         "legal_ids": [
@@ -2071,7 +2241,7 @@
         "mask_sha256_f32_le": "491561d400153511d2ae5338bc168bde434f5f06685e35c4521a244398cf4fe3",
         "obs_sha256_f32_le": "0f46ba49ac46960cee2bc01fdbb25245d4dc341be487bda5efb8c70f27caeb1a",
         "obs_v5_dim": 7128,
-        "obs_v5_sha256_f32_le": "2be6d96521722c89618066efec1b53a7f86204b51d63c86d9bd83b35b82788b9",
+        "obs_v5_sha256_f32_le": "6d3ab5d5632be7325a1a6d8928414e05ecf326f8c7196ba6a42fb5e32123ae01",
         "state": {
           "current_turn_owner_id": 1,
           "p1": {
@@ -2331,7 +2501,27 @@
             "enemy_hero_hp_delta": 0,
             "my_board_count_delta": 1,
             "own_hero_hp_delta": 0,
-            "turn_number": 1
+            "turn_number": 1,
+            "source_card": {
+              "card_id": 37,
+              "type": "warrior",
+              "mana_cost": 1,
+              "attack": 1,
+              "hp": 2,
+              "max_hp": 2,
+              "mechanics": [],
+              "is_ready": false,
+              "is_frozen": false,
+              "level": 1,
+              "skip_count": 0,
+              "base_attack": 0,
+              "base_hp": 0,
+              "base_max_hp": 0,
+              "base_mana_cost": 0,
+              "base_mechanics": [],
+              "base_snapshot_set": false
+            },
+            "target_card": null
           },
           {
             "action_id": 0,
@@ -2342,7 +2532,9 @@
             "enemy_hero_hp_delta": 0,
             "my_board_count_delta": 0,
             "own_hero_hp_delta": 0,
-            "turn_number": 2
+            "turn_number": 2,
+            "source_card": null,
+            "target_card": null
           },
           {
             "action_id": 1,
@@ -2353,7 +2545,27 @@
             "enemy_hero_hp_delta": 0,
             "my_board_count_delta": 1,
             "own_hero_hp_delta": 0,
-            "turn_number": 2
+            "turn_number": 2,
+            "source_card": {
+              "card_id": 37,
+              "type": "warrior",
+              "mana_cost": 1,
+              "attack": 1,
+              "hp": 2,
+              "max_hp": 2,
+              "mechanics": [],
+              "is_ready": false,
+              "is_frozen": false,
+              "level": 1,
+              "skip_count": 0,
+              "base_attack": 0,
+              "base_hp": 0,
+              "base_max_hp": 0,
+              "base_mana_cost": 0,
+              "base_mechanics": [],
+              "base_snapshot_set": false
+            },
+            "target_card": null
           }
         ],
         "legal_ids": [
@@ -2362,7 +2574,7 @@
         "mask_sha256_f32_le": "69ba8d7d0d3cac51fbe340c31cde59ea84f03bca452faf27ab3a56855622f432",
         "obs_sha256_f32_le": "1af34d75e441d5a81d644b04dd38c1d028c22207ebc847efe4832ca94a91ce31",
         "obs_v5_dim": 7128,
-        "obs_v5_sha256_f32_le": "ce72d42a46b67cfd74cee7b21a5578b2c85142b26a5c53a4715c9137de127b73",
+        "obs_v5_sha256_f32_le": "50693dc23dda276e951044d711698b79d76df1f76d0e1218f12816b83f9b21e9",
         "state": {
           "current_turn_owner_id": 2,
           "p1": {
@@ -2649,7 +2861,27 @@
             "enemy_hero_hp_delta": 0,
             "my_board_count_delta": 1,
             "own_hero_hp_delta": 0,
-            "turn_number": 1
+            "turn_number": 1,
+            "source_card": {
+              "card_id": 37,
+              "type": "warrior",
+              "mana_cost": 1,
+              "attack": 1,
+              "hp": 2,
+              "max_hp": 2,
+              "mechanics": [],
+              "is_ready": false,
+              "is_frozen": false,
+              "level": 1,
+              "skip_count": 0,
+              "base_attack": 0,
+              "base_hp": 0,
+              "base_max_hp": 0,
+              "base_mana_cost": 0,
+              "base_mechanics": [],
+              "base_snapshot_set": false
+            },
+            "target_card": null
           },
           {
             "action_id": 0,
@@ -2660,7 +2892,9 @@
             "enemy_hero_hp_delta": 0,
             "my_board_count_delta": 0,
             "own_hero_hp_delta": 0,
-            "turn_number": 2
+            "turn_number": 2,
+            "source_card": null,
+            "target_card": null
           },
           {
             "action_id": 1,
@@ -2671,7 +2905,27 @@
             "enemy_hero_hp_delta": 0,
             "my_board_count_delta": 1,
             "own_hero_hp_delta": 0,
-            "turn_number": 2
+            "turn_number": 2,
+            "source_card": {
+              "card_id": 37,
+              "type": "warrior",
+              "mana_cost": 1,
+              "attack": 1,
+              "hp": 2,
+              "max_hp": 2,
+              "mechanics": [],
+              "is_ready": false,
+              "is_frozen": false,
+              "level": 1,
+              "skip_count": 0,
+              "base_attack": 0,
+              "base_hp": 0,
+              "base_max_hp": 0,
+              "base_mana_cost": 0,
+              "base_mechanics": [],
+              "base_snapshot_set": false
+            },
+            "target_card": null
           },
           {
             "action_id": 0,
@@ -2682,7 +2936,9 @@
             "enemy_hero_hp_delta": 0,
             "my_board_count_delta": 0,
             "own_hero_hp_delta": 0,
-            "turn_number": 3
+            "turn_number": 3,
+            "source_card": null,
+            "target_card": null
           },
           {
             "action_id": 552,
@@ -2693,7 +2949,45 @@
             "enemy_hero_hp_delta": 1,
             "my_board_count_delta": 0,
             "own_hero_hp_delta": 0,
-            "turn_number": 3
+            "turn_number": 3,
+            "source_card": {
+              "card_id": 37,
+              "type": "warrior",
+              "mana_cost": 1,
+              "attack": 1,
+              "hp": 2,
+              "max_hp": 2,
+              "mechanics": [],
+              "is_ready": true,
+              "is_frozen": false,
+              "level": 1,
+              "skip_count": 0,
+              "base_attack": 0,
+              "base_hp": 0,
+              "base_max_hp": 0,
+              "base_mana_cost": 0,
+              "base_mechanics": [],
+              "base_snapshot_set": false
+            },
+            "target_card": {
+              "card_id": 1,
+              "type": "hero",
+              "mana_cost": 0,
+              "attack": 0,
+              "hp": 35,
+              "max_hp": 35,
+              "mechanics": [],
+              "is_ready": false,
+              "is_frozen": false,
+              "level": 1,
+              "skip_count": 0,
+              "base_attack": 0,
+              "base_hp": 0,
+              "base_max_hp": 0,
+              "base_mana_cost": 0,
+              "base_mechanics": [],
+              "base_snapshot_set": false
+            }
           }
         ],
         "legal_ids": [
@@ -2704,7 +2998,7 @@
         "mask_sha256_f32_le": "638da352384edc09cb1c83b3ae96e9e7b0ef01ecd9c65a398df32576d945c8c6",
         "obs_sha256_f32_le": "15ccdabff5087b62600de8b0252781557d9eba32395f429dfa023f6852836c82",
         "obs_v5_dim": 7128,
-        "obs_v5_sha256_f32_le": "9766117f8f190a0b285a4552e388cb79027f0f7dab8f96fdb5c10e83103cc009",
+        "obs_v5_sha256_f32_le": "c3eb81edd43f31c3253df87dbfc625674d90f8b450e6d8c6af02138cf2a90907",
         "state": {
           "current_turn_owner_id": 1,
           "p1": {
@@ -2964,7 +3258,27 @@
             "enemy_hero_hp_delta": 0,
             "my_board_count_delta": 1,
             "own_hero_hp_delta": 0,
-            "turn_number": 1
+            "turn_number": 1,
+            "source_card": {
+              "card_id": 37,
+              "type": "warrior",
+              "mana_cost": 1,
+              "attack": 1,
+              "hp": 2,
+              "max_hp": 2,
+              "mechanics": [],
+              "is_ready": false,
+              "is_frozen": false,
+              "level": 1,
+              "skip_count": 0,
+              "base_attack": 0,
+              "base_hp": 0,
+              "base_max_hp": 0,
+              "base_mana_cost": 0,
+              "base_mechanics": [],
+              "base_snapshot_set": false
+            },
+            "target_card": null
           },
           {
             "action_id": 0,
@@ -2975,7 +3289,9 @@
             "enemy_hero_hp_delta": 0,
             "my_board_count_delta": 0,
             "own_hero_hp_delta": 0,
-            "turn_number": 2
+            "turn_number": 2,
+            "source_card": null,
+            "target_card": null
           },
           {
             "action_id": 1,
@@ -2986,7 +3302,27 @@
             "enemy_hero_hp_delta": 0,
             "my_board_count_delta": 1,
             "own_hero_hp_delta": 0,
-            "turn_number": 2
+            "turn_number": 2,
+            "source_card": {
+              "card_id": 37,
+              "type": "warrior",
+              "mana_cost": 1,
+              "attack": 1,
+              "hp": 2,
+              "max_hp": 2,
+              "mechanics": [],
+              "is_ready": false,
+              "is_frozen": false,
+              "level": 1,
+              "skip_count": 0,
+              "base_attack": 0,
+              "base_hp": 0,
+              "base_max_hp": 0,
+              "base_mana_cost": 0,
+              "base_mechanics": [],
+              "base_snapshot_set": false
+            },
+            "target_card": null
           },
           {
             "action_id": 0,
@@ -2997,7 +3333,9 @@
             "enemy_hero_hp_delta": 0,
             "my_board_count_delta": 0,
             "own_hero_hp_delta": 0,
-            "turn_number": 3
+            "turn_number": 3,
+            "source_card": null,
+            "target_card": null
           }
         ],
         "legal_ids": [
@@ -3010,7 +3348,7 @@
         "mask_sha256_f32_le": "491561d400153511d2ae5338bc168bde434f5f06685e35c4521a244398cf4fe3",
         "obs_sha256_f32_le": "0f46ba49ac46960cee2bc01fdbb25245d4dc341be487bda5efb8c70f27caeb1a",
         "obs_v5_dim": 7128,
-        "obs_v5_sha256_f32_le": "2be6d96521722c89618066efec1b53a7f86204b51d63c86d9bd83b35b82788b9",
+        "obs_v5_sha256_f32_le": "6d3ab5d5632be7325a1a6d8928414e05ecf326f8c7196ba6a42fb5e32123ae01",
         "state": {
           "current_turn_owner_id": 1,
           "p1": {

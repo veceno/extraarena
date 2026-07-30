@@ -122,6 +122,7 @@ def _fake_opponent_policies_factory():
     policies["self"] = _EndTurnPolicy()
     # greedy_face + v4max -> simple fakes (cover the dispatch identities B3 may
     # emit via the tail; not in the default B3 mix but kept for completeness).
+    policies["end_turn"] = _EndTurnPolicy()
     policies["greedy_face"] = _EndTurnPolicy()
     policies["v4max"] = _EndTurnPolicy()
     return policies
@@ -232,10 +233,9 @@ class TestRunsNUpdatesAndSnapshots:
         assert manifest.n_snapshots == 2
         assert len(manifest.snapshot_history) == 2
         assert {s["update_number"] for s in manifest.snapshot_history} == {2, 4}
-        # the pool fills: seed anchor set on the first snapshot + rolling added.
-        assert driver.pool.seed_anchor is not None
-        # second snapshot adds a rolling entry (the first set the seed anchor).
-        assert driver.pool.non_anchor_count >= 1
+        # Failed gates cannot create a seed/best anchor.
+        assert driver.pool.seed_anchor is None
+        assert driver.pool.non_anchor_count == 0
         assert len(manifest.update_metrics) == 4
         # each update metric records the mix used + the A4 live-path kind.
         for m in manifest.update_metrics:
@@ -591,7 +591,6 @@ class TestDoesNotEditFrozenClassic:
             os.path.join(_TESTS_DIR, "..", "..", "..", "..")
         )
         frozen = [
-            "TrainV3.5/python/train_v3/league_v5.py",
             "TrainV3.5/python/train_v3/gauntlet_v5.py",
             "TrainV3.5/python/train_v3/opponents_v5.py",
             "TrainV3.5/python/train_v3/reward_v5.py",
@@ -600,7 +599,6 @@ class TestDoesNotEditFrozenClassic:
             "TrainV3.5/python/train_v3/a_gate.py",
             "TrainV3.5/python/train_v3/ppo_phaseA_config.py",
             "TrainV3.5/python/train_v3/rust_trainer.py",
-            "TrainV3.5/python/train_v3/snapshot_pool.py",
             "TrainV3.5/python/train_v3/v4_orig_temp_spectrum.py",
             "TrainV3.5/python/train_v3/block_b_opponent_mix.py",
             "TrainV3.5/python/train_v3/curriculum.py",

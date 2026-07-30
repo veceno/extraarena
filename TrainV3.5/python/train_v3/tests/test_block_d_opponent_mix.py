@@ -52,10 +52,10 @@ class _FakePool:
     surface (``self_snapshot_prevalence_weight``). D1 does NOT call it; the fake
     pool is passed only to exercise the D1 API surface (so D2 can swap builders).
 
-    The prevalence saturates at ``SELF_SNAPSHOT_SHARE_CAP`` (0.05) -- emulating B1
+    The prevalence saturates at ``SELF_SNAPSHOT_SHARE_CAP`` -- emulating B1
     ``SnapshotPool.self_snapshot_prevalence_weight`` saturation
     (``block_b_opponent_mix.py:156-157``, ``test_b1_prevalence_cap_005``). So a
-    "full pool" (prevalence 1.0) feeds B3 a 0.05 self-snapshot share (the B3 frozen-
+    "full pool" (prevalence 1.0) feeds B3 a capped self-snapshot share (the B3 frozen-
     field cap), which is what the D-D1 consolidation-vs-frozen-field regression
     guard checks against. D1 ignores the value entirely."""
 
@@ -325,12 +325,12 @@ def test_parser_reexport_accepts_11_names_rejects_unknown():
 
 # =============================================================================
 # 8. test_block_d_mix_not_block_b_frozen (REGRESSION GUARD) -- at a full fake pool
-#    (prevalence 1.0), D1 default self share (0.50) != B3 self share (capped 0.05).
+#    (prevalence 1.0), D1 default self share (0.50) != B3 self share (capped 0.25).
 # =============================================================================
 def test_block_d_mix_not_block_b_frozen():
     """THE D-D1 consolidation-vs-frozen-field guard. At a full fake pool (prevalence
     1.0), the D1 default self+v5_snapshot weight (0.50, ``self_share_target``
-    DIRECT) is GREATER than B3's self+v5_snapshot weight (capped 0.05,
+    DIRECT) is GREATER than B3's self+v5_snapshot weight (capped 0.25,
     ``pool.self_snapshot_prevalence_weight()`` ramp). This is the load-bearing gap
     D1 opens: a Block-B-frozen-weights verbatim run from the post-C checkpoint
     would NOT consolidate -- D1 does."""
@@ -340,7 +340,7 @@ def test_block_d_mix_not_block_b_frozen():
     d_self = d_mix["self"] + d_mix["v5_snapshot"]
     b_self = b_mix["self"] + b_mix["v5_snapshot"]
     assert d_self == pytest.approx(0.50, abs=1e-9)
-    assert b_self == pytest.approx(0.05, abs=1e-9)
+    assert b_self == pytest.approx(SELF_SNAPSHOT_SHARE_CAP, abs=1e-9)
     assert d_self > b_self + 1e-6  # the consolidation-vs-frozen-field gap
 
 

@@ -69,14 +69,19 @@ from typing import Any, Dict, Optional, Union
 import numpy as np
 
 from .bc_train import (
-    DEFAULT_MANA_DRAW_BCE_WEIGHT,
     _zero_frozen_grads,
     assert_frozen_preserved,
     frozen_param_names,
     snapshot_frozen_params,
     trainable_param_names,
 )
+
+# The factorized AWAC surrogate already trains the gate with signed advantage.
+# An unconditional imitation BCE of weight 1 overwhelms that signal and revives
+# the draw-spam failure. It remains an opt-in auxiliary only.
+DEFAULT_MANA_DRAW_BCE_WEIGHT = 0.0
 from .offline_replay_bridge import OfflineReplayBatch
+from .contracts import ACTION_FEATURE_DIM, MAX_CANDIDATE_ACTIONS, OBS_V5_DIM
 from .rust_ppo import (
     RustPPOBatch,
     RustPPOEvaluation,
@@ -165,7 +170,14 @@ def awac_crr_loss(
     probs = _numpy_softmax_masked(logits, action_mask)
     rows = np.arange(B)
     action_probs = probs[rows, actions]
-    new_log_probs = np.log(action_probs + _LOG_EPS)
+    candidate_log_probs = np.log(action_probs + _LOG_EPS)
+    draw_p = np.where(mana_draw_legal, _numpy_sigmoid(mana_draw_logit), 0.0)
+    is_md_bool = is_mana_draw.astype(np.bool_)
+    new_log_probs = np.where(
+        is_md_bool,
+        np.log(draw_p + _LOG_EPS),
+        np.log(1.0 - draw_p + _LOG_EPS) + candidate_log_probs,
+    )
 
     # PPO ratio (rust_ppo.py:770).
     ratios = np.exp(new_log_probs - old_log_probs)
@@ -178,9 +190,7 @@ def awac_crr_loss(
     surr1 = ratios * A
     surr2 = np.clip(ratios, 1.0 - clip_epsilon, 1.0 + clip_epsilon) * A
 
-    # valid_policy_mask: EXCLUDES mana_draw (target_tcode=-1), terminal (-1),
-    # and padded rows from the PPO surrogate.
-    valid_policy_mask = (target_tcodes >= 0) & (~is_padded)
+    valid_policy_mask = ((target_tcodes >= 0) | is_md_bool) & (~is_padded)
     vpf = valid_policy_mask.astype(np.float32)
     vpf_count = float(vpf.sum())
     vpf_denom = max(vpf_count, 1.0)
@@ -206,8 +216,9 @@ def awac_crr_loss(
     mdf_denom = max(mdf_count, 1.0)
     mana_draw_bce = float(np.sum(bce_per_row * mdf) / mdf_denom)
 
-    # entropy over valid rows (rust_ppo.py:776).
-    ent_per_row = -np.sum(probs * np.log(probs + _LOG_EPS), axis=-1)
+    candidate_entropy = -np.sum(probs * np.log(probs + _LOG_EPS), axis=-1)
+    gate_entropy = -(draw_p * np.log(draw_p + _LOG_EPS) + (1.0 - draw_p) * np.log(1.0 - draw_p + _LOG_EPS))
+    ent_per_row = gate_entropy + (1.0 - draw_p) * candidate_entropy
     entropy = float(np.sum(ent_per_row * vpf) / vpf_denom)
 
     total = (
@@ -245,7 +256,7 @@ def awac_crr_loss(
 
 
 def _numpy_sigmoid(x: np.ndarray) -> np.ndarray:
-    return 1.0 / (1.0 + np.exp(-x))
+    return 1.0 / (1.0 + np.exp(-np.clip(x, -60.0, 60.0)))
 
 
 def awac_weight(
@@ -327,7 +338,19 @@ def evaluate_awac_dense_batch(
 
     actions = mx.array(flat["actions"], dtype=mx.int32)
     action_probs = _gather_selected_action_probs(probs, actions)
-    new_log_probs = mx.log(action_probs + _LOG_EPS)
+    candidate_log_probs = mx.log(action_probs + _LOG_EPS)
+    md_legal_mx = mx.array(mana_draw_legal).astype(mx.bool_)
+    is_md_bool = mx.array(is_mana_draw).astype(mx.bool_)
+    raw_draw_p = mx.sigmoid(mana_draw_logit)
+    draw_p = mx.where(md_legal_mx, raw_draw_p, mx.zeros_like(raw_draw_p))
+    gate_log_prob = mx.where(
+        is_md_bool,
+        mx.log(draw_p + _LOG_EPS),
+        mx.log(1.0 - draw_p + _LOG_EPS),
+    )
+    new_log_probs = gate_log_prob + mx.where(
+        is_md_bool, mx.zeros_like(candidate_log_probs), candidate_log_probs
+    )
 
     old_log_probs = mx.array(flat["old_log_probs"])
     advantages = mx.array(flat["advantages"])
@@ -343,7 +366,7 @@ def evaluate_awac_dense_batch(
 
     target_tcodes_mx = mx.array(target_tcodes)
     is_padded_mx = mx.array(is_padded)
-    valid_policy_mask = (target_tcodes_mx >= 0) & (~is_padded_mx)
+    valid_policy_mask = ((target_tcodes_mx >= 0) | is_md_bool) & (~is_padded_mx)
     vpf = valid_policy_mask.astype(advantages.dtype)
     vpf_sum = mx.sum(vpf)
     vpf_denom = mx.maximum(vpf_sum, mx.array(1.0, dtype=vpf_sum.dtype))
@@ -365,8 +388,10 @@ def evaluate_awac_dense_batch(
     mdf_denom = mx.maximum(mdf_sum, mx.array(1.0, dtype=mdf_sum.dtype))
     mana_draw_bce = mx.sum(bce_per_row * mdf) / mdf_denom
 
-    # entropy over valid rows (rust_ppo.py:776).
-    ent_per_row = -mx.sum(probs * mx.log(probs + _LOG_EPS), axis=-1)
+    # Joint factorized entropy, identical to online PPO.
+    candidate_entropy = -mx.sum(probs * mx.log(probs + _LOG_EPS), axis=-1)
+    gate_entropy = -(draw_p * mx.log(draw_p + _LOG_EPS) + (1.0 - draw_p) * mx.log(1.0 - draw_p + _LOG_EPS))
+    ent_per_row = gate_entropy + (1.0 - draw_p) * candidate_entropy
     entropy = mx.sum(ent_per_row * vpf) / vpf_denom
 
     # clip_fraction + approx_kl over valid rows (mirror rust_ppo.py:777-784).
@@ -452,8 +477,6 @@ def _resolve_model(
     Raises ``FileNotFoundError`` if a path is given but the file is absent
     (caller skip-gates on this).
     """
-    from .v5_policy import V5ActionConditionedPolicy
-
     if hasattr(checkpoint_path_or_model, "parameters") and hasattr(
         checkpoint_path_or_model, "encode_state"
     ):
@@ -465,11 +488,30 @@ def _resolve_model(
             f"V5 policy checkpoint not found: {path} (skip-gated, A2 pattern)"
         )
 
-    from .warm_start_v5 import load_v4_max_into_v5
+    # C resumes the learned V5, not a V4 transfer approximation. Infer the
+    # architecture from the V5 fuser tensor so old 128 and current 256 models
+    # both restore exactly, including history/private encoders and mana head.
+    import numpy as np
+    from ai.train_v2.model_mlx import load_checkpoint
+    from .v5_policy import create_v5_policy
 
-    model = V5ActionConditionedPolicy(hidden_dim=hidden_dim)
-    # Q3 PARTIAL warm-start (strict=False): only mapped params are overwritten.
-    load_v4_max_into_v5(model, npz_path=str(path))
+    with np.load(path, allow_pickle=False) as archive:
+        fuser_key = next(
+            (key for key in archive.files if key.endswith("state_fuser.layers.0.weight")),
+            None,
+        )
+        inferred_hidden = int(archive[fuser_key].shape[0]) if fuser_key is not None else int(hidden_dim)
+        action_key = next(
+            (key for key in archive.files if key.endswith("action_encoder.weight")),
+            None,
+        )
+        inferred_action_hidden = int(archive[action_key].shape[0]) if action_key is not None else 128
+    model = create_v5_policy(
+        policy_kind="v5_split_encoder",
+        hidden_dim=inferred_hidden,
+        action_hidden_dim=inferred_action_hidden,
+    )
+    load_checkpoint(str(path), model)
     return model, "npz"
 
 
@@ -587,7 +629,13 @@ def train_awac_crr_replay(
     rng = np.random.default_rng(seed)
 
     flat = ppo_batch.flatten()
-    row_count = int(flat["actions"].shape[0])
+    flat_row_count = int(flat["actions"].shape[0])
+    # Padding exists only to preserve per-game GAE boundaries.  Sampling it as
+    # optimizer indices creates extra sparse updates, so one unusually long
+    # game changes the effective weight of every other game in the shard.
+    # Keep padding in full-batch diagnostics but train on real transitions.
+    real_indices = np.flatnonzero(~par["is_padded"]).astype(np.int64)
+    row_count = int(real_indices.size)
     if row_count <= 0:
         return {
             "status": "skipped",
@@ -674,7 +722,7 @@ def train_awac_crr_replay(
         "approx_kl": [],
     }
 
-    indices = np.arange(row_count, dtype=np.int64)
+    indices = real_indices.copy()
 
     def _slice_parallel(idx: np.ndarray) -> Dict[str, np.ndarray]:
         return {
@@ -739,6 +787,19 @@ def train_awac_crr_replay(
             optimizer,
             metadata={
                 "kind": "awac_crr_replay",
+                "model_version": "v5_split_encoder_mlx_v1",
+                "policy_kind": getattr(model, "policy_kind", "v5_split_encoder"),
+                "obs_dim": int(getattr(model, "obs_dim", OBS_V5_DIM)),
+                "action_feature_dim": int(
+                    getattr(model, "action_feature_dim", ACTION_FEATURE_DIM)
+                ),
+                "max_candidate_actions": int(MAX_CANDIDATE_ACTIONS),
+                "config": {
+                    "hidden_dim": int(getattr(model, "hidden_dim", hidden_dim)),
+                    "action_hidden_dim": int(
+                        getattr(model, "action_hidden_dim", 128)
+                    ),
+                },
                 "lambda_awac": float(lambda_awac),
                 "awac_clamp": float(awac_clamp),
                 "epochs": int(epochs),
@@ -762,6 +823,7 @@ def train_awac_crr_replay(
         "clip_fraction": float(after.clip_fraction.item()),
         "num_updates": len(metric_values["loss"]),
         "rows": row_count,
+        "padded_rows_excluded": flat_row_count - row_count,
         "epochs": epochs,
         "minibatch_size": minibatch_size,
         "lambda_awac": float(lambda_awac),

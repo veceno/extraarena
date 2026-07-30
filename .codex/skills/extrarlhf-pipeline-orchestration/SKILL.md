@@ -157,6 +157,13 @@ data. Require at least 50 battles, no rejected/fallback decisions, and a 95%
 Wilson lower bound for p1 win rate above 3%. The default Phase-C bridge remains
 human-only; LLM input needs an explicit decision-source opt-in after this gate.
 
+Structural cleanliness is necessary but not sufficient for semi-synthetic
+LLM data. Require the summary quality gate: at least 50 battles, no rejected or
+fallback decisions, and the 95% Wilson lower bound for p1 win rate above 3%.
+The default Phase-C replay bridge still accepts only `decision_source=human`.
+LLM input requires an explicit `accepted_decision_sources=("llm",)` opt-in
+after that quality gate passes.
+
 ### Phase 3 — Eval (candidate vs current)
 Run a **model-vs-model** benchmark series: `p1_actor_type="rl"`,
 `p1_model_path=<candidate.onnx>`, `p1_model_kind=<kind>`,

@@ -17,10 +17,11 @@ import asyncio
 from rlhf_env.tests._v5_helpers import make_manager, read_jsonl, v5_dir_for
 
 # Кастомная колода p1 с НОВЫМИ картами 47/50/52 (3 из 5 новых mechanic-семейств)
-# + hero 49 (crime_and_punishment_2). 1 hero + 12 карт = 13 (валидно: 6-30, ровно 1 hero).
+# + hero 49 (crime_and_punishment_2). Current ArenaEnv contract is exactly
+# 1 hero + 8 unique cards = 9.
 P1_CUSTOM_DECK = {
     "hero": 49,
-    "cards": [47, 50, 52, 8, 10, 13, 18, 19, 20, 21, 22, 25],
+    "cards": [47, 50, 52, 8, 10, 13, 18, 19],
 }
 NEW_CARD_MECHANICS = {
     47: "aoe_silence",

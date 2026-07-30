@@ -75,7 +75,7 @@ append_only loader ``action_features`` field.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
@@ -88,9 +88,12 @@ from ai.train_v2.classic_actions_v1 import (
 )
 from ai.train_v2.offline_dataset_loader import (
     OfflineTransition,
+    compute_offline_reward,
     iter_offline_transitions,
     reconstruct_gamestate,
+    reward_view_from_snapshot,
 )
+from ai.train_v2.obs_v5 import encode_observation_v5
 from train_v3.bc_dataset import resolve_v5_tcode
 from train_v3.contracts import AssistModeV5, InfoModeV5, OBS_V5_DIM
 from train_v3.rust_collector import RustTransitionBatch
@@ -115,12 +118,8 @@ _TERMINAL_ACTION_TYPES = frozenset({"surrender", "draw", "stalemate"})
 
 
 def _omniscient_info_mode() -> InfoModeV5:
-    """D11: the trace is omniscient -- pass an omniscient InfoModeV5 so the
-    loader's obs/next_obs match the omniscient deploy encoder AND the
-    omniscient pre_state v5_trace records (design.md:46)."""
+    """One explicit A/B/C/production private-information contract."""
     return InfoModeV5(
-        own_hand_identity_known=True,
-        own_deck_known=True,
         enemy_hand_known=True,
         enemy_deck_known=True,
         enemy_deck_order_known=True,
@@ -204,16 +203,19 @@ def _normalize_group_dirs(
 
 
 def _resolve_row(
-    t: OfflineTransition, *, strict: bool
+    t: OfflineTransition, *, strict: bool, accepted_sources: frozenset[str]
 ) -> _ResolvedRow | None:
     """Apply the D-C7 human filter + 601-tcode resolution to one
     ``OfflineTransition``. Returns ``None`` if the row is filtered (non-human)
     or skipped (missing snapshot / unresolvable tcode)."""
-    # D-C7 human filter (reuse A1 pattern bc_dataset.py:313).
-    if t.meta.get("decision_source") != "human":
+    # D-C7 remains human-only by default.  Other decision sources are an
+    # explicit opt-in and must be quality-gated before this bridge is called.
+    if t.meta.get("decision_source") not in accepted_sources:
         return None
-    # Rejected attempts are canonical audit rows, never behavior targets.
-    # ``is True`` deliberately excludes missing and truthy non-bool values.
+    # A rejected UI/MCP attempt is present in the trace for auditability, but
+    # it did not change the environment and must never become a policy target.
+    # Structural v5 validation intentionally permits such rows; the replay
+    # bridge is the authoritative training-ingestion filter.
     if t.meta.get("accepted") is not True:
         return None
     # The loader carries the raw pre_state snapshot (additive Block-A field);
@@ -274,8 +276,101 @@ def _resolve_row(
         reward=float(t.reward),
         terminal=bool(t.terminal),
         action_id=action_id,
-        battle_id=t.meta.get("battle_id"),
+        battle_id=t.meta.get("trajectory_id", t.meta.get("battle_id")),
     )
+
+
+def _aggregate_actor_macro_transitions(
+    raw: list[OfflineTransition],
+    *,
+    accepted_sources: frozenset[str],
+    info_mode: InfoModeV5,
+    assist_mode: AssistModeV5,
+) -> list[OfflineTransition]:
+    """Collapse environment steps into actor-decision macro transitions.
+
+    A Phase-C row represents the consequence of one accepted human/LLM
+    decision through all intervening opponent actions, up to that same actor's
+    next decision (or the terminal state).  This prevents human-only filtering
+    from discarding opponent damage and losses that occur on the bot's turn.
+    Separate actors in the same battle become separate trajectories.
+    """
+    by_battle: dict[Any, list[OfflineTransition]] = {}
+    for t in raw:
+        by_battle.setdefault(t.meta.get("battle_id"), []).append(t)
+
+    aggregated: list[OfflineTransition] = []
+    for battle_id, rows in by_battle.items():
+        accepted_positions = [
+            i for i, t in enumerate(rows)
+            if (
+                t.meta.get("decision_source") in accepted_sources
+                and t.meta.get("accepted") is True
+            )
+        ]
+        for pos in accepted_positions:
+            current = rows[pos]
+            actor_id = current.meta.get("actor_user_id")
+            actor_player = int(current.meta.get("actor_player") or 1)
+            next_pos = next(
+                (
+                    i for i in accepted_positions
+                    if i > pos and rows[i].meta.get("actor_user_id") == actor_id
+                ),
+                None,
+            )
+            endpoint_pos = (next_pos - 1) if next_pos is not None else len(rows) - 1
+            endpoint = rows[endpoint_pos]
+            terminal = any(t.terminal for t in rows[pos : endpoint_pos + 1])
+
+            if next_pos is not None and not terminal:
+                next_obs = rows[next_pos].obs
+            elif endpoint.post_state_snapshot is not None:
+                final_state = reconstruct_gamestate(endpoint.post_state_snapshot)
+                next_obs = encode_observation_v5(
+                    final_state,
+                    int(actor_id),
+                    info_mode=info_mode,
+                    assist_mode=assist_mode,
+                    history_events=endpoint.post_state_snapshot.get("v5_history_events") or [],
+                )
+            else:
+                logger.warning(
+                    "offline_replay_bridge: battle=%s actor=%s lacks final post snapshot; "
+                    "falling back to immediate next_obs",
+                    battle_id,
+                    actor_id,
+                )
+                next_obs = current.next_obs
+
+            reward = float(current.reward)
+            if current.pre_state_snapshot is not None and endpoint.post_state_snapshot is not None:
+                status = str(endpoint.meta.get("status") or "ongoing")
+                pre_view = reward_view_from_snapshot(current.pre_state_snapshot, actor_player)
+                post_view = reward_view_from_snapshot(endpoint.post_state_snapshot, actor_player)
+                reward = compute_offline_reward(
+                    int(actor_id),
+                    pre_view,
+                    post_view,
+                    current.meta.get("accepted"),
+                    status,
+                    is_mana_draw=current.meta.get("action_type") == _MANA_DRAW_ACTION_TYPE,
+                )
+
+            aggregated.append(
+                replace(
+                    current,
+                    reward=reward,
+                    next_obs=next_obs,
+                    terminal=terminal,
+                    meta={
+                        **current.meta,
+                        "trajectory_id": (battle_id, actor_id),
+                        "macro_endpoint_seq": endpoint.meta.get("seq"),
+                    },
+                )
+            )
+    return aggregated
 
 
 def _materialize_transitions(
@@ -328,6 +423,7 @@ def build_offline_replay_batch(
     assist_mode: AssistModeV5 | None = None,
     max_battles: int | None = None,
     strict: bool = False,
+    accepted_decision_sources: Sequence[str] = ("human",),
 ) -> OfflineReplayBatch:
     """Build a ``RustTransitionBatch``-shaped DENSE offline-replay batch from
     fresh HUMAN v5_trace rows for the C3 AWAC/CRR offline-PPO replay.
@@ -354,6 +450,10 @@ def build_offline_replay_batch(
         strict: ``False`` (default) skips a row whose ``action_native`` fails to
             resolve (logged warning, A1 production-robust pattern); ``True``
             propagates ``TcodeResolutionError``.
+        accepted_decision_sources: decision sources eligible for replay.
+            Defaults to the frozen Phase-C contract ``("human",)``.  Passing
+            ``("llm",)`` is an explicit semi-synthetic opt-in and is only safe
+            after the campaign quality gate has passed.
 
     Returns:
         an ``OfflineReplayBatch`` carrying the ``RustTransitionBatch`` +
@@ -368,6 +468,17 @@ def build_offline_replay_batch(
         assist_mode=assist_mode,
         max_battles=max_battles,
     )
+    accepted_sources = frozenset(str(s) for s in accepted_decision_sources)
+    if not accepted_sources:
+        raise ValueError("accepted_decision_sources must not be empty")
+    effective_info = info_mode or _omniscient_info_mode()
+    effective_assist = assist_mode or AssistModeV5()
+    raw = _aggregate_actor_macro_transitions(
+        raw,
+        accepted_sources=accepted_sources,
+        info_mode=effective_info,
+        assist_mode=effective_assist,
+    )
 
     # Step 1+2: D-C7 human filter + 601-tcode resolution. Group by battle_id
     # (preserving first-appearance order) -- each battle is one game (one env).
@@ -375,13 +486,13 @@ def build_offline_replay_batch(
     game_index: dict[Any, int] = {}
     skipped = 0
     for t in raw:
-        row = _resolve_row(t, strict=strict)
+        row = _resolve_row(t, strict=strict, accepted_sources=accepted_sources)
         if row is None:
-            # Distinguish skipped (unresolvable / missing snapshot) from
-            # filtered (non-human or rejected). Only an accepted human row that
-            # fails resolution counts as skipped.
+            # Distinguish skipped (unresolvable / missing snapshot) from filtered
+            # (wrong source or rejected attempt). Only an accepted eligible row
+            # that cannot be resolved counts as skipped.
             if (
-                t.meta.get("decision_source") == "human"
+                t.meta.get("decision_source") in accepted_sources
                 and t.meta.get("accepted") is True
             ):
                 skipped += 1
@@ -424,9 +535,10 @@ def build_offline_replay_batch(
     feats_all = np.stack(
         [r.action_features for g in games for r in g], axis=0
     ).astype(np.float32, copy=False)
-    logits_all, values_all, _mdl_all = policy_fn(obs_all, feats_all)
+    logits_all, values_all, mdl_all = policy_fn(obs_all, feats_all)
     logits_all = np.asarray(logits_all, dtype=np.float32)
     values_all = np.asarray(values_all, dtype=np.float32).reshape(-1)
+    draw_logits_all = np.asarray(mdl_all, dtype=np.float32).reshape(-1)
 
     # Masked softmax over the 601 candidates (mirror the dense evaluator,
     # rust_ppo.py:760-761). The mask is the per-row append_only legal mask
@@ -434,16 +546,22 @@ def build_offline_replay_batch(
     masks_all = _masks_from_rows(games)
     probs_all = _masked_softmax_probs(logits_all, masks_all)
 
-    # old_log_prob per row (D-C10): log(softmax(masked)[target_tcode] + 1e-10)
-    # for normal rows; 0.0 for mana_draw / terminal rows.
+    # Exact factorized online contract:
+    #   draw: log P(draw)
+    #   card: log(1-P(draw)) + log P(card | no draw)
     flat_rows = [r for g in games for r in g]
     old_log_probs_flat = np.zeros(len(flat_rows), dtype=np.float32)
     for i, r in enumerate(flat_rows):
-        if r.target_tcode is not None:
+        draw_p = 0.0
+        if r.mana_draw_legal:
+            draw_p = float(1.0 / (1.0 + np.exp(-np.clip(draw_logits_all[i], -60.0, 60.0))))
+        if r.is_mana_draw:
+            old_log_probs_flat[i] = float(np.log(draw_p + 1.0e-10))
+        elif r.target_tcode is not None:
             old_log_probs_flat[i] = float(
-                np.log(probs_all[i, r.target_tcode] + 1.0e-10)
+                np.log(1.0 - draw_p + 1.0e-10)
+                + np.log(probs_all[i, r.target_tcode] + 1.0e-10)
             )
-        # else 0.0 (mana_draw / terminal -- excluded from the PPO ratio)
 
     # bootstrap_values (Step 4): V(next_obs) of each game's FINAL real
     # transition, shape (num_games,). Run the current policy on each game's last
@@ -641,7 +759,7 @@ def _assemble_batch(
 def make_policy_fn_from_checkpoint(
     checkpoint_path: "str | Path | None",
     *,
-    hidden_dim: int = 128,
+    hidden_dim: int = 256,
     action_feature_dim: int = ACTION_FEATURE_DIM,
 ) -> PolicyFn:
     """Load a V5 MLX policy checkpoint and wrap it as a ``policy_fn`` returning
@@ -670,10 +788,47 @@ def make_policy_fn_from_checkpoint(
 
     import mlx.core as mx
     from ai.train_v2 import model_mlx
-    from train_v3.v5_policy import V5ActionConditionedPolicy
+    from train_v3.v5_policy import create_v5_policy
 
-    policy = V5ActionConditionedPolicy(
-        hidden_dim=hidden_dim, action_feature_dim=action_feature_dim,
+    # Phase C resumes a learned V5 checkpoint.  Current post-B checkpoints use
+    # a 256-wide state fuser, while older fixtures may still be 128-wide.
+    # Instantiating the default width and relying on a permissive checkpoint
+    # loader leaves a shape-incoherent model that only fails on its first
+    # forward pass.  Infer both learned widths from the archive, matching the
+    # authoritative C3 loader in awac_crr_replay._resolve_model.
+    with np.load(resolved, allow_pickle=False) as archive:
+        fuser_key = next(
+            (
+                key
+                for key in archive.files
+                if key.endswith("state_fuser.layers.0.weight")
+            ),
+            None,
+        )
+        inferred_hidden = (
+            int(archive[fuser_key].shape[0])
+            if fuser_key is not None
+            else int(hidden_dim)
+        )
+        action_key = next(
+            (
+                key
+                for key in archive.files
+                if key.endswith("action_encoder.weight")
+            ),
+            None,
+        )
+        inferred_action_hidden = (
+            int(archive[action_key].shape[0])
+            if action_key is not None
+            else 128
+        )
+
+    policy = create_v5_policy(
+        policy_kind="v5_split_encoder",
+        hidden_dim=inferred_hidden,
+        action_hidden_dim=inferred_action_hidden,
+        action_feature_dim=action_feature_dim,
     )
     model_mlx.load_checkpoint(str(resolved), policy)
 

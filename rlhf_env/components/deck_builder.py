@@ -179,8 +179,8 @@ def validate_deck(
     catalog: CardCatalog,
     *,
     require_hero: bool = True,
-    min_size: int = 6,
-    max_size: int = 30,
+    min_size: int = PROD_DECK_SIZE,
+    max_size: int = PROD_DECK_SIZE,
 ) -> Tuple[bool, str]:
     """Проверяет базовую валидность колоды против каталога."""
     ids = list(deck_ids)
@@ -188,6 +188,8 @@ def validate_deck(
         return False, f"deck too small: {len(ids)} < {min_size}"
     if len(ids) > max_size:
         return False, f"deck too large: {len(ids)} > {max_size}"
+    if len(set(ids)) != len(ids):
+        return False, "deck contains duplicate card ids"
 
     for cid in ids:
         if cid not in catalog.cards:
@@ -198,6 +200,9 @@ def validate_deck(
         return False, f"deck must contain exactly 1 hero, got {len(heroes)}"
     if not require_hero and len(heroes) > 1:
         return False, f"deck must contain at most 1 hero, got {len(heroes)}"
+
+    if require_hero and len(ids) - len(heroes) != TARGET_NON_HERO:
+        return False, f"deck must contain exactly {TARGET_NON_HERO} non-hero cards"
 
     return True, "ok"
 

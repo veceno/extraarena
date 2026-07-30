@@ -59,7 +59,7 @@ from ai.train_v2.classic_card_shape_v1 import (
     _TYPE_INDEX,
     _encode_mechanics_cached,
 )
-from core.state import CardInstance, MECHANICS_LIST
+from core.state import CardInstance, CardType, MECHANICS_LIST
 
 CARD_SHAPE_VERSION = "v5_card_shape_v1"
 CARD_SHAPE_DIM_V5 = 73
@@ -135,7 +135,7 @@ def _encode_v5_extras_cached(
 
 
 def encode_card_shape_v5(
-    card: CardInstance | None,
+    card: CardInstance | dict | None,
     *,
     board_pos: int = -1,
     hand_pos: int = -1,
@@ -156,26 +156,51 @@ def encode_card_shape_v5(
     if card is None:
         return out
 
-    eff_atk = effective_attack if effective_attack is not None else card.attack
+    # Preserve the frozen object path byte-for-byte. Persisted V5 traces carry
+    # JSON dictionaries, so normalize only that separate representation.
+    if isinstance(card, dict):
+        # Live persisted v5_trace uses ``card_type``; TrainV3 golden fixtures
+        # use the Rust-compatible serialized key ``type``.
+        raw_type = card.get("card_type", card.get("type", CardType.WARRIOR))
+        card_type = raw_type if isinstance(raw_type, CardType) else CardType(str(raw_type))
+        mana_cost = int(card.get("mana_cost", card.get("mana", 0)))
+        attack = int(card.get("attack", card.get("atk", 0)))
+        hp = int(card.get("hp", card.get("hp_current", 0)))
+        max_hp = int(card["max_hp"]) if "max_hp" in card else hp
+        is_ready = bool(card.get("is_ready", False))
+        is_frozen = bool(card.get("is_frozen", False))
+        level = int(card.get("level", 1))
+        mechanics = tuple(card.get("mechanics") or ())
+    else:
+        card_type = card.card_type
+        mana_cost = card.mana_cost
+        attack = card.attack
+        hp = card.hp
+        max_hp = card.max_hp
+        is_ready = card.is_ready
+        is_frozen = card.is_frozen
+        level = card.level
+        mechanics = tuple(card.mechanics)
+    eff_atk = effective_attack if effective_attack is not None else attack
 
     # --- [0:14) type + stats (re-implemented to match classic byte-for-byte) ---
-    type_idx = _TYPE_INDEX.get(card.card_type, 1)
+    type_idx = _TYPE_INDEX.get(card_type, 1)
     out[type_idx] = 1.0
 
-    out[3] = min(card.mana_cost / 10.0, 1.0)
-    out[4] = min(card.attack / 20.0, 1.0)
-    out[5] = min(card.hp / 20.0, 1.0)
-    out[6] = min(card.max_hp / 20.0, 1.0)
-    out[7] = card.hp / max(card.max_hp, 1)
-    out[8] = float(card.is_ready)
-    out[9] = float(card.is_frozen)
-    out[10] = min(card.level / 10.0, 1.0)
+    out[3] = min(mana_cost / 10.0, 1.0)
+    out[4] = min(attack / 20.0, 1.0)
+    out[5] = min(hp / 20.0, 1.0)
+    out[6] = min(max_hp / 20.0, 1.0)
+    out[7] = hp / max(max_hp, 1)
+    out[8] = float(is_ready)
+    out[9] = float(is_frozen)
+    out[10] = min(level / 10.0, 1.0)
     out[11] = min(eff_atk / 20.0, 1.0)
     out[12] = (board_pos + 1) / 8.0 if board_pos >= 0 else 0.0
     out[13] = (hand_pos + 1) / 5.0 if hand_pos >= 0 else 0.0
 
     # --- [14:47) + [47:64) classic mechanics (frozen helper => byte-identical) ---
-    flags, scalars = _encode_mechanics_cached(tuple(card.mechanics))
+    flags, scalars = _encode_mechanics_cached(mechanics)
     # Write only the first 33 flags to [14:47).  flags[33] (desk_freeze) is NOT
     # written here — it would land at index 47 and be clobbered by the damage
     # scalar, exactly as in classic.  Instead it is re-encoded at index 69.
@@ -186,7 +211,7 @@ def encode_card_shape_v5(
 
     # --- [64:73) V5-only extensions ---
     new_onehots, magnitude_scalars, desk_freeze_flag = _encode_v5_extras_cached(
-        tuple(card.mechanics)
+        mechanics
     )
     out[V5_NEW_ONEHOT_BASE : V5_NEW_ONEHOT_BASE + 5] = new_onehots
     out[V5_DESK_FREEZE_INDEX] = desk_freeze_flag

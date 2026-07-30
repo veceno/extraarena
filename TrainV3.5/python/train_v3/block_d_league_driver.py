@@ -85,7 +85,11 @@ from .exit_to_c2 import (
     DEFAULT_MIN_GAIN,
 )
 from .ppo_phaseA_config import PhaseAPPOConfig
-from .rust_live_self_play import PolicyOpponent, run_live_self_play_update
+from .rust_live_self_play import (
+    PolicyOpponent,
+    create_live_self_play_session,
+    run_live_self_play_update,
+)
 from .second_start_parity import BlockBGameRunner, SecondStartParityLoop
 from .snapshot_pool import SnapshotPool
 
@@ -203,6 +207,14 @@ class BlockDLeagueDriver(BlockBLeagueDriver):
         ``super().__init__`` so the inherited ``_snapshot_step:528``
         ``detect_h2h_plateau`` uses the flipped at/above reading (reason
         ``"plateau_at_or_above_dominance_target"``).
+      learning_rate_for_update: optional callable ``(update_number) -> lr``.
+        Mirrors the current Block-B driver: the positive value is applied to
+        ``optimizer.learning_rate`` before the live PPO update and persisted in
+        that update's slim metrics.
+      trajectory_sink: optional callback invoked as ``(update_number, rollout,
+        metrics, session)`` before the heavyweight rollout is removed from the
+        manifest. Operational runners use this to persist a sampled,
+        checksummed hard-state corpus without bloating league bookkeeping.
       curriculum_off: D-D4 -- when True (default) the B4 per-lane-loss reweight
         is a NO-OP (``cap=0.0``); when False the B4 ``cap=0.25`` reweight runs.
       e1_candidate_set: the D3 ``E1CandidateSet`` (post-C3 + post-B threaded;
@@ -235,6 +247,8 @@ class BlockDLeagueDriver(BlockBLeagueDriver):
         games_per_opponent_gauntlet: int = 1,
         model: Any = None,
         optimizer: Any = None,
+        learning_rate_for_update: Callable[[int], float] | None = None,
+        trajectory_sink: Callable[[int, Any, dict[str, Any], Any], None] | None = None,
         steps_per_update: int | None = None,
         min_gain: float = DEFAULT_MIN_GAIN,
         self_share_target: float = 0.50,
@@ -283,6 +297,7 @@ class BlockDLeagueDriver(BlockBLeagueDriver):
             games_per_opponent_gauntlet=games_per_opponent_gauntlet,
             model=model,
             optimizer=optimizer,
+            learning_rate_for_update=learning_rate_for_update,
             steps_per_update=steps_per_update,
             below_target_exits=below_target_exits,
             min_gain=min_gain,
@@ -294,6 +309,7 @@ class BlockDLeagueDriver(BlockBLeagueDriver):
         self.exit_mode = str(exit_mode)
         self.curriculum_off = bool(curriculum_off)
         self.e1_candidate_set = e1_candidate_set
+        self.trajectory_sink = trajectory_sink
 
     # ---- the per-update mix build (D1 + collapse monitor + D-D4 curriculum) --
     def _build_reweighted_mix(self) -> list[tuple[str, float]]:
@@ -397,8 +413,29 @@ class BlockDLeagueDriver(BlockBLeagueDriver):
             p1_rate = float(self.parity.p1_score_rate())
             p2_rate = float(self.parity.p2_score_rate())
 
+            learning_rate: float | None = None
+            if self.learning_rate_for_update is not None:
+                learning_rate = float(
+                    self.learning_rate_for_update(update_number)
+                )
+                if learning_rate <= 0.0:
+                    raise ValueError(
+                        "learning_rate_for_update must return a positive value"
+                    )
+                if self.optimizer is not None:
+                    setattr(self.optimizer, "learning_rate", learning_rate)
+
             # (e) A4 live update (Option 1: opponent_mix_parsed bypasses
             # parse_v5_opponent_mix so v4-orig-* pass through).
+            if self._rollout_session is None:
+                self._rollout_session = create_live_self_play_session(
+                    self.config,
+                    seed=int(self.seed) + update_number,
+                    worker_factory=self.worker_factory,
+                    p1_score_rate=p1_rate,
+                    p2_score_rate=p2_rate,
+                    opponent_mix_parsed=mix,
+                )
             metrics = run_live_self_play_update(
                 self.config,
                 self.learner_policy,
@@ -411,9 +448,18 @@ class BlockDLeagueDriver(BlockBLeagueDriver):
                 p2_score_rate=p2_rate,
                 steps=self.steps_per_update,
                 opponent_mix_parsed=mix,
+                session=self._rollout_session,
             )
             rollout = metrics.get("rollout")
             self._last_rollout = rollout
+            metrics["mix_used"] = list(mix)
+            if self.trajectory_sink is not None:
+                self.trajectory_sink(
+                    update_number,
+                    rollout,
+                    metrics,
+                    self._rollout_session,
+                )
             # trim the rollout from the persisted metrics (keep it in-memory only
             # -- the manifest records scalar metrics, not the full batch).
             slim_metrics = {
@@ -422,6 +468,8 @@ class BlockDLeagueDriver(BlockBLeagueDriver):
             slim_metrics["mix_used"] = list(mix)
             slim_metrics["p1_score_rate"] = p1_rate
             slim_metrics["p2_score_rate"] = p2_rate
+            if learning_rate is not None:
+                slim_metrics["learning_rate"] = learning_rate
             slim_metrics["update_number"] = update_number
             manifest.update_metrics.append(slim_metrics)
             manifest.n_updates_run = update_number
@@ -437,6 +485,17 @@ class BlockDLeagueDriver(BlockBLeagueDriver):
             # (MONITORED; the inherited _snapshot_step appends to
             # self._h2h_history + self._aggregate_history).
             if update_number % self.snapshot_cadence == 0:
+                # Rotate only at an explicit league boundary. Keeping one
+                # session between boundaries lets unfinished episodes retain
+                # their arena state and receive terminal credit in a later PPO
+                # update, while rebinding the changed snapshot mix only between
+                # complete league segments.
+                self._rollout_session.close()
+                self._rollout_session = None
+                for policy in opponent_policies.values():
+                    reset_session = getattr(policy, "reset_session", None)
+                    if callable(reset_session):
+                        reset_session()
                 snap_record = self._snapshot_step(
                     update_number, snapshot_seed=int(self.seed) + update_number
                 )
@@ -499,4 +558,7 @@ class BlockDLeagueDriver(BlockBLeagueDriver):
         manifest.h2h_history = list(self._h2h_history)
         manifest.aggregate_history = list(self._aggregate_history)
         manifest.candidate_paths = self._derive_candidate_paths(best_path)
+        if self._rollout_session is not None:
+            self._rollout_session.close()
+            self._rollout_session = None
         return manifest

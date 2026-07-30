@@ -248,6 +248,28 @@ def _sidecar_kind_detector(
     return None
 
 
+def _v5_sidecar_kind_detector(
+    path: Optional[str], sidecar: Dict[str, Any], name: Optional[str]
+) -> Optional[str]:
+    """Recognize the V5 three-output contract before the broader V4 detector.
+
+    V5 and V4 both expose ``observation`` + ``action_features``.  Therefore the
+    generic action-conditioned detector below would classify a V5 export as
+    ``action_onnx`` unless this more specific detector runs first.
+    """
+    if not path or not sidecar:
+        return None
+    if str(sidecar.get("model_version") or "") == "v5_split_encoder_onnx_v1":
+        return "v5"
+    if (
+        int(sidecar.get("obs_dim") or 0) == 7128
+        and bool(sidecar.get("mana_draw_head"))
+        and str(sidecar.get("format") or "") == "v5"
+    ):
+        return "v5"
+    return None
+
+
 # ----------------------------------------------------------------------------
 # Реестр
 # ----------------------------------------------------------------------------
@@ -414,6 +436,9 @@ def _register_builtins(reg: AdapterRegistry) -> None:
     # sidecar-детектор — выше layer-A fallback (LIFO): определяет V4/V3 по sidecar
     # без gitignored inspect_model. Добавлен последним → в голове списка.
     reg.register_detector(_sidecar_kind_detector)
+    # V5 is a strict superset of the V4 action-conditioned I/O fingerprint, so
+    # it must be registered last and therefore run first in the LIFO chain.
+    reg.register_detector(_v5_sidecar_kind_detector)
 
 
 __all__ = [
@@ -424,4 +449,5 @@ __all__ = [
     "V5StubAdapter",
     "default_registry",
     "_baseline_kind",
+    "_v5_sidecar_kind_detector",
 ]
