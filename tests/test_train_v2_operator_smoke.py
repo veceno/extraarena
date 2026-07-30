@@ -122,16 +122,14 @@ def test_cli_help_smoke(module):
 
 def test_docs_exist():
     repo_root = Path(__file__).parent.parent
-    operator_doc = repo_root / "docs" / "TRAIN_V2_OPERATOR.md"
+    legacy_operator_doc = repo_root / "docs" / "TRAIN_V2_OPERATOR.md"
     artifacts_doc = repo_root / "docs" / "TRAIN_V2_ARTIFACTS.md"
-    assert operator_doc.exists()
+    assert not legacy_operator_doc.exists()
     assert artifacts_doc.exists()
-    op_text = operator_doc.read_text()
     art_text = artifacts_doc.read_text()
-    assert "panel" in op_text.lower()
-    assert "snapshot" in op_text.lower()
-    assert "doctor" in op_text.lower()
-    assert "smoke" in op_text.lower()
+    assert "panel" in art_text.lower()
+    assert "snapshot" in art_text.lower()
+    assert "doctor" in art_text.lower()
     assert "artifact" in art_text.lower()
     assert "version" in art_text.lower()
     assert "synthetic" in art_text.lower() or "inference" in art_text.lower()

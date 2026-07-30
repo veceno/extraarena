@@ -6,6 +6,7 @@ from infrastructure.config import get_settings
 
 STRONG_JWT_SECRET = "test-support-jwt-secret-that-is-long-enough-2026"
 STRONG_ADMIN_SECRET = "test-support-admin-secret-that-is-long-enough-2026"
+STRONG_MCP_SECRET = "test-support-mcp-secret-that-is-long-enough-2026"
 STRONG_SUPPORT_TOKEN = "support-bot-token-that-is-long-enough-2026"
 STRONG_SUPPORT_WEBHOOK_SECRET = "support-max-webhook-secret-that-is-long-enough-2026"
 
@@ -18,6 +19,8 @@ def _base_env(monkeypatch, tmp_path, *, environment: str = "development") -> Non
     if environment != "development":
         monkeypatch.setenv("JWT_SECRET", STRONG_JWT_SECRET)
         monkeypatch.setenv("ADMIN_SESSION_SECRET", STRONG_ADMIN_SECRET)
+        monkeypatch.setenv("MCP_TOKEN_SECRET", STRONG_MCP_SECRET)
+        monkeypatch.setenv("MCP_ALLOWED_ORIGINS", "https://admin.example")
         monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "https://game.example")
     for name in (
         "SUPPORT_ENABLED",

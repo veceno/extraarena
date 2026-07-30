@@ -43,6 +43,12 @@ class NotificationMailHarness(MailDBHarness):
 
     async def fetchrow(self, query, *args):
         self.fetch_args = (query, args)
+        if "AS sent_24h" in query:
+            return {
+                "sent_24h": 0,
+                "sent_7d": 0,
+                "pending_priority": 0,
+            }
         return {
             "id": 1,
             "user_id": args[0],

@@ -5352,7 +5352,7 @@ window.loadMobileSquadsBootstrap = async function(options = {}) {
 };
 </script>
 
-<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=1df2ecfa3589">
+<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=a5e7b072b57c">
 // ═══════════════════════════════════════════
 // DESIGN TOKENS
 // ═══════════════════════════════════════════
@@ -8303,8 +8303,8 @@ const ShopScreen = ({profile, onProfileUpdate}) => {
 // ═══════════════════════════════════════════
 const TIER_COLORS = ['','#6ee7b7','#60a5fa','#a78bfa','#f59e0b','#f43f5e'];
 const TIER_NAMES  = ['','T1','T2','T3','T4','T5'];
-const RARITY_COLORS = {common:'#9ca3af',rare:'#60a5fa',superrare:'#a78bfa',epic:'#f59e0b',legendary:'#f97316',mythic:'#ec4899',divine:'#fcd34d',limited:'#f43f5e',start:T.ai};
-const RARITY_LABELS = {common:'Обычная',rare:'Редкая',superrare:'Суперредкая',epic:'Эпическая',legendary:'Легендарная',mythic:'Мифическая',divine:'Божественная',limited:'Лимит.',start:'Стартовая'};
+const RARITY_COLORS = {common:'#9ca3af',rare:'#60a5fa',superrare:'#a78bfa',epic:'#f59e0b',legendary:'#f97316',mythic:'#ec4899',divine:'#fcd34d',limited:'#f43f5e',unique:'#c084fc',start:T.ai};
+const RARITY_LABELS = {common:'Обычная',rare:'Редкая',superrare:'Суперредкая',epic:'Эпическая',legendary:'Легендарная',mythic:'Мифическая',divine:'Божественная',limited:'Лимит.',unique:'Уникальная',start:'Стартовая'};
 const CASE_REWARD_SFX_BY_RARITY = {
   start: 'case-reward-card-start-sound',
   common: 'case-reward-card-common-sound',
@@ -8315,8 +8315,9 @@ const CASE_REWARD_SFX_BY_RARITY = {
   mythic: 'case-reward-card-mythic-sound',
   divine: 'case-reward-card-divine-sound',
   limited: 'case-reward-card-limited-sound',
+  unique: 'case-reward-card-limited-sound',
 };
-const CASE_REWARD_RARITY_WEIGHT = {start:0, common:1, rare:2, superrare:3, epic:4, legendary:5, mythic:6, divine:7, limited:8};
+const CASE_REWARD_RARITY_WEIGHT = {start:0, common:1, rare:2, superrare:3, epic:4, legendary:5, mythic:6, divine:7, limited:8, unique:9};
 
 const caseRewardSfxId = (rewards) => {
   const cards = rewards?.cards || [];
@@ -21289,6 +21290,11 @@ const rewardRarityLabel = (rarity) => {
     legendary: 'Легендарная',
     mythic: 'Мифическая',
     divine: 'Божественная',
+    limited: 'Лимитированная',
+    unique: 'Уникальная',
+    start: 'Стартовая',
+    superrare: 'Сверхредкая',
+    common: 'Обычная',
   };
   return map[rarity] || 'Гарантированная';
 };
@@ -21644,6 +21650,6 @@ const renderExtraArenaApp = () => {
   renderExtraArenaApp();
 })();
 </script>
-<script src="index.compiled.js?v=1df2ecfa3589"></script>
+<script src="index.compiled.js?v=a5e7b072b57c"></script>
 </body>
 </html>

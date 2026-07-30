@@ -2251,16 +2251,16 @@ class MCPServer:
                         result.get("battle_id"),
                         field="battle_id",
                     )
-                    if result.get("v5_trace_ok") is not True:
-                        raise ValueError(
-                            f"V5 trace is not valid for battle {battle_id}"
-                        )
                     if (
                         result.get("degraded") is True
                         or result.get("policy_warnings")
                     ):
                         raise ValueError(
                             f"degraded policy result for battle {battle_id}"
+                        )
+                    if result.get("v5_trace_ok") is not True:
+                        raise ValueError(
+                            f"V5 trace is not valid for battle {battle_id}"
                         )
                     v5_dir = _safe_session_path(
                         hub.manager.sessions_dir,

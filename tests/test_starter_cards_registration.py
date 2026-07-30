@@ -59,6 +59,11 @@ class FakeEnsureUserDB(Database):
         self.executed.append((query, args))
         return "OK"
 
+    async def fetchrow(self, query, *args):
+        if "INSERT INTO users" in query and "RETURNING user_id" in query:
+            return {"user_id": args[0]}
+        return None
+
     async def grant_start_cards(self, user_id):
         self.start_cards_user_id = user_id
         return {"success": True, "added": len(STARTER_DECK_CARD_IDS)}

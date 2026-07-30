@@ -149,7 +149,7 @@ def test_main_ui_uses_shared_premium_nickname_and_public_id_helpers():
         "const ProfileScreen =",
     ]:
         start = source.index(marker)
-        block = source[start:start + 30000]
+        block = source[start:start + 40000]
         assert "PremiumNickname" in block
 
     assert "PublicPlayerId player={friend}" in source

@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from train_v3.aux_inference import (
     AssemblerV1,
@@ -42,6 +43,8 @@ def _training_module():
 
 
 def _first_jsonl(path: Path) -> dict:
+    if not path.is_file():
+        pytest.skip(f"external training artifact is not available: {path}")
     with path.open(encoding="utf-8") as handle:
         return json.loads(next(handle))
 
@@ -170,8 +173,11 @@ def test_metronome_trace_prediction_and_timestamp_mono_duo_contracts() -> None:
         (
             ROOT
             / "TrainV3.5/runs/phase_c_human_freeze_u29250_299_20260727/sessions"
-        ).glob("*/battles/*/v5/actions.jsonl")
+        ).glob("*/battles/*/v5/actions.jsonl"),
+        None,
     )
+    if trace_path is None:
+        pytest.skip("external Phase-C human trace is not available")
     trace_row = next(
         row
         for row in map(json.loads, trace_path.read_text(encoding="utf-8").splitlines())

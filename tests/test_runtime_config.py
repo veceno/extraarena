@@ -12,6 +12,7 @@ from web import server as web_server
 
 STRONG_TEST_JWT_SECRET = "test-runtime-jwt-secret-that-is-long-enough-2026"
 STRONG_TEST_ADMIN_SECRET = "test-runtime-admin-secret-that-is-long-enough-2026"
+STRONG_TEST_MCP_SECRET = "test-runtime-mcp-secret-that-is-long-enough-2026"
 
 
 class RuntimeDBHarness(Database):
@@ -67,6 +68,8 @@ def test_production_rejects_wildcard_cors_origins(monkeypatch):
     monkeypatch.setenv("ENVIRONMENT", "production")
     monkeypatch.setenv("JWT_SECRET", STRONG_TEST_JWT_SECRET)
     monkeypatch.setenv("ADMIN_SESSION_SECRET", STRONG_TEST_ADMIN_SECRET)
+    monkeypatch.setenv("MCP_TOKEN_SECRET", STRONG_TEST_MCP_SECRET)
+    monkeypatch.setenv("MCP_ALLOWED_ORIGINS", "https://admin.example")
     monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "*")
     get_settings.cache_clear()
 
@@ -81,6 +84,8 @@ def test_production_rejects_payment_webhook_diagnostics_flag(monkeypatch):
     monkeypatch.setenv("ENVIRONMENT", "production")
     monkeypatch.setenv("JWT_SECRET", STRONG_TEST_JWT_SECRET)
     monkeypatch.setenv("ADMIN_SESSION_SECRET", STRONG_TEST_ADMIN_SECRET)
+    monkeypatch.setenv("MCP_TOKEN_SECRET", STRONG_TEST_MCP_SECRET)
+    monkeypatch.setenv("MCP_ALLOWED_ORIGINS", "https://admin.example")
     monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "https://game.example")
     monkeypatch.setenv("PAYMENT_WEBHOOK_DIAGNOSTICS_ENABLED", "true")
     get_settings.cache_clear()
@@ -97,6 +102,8 @@ def test_payment_test_modes_are_not_default_enabled_in_production(monkeypatch, t
     monkeypatch.setenv("ENVIRONMENT", "production")
     monkeypatch.setenv("JWT_SECRET", STRONG_TEST_JWT_SECRET)
     monkeypatch.setenv("ADMIN_SESSION_SECRET", STRONG_TEST_ADMIN_SECRET)
+    monkeypatch.setenv("MCP_TOKEN_SECRET", STRONG_TEST_MCP_SECRET)
+    monkeypatch.setenv("MCP_ALLOWED_ORIGINS", "https://admin.example")
     monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "https://game.example")
     monkeypatch.setenv("YOOKASSA_SHOP_ID", "shop-id")
     monkeypatch.setenv("YOOKASSA_SECRET_KEY", "secret")
@@ -127,6 +134,8 @@ def test_production_rejects_explicit_payment_test_modes_without_override(monkeyp
     monkeypatch.setenv("ENVIRONMENT", "production")
     monkeypatch.setenv("JWT_SECRET", STRONG_TEST_JWT_SECRET)
     monkeypatch.setenv("ADMIN_SESSION_SECRET", STRONG_TEST_ADMIN_SECRET)
+    monkeypatch.setenv("MCP_TOKEN_SECRET", STRONG_TEST_MCP_SECRET)
+    monkeypatch.setenv("MCP_ALLOWED_ORIGINS", "https://admin.example")
     monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "https://game.example")
     monkeypatch.setenv("YOOKASSA_SHOP_ID", "shop-id")
     monkeypatch.setenv("YOOKASSA_SECRET_KEY", "secret")
@@ -204,6 +213,8 @@ def test_production_socketio_cors_uses_allowlist_not_wildcard(monkeypatch):
     monkeypatch.setenv("ENVIRONMENT", "production")
     monkeypatch.setenv("JWT_SECRET", STRONG_TEST_JWT_SECRET)
     monkeypatch.setenv("ADMIN_SESSION_SECRET", STRONG_TEST_ADMIN_SECRET)
+    monkeypatch.setenv("MCP_TOKEN_SECRET", STRONG_TEST_MCP_SECRET)
+    monkeypatch.setenv("MCP_ALLOWED_ORIGINS", "https://admin.example")
     monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "https://game.example")
     get_settings.cache_clear()
 

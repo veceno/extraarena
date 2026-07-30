@@ -158,9 +158,11 @@ def test_night_run_cli_help():
 
 def test_docs_exist():
     repo_root = Path(__file__).parent.parent
-    doc = repo_root / "docs" / "TRAIN_V2_NIGHT_RUN.md"
+    legacy_doc = repo_root / "docs" / "TRAIN_V2_NIGHT_RUN.md"
+    doc = repo_root / "docs" / "TrainV3.5" / "TRAINING_GUIDE.md"
+    assert not legacy_doc.exists()
     assert doc.exists()
     text = doc.read_text()
-    assert "night_run" in text
-    assert "monitor" in text.lower()
-    assert "panel" in text.lower()
+    assert "Block B" in text
+    assert "snapshot" in text.lower()
+    assert "smoke" in text.lower()
