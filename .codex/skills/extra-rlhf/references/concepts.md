@@ -51,8 +51,9 @@ human-noise); `*-vs-bot` is cheap rollouts/sanity.
 5. Factory by kind; resolved `path`/`kind` written back into `spec`.
 
 Built-in kinds: `random`, `greedy_face`, `end_turn`, `legacy_onnx` (V3-style),
-`action_onnx`/`v4` (action-conditioned), `v5` (reserved stub — implement +
-`register("v5", factory)` to activate). Add a model without editing if/elif:
+`action_onnx`/`v4` (action-conditioned), `v5` (implemented: observation 7128,
+601 action candidates, separate value and mana-draw heads). V5 sidecars are
+detected before the generic V4/action-conditioned detector. Add a model without editing if/elif:
 `default_registry().register("mykind", factory)` / `register_detector(fn)`.
 MCP exposes `register_custom_model` for runtime add by path+kind.
 
@@ -82,12 +83,23 @@ the name is freed on the next status read.
 
 ## `degraded` / `policy_warnings` (silent-fallback guard)
 
-If a policy can't be built (missing model, v5 stub not implemented, onnx load
+If a policy can't be built (missing model, invalid sidecar, onnx load
 fail), the match falls back to a safe policy (e.g. `end_turn`) and
 `start_series` returns `degraded=true` + `policy_warnings`. **Always check
 `degraded`** before trusting a trace — a degraded match's `decision_source` is
 not the requested model. `v5/meta.json bot_policy.weights_hash` lets you
 verify post-hoc that the real checkpoint played (sha256[:16] of the onnx file).
+Warnings/degraded are also persisted per battle in `manifest.json`, so an
+offline collector can reject fallback data after the process exits.
+
+## Process ownership
+
+MCP stdio and the web arena each own an independent in-memory match manager.
+They share trace files only when configured with the same absolute sessions
+directory. A live `match_id` is therefore valid only in the process/session
+that created it. An L2 worker must own start→play→finish; a Phase-C human
+collector observes completed web groups from disk instead of trying to drive
+them through MCP.
 
 ## Determinism & replay
 

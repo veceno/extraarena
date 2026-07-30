@@ -1,8 +1,8 @@
 {
-  "_comment": "ExtraRLHF MCP server registration. The server is stdio JSON-RPC 2.0 (python3 -m rlhf_env.mcp_server). It MUST run from the repo root so the `rlhf_env` package + relative paths (ai/models, ai/cards.json) resolve. Replace <REPO_ROOT> with the absolute path to your ExtraArenaRaS checkout. CLI flags can also be set via env vars: RLHF_MODELS_DIR, RLHF_SESSIONS_DIR, RLHF_CARDS_PATH, RLHF_LOG_LEVEL.",
+  "_comment": "ExtraRLHF MCP server registration. Pin both the dependency-bearing Python interpreter and exact checkout/worktree. The server is stdio JSON-RPC 2.0 and must run from the repo root.",
   "mcpServers": {
     "extra-rlhf": {
-      "command": "python3",
+      "command": "<PYTHON_WITH_RLHF_DEPS>",
       "args": [
         "-m", "rlhf_env.mcp_server",
         "--models-dir", "ai/models",

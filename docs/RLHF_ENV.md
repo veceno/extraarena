@@ -103,7 +103,8 @@ sessions/agents_index.json
 
 ## Universal, not version-locked
 
-"V5" is only the **storage layout** name + one reserved adapter kind. The same
+"V5" is the **storage layout** name and the implemented 7128/601 + mana-draw
+adapter kind. The same
 orchestration serves legacy (`legacy_onnx`), action-conditioned (`action_onnx`/
 `v4`), future adapters, and baselines. New kind → `register_custom_model` or
 `AdapterRegistry.register(...)`.

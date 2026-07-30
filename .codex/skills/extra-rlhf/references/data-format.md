@@ -80,7 +80,7 @@ layout name; the trace itself is model-version-agnostic.
   "battle_tag": "rl-vs-rl|llm-vs-bot|...",
   "bot_policy":   { "name": "...", "kind": "...", "path": "...",
                     "weights_hash": "<sha256[:16]>", "weights_version": .. },  // p2
-  "p1_policy_info": { ... } | null, // p1 RL model (only for rl p1)
+  "p1_policy": { ... } | null,      // p1 RL model (only for rl p1)
   "winner_user_id": .., "status": "...", "turns": ..,
   "models": { "p1": {...}, "p2": {...} }
 }
@@ -94,6 +94,7 @@ verify no degradation.
 {
   "turn": N, "actor_player": 1|2,
   "decision_source": "human|llm|bot|rl",   // who chose this action
+  "human_decision_time_ms": 1842|null,      // server-observed; populated only for human
   "legal_actions": [ {...}, ... ],          // full legal set at decision point
   "legal_action_index": K,                  // which legal action was taken
   "action_json": { "type": "...", ... },    // the action (matches legal_actions[K])
@@ -103,6 +104,12 @@ verify no degradation.
   "accepted": bool, "timestamp_ms": ..
 }
 ```
+`human_decision_time_ms` measures the observed interval from exposing an
+actionable browser state until the next action request arrives. It is reset
+after every action and when control returns from the bot. The value therefore
+includes normal UI/network latency, which is intentional for human-pacing
+modelling. It is always `null` for `llm`, `rl`, and `bot` rows.
+
 Invariants (enforced by `validate_v5_traces`): all fields non-null;
 `action_json.type == legal_actions[legal_action_index].type`;
 `actor_player`↔`decision_source` consistent (1↔human|llm|rl, 2↔bot);

@@ -187,6 +187,28 @@ def test_sidecar_detector_v4_without_layer_a(tmp_path):
     assert _sidecar_kind_detector("/x.onnx", {}, "x") is None
 
 
+def test_v5_sidecar_detected_before_broader_v4_detector():
+    from rlhf_env.components.policy_adapters import (
+        _sidecar_kind_detector,
+        _v5_sidecar_kind_detector,
+        default_registry,
+    )
+
+    sidecar = {
+        "model_version": "v5_split_encoder_onnx_v1",
+        "inputs": ["observation", "action_features"],
+        "outputs": ["logits", "value", "mana_draw_logit"],
+        "obs_dim": 7128,
+        "action_feature_dim": 171,
+        "mana_draw_head": True,
+        "format": "v5",
+    }
+    # This documents the ambiguity: the old detector alone calls it V4.
+    assert _sidecar_kind_detector("/x.onnx", sidecar, "v5") == "action_onnx"
+    assert _v5_sidecar_kind_detector("/x.onnx", sidecar, "v5") == "v5"
+    assert default_registry().detect_kind("/x.onnx", sidecar, name="v5") == "v5"
+
+
 def test_scan_directory_derives_v4_kind_from_sidecar(tmp_path):
     """PolicyRegistry.scan_directory сканирует V4 ONNX по sidecar без layer A."""
     import json

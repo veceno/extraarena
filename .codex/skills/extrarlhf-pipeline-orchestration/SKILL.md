@@ -64,6 +64,12 @@ Tell L1: "Collect `<N>` battles of `llm-vs-rl` vs `<model>` across agents
 `<codenames>` with varied seeds. Validate traces clean. Report group_ids + a
 `download_battle_logs` archive." L1 returns group_ids + integrity status.
 
+For Extra-LR V5 **Phase C**, the frozen default is different: collect browser
+`human-vs-rl` series against the selected V5 checkpoint. The web process owns
+those matches; `C2CollectionDriver` only observes completed groups from the
+shared sessions directory and returns their `group_dirs`. It must never launch
+or advance a human battle through a separate MCP process.
+
 ### Phase 2 — Train (out of env)
 You don't run the trainer. You produce the dataset artifact:
 - `validate_v5_traces` on every campaign group → all `ok`, no `broken`.
@@ -73,6 +79,13 @@ You don't run the trainer. You produce the dataset artifact:
   (see `../extra-rlhf/references/data-format.md`).
 Gate: do not train on a group with `broken` traces or `degraded` battles
 (check `weights_hash` matches the intended opponent).
+
+Structural cleanliness is necessary but not sufficient for semi-synthetic
+LLM data. Require the summary quality gate: at least 50 battles, no rejected or
+fallback decisions, and the 95% Wilson lower bound for p1 win rate above 3%.
+The default Phase-C replay bridge still accepts only `decision_source=human`.
+LLM input requires an explicit `accepted_decision_sources=("llm",)` opt-in
+after that quality gate passes.
 
 ### Phase 3 — Eval (candidate vs current)
 Run a **model-vs-model** benchmark series: `p1_actor_type="rl"`,

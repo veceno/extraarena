@@ -22,7 +22,12 @@ from pathlib import Path
 import pytest
 
 from rlhf_env.components.policy_registry import PolicyRegistry
-from rlhf_env.mcp_server import HeadlessHub, MCPServer
+from rlhf_env.mcp_server import (
+    HeadlessHub,
+    MCPServer,
+    _aggregate_quality_reports,
+    _semi_synthetic_quality,
+)
 from rlhf_env.tests._v5_helpers import v5_dir_for, read_jsonl
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -43,6 +48,43 @@ def server(tmp_path):
 
 def _run(coro):
     return asyncio.run(coro)
+
+
+def test_semi_synthetic_quality_requires_50_games_and_wilson_floor(tmp_path):
+    results = []
+    for i in range(50):
+        bid = f"b_{i}"
+        apath = tmp_path / "battles" / bid / "v5"
+        apath.mkdir(parents=True)
+        (apath / "actions.jsonl").write_text(json.dumps({
+            "decision_source": "llm", "action_type": "attack", "accepted": True,
+            "error": None, "legal_actions": [{"type": "attack"}],
+        }) + "\n", encoding="utf-8")
+        results.append({
+            "battle_id": bid, "battle_tag": "llm-vs-bot",
+            "status": "P1_WIN" if i < 8 else "P2_WIN",
+            "policy_warnings": [], "degraded": False,
+        })
+    quality = _semi_synthetic_quality(tmp_path, results)
+    assert quality["p1_win_rate"] == pytest.approx(0.16)
+    assert quality["p1_win_rate_wilson_lower_95"] > 0.03
+    assert quality["semi_synthetic_usable"] is True
+    results[0]["degraded"] = True
+    assert _semi_synthetic_quality(tmp_path, results)["semi_synthetic_usable"] is False
+
+
+def test_quality_reports_pool_across_short_series():
+    one = {
+        "llm_battles": 25, "llm_wins": 4, "llm_decisions": 100,
+        "rejected_or_error_decisions": 0, "degraded_battles": 0,
+        "mana_draw_decisions": 2, "end_turn_decisions": 20,
+        "end_turn_with_attack_legal": 0, "end_turn_with_play_legal": 0,
+    }
+    pooled = _aggregate_quality_reports([one, one])
+    assert pooled["llm_battles"] == 50
+    assert pooled["llm_wins"] == 8
+    assert pooled["p1_win_rate_wilson_lower_95"] > 0.03
+    assert pooled["semi_synthetic_usable"] is True
 
 
 def test_start_series_rl_autoplays_with_agent(server):
@@ -77,6 +119,103 @@ def test_list_active_series_and_agent_status(server):
     assert gs["agent_name"] == "Mentalist"
     assert gs["busy"] is True
     assert gs["p1_actor_type"] == "rl"
+
+
+def test_next_battle_rejects_unfinished_llm_match(server):
+    srv, _hub, _tmp = server
+    started = _run(srv._tool("start_series", {"spec": {
+        "p2_model": "random", "p1_actor_type": "llm",
+        "battles_planned": 2, "starting_player": "p1",
+    }}))
+    assert started["is_ended"] is False
+    blocked = _run(srv._tool("next_battle", {"group_id": started["group_id"]}))
+    assert blocked == {
+        "error": "current_battle_in_progress",
+        "group_id": started["group_id"],
+    }
+    status = _run(srv._tool("get_match_status", {"match_id": started["match_id"]}))
+    assert status["is_ended"] is False
+
+
+def test_compact_player_state_and_submit_response_are_decision_complete(server):
+    srv, _hub, _tmp = server
+    started = _run(srv._tool("start_series", {"spec": {
+        "p2_model": "random", "p1_actor_type": "llm",
+        "battles_planned": 1, "starting_player": "p1", "seed": 77,
+    }}))
+    mid = started["match_id"]
+    full = _run(srv._tool("get_state", {"match_id": mid}))
+    compact = _run(srv._tool("get_state", {
+        "match_id": mid, "compact": True, "history_limit": 4,
+    }))
+    assert compact["compact"] is True
+    assert [
+        {k: v for k, v in action.items() if k != "legal_action_index"}
+        for action in compact["legal_actions"]
+    ] == full["legal_actions"]
+    assert [a["legal_action_index"] for a in compact["legal_actions"]] == list(
+        range(len(compact["legal_actions"]))
+    )
+    assert compact["player"]["hand"]
+    assert compact["player"]["hero"]["mechanics"] == full["player"]["hero"]["mechanics"]
+    assert len(json.dumps(compact)) < len(json.dumps(full))
+
+    end_turn = next(a for a in compact["legal_actions"] if a["type"] == "end_turn")
+    resp = _run(srv._tool("submit_action", {
+        "match_id": mid, "action": end_turn, "compact_response": True,
+    }))
+    assert resp["state"]["compact"] is True
+    assert "legal_actions" in resp["state"]
+
+
+def test_submit_action_by_legal_index_avoids_uuid_transcription(server):
+    srv, _hub, _tmp = server
+    started = _run(srv._tool("start_series", {"spec": {
+        "p2_model": "random", "p1_actor_type": "llm",
+        "battles_planned": 1, "starting_player": "p1", "seed": 79,
+    }}))
+    mid = started["match_id"]
+    compact = _run(srv._tool("get_state", {
+        "match_id": mid, "compact": True,
+    }))
+    chosen = next(a for a in compact["legal_actions"] if a["type"] == "end_turn")
+    resp = _run(srv._tool("submit_action", {
+        "match_id": mid,
+        "legal_action_index": chosen["legal_action_index"],
+        "compact_response": True,
+    }))
+    assert resp["result"]["success"] is True
+    assert resp["resolved_legal_action_index"] == chosen["legal_action_index"]
+    assert resp["resolved_legal_action"] == {"type": "end_turn"}
+
+
+def test_invalid_legal_index_is_rejected_before_trace_recording(server):
+    srv, hub, tmp = server
+    started = _run(srv._tool("start_series", {"spec": {
+        "p2_model": "random", "p1_actor_type": "llm",
+        "battles_planned": 1, "starting_player": "p1", "seed": 81,
+    }}))
+    mid = started["match_id"]
+    match = hub._match(mid)
+    resp = _run(srv._tool("submit_action", {
+        "match_id": mid, "legal_action_index": 999999,
+    }))
+    assert resp["error"] == "legal_action_index_out_of_range"
+    assert resp["legal_action_count"] > 0
+    v5 = v5_dir_for(match, tmp / "sessions")
+    assert read_jsonl(v5 / "actions.jsonl") == []
+
+
+def test_tools_call_uses_standard_text_content_block(server):
+    srv, _hub, _tmp = server
+    response = _run(srv.dispatch("tools/call", {
+        "name": "list_models", "arguments": {},
+    }))
+    assert response["isError"] is False
+    assert response["content"][0]["type"] == "text"
+    parsed = json.loads(response["content"][0]["text"])
+    assert parsed == response["structuredContent"]
+    assert "models" in parsed
 
 
 def test_match_status_and_action_history(server):

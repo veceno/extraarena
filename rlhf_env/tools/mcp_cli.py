@@ -42,6 +42,8 @@ def build_action(legal):
     if t == "attack":
         return {"type":"attack","attacker_id":legal.get("attacker_id"),
                 "target_id":legal.get("target_id"),"target_is_hero":legal.get("target_is_hero", False)}
+    if t == "mana_draw":
+        return {"type":"mana_draw"}
     return {"type":"end_turn"}
 
 def fmt_board(board, mine):
@@ -88,6 +90,8 @@ def fmt_legal(legal, st):
                 tid = a.get("target_id")
                 tname = next((f"B{j}:{(b.get('name') or '?')}(a{_atk(b)},h{_hp(b)})" for j,b in enumerate(opp_board) if b.get("instance_id")==tid), _short(tid))
                 out.append(f"[{i}] atk {aname} -> {tname}")
+        elif t == "mana_draw":
+            out.append(f"[{i}] mana_draw")
         else:
             out.append(f"[{i}] end_turn")
     return "  ".join(out) if out else "(none)"

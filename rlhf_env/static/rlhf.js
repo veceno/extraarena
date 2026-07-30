@@ -54,43 +54,33 @@ function rlhfSetMsg(msg, isErr) {
 async function loadModels() {
   try {
     const r = await fetch(API("/registry/models"));
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const data = await r.json();
-    const models = data.models || [];
-    const groups = { action_onnx: "── ONNX action-conditioned (V4) ──",
-                     legacy_onnx: "── ONNX legacy (V2/V3) ──" };
-    let lastGroup = null;
+    // Defense in depth: the server already exposes only player-visible V5
+    // specs, but the browser filters again so a stale/cached response cannot
+    // resurrect V3/V4/baseline choices.
+    const models = (data.models || []).filter((m) => m.kind === "v5");
+    els.p2Select.replaceChildren();
+    if (!models.length) {
+      throw new Error("V5 временно недоступна");
+    }
     for (const m of models) {
       const opt = document.createElement("option");
       opt.value = m.name;
-      if (groups[m.kind] && groups[m.kind] !== lastGroup) {
-        const sep = document.createElement("option");
-        sep.disabled = true;
-        sep.textContent = groups[m.kind];
-        els.p2Select.appendChild(sep);
-        lastGroup = groups[m.kind];
-      } else if (!groups[m.kind] && (m.kind === "random" || m.kind === "greedy_face" || m.kind === "end_turn")) {
-        if (lastGroup !== "baselines") {
-          const sep = document.createElement("option");
-          sep.disabled = true;
-          sep.textContent = "── Baselines ──";
-          els.p2Select.appendChild(sep);
-          lastGroup = "baselines";
-        }
-      }
-      opt.textContent = `${m.name} [${m.kind}]`;
+      opt.textContent = `${m.name} [V5]`;
       els.p2Select.appendChild(opt);
     }
-    // Выбор по умолчанию для человека — Extra-LR-V4-Max (модель max-возможностей).
-    // Раньше дефолтом был end_turn (baseline «сдаться ходом»); теперь — сильнейшая
-    // V4. Если её нет в реестре — оставляем fallback end_turn.
-    const DEFAULT_MODEL = "extra-lr-v4-max";
-    if ([...els.p2Select.options].some((o) => o.value === DEFAULT_MODEL)) {
-      els.p2Select.value = DEFAULT_MODEL;
-    } else {
-      els.p2Select.value = "end_turn";
-    }
+    els.p2Select.value = models[0].name;
+    els.p2Select.disabled = false;
   } catch (e) {
     console.warn("loadModels failed:", e);
+    els.p2Select.replaceChildren();
+    const opt = document.createElement("option");
+    opt.disabled = true;
+    opt.selected = true;
+    opt.textContent = "V5 временно недоступна";
+    els.p2Select.appendChild(opt);
+    els.p2Select.disabled = true;
   }
 }
 
@@ -351,6 +341,10 @@ function parseCustomDeck(side) {
 els.form.addEventListener("submit", async (e) => {
   e.preventDefault();
   clearError();
+  if (els.p2Select.disabled || !els.p2Select.value) {
+    showError("Модель V5 временно недоступна. Обновите страницу позже.");
+    return;
+  }
   const fd = new FormData(els.form);
   const spec = {
     p1_model: "human",          // sentinel — человек играет за P1

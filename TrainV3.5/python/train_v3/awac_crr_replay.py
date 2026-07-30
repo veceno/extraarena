@@ -81,6 +81,7 @@ from .bc_train import (
 # the draw-spam failure. It remains an opt-in auxiliary only.
 DEFAULT_MANA_DRAW_BCE_WEIGHT = 0.0
 from .offline_replay_bridge import OfflineReplayBatch
+from .contracts import ACTION_FEATURE_DIM, MAX_CANDIDATE_ACTIONS, OBS_V5_DIM
 from .rust_ppo import (
     RustPPOBatch,
     RustPPOEvaluation,
@@ -255,7 +256,7 @@ def awac_crr_loss(
 
 
 def _numpy_sigmoid(x: np.ndarray) -> np.ndarray:
-    return 1.0 / (1.0 + np.exp(-x))
+    return 1.0 / (1.0 + np.exp(-np.clip(x, -60.0, 60.0)))
 
 
 def awac_weight(
@@ -628,7 +629,13 @@ def train_awac_crr_replay(
     rng = np.random.default_rng(seed)
 
     flat = ppo_batch.flatten()
-    row_count = int(flat["actions"].shape[0])
+    flat_row_count = int(flat["actions"].shape[0])
+    # Padding exists only to preserve per-game GAE boundaries.  Sampling it as
+    # optimizer indices creates extra sparse updates, so one unusually long
+    # game changes the effective weight of every other game in the shard.
+    # Keep padding in full-batch diagnostics but train on real transitions.
+    real_indices = np.flatnonzero(~par["is_padded"]).astype(np.int64)
+    row_count = int(real_indices.size)
     if row_count <= 0:
         return {
             "status": "skipped",
@@ -715,7 +722,7 @@ def train_awac_crr_replay(
         "approx_kl": [],
     }
 
-    indices = np.arange(row_count, dtype=np.int64)
+    indices = real_indices.copy()
 
     def _slice_parallel(idx: np.ndarray) -> Dict[str, np.ndarray]:
         return {
@@ -780,6 +787,19 @@ def train_awac_crr_replay(
             optimizer,
             metadata={
                 "kind": "awac_crr_replay",
+                "model_version": "v5_split_encoder_mlx_v1",
+                "policy_kind": getattr(model, "policy_kind", "v5_split_encoder"),
+                "obs_dim": int(getattr(model, "obs_dim", OBS_V5_DIM)),
+                "action_feature_dim": int(
+                    getattr(model, "action_feature_dim", ACTION_FEATURE_DIM)
+                ),
+                "max_candidate_actions": int(MAX_CANDIDATE_ACTIONS),
+                "config": {
+                    "hidden_dim": int(getattr(model, "hidden_dim", hidden_dim)),
+                    "action_hidden_dim": int(
+                        getattr(model, "action_hidden_dim", 128)
+                    ),
+                },
                 "lambda_awac": float(lambda_awac),
                 "awac_clamp": float(awac_clamp),
                 "epochs": int(epochs),
@@ -803,6 +823,7 @@ def train_awac_crr_replay(
         "clip_fraction": float(after.clip_fraction.item()),
         "num_updates": len(metric_values["loss"]),
         "rows": row_count,
+        "padded_rows_excluded": flat_row_count - row_count,
         "epochs": epochs,
         "minibatch_size": minibatch_size,
         "lambda_awac": float(lambda_awac),

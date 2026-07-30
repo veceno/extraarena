@@ -105,6 +105,15 @@ class DynamicSelfSnapshotOpponent:
             return pool_entries[int(self.rng.integers(0, len(pool_entries)))]
         return None
 
+    def reset_session(self) -> None:
+        """Release per-lane snapshot pins at an explicit league boundary.
+
+        Persistent PPO sessions must keep the opponent fixed while an episode
+        is in flight. Once the whole session rotates, lanes may bind to the
+        newly promoted/rolling snapshot pool.
+        """
+        self._pinned_path_by_env.clear()
+
 
 class LiveBlockBGameRunner:
     """Minimal operational side-stratified external bench runner."""

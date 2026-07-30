@@ -22,9 +22,10 @@ your job. Pick your level, then open that sub-skill.
 | 1 | `extrarlhf-gen-orchestration` | the **data-generation orchestrator** | plan + dispatch a fleet of series, monitor, validate, ship dataset | `start_series`, `next_battle`, `finish_series`, `list_active_series`, `get_agent_status`, `get_v5_dataset_summary`, `validate_v5_traces` |
 | 2 | `extrarlhf-player` | the **player sub-agent** | play **one** battle as p1 (human/llm) | `get_match_status`, `get_state`, `get_legal_actions`, `submit_action`, `advance_bot`, `surrender`, `get_action_history` |
 
-**Composition:** L0 directs L1; L1 spawns many L2 agents in parallel; L2 plays
-one battle. L1 can also run model-vs-model series (`p1_actor_type="rl"`) that
-auto-play with no L2 agent.
+**Composition:** L0 directs L1; L1 runs bounded L2 workers; L2 owns one complete
+start→play→finish lifecycle. A `match_id` is process-local, so never create it
+in one MCP process and hand it to another. L1 can also run model-vs-model
+series (`p1_actor_type="rl"`) that auto-play with no L2 worker.
 
 ## When to use which
 
@@ -41,12 +42,14 @@ Register the MCP server in your client and install the skills — see
 
 ```bash
 echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
-  | python3 -m rlhf_env.mcp_server   # expect 25 tools
+  | /Library/Frameworks/Python.framework/Versions/3.13/bin/python3 \
+      -m rlhf_env.mcp_server   # expect 25 tools in this checkout
 ```
 
-If `ai.model_benchmark` (layer A) is absent in your checkout, onnx auto-detect
-is unavailable — pass `p2_model_path` + `p2_model_kind` explicitly to play onnx
-models (see `concepts.md`).
+Pin the interpreter and checkout in client config. A bare `python3` may resolve
+to an environment without NumPy/ONNX Runtime. The current V5 sidecar detector
+recognizes the 7128-observation, 601-action, mana-draw-head contract; still pass
+`kind="v5"` explicitly for a curated checkpoint.
 
 ## Key concepts (read once)
 
@@ -65,7 +68,7 @@ models (see `concepts.md`).
 
 Nothing here is hardcoded to a specific model version. "V5" appears only as the
 **storage layout** name for the omniscient trace (`v5/{meta,turns,actions}.jsonl`)
-and as one reserved adapter kind. The same orchestration works for legacy
+and as the implemented V5 adapter kind. The same orchestration works for legacy
 (`legacy_onnx`), action-conditioned (`action_onnx`/`v4`), future adapters, and
 baselines — register a new kind via `register_custom_model` or
 `default_registry().register(...)`.

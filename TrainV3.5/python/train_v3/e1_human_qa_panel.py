@@ -405,6 +405,12 @@ class E1HumanQAPanelDriver:
                 battle_cap=self.min_battles,
                 battles_per_series=self.battles_per_series,
             )
+            # Optional operational hook: arrange/show the browser-owned human
+            # series for this candidate. C2 itself remains a disk observer and
+            # never creates a human match in a separate MCP process.
+            prepare_candidate = getattr(c2_client, "prepare_candidate", None)
+            if callable(prepare_candidate):
+                prepare_candidate(path, driver.plan_series_specs())
             result: C2CollectionResult = driver.collect(c2_client)
             # Harvest the reviewer scorecards for this candidate.
             scorecards = scorecard_client.list_scorecards(path)

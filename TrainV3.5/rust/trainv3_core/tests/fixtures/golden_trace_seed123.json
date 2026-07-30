@@ -26,7 +26,7 @@
     "mask_sha256_f32_le": "9ee352bc0366ba926549d02e3762bb0256f2acf12db4de6fea26f4373c99c4b0",
     "obs_sha256_f32_le": "17c83ed97ddf8dbed6e8e8f6b796598297147859ceae2b9595169057e5aff37b",
     "obs_v5_dim": 7128,
-    "obs_v5_sha256_f32_le": "095e9989d468d5fa5c9497e09b234f3252657dde00730f65747e0b87b9b8d39f",
+    "obs_v5_sha256_f32_le": "0c841aa6256fa574299b4f80bacee65e2c8cda70a3876065c7b45d86960b53bf",
     "state": {
       "current_turn_owner_id": 1,
       "p1": {
@@ -325,7 +325,9 @@
             "enemy_hero_hp_delta": 0,
             "my_board_count_delta": 0,
             "own_hero_hp_delta": 0,
-            "turn_number": 2
+            "turn_number": 2,
+            "source_card": null,
+            "target_card": null
           }
         ],
         "legal_ids": [
@@ -619,7 +621,7 @@
         "mask_sha256_f32_le": "9ee352bc0366ba926549d02e3762bb0256f2acf12db4de6fea26f4373c99c4b0",
         "obs_sha256_f32_le": "17c83ed97ddf8dbed6e8e8f6b796598297147859ceae2b9595169057e5aff37b",
         "obs_v5_dim": 7128,
-        "obs_v5_sha256_f32_le": "095e9989d468d5fa5c9497e09b234f3252657dde00730f65747e0b87b9b8d39f",
+        "obs_v5_sha256_f32_le": "0c841aa6256fa574299b4f80bacee65e2c8cda70a3876065c7b45d86960b53bf",
         "state": {
           "current_turn_owner_id": 1,
           "p1": {
@@ -932,7 +934,9 @@
             "enemy_hero_hp_delta": 0,
             "my_board_count_delta": 0,
             "own_hero_hp_delta": 0,
-            "turn_number": 2
+            "turn_number": 2,
+            "source_card": null,
+            "target_card": null
           },
           {
             "action_id": 0,
@@ -943,7 +947,9 @@
             "enemy_hero_hp_delta": 0,
             "my_board_count_delta": 0,
             "own_hero_hp_delta": 0,
-            "turn_number": 3
+            "turn_number": 3,
+            "source_card": null,
+            "target_card": null
           }
         ],
         "legal_ids": [
@@ -955,7 +961,7 @@
         "mask_sha256_f32_le": "5148e44e425f27597c59fe5e6414dc8d95f941e39a2e4af5158fc739a0eef578",
         "obs_sha256_f32_le": "9ae6bcab4c858984e70f0588594ce18c35923bd590c137a051ddc5abf52e78a6",
         "obs_v5_dim": 7128,
-        "obs_v5_sha256_f32_le": "1f02f45e78b6b09b1d4a9ac7d277384fc2a4f16383fa60d84fea4b03849811ab",
+        "obs_v5_sha256_f32_le": "fa1cdd8b6f79b3250a1f68be0d48f6b9cf3bda87b6625779284c69d58ba98bfa",
         "state": {
           "current_turn_owner_id": 1,
           "p1": {
@@ -1241,7 +1247,9 @@
             "enemy_hero_hp_delta": 0,
             "my_board_count_delta": 0,
             "own_hero_hp_delta": 0,
-            "turn_number": 2
+            "turn_number": 2,
+            "source_card": null,
+            "target_card": null
           }
         ],
         "legal_ids": [
@@ -1564,7 +1572,9 @@
             "enemy_hero_hp_delta": 0,
             "my_board_count_delta": 0,
             "own_hero_hp_delta": 0,
-            "turn_number": 2
+            "turn_number": 2,
+            "source_card": null,
+            "target_card": null
           },
           {
             "action_id": 0,
@@ -1575,7 +1585,9 @@
             "enemy_hero_hp_delta": 0,
             "my_board_count_delta": 0,
             "own_hero_hp_delta": 0,
-            "turn_number": 3
+            "turn_number": 3,
+            "source_card": null,
+            "target_card": null
           },
           {
             "action_id": 0,
@@ -1586,7 +1598,9 @@
             "enemy_hero_hp_delta": 0,
             "my_board_count_delta": 0,
             "own_hero_hp_delta": 0,
-            "turn_number": 4
+            "turn_number": 4,
+            "source_card": null,
+            "target_card": null
           }
         ],
         "legal_ids": [
@@ -1870,7 +1884,9 @@
             "enemy_hero_hp_delta": 0,
             "my_board_count_delta": 0,
             "own_hero_hp_delta": 0,
-            "turn_number": 2
+            "turn_number": 2,
+            "source_card": null,
+            "target_card": null
           },
           {
             "action_id": 0,
@@ -1881,7 +1897,9 @@
             "enemy_hero_hp_delta": 0,
             "my_board_count_delta": 0,
             "own_hero_hp_delta": 0,
-            "turn_number": 3
+            "turn_number": 3,
+            "source_card": null,
+            "target_card": null
           }
         ],
         "legal_ids": [
@@ -1893,7 +1911,7 @@
         "mask_sha256_f32_le": "5148e44e425f27597c59fe5e6414dc8d95f941e39a2e4af5158fc739a0eef578",
         "obs_sha256_f32_le": "9ae6bcab4c858984e70f0588594ce18c35923bd590c137a051ddc5abf52e78a6",
         "obs_v5_dim": 7128,
-        "obs_v5_sha256_f32_le": "1f02f45e78b6b09b1d4a9ac7d277384fc2a4f16383fa60d84fea4b03849811ab",
+        "obs_v5_sha256_f32_le": "fa1cdd8b6f79b3250a1f68be0d48f6b9cf3bda87b6625779284c69d58ba98bfa",
         "state": {
           "current_turn_owner_id": 1,
           "p1": {

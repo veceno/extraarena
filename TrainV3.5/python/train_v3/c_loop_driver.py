@@ -357,16 +357,25 @@ class CLoopDriver:
         # (a) C2 COLLECT ------------------------------------------------------
         collection_outcome = self.collection_driver.collect(self.mcp_client)
         if not isinstance(collection_outcome, CollectionOutcome):
-            # Defensive: a mis-typed collection result is treated as a skip (the
-            # loop NEVER crashes on a collection stub; mirrors C2 skip-gates).
-            return (
-                {
-                    "update_number": int(update_number),
-                    "status": "skipped",
-                    "skip_reason": "collection_result_not_collection_outcome",
-                },
-                True,
-            )
+            # Production C1 returns C2CollectionResult.  Keep the train_v3
+            # module independent from rlhf_env by adapting its structural
+            # fields here instead of importing it at module load time.
+            if hasattr(collection_outcome, "status") and hasattr(collection_outcome, "group_dirs"):
+                collection_outcome = CollectionOutcome(
+                    status=str(collection_outcome.status),
+                    group_dirs=list(collection_outcome.group_dirs or []),
+                    reason=str(getattr(collection_outcome, "reason", "") or ""),
+                    mana_draw_row_count=int(getattr(collection_outcome, "mana_draw_row_count", 0) or 0),
+                )
+            else:
+                return (
+                    {
+                        "update_number": int(update_number),
+                        "status": "skipped",
+                        "skip_reason": "collection_result_not_collection_outcome",
+                    },
+                    True,
+                )
         if collection_outcome.status == "skipped" or (
             collection_outcome.batch is None and not collection_outcome.group_dirs
         ):

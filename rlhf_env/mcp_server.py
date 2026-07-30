@@ -33,6 +33,7 @@ import argparse
 import asyncio
 import json
 import logging
+import math
 import os
 import sys
 import zipfile
@@ -52,6 +53,152 @@ from rlhf_env.components.policy_registry import PolicyRegistry  # noqa: E402
 from rlhf_env.components.v5_trace_validate import validate_v5_trace  # noqa: E402
 
 logger = logging.getLogger(__name__)
+
+
+def _wilson_lower_bound(wins: int, games: int, z: float = 1.96) -> float:
+    if games <= 0:
+        return 0.0
+    p = wins / games
+    denom = 1.0 + z * z / games
+    centre = p + z * z / (2.0 * games)
+    margin = z * math.sqrt((p * (1.0 - p) + z * z / (4.0 * games)) / games)
+    return max(0.0, (centre - margin) / denom)
+
+
+def _semi_synthetic_quality(gdir: Path, results: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Behavioral gate for LLM traces; structural validity alone is not enough."""
+    llm_results = [
+        r for r in results if str(r.get("battle_tag") or "").startswith("llm-vs-")
+    ]
+    games = len(llm_results)
+    wins = sum(1 for r in llm_results if str(r.get("status", "")).upper() == "P1_WIN")
+    decisions = rejected = end_turn = end_turn_attack = end_turn_play = mana_draw = 0
+    degraded = 0
+    for r in llm_results:
+        degraded += int(bool(r.get("degraded") or r.get("policy_warnings")))
+        apath = gdir / "battles" / str(r.get("battle_id")) / "v5" / "actions.jsonl"
+        if not apath.exists():
+            continue
+        for line in apath.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            if row.get("decision_source") != "llm":
+                continue
+            decisions += 1
+            rejected += int(row.get("accepted") is not True or bool(row.get("error")))
+            action_type = row.get("action_type")
+            mana_draw += int(action_type == "mana_draw")
+            if action_type == "end_turn":
+                end_turn += 1
+                legal_types = {a.get("type") for a in (row.get("legal_actions") or []) if isinstance(a, dict)}
+                end_turn_attack += int("attack" in legal_types)
+                end_turn_play += int("play_card" in legal_types)
+    win_rate = wins / games if games else 0.0
+    lower = _wilson_lower_bound(wins, games)
+    rejection_rate = rejected / decisions if decisions else 0.0
+    # A campaign is promotable only after a bounded 50-game smoke and a
+    # statistically conservative lower bound above the user's 3% floor.
+    usable = bool(
+        games >= 50
+        and decisions > 0
+        and degraded == 0
+        and rejected == 0
+        and lower > 0.03
+    )
+    return {
+        "llm_battles": games,
+        "llm_wins": wins,
+        "p1_win_rate": win_rate,
+        "p1_win_rate_wilson_lower_95": lower,
+        "llm_decisions": decisions,
+        "rejected_or_error_decisions": rejected,
+        "rejection_rate": rejection_rate,
+        "degraded_battles": degraded,
+        "mana_draw_decisions": mana_draw,
+        "end_turn_decisions": end_turn,
+        "end_turn_with_attack_legal": end_turn_attack,
+        "end_turn_with_play_legal": end_turn_play,
+        "minimum_battles": 50,
+        "minimum_wilson_lower_bound": 0.03,
+        "semi_synthetic_usable": usable,
+    }
+
+
+def _aggregate_quality_reports(reports: List[Dict[str, Any]]) -> Dict[str, Any]:
+    additive = (
+        "llm_battles", "llm_wins", "llm_decisions",
+        "rejected_or_error_decisions", "degraded_battles",
+        "mana_draw_decisions", "end_turn_decisions",
+        "end_turn_with_attack_legal", "end_turn_with_play_legal",
+    )
+    total = {k: sum(int(r.get(k, 0) or 0) for r in reports) for k in additive}
+    games = total["llm_battles"]
+    decisions = total["llm_decisions"]
+    total["p1_win_rate"] = total["llm_wins"] / games if games else 0.0
+    total["p1_win_rate_wilson_lower_95"] = _wilson_lower_bound(total["llm_wins"], games)
+    total["rejection_rate"] = (
+        total["rejected_or_error_decisions"] / decisions if decisions else 0.0
+    )
+    total["minimum_battles"] = 50
+    total["minimum_wilson_lower_bound"] = 0.03
+    total["semi_synthetic_usable"] = bool(
+        games >= 50
+        and decisions > 0
+        and total["degraded_battles"] == 0
+        and total["rejected_or_error_decisions"] == 0
+        and total["p1_win_rate_wilson_lower_95"] > 0.03
+    )
+    return total
+
+
+def _compact_state(state: Dict[str, Any], *, history_limit: int = 8) -> Dict[str, Any]:
+    """Decision-complete, token-bounded view for LLM player loops."""
+    card_keys = (
+        "instance_id", "card_id", "name", "description", "card_type",
+        "mana_cost", "attack", "hp", "max_hp", "mechanics", "is_ready",
+        "can_attack", "is_frozen", "level",
+    )
+
+    def card(c: Any) -> Dict[str, Any]:
+        return {k: c[k] for k in card_keys if isinstance(c, dict) and k in c}
+
+    def side(raw: Any, *, include_hand: bool) -> Dict[str, Any]:
+        raw = raw if isinstance(raw, dict) else {}
+        out = {
+            "user_id": raw.get("user_id"),
+            "mana": raw.get("mana"),
+            "max_mana": raw.get("max_mana"),
+            "mana_draw_count_this_turn": raw.get("mana_draw_count_this_turn", 0),
+            "hero": card(raw.get("hero")),
+            "board": [card(c) for c in (raw.get("board") or [])],
+            "hand_count": raw.get("hand_count", len(raw.get("hand") or [])),
+            "deck_count": raw.get("deck_count"),
+        }
+        if include_hand:
+            out["hand"] = [card(c) for c in (raw.get("hand") or [])]
+        return out
+
+    top_keys = (
+        "match_id", "turn", "current_player_id", "is_my_turn", "is_ended",
+        "game_over", "winner_id", "ruleset", "sudden_death",
+    )
+    out = {k: state.get(k) for k in top_keys if k in state}
+    out["player"] = side(state.get("player"), include_hand=True)
+    out["opponent"] = side(state.get("opponent"), include_hand=False)
+    # Long UUIDs are deliberately kept for inspection, but LLM players should
+    # submit the stable per-state index instead of transcribing them. Small
+    # models were observed mutating one or two UUID characters, turning an
+    # otherwise sound choice into a rejected action.
+    out["legal_actions"] = [
+        {"legal_action_index": idx, **dict(action)}
+        for idx, action in enumerate(state.get("legal_actions") or [])
+        if isinstance(action, dict)
+    ]
+    history = list(state.get("action_history") or [])
+    out["action_history"] = history[-max(0, min(int(history_limit), 20)):]
+    out["compact"] = True
+    return out
 
 
 def _policy_info(policy: Any) -> Optional[Dict[str, Any]]:
@@ -194,18 +341,23 @@ class MCPServer:
             },
             {
                 "name": "get_state",
-                "description": "Полный actor-perspective state боя (тот же формат, что /api/battle/state в браузере).",
-                "inputSchema": {"type": "object", "properties": {"match_id": {"type": "string"}}, "required": ["match_id"]},
+                "description": "Actor-perspective state. compact=true keeps all decision fields/legal actions but removes UI payload and bounds history for efficient LLM loops.",
+                "inputSchema": {"type": "object", "properties": {
+                    "match_id": {"type": "string"},
+                    "compact": {"type": "boolean", "default": False},
+                    "history_limit": {"type": "integer", "minimum": 0, "maximum": 20, "default": 8},
+                }, "required": ["match_id"]},
             },
             {
                 "name": "get_legal_actions",
-                "description": "Список легальных действий для текущего (человека) игрока.",
+                "description": "Список легальных действий для текущего (человека) игрока. Каждое действие содержит legal_action_index для безопасной отправки без копирования UUID.",
                 "inputSchema": {"type": "object", "properties": {"match_id": {"type": "string"}}, "required": ["match_id"]},
             },
             {
                 "name": "submit_action",
                 "description": (
-                    "Выполнить действие игрока (p1). action: {type:'play_card'|'attack'|'end_turn'|'mana_draw', ...}. "
+                    "Выполнить действие игрока (p1). Предпочтительно передать legal_action_index из последнего get_state/get_legal_actions; "
+                    "сервер сам разрешит его в точное действие без копирования UUID. Legacy-вариант action: {type:'play_card'|'attack'|'end_turn'|'mana_draw', ...}. "
                     "play_card: {type:'play_card', card_id_from_hand|hand_index, target_position?, target_id?, target_is_hero?}. "
                     "attack: {type:'attack', attacker_id, target_id, target_is_hero?}. "
                     "end_turn: {type:'end_turn'}. "
@@ -216,6 +368,9 @@ class MCPServer:
                     "type": "object",
                     "properties": {
                         "match_id": {"type": "string"},
+                        "legal_action_index": {"type": "integer", "minimum": 0},
+                        "compact_response": {"type": "boolean", "default": False},
+                        "history_limit": {"type": "integer", "minimum": 0, "maximum": 20, "default": 8},
                         "action": {
                             "type": "object",
                             "properties": {
@@ -230,7 +385,7 @@ class MCPServer:
                             "required": ["type"],
                         },
                     },
-                    "required": ["match_id", "action"],
+                    "required": ["match_id"],
                 },
             },
             {
@@ -425,7 +580,12 @@ class MCPServer:
 
         if name == "next_battle":
             gid = args["group_id"]
-            match = hub.manager.next_match(gid)
+            try:
+                match = hub.manager.next_match(gid)
+            except RuntimeError as exc:
+                if str(exc) == "current_battle_in_progress":
+                    return {"error": "current_battle_in_progress", "group_id": gid}
+                raise
             if match is None:
                 return {"status": "series_complete", "group_id": gid}
             runner = await hub.get_runner(match.engine.match_id)
@@ -443,19 +603,25 @@ class MCPServer:
             match = hub._match(args["match_id"])
             if match is None:
                 return {"error": "match_not_found"}
-            return match.engine.get_full_state(viewer_id=match.engine.human_user_id)
+            state = match.engine.get_full_state(viewer_id=match.engine.human_user_id)
+            if args.get("compact"):
+                return _compact_state(state, history_limit=int(args.get("history_limit", 8)))
+            return state
 
         if name == "get_legal_actions":
             match = hub._match(args["match_id"])
             if match is None:
                 return {"error": "match_not_found"}
             uid = match.engine.human_user_id
-            legal = match.engine.get_legal_actions(uid) if not match.engine.is_current_player_bot() else []
+            legal_raw = match.engine.get_legal_actions(uid) if not match.engine.is_current_player_bot() else []
+            legal = [
+                {"legal_action_index": idx, **dict(action)}
+                for idx, action in enumerate(legal_raw)
+            ]
             return {"legal_actions": legal, "is_my_turn": match.engine.get_current_player_id() == uid}
 
         if name == "submit_action":
             match_id = args["match_id"]
-            action = args.get("action", {})
             runner = await hub.get_runner(match_id)
             if runner is None:
                 return {"error": "match_not_found"}
@@ -466,12 +632,44 @@ class MCPServer:
             # (run_bot_turn с match.p1_policy). Симметрично surrender/get_legal_actions.
             if getattr(runner.match.engine, "p1_actor_type", "human") == "rl":
                 return {"error": "submit_action_unavailable_for_rl_p1"}
+            resolved_index = args.get("legal_action_index")
+            if resolved_index is not None:
+                engine = runner.match.engine
+                uid = engine.human_user_id
+                if engine.get_current_player_id() != uid:
+                    return {"error": "not_your_turn"}
+                legal_raw = engine.get_legal_actions_raw(uid)
+                if isinstance(resolved_index, bool) or not isinstance(resolved_index, int):
+                    return {"error": "legal_action_index_must_be_integer"}
+                if resolved_index < 0 or resolved_index >= len(legal_raw):
+                    return {
+                        "error": "legal_action_index_out_of_range",
+                        "legal_action_count": len(legal_raw),
+                    }
+                action = legal_raw[resolved_index].to_dict()
+            else:
+                action = args.get("action")
+                if not isinstance(action, dict) or not action.get("type"):
+                    return {"error": "action_or_legal_action_index_required"}
             action = dict(action)
+            resolved_action = dict(action)
             action.setdefault("client_action_id", f"mcp_{match_id}_{int(asyncio.get_event_loop().time()*1000)&0xffff}")
             resp = await runner.execute_human_action(action)
             # авто-advance бота уже выполнен в execute_human_action (create_task run_bot_turn),
             # но в headless-режоте create_task мог быть запланирован — дождёмся его.
             await self._drain_bot(runner)
+            if resolved_index is not None and isinstance(resp, dict):
+                resp = dict(resp)
+                resp["resolved_legal_action_index"] = resolved_index
+                resp["resolved_legal_action"] = resolved_action
+            if args.get("compact_response") and isinstance(resp, dict):
+                state = runner.match.engine.get_full_state(
+                    viewer_id=runner.match.engine.human_user_id,
+                )
+                resp = dict(resp)
+                resp["state"] = _compact_state(
+                    state, history_limit=int(args.get("history_limit", 8)),
+                )
             return resp
 
         if name == "advance_bot":
@@ -698,15 +896,27 @@ class MCPServer:
             results = m.get("battles_results", []) or []
             tag_dist: Dict[str, int] = {}
             v5_ok = 0
+            manifest_v5_ok = 0
             turns_total = 0
             actions_total = 0
+            expected_catalog_hash = hub.manager.catalog_hash
+            expected_card_count = len(hub.manager.catalog.cards)
             for r in results:
                 t = r.get("battle_tag")
                 if t:
                     tag_dist[t] = tag_dist.get(t, 0) + 1
                 if r.get("v5_trace_ok"):
-                    v5_ok += 1
+                    manifest_v5_ok += 1
                 v5dir = gdir / "battles" / r["battle_id"] / "v5"
+                battle_log = gdir / "battles" / f"{r['battle_id']}.json"
+                rep = validate_v5_trace(
+                    v5dir,
+                    battle_log_path=battle_log,
+                    expected_catalog_hash=expected_catalog_hash,
+                    expected_card_count=expected_card_count,
+                )
+                if rep["ok"]:
+                    v5_ok += 1
                 tpath = v5dir / "turns.jsonl"
                 apath = v5dir / "actions.jsonl"
                 if tpath.exists():
@@ -715,18 +925,35 @@ class MCPServer:
                     actions_total += sum(1 for _ in apath.open())
             return {
                 "group_id": gid,
+                "group_dir": str(gdir.resolve()),
                 "battles_finished": len(results),
+                "battle_ids": [str(r.get("battle_id")) for r in results if r.get("battle_id")],
+                "battles": [
+                    {
+                        "battle_id": r.get("battle_id"),
+                        "policy_warnings": list(r.get("policy_warnings") or []),
+                        "degraded": bool(r.get("degraded")),
+                        "v5_trace_ok": bool(r.get("v5_trace_ok")),
+                    }
+                    for r in results
+                ],
                 "v5_trace_ok_count": v5_ok,
+                "manifest_v5_trace_ok_count": manifest_v5_ok,
+                "deep_validated": True,
+                "current_catalog_hash": expected_catalog_hash,
+                "current_card_count": expected_card_count,
                 "battle_tag_distribution": tag_dist,
                 "turns_total": turns_total,
                 "actions_total": actions_total,
                 "rows": actions_total,
+                "quality": _semi_synthetic_quality(gdir, results),
             }
 
         if name == "list_v5_groups":
             tag_filter = args.get("battle_tag")
             limit = int(args.get("limit", 100) or 100)
             out: List[Dict[str, Any]] = []
+            quality_reports: List[Dict[str, Any]] = []
             sdir = hub.manager.sessions_dir
             if sdir.exists():
                 for gdir in sorted(sdir.iterdir()):
@@ -741,6 +968,7 @@ class MCPServer:
                     tags = {r.get("battle_tag") for r in results if r.get("battle_tag")}
                     if tag_filter and tag_filter not in tags:
                         continue
+                    quality_reports.append(_semi_synthetic_quality(gdir, results))
                     out.append({
                         "group_id": gdir.name,
                         "agent_name": m.get("agent_name"),
@@ -751,7 +979,10 @@ class MCPServer:
                     })
                     if len(out) >= limit:
                         break
-            return {"groups": out}
+            return {
+                "groups": out,
+                "quality": _aggregate_quality_reports(quality_reports),
+            }
 
         if name == "get_v5_trace":
             gid = args["group_id"]
@@ -787,7 +1018,12 @@ class MCPServer:
                 # battle_log b_<bid>.json лежит рядом с v5/-директорией боя; путь
                 # строится от того же battle_id (уже содержит префикс b_).
                 battle_log = gdir / "battles" / f"{bid}.json"
-                rep = validate_v5_trace(v5dir, battle_log_path=battle_log)
+                rep = validate_v5_trace(
+                    v5dir,
+                    battle_log_path=battle_log,
+                    expected_catalog_hash=hub.manager.catalog_hash,
+                    expected_card_count=len(hub.manager.catalog.cards),
+                )
                 if rep["ok"]:
                     ok += 1
                 else:
@@ -842,10 +1078,19 @@ class MCPServer:
             args = params.get("arguments", {}) or {}
             try:
                 result = await self._tool(name, args)
-                return {"content": [{"type": "json", "data": result}], "isError": False}
+                return {
+                    "content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}],
+                    "structuredContent": result,
+                    "isError": False,
+                }
             except Exception as exc:  # noqa: BLE001
                 logger.exception("[mcp] tool %s failed", name)
-                return {"content": [{"type": "json", "data": {"error": str(exc)}}], "isError": True}
+                error = {"error": str(exc)}
+                return {
+                    "content": [{"type": "text", "text": json.dumps(error, ensure_ascii=False)}],
+                    "structuredContent": error,
+                    "isError": True,
+                }
         return {"error": {"code": -32601, "message": f"unknown method: {method}"}}
 
 

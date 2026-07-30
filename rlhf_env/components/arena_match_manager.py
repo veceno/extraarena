@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import random
 import re
@@ -225,6 +226,83 @@ class ArenaMatchManager:
             sessions_dir=self.sessions_dir,
             cards_path=self.cards_path,
         )
+        self._restore_groups_from_disk()
+
+    def _restore_groups_from_disk(self) -> None:
+        """Hydrate persisted group manifests after a process restart.
+
+        Match objects are intentionally process-local and cannot be restored.
+        A non-finalized series resumes from ``battles_finished``: the next call
+        to :meth:`next_match` rebuilds precisely that battle index from the
+        persisted spec/seed.  Completed groups are restored read-only so the
+        browse UI and API retain history across restarts.
+        """
+        restored = 0
+        for manifest_path in sorted(
+            self.sessions_dir.glob("*/manifest.json"),
+            key=lambda path: path.stat().st_mtime,
+        ):
+            try:
+                raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+                if not isinstance(raw, dict):
+                    raise ValueError("manifest root must be an object")
+                group_id = str(raw.get("group_id") or manifest_path.parent.name)
+                if group_id != manifest_path.parent.name:
+                    raise ValueError("manifest group_id does not match directory")
+                spec = raw.get("spec") or {}
+                if not isinstance(spec, dict):
+                    raise ValueError("manifest spec must be an object")
+                results = raw.get("results") or {}
+                if not isinstance(results, dict):
+                    raise ValueError("manifest results must be an object")
+
+                planned = int(
+                    results.get("battles_planned")
+                    or spec.get("battles_planned")
+                    or len(raw.get("battle_ids") or [])
+                    or 1
+                )
+                if planned <= 0:
+                    raise ValueError("battles_planned must be positive")
+                battle_results = raw.get("battles_results") or []
+                finished = max(
+                    int(results.get("battles_finished", 0) or 0),
+                    len(battle_results) if isinstance(battle_results, list) else 0,
+                )
+                finished = min(finished, planned)
+                agent_name = raw.get("agent_name") or spec.get("agent_name")
+                agent_name = str(agent_name).strip() if agent_name else None
+
+                manifest = ManifestWriter(
+                    group_id=group_id,
+                    spec=dict(spec),
+                    group_dir=manifest_path.parent,
+                    repo_root=Path.cwd(),
+                )
+                self._groups[group_id] = _GroupLive(
+                    group_id=group_id,
+                    spec=dict(spec),
+                    manifest=manifest,
+                    battles_planned=planned,
+                    # No live match survives a restart.  For N persisted results,
+                    # next_match must construct zero-based battle index N.
+                    current_index=finished - 1,
+                    current_match_id=None,
+                    agent_name=agent_name,
+                )
+                restored += 1
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "[ArenaMatchManager] skipping invalid persisted manifest %s: %s",
+                    manifest_path,
+                    exc,
+                )
+        if restored:
+            logger.info(
+                "[ArenaMatchManager] restored %d persisted groups from %s",
+                restored,
+                self.sessions_dir,
+            )
 
     # ------------------------------------------------------------------
     # Публичное API
@@ -309,6 +387,17 @@ class ArenaMatchManager:
         live = self._groups.get(group_id)
         if live is None:
             return None
+        # Explicitly finished (including early-finished) series are history,
+        # never resumable merely because battles_finished < battles_planned.
+        if live.manifest.manifest.get("finished_at"):
+            return None
+        # Never advance over an unfinished human/LLM battle.  Doing so replaces
+        # ``current_match_id`` and leaves the unplayed match unfinalized, which
+        # silently creates empty or partial training groups.
+        if live.current_match_id is not None:
+            current = self._matches.get(live.current_match_id)
+            if current is not None and not bool(current.engine.is_ended):
+                raise RuntimeError("current_battle_in_progress")
         next_index = live.current_index + 1
         if next_index >= live.battles_planned:
             live.manifest.finalize()
@@ -426,7 +515,12 @@ class ArenaMatchManager:
 
     def list_groups(self) -> List[Dict[str, Any]]:
         out = []
-        for live in self._groups.values():
+        lives = sorted(
+            self._groups.values(),
+            key=lambda item: str(item.manifest.manifest.get("created_at") or ""),
+            reverse=True,
+        )
+        for live in lives:
             m = live.manifest.manifest
             res = m.get("results", {}) or {}
             spec = m.get("spec", {}) or {}
@@ -454,7 +548,7 @@ class ArenaMatchManager:
                 # получала str(dict) как ключ.
                 "p2_model": _model_name(spec.get("p2_model")),
                 "battle_tag": battle_tag,
-                "current_battle": live.current_index,
+                "current_battle": max(live.current_index, 0),
                 "current_match_id": live.current_match_id,
                 "manifest_path": str(live.manifest.manifest_path),
             })

@@ -348,6 +348,9 @@ class ArenaTransport:
                 # bot-матч: после готовности человека сразу стартуем.
                 if ready_info.get("all_ready"):
                     await self._broadcast(match_id, "match_ready", {"readiness": ready_info})
+                    runner = await self.get_runner(match_id)
+                    if runner is not None:
+                        runner.mark_human_decision_start()
                     await self._maybe_trigger_bot(match_id)
                 else:
                     await self._broadcast(match_id, "match_waiting", {"readiness": ready_info})

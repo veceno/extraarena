@@ -23,8 +23,8 @@
       <legend>Противник</legend>
       <div class="rlhf-field">
         <label class="rlhf-label" for="p2_model">Модель-бот</label>
-        <select name="p2_model" id="p2_model">
-          <option value="end_turn">end_turn (fallback, если список не загрузился)</option>
+        <select name="p2_model" id="p2_model" disabled>
+          <option value="" disabled selected>Загрузка V5…</option>
         </select>
       </div>
       <p class="rlhf-hint">
@@ -133,6 +133,6 @@
   <p class="rlhf-footer-link"><a href="/groups">Все серии →</a></p>
 </div>
 
-<script src="/static/rlhf.js"></script>
+<script src="/static/rlhf.js?v=20260716-v5-only"></script>
 </body>
 </html>

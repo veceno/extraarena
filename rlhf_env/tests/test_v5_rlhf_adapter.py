@@ -13,6 +13,8 @@ Covers:
 """
 from __future__ import annotations
 
+import sys
+import types
 from pathlib import Path
 
 import numpy as np
@@ -75,6 +77,35 @@ def test_default_registry_build_v5_returns_real_adapter_not_stub():
     p = default_registry().build(spec)
     assert isinstance(p, V5RlhfAdapter)
     assert not isinstance(p, V5StubAdapter)
+
+
+def test_real_onnx_wrapper_accepts_batched_scalar_heads(monkeypatch):
+    """Production ONNX exports return value and mana heads as shape [1, 1]."""
+    class FakeSession:
+        def __init__(self, path, providers):
+            assert providers == ["CPUExecutionProvider"]
+
+        def run(self, output_names, feed):
+            assert output_names == ["logits", "value", "mana_draw_logit"]
+            return [
+                np.zeros((1, 601), dtype=np.float32),
+                np.asarray([[0.25]], dtype=np.float32),
+                np.asarray([[-0.75]], dtype=np.float32),
+            ]
+
+    monkeypatch.setitem(
+        sys.modules,
+        "onnxruntime",
+        types.SimpleNamespace(InferenceSession=FakeSession),
+    )
+    infer = V5RlhfAdapter._build_onnx_inference("fake.onnx")
+    logits, value, mana_draw_logit = infer(
+        np.zeros(7128, dtype=np.float32),
+        np.zeros((601, 171), dtype=np.float32),
+    )
+    assert logits.shape == (601,)
+    assert value == pytest.approx(0.25)
+    assert mana_draw_logit == pytest.approx(-0.75)
 
 
 def test_fresh_registry_resolves_registered_real_factory():
@@ -154,6 +185,30 @@ def test_select_action_empty_legal_returns_zero(tmp_path):
             return []
 
     assert adapter.select_action(_EmptyEngine(), 1) == 0
+
+
+@pytest.mark.parametrize("bad_logits", [
+    np.full(601, np.nan, dtype=np.float32),
+    np.zeros(600, dtype=np.float32),
+])
+def test_v5_rejects_invalid_logits_instead_of_silent_end_turn(tmp_path, bad_logits):
+    mgr = make_manager(tmp_path)
+    _match, engine, _runner = create_match(mgr, p2_model="random", starting_player="p1")
+    adapter = V5RlhfAdapter({"name": "broken-v5", "inference": _fake_inference(bad_logits)})
+    with pytest.raises(RuntimeError, match="invalid logits"):
+        adapter.select_action(engine._arena, engine.human_user_id)
+
+
+def test_v5_rejects_non_finite_mana_draw_logit(tmp_path):
+    mgr = make_manager(tmp_path)
+    _match, engine, _runner = create_match(mgr, p2_model="random", starting_player="p1")
+
+    def broken_draw(obs, action_features):
+        return np.zeros(601, dtype=np.float32), 0.0, np.nan
+
+    adapter = V5RlhfAdapter({"name": "broken-v5", "inference": broken_draw})
+    with pytest.raises(RuntimeError, match="mana_draw_logit"):
+        adapter.select_action(engine._arena, engine.human_user_id)
 
 
 # ----------------------------------------------------------------------------

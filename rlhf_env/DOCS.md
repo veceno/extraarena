@@ -58,7 +58,8 @@ imitation learning или RLHF.
 | `components/match_runner.py` | Один матч: `run_bot_turn`/`run_auto`/`execute_human_action`; p1-as-RL auto-play; `_capture_models` |
 | `components/arena_engine.py` | `RlhfBattleEngine` — обёртка над `core.engine`, `p1_actor_type`, `battle_tag` |
 | `components/agent_registry.py` | Кодовые имена суб-агентов; `fcntl.flock` cross-process + `_self_heal_locked` |
-| `components/policy_adapters.py` | `AdapterRegistry` — модульная точка расширения (`register`/`register_detector`/`build`/`detect_kind`), V5StubAdapter |
+| `components/policy_adapters.py` | `AdapterRegistry` — модульная точка расширения; V5 detector идёт раньше generic action-ONNX |
+| `components/v5_rlhf_adapter.py` | Реальный V5 adapter: obs=7128, 601 actions, value + mana-draw head |
 | `components/policy_registry.py` | Сканирует `ai/models/*.onnx` + sidecar; `resolve_spec` (вкл. custom by path) |
 | `components/policy_factory.py` | `build_policy(spec)` → делегирует `AdapterRegistry` |
 | `components/v5_trace.py` | `V5TraceRecorder` — omniscient offline-трейс (`v5/{meta,turns,actions}.jsonl`) |
@@ -129,7 +130,7 @@ flowchart TD
   ENG["RlhfBattleEngine<br/>p1_actor_type · battle_tag"]
   V5["V5TraceRecorder<br/>meta/turns/actions.jsonl"]
   MAN["ManifestWriter<br/>manifest/summary/catalog"]
-  POL["Policies: legacy_onnx · action_onnx/v4 · v5-stub · random · greedy_face · end_turn"]
+  POL["Policies: legacy_onnx · action_onnx/v4 · v5 · random · greedy_face · end_turn"]
   DISK[("sessions/<group>/...")]
 
   MCP --> MGR
@@ -146,6 +147,11 @@ flowchart TD
 `submit_action` (MCP player-path или WS); `rl` — p1 auto-играет через
 `run_bot_turn(player_id=p1, policy=match.p1_policy)` (model-vs-model, без
 `submit_action`). `battle_tag = {p1}-vs-{bot|rl}` зависит только от kind-а p2.
+
+Для браузерного `p1_actor_type=human` каждая action-row также несёт
+`human_decision_time_ms`: наблюдаемую сервером паузу от выдачи человеку
+управляемого state до следующего action request. Для `llm|rl|bot` поле
+всегда `null`.
 
 ### 2.2. Поток данных (один бой)
 
@@ -455,7 +461,7 @@ JSON-RPC, stdio не ломается).
 |------|-----------|---------|
 | `get_state` | `match_id: str` | actor-perspective full_state (hand/board/deck/action_history — как `/api/battle/state`) |
 | `get_legal_actions` | `match_id: str` | `{legal_actions, is_my_turn}` |
-| `submit_action` | `match_id, action` | `{result, state, sound_events}` \| `{result, state, error}` (**отвергается при `p1_actor_type=="rl"`** → `submit_action_unavailable_for_rl_p1`) |
+| `submit_action` | `match_id, legal_action_index` (предпочтительно) или `action` | Индекс берётся из последнего compact-state/legal-actions и устраняет ручное копирование UUID; `{result, state, sound_events}` \| `{result, state, error}` (**отвергается при `p1_actor_type=="rl"`** → `submit_action_unavailable_for_rl_p1`) |
 | `advance_bot` | `match_id: str` | `{status, is_ended}` — шаг авто-игрока (p2 всегда; p1 тоже, если rl) |
 | `surrender` | `match_id: str` | `{result:{game_over, winner_id}, state}` (**отвергается при `p1_actor_type=="rl"`**) |
 | `get_match_status` | `match_id: str` | lightweight `{turn, is_ended, winner, is_my_turn, current_player_id, action_count}` (без полного state — для polling) |
@@ -814,10 +820,9 @@ fallback через gitignored `ai.model_benchmark.inspect_model`, если laye
 ### 9.6. Новый adapter-kind (расширение реестра)
 
 `AdapterRegistry` (`rlhf_env/components/policy_adapters.py`) — единственная точка
-расширения: `register(kind, factory)` + `register_detector(detector)`. V5 —
-зарезервированный слот (`V5StubAdapter` поднимает `NotImplementedError` как
-шаблон; impl = Block 0, зона пользователя). Добавить новый kind можно без правок
-if/elif:
+расширения: `register(kind, factory)` + `register_detector(detector)`. V5 уже
+реализован в `v5_rlhf_adapter.py`; `V5StubAdapter` остаётся только явным test
+double/fallback-шаблоном. Добавить новый kind можно без правок if/elif:
 
 ```python
 from rlhf_env.components.policy_adapters import default_registry
@@ -1055,8 +1060,8 @@ default_registry().register_detector(
 
 Adapter контракт: attrs `name/kind/model_path/weights_hash/weights_version` +
 `select_action(engine, player_id) -> int` (идентично потребителям в
-`arena_match_manager`/`match_runner._capture_models`). V5 — зарезервированный
-слот (`V5StubAdapter`); impl = Block 0 (зона пользователя), см. §9.6.
+`arena_match_manager`/`match_runner._capture_models`). V5 использует
+`V5RlhfAdapter`, а sidecar detector проверяет V5-контракт до generic V4.
 
 ### 14.2. Добавить новый формат deck_strategy
 

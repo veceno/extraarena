@@ -120,7 +120,14 @@ class V5RlhfAdapter:
                 {"observation": obs_batch, "action_features": af_batch},
             )
             # Un-batch: logits -> [601], value -> scalar, mana_draw_logit -> scalar.
-            return outputs[0][0], float(outputs[1][0]), float(outputs[2][0])
+            # Real exports return value/mana heads as [batch, 1].  NumPy 2.x
+            # rejects float(array([x])), so flatten explicitly before scalar
+            # conversion instead of relying on the old implicit conversion.
+            value = float(np.asarray(outputs[1], dtype=np.float32).reshape(-1)[0])
+            mana_draw_logit = float(
+                np.asarray(outputs[2], dtype=np.float32).reshape(-1)[0]
+            )
+            return outputs[0][0], value, mana_draw_logit
 
         return _infer
 
@@ -203,11 +210,18 @@ class V5RlhfAdapter:
         # 6. V5 3-tuple forward (logits, value, mana_draw_logit).
         logits, _value, mana_draw_logit = self._inference(obs, action_features)
         logits = np.asarray(logits, dtype=np.float32).reshape(-1)
+        if logits.shape != (601,) or not np.all(np.isfinite(logits)):
+            raise RuntimeError(
+                "V5 inference produced invalid logits: expected 601 finite values, "
+                f"got shape={logits.shape}, finite={bool(np.all(np.isfinite(logits)))}"
+            )
 
         # V5's draw decision is a separate binary gate, not candidate 602.
         # Return the real engine ManaDrawAction index when legal and positive.
         from core.actions import ManaDrawAction
         draw_logit = float(np.asarray(mana_draw_logit, dtype=np.float32).reshape(-1)[0])
+        if not np.isfinite(draw_logit):
+            raise RuntimeError("V5 inference produced a non-finite mana_draw_logit")
         if draw_logit > 0.0:
             for idx, action in enumerate(legal):
                 if isinstance(action, ManaDrawAction):

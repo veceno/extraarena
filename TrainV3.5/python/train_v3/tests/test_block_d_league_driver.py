@@ -166,6 +166,9 @@ def _build_d_driver(
     seed_anchor_path: str = "post_c.npz",
     seed: int = 7,
     opponent_policies_factory=None,
+    optimizer=None,
+    learning_rate_for_update=None,
+    trajectory_sink=None,
 ) -> d2mod.BlockDLeagueDriver:
     config = _league_config(
         env_count=env_count,
@@ -205,6 +208,9 @@ def _build_d_driver(
         checkpoint_namer=lambda upd: f"fake_ckpt_{upd:04d}.npz",
         games_per_opponent_per_side=1,
         games_per_opponent_gauntlet=1,
+        optimizer=optimizer,
+        learning_rate_for_update=learning_rate_for_update,
+        trajectory_sink=trajectory_sink,
         steps_per_update=steps_per_update,
         self_share_target=self_share_target,
         exit_mode=exit_mode,
@@ -667,3 +673,92 @@ class TestAggregateHistoryFreshSeeded:
         assert isinstance(manifest.aggregate_history, list)
         for v in manifest.aggregate_history:
             assert isinstance(v, float)
+
+
+# =============================================================================
+# 14. Block-B runtime parity: persistent rollout session + LR schedule
+# =============================================================================
+class TestBlockBRuntimeParity:
+    def test_trajectory_sink_receives_rollout_before_manifest_trim(self):
+        captured = []
+        driver = _build_d_driver(
+            n_updates=2,
+            snapshot_cadence=10,
+            trajectory_sink=lambda update, rollout, metrics, session: captured.append(
+                (update, rollout, metrics.get("rollout"), session)
+            ),
+        )
+
+        manifest = driver.run(2)
+
+        assert [row[0] for row in captured] == [1, 2]
+        assert all(row[1] is row[2] for row in captured)
+        assert all(row[1] is not None for row in captured)
+        assert all(row[3] is not None for row in captured)
+        assert all("rollout" not in row for row in manifest.update_metrics)
+
+    def test_rollout_session_persists_between_snapshots_and_closes(self, monkeypatch):
+        # A single LiveSelfPlaySession spans consecutive PPO updates, so an
+        # episode cut by an update boundary can finish later and keep its
+        # terminal credit. The session rotates only at the explicit snapshot
+        # boundary and is also closed at schedule end.
+        driver = _build_d_driver(n_updates=5, snapshot_cadence=3)
+        real_create = d2mod.create_live_self_play_session
+        real_update = d2mod.run_live_self_play_update
+        created = []
+        used = []
+
+        def spy_create(*args, **kwargs):
+            session = real_create(*args, **kwargs)
+            created.append(session)
+            return session
+
+        def spy_update(*args, **kwargs):
+            used.append(kwargs.get("session"))
+            return real_update(*args, **kwargs)
+
+        monkeypatch.setattr(d2mod, "create_live_self_play_session", spy_create)
+        monkeypatch.setattr(d2mod, "run_live_self_play_update", spy_update)
+
+        manifest = driver.run(5)
+
+        assert manifest.n_updates_run == 5
+        assert len(created) == 2
+        assert used == [
+            created[0],
+            created[0],
+            created[0],
+            created[1],
+            created[1],
+        ]
+        assert all(session.closed for session in created)
+        assert driver._rollout_session is None
+
+    def test_learning_rate_schedule_applies_and_is_recorded(self):
+        class _Optimizer:
+            learning_rate = 0.0
+
+        optimizer = _Optimizer()
+        scheduled = [3.0e-5, 2.0e-5, 1.0e-5]
+        driver = _build_d_driver(
+            n_updates=3,
+            snapshot_cadence=10,
+            optimizer=optimizer,
+            learning_rate_for_update=lambda update: scheduled[update - 1],
+        )
+
+        manifest = driver.run(3)
+
+        assert [m["learning_rate"] for m in manifest.update_metrics] == scheduled
+        assert optimizer.learning_rate == scheduled[-1]
+
+    def test_learning_rate_schedule_rejects_non_positive_value(self):
+        driver = _build_d_driver(
+            n_updates=1,
+            snapshot_cadence=10,
+            learning_rate_for_update=lambda _update: 0.0,
+        )
+        with pytest.raises(
+            ValueError, match="learning_rate_for_update must return a positive value"
+        ):
+            driver.run(1)

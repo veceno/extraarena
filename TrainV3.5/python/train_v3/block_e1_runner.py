@@ -415,9 +415,10 @@ def build_production_c2_client() -> Any:
     """Build the production C2 MCP collection client (USER-provided).
 
     Operational wiring: the rlhf_env MCP ``McpCollectionClient`` (the C2
-    deploy surface, ``rlhf_env/components/c2_collection_driver.py:46`` Protocol:
-    start_series / next_battle / list_v5_groups / get_v5_dataset_summary /
-    get_v5_trace / list_battles).
+    observer surface, ``rlhf_env/components/c2_collection_driver.py`` Protocol:
+    list_v5_groups / get_v5_dataset_summary / get_v5_trace /
+    validate_v5_traces). Human matches are owned by the web process; this
+    client only harvests completed groups from the shared sessions directory.
 
     The in-worktree stub raises ``NotImplementedError`` -- the real RUN is
     USER-executed per E-E12.

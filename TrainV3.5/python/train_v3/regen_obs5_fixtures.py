@@ -1,4 +1,4 @@
-"""Re-encode the 5 full-matcher golden fixtures to the 5-slot obs layout.
+"""Re-encode full-matcher golden fixtures to the current V5 obs contract.
 
 The Rust observation encoder was ported from the OLD 7-slot card-slot layout to
 the current Python `classic_obs_v1._encode_card_slots` 5-slot layout (own board
@@ -35,6 +35,7 @@ Usage (from the worktree TrainV3.5 dir):
 """
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 from typing import Any
@@ -48,7 +49,7 @@ from core.state import (
 )
 from ai.train_v2.classic_obs_v1 import encode_observation
 from train_v3.contracts import AssistModeV5, InfoModeV5
-from train_v3.golden_trace import _hash_f32
+from train_v3.golden_trace import _card_payload, _hash_f32, _history_cards_for_action
 from train_v3.obs_v5 import encode_observation_v5
 
 FIXTURE_NAMES = (
@@ -57,6 +58,7 @@ FIXTURE_NAMES = (
     "targeted_potion",
     "taunt_attack",
     "attack_cleanup",
+    "e2e_oracle",
 )
 
 FIXTURE_DIR = Path("rust/trainv3_core/tests/fixtures")
@@ -164,9 +166,37 @@ def reencode_one(name: str) -> None:
     info_mode = _info_mode_from_env_config(ec)
     assist_mode = _assist_mode_from_env_config(ec)
 
+    history_events = copy.deepcopy(trace["initial"].get("history_events") or [])
+    trace["initial"]["history_events"] = copy.deepcopy(history_events)
     _reencode_snapshot(trace["initial"], info_mode, assist_mode)
     for step in trace["steps"]:
+        # The live Python env and Rust rollout worker both encode source/target
+        # card shapes in the V5 history window. Older golden generation omitted
+        # them, making worker obs diverge even though state/action/reward parity
+        # was correct. Reconstruct card references from the frozen pre-state and
+        # action id without re-simulating gameplay.
+        step["pre"]["history_events"] = copy.deepcopy(history_events)
         _reencode_snapshot(step["pre"], info_mode, assist_mode)
+        old_post_history = step["post"].get("history_events") or []
+        event = copy.deepcopy(old_post_history[-1]) if old_post_history else {
+            "actor_id": step["acting_player_id"],
+            "action_id": step["action_id"],
+            "action_type": "mana_draw" if step.get("mana_draw_taken") else "unknown",
+        }
+        event.pop("source_card", None)
+        event.pop("target_card", None)
+        if not step.get("mana_draw_taken"):
+            pre_state = _state_from_payload(step["pre"]["state"])
+            source, target = _history_cards_for_action(
+                pre_state, int(step["acting_player_id"]), int(step["action_id"]),
+            )
+            event["source_card"] = _card_payload(source)
+            event["target_card"] = _card_payload(target)
+        else:
+            event["source_card"] = None
+            event["target_card"] = None
+        history_events = [*history_events, event][-20:]
+        step["post"]["history_events"] = copy.deepcopy(history_events)
         _reencode_snapshot(step["post"], info_mode, assist_mode)
 
     with open(path, "w") as f:

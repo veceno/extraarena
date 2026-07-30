@@ -7,7 +7,7 @@ the MCP gives tools; the skills give the workflows.
 The MCP server is **stdio JSON-RPC 2.0**, launched from the **repo root**:
 
 ```bash
-python3 -m rlhf_env.mcp_server \
+<PYTHON_WITH_RLHF_DEPS> -m rlhf_env.mcp_server \
   --models-dir ai/models \
   --sessions-dir rlhf_env/sessions \
   --cards-path ai/cards.json
@@ -17,9 +17,12 @@ CLI flags can also be env vars: `RLHF_MODELS_DIR`, `RLHF_SESSIONS_DIR`,
 `RLHF_CARDS_PATH`, `RLHF_LOG_LEVEL`. A bash wrapper exists:
 `./rlhf_env/start_rlhf_env.sh mcp`.
 
-> Replace `<REPO_ROOT>` below with the absolute path to your ExtraArenaRaS
-> checkout. The `cwd` must be the repo root so the `rlhf_env` package and the
-> relative `ai/models`, `ai/cards.json` paths resolve.
+> Replace `<REPO_ROOT>` below with the absolute path to the exact checkout or
+> worktree you are curating, and `<PYTHON_WITH_RLHF_DEPS>` with an absolute
+> interpreter path. On this Mac the verified interpreter is
+> `/Library/Frameworks/Python.framework/Versions/3.13/bin/python3`; bare
+> `python3` may select Python 3.14 without NumPy. The `cwd` must be the repo root
+> so the `rlhf_env` package and relative paths resolve.
 
 ---
 
@@ -32,7 +35,7 @@ Create `.mcp.json` in the repo root (or merge into an existing one):
 {
   "mcpServers": {
     "extra-rlhf": {
-      "command": "python3",
+      "command": "<PYTHON_WITH_RLHF_DEPS>",
       "args": ["-m", "rlhf_env.mcp_server",
                "--models-dir", "ai/models",
                "--sessions-dir", "rlhf_env/sessions",
@@ -46,7 +49,7 @@ Create `.mcp.json` in the repo root (or merge into an existing one):
 Or via CLI (run from repo root, so `cwd` is implicit):
 
 ```bash
-claude mcp add extra-rlhf -- python3 -m rlhf_env.mcp_server \
+claude mcp add extra-rlhf -- <PYTHON_WITH_RLHF_DEPS> -m rlhf_env.mcp_server \
   --models-dir ai/models --sessions-dir rlhf_env/sessions --cards-path ai/cards.json
 ```
 
@@ -76,7 +79,7 @@ Add to `~/.codex/config.toml`:
 
 ```toml
 [mcp_servers.extra-rlhf]
-command = "python3"
+command = "<PYTHON_WITH_RLHF_DEPS>"
 args = ["-m", "rlhf_env.mcp_server",
         "--models-dir", "ai/models",
         "--sessions-dir", "rlhf_env/sessions",
@@ -100,7 +103,7 @@ Add to `opencode.json` (or `~/.config/opencode/opencode.json`):
   "mcp": {
     "extra-rlhf": {
       "type": "local",
-      "command": ["python3", "-m", "rlhf_env.mcp_server",
+      "command": ["<PYTHON_WITH_RLHF_DEPS>", "-m", "rlhf_env.mcp_server",
                    "--models-dir", "ai/models",
                    "--sessions-dir", "rlhf_env/sessions",
                    "--cards-path", "ai/cards.json"],
@@ -136,14 +139,14 @@ standard MCP: `initialize` → `tools/list` (25 tools) → `tools/call`.
 ```bash
 # 1. server alive + tools enumerate
 echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
-  | python3 -m rlhf_env.mcp_server   # expect 25 tools
+  | <PYTHON_WITH_RLHF_DEPS> -m rlhf_env.mcp_server   # expect 25 tools
 
 # 2. start a quick series (llm-vs-bot, auto-plays)
 echo '{
   "jsonrpc":"2.0","id":2,"method":"tools/call",
   "params":{"name":"start_series",
             "arguments":{"spec":{"p2_model":"random","battles_planned":1,"seed":42}}}
-}' | python3 -m rlhf_env.mcp_server
+}' | <PYTHON_WITH_RLHF_DEPS> -m rlhf_env.mcp_server
 ```
 
 In your client, ask: *"Use the extra-rlhf skill to run 3 llm-vs-bot battles vs

@@ -474,6 +474,34 @@ class TestRustPythonParity:
 # DERIVED DIM CASCADE (contracts.py)
 # ============================================================================
 
+def test_persisted_history_card_dict_matches_live_card_instance():
+    live = CardInstance(
+        card_type=CardType.WARRIOR,
+        mana_cost=3,
+        attack=5,
+        hp=4,
+        max_hp=7,
+        level=6,
+        mechanics=["rebirth_1", "taunt"],
+        is_ready=True,
+        is_frozen=False,
+    )
+    persisted = {
+        "card_type": "warrior",
+        "mana_cost": 3,
+        "attack": 5,
+        "hp": 4,
+        "max_hp": 7,
+        "level": 6,
+        "mechanics": ["rebirth_1", "taunt"],
+        "is_ready": True,
+        "is_frozen": False,
+    }
+    assert np.array_equal(
+        encode_card_shape_v5(live),
+        encode_card_shape_v5(persisted),
+    )
+
 class TestV5DimCascade:
     def test_dim_cascade_from_card_shape_v5(self):
         """All V5 dims derive from CARD_SHAPE_DIM_V5=73 (named offsets, not literals)."""

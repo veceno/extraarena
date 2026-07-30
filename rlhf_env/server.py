@@ -84,6 +84,17 @@ RLHF_CONFIG_PATH = _HERE / "config.json"
 WEBAPP_BORROW = _HERE / "webapp_borrow"
 
 
+def player_visible_model_specs(specs: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
+    """Return the public player-facing opponent list.
+
+    The web arena is the human Phase-C collection surface and intentionally
+    exposes only deployed V5 policies.  The underlying PolicyRegistry remains
+    complete for MCP orchestration, benchmarks, and internal model-vs-model
+    campaigns.
+    """
+    return [spec for spec in specs if str(spec.get("kind", "")).lower() == "v5"]
+
+
 def load_rlhf_config() -> Dict[str, Any]:
     """Читает rlhf_env/config.json. Возвращает {} при отсутствии/ошибке (молчит)."""
     import json
@@ -551,13 +562,15 @@ class WebApp:
         return self._session_clear_cookie(resp)
 
     async def api_list_models(self, _request: web.Request) -> web.Response:
-        return web.json_response({"models": self.registry.list_specs()})
+        return web.json_response({
+            "models": player_visible_model_specs(self.registry.list_specs()),
+        })
 
     async def api_deck_strategies(self, _request: web.Request) -> web.Response:
         return web.json_response({
             "strategies": [
                 {"id": "random_arenaenv", "label": "Случайные ArenaENV колоды",
-                 "description": "1 hero + warriors (5-8 × 2) + potions (1-3 × 2)"},
+                 "description": "1 герой + 8 уникальных карт (воины и зелья)"},
                 {"id": "custom", "label": "Загрузить JSON-колоду",
                  "description": "custom_deck_p1 / custom_deck_p2 из spec"},
             ],

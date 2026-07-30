@@ -56,48 +56,53 @@ from train_v3.e1_human_qa_panel import (  # noqa: E402
 class _FakeC2Client:
     """A minimal ``McpCollectionClient`` Protocol implementation for tests.
 
-    ``collect()`` drives ``start_series`` / ``next_battle`` /
-    ``get_v5_dataset_summary`` / ``get_v5_trace`` / ``list_battles``. The fake
-    returns canned responses so ``C2CollectionResult.battle_count`` is
-    controlled (coverage floor). It SPIES on the deployed candidate path via
-    ``start_series`` -> ``p2_model.path``.
+    The panel optionally calls ``prepare_candidate`` to arrange browser-owned
+    human series; C2 then observes one completed group from disk.
     """
 
     def __init__(self, *, battle_count_per_series: int = 10) -> None:
         self.battle_count_per_series = int(battle_count_per_series)
         self.deployed_paths: list[str] = []
         self.start_calls: int = 0
+        self.current_group: str | None = None
+
+    def prepare_candidate(self, path, series_plans):
+        self.start_calls += 1
+        self.deployed_paths.append(path)
+        self.current_group = f"g-{self.start_calls}"
 
     # -- McpCollectionClient surface ----------------------------------------
-    def start_series(self, spec):
-        self.start_calls += 1
-        path = spec.get("p2_model", {}).get("path") if isinstance(spec, dict) else None
-        if path is not None:
-            self.deployed_paths.append(path)
-        return {"group_id": f"g-{self.start_calls}", "v5_trace_ok": True}
-
-    def next_battle(self, group_id):
-        # Signal series complete immediately; battles are counted via the
-        # summary in _harvest_group.
-        return {"status": "series_complete"}
-
     def list_v5_groups(self, *args, **kwargs):
-        return {"groups": []}
+        return {"groups": ([{"group_id": self.current_group, "finished_at": "now"}]
+                           if self.current_group else [])}
 
     def get_v5_dataset_summary(self, group_id):
         return {
+            "group_dir": f"/tmp/{group_id}",
             "battles_finished": self.battle_count_per_series,
             "v5_trace_ok_count": self.battle_count_per_series,
             "battle_ids": [f"{group_id}-b{i}" for i in range(self.battle_count_per_series)],
+            "battles": [
+                {"battle_id": f"{group_id}-b{i}", "policy_warnings": [], "degraded": False}
+                for i in range(self.battle_count_per_series)
+            ],
+            "current_card_count": 50,
+            "current_catalog_hash": "catalog50",
         }
 
     def get_v5_trace(self, group_id, battle_id, what):
         # No mana_draw rows in the fake (the panel is mana_draw-BLIND; the
         # mana_draw axis is NOT exercised here).
+        if what == "meta":
+            return {"data": {
+                "battle_tag": "human-vs-rl", "p1_actor_type": "human",
+                "bot_policy": {"kind": "v5"}, "catalog_hash": "catalog50",
+            }}
         return {"data": []}
 
-    def list_battles(self, group_id):
-        return [{"battle_id": f"{group_id}-b{i}"} for i in range(self.battle_count_per_series)]
+    def validate_v5_traces(self, group_id):
+        return {"checked": self.battle_count_per_series,
+                "ok": self.battle_count_per_series, "broken": []}
 
 
 class _FakeScorecardClient:

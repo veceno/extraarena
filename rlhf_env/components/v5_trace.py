@@ -365,6 +365,28 @@ class V5TraceRecorder:
     # ------------------------------------------------------------------
     # action_id + source/target (V5 _build_event semantics, PRE-execute)
     # ------------------------------------------------------------------
+    def _resolve_play_card_target_id(
+        self,
+        user_id: int,
+        action_json: Dict[str, Any],
+    ) -> Optional[str]:
+        """Mirror ``RlhfBattleEngine.play_card`` target precedence exactly.
+
+        The browser sends both ``target_id`` and the UI hint
+        ``target_is_hero`` for targeted cards.  The engine treats an explicit
+        ``target_id`` as canonical and only derives the opponent hero id when
+        it is absent.  Trace resolution must follow the same rule or the
+        accepted engine action cannot be found in ``legal_actions``.
+        """
+        raw_target_id = action_json.get("target_id")
+        if raw_target_id is not None:
+            return str(raw_target_id)
+        if not bool(action_json.get("target_is_hero", False)):
+            return None
+        st = self.engine._arena.state
+        enemy = st.p2 if st.p1.user_id == user_id else st.p1
+        return str(enemy.hero.instance_id)
+
     def _resolve_action_id(self, user_id: int, action_json: Dict[str, Any], provided: Optional[int],
                            legal: Optional[List[Any]] = None) -> Optional[int]:
         if provided is not None:
@@ -401,18 +423,26 @@ class V5TraceRecorder:
             # молча зануляла legal_action_index для warrior-игр: webapp шлёт
             # board_position = слот клика (0..4), а не len(board), поэтому
             # int(a.position)!=int(position) всегда true при непустом столе.
-            target_is_hero = bool(action_json.get("target_is_hero", False))
-            target_id = str(enemy.hero.instance_id) if target_is_hero else (
-                str(action_json.get("target_id")) if action_json.get("target_id") else None)
+            target_id = self._resolve_play_card_target_id(user_id, action_json)
+            same_hand_candidates: List[int] = []
             for i, a in enumerate(legal):
                 if not isinstance(a, PlayCardAction):
                     continue
                 if a.hand_index != hi:
                     continue
+                same_hand_candidates.append(i)
                 a_tid = str(a.target_id) if a.target_id else None
                 if a_tid != target_id and not (a_tid is None and target_id is None):
                     continue
                 return i
+            # Some LLM clients attach a stale/spurious target_id even to an
+            # untargeted card.  The engine still accepts that play when there
+            # is exactly one legal action for the resolved hand slot.  Mirror
+            # that unambiguous engine choice so accepted actions never lose
+            # their training label; keep target strict whenever several legal
+            # targets exist.
+            if len(same_hand_candidates) == 1:
+                return same_hand_candidates[0]
             return None
         if atype == "attack":
             attacker_id = str(action_json.get("attacker_id"))
@@ -448,11 +478,9 @@ class V5TraceRecorder:
                 hi = -1
             if 0 <= hi < len(me.hand):
                 source = me.hand[hi]
-            tid = action_json.get("target_id")
+            tid = self._resolve_play_card_target_id(user_id, action_json)
             pool = [me.hero, enemy.hero, *me.board, *enemy.board]
-            if action_json.get("target_is_hero"):
-                target = enemy.hero
-            elif tid is not None:
+            if tid is not None:
                 target = _find_by_instance_id(pool, tid)
         elif atype == "attack":
             aid = action_json.get("attacker_id")
@@ -466,8 +494,15 @@ class V5TraceRecorder:
     # ------------------------------------------------------------------
     # hooks (вызывается из match_runner рядом с analytics-хуками)
     # ------------------------------------------------------------------
-    def before_action(self, user_id: int, action_json: Dict[str, Any], decision_source: str,
-                      action_id_provided: Optional[int] = None) -> int:
+    def before_action(
+        self,
+        user_id: int,
+        action_json: Dict[str, Any],
+        decision_source: str,
+        action_id_provided: Optional[int] = None,
+        *,
+        human_decision_time_ms: Optional[int] = None,
+    ) -> int:
         try:
             st = self.engine._arena.state
             # turn snapshot — на первом действии каждого ГЛОБАЛЬНОГО хода
@@ -507,6 +542,11 @@ class V5TraceRecorder:
                 "actor_user_id": int(user_id),
                 "actor_player": actor_player,
                 "decision_source": decision_source,
+                "human_decision_time_ms": (
+                    int(human_decision_time_ms)
+                    if decision_source == "human" and human_decision_time_ms is not None
+                    else None
+                ),
                 "legal_action_index": legal_index,
                 "action_type": atype,
                 "action_json": action_json,
@@ -562,8 +602,15 @@ class V5TraceRecorder:
         with self.actions_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
-    def record_terminal(self, user_id: int, action_type: str, reason: str,
-                         decision_source: str = "human") -> int:
+    def record_terminal(
+        self,
+        user_id: int,
+        action_type: str,
+        reason: str,
+        decision_source: str = "human",
+        *,
+        human_decision_time_ms: Optional[int] = None,
+    ) -> int:
         """Синтетический action-row для терминала БЕЗ обычного действия (surrender /
         non-action draw). pre_state снапается тут; post_state + deltas — в
         after_action(handle) ПОСЛЕ мутации (mark_surrender меняет status на P2_WIN).
@@ -587,6 +634,11 @@ class V5TraceRecorder:
                 "actor_user_id": int(user_id),
                 "actor_player": actor_player,
                 "decision_source": decision_source,
+                "human_decision_time_ms": (
+                    int(human_decision_time_ms)
+                    if decision_source == "human" and human_decision_time_ms is not None
+                    else None
+                ),
                 "legal_action_index": None,
                 "action_type": action_type,
                 "action_json": {"type": action_type, "reason": reason},

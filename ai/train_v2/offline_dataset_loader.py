@@ -180,6 +180,10 @@ class OfflineTransition:
             as the JSON-friendly snapshot (not the mutable ``GameState``) so
             the transition stays serializable-ish and BC reconstruction is
             spec-literal (``reconstruct_gamestate(snapshot)``).
+        post_state_snapshot: the matching raw ``post_state`` snapshot.  The
+            Phase-C replay bridge uses it to construct a human-perspective
+            macro transition across intervening bot actions, including a
+            terminal loss that happens on the bot's turn.
     """
 
     obs: np.ndarray
@@ -194,6 +198,7 @@ class OfflineTransition:
     # untouched; they only read the legacy fields above).
     action_native: Optional[Dict[str, Any]] = None
     pre_state_snapshot: Optional[Dict[str, Any]] = None
+    post_state_snapshot: Optional[Dict[str, Any]] = None
 
 
 # ---------------------------------------------------------------------------
@@ -792,6 +797,8 @@ def iter_offline_transitions(
                     # truth, without re-reading actions.jsonl. The raw row
                     # carries it at v5_trace.py:496.
                     "decision_source": row.get("decision_source"),
+                    "actor_player": actor_player,
+                    "accepted": row.get("accepted"),
                 },
                 # Additive Block-A: ENGINE-sourced action dict (v5_trace.py:481
                 # ``legal[legal_index].to_dict()``) for 601-tcode resolution, and
@@ -800,6 +807,7 @@ def iter_offline_transitions(
                 # terminal synthetic rows (surrender/draw/stalemate).
                 action_native=row.get("action_native"),
                 pre_state_snapshot=pre_snap,
+                post_state_snapshot=post_snap,
             )
 
 

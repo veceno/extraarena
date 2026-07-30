@@ -1,7 +1,7 @@
 # ExtraRLHF MCP — Tool Reference
 
 The `extra-rlhf` MCP server (stdio JSON-RPC 2.0) exposes **25 tools** over the
-`rlhf_env` arena. Launch: `python3 -m rlhf_env.mcp_server` (see `../INSTALL.md`
+`rlhf_env` arena. Launch with a pinned dependency-bearing interpreter (see `../INSTALL.md`
 to register in a client). All tools are called via `tools/call` with `arguments`.
 
 Conventions: `match_id` / `group_id` / `battle_id` / `agent_name` are strings.
@@ -29,9 +29,9 @@ are returned in `start_series.player_ids`.
 | Tool | Args | Returns | Notes |
 |---|---|---|---|
 | `get_match_status` | `match_id` | `{match_id,group_id,battle_id,agent_name,turn,is_ended,winner_id,current_player_id,is_my_turn,p1_actor_type,battle_tag}` | Lightweight poll (no full state). Reaps completed series. |
-| `get_state` | `match_id` | actor-perspective full state (hand, board, hp, mana, deck, action_history, turn) | Same shape as prod `/api/battle/state`. |
+| `get_state` | `match_id`, `compact?`, `history_limit?` | actor-perspective state: nested `player`/`opponent`, top-level `legal_actions`, history/turn/result | Use `compact=true,history_limit=8` for LLM play; enough for one decision without `get_legal_actions`. |
 | `get_legal_actions` | `match_id` | `{legal_actions, is_my_turn}` | Empty + `is_my_turn=false` when it's the opponent's turn. |
-| `submit_action` | `match_id, action` | `{result:{success,game_over,winner_id}, state, sound_events}` or `{error}` | **Rejected** with `submit_action_unavailable_for_rl_p1` when `p1_actor_type="rl"` (model-vs-model p1 is driven by `advance_bot`). After `play_card`/`attack`/`end_turn` the bot turn auto-runs; after `mana_draw` it does **not**. |
+| `submit_action` | `match_id, legal_action_index` (preferred) or `action`, `compact_response?`, `history_limit?` | `{result:{success,game_over,winner_id}, state, sound_events}` or `{error}` | LLMs must use the index from the latest state to avoid UUID transcription errors. Use `compact_response=true`. **Rejected** with `submit_action_unavailable_for_rl_p1` when `p1_actor_type="rl"`. After ordinary actions the bot auto-runs; after `mana_draw` it does not. |
 | `advance_bot` | `match_id` | `{status:"ok", is_ended, winner_id}` or `{status:"not_bot_turn"}` | Runs one opponent turn. For `p1_actor_type="rl"` also steps the p1 RL model when it's p1's turn. |
 | `surrender` | `match_id` | `{result:{game_over,winner_id}, state}` | **Rejected** with `surrender_unavailable_for_rl_p1` for rl p1. |
 | `get_action_history` | `match_id, limit?` | `{actions:[{turn,actor,kind,action_dict,ok}], count}` | Replay without re-fetching full state. |
@@ -47,15 +47,16 @@ are returned in `start_series.player_ids`.
 ```
 
 `id` fields accept int or string (hero ids are strings). `hand_index` is the
-0-based position in `get_state.hand`. `target_is_hero=true` targets the hero
+0-based position in `get_state.player.hand`. A legal action's `position` is
+submitted as `target_position`. `target_is_hero=true` targets the hero
 face; otherwise `target_id` is a board unit.
 
 ## Dataset & trace (V5-style omniscient offline trace)
 
 | Tool | Args | Returns | Notes |
 |---|---|---|---|
-| `get_v5_dataset_summary` | `group_id` | `{battles_finished, v5_trace_ok_count, battle_tag_distribution, turns_total, actions_total}` | Dataset readiness for a group. |
-| `list_v5_groups` | `battle_tag?, limit?` | `{groups:[{group_id,battles_finished,battle_tag,v5_trace_ok_count}]}` | Filter by tag (e.g. `llm-vs-rl`). |
+| `get_v5_dataset_summary` | `group_id` | counts, `battle_ids`, per-battle degraded/warnings, current catalog provenance, `quality` | Structural + behavioral readiness; semi-synthetic quality needs 50 games and Wilson lower bound >3%. |
+| `list_v5_groups` | `battle_tag?, limit?` | groups + pooled `quality` over returned groups | Use `limit=10000` for a campaign gate (e.g. `llm-vs-rl`). |
 | `get_v5_trace` | `group_id, battle_id, what:"meta"\|"turns"\|"actions"` | `{data, rows_count}` | Raw trace contents. |
 | `validate_v5_traces` | `group_id` | `{checked, ok, broken:[{battle_id, issues:[]}]}` | Integrity check (non-null fields, decision_source, actor↔source mapping, turns count). |
 | `get_dataset` | `group_id` | `{dataset_jsonl, dataset_rows, per_battle_jsonl}` | Legacy per-action NDJSON. |
@@ -80,4 +81,4 @@ face; otherwise `target_id` is a board unit.
 | `difficulty` | str | ignored | Legacy; models always play `argmax` (max difficulty). |
 
 Response `p1_model`/`p2_model` are `{name,kind,path,weights_hash,weights_version}`;
-`degraded=true` + `policy_warnings` signal a fallback (e.g. v5-stub → end_turn).
+`degraded=true` + `policy_warnings` signal a fallback (e.g. model error → end_turn).

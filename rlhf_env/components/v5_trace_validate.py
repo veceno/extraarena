@@ -53,7 +53,10 @@ _TERMINAL_STATUSES = {"p1_win", "p2_win", "draw", "stalemate"}
 # Поля meta.json, обязательные для глубоких cross-meta инвариантов (actor/source,
 # terminal↔meta). Реальный V5TraceRecorder._write_meta всегда их пишет; отсутствие =
 # порча meta, и source-consistency-чек не должен молча пропускаться.
-_REQUIRED_META_FIELDS = ("p1_user_id", "p2_user_id", "p1_actor_type", "p2_actor_type", "status")
+_REQUIRED_META_FIELDS = (
+    "p1_user_id", "p2_user_id", "p1_actor_type", "p2_actor_type", "status",
+    "schema_version", "engine_version", "ruleset", "catalog_hash", "catalog_path",
+)
 
 # Поля action-строки, обязательные для любой (в т.ч. терминальной) строки.
 _REQUIRED_ACTION_FIELDS = (
@@ -229,12 +232,15 @@ def _check_actor_source(
                     issues.append(
                         f"[actor] seq={seq}: meta.p2_actor_type={p2_type!r} != 'bot'"
                     )
-        # Ход только свой: current_turn_owner_id в pre_state == actor_user_id.
-        # owner=None — тоже нарушение (поле отсутствует/порчено): реальный recorder
-        # всегда выставляет current_turn_owner_id; None != actor_uid → флаг.
+        # Исполненное действие — только в свой ход: current_turn_owner_id в
+        # pre_state == actor_user_id. Отклонённая клиентская попытка может
+        # легитимно прийти уже во время хода бота; она остаётся в audit trail,
+        # но не является исполненным действием или обучающей меткой.
+        # Для accepted owner=None — тоже нарушение (поле отсутствует/порчено):
+        # реальный recorder всегда выставляет current_turn_owner_id.
         pre = r.get("pre_state") or {}
         owner = pre.get("current_turn_owner_id")
-        if actor_uid is not None and owner != actor_uid:
+        if r.get("accepted") is True and actor_uid is not None and owner != actor_uid:
             issues.append(
                 f"[actor] seq={seq}: pre_state.current_turn_owner_id={owner!r} != "
                 f"actor_user_id={actor_uid} (acted out of turn / owner missing)"
@@ -439,6 +445,9 @@ def _check_correspondence(
 def validate_v5_trace(
     v5_dir: Path,
     battle_log_path: Optional[Path] = None,
+    *,
+    expected_catalog_hash: Optional[str] = None,
+    expected_card_count: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Валидирует один V5-trace (директория ``battles/<bid>/v5``).
 
@@ -494,6 +503,34 @@ def validate_v5_trace(
     missing_meta = [f for f in _REQUIRED_META_FIELDS if f not in meta]
     if missing_meta:
         issues.append(f"[meta] missing required fields {missing_meta}")
+
+    # Phase-C ruleset provenance gate.  A structurally valid trace from a stale
+    # cards.json must not be mixed into the current campaign.
+    catalog_hash = meta.get("catalog_hash")
+    if expected_catalog_hash is not None and catalog_hash != expected_catalog_hash:
+        issues.append(
+            f"[ruleset] catalog_hash={catalog_hash!r} != current={expected_catalog_hash!r}"
+        )
+    catalog_rel = meta.get("catalog_path")
+    if catalog_rel:
+        group_dir = v5_dir.parents[2]
+        catalog_path = group_dir / str(catalog_rel)
+        if not catalog_path.exists():
+            issues.append(f"[ruleset] catalog file missing: {catalog_rel}")
+        else:
+            try:
+                catalog_payload = json.loads(catalog_path.read_text(encoding="utf-8"))
+                if catalog_payload.get("catalog_hash") != catalog_hash:
+                    issues.append("[ruleset] catalog.json hash does not match meta.catalog_hash")
+                cards = catalog_payload.get("cards")
+                if not isinstance(cards, dict):
+                    issues.append("[ruleset] catalog.json cards is not an object")
+                elif expected_card_count is not None and len(cards) != int(expected_card_count):
+                    issues.append(
+                        f"[ruleset] catalog card count={len(cards)} != current={int(expected_card_count)}"
+                    )
+            except (OSError, json.JSONDecodeError) as exc:
+                issues.append(f"[ruleset] invalid catalog.json: {exc}")
 
     # --- требуемые поля каждой action-строки + bool accepted ---
     for r in rows:

@@ -100,6 +100,9 @@ class MatchRunner:
             decks={"p1": list(match.p1_deck_ids), "p2": list(match.p2_deck_ids)},
         )
         self._start_monotonic = time.monotonic()
+        # Armed only while a real browser-controlled human has an actionable
+        # state.  MCP/LLM and model-vs-model paths never populate this clock.
+        self._human_decision_started_monotonic: Optional[float] = None
         self._bot_task: Optional[asyncio.Task] = None
         # BUG4:.policy_fallbacks — собираем случаи, когда bot_policy.select_action
         # бросил (напр. V5StubAdapter NotImplementedError) и мы fallback'нули на
@@ -175,14 +178,49 @@ class MatchRunner:
     # ------------------------------------------------------------------
     # Аналитика-хуки (рекордер подключается в фазе 4; None → no-op)
     # ------------------------------------------------------------------
-    def _rec_before(self, user_id: int, action_json: Dict[str, Any], decision_source: str,
-                    action_id: Optional[int] = None) -> Any:
+    def mark_human_decision_start(self) -> None:
+        """Start a server-observed decision window for a real human actor.
+
+        Call this only when an updated state is about to become actionable in
+        the browser (client_ready, post-action response, or bot end_turn).
+        """
+        engine = self.match.engine
+        if (
+            getattr(engine, "p1_actor_type", "human") == "human"
+            and not engine.is_ended
+            and engine.get_current_player_id() == engine.human_user_id
+        ):
+            self._human_decision_started_monotonic = time.monotonic()
+        else:
+            self._human_decision_started_monotonic = None
+
+    def _consume_human_decision_time_ms(self, decision_source: str) -> Optional[int]:
+        started = self._human_decision_started_monotonic
+        self._human_decision_started_monotonic = None
+        if decision_source != "human" or started is None:
+            return None
+        return max(0, int(round((time.monotonic() - started) * 1000)))
+
+    def _rec_before(
+        self,
+        user_id: int,
+        action_json: Dict[str, Any],
+        decision_source: str,
+        action_id: Optional[int] = None,
+        *,
+        human_decision_time_ms: Optional[int] = None,
+    ) -> Any:
         # Возвращает кортеж (analytics_handle, v5_handle) — оба могут быть None/-1.
         arec = getattr(self.match, "recorder", None)
         a_handle: Any = None
         if arec is not None:
             try:
-                a_handle = arec.before_action(user_id, action_json, decision_source)
+                a_handle = arec.before_action(
+                    user_id,
+                    action_json,
+                    decision_source,
+                    human_decision_time_ms=human_decision_time_ms,
+                )
             except Exception:  # noqa: BLE001
                 logger.warning("recorder.before_action failed: %s", exc_info=True)
                 a_handle = None
@@ -190,7 +228,13 @@ class MatchRunner:
         v5_handle: int = -1
         if v5 is not None:
             try:
-                v5_handle = v5.before_action(user_id, action_json, decision_source, action_id_provided=action_id)
+                v5_handle = v5.before_action(
+                    user_id,
+                    action_json,
+                    decision_source,
+                    action_id_provided=action_id,
+                    human_decision_time_ms=human_decision_time_ms,
+                )
             except Exception:  # noqa: BLE001
                 logger.warning("v5.before_action failed: %s", exc_info=True)
                 v5_handle = -1
@@ -213,7 +257,15 @@ class MatchRunner:
             except Exception:  # noqa: BLE001
                 logger.warning("v5.after_action failed: %s", exc_info=True)
 
-    def _append_step(self, player_id: int, action_json: Dict[str, Any], ok: bool, error: Optional[str]) -> None:
+    def _append_step(
+        self,
+        player_id: int,
+        action_json: Dict[str, Any],
+        ok: bool,
+        error: Optional[str],
+        *,
+        human_decision_time_ms: Optional[int] = None,
+    ) -> None:
         state_after = _state_summary(self.match.engine)
         self.battle_log["actions"].append({
             "turn": self.match.engine._arena.state.turn_number,
@@ -221,6 +273,7 @@ class MatchRunner:
             "kind": action_json.get("type", "unknown"),
             "action_dict": action_json,
             "timestamp_ms": int(time.monotonic() * 1000),
+            "human_decision_time_ms": human_decision_time_ms,
             "state_after_summary": state_after,
             "ok": bool(ok),
             "error": error,
@@ -243,7 +296,14 @@ class MatchRunner:
 
             # pre-snapshot аналитики (как в проде — ДО выполнения). decision_source
             # = тип актора p1 (human | llm), чтобы MCP-LLM тегировался отдельно.
-            handle = self._rec_before(user_id, action_json, getattr(engine, "p1_actor_type", "human"))
+            decision_source = getattr(engine, "p1_actor_type", "human")
+            human_decision_time_ms = self._consume_human_decision_time_ms(decision_source)
+            handle = self._rec_before(
+                user_id,
+                action_json,
+                decision_source,
+                human_decision_time_ms=human_decision_time_ms,
+            )
 
             try:
                 if kind == "play_card":
@@ -270,14 +330,22 @@ class MatchRunner:
             except Exception as exc:  # noqa: BLE001
                 logger.error("execute_human_action failed: %s", exc, exc_info=True)
                 self._rec_after(handle, False, error="action_failed")
+                self.mark_human_decision_start()
                 state = self._state_with_series(engine.get_full_state(viewer_id=user_id))
                 return {"result": {"success": False, "error": "action_failed"}, "state": state, "error": "action_failed"}
 
             accepted = bool(result.get("success", False))
             self._rec_after(handle, accepted, error=result.get("error") if not accepted else None)
-            self._append_step(user_id, action_json, accepted, result.get("error") if not accepted else None)
+            self._append_step(
+                user_id,
+                action_json,
+                accepted,
+                result.get("error") if not accepted else None,
+                human_decision_time_ms=human_decision_time_ms,
+            )
 
             if not accepted:
+                self.mark_human_decision_start()
                 state = self._state_with_series(engine.get_full_state(viewer_id=user_id))
                 return {"result": result, "state": state, "error": result.get("error")}
 
@@ -302,6 +370,10 @@ class MatchRunner:
             # если ход перешёл к боту — запускаем бот-рутин
             if engine.is_current_player_bot():
                 self._schedule_bot_turn()
+            else:
+                # Следующее действие в том же человеческом ходу измеряется от
+                # момента подготовки нового HTTP-state к отправке клиенту.
+                self.mark_human_decision_start()
             return {"result": result, "state": state, "sound_events": result.get("sound_events", [])}
 
     # ------------------------------------------------------------------
@@ -421,6 +493,7 @@ class MatchRunner:
                 if action_json.get("type") == "end_turn" and accepted:
                     # turn_start — сброс таймера на стороне клиента.
                     self._emit("turn_start", {"actor_user_id": bot_id})
+                    self.mark_human_decision_start()
                     return
             # пауза между действиями бота (lock отпущен — бродкасты идут).
             await asyncio.sleep(random.uniform(*classic.bot_action_gap_range))
@@ -437,6 +510,8 @@ class MatchRunner:
         if getattr(engine, "p1_actor_type", "human") == "rl":
             return {"error": "surrender_unavailable_for_rl_p1"}
         async with match.lock:
+            decision_source = getattr(engine, "p1_actor_type", "human")
+            human_decision_time_ms = self._consume_human_decision_time_ms(decision_source)
             # V5 terminal row: pre-snapshot ДО mark_surrender, post — после (status=P2_WIN).
             # Без этого терминальное состояние сдачи не попадает в actions.jsonl.
             v5 = getattr(match, "v5_recorder", None)
@@ -445,7 +520,8 @@ class MatchRunner:
                 try:
                     v5_handle = v5.record_terminal(
                         user_id, "surrender", "surrender",
-                        decision_source=getattr(engine, "p1_actor_type", "human"),
+                        decision_source=decision_source,
+                        human_decision_time_ms=human_decision_time_ms,
                     )
                 except Exception:  # noqa: BLE001
                     logger.warning("v5.record_terminal failed: %s", exc_info=True)
@@ -498,6 +574,8 @@ class MatchRunner:
         self.battle_log["finished_at"] = _utc_now_iso()
         self.battle_log["duration_seconds"] = round(duration, 3)
         self.battle_log["result"] = {"status": status, "winner_user_id": winner, "loser_user_id": loser}
+        self.battle_log["policy_warnings"] = list(self.policy_fallbacks)
+        self.battle_log["degraded"] = bool(self.policy_fallbacks)
         self.battle_log["final_state_summary"] = _state_summary(engine)
         self.battle_log["log_version"] = BATTLE_LOG_VERSION
 
@@ -518,6 +596,23 @@ class MatchRunner:
             except Exception:  # noqa: BLE001
                 logger.warning("v5.finalize failed: %s", exc_info=True)
 
+        # ``v5_trace_ok`` is a data-integrity claim, not merely an
+        # "initialized recorder" flag. Validate the files after both the battle
+        # log and V5 trace have been flushed.
+        v5_trace_ok = False
+        if v5_info.get("v5_dir"):
+            try:
+                from rlhf_env.components.v5_trace_validate import validate_v5_trace
+                trace_dir = group_dir / str(v5_info["v5_dir"])
+                v5_trace_ok = bool(validate_v5_trace(
+                    trace_dir,
+                    battle_log_path=battle_log_path,
+                    expected_catalog_hash=getattr(v5, "catalog_hash", None),
+                    expected_card_count=len(v5.catalog.cards),
+                )["ok"])
+            except Exception:  # noqa: BLE001
+                logger.warning("deep v5 trace validation failed: %s", exc_info=True)
+
         match.manifest.append_battle_result(
             battle_id=match.battle_id,
             battle_log_path=str(battle_log_path),
@@ -531,8 +626,9 @@ class MatchRunner:
             decks_cache=v5_info.get("decks_cache"),
             battle_tag=getattr(engine, "battle_tag", None) or getattr(v5, "battle_tag", None),
             p1_actor_type=getattr(engine, "p1_actor_type", None),
-            v5_trace_ok=not getattr(match, "v5_trace_init_failed", False) and v5 is not None,
+            v5_trace_ok=v5_trace_ok,
             agent_name=getattr(match, "agent_name", None),
+            policy_warnings=self.policy_fallbacks,
         )
 
         # аналитика (NDJSON)

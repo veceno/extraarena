@@ -1,327 +1,130 @@
-"""C1 — C2CollectionDriver unit tests (synthetic: fake MCP client + canned
-v5_trace catalog; no real rlhf_env/DB/socket/onnx).
-
-Covers:
-  5. counts mana_draw rows per D-C4 (mana_draw + decision_source=='human').
-  6. stops on mana_draw floor (stopped_reason='floor').
-  7. stops on battle cap (stopped_reason='cap').
-  8. rejects fallback/stub traces; multi-series 1000-cap handling
-     (battle_cap=5000 -> 5 series planned); p1_actor_type='human' + kind='v5'
-     in the planned spec.
-"""
 from __future__ import annotations
 
-from typing import Any, Dict, List
+import hashlib
+from pathlib import Path
+from typing import Any
 
-import pytest
-
-from rlhf_env.components.c2_collection_driver import (
-    C2CollectionDriver,
-    C2CollectionResult,
-)
+from rlhf_env.components.c2_collection_driver import C2CollectionDriver
 
 
-# ----------------------------------------------------------------------------
-# Fake MCP client (canned catalog)
-# ----------------------------------------------------------------------------
-
-class _GroupPlan:
-    def __init__(
-        self,
-        *,
-        battles_finished: int = 1,
-        v5_trace_ok_count: int | None = None,
-        actions_rows: List[Dict[str, Any]] | None = None,
-        policy_warnings: List[str] | None = None,
-        battle_ids: List[str] | None = None,
-    ):
-        self.battles_finished = battles_finished
-        self.v5_trace_ok_count = (
-            v5_trace_ok_count if v5_trace_ok_count is not None else battles_finished
-        )
-        self.actions_rows = actions_rows or []
-        self.policy_warnings = policy_warnings or []
-        # One battle_id per finished battle by default.
-        self.battle_ids = battle_ids or [f"b_{i}" for i in range(battles_finished)]
+def _draw(source: str = "human") -> dict[str, Any]:
+    return {"action_type": "mana_draw", "decision_source": source}
 
 
-class FakeMcpClient:
-    """Injectable fake implementing the McpCollectionClient Protocol."""
+class FakeObserverClient:
+    def __init__(self, groups: list[dict[str, Any]], plans: dict[str, dict[str, Any]]):
+        self.groups = groups
+        self.plans = plans
+        self.start_series_called = False
 
-    def __init__(self, group_plans: List[_GroupPlan]):
-        self._plans = list(group_plans)
-        self._idx = 0
-        self._current: _GroupPlan | None = None
-        self.start_series_calls: List[Dict[str, Any]] = []
+    def start_series(self, spec):  # pragma: no cover - safety sentinel
+        self.start_series_called = True
+        raise AssertionError("observer must not create human matches through MCP")
 
-    def start_series(self, spec: Dict[str, Any]) -> Dict[str, Any]:
-        self.start_series_calls.append(spec)
-        if self._idx >= len(self._plans):
-            return {"group_id": None, "policy_warnings": []}
-        plan = self._plans[self._idx]
-        self._idx += 1
-        self._current = plan
-        return {
-            "group_id": f"g_{self._idx - 1}",
-            "policy_warnings": list(plan.policy_warnings),
-        }
+    def list_v5_groups(self, *args, **kwargs):
+        assert kwargs["battle_tag"] == "human-vs-rl"
+        return {"groups": self.groups}
 
-    def next_battle(self, group_id: str) -> Dict[str, Any]:
-        # Immediately signal series completion; battle counts come from summary.
-        return {"status": "series_complete"}
+    def get_v5_dataset_summary(self, group_id: str):
+        return self.plans[group_id]["summary"]
 
-    def list_v5_groups(self, *args: Any, **kwargs: Any) -> Dict[str, Any]:
-        return {"groups": []}
+    def validate_v5_traces(self, group_id: str):
+        return self.plans[group_id].get("validation", {"checked": 1, "ok": 1, "broken": []})
 
-    def get_v5_dataset_summary(self, group_id: str) -> Dict[str, Any]:
-        plan = self._current
-        if plan is None:
-            return {"error": "no group"}
-        return {
-            "battles_finished": plan.battles_finished,
-            "v5_trace_ok_count": plan.v5_trace_ok_count,
-            "battle_ids": list(plan.battle_ids),
-        }
-
-    def get_v5_trace(self, group_id: str, battle_id: str, what: str) -> Dict[str, Any]:
-        plan = self._current
-        if plan is None or what != "actions":
-            return {"data": []}
-        # actions_rows is the PER-GROUP catalog; return it once for the first
-        # battle_id and empty for the rest (so per-group counts are not inflated
-        # by multiplying across battle_ids).
-        if not plan.battle_ids or battle_id != plan.battle_ids[0]:
-            return {"data": []}
-        return {"data": list(plan.actions_rows)}
+    def get_v5_trace(self, group_id: str, battle_id: str, what: str):
+        return {"data": self.plans[group_id][what].get(battle_id, {})}
 
 
-def _mana_draw_row(decision_source: str = "human") -> Dict[str, Any]:
-    return {"action_type": "mana_draw", "decision_source": decision_source}
+def _plan(tmp_path: Path, gid: str, weights_hash: str, *, actions=None, warnings=None, valid=True):
+    bid = f"b_{gid}"
+    return {
+        "summary": {
+            "group_id": gid,
+            "group_dir": str(tmp_path / gid),
+            "battles_finished": 1,
+            "battle_ids": [bid],
+            "battles": [{"battle_id": bid, "policy_warnings": warnings or [], "degraded": bool(warnings)}],
+            "current_card_count": 50,
+            "current_catalog_hash": "catalog50",
+        },
+        "validation": {"checked": 1, "ok": 1 if valid else 0, "broken": [] if valid else [{"battle_id": bid}]},
+        "meta": {bid: {
+            "battle_tag": "human-vs-rl", "p1_actor_type": "human",
+            "bot_policy": {"kind": "v5", "weights_hash": weights_hash},
+            "catalog_hash": "catalog50",
+        }},
+        "actions": {bid: actions or []},
+    }
 
 
-def _row(atype: str, decision_source: str = "human") -> Dict[str, Any]:
-    return {"action_type": atype, "decision_source": decision_source}
+def _driver(tmp_path: Path, **kwargs):
+    checkpoint = tmp_path / "u29250.onnx"
+    checkpoint.write_bytes(b"real-v5-weights")
+    return C2CollectionDriver(
+        str(checkpoint), expected_catalog_hash="catalog50", **kwargs,
+    ), hashlib.sha256(checkpoint.read_bytes()).hexdigest()[:16]
 
 
-# ----------------------------------------------------------------------------
-# 5. mana_draw row counting (D-C4)
-# ----------------------------------------------------------------------------
-
-def test_mana_draw_row_counting_d_c4():
-    rows = [
-        _mana_draw_row("human"),  # count
-        _mana_draw_row("human"),  # count
-        _mana_draw_row("human"),  # count
-        _mana_draw_row("human"),  # count
-        _mana_draw_row("bot"),    # skip (not human)
-        _row("end_turn", "human"),  # skip (not mana_draw)
-        _row("play_card", "human"),  # skip
-        _mana_draw_row("llm"),    # skip (not human)
-    ]
-    plan = _GroupPlan(battles_finished=1, actions_rows=rows)
-    client = FakeMcpClient([plan])
-    driver = C2CollectionDriver("/v5.onnx", mana_draw_floor=10_000, battle_cap=1, battles_per_series=1)
-    result = driver.collect(client)
-    assert result.mana_draw_row_count == 4
-    assert result.battle_count == 1
-    assert result.groups_collected == 1
-
-
-# ----------------------------------------------------------------------------
-# 6. stops on mana_draw floor
-# ----------------------------------------------------------------------------
-
-def test_stops_on_mana_draw_floor():
-    # 5 series planned (battle_cap=5000, per_series=1000); each group 1000
-    # battles + 1000 mana_draw human rows; floor=3000 -> floor hit after 3
-    # groups, before the cap (battle_count=3000 < 5000).
-    plans = [
-        _GroupPlan(
-            battles_finished=1000,
-            actions_rows=[_mana_draw_row("human") for _ in range(1000)],
-        )
-        for _ in range(5)
-    ]
-    client = FakeMcpClient(plans)
-    driver = C2CollectionDriver(
-        "/v5.onnx", mana_draw_floor=3000, battle_cap=5000, battles_per_series=1000
+def test_observes_completed_groups_without_starting_human_match(tmp_path):
+    driver, whash = _driver(tmp_path, mana_draw_floor=99, battle_cap=10)
+    client = FakeObserverClient(
+        [{"group_id": "g1", "finished_at": "now"}],
+        {"g1": _plan(tmp_path, "g1", whash, actions=[_draw(), _draw(), _draw("bot")])},
     )
     result = driver.collect(client)
+    assert result.status == "ok"
+    assert result.group_ids == ["g1"]
+    assert result.group_dirs == [str(tmp_path / "g1")]
+    assert result.battle_count == 1
+    assert result.mana_draw_row_count == 2
+    assert client.start_series_called is False
+
+
+def test_waits_for_human_data_and_ignores_in_progress(tmp_path):
+    driver, whash = _driver(tmp_path)
+    client = FakeObserverClient(
+        [{"group_id": "running", "finished_at": None}],
+        {"running": _plan(tmp_path, "running", whash)},
+    )
+    result = driver.collect(client)
+    assert result.status == "skipped"
+    assert result.stopped_reason == "waiting_for_human_data"
+
+
+def test_rejects_degraded_stale_or_structurally_broken_groups(tmp_path):
+    driver, whash = _driver(tmp_path, mana_draw_floor=99, battle_cap=10)
+    plans = {
+        "fallback": _plan(tmp_path, "fallback", whash, warnings=["fallback"]),
+        "stale": _plan(tmp_path, "stale", "wrong-hash"),
+        "broken": _plan(tmp_path, "broken", whash, valid=False),
+        "clean": _plan(tmp_path, "clean", whash, actions=[_draw()]),
+    }
+    groups = [{"group_id": gid, "finished_at": "now"} for gid in plans]
+    result = driver.collect(FakeObserverClient(groups, plans))
+    assert result.group_ids == ["clean"]
+    assert {r["group_id"] for r in result.rejected_groups} == {"fallback", "stale", "broken"}
+
+
+def test_consumed_groups_are_not_replayed_twice(tmp_path):
+    driver, whash = _driver(tmp_path, mana_draw_floor=99, battle_cap=10)
+    client = FakeObserverClient(
+        [{"group_id": "g1", "finished_at": "now"}],
+        {"g1": _plan(tmp_path, "g1", whash, actions=[_draw()])},
+    )
+    assert driver.collect(client).status == "ok"
+    assert driver.collect(client).status == "skipped"
+
+
+def test_floor_cap_and_series_plan_shape(tmp_path):
+    driver, whash = _driver(tmp_path, mana_draw_floor=2, battle_cap=2500, battles_per_series=1000)
+    plans = {
+        gid: _plan(tmp_path, gid, whash, actions=[_draw(), _draw()])
+        for gid in ("g1", "g2")
+    }
+    groups = [{"group_id": gid, "finished_at": "now"} for gid in plans]
+    result = driver.collect(FakeObserverClient(groups, plans))
     assert result.stopped_reason == "floor"
-    assert result.mana_draw_row_count >= 3000
-    assert result.battle_count < 5000
-
-
-# ----------------------------------------------------------------------------
-# 7. stops on battle cap
-# ----------------------------------------------------------------------------
-
-def test_stops_on_battle_cap():
-    # 3 series planned (battle_cap=3000, per_series=1000); each group 1000
-    # battles + 100 mana_draw rows; floor=5000 -> cap hit after 3 groups
-    # (battle_count=3000), mana_draw=300 < 5000.
-    plans = [
-        _GroupPlan(
-            battles_finished=1000,
-            actions_rows=[_mana_draw_row("human") for _ in range(100)],
-        )
-        for _ in range(3)
-    ]
-    client = FakeMcpClient(plans)
-    driver = C2CollectionDriver(
-        "/v5.onnx", mana_draw_floor=5000, battle_cap=3000, battles_per_series=1000
-    )
-    result = driver.collect(client)
-    assert result.stopped_reason == "cap"
-    assert result.battle_count >= 3000
-    assert result.mana_draw_row_count < 5000
-
-
-# ----------------------------------------------------------------------------
-# 8. rejects fallback/stub traces + multi-series planning + spec shape
-# ----------------------------------------------------------------------------
-
-def test_rejects_fallback_and_stub_trace_groups():
-    # group0: policy_fallbacks fired -> rejected.
-    # group1: v5_trace_ok false (0 < battles_finished) -> rejected.
-    # group2: clean -> accepted.
-    plans = [
-        _GroupPlan(
-            battles_finished=1,
-            actions_rows=[_mana_draw_row("human")],
-            policy_warnings=["v5-stub -> end_turn (fallback)"],
-        ),
-        _GroupPlan(
-            battles_finished=2,
-            v5_trace_ok_count=0,
-            actions_rows=[_mana_draw_row("human")],
-        ),
-        _GroupPlan(
-            battles_finished=1,
-            actions_rows=[_mana_draw_row("human")],
-        ),
-    ]
-    client = FakeMcpClient(plans)
-    driver = C2CollectionDriver(
-        "/v5.onnx", mana_draw_floor=10_000, battle_cap=3, battles_per_series=1
-    )
-    result = driver.collect(client)
-    assert len(result.rejected_groups) == 2
-    rejected_gids = {r["group_id"] for r in result.rejected_groups}
-    assert "g_0" in rejected_gids  # fallback group
-    assert "g_1" in rejected_gids  # stub-trace group
-    # Only the clean group contributed.
-    assert result.groups_collected == 1
-    assert result.battle_count == 1
-    assert result.mana_draw_row_count == 1
-
-
-def test_multi_series_planning_and_spec_shape():
-    driver = C2CollectionDriver(
-        "/v5/checkpoint.onnx", battle_cap=5000, battles_per_series=1000
-    )
-    specs = driver.plan_series_specs()
-    assert len(specs) == 5
-    total = 0
-    for spec in specs:
-        assert spec["p1_actor_type"] == "human"
-        p2 = spec["p2_model"]
-        assert isinstance(p2, dict)
-        assert p2["kind"] == "v5"
-        assert p2["name"] == "v5-deploy"
-        assert p2["path"] == "/v5/checkpoint.onnx"
-        assert spec["battles_planned"] <= 1000
-        total += spec["battles_planned"]
-    assert total == 5000
-
-
-def test_plan_series_spec_remainder_handling():
-    # battle_cap=2500, per_series=1000 -> 3 series (1000, 1000, 500).
-    driver = C2CollectionDriver("/v5.onnx", battle_cap=2500, battles_per_series=1000)
+    assert result.group_ids == ["g1"]
     specs = driver.plan_series_specs()
     assert [s["battles_planned"] for s in specs] == [1000, 1000, 500]
-
-
-def test_plan_series_spec_single_shape():
-    driver = C2CollectionDriver("/v5/x.onnx", battle_cap=1, battles_per_series=1000)
-    spec = driver.plan_series_spec(0, battles_planned=1)
-    assert spec["p1_actor_type"] == "human"
-    assert spec["p2_model"]["kind"] == "v5"
-    assert spec["battles_planned"] == 1
-
-
-# ----------------------------------------------------------------------------
-# 9. D-C4 counter is NOT inert against a real server: a summary WITHOUT an
-#    injected 'battle_ids' field still yields the correct mana_draw count when
-#    the client provides list_battles (the PRIMARY real-server battle-id source;
-#    the real get_v5_dataset_summary returns no battle_ids, mcp_server.py:716).
-# ----------------------------------------------------------------------------
-
-class _ListBattlesFakeMcpClient(FakeMcpClient):
-    """Like FakeMcpClient but does NOT inject 'battle_ids' into the summary;
-    instead it exposes battle_ids via list_battles (the real-server path)."""
-
-    def get_v5_dataset_summary(self, group_id: str) -> Dict[str, Any]:
-        plan = self._current
-        if plan is None:
-            return {"error": "no group"}
-        # Deliberately omit 'battle_ids' to mimic the real server summary.
-        return {
-            "battles_finished": plan.battles_finished,
-            "v5_trace_ok_count": plan.v5_trace_ok_count,
-        }
-
-    def list_battles(self, group_id: str) -> List[Dict[str, Any]]:
-        plan = self._current
-        if plan is None:
-            return []
-        return [{"battle_id": bid} for bid in plan.battle_ids]
-
-
-def test_mana_draw_count_via_list_battles_real_server_path():
-    """A summary without 'battle_ids' (real-server shape) still produces the
-    correct mana_draw count via mcp_client.list_battles."""
-    rows = [
-        _mana_draw_row("human"),
-        _mana_draw_row("human"),
-        _row("play_card", "human"),
-        _mana_draw_row("bot"),
-    ]
-    plan = _GroupPlan(battles_finished=2, actions_rows=rows)
-    client = _ListBattlesFakeMcpClient([plan])
-    driver = C2CollectionDriver("/v5.onnx", mana_draw_floor=10_000, battle_cap=2, battles_per_series=2)
-    result = driver.collect(client)
-    assert result.mana_draw_row_count == 2
-    assert result.battle_count == 2
-    assert result.groups_collected == 1
-
-
-def test_list_battles_not_implemented_yields_zero_no_crash():
-    """If a real client's list_battles is not yet wired (NotImplementedError),
-    the driver does not crash and the group's mana_draw count stays 0."""
-
-    class _NoListBattlesClient(FakeMcpClient):
-        def get_v5_dataset_summary(self, group_id: str) -> Dict[str, Any]:
-            plan = self._current
-            if plan is None:
-                return {"error": "no group"}
-            return {
-                "battles_finished": plan.battles_finished,
-                "v5_trace_ok_count": plan.v5_trace_ok_count,
-            }
-
-        def list_battles(self, group_id: str) -> List[Dict[str, Any]]:
-            raise NotImplementedError("battle-listing MCP tool not yet deployed")
-
-    rows = [_mana_draw_row("human"), _mana_draw_row("human")]
-    plan = _GroupPlan(battles_finished=1, actions_rows=rows)
-    client = _NoListBattlesClient([plan])
-    driver = C2CollectionDriver("/v5.onnx", mana_draw_floor=10_000, battle_cap=1, battles_per_series=1)
-    result = driver.collect(client)
-    # No battle_ids resolvable -> mana_draw_rows stays 0; group still accepted
-    # (trace_ok True) but contributes 0 mana_draw rows and the finished battles.
-    # battle_count (1) reaches battle_cap (1) -> 'cap'.
-    assert result.mana_draw_row_count == 0
-    assert result.battle_count == 1
-    assert result.groups_collected == 1
-    assert result.stopped_reason == "cap"
+    assert all(s["p1_actor_type"] == "human" and s["p2_model"]["kind"] == "v5" for s in specs)

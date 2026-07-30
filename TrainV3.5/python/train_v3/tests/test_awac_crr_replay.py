@@ -55,6 +55,7 @@ TrainV3.5/python/train_v3/tests/test_awac_crr_replay.py``
 """
 from __future__ import annotations
 
+import json
 import math
 from dataclasses import fields as dataclass_fields
 
@@ -643,7 +644,7 @@ def test_dense_evaluator_mirror():
 # ---------------------------------------------------------------------------
 
 @_MLX
-def test_end_to_end_on_c2_batch():
+def test_end_to_end_on_c2_batch(tmp_path):
     from train_v3.v5_policy import V5ActionConditionedPolicy
 
     orb = _build_tiny_offline_replay_batch()
@@ -658,13 +659,24 @@ def test_end_to_end_on_c2_batch():
     metrics = train_awac_crr_replay(
         model, orb, epochs=1, minibatch_size=2, seed=0, hidden_dim=128,
         lambda_awac=1.0, awac_clamp=4.0,
+        save_checkpoint_path=tmp_path / "phase_c_v5.npz",
     )
     assert metrics["status"] == "trained"
     assert math.isfinite(metrics["loss_after"])
     assert math.isfinite(metrics["loss_before"])
     assert metrics["num_updates"] == 2  # 4 rows / 2 minibatch * 1 epoch
+    assert metrics["rows"] == 3
+    assert metrics["padded_rows_excluded"] == 1
     assert metrics["policy_loss"] is not None
     assert metrics["mana_draw_bce"] is not None
+    with np.load(tmp_path / "phase_c_v5.npz", allow_pickle=False) as archive:
+        metadata = json.loads(archive["__meta__"].tobytes().decode("utf-8"))
+    assert metadata["model_version"] == "v5_split_encoder_mlx_v1"
+    assert metadata["policy_kind"] == "v5_split_encoder"
+    assert metadata["obs_dim"] == OBS_V5_DIM
+    assert metadata["action_feature_dim"] == ACTION_FEATURE_DIM
+    assert metadata["max_candidate_actions"] == MAX_CANDIDATE_ACTIONS
+    assert metadata["config"]["hidden_dim"] == 128
 
 
 # ---------------------------------------------------------------------------
