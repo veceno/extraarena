@@ -40,6 +40,13 @@ from infrastructure.case_config import (
     merge_case_config_patch,
     validate_case_config,
 )
+from infrastructure.card_economy import (
+    calculate_card_upgrade_cost,
+    calculate_duplicate_particles,
+    calculate_new_card_catchup,
+    calculate_upgrade_coins,
+    calculate_upgrade_particles,
+)
 from infrastructure.notifications import (
     ACTIVITY_SUPPRESSED_NOTIFICATION_CATEGORIES,
     DISCRETIONARY_NOTIFICATION_CATEGORIES,
@@ -121,6 +128,10 @@ class _SeasonActivationResetError(RuntimeError):
     def __init__(self, result: dict[str, Any]):
         super().__init__(str(result.get("error") or "season_reset_failed"))
         self.result = result
+
+
+class _CardUpgradeWriteConflict(RuntimeError):
+    """Rollback signal for an unexpected guarded-write conflict."""
 
 RATING_CATEGORIES: tuple[dict[str, str], ...] = (
     {
@@ -1062,7 +1073,7 @@ def get_upgrade_cost_level(card_obj: Any, level: int) -> int | None:
     max_level = get_card_max_level(card_obj)
     if effective_level >= max_level:
         return None
-    return 9 if is_simplified_levelup(card_obj) else effective_level
+    return effective_level
 
 
 def _scaled_card_stats(card_obj: Any, level: int) -> dict[str, Any]:
@@ -13331,6 +13342,7 @@ class Database:
                 break
 
         granted: list[dict[str, Any]] = []
+        catchup_snapshot: Optional[dict[str, int]] = None
         for reward in rewards:
             r_type = reward["type"]
             amount = int(reward.get("amount") or 0)
@@ -13354,6 +13366,8 @@ class Database:
                         int(card_id),
                     ))
                 if owned_card:
+                    # Явное продуктовое правило платного набора с фоном:
+                    # уже купленная карта заменяется на 50 гемов.
                     fallback_gems = 50
                     await conn.execute("UPDATE users SET gems = COALESCE(gems, 0) + $1 WHERE user_id = $2", fallback_gems, user_id)
                     granted.append({
@@ -13372,17 +13386,67 @@ class Database:
                         json.dumps({"set_id": set_id, "fallback_for": "owned_card", "card_id": int(card_id)}, ensure_ascii=False),
                     )
                     continue
-                await conn.execute(
-                    """
-                    INSERT INTO user_cards (user_id, card_id, level, particles, obtained_at)
-                    VALUES ($1, $2, 1, 0, $3)
-                    ON CONFLICT (user_id, card_id) DO UPDATE
-                    SET level = user_cards.level + 1,
-                        obtained_at = $3
-                    """,
-                    user_id, int(card_id), datetime.now(timezone.utc),
+                if catchup_snapshot is None:
+                    catchup_snapshot = await self._get_card_catchup_snapshot_on_conn(
+                        conn,
+                        user_id,
+                    )
+                card_grant = await self._grant_card_or_duplicate_on_conn(
+                    conn,
+                    user_id,
+                    int(card_id),
+                    source="shop_set",
+                    source_metadata={"set_id": set_id},
+                    catchup_snapshot=catchup_snapshot,
                 )
-                granted.append({"type": "card", "card_id": int(card_id)})
+                if not card_grant.get("success"):
+                    raise RuntimeError(
+                        str(card_grant.get("error") or "card_grant_failed")
+                    )
+                if card_grant.get("is_new", False):
+                    granted.append({
+                        "type": "card",
+                        "card_id": int(card_id),
+                        "card_name": card_grant.get("card_name") or "",
+                        "rarity": card_grant.get("rarity") or "common",
+                        "level": int(card_grant.get("level") or 1),
+                        "catchup": dict(card_grant.get("catchup") or {}),
+                    })
+                else:
+                    rarity = str(card_grant.get("rarity") or "common")
+                    reward_type = str(card_grant.get("reward_type") or "particles")
+                    reward_amount = int(card_grant.get("amount") or 0)
+                    granted_reward = {
+                        "type": reward_type,
+                        "amount": reward_amount,
+                        "fallback_for": card_grant.get("fallback_for") or "owned_card",
+                        "card_id": card_grant.get("card_id"),
+                        "card_name": card_grant.get("card_name") or "",
+                        "rarity": rarity,
+                    }
+                    if card_grant.get("redirected"):
+                        granted_reward.update({
+                            "redirected": True,
+                            "source_card_id": int(card_id),
+                        })
+                    granted.append(granted_reward)
+                    await conn.execute(
+                        """
+                        INSERT INTO economy_events (user_id, event_type, resource, amount, source, metadata)
+                        VALUES ($1, 'earn', $2, $3, 'shop_set', $4::jsonb)
+                        """,
+                        user_id,
+                        reward_type,
+                        float(reward_amount),
+                        json.dumps({
+                            "set_id": set_id,
+                            "fallback_for": card_grant.get("fallback_for") or "owned_card",
+                            "source_card_id": int(card_id),
+                            "card_id": card_grant.get("card_id"),
+                            "rarity": rarity,
+                            "redirected": bool(card_grant.get("redirected", False)),
+                        }, ensure_ascii=False),
+                    )
             elif r_type == "particles":
                 await conn.execute(
                     """
@@ -18755,6 +18819,7 @@ class Database:
             raise RuntimeError("База данных не подключена.")
 
         granted: list[dict[str, Any]] = []
+        catchup_snapshot: Optional[dict[str, int]] = None
         async with self._pool.acquire() as conn:
             async with conn.transaction():
                 normalized_entries: list[dict[str, Any]] = []
@@ -18809,7 +18874,7 @@ class Database:
                         if not card_id or card_id <= 0:
                             return {"success": False, "error": "specific_card_id_required", "message": "Для конкретной карты укажите card_id.", "granted": []}
                         card = await conn.fetchrow(
-                            "SELECT id, name, card_type FROM cards WHERE id = $1",
+                            "SELECT id, name, card_type, rarity FROM cards WHERE id = $1",
                             card_id,
                         )
                         if not card:
@@ -18819,6 +18884,7 @@ class Database:
                         reward_meta = dict(reward_meta or {})
                         reward_meta["card_id"] = card_id
                         reward_meta["card_name"] = card["name"] or ""
+                        reward_meta["rarity"] = card["rarity"] or "common"
                     normalized_entries.append({
                         "reward_type": reward_type,
                         "reward_amount": reward_amount,
@@ -18923,16 +18989,28 @@ class Database:
                             user_id,
                         )
                         if card:
-                            inserted_card = await conn.fetchrow(
-                                """
-                                INSERT INTO user_cards (user_id, card_id, level, particles)
-                                VALUES ($1, $2, 1, 0)
-                                ON CONFLICT (user_id, card_id) DO NOTHING
-                                RETURNING card_id
-                                """,
-                                user_id, int(card["id"]),
+                            if catchup_snapshot is None:
+                                catchup_snapshot = await self._get_card_catchup_snapshot_on_conn(
+                                    conn,
+                                    user_id,
+                                )
+                            card_grant = await self._grant_card_or_duplicate_on_conn(
+                                conn,
+                                user_id,
+                                int(card["id"]),
+                                source="reward_track",
+                                source_metadata={
+                                    "track_type": track_type,
+                                    "position": position,
+                                    "reward_type": "card",
+                                },
+                                catchup_snapshot=catchup_snapshot,
                             )
-                            if inserted_card:
+                            if not card_grant.get("success"):
+                                raise RuntimeError(
+                                    str(card_grant.get("error") or "card_grant_failed")
+                                )
+                            if card_grant.get("is_new", False):
                                 granted.append({
                                     "reward_type": "card",
                                     "reward_amount": 1,
@@ -18940,6 +19018,8 @@ class Database:
                                     "card_name": card["name"] or "",
                                     "rarity": card["rarity"] or "",
                                     "requested_rarities": rarities,
+                                    "level": int(card_grant.get("level") or 1),
+                                    "catchup": dict(card_grant.get("catchup") or {}),
                                 })
                                 await conn.execute(
                                     """
@@ -18953,42 +19033,138 @@ class Database:
                                         "card_id": int(card["id"]),
                                         "card_name": card["name"],
                                         "rarity": card["rarity"],
+                                        "catchup": card_grant.get("catchup") or {},
                                     }, ensure_ascii=False),
                                 )
                             else:
-                                card = None
+                                duplicate_reward_type = str(
+                                    card_grant.get("reward_type") or "particles"
+                                )
+                                duplicate_reward_amount = int(
+                                    card_grant.get("amount") or 0
+                                )
+                                granted.append({
+                                    "reward_type": duplicate_reward_type,
+                                    "reward_amount": duplicate_reward_amount,
+                                    "fallback_for": card_grant.get("fallback_for") or "card",
+                                    "card_id": card_grant.get("card_id"),
+                                    "card_name": card_grant.get("card_name") or card["name"] or "",
+                                    "rarity": str(card["rarity"] or "common"),
+                                    "requested_rarities": rarities,
+                                    "redirected": bool(card_grant.get("redirected", False)),
+                                    "source_card_id": int(card["id"]),
+                                })
+                                await conn.execute(
+                                    """
+                                    INSERT INTO economy_events
+                                        (user_id, event_type, resource, amount, source, metadata)
+                                    VALUES ($1, 'earn', $2, $3, 'reward_track', $4::jsonb)
+                                    """,
+                                    user_id,
+                                    duplicate_reward_type,
+                                    duplicate_reward_amount,
+                                    json.dumps({
+                                        "track_type": track_type,
+                                        "position": position,
+                                        "fallback_for": card_grant.get("fallback_for") or "card",
+                                        "source_card_id": int(card["id"]),
+                                        "card_id": card_grant.get("card_id"),
+                                        "rarity": str(card["rarity"] or "common"),
+                                        "redirected": bool(card_grant.get("redirected", False)),
+                                    }, ensure_ascii=False),
+                                )
                         if not card:
-                            chosen_rarity = next((r for r in rarities if r in RARITY_ORDER), "common")
-                            fallback_coins = fallback_coins_for_rarity(chosen_rarity)
-                            await conn.execute(
+                            duplicate_card = await conn.fetchrow(
                                 """
-                                UPDATE users
-                                SET coins = GREATEST(0, COALESCE(coins, 0) + $1),
-                                    updated_at = NOW()
-                                WHERE user_id = $2
+                                SELECT cards.id, cards.name, cards.rarity
+                                FROM cards
+                                INNER JOIN user_cards
+                                    ON user_cards.card_id = cards.id
+                                   AND user_cards.user_id = $2
+                                WHERE cards.rarity = ANY($1::text[])
+                                  AND cards.card_type = 'warrior'
+                                  AND cards.rarity NOT IN ('limited', 'start')
+                                ORDER BY RANDOM()
+                                LIMIT 1
                                 """,
-                                fallback_coins, user_id,
+                                [str(rarity) for rarity in rarities],
+                                user_id,
                             )
-                            granted.append({
-                                "reward_type": "coins",
-                                "reward_amount": fallback_coins,
-                                "fallback_for": "card",
-                                "requested_rarities": rarities,
-                                "fallback_rarity": chosen_rarity,
-                            })
-                            await conn.execute(
-                                """
-                                INSERT INTO economy_events (user_id, event_type, resource, amount, source, metadata)
-                                VALUES ($1, 'earn', 'coins', $2, 'reward_track', $3::jsonb)
-                                """,
-                                user_id, fallback_coins,
-                                json.dumps({
-                                    "track_type": track_type,
-                                    "position": position,
+                            if duplicate_card:
+                                duplicate_rarity = str(duplicate_card["rarity"] or "common")
+                                particles = calculate_duplicate_particles(duplicate_rarity)
+                                duplicate_result = await self._grant_duplicate_particles_on_conn(
+                                    conn,
+                                    user_id,
+                                    int(duplicate_card["id"]),
+                                    duplicate_rarity,
+                                    particles,
+                                )
+                                if not duplicate_result.get("success"):
+                                    raise RuntimeError(str(duplicate_result.get("error") or "duplicate_grant_failed"))
+                                duplicate_reward_type = str(duplicate_result.get("reward_type") or "particles")
+                                duplicate_reward_amount = int(duplicate_result.get("amount") or 0)
+                                granted.append({
+                                    "reward_type": duplicate_reward_type,
+                                    "reward_amount": duplicate_reward_amount,
+                                    "fallback_for": duplicate_result.get("fallback_for") or "card",
+                                    "card_id": duplicate_result.get("card_id"),
+                                    "card_name": duplicate_result.get("card_name") or duplicate_card["name"] or "",
+                                    "rarity": duplicate_rarity,
+                                    "requested_rarities": rarities,
+                                    "redirected": bool(duplicate_result.get("redirected", False)),
+                                    "source_card_id": int(duplicate_card["id"]),
+                                })
+                                await conn.execute(
+                                    """
+                                    INSERT INTO economy_events (user_id, event_type, resource, amount, source, metadata)
+                                    VALUES ($1, 'earn', $2, $3, 'reward_track', $4::jsonb)
+                                    """,
+                                    user_id,
+                                    duplicate_reward_type,
+                                    duplicate_reward_amount,
+                                    json.dumps({
+                                        "track_type": track_type,
+                                        "position": position,
+                                        "fallback_for": duplicate_result.get("fallback_for") or "card",
+                                        "source_card_id": int(duplicate_card["id"]),
+                                        "card_id": duplicate_result.get("card_id"),
+                                        "rarity": duplicate_rarity,
+                                        "redirected": bool(duplicate_result.get("redirected", False)),
+                                    }, ensure_ascii=False),
+                                )
+                            else:
+                                chosen_rarity = next((r for r in rarities if r in RARITY_ORDER), "common")
+                                fallback_coins = fallback_coins_for_rarity(chosen_rarity)
+                                await conn.execute(
+                                    """
+                                    UPDATE users
+                                    SET coins = GREATEST(0, COALESCE(coins, 0) + $1),
+                                        updated_at = NOW()
+                                    WHERE user_id = $2
+                                    """,
+                                    fallback_coins, user_id,
+                                )
+                                granted.append({
+                                    "reward_type": "coins",
+                                    "reward_amount": fallback_coins,
                                     "fallback_for": "card",
+                                    "requested_rarities": rarities,
                                     "fallback_rarity": chosen_rarity,
-                                }, ensure_ascii=False),
-                            )
+                                })
+                                await conn.execute(
+                                    """
+                                    INSERT INTO economy_events (user_id, event_type, resource, amount, source, metadata)
+                                    VALUES ($1, 'earn', 'coins', $2, 'reward_track', $3::jsonb)
+                                    """,
+                                    user_id, fallback_coins,
+                                    json.dumps({
+                                        "track_type": track_type,
+                                        "position": position,
+                                        "fallback_for": "card",
+                                        "fallback_rarity": chosen_rarity,
+                                    }, ensure_ascii=False),
+                                )
                     elif reward_type == "specific_card":
                         card_id = int((reward_meta or {}).get("card_id") or 0)
                         card_name = str((reward_meta or {}).get("card_name") or "")
@@ -18996,23 +19172,36 @@ class Database:
                         if not card_rarity:
                             rarity_row = await conn.fetchrow("SELECT rarity FROM cards WHERE id = $1", card_id)
                             card_rarity = str(rarity_row["rarity"]) if rarity_row else "common"
-                        inserted_card = await conn.fetchrow(
-                            """
-                            INSERT INTO user_cards (user_id, card_id, level, particles)
-                            VALUES ($1, $2, 1, 0)
-                            ON CONFLICT (user_id, card_id) DO NOTHING
-                            RETURNING card_id
-                            """,
+                        if catchup_snapshot is None:
+                            catchup_snapshot = await self._get_card_catchup_snapshot_on_conn(
+                                conn,
+                                user_id,
+                            )
+                        card_grant = await self._grant_card_or_duplicate_on_conn(
+                            conn,
                             user_id,
                             card_id,
+                            source="reward_track",
+                            source_metadata={
+                                "track_type": track_type,
+                                "position": position,
+                                "reward_type": "specific_card",
+                            },
+                            catchup_snapshot=catchup_snapshot,
                         )
-                        if inserted_card:
+                        if not card_grant.get("success"):
+                            raise RuntimeError(
+                                str(card_grant.get("error") or "card_grant_failed")
+                            )
+                        if card_grant.get("is_new", False):
                             granted.append({
                                 "reward_type": "specific_card",
                                 "reward_amount": 1,
                                 "card_id": card_id,
                                 "card_name": card_name,
                                 "rarity": card_rarity,
+                                "level": int(card_grant.get("level") or 1),
+                                "catchup": dict(card_grant.get("catchup") or {}),
                             })
                             await conn.execute(
                                 """
@@ -19027,40 +19216,40 @@ class Database:
                                     "card_name": card_name,
                                     "rarity": card_rarity,
                                     "reward_type": "specific_card",
+                                    "catchup": card_grant.get("catchup") or {},
                                 }, ensure_ascii=False),
                             )
                         else:
-                            fallback_coins = fallback_coins_for_rarity(card_rarity)
-                            await conn.execute(
-                                """
-                                UPDATE users
-                                SET coins = GREATEST(0, COALESCE(coins, 0) + $1),
-                                    updated_at = NOW()
-                                WHERE user_id = $2
-                                """,
-                                fallback_coins,
-                                user_id,
+                            duplicate_reward_type = str(
+                                card_grant.get("reward_type") or "particles"
                             )
+                            duplicate_reward_amount = int(card_grant.get("amount") or 0)
                             granted.append({
-                                "reward_type": "coins",
-                                "reward_amount": fallback_coins,
-                                "fallback_for": "specific_card",
-                                "card_id": card_id,
-                                "fallback_rarity": card_rarity,
+                                "reward_type": duplicate_reward_type,
+                                "reward_amount": duplicate_reward_amount,
+                                "fallback_for": card_grant.get("fallback_for") or "specific_card",
+                                "card_id": card_grant.get("card_id"),
+                                "card_name": card_grant.get("card_name") or card_name,
+                                "rarity": card_rarity,
+                                "redirected": bool(card_grant.get("redirected", False)),
+                                "source_card_id": card_id,
                             })
                             await conn.execute(
                                 """
                                 INSERT INTO economy_events (user_id, event_type, resource, amount, source, metadata)
-                                VALUES ($1, 'earn', 'coins', $2, 'reward_track', $3::jsonb)
+                                VALUES ($1, 'earn', $2, $3, 'reward_track', $4::jsonb)
                                 """,
                                 user_id,
-                                fallback_coins,
+                                duplicate_reward_type,
+                                duplicate_reward_amount,
                                 json.dumps({
                                     "track_type": track_type,
                                     "position": position,
-                                    "fallback_for": "specific_card",
-                                    "card_id": card_id,
-                                    "fallback_rarity": card_rarity,
+                                    "fallback_for": card_grant.get("fallback_for") or "specific_card",
+                                    "source_card_id": card_id,
+                                    "card_id": card_grant.get("card_id"),
+                                    "rarity": card_rarity,
+                                    "redirected": bool(card_grant.get("redirected", False)),
                                 }, ensure_ascii=False),
                             )
                     elif reward_type == "case":
@@ -19438,28 +19627,425 @@ class Database:
         )
         return [dict(row) for row in rows]
 
+    async def get_random_owned_upgradeable_cards_by_rarity(
+        self,
+        user_id: int,
+        rarity: str,
+        limit: int = 1,
+    ) -> list[dict[str, Any]]:
+        """Return owned, non-maxed cards for one particle-shop rarity slot."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена.")
+        rows = await self.fetch(
+            """
+            SELECT c.id,
+                   c.name,
+                   c.rarity,
+                   c.simplified_levelup,
+                   uc.level,
+                   COALESCE(uc.particles, 0) AS particles
+            FROM user_cards uc
+            INNER JOIN cards c ON c.id = uc.card_id
+            WHERE uc.user_id = $1
+              AND c.rarity = $2
+              AND (
+                    (COALESCE(c.simplified_levelup, FALSE) = TRUE AND uc.level < 2)
+                 OR (COALESCE(c.simplified_levelup, FALSE) = FALSE AND uc.level < 10)
+              )
+            ORDER BY RANDOM()
+            LIMIT $3
+            """,
+            user_id,
+            str(rarity),
+            max(1, int(limit)),
+        )
+        return [dict(row) for row in rows]
+
     async def add_card_to_user(self, user_id: int, card_id: int) -> dict[str, Any]:
-        """Выдать карту игроку. Возвращает dict с результатом."""
+        """Выдать карту через канонический first-acquisition/duplicate путь."""
+        return await self.grant_card_or_duplicate(
+            user_id,
+            card_id,
+            source="direct_card_grant",
+        )
+
+    async def _grant_duplicate_particles_on_conn(
+        self,
+        conn,
+        user_id: int,
+        card_id: int,
+        rarity: str,
+        particles: int,
+    ) -> dict[str, Any]:
+        """Apply duplicate value without leaving new dead particles on a max card."""
+        particle_amount = max(0, int(particles or 0))
+        normalized_rarity = str(rarity or "common").lower()
+        if particle_amount <= 0:
+            return {"success": False, "error": "invalid_particles"}
+
+        # Match card-upgrade lock ordering: wallet first, then card rows.
+        user_balance = await conn.fetchrow(
+            """
+            SELECT COALESCE(coins, 0) AS coins
+            FROM users
+            WHERE user_id = $1
+            FOR UPDATE
+            """,
+            user_id,
+        )
+        if not user_balance:
+            return {"success": False, "error": "user_not_found"}
+
+        source_card = await conn.fetchrow(
+            """
+            SELECT uc.card_id,
+                   uc.level,
+                   c.name,
+                   c.simplified_levelup
+            FROM user_cards uc
+            INNER JOIN cards c ON c.id = uc.card_id
+            WHERE uc.user_id = $1 AND uc.card_id = $2
+            FOR UPDATE OF uc
+            """,
+            user_id,
+            card_id,
+        )
+        if not source_card:
+            return {"success": False, "error": "duplicate_card_not_owned"}
+
+        source_max_level = get_card_max_level({
+            "simplified_levelup": bool(source_card.get("simplified_levelup", False)),
+        })
+        source_level = max(1, int(source_card.get("level") or 1))
+        if source_level < source_max_level:
+            updated = await conn.fetchrow(
+                """
+                UPDATE user_cards
+                SET particles = COALESCE(particles, 0) + $1
+                WHERE user_id = $2 AND card_id = $3
+                RETURNING particles
+                """,
+                particle_amount,
+                user_id,
+                card_id,
+            )
+            if not updated:
+                return {"success": False, "error": "duplicate_card_not_owned"}
+            return {
+                "success": True,
+                "reward_type": "particles",
+                "amount": particle_amount,
+                "particles_added": particle_amount,
+                "particles": int(updated["particles"] or 0),
+                "card_id": card_id,
+                "card_name": str(source_card.get("name") or ""),
+                "rarity": normalized_rarity,
+                "redirected": False,
+                "source_card_id": card_id,
+            }
+
+        redirect_card = await conn.fetchrow(
+            """
+            SELECT uc.card_id,
+                   c.name,
+                   c.simplified_levelup
+            FROM user_cards uc
+            INNER JOIN cards c ON c.id = uc.card_id
+            WHERE uc.user_id = $1
+              AND uc.card_id <> $2
+              AND c.rarity = $3
+              AND (
+                    (COALESCE(c.simplified_levelup, FALSE) = TRUE AND uc.level < 2)
+                 OR (COALESCE(c.simplified_levelup, FALSE) = FALSE AND uc.level < 10)
+              )
+            ORDER BY RANDOM()
+            LIMIT 1
+            FOR UPDATE OF uc
+            """,
+            user_id,
+            card_id,
+            normalized_rarity,
+        )
+        if redirect_card:
+            redirect_card_id = int(redirect_card["card_id"])
+            updated = await conn.fetchrow(
+                """
+                UPDATE user_cards
+                SET particles = COALESCE(particles, 0) + $1
+                WHERE user_id = $2 AND card_id = $3
+                RETURNING particles
+                """,
+                particle_amount,
+                user_id,
+                redirect_card_id,
+            )
+            if not updated:
+                return {"success": False, "error": "redirect_card_not_owned"}
+            return {
+                "success": True,
+                "reward_type": "particles",
+                "amount": particle_amount,
+                "particles_added": particle_amount,
+                "particles": int(updated["particles"] or 0),
+                "card_id": redirect_card_id,
+                "card_name": str(redirect_card.get("name") or ""),
+                "rarity": normalized_rarity,
+                "redirected": True,
+                "source_card_id": card_id,
+                "source_card_name": str(source_card.get("name") or ""),
+            }
+
+        fallback_coins = fallback_coins_for_particles(
+            particle_amount,
+            normalized_rarity,
+        )
+        updated_user = await conn.fetchrow(
+            """
+            UPDATE users
+            SET coins = GREATEST(0, COALESCE(coins, 0) + $1),
+                updated_at = NOW()
+            WHERE user_id = $2
+            RETURNING coins
+            """,
+            fallback_coins,
+            user_id,
+        )
+        if not updated_user:
+            return {"success": False, "error": "user_not_found"}
+        return {
+            "success": True,
+            "reward_type": "coins",
+            "amount": fallback_coins,
+            "coins_added": fallback_coins,
+            "coins": int(updated_user["coins"] or 0),
+            "rarity": normalized_rarity,
+            "fallback_for": "max_level_duplicate",
+            "source_card_id": card_id,
+            "source_card_name": str(source_card.get("name") or ""),
+        }
+
+    async def grant_duplicate_particles(
+        self,
+        user_id: int,
+        card_id: int,
+        rarity: str,
+        particles: int,
+        *,
+        conn=None,
+    ) -> dict[str, Any]:
+        """Grant duplicate value atomically, redirecting value away from max cards."""
+        if conn is not None:
+            return await self._grant_duplicate_particles_on_conn(
+                conn,
+                user_id,
+                card_id,
+                rarity,
+                particles,
+            )
         if not self._pool:
             raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+        async with self._pool.acquire() as acquired:
+            async with acquired.transaction():
+                return await self._grant_duplicate_particles_on_conn(
+                    acquired,
+                    user_id,
+                    card_id,
+                    rarity,
+                    particles,
+                )
 
-        # Проверяем существование карты
-        card_exists = await self.fetchval("SELECT 1 FROM cards WHERE id = $1", card_id)
-        if not card_exists:
+    async def _get_card_catchup_snapshot_on_conn(
+        self,
+        conn,
+        user_id: int,
+    ) -> dict[str, int]:
+        """Snapshot the median level of the user's nine strongest regular cards."""
+        row = await conn.fetchrow(
+            """
+            WITH top_cards AS (
+                SELECT uc.level
+                FROM user_cards uc
+                INNER JOIN cards c ON c.id = uc.card_id
+                WHERE uc.user_id = $1
+                  AND COALESCE(c.simplified_levelup, FALSE) = FALSE
+                ORDER BY uc.level DESC, uc.card_id ASC
+                LIMIT 9
+            )
+            SELECT COUNT(*)::int AS eligible_count,
+                   COALESCE(
+                       PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY level),
+                       1
+                   )::int AS reference_level
+            FROM top_cards
+            """,
+            user_id,
+        )
+        if not row:
+            return {"eligible_count": 0, "reference_level": 1}
+        return {
+            "eligible_count": max(0, int(row.get("eligible_count") or 0)),
+            "reference_level": max(1, int(row.get("reference_level") or 1)),
+        }
+
+    async def _grant_card_or_duplicate_on_conn(
+        self,
+        conn,
+        user_id: int,
+        card_id: int,
+        *,
+        tier: int = 1,
+        source: str = "card_reward",
+        source_metadata: Optional[dict[str, Any]] = None,
+        apply_catchup: bool = True,
+        catchup_snapshot: Optional[dict[str, int]] = None,
+    ) -> dict[str, Any]:
+        """Atomically grant a new level-1 card with catch-up reserve or a duplicate."""
+        user_row = await conn.fetchrow(
+            """
+            SELECT user_id
+            FROM users
+            WHERE user_id = $1
+            FOR UPDATE
+            """,
+            user_id,
+        )
+        if not user_row:
+            return {"success": False, "error": "user_not_found"}
+
+        card = await conn.fetchrow(
+            """
+            SELECT id, name, rarity, simplified_levelup
+            FROM cards
+            WHERE id = $1
+            """,
+            card_id,
+        )
+        if not card:
             return {"success": False, "error": "card_not_found"}
 
-        try:
-            await self.execute(
-                """
-                INSERT INTO user_cards (user_id, card_id, level, particles)
-                VALUES ($1, $2, 1, 0)
-                ON CONFLICT (user_id, card_id) DO NOTHING
-                """,
-                user_id, card_id
+        snapshot = (
+            dict(catchup_snapshot)
+            if catchup_snapshot is not None
+            else await self._get_card_catchup_snapshot_on_conn(conn, user_id)
+        )
+        catchup = calculate_new_card_catchup(
+            snapshot.get("reference_level", 1),
+            eligible_count=snapshot.get("eligible_count", 0),
+            simplified_levelup=(
+                not apply_catchup
+                or bool(card.get("simplified_levelup", False))
+            ),
+        )
+        catchup_particles = int(catchup["particles"])
+
+        inserted = await conn.fetchrow(
+            """
+            INSERT INTO user_cards (user_id, card_id, level, particles, obtained_at)
+            VALUES ($1, $2, 1, $3, NOW())
+            ON CONFLICT (user_id, card_id) DO NOTHING
+            RETURNING card_id, level, particles
+            """,
+            user_id,
+            card_id,
+            catchup_particles,
+        )
+        if inserted:
+            catchup_payload = {
+                "particles": catchup_particles,
+                "reference_level": int(catchup["reference_level"]),
+                "target_level": int(catchup["target_level"]),
+                "eligible_count": int(catchup["eligible_count"]),
+                "policy_version": int(catchup["policy_version"]),
+            }
+            if catchup_particles > 0:
+                metadata = {
+                    **dict(source_metadata or {}),
+                    "card_id": card_id,
+                    "card_name": str(card.get("name") or ""),
+                    "rarity": str(card.get("rarity") or "common"),
+                    "acquisition_source": str(source or "card_reward"),
+                    **catchup_payload,
+                }
+                await conn.execute(
+                    """
+                    INSERT INTO economy_events
+                        (user_id, event_type, resource, amount, source, metadata)
+                    VALUES ($1, 'earn', 'particles', $2, 'card_catchup', $3::jsonb)
+                    """,
+                    user_id,
+                    catchup_particles,
+                    json.dumps(metadata, ensure_ascii=False),
+                )
+            return {
+                "success": True,
+                "is_new": True,
+                "reward_type": "card",
+                "amount": 1,
+                "card_id": card_id,
+                "card_name": str(card.get("name") or ""),
+                "rarity": str(card.get("rarity") or "common"),
+                "level": 1,
+                "particles": catchup_particles,
+                "catchup": catchup_payload,
+            }
+
+        rarity = str(card.get("rarity") or "common").lower()
+        particles = calculate_duplicate_particles(rarity, tier)
+        duplicate_result = await self._grant_duplicate_particles_on_conn(
+            conn,
+            user_id,
+            card_id,
+            rarity,
+            particles,
+        )
+        if not duplicate_result.get("success"):
+            return duplicate_result
+        return {
+            **duplicate_result,
+            "is_new": False,
+        }
+
+    async def grant_card_or_duplicate(
+        self,
+        user_id: int,
+        card_id: int,
+        *,
+        tier: int = 1,
+        source: str = "card_reward",
+        source_metadata: Optional[dict[str, Any]] = None,
+        apply_catchup: bool = True,
+        catchup_snapshot: Optional[dict[str, int]] = None,
+        conn=None,
+    ) -> dict[str, Any]:
+        """Выдать карту или атомарно конвертировать уже имеющуюся в частицы."""
+        if conn is not None:
+            return await self._grant_card_or_duplicate_on_conn(
+                conn,
+                user_id,
+                card_id,
+                tier=tier,
+                source=source,
+                source_metadata=source_metadata,
+                apply_catchup=apply_catchup,
+                catchup_snapshot=catchup_snapshot,
             )
-            return {"success": True}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
+        if not self._pool:
+            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+        try:
+            async with self._pool.acquire() as acquired:
+                async with acquired.transaction():
+                    return await self._grant_card_or_duplicate_on_conn(
+                        acquired,
+                        user_id,
+                        card_id,
+                        tier=tier,
+                        source=source,
+                        source_metadata=source_metadata,
+                        apply_catchup=apply_catchup,
+                        catchup_snapshot=catchup_snapshot,
+                    )
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
 
     async def grant_start_cards(self, user_id: int) -> dict[str, Any]:
         """Выдать игроку стартовый набор карт без создания дубликатов."""
@@ -19515,10 +20101,11 @@ class Database:
         cost_level = get_upgrade_cost_level({"simplified_levelup": simplified_levelup}, level)
         if cost_level is None:
             return {"particles": 0, "coins": 0}
-        return {
-            "particles": self.calculate_upgrade_particles(rarity, cost_level),
-            "coins": self.calculate_upgrade_coins(rarity, cost_level),
-        }
+        return calculate_card_upgrade_cost(
+            rarity,
+            cost_level,
+            simplified_levelup=simplified_levelup,
+        )
 
     def _upgrade_cost_fields(self, rarity: str, level: int, simplified_levelup: bool = False) -> dict[str, int]:
         cost = self.get_upgrade_cost(rarity, level, simplified_levelup)
@@ -19528,103 +20115,12 @@ class Database:
         }
 
     def calculate_upgrade_particles(self, rarity: str, level: int) -> int:
-        """Рассчитать необходимое количество частиц для улучшения карты.
-
-        Args:
-            rarity: Редкость карты (common, rare, start, superrare, epic, legendary, mythic, divine, limited)
-            level: Текущий уровень карты (1-9, переход на level+1)
-
-        Returns:
-            Количество частиц, необходимое для улучшения до следующего уровня
-        """
-        import math
-
-        # Базовые значения частиц для каждого перехода уровня (для Обычной карты)
-        base_particles_by_level = {
-            1: 5,    # 1 → 2
-            2: 10,   # 2 → 3
-            3: 20,   # 3 → 4
-            4: 40,   # 4 → 5
-            5: 80,   # 5 → 6
-            6: 160,  # 6 → 7
-            7: 320,  # 7 → 8
-            8: 640,  # 8 → 9
-            9: 2500  # 9 → 10 (ценовой обрыв)
-        }
-
-        # Множители частиц по редкостям
-        rarity_multipliers = {
-            "common": 1.0,
-            "rare": 1.3,
-            "start": 1.4,
-            "superrare": 1.6,
-            "epic": 2.0,
-            "legendary": 2.5,
-            "mythic": 4.0,
-            "divine": 3.0,
-            "limited": 3.5
-        }
-
-        # Получаем базовое значение для текущего уровня
-        base_particles = base_particles_by_level.get(level, 5)
-
-        # Получаем множитель редкости
-        rarity_mult = rarity_multipliers.get(rarity, 1.0)
-
-        # Вычисляем финальное количество частиц (округление вверх)
-        required_particles = math.ceil(base_particles * rarity_mult)
-
-        return int(required_particles)
+        """Рассчитать частицы по единой серверной таблице экономики."""
+        return calculate_upgrade_particles(rarity, level)
 
     def calculate_upgrade_coins(self, rarity: str, level: int) -> int:
-        """Рассчитать необходимое количество монет для улучшения карты.
-
-        Args:
-            rarity: Редкость карты (common, rare, start, superrare, epic, legendary, mythic, divine, limited)
-            level: Текущий уровень карты (1-9, переход на level+1)
-
-        Returns:
-            Количество монет, необходимое для улучшения до следующего уровня
-        """
-        import math
-
-        # Базовые значения монет для каждого перехода уровня (для Обычной карты)
-        base_coins_by_level = {
-            1: 50,      # 1 → 2
-            2: 150,     # 2 → 3
-            3: 400,     # 3 → 4
-            4: 900,     # 4 → 5
-            5: 2000,    # 5 → 6
-            6: 4500,    # 6 → 7
-            7: 8000,    # 7 → 8
-            8: 13000,   # 8 → 9
-            9: 40000    # 9 → 10 (ценовой обрыв)
-        }
-
-        # Множители монет по редкостям
-        # Смещение экономики: больше спроса на монеты у легендарок
-        rarity_multipliers = {
-            "common": 1.0,
-            "rare": 1.2,
-            "start": 1.3,
-            "superrare": 1.5,
-            "epic": 2.0,
-            "legendary": 3.5,  # было 3.0
-            "mythic": 4.0,
-            "divine": 5.0,
-            "limited": 6.0
-        }
-
-        # Получаем базовое значение для текущего уровня
-        base_coins = base_coins_by_level.get(level, 50)
-
-        # Получаем множитель редкости
-        rarity_mult = rarity_multipliers.get(rarity, 1.0)
-
-        # Вычисляем финальное количество монет (округление вверх)
-        required_coins = math.ceil(base_coins * rarity_mult)
-
-        return int(required_coins)
+        """Рассчитать монеты по единой серверной таблице экономики."""
+        return calculate_upgrade_coins(rarity, level)
 
     async def add_particles_to_card(self, user_id: int, card_id: int, particles: int) -> dict[str, Any]:
         """Добавить частицы к карте. Возвращает dict с результатом."""
@@ -19635,98 +20131,133 @@ class Database:
             return {"success": False, "error": "invalid_particles"}
 
         try:
-            await self.execute(
+            updated = await self.fetchrow(
                 """
                 UPDATE user_cards
                 SET particles = COALESCE(particles, 0) + $1
                 WHERE user_id = $2 AND card_id = $3
+                RETURNING particles
                 """,
                 particles, user_id, card_id
             )
-            return {"success": True}
+            if not updated:
+                return {"success": False, "error": "card_not_owned"}
+            return {"success": True, "particles": int(updated["particles"] or 0)}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
     async def upgrade_card(self, user_id: int, card_id: int) -> dict[str, Any]:
-        """Улучшить карту. Возвращает dict с результатом."""
+        """Атомарно улучшить карту, блокируя баланс и строку карты."""
         if not self._pool:
             raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
 
         try:
-            # Получаем информацию о карте пользователя и базовой карте
-            user_card = await self.fetchrow(
-                """
-                SELECT uc.level,
-                       uc.particles,
-                       c.rarity,
-                       c.power,
-                       c.base_attack,
-                       c.base_hp,
-                       c.mana_cost,
-                       c.mechanics,
-                       c.card_type,
-                       c.simplified_levelup
-                FROM user_cards uc
-                INNER JOIN cards c ON c.id = uc.card_id
-                WHERE uc.user_id = $1 AND uc.card_id = $2
-                """,
-                user_id, card_id
-            )
+            async with self._pool.acquire() as conn:
+                async with conn.transaction():
+                    # Единый порядок блокировок для всех улучшений пользователя:
+                    # сначала кошелёк, затем конкретная карта.
+                    user_balance = await conn.fetchrow(
+                        """
+                        SELECT COALESCE(coins, 0) AS coins
+                        FROM users
+                        WHERE user_id = $1
+                        FOR UPDATE
+                        """,
+                        user_id,
+                    )
+                    if not user_balance:
+                        return {"success": False, "error": "user_not_found"}
 
-            if not user_card:
-                return {"success": False, "error": "card_not_found"}
+                    user_card = await conn.fetchrow(
+                        """
+                        SELECT uc.level,
+                               uc.particles,
+                               c.rarity,
+                               c.power,
+                               c.base_attack,
+                               c.base_hp,
+                               c.mana_cost,
+                               c.mechanics,
+                               c.card_type,
+                               c.simplified_levelup
+                        FROM user_cards uc
+                        INNER JOIN cards c ON c.id = uc.card_id
+                        WHERE uc.user_id = $1 AND uc.card_id = $2
+                        FOR UPDATE OF uc
+                        """,
+                        user_id,
+                        card_id,
+                    )
+                    if not user_card:
+                        return {"success": False, "error": "card_not_found"}
 
-            simplified_levelup = bool(user_card.get("simplified_levelup", False))
-            max_level = self.get_card_max_level({"simplified_levelup": simplified_levelup})
-            current_level = min(max(1, int(user_card["level"] or 1)), max_level)
+                    simplified_levelup = bool(user_card.get("simplified_levelup", False))
+                    max_level = self.get_card_max_level({"simplified_levelup": simplified_levelup})
+                    current_level = min(max(1, int(user_card["level"] or 1)), max_level)
+                    if current_level >= max_level:
+                        return {"success": False, "error": "max_level_reached"}
 
-            # Проверяем максимальный уровень
-            if current_level >= max_level:
-                return {"success": False, "error": "max_level_reached"}
+                    current_particles = int(user_card["particles"] or 0)
+                    rarity = str(user_card["rarity"] or "common")
+                    cost = self.get_upgrade_cost(rarity, current_level, simplified_levelup)
+                    required_particles = cost["particles"]
+                    required_coins = cost["coins"]
+                    user_coins = int(user_balance["coins"] or 0)
 
-            current_particles = user_card["particles"] or 0
-            rarity = user_card["rarity"]
+                    if current_particles < required_particles:
+                        return {
+                            "success": False,
+                            "error": "insufficient_particles",
+                            "required": required_particles,
+                            "current": current_particles,
+                        }
+                    if user_coins < required_coins:
+                        return {
+                            "success": False,
+                            "error": "insufficient_coins",
+                            "required": required_coins,
+                            "current": user_coins,
+                        }
+
+                    new_level = min(current_level + 1, max_level)
+                    updated_card = await conn.fetchrow(
+                        """
+                        UPDATE user_cards
+                        SET level = $1, particles = particles - $2
+                        WHERE user_id = $3 AND card_id = $4
+                          AND level = $5
+                          AND particles >= $2
+                        RETURNING level, particles
+                        """,
+                        new_level,
+                        required_particles,
+                        user_id,
+                        card_id,
+                        current_level,
+                    )
+                    if not updated_card:
+                        raise _CardUpgradeWriteConflict("card_state_changed")
+
+                    updated_user = await conn.fetchrow(
+                        """
+                        UPDATE users
+                        SET coins = coins - $1
+                        WHERE user_id = $2
+                          AND coins >= $1
+                        RETURNING coins
+                        """,
+                        required_coins,
+                        user_id,
+                    )
+                    if not updated_user:
+                        raise _CardUpgradeWriteConflict("coin_balance_changed")
+
             base_power = user_card["power"]
             base_attack = user_card.get("base_attack") or 0
             base_hp = user_card.get("base_hp") or 0
             mana_cost = user_card.get("mana_cost") or 0
             mechanics = _normalize_mechanics(user_card.get("mechanics"))
             card_type = user_card.get("card_type") or "warrior"
-
-            # Рассчитываем необходимое количество частиц и монет
-            cost = self.get_upgrade_cost(rarity, current_level, simplified_levelup)
-            required_particles = cost["particles"]
-            required_coins = cost["coins"]
-
-            # Получаем текущее количество монет пользователя
-            user_coins = await self.fetchval(
-                "SELECT coins FROM users WHERE user_id = $1",
-                user_id
-            ) or 0
-
-            # Проверяем частицы
-            if current_particles < required_particles:
-                return {
-                    "success": False,
-                    "error": "insufficient_particles",
-                    "required": required_particles,
-                    "current": current_particles
-                }
-
-            # Проверяем монеты
-            if user_coins < required_coins:
-                return {
-                    "success": False,
-                    "error": "insufficient_coins",
-                    "required": required_coins,
-                    "current": user_coins
-                }
-
-            # Улучшаем карту: увеличиваем уровень, сбрасываем частицы, увеличиваем мощность
-            new_level = min(current_level + 1, max_level)
-
-            # Формула мощности: Power(n) = Power_base × 1.10^(n-1)
-            import math
             power_multiplier = math.pow(1.10, new_level - 1)
             new_power = int(base_power * power_multiplier)
             card_base_payload = {
@@ -19740,29 +20271,6 @@ class Database:
             }
             old_stats = calculate_card_stats(card_base_payload, level=current_level)
             new_stats = calculate_card_stats(card_base_payload, level=new_level)
-
-            # Выполняем обновление в транзакции
-            async with self._pool.acquire() as conn:
-                async with conn.transaction():
-                    # Обновляем карту: повышаем уровень и списываем частицы
-                    await conn.execute(
-                        """
-                        UPDATE user_cards
-                        SET level = $1, particles = particles - $2
-                        WHERE user_id = $3 AND card_id = $4
-                        """,
-                        new_level, required_particles, user_id, card_id
-                    )
-
-                    # Списываем монеты
-                    await conn.execute(
-                        """
-                        UPDATE users
-                        SET coins = coins - $1
-                        WHERE user_id = $2
-                        """,
-                        required_coins, user_id
-                    )
 
             try:
                 await self.award_squad_cbrp(
@@ -19799,6 +20307,8 @@ class Database:
                 "max_level": max_level,
                 "is_max_level": new_level >= max_level,
             }
+        except _CardUpgradeWriteConflict:
+            return {"success": False, "error": "upgrade_conflict"}
         except Exception as e:
             import logging
             logging.getLogger(__name__).error(f"Ошибка улучшения карты: {e}", exc_info=True)

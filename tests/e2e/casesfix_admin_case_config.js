@@ -6,7 +6,7 @@ case configuration UI added by CasesFix) against a mocked /api/admin/configs +
 
 Covers the CasesFix frontend changes:
   1. renderCaseConfig renders the live case_config from /api/admin/configs:
-     limited base particles (150), T5 jackpot particles (125, the post-960a5e8e
+     limited base particles (160), T5 jackpot particles (125, the post-960a5e8e
      value the old >=500 threshold was stale against), limited-event switch
      state, probability input, and the human-readable summary.
   2. The limited-event toggle posts a structured patch
@@ -42,13 +42,13 @@ const json = (payload, status = 200) => ({
 
 // ── Mirror infrastructure/case_config.py post-CasesFix defaults ──
 // The −40% epic+ rebalance (2026-07-12) lives in tier_rarity_probabilities.
-// limited base = 150, T5 jackpot = 125 (was 500 before 960a5e8e).
+// limited base = 160, T5 jackpot = 125 (was 500 before 960a5e8e).
 const CASE_CONFIG = {
   limited_event_active: false,
   limited_event_probability: 0.0015,
   base_particles_by_rarity: {
     common: 2, rare: 3, start: 4, superrare: 5,
-    epic: 10, legendary: 20, mythic: 40, divine: 100, limited: 150,
+    epic: 10, legendary: 20, mythic: 40, divine: 100, limited: 160,
   },
   t5_common_jackpot_particles: 125,
   tier_rarity_probabilities: {
@@ -171,12 +171,12 @@ function startServer() {
 
     console.log('\n── renderCaseConfig: live case_config rendering ──');
     const limitedBase = await page.inputValue('#cfg-case-limited-base');
-    assert(limitedBase === '150', `limited base particles renders 150 (got "${limitedBase}")`);
+    assert(limitedBase === '160', `limited base particles renders 160 (got "${limitedBase}")`);
     const jackpot = await page.inputValue('#cfg-case-jackpot');
     assert(jackpot === '125', `T5 jackpot particles renders 125 — the post-960a5e8e value the old >=500 threshold was stale against (got "${jackpot}")`);
     const summary = await page.inputValue('#cfg-case-summary');
     assert(summary.includes('Limited event OFF'), `summary shows "Limited event OFF" (got "${summary}")`);
-    assert(summary.includes('limited base: 150'), `summary shows "limited base: 150" (got "${summary}")`);
+    assert(summary.includes('limited base: 160'), `summary shows "limited base: 160" (got "${summary}")`);
     const switchOn = await page.getAttribute('#cfg-case-limited-switch', 'data-on');
     assert(switchOn === '0', `limited-event switch is OFF (data-on="${switchOn}")`);
     const prob = await page.inputValue('#cfg-case-limited-prob');

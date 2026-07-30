@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from typing import Any
 
 SHOP_PRICES: dict[str, int] = {
@@ -36,26 +37,54 @@ CASE_PACKS: dict[str, dict[str, int]] = {
     "case_pack_10": {"keys": 10, "gems": 250},
 }
 
-PARTICLES_COSTS: dict[str, dict[str, int]] = {
-    "common": {"particles": 50, "coins": 200},
-    "rare":   {"particles": 30, "coins": 400},
-    "epic":   {"particles": 15, "coins": 1000},
-}
+PARTICLE_SHOP_RARITIES: tuple[str, ...] = (
+    "common",
+    "rare",
+    "start",
+    "superrare",
+    "epic",
+    "legendary",
+    "mythic",
+    "divine",
+    "limited",
+)
+PARTICLE_SHOP_PROGRESS_SHARE = 0.25
+PARTICLE_SHOP_MIN_PARTICLES = 10
+PARTICLE_SHOP_ROUNDING = 5
+PARTICLE_SHOP_COINS_PER_PARTICLE = 4
 
 
 RARITY_SHOP_ORDER: dict[str, int] = {
     "common": 1,
     "rare": 2,
-    "superrare": 3,
-    "epic": 4,
-    "legendary": 5,
-    "mythic": 6,
-    "divine": 7,
-    "limited": 8,
-    "unique": 9,
+    "start": 3,
+    "superrare": 4,
+    "epic": 5,
+    "legendary": 6,
+    "mythic": 7,
+    "divine": 8,
+    "limited": 9,
+    "unique": 10,
 }
 
-UNOWNED_CARD_RARITY_PENALTY = 2
+UNOWNED_CARD_RARITY_PENALTY = 4
+
+
+def calculate_particle_shop_offer(upgrade_particles_required: int) -> dict[str, int]:
+    """Price one daily offer from next-level progress, never from rarity."""
+    required = max(1, _as_int(upgrade_particles_required, 1))
+    raw_particles = max(
+        PARTICLE_SHOP_MIN_PARTICLES,
+        math.ceil(required * PARTICLE_SHOP_PROGRESS_SHARE),
+    )
+    particles = (
+        math.ceil(raw_particles / PARTICLE_SHOP_ROUNDING)
+        * PARTICLE_SHOP_ROUNDING
+    )
+    return {
+        "particles": particles,
+        "coins": particles * PARTICLE_SHOP_COINS_PER_PARTICLE,
+    }
 
 
 def _as_int(value: Any, default: int = 0) -> int:

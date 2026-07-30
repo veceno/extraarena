@@ -361,7 +361,7 @@ async def test_specific_card_not_owned(db: Database) -> None:
 
 
 async def test_specific_card_already_owned(db: Database) -> None:
-    banner("TEST: specific_card — fallback to coins when card already owned")
+    banner("TEST: specific_card — duplicate converts to particles")
     user_id = 900008
     await ensure_test_user(db, user_id, "specific_card_owned")
     async with db._pool.acquire() as conn:  # type: ignore[attr-defined]
@@ -382,14 +382,13 @@ async def test_specific_card_already_owned(db: Database) -> None:
             }
         ],
     )
-    assert_eq(result.get("success"), True, "claim success (fallback in-grant)")
+    assert_eq(result.get("success"), True, "claim success (duplicate conversion)")
     granted = result.get("granted") or []
     assert_eq(len(granted), 1, "granted length")
-    assert_eq(granted[0]["reward_type"], "coins", "fallback type")
+    assert_eq(granted[0]["reward_type"], "particles", "fallback type")
     assert_eq(granted[0]["fallback_for"], "specific_card", "fallback_for marker")
-    assert_eq(granted[0]["fallback_rarity"], "legendary", "fallback rarity")
-    # legendary is rarity_ordinal = 6 → 600 coins
-    assert_eq(granted[0]["reward_amount"], 600, "fallback coins amount")
+    assert_eq(granted[0]["rarity"], "legendary", "fallback rarity")
+    assert_eq(granted[0]["reward_amount"], 26, "duplicate particles amount")
 
     async with db._pool.acquire() as conn:  # type: ignore[attr-defined]
         coins = await conn.fetchval("SELECT coins FROM users WHERE user_id = $1", user_id)
@@ -397,8 +396,8 @@ async def test_specific_card_already_owned(db: Database) -> None:
             "SELECT particles FROM user_cards WHERE user_id = $1 AND card_id = 20",
             user_id,
         )
-    assert_eq(coins, 600, "user.coins after fallback")
-    assert_eq(particles, 0, "no particles added (specific_card fallback does not increment)")
+    assert_eq(coins, 0, "user.coins unchanged after duplicate")
+    assert_eq(particles, 26, "duplicate particles added")
 
 
 async def test_specific_card_invalid_id(db: Database) -> None:

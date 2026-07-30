@@ -11,6 +11,7 @@ from infrastructure.case_config import (
     BASE_PARTICLES_BY_RARITY,
     TIER_REWARDS_COUNT,
 )
+from infrastructure.card_economy import calculate_duplicate_particles
 from infrastructure.config import get_settings
 from web import server as web_server
 
@@ -195,8 +196,24 @@ class _OpenRewardCaseDB:
         self.keys -= amount
         return self.keys
 
+    async def increment_daily_quest(self, user_id, quest_id, delta, **_kwargs):
+        return None
+
     async def award_squad_cbrp(self, *args, **kwargs):
         return {"awarded": False}
+
+
+class _RedirectDuplicateCaseDB(_OpenRewardCaseDB):
+    def __init__(self, result):
+        super().__init__()
+        self.duplicate_result = dict(result)
+        self.duplicate_calls = []
+
+    async def grant_duplicate_particles(self, user_id, card_id, rarity, particles):
+        self.duplicate_calls.append((user_id, card_id, rarity, particles))
+        if self.duplicate_result.get("reward_type") == "coins":
+            self.coins += int(self.duplicate_result.get("coins_added") or 0)
+        return dict(self.duplicate_result)
 
 
 class _UniLookupDB:
@@ -254,10 +271,13 @@ async def test_user_case_rewards_and_quest_progress_share_transaction():
         user_id=1001,
         user_case_id=77,
         rewards={"coins": 0, "cards": [], "particles": [], "gems": 0},
+        final_tier=1,
         decrement_legacy_key=False,
     )
 
-    assert result == {"success": True}
+    assert result["success"] is True
+    assert result["converted_duplicates"] == []
+    assert result["converted_card_ids"] == []
     assert db.quest_calls == [(conn, 1001, [("open_case_1", 1, False)])]
     assert conn.tx.exit_exc_type is None
 
@@ -305,11 +325,148 @@ async def test_user_case_transaction_rolls_back_when_quest_write_fails():
         user_id=1001,
         user_case_id=77,
         rewards={"coins": 0, "cards": [], "particles": [], "gems": 0},
+        final_tier=1,
         decrement_legacy_key=False,
     )
 
     assert result == {"success": False, "error": "quest write failed"}
     assert conn.tx.exit_exc_type is RuntimeError
+
+
+class _LimitedLookupDB:
+    async def get_uni_card(self):
+        return None
+
+    async def get_cards_by_rarity(self, rarity):
+        if rarity == "limited":
+            return [{"id": 500, "name": "Event Card", "rarity": "limited"}]
+        return []
+
+
+@pytest.mark.asyncio
+async def test_active_limited_event_allows_limited_card_in_t5(monkeypatch):
+    monkeypatch.setattr(case_system, "LIMITED_EVENT_ACTIVE", True)
+
+    card = await case_system.select_card_by_rarity(_LimitedLookupDB(), "limited", 5)
+
+    assert card == {"id": 500, "name": "Event Card", "rarity": "limited"}
+    assert "limited" in case_system.get_available_rarities_for_tier(5)
+
+
+@pytest.mark.asyncio
+async def test_case_duplicate_payload_uses_redirect_target_for_max_card():
+    db = _RedirectDuplicateCaseDB({
+        "success": True,
+        "reward_type": "particles",
+        "particles_added": 25,
+        "card_id": 88,
+        "card_name": "Redirect Target",
+        "rarity": "epic",
+        "redirected": True,
+        "source_card_id": 77,
+    })
+    rewards = {
+        "coins": 0,
+        "cards": [],
+        "particles": [{
+            "card_id": 77,
+            "card_name": "Max Source",
+            "rarity": "epic",
+            "particles": 25,
+        }],
+        "gems": 0,
+    }
+
+    result = await case_system._apply_case_opening_rewards(
+        db,
+        user_id=1001,
+        user_case_id=501,
+        rewards=rewards,
+        final_tier=3,
+        decrement_legacy_key=False,
+    )
+
+    assert result["success"] is True
+    assert db.duplicate_calls == [(1001, 77, "epic", 25)]
+    assert rewards["particles"] == [{
+        "card_id": 88,
+        "card_name": "Redirect Target",
+        "rarity": "epic",
+        "particles": 25,
+        "redirected": True,
+        "source_card_id": 77,
+        "source_card_name": "Max Source",
+    }]
+
+
+@pytest.mark.asyncio
+async def test_case_duplicate_payload_adds_coin_fallback_when_rarity_is_complete():
+    db = _RedirectDuplicateCaseDB({
+        "success": True,
+        "reward_type": "coins",
+        "coins_added": 325,
+        "amount": 325,
+        "fallback_for": "max_level_duplicate",
+        "source_card_id": 77,
+    })
+    rewards = {
+        "coins": 100,
+        "cards": [],
+        "particles": [{
+            "card_id": 77,
+            "card_name": "Max Source",
+            "rarity": "epic",
+            "particles": 25,
+        }],
+        "gems": 0,
+    }
+
+    result = await case_system._apply_case_opening_rewards(
+        db,
+        user_id=1001,
+        user_case_id=502,
+        rewards=rewards,
+        final_tier=3,
+        decrement_legacy_key=False,
+    )
+
+    assert result["success"] is True
+    assert rewards["particles"] == []
+    assert rewards["coins"] == 425
+    assert db.coins == 425
+
+
+@pytest.mark.asyncio
+async def test_case_reward_metadata_uses_actual_fallback_card_rarity(monkeypatch):
+    async def fallback_card(_db, _rarity, _tier, _case_config=None):
+        return {"id": 77, "name": "Fallback Common", "rarity": "common"}
+
+    monkeypatch.setattr(case_system, "select_rarity", lambda *_args, **_kwargs: "legendary")
+    monkeypatch.setattr(
+        case_system,
+        "check_start_rarity_replacement",
+        lambda rarity, _case_config=None: rarity,
+    )
+    monkeypatch.setattr(case_system, "select_card_by_rarity", fallback_card)
+    monkeypatch.setitem(
+        case_system.TIER_REWARDS_COUNT,
+        1,
+        {"coins": (0, 0), "cards": (1, 1)},
+    )
+
+    rewards = await case_system._generate_single_case_rewards(
+        object(),
+        tier=1,
+        user_id=1001,
+        user_card_ids={77},
+    )
+
+    assert rewards["particles"] == [{
+        "card_id": 77,
+        "card_name": "Fallback Common",
+        "rarity": "common",
+        "particles": calculate_duplicate_particles("common", 1),
+    }]
 
 
 def test_simulate_case_tap_results_uses_server_rolls(monkeypatch):
@@ -910,14 +1067,14 @@ async def test_user_case_claim_idempotent_returns_400_already_claimed(monkeypatc
 
 
 def test_limited_duplicate_drops_nonzero_particles():
-    """Регрессия: limited-дубликат должен давать частицы (base=150, выше divine).
+    """Регрессия: limited-дубликат должен давать частицы (base=160, выше divine).
 
     Раньше base_particles_by_rarity['limited']==0 → дубликаты лимитированных
-    всегда давали 0 частиц. Теперь base=150, T1 множитель 1.30 → 195.
+    всегда давали 0 частиц. Теперь base=160, T1 множитель 1.30 → 208.
     """
     amount = case_system.calculate_particles_for_duplicate("limited", 1, False, None)
     assert amount > 0
-    assert amount == 195  # int(150 * 1.30)
+    assert amount == 208  # int(160 * 1.30)
 
 
 def test_limited_duplicate_above_divine():

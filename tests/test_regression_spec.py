@@ -557,8 +557,8 @@ def test_simplified_card_stats_match_arena_and_collection():
     assert db_stats["is_max_level"] is True
 
 
-def test_simplified_upgrade_cost_uses_regular_level_9_cost():
-    """Переход simplified 1->2 стоит как обычный 9->10 для той же редкости."""
+def test_simplified_upgrade_cost_uses_dedicated_economy_price():
+    """Переход simplified 1->2 не зависит от цены обычного 9->10."""
     from infrastructure.config import DatabaseSettings
     from infrastructure.database import Database
 
@@ -566,8 +566,12 @@ def test_simplified_upgrade_cost_uses_regular_level_9_cost():
 
     assert db.get_card_max_level({"simplified_levelup": True}) == 2
     assert db.get_upgrade_cost("legendary", level=1, simplified_levelup=True) == {
-        "particles": db.calculate_upgrade_particles("legendary", 9),
-        "coins": db.calculate_upgrade_coins("legendary", 9),
+        "particles": 640,
+        "coins": 13000,
+    }
+    assert db.get_upgrade_cost("legendary", level=2, simplified_levelup=True) == {
+        "particles": 0,
+        "coins": 0,
     }
 
 

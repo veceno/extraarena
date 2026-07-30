@@ -404,6 +404,41 @@ class ShopSetOwnedCardFallbackConn(ShopSetRewardConn):
         return None
 
 
+class ShopSetOwnedCardParticleConn(ShopSetRewardConn):
+    def __init__(self):
+        super().__init__()
+        self.particles = 10
+
+    async def fetchrow(self, query, *args):
+        normalized = " ".join(str(query).split())
+        if "SELECT id, name, rarity, simplified_levelup FROM cards" in normalized:
+            return {
+                "id": 77,
+                "name": "Duplicate Rare",
+                "rarity": "rare",
+                "simplified_levelup": False,
+            }
+        if "PERCENTILE_DISC" in normalized:
+            return {"eligible_count": 9, "reference_level": 1}
+        if "INSERT INTO user_cards" in normalized:
+            return None
+        if "SELECT name, rarity FROM cards" in normalized:
+            return {"name": "Duplicate Rare", "rarity": "rare"}
+        if "FROM users" in normalized and "FOR UPDATE" in normalized:
+            return {"coins": 1000}
+        if "FROM user_cards uc" in normalized and "FOR UPDATE OF uc" in normalized:
+            return {
+                "card_id": 77,
+                "level": 1,
+                "name": "Duplicate Rare",
+                "simplified_levelup": False,
+            }
+        if "UPDATE user_cards" in normalized and "RETURNING particles" in normalized:
+            self.particles += int(args[0])
+            return {"particles": self.particles}
+        return None
+
+
 @pytest.mark.asyncio
 async def test_successful_payment_does_not_grant_rewards_when_processing_claim_fails():
     db = ClaimFailedPaymentDB()
@@ -876,6 +911,27 @@ async def test_shop_set_card_background_reward_replaces_owned_card_with_gems():
     assert {"type": "gems", "amount": 50, "fallback_for": "owned_card", "card_id": 77} in granted
     assert not any("INSERT INTO user_cards" in query for query, _args in conn.execute_calls)
     assert any("UPDATE users SET gems" in query for query, _args in conn.execute_calls)
+
+
+@pytest.mark.asyncio
+async def test_shop_set_owned_card_without_background_converts_to_particles():
+    db = ShopSetRewardApplyDB()
+    conn = ShopSetOwnedCardParticleConn()
+    rewards, error = db._normalize_shop_set_rewards([{"type": "card", "card_id": 77}])
+    assert error is None
+
+    granted = await db._apply_shop_set_rewards_on_conn(conn, 1001, 13, rewards)
+
+    assert granted == [{
+        "type": "particles",
+        "amount": 3,
+        "fallback_for": "owned_card",
+        "card_id": 77,
+        "card_name": "Duplicate Rare",
+        "rarity": "rare",
+    }]
+    assert conn.particles == 13
+    assert not any("SET level = user_cards.level + 1" in query for query, _args in conn.execute_calls)
 
 
 @pytest.mark.asyncio

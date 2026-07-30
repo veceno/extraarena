@@ -4,6 +4,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from infrastructure.config import get_settings
 from infrastructure.database import Database
+from infrastructure.card_economy import calculate_duplicate_particles
 from infrastructure.case_config import fallback_coins_for_rarity, RARITY_ORDER
 from web import server as web_server
 
@@ -133,9 +134,16 @@ async def _grant_entries_via_mock(db, *, user_id, track_type, position, entries)
             if hasattr(db, "get_user_cards"):
                 owned = await db.get_user_cards(user_id)
                 owned_ids = {int((c or {}).get("id") or (c or {}).get("card_id") or 0) for c in (owned or [])}
-            cards = [c for c in (cards or []) if int((c or {}).get("id") or 0) not in owned_ids]
-            if cards:
-                card = cards[0]
+            duplicate_candidates = [
+                c for c in (cards or [])
+                if int((c or {}).get("id") or 0) in owned_ids
+            ]
+            new_cards = [
+                c for c in (cards or [])
+                if int((c or {}).get("id") or 0) not in owned_ids
+            ]
+            if new_cards:
+                card = new_cards[0]
                 if hasattr(db, "add_card_to_user"):
                     await db.add_card_to_user(user_id, int(card["id"]))
                 granted.append({
@@ -144,6 +152,22 @@ async def _grant_entries_via_mock(db, *, user_id, track_type, position, entries)
                     "card_id": int(card["id"]),
                     "card_name": card.get("name", "") or "",
                     "rarity": card.get("rarity", "") or "",
+                    "requested_rarities": rarities,
+                })
+            elif duplicate_candidates:
+                card = duplicate_candidates[0]
+                card_id = int(card["id"])
+                rarity = str(card.get("rarity") or rarities[0] or "common")
+                particles = calculate_duplicate_particles(rarity)
+                if hasattr(db, "add_particles_to_card"):
+                    await db.add_particles_to_card(user_id, card_id, particles)
+                granted.append({
+                    "reward_type": "particles",
+                    "reward_amount": particles,
+                    "fallback_for": "card",
+                    "card_id": card_id,
+                    "card_name": card.get("name", "") or "",
+                    "rarity": rarity,
                     "requested_rarities": rarities,
                 })
             else:
@@ -179,15 +203,16 @@ async def _grant_entries_via_mock(db, *, user_id, track_type, position, entries)
                 owned = await db.get_user_cards(user_id)
                 owned_ids = {int((c or {}).get("id") or (c or {}).get("card_id") or 0) for c in (owned or [])}
             if card_id in owned_ids:
-                fallback_coins = fallback_coins_for_rarity(card_rarity)
-                if hasattr(db, "update_user_coins"):
-                    await db.update_user_coins(user_id, fallback_coins)
+                particles = calculate_duplicate_particles(card_rarity)
+                if hasattr(db, "add_particles_to_card"):
+                    await db.add_particles_to_card(user_id, card_id, particles)
                 granted.append({
-                    "reward_type": "coins",
-                    "reward_amount": fallback_coins,
+                    "reward_type": "particles",
+                    "reward_amount": particles,
                     "fallback_for": "specific_card",
                     "card_id": card_id,
-                    "fallback_rarity": card_rarity,
+                    "card_name": card_name,
+                    "rarity": card_rarity,
                 })
             else:
                 if hasattr(db, "add_card_to_user"):
@@ -810,6 +835,7 @@ class _CardRewardClaimDB(_CaseRewardClaimDB):
         self.owned_cards = list(owned_cards or [])
         self.added_cards = []
         self.coins_added = 0
+        self.particles_added = []
 
     async def get_reward_track_entries(self, track_type, position):
         return [
@@ -842,6 +868,14 @@ class _CardRewardClaimDB(_CaseRewardClaimDB):
 
     async def update_user_coins(self, user_id, amount):
         self.coins_added += int(amount)
+
+    async def add_particles_to_card(self, user_id, card_id, particles):
+        self.particles_added.append({
+            "user_id": int(user_id),
+            "card_id": int(card_id),
+            "particles": int(particles),
+        })
+        return {"success": True}
 
 
 class _InvalidSpecificCardRewardClaimDB(_CardRewardClaimDB):
@@ -1308,7 +1342,7 @@ async def test_specific_card_reward_missing_card_id_returns_readable_error(monke
 
 
 @pytest.mark.asyncio
-async def test_specific_card_reward_duplicate_falls_back_to_coins(monkeypatch):
+async def test_specific_card_reward_duplicate_converts_to_particles(monkeypatch):
     monkeypatch.setenv("BOT_TOKEN", "bot-token")
     monkeypatch.setenv("WEBAPP_HOST", "127.0.0.1")
     monkeypatch.setenv("ENVIRONMENT", "development")
@@ -1327,15 +1361,17 @@ async def test_specific_card_reward_duplicate_falls_back_to_coins(monkeypatch):
         assert response.status == 200
         assert body["granted"] == [
             {
-                "reward_type": "coins",
-                "reward_amount": 200,
+                "reward_type": "particles",
+                "reward_amount": 3,
                 "fallback_for": "specific_card",
                 "card_id": 46,
-                "fallback_rarity": "rare",
+                "card_name": "Exact Card",
+                "rarity": "rare",
             }
         ]
         assert db.added_cards == []
-        assert db.coins_added == 200
+        assert db.coins_added == 0
+        assert db.particles_added == [{"user_id": 1001, "card_id": 46, "particles": 3}]
     finally:
         await client.close()
         get_settings.cache_clear()

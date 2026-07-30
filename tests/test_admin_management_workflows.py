@@ -1181,7 +1181,7 @@ async def test_admin_case_config_http_read_and_patch_live(monkeypatch):
         read_body = await read.json()
         assert read.status == 200
         assert read_body["status"] == "ok"
-        assert read_body["data"]["base_particles_by_rarity"]["limited"] == 150
+        assert read_body["data"]["base_particles_by_rarity"]["limited"] == 160
 
         # POST partial base_particles patch
         patch = await client.post(

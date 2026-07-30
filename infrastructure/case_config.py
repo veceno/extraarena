@@ -10,6 +10,12 @@ import copy
 from dataclasses import dataclass
 from typing import Dict, List
 
+from infrastructure.card_economy import (
+    BASE_PARTICLES_BY_RARITY,
+    T5_COMMON_JACKPOT_PARTICLES,
+    TIER_PARTICLES_MULTIPLIER,
+)
+
 
 # Порядок редкостей от самой частой к самой редкой
 RARITY_ORDER = [
@@ -52,7 +58,7 @@ PARTICLES_FALLBACK_RARITY_MULTIPLIER = {
     "limited": 1.7,
 }
 
-# Нижняя граница для limited-карт (BASE_PARTICLES_BY_RARITY['limited'] == 0, формула даёт 0).
+# Нижняя граница для старых fallback-наград частицами.
 PARTICLES_FALLBACK_COIN_CAP = 3200
 
 
@@ -161,40 +167,6 @@ TIER_REWARDS_COUNT = {
         "gems_amount": (10, 50), # Количество гемов
     },
 }
-
-# Базовое количество частиц по редкости
-# Правки 2026-06-25: значения снижены ~на 75% (math.ceil(base × 0.25)) для
-# сохранения иерархии common < rare < superrare < … < divine.
-BASE_PARTICLES_BY_RARITY = {
-    "common": 2,      # было 5
-    "rare": 3,        # было 10
-    "start": 4,       # было 15
-    "superrare": 5,   # было 20
-    "epic": 10,       # было 40
-    "legendary": 20,  # было 80
-    "mythic": 40,     # было 160
-    "divine": 100,    # было 400
-    "limited": 150,   # Лимитированные дают частицы (выше divine): дубликаты конвертируются в частицы
-}
-
-# Множитель частиц от тира кейса
-# Правки 2026-06-25: T2–T5 снижены ~на 75% (×0.25, округлено вверх до сотых).
-# T1 оставлен 1.0, чтобы базовый common-дубль не схлопнулся в ноль
-# (1.25 → ceil → 2 частицы × 1.0 = 2, раньше было 5 × 1.0 = 5, итого −60% по
-# T1 common; редкие редкости на T1 теперь дают меньше, но всё ещё видимо).
-# Правки 2026-06-25 (повтор №1): T2–T5 подняты на +15–20% от прежних значений,
-# чтобы int(base × mult) ≥ 1 для common на всех тирах (фикс «+0 частиц»).
-# Правки 2026-06-25 (повтор №2): +30% поверх повтора №1 (T1–T5 включительно).
-TIER_PARTICLES_MULTIPLIER = {
-    1: 1.30,   # было 1.00 → 1.30 (+30%)
-    2: 0.65,   # было 0.38 → 0.50 → 0.65 (+30%)
-    3: 0.81,   # было 0.50 → 0.62 → 0.81 (+31%)
-    4: 1.14,   # было 0.75 → 0.88 → 1.14 (+30%)
-    5: 1.95,   # было 1.25 → 1.50 → 1.95 (+30%)
-}
-
-# Джекпот частиц для Обычной карты из T5
-T5_COMMON_JACKPOT_PARTICLES = 125  # было 500 (×0.25)
 
 # Шанс апгрейда тира на каждом тапе
 TIER_UPGRADE_CHANCES = {

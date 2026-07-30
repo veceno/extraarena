@@ -91,8 +91,9 @@ from infrastructure.shop_config import (
     CASE_PACKS,
     SHOP_PRICES,
     GEM_PACKAGES,
-    PARTICLES_COSTS,
+    PARTICLE_SHOP_RARITIES,
     build_shop_catalog,
+    calculate_particle_shop_offer,
     order_particles_for_shop,
 )
 from web.extraid_handlers import (
@@ -1585,6 +1586,10 @@ REWARD_CONFIG_ERROR_MESSAGES = {
     "specific_card_id_required": "Для конкретной карты укажите card_id.",
     "specific_card_not_found": "Карта для награды не найдена.",
     "specific_card_must_be_warrior": "В ExtraPass можно выдавать только карты бойцов.",
+    "reward_card_id_required": "Для частиц укажите card_id.",
+    "reward_card_not_found": "Карта для частиц не найдена.",
+    "cosmetic_slug_required": "Для косметической награды укажите cosmetic_slug.",
+    "reward_cosmetic_not_found": "Косметический предмет для награды не найден.",
     "invalid_reward_meta": "Meta JSON награды заполнен некорректно.",
 }
 ADMIN_SEASON_RESET_PREVIEW_PLAYER_LIMIT = 200
@@ -1654,6 +1659,12 @@ def _specific_card_id_from_meta(reward_meta: Any) -> int | None:
     return card_id if card_id > 0 else None
 
 
+def _cosmetic_slug_from_reward_meta(reward_meta: Any) -> str | None:
+    meta = _normalize_reward_meta_value(reward_meta) or {}
+    slug = str(meta.get("cosmetic_slug") or meta.get("slug") or "").strip()
+    return slug or None
+
+
 def _validate_reward_entry_config(
     reward_type: Any,
     reward_amount: Any,
@@ -1679,6 +1690,16 @@ def _validate_reward_entry_config(
             raise ValueError("invalid_card_reward_amount")
         if _specific_card_id_from_meta(meta) is None:
             raise ValueError("specific_card_id_required")
+    if reward_type_text == "particles":
+        if amount <= 0:
+            raise ValueError("invalid_reward_amount")
+        if _specific_card_id_from_meta(meta) is None:
+            raise ValueError("reward_card_id_required")
+    if reward_type_text == "cosmetic":
+        if amount < 0:
+            raise ValueError("invalid_reward_amount")
+        if _cosmetic_slug_from_reward_meta(meta) is None:
+            raise ValueError("cosmetic_slug_required")
     return {"reward_type": reward_type_text, "reward_amount": amount, "reward_meta": meta}
 
 
@@ -2177,10 +2198,29 @@ def _normalize_reward_track_import_payload(payload: Any, season: dict[str, Any])
         if position < int(track_def["start_position"]) or position > int(track_def["end_position"]):
             raise ValueError(f"position_out_of_track_scope:{track_def['id']}:{position}")
 
+        reward_type = str(raw.get("reward_type") or raw.get("type") or "").strip()
         reward_amount = int(raw.get("reward_amount") if raw.get("reward_amount") is not None else raw.get("amount", 0))
         reward_meta = raw.get("reward_meta", raw.get("meta"))
+        reward_meta = dict(reward_meta) if isinstance(reward_meta, dict) else reward_meta
+        if reward_type == "particles" and raw.get("card_id") is not None:
+            reward_meta = dict(reward_meta or {})
+            reward_meta.setdefault("card_id", raw["card_id"])
+        if reward_type == "cosmetic":
+            reward_meta = dict(reward_meta or {})
+            if raw.get("cosmetic_slug") is not None:
+                reward_meta.setdefault("cosmetic_slug", raw["cosmetic_slug"])
+            if raw.get("auto_equip") is not None:
+                reward_meta.setdefault("auto_equip", bool(raw["auto_equip"]))
+            reward_amount = 1
+        if reward_type == "guaranteed_card":
+            reward_type = (
+                "specific_card"
+                if _specific_card_id_from_meta(reward_meta) is not None
+                else "card"
+            )
+            reward_amount = 1
         reward_config = _validate_reward_entry_config(
-            raw.get("reward_type") or raw.get("type") or "",
+            reward_type,
             reward_amount,
             reward_meta,
         )
@@ -2279,7 +2319,30 @@ async def _admin_validate_reward_track_config(db: Any, row: dict[str, Any]) -> s
     except ValueError as exc:
         return _reward_config_error_code(exc)
 
-    if reward_config["reward_type"] != "specific_card":
+    reward_type = reward_config["reward_type"]
+    if reward_type == "particles":
+        card_id = _specific_card_id_from_meta(reward_config.get("reward_meta"))
+        if card_id is None:
+            return "reward_card_id_required"
+        get_card_info = getattr(db, "get_card_info", None)
+        if not get_card_info:
+            return None
+        return None if await get_card_info(card_id) else "reward_card_not_found"
+
+    if reward_type == "cosmetic":
+        slug = _cosmetic_slug_from_reward_meta(reward_config.get("reward_meta"))
+        if not slug:
+            return "cosmetic_slug_required"
+        get_cosmetic_item = getattr(db, "get_cosmetic_item", None)
+        if not get_cosmetic_item:
+            return None
+        return (
+            None
+            if await get_cosmetic_item(slug)
+            else "reward_cosmetic_not_found"
+        )
+
+    if reward_type != "specific_card":
         return None
 
     card_id = _specific_card_id_from_meta(reward_config.get("reward_meta"))
@@ -8961,11 +9024,16 @@ def create_web_app(
             )
 
     async def card_add_particles_handler(request: web.Request) -> web.Response:
-        """Обработчик добавления частиц к карте."""
+        """Административная выдача частиц к уже принадлежащей игроку карте."""
         user_id = await require_user_id(request)
 
         if request.method != "POST":
             return web.json_response({"error": "method_not_allowed"}, status=405)
+        if not await _is_admin_user(db, user_id):
+            return web.json_response(
+                {"success": False, "error": "admin_access_required"},
+                status=403,
+            )
 
         try:
             data = await request.json()
@@ -10696,14 +10764,98 @@ def create_web_app(
 
         if rewards.get("coins", 0) > 0:
             await db.update_user_coins(user_id, rewards["coins"])
-        for card_reward in rewards.get("cards", []):
-            await db.add_card_to_user(user_id, card_reward["card_id"])
-        for particle_reward in rewards.get("particles", []):
-            await db.add_particles_to_card(
-                user_id,
-                particle_reward["card_id"],
-                particle_reward["particles"],
-            )
+        original_particle_rewards = list(rewards.get("particles", []))
+        applied_particle_rewards: list[dict[str, Any]] = []
+        converted_card_ids: set[int] = set()
+        duplicate_fallback_coins = 0
+
+        def apply_duplicate_result(
+            result: dict[str, Any],
+            *,
+            source_card_id: int,
+            source_card_name: str,
+            rarity: str,
+        ) -> None:
+            nonlocal duplicate_fallback_coins
+            if str(result.get("reward_type") or "particles") == "coins":
+                duplicate_fallback_coins += int(result.get("coins_added") or result.get("amount") or 0)
+                return
+            applied_particle_rewards.append({
+                "card_id": int(result.get("card_id") or source_card_id),
+                "card_name": str(result.get("card_name") or source_card_name),
+                "rarity": str(result.get("rarity") or rarity),
+                "particles": int(result.get("particles_added") or result.get("amount") or 0),
+                "redirected": bool(result.get("redirected", False)),
+                "source_card_id": source_card_id,
+                "source_card_name": source_card_name,
+            })
+
+        for card_reward in list(rewards.get("cards", [])):
+            grant_duplicate = getattr(db, "grant_card_or_duplicate", None)
+            if callable(grant_duplicate):
+                grant_result = await grant_duplicate(
+                    user_id,
+                    card_reward["card_id"],
+                    tier=final_tier,
+                    source="case_key",
+                    source_metadata={
+                        "opening_id": opening_id,
+                        "opening_token": opening_token,
+                        "final_tier": final_tier,
+                    },
+                )
+                if not grant_result.get("success"):
+                    return {
+                        "success": False,
+                        "error": grant_result.get("error", "card_grant_failed"),
+                    }, 400
+                if grant_result.get("is_new", False):
+                    card_reward["is_new"] = True
+                    card_reward["level"] = int(grant_result.get("level") or 1)
+                    if grant_result.get("catchup"):
+                        card_reward["catchup"] = dict(grant_result["catchup"])
+                else:
+                    source_card_id = int(card_reward["card_id"])
+                    converted_card_ids.add(source_card_id)
+                    apply_duplicate_result(
+                        grant_result,
+                        source_card_id=source_card_id,
+                        source_card_name=str(card_reward.get("card_name") or ""),
+                        rarity=str(card_reward.get("rarity") or "common"),
+                    )
+            else:
+                await db.add_card_to_user(user_id, card_reward["card_id"])
+        if converted_card_ids:
+            rewards["cards"] = [
+                item for item in rewards.get("cards", [])
+                if int(item["card_id"]) not in converted_card_ids
+            ]
+        for particle_reward in original_particle_rewards:
+            duplicate_grant = getattr(db, "grant_duplicate_particles", None)
+            if callable(duplicate_grant):
+                grant_result = await duplicate_grant(
+                    user_id,
+                    int(particle_reward["card_id"]),
+                    str(particle_reward.get("rarity") or "common"),
+                    int(particle_reward["particles"]),
+                )
+                if not grant_result.get("success"):
+                    return {"success": False, "error": grant_result.get("error", "duplicate_grant_failed")}, 400
+                apply_duplicate_result(
+                    grant_result,
+                    source_card_id=int(particle_reward["card_id"]),
+                    source_card_name=str(particle_reward.get("card_name") or ""),
+                    rarity=str(particle_reward.get("rarity") or "common"),
+                )
+            else:
+                await db.add_particles_to_card(
+                    user_id,
+                    particle_reward["card_id"],
+                    particle_reward["particles"],
+                )
+                applied_particle_rewards.append(dict(particle_reward))
+        rewards["particles"] = applied_particle_rewards
+        rewards["coins"] = int(rewards.get("coins") or 0) + duplicate_fallback_coins
         if rewards.get("gems", 0) > 0:
             await db.add_gems(user_id, rewards["gems"])
 
@@ -10809,10 +10961,20 @@ def create_web_app(
             user_id=user_id,
             user_case_id=user_case_id,
             rewards=rewards,
+            final_tier=final_tier,
             decrement_legacy_key=is_legacy_key_case,
         )
         if not applied.get("success"):
             return {"success": False, "error": applied.get("error", "case_rewards_failed"), "message": "Не удалось применить награды"}, 400
+        converted_card_ids = {
+            int(card_id)
+            for card_id in (applied.get("converted_card_ids") or [])
+        }
+        if converted_card_ids:
+            rewards["cards"] = [
+                item for item in rewards.get("cards", [])
+                if int(item["card_id"]) not in converted_card_ids
+            ]
 
         try:
             event_source = f"case_open_user:{user_id}:{opening_id}"
@@ -20631,16 +20793,15 @@ def create_web_app(
             purchased_today = purchased_raw if isinstance(purchased_raw, list) else []
 
             if rotation_date != today or not raw_cards or not isinstance(raw_cards, list) or len(raw_cards) == 0:
-                common = await db.get_random_cards_by_rarities(["common"], limit=1)
-                rare = await db.get_random_cards_by_rarities(["rare"], limit=1)
-                epic = await db.get_random_cards_by_rarities(["epic"], limit=1)
-
-                raw_cards = [
-                    common[0]["id"] if common else None,
-                    rare[0]["id"] if rare else None,
-                    epic[0]["id"] if epic else None,
-                ]
-                raw_cards = [c for c in raw_cards if c is not None]
+                raw_cards = []
+                for rarity in PARTICLE_SHOP_RARITIES:
+                    rarity_cards = await db.get_random_owned_upgradeable_cards_by_rarity(
+                        user_id,
+                        rarity,
+                        limit=1,
+                    )
+                    if rarity_cards:
+                        raw_cards.append(int(rarity_cards[0]["id"]))
 
                 await db.update_user_settings(
                     user_id,
@@ -20681,14 +20842,22 @@ def create_web_app(
                 if not row:
                     continue
                 rarity = row["rarity"]
-                cost = PARTICLES_COSTS.get(rarity, PARTICLES_COSTS["common"])
                 level = int(row.get("level") or 1)
                 current_particles = int(row.get("current_particles") or 0)
                 simplified_levelup = bool(row.get("simplified_levelup", False))
                 max_level = db.get_card_max_level({"simplified_levelup": simplified_levelup})
                 is_max_level = level >= max_level
                 upgrade_cost = db.get_upgrade_cost(rarity, level, simplified_levelup)
+                if is_max_level:
+                    upgrade_cost = db.get_upgrade_cost(
+                        rarity,
+                        max_level - 1,
+                        simplified_levelup,
+                    )
                 upgrade_particles_required = 0 if is_max_level else int(upgrade_cost.get("particles") or 0)
+                cost = calculate_particle_shop_offer(
+                    int(upgrade_cost.get("particles") or 0)
+                )
                 progress_pct = 100 if is_max_level else (
                     min(100, round((current_particles / upgrade_particles_required) * 100))
                     if upgrade_particles_required > 0 else 0
@@ -20757,6 +20926,7 @@ def create_web_app(
                 """
                 SELECT c.rarity,
                        c.simplified_levelup,
+                       uc.card_id IS NOT NULL AS owned,
                        COALESCE(uc.level, 1) AS level
                 FROM cards c
                 LEFT JOIN user_cards uc
@@ -20771,6 +20941,12 @@ def create_web_app(
 
             allow_max_level_particle_purchase = bool(app.get("shop_allow_max_level_particles", False))
             card_info = dict(card_row)
+            if not bool(card_info.get("owned")):
+                return web.json_response({
+                    "success": False,
+                    "error": "card_not_owned",
+                    "message": "Частицы можно покупать только для полученных карт.",
+                }, status=400)
             simplified_levelup = bool(card_info.get("simplified_levelup", False))
             current_level = int(card_info.get("level") or 1)
             max_level = db.get_card_max_level({"simplified_levelup": simplified_levelup})
@@ -20782,9 +20958,11 @@ def create_web_app(
                 }, status=400)
 
             rarity = card_info["rarity"]
-            cost = PARTICLES_COSTS.get(rarity)
-            if not cost:
-                return web.json_response({"error": "unsupported_rarity"}, status=400)
+            price_level = max_level - 1 if current_level >= max_level else current_level
+            upgrade_cost = db.get_upgrade_cost(rarity, price_level, simplified_levelup)
+            cost = calculate_particle_shop_offer(
+                int(upgrade_cost.get("particles") or 0)
+            )
 
             coins_cost = cost["coins"]
             particles_amount = cost["particles"]

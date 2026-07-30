@@ -19,13 +19,12 @@ from infrastructure.case_config import (
     START_RARITY_REPLACEMENT,
     TIER_REWARDS_COUNT,
     BASE_PARTICLES_BY_RARITY,
-    TIER_PARTICLES_MULTIPLIER,
-    T5_COMMON_JACKPOT_PARTICLES,
     TIER_UPGRADE_CHANCES,
     LIMITED_EVENT_ACTIVE,
     LIMITED_EVENT_PROBABILITY,
     resolve_case_config,
 )
+from infrastructure.card_economy import calculate_duplicate_particles
 
 MAX_TAP_NUMBER = max(TIER_UPGRADE_CHANCES.keys(), default=4)
 ULTRA_REROLL_ATTEMPTS = 1
@@ -202,7 +201,7 @@ def get_available_rarities_for_tier(tier: int, case_config: dict = None) -> List
     лимитированные карты никогда не будут выпадать (баг: limited-event не доставлял
     limited-карты, а дубликаты divine получали limited-частицы). С событием limited
     остаётся в available_rarities → get_cards_by_rarity('limited') выбирает реальную
-    limited-карту, и calculate_particles_for_duplicate('limited',...) считает 150×mult.
+    limited-карту.
     """
     cc = resolve_case_config(case_config)
     max_rarity = cc["max_rarity_by_tier"].get(tier, "common")
@@ -211,7 +210,10 @@ def get_available_rarities_for_tier(tier: int, case_config: dict = None) -> List
     max_index = rarity_order.index(max_rarity) if max_rarity in rarity_order else 0
     available = list(rarity_order[:max_index + 1])
     # limited доступна только на T5 и только при активном событии (см. select_rarity).
-    if tier == 5 and cc.get("limited_event_active") and "limited" not in available:
+    limited_active = bool(cc.get("limited_event_active"))
+    if case_config is None:
+        limited_active = limited_active or bool(LIMITED_EVENT_ACTIVE)
+    if tier == 5 and limited_active and "limited" not in available:
         available.append("limited")
     return available
 
@@ -275,6 +277,13 @@ def calculate_particles_for_duplicate(rarity: str, tier: int, is_t5_common: bool
     Returns:
         Количество частиц
     """
+    if case_config is None:
+        return calculate_duplicate_particles(
+            rarity,
+            tier,
+            is_t5_common=is_t5_common,
+        )
+
     cc = resolve_case_config(case_config)
     # Джекпот для обычной карты из T5
     if is_t5_common and tier == 5 and rarity == "common":
@@ -379,6 +388,9 @@ async def _generate_single_case_rewards(
             # Если карта не найдена, пропускаем
             continue
 
+        # Fallback внутри select_card_by_rarity мог вернуть карту другой
+        # редкости; reward metadata и компенсация должны описывать факт.
+        rarity = str(card.get("rarity") or rarity).lower()
         card_id = card["id"]
         is_duplicate = card_id in user_card_ids
 
@@ -511,8 +523,37 @@ async def _apply_case_opening_rewards(
     user_id: int,
     user_case_id: int,
     rewards: Dict[str, Any],
+    final_tier: int,
     decrement_legacy_key: bool,
 ) -> Dict[str, Any]:
+    converted_duplicates: list[dict[str, Any]] = []
+    converted_card_ids: list[int] = []
+    original_particle_rewards = list(rewards.get("particles", []))
+    applied_particle_rewards: list[dict[str, Any]] = []
+    duplicate_fallback_coins = 0
+
+    def apply_duplicate_result(
+        result: dict[str, Any],
+        *,
+        source_card_id: int,
+        source_card_name: str,
+        rarity: str,
+    ) -> None:
+        nonlocal duplicate_fallback_coins
+        reward_type = str(result.get("reward_type") or "particles")
+        if reward_type == "coins":
+            duplicate_fallback_coins += int(result.get("coins_added") or result.get("amount") or 0)
+            return
+        applied_particle_rewards.append({
+            "card_id": int(result.get("card_id") or source_card_id),
+            "card_name": str(result.get("card_name") or source_card_name),
+            "rarity": str(result.get("rarity") or rarity),
+            "particles": int(result.get("particles_added") or result.get("amount") or 0),
+            "redirected": bool(result.get("redirected", False)),
+            "source_card_id": source_card_id,
+            "source_card_name": source_card_name,
+        })
+
     pool = getattr(db, "_pool", None)
     if pool:
         try:
@@ -523,29 +564,130 @@ async def _apply_case_opening_rewards(
                             "UPDATE users SET coins = GREATEST(0, COALESCE(coins, 0) + $1), updated_at = NOW() WHERE user_id = $2",
                             int(rewards["coins"]), user_id,
                         )
+                    catchup_snapshot = None
+                    snapshot_reader = getattr(
+                        db,
+                        "_get_card_catchup_snapshot_on_conn",
+                        None,
+                    )
+                    if rewards["cards"] and callable(snapshot_reader):
+                        catchup_snapshot = await snapshot_reader(conn, user_id)
                     for card_reward in rewards["cards"]:
                         card_id = int(card_reward["card_id"])
-                        card_exists = await conn.fetchval("SELECT 1 FROM cards WHERE id = $1", card_id)
-                        if not card_exists:
-                            raise ValueError(f"card_not_found:{card_id}")
-                        await conn.execute(
-                            """
-                            INSERT INTO user_cards (user_id, card_id, level, particles)
-                            VALUES ($1, $2, 1, 0)
-                            ON CONFLICT (user_id, card_id) DO NOTHING
-                            """,
-                            user_id, card_id,
-                        )
-                    for particle_reward in rewards["particles"]:
-                        await conn.execute(
-                            """
-                            UPDATE user_cards
-                            SET particles = COALESCE(particles, 0) + $1
-                            WHERE user_id = $2 AND card_id = $3
-                            """,
-                            int(particle_reward["particles"]),
-                            user_id,
-                            int(particle_reward["card_id"]),
+                        grant_card = getattr(db, "grant_card_or_duplicate", None)
+                        if callable(grant_card):
+                            grant_result = await grant_card(
+                                user_id,
+                                card_id,
+                                tier=final_tier,
+                                source="case",
+                                source_metadata={
+                                    "user_case_id": user_case_id,
+                                    "final_tier": final_tier,
+                                },
+                                catchup_snapshot=catchup_snapshot,
+                                conn=conn,
+                            )
+                        else:
+                            card_exists = await conn.fetchval(
+                                "SELECT 1 FROM cards WHERE id = $1",
+                                card_id,
+                            )
+                            if not card_exists:
+                                raise ValueError(f"card_not_found:{card_id}")
+                            inserted = await conn.fetchrow(
+                                """
+                                INSERT INTO user_cards (user_id, card_id, level, particles)
+                                VALUES ($1, $2, 1, 0)
+                                ON CONFLICT (user_id, card_id) DO NOTHING
+                                RETURNING card_id
+                                """,
+                                user_id, card_id,
+                            )
+                            grant_result = {
+                                "success": True,
+                                "is_new": bool(inserted),
+                            }
+                        if not grant_result.get("success"):
+                            raise ValueError(
+                                str(grant_result.get("error") or f"card_grant_failed:{card_id}")
+                            )
+                        if grant_result.get("is_new", False):
+                            card_reward["is_new"] = True
+                            card_reward["level"] = int(grant_result.get("level") or 1)
+                            if grant_result.get("catchup"):
+                                card_reward["catchup"] = dict(grant_result["catchup"])
+                        else:
+                            rarity = str(card_reward.get("rarity") or "common").lower()
+                            if not callable(grant_card):
+                                particles = calculate_duplicate_particles(rarity, final_tier)
+                                updated = await conn.fetchrow(
+                                    """
+                                    UPDATE user_cards
+                                    SET particles = COALESCE(particles, 0) + $1
+                                    WHERE user_id = $2 AND card_id = $3
+                                    RETURNING particles
+                                    """,
+                                    particles,
+                                    user_id,
+                                    card_id,
+                                )
+                                grant_result = {
+                                    "success": bool(updated),
+                                    "reward_type": "particles",
+                                    "card_id": card_id,
+                                    "card_name": card_reward.get("card_name", ""),
+                                    "rarity": rarity,
+                                    "particles_added": particles,
+                                }
+                            converted_card_ids.append(card_id)
+                            apply_duplicate_result(
+                                grant_result,
+                                source_card_id=card_id,
+                                source_card_name=str(card_reward.get("card_name") or ""),
+                                rarity=rarity,
+                            )
+                            if str(grant_result.get("reward_type") or "particles") == "particles":
+                                converted_duplicates.append(applied_particle_rewards[-1])
+                    for particle_reward in original_particle_rewards:
+                        particle_card_id = int(particle_reward["card_id"])
+                        particle_rarity = str(particle_reward.get("rarity") or "common").lower()
+                        particle_amount = int(particle_reward["particles"])
+                        duplicate_grant = getattr(db, "grant_duplicate_particles", None)
+                        if callable(duplicate_grant):
+                            grant_result = await duplicate_grant(
+                                user_id,
+                                particle_card_id,
+                                particle_rarity,
+                                particle_amount,
+                                conn=conn,
+                            )
+                        else:
+                            await conn.execute(
+                                """
+                                UPDATE user_cards
+                                SET particles = COALESCE(particles, 0) + $1
+                                WHERE user_id = $2 AND card_id = $3
+                                """,
+                                particle_amount,
+                                user_id,
+                                particle_card_id,
+                            )
+                            grant_result = {
+                                "success": True,
+                                "reward_type": "particles",
+                                "card_id": particle_card_id,
+                                "card_name": particle_reward.get("card_name", ""),
+                                "rarity": particle_rarity,
+                                "particles_added": particle_amount,
+                            }
+                        if not grant_result.get("success"):
+                            raise ValueError(str(grant_result.get("error") or "duplicate_grant_failed"))
+                        apply_duplicate_result(
+                            grant_result,
+                            source_card_id=particle_card_id,
+                            source_card_name=str(particle_reward.get("card_name") or ""),
+                            rarity=particle_rarity,
                         )
                     if rewards["gems"] > 0:
                         await conn.execute(
@@ -576,24 +718,85 @@ async def _apply_case_opening_rewards(
                             user_id,
                             [("open_case_1", 1, False)],
                         )
-            return {"success": True}
+            rewards["particles"] = applied_particle_rewards
+            rewards["coins"] = int(rewards.get("coins") or 0) + duplicate_fallback_coins
+            return {
+                "success": True,
+                "converted_duplicates": converted_duplicates,
+                "converted_card_ids": converted_card_ids,
+            }
         except Exception as exc:
             return {"success": False, "error": str(exc)}
 
     if rewards["coins"] > 0:
         await db.update_user_coins(user_id, rewards["coins"])
     for card_reward in rewards["cards"]:
-        await db.add_card_to_user(user_id, card_reward["card_id"])
-    for particle_reward in rewards["particles"]:
-        await db.add_particles_to_card(
-            user_id,
-            particle_reward["card_id"],
-            particle_reward["particles"],
-        )
+        grant_duplicate = getattr(db, "grant_card_or_duplicate", None)
+        if callable(grant_duplicate):
+            grant_result = await grant_duplicate(
+                user_id,
+                card_reward["card_id"],
+                tier=final_tier,
+                source="case",
+                source_metadata={
+                    "user_case_id": user_case_id,
+                    "final_tier": final_tier,
+                },
+            )
+            if not grant_result.get("success"):
+                return grant_result
+            if grant_result.get("is_new", False):
+                card_reward["is_new"] = True
+                card_reward["level"] = int(grant_result.get("level") or 1)
+                if grant_result.get("catchup"):
+                    card_reward["catchup"] = dict(grant_result["catchup"])
+            else:
+                source_card_id = int(card_reward["card_id"])
+                converted_card_ids.append(source_card_id)
+                apply_duplicate_result(
+                    grant_result,
+                    source_card_id=source_card_id,
+                    source_card_name=str(card_reward.get("card_name") or ""),
+                    rarity=str(card_reward.get("rarity") or "common"),
+                )
+                if str(grant_result.get("reward_type") or "particles") == "particles":
+                    converted_duplicates.append(applied_particle_rewards[-1])
+        else:
+            await db.add_card_to_user(user_id, card_reward["card_id"])
+    for particle_reward in original_particle_rewards:
+        duplicate_grant = getattr(db, "grant_duplicate_particles", None)
+        if callable(duplicate_grant):
+            grant_result = await duplicate_grant(
+                user_id,
+                int(particle_reward["card_id"]),
+                str(particle_reward.get("rarity") or "common"),
+                int(particle_reward["particles"]),
+            )
+            if not grant_result.get("success"):
+                return grant_result
+            apply_duplicate_result(
+                grant_result,
+                source_card_id=int(particle_reward["card_id"]),
+                source_card_name=str(particle_reward.get("card_name") or ""),
+                rarity=str(particle_reward.get("rarity") or "common"),
+            )
+        else:
+            await db.add_particles_to_card(
+                user_id,
+                particle_reward["card_id"],
+                particle_reward["particles"],
+            )
+            applied_particle_rewards.append(dict(particle_reward))
     if rewards["gems"] > 0:
         await db.add_gems(user_id, rewards["gems"])
     await db.remove_user_case(user_case_id, user_id)
     if decrement_legacy_key:
         await db.decrement_user_keys(user_id, 1)
     await db.increment_daily_quest(user_id, "open_case_1", 1)
-    return {"success": True}
+    rewards["particles"] = applied_particle_rewards
+    rewards["coins"] = int(rewards.get("coins") or 0) + duplicate_fallback_coins
+    return {
+        "success": True,
+        "converted_duplicates": converted_duplicates,
+        "converted_card_ids": converted_card_ids,
+    }

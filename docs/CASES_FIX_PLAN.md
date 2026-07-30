@@ -30,7 +30,7 @@ Two problems in one change-set:
 7. **Migration:** `_ensure_game_settings_table` seeds the `case_config` row `ON CONFLICT DO NOTHING`; `_merge_case_config_defaults` fills newly-introduced top-level + tier keys without clobbering admin edits; idempotent.
 
 ## Particle fix (Problem A)
-1. `infrastructure/case_config.py:171` — `"limited": 0` → `"limited": 150` (above `divine`=100; limited is the highest rarity ordinal, so a duplicate should grant particles like every other rarity; 0.15% T5-event-only drops → marginal particle impact negligible). **This is the only value change.**
+1. `infrastructure/case_config.py:171` — `"limited": 0` → `"limited": 160` (above `divine`=100; limited is the highest rarity ordinal, so a duplicate should grant particles like every other rarity; 0.15% T5-event-only drops → marginal particle impact negligible). **This is the only value change.**
 2. `infrastructure/case_system.py:260` — replace `return int(base_particles * multiplier)` with:
    ```python
    amount = int(base_particles * multiplier)

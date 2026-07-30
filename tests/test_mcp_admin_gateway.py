@@ -1119,8 +1119,8 @@ async def test_mcp_case_config_read_returns_defaults_and_audits(monkeypatch):
         structured = payload["result"]["structuredContent"]
 
         assert response.status == 200
-        # limited base = 150 (фикс бага 0-частиц для limited)
-        assert structured["base_particles_by_rarity"]["limited"] == 150
+        # limited base = 160 (фикс бага 0-частиц для limited)
+        assert structured["base_particles_by_rarity"]["limited"] == 160
         assert db.audit_calls[-1]["tool_name"] == "admin.case_config.read"
         assert db.audit_calls[-1]["status"] == "success"
     finally:

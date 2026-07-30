@@ -71,6 +71,7 @@ class SecurityFakeDB:
         self.payment_records = {}
         self.profile_trophies = 500
         self.runtime_config_updates = []
+        self.particle_grants = []
         self.keys_by_user = {}
         self.settings_updates = []
         self.settings = {
@@ -170,6 +171,10 @@ class SecurityFakeDB:
     async def update_user_settings(self, user_id, **kwargs):
         self.settings_updates.append((user_id, kwargs))
         self.settings.update(kwargs)
+
+    async def add_particles_to_card(self, user_id, card_id, particles):
+        self.particle_grants.append((int(user_id), int(card_id), int(particles)))
+        return {"success": True, "particles": int(particles)}
 
     async def get_onboarding_state(self, user_id):
         return {"status": "completed", "completed": True}
@@ -394,12 +399,12 @@ def _auth_token(session_id: str, user_id: int = 1001) -> str:
     )
 
 
-async def _client(db=None, payment_service=None):
+async def _client(db=None, payment_service=None, *, user_id=1001):
     session_id = str(uuid.uuid4())
     app = web_server.create_web_app(
         db or SecurityFakeDB(),
         bot_token="bot-token",
-        extraid_db=FakeExtraIDDB(session_id),
+        extraid_db=FakeExtraIDDB(session_id, user_id=user_id),
         payment_service=payment_service or FakePaymentService(),
         rustore_payment_service=getattr(db, "rustore_payment_service", None) if db is not None else None,
         webapp_url="https://game.example",
@@ -407,6 +412,46 @@ async def _client(db=None, payment_service=None):
     client = TestClient(TestServer(app))
     await client.start_server()
     return client, session_id
+
+
+@pytest.mark.asyncio
+async def test_card_particle_grant_rejects_regular_user():
+    db = SecurityFakeDB()
+    client, session_id = await _client(db=db)
+    token = _auth_token(session_id)
+    try:
+        response = await client.post(
+            "/api/cards/add-particles",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"card_id": 77, "particles": 999999},
+        )
+        body = await response.json()
+
+        assert response.status == 403
+        assert body["error"] == "admin_access_required"
+        assert db.particle_grants == []
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_card_particle_grant_allows_admin():
+    db = SecurityFakeDB()
+    client, session_id = await _client(db=db, user_id=web_server.ADMIN_ID)
+    token = _auth_token(session_id, user_id=web_server.ADMIN_ID)
+    try:
+        response = await client.post(
+            "/api/cards/add-particles",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"card_id": 77, "particles": 15},
+        )
+        body = await response.json()
+
+        assert response.status == 200
+        assert body["success"] is True
+        assert db.particle_grants == [(web_server.ADMIN_ID, 77, 15)]
+    finally:
+        await client.close()
 
 
 @pytest.mark.asyncio
@@ -995,7 +1040,7 @@ async def test_card_image_preview_variant_serves_webp_preview(monkeypatch, tmp_p
 
         assert response.status == 200
         assert response.headers["Content-Type"].startswith("image/webp")
-        assert response.headers["Cache-Control"] == "public, max-age=31536000, immutable"
+        assert response.headers["Cache-Control"] == "public, max-age=3600, must-revalidate"
         assert await response.read() == b"preview-image"
     finally:
         await client.close()

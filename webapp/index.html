@@ -5258,7 +5258,7 @@ window.loadMobileSquadsBootstrap = async function(options = {}) {
 };
 </script>
 
-<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=eee7c9705147">
+<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=bc4d3a0e30f7">
 // ═══════════════════════════════════════════
 // DESIGN TOKENS
 // ═══════════════════════════════════════════
@@ -7951,7 +7951,7 @@ const ShopScreen = ({profile, onProfileUpdate}) => {
             <div className="ea-shop-particles-head">
               <div>
                 <div className="ea-shop-eyebrow blue">Сегодня в продаже</div>
-                <p className="ea-shop-small-copy">Добирай частицы до следующего уровня. Ротация обновится по таймеру.</p>
+                <p className="ea-shop-small-copy">Предложения для полученных карт. Размер зависит от следующего уровня, а не редкости.</p>
               </div>
               <div className="ea-shop-timer">⏳ {particlesTimer || '0:00:00'}</div>
             </div>
@@ -8713,6 +8713,12 @@ const caseRewardSfxId = (rewards) => {
                       <div style={{position:'relative',zIndex:1}}>
                         <div style={{fontSize:'19px',fontWeight:'900',color:T.white,fontFamily:"'Exo 2',sans-serif",lineHeight:1.1,marginBottom:'8px'}}>{c.card_name || 'Карта'}</div>
                         <span style={{display:'inline-flex',alignItems:'center',justifyContent:'center',minHeight:'24px',fontSize:'11px',color:accent,background:`${accent}1f`,border:`1px solid ${accent}55`,borderRadius:'999px',padding:'3px 10px',fontWeight:'800',fontFamily:"'Exo 2',sans-serif"}}>{RARITY_LABELS[c.rarity]||c.rarity||'Редкость'}</span>
+                        {Number(c.catchup?.particles || 0) > 0 && (
+                          <div style={{marginTop:'10px',padding:'7px 10px',borderRadius:'10px',background:'rgba(74,222,128,0.10)',border:'1px solid rgba(74,222,128,0.34)',color:'#bbf7d0',fontSize:'11px',fontWeight:'700',lineHeight:1.35}}>
+                            ✨ Бонус освоения: +{c.catchup.particles} частиц<br/>
+                            <span style={{color:T.grey2,fontWeight:'600'}}>Запас для прокачки до {c.catchup.target_level} уровня</span>
+                          </div>
+                        )}
                       </div>
                     </div>
                   );
@@ -10763,22 +10769,13 @@ const showTempUnavailable = () => {
   else window.showToast?.(TEMP_UNAVAILABLE_MESSAGE, 'error', 3200);
 };
 
-// ─── Upgrade cost helpers (mirrors database.py / main.js formulas) ───────────
-const _UP_PARTICLES = {1:5,2:10,3:20,4:40,5:80,6:160,7:320,8:640,9:2500};
-const _UP_COINS     = {1:50,2:150,3:400,4:900,5:2000,6:4500,7:8000,8:13000,9:40000};
-const _RARITY_PM = {common:1.0,rare:1.3,start:1.4,superrare:1.6,epic:2.0,legendary:2.5,mythic:4.0,divine:3.0,limited:3.5};
-const _RARITY_CM = {common:1.0,rare:1.2,start:1.3,superrare:1.5,epic:2.0,legendary:3.5,mythic:4.0,divine:5.0,limited:6.0};
-const calcUpgradeParticles = (rarity, level) =>
-  Math.ceil((_UP_PARTICLES[level] || 5)  * (_RARITY_PM[rarity] || 1.0));
-const calcUpgradeCoins = (rarity, level) =>
-  Math.ceil((_UP_COINS[level]     || 50) * (_RARITY_CM[rarity] || 1.0));
+// Стоимость приходит с API: сервер остаётся единственным источником экономики.
 const cardMaxLevel = (card) => Number(card?.max_level) || (card?.simplified_levelup ? 2 : 10);
 const cardIsMaxLevel = (card, level = card?.level || 1) => Number(level || 1) >= cardMaxLevel(card);
-const cardUpgradeCostLevel = (card, level = card?.level || 1) => card?.simplified_levelup ? 9 : Number(level || 1);
 const cardUpgradeParticles = (card, level = card?.level || 1) =>
-  calcUpgradeParticles(card?.rarity, cardIsMaxLevel(card, level) ? 9 : cardUpgradeCostLevel(card, level));
+  cardIsMaxLevel(card, level) ? 0 : Number(card?.upgrade_particles_required || 0);
 const cardUpgradeCoins = (card, level = card?.level || 1) =>
-  cardIsMaxLevel(card, level) ? 0 : calcUpgradeCoins(card?.rarity, cardUpgradeCostLevel(card, level));
+  cardIsMaxLevel(card, level) ? 0 : Number(card?.upgrade_coins_required || 0);
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Версия URL карточных картинок. Раньше сервер отдавал preview-ответам
@@ -20719,7 +20716,6 @@ const BattlePassSheet = ({onClose, profile, onGoToShop, onOpenExtraPassCase}) =>
       const amount = Number(item?.reward_amount ?? item?.amount ?? 0);
       if (type === 'coins') {
         if (item?.fallback_for === 'card') return 'Выпала повторка! Получено ' + amount.toLocaleString('ru-RU') + ' монет';
-        if (item?.fallback_for === 'specific_card') return 'Карта уже собрана. Получено ' + amount.toLocaleString('ru-RU') + ' монет';
         if (item?.fallback_for === 'particles') return 'Карта не в коллекции. Получено ' + amount.toLocaleString('ru-RU') + ' монет';
         if (item?.fallback_for === 'cosmetic') return 'Косметика недоступна. Получено ' + amount.toLocaleString('ru-RU') + ' монет';
         if (item?.fallback_for === 'case') return 'Кейс не выдан. Получено ' + amount.toLocaleString('ru-RU') + ' монет';
@@ -20729,12 +20725,20 @@ const BattlePassSheet = ({onClose, profile, onGoToShop, onOpenExtraPassCase}) =>
       if (type === 'gems') return '+' + amount.toLocaleString('ru-RU') + ' ' + ruPlural(amount, ['гем','гема','гемов']);
       if (type === 'keys') return '+' + amount.toLocaleString('ru-RU') + ' ' + ruPlural(amount, ['ключ','ключа','ключей']);
       if (type === 'case') return 'T' + (item?.case_tier || amount || 1) + ' кейс';
-      if (type === 'particles') return '+' + amount.toLocaleString('ru-RU') + ' ' + ruPlural(amount, ['частица','частицы','частиц']) + (item?.card_name ? ' для «' + item.card_name + '»' : '');
+      if (type === 'particles') {
+        const prefix = item?.fallback_for === 'specific_card' || item?.fallback_for === 'card'
+          ? 'Повторная карта: +' : '+';
+        return prefix + amount.toLocaleString('ru-RU') + ' ' + ruPlural(amount, ['частица','частицы','частиц']) + (item?.card_name ? ' для «' + item.card_name + '»' : '');
+      }
       if (type === 'cosmetic') return item?.name || item?.cosmetic_slug || 'Косметика';
       if (type === 'specific_card' || type === 'card' || type === 'guaranteed_card') {
         const name = item?.card_name || 'Карта';
         const r = item?.rarity ? ' (' + rarityNameRu(item.rarity) + ')' : '';
-        return name + r;
+        const catchup = item?.catchup || {};
+        const bonus = Number(catchup.particles || 0) > 0
+          ? ': бонус освоения +' + Number(catchup.particles).toLocaleString('ru-RU') + ' частиц до ' + catchup.target_level + ' уровня'
+          : '';
+        return name + r + bonus;
       }
       return item?.reward_type ? ('Неизвестная награда: ' + item.reward_type) : '';
     }).filter(Boolean);
@@ -20810,8 +20814,10 @@ const BattlePassSheet = ({onClose, profile, onGoToShop, onOpenExtraPassCase}) =>
 
         fallbackItems.forEach(item => {
           const amt = Number(item?.reward_amount ?? 0);
-          const txt = item?.fallback_for === 'card' ? ('Выпала повторка! Получено ' + amt.toLocaleString('ru-RU') + ' монет')
-            : item?.fallback_for === 'specific_card' ? ('Карта уже собрана. Получено ' + amt.toLocaleString('ru-RU') + ' монет')
+          const type = item?.reward_type || item?.type;
+          const txt = type === 'particles' && (item?.fallback_for === 'card' || item?.fallback_for === 'specific_card')
+            ? ('Повторная карта! Получено ' + amt.toLocaleString('ru-RU') + ' ' + ruPlural(amt, ['частица','частицы','частиц']))
+            : item?.fallback_for === 'card' ? ('Выпала повторка! Получено ' + amt.toLocaleString('ru-RU') + ' монет')
             : item?.fallback_for === 'particles' ? ('Карта не в коллекции. Получено ' + amt.toLocaleString('ru-RU') + ' монет')
             : ('Получено ' + amt.toLocaleString('ru-RU') + ' монет');
           window.showToast?.(txt, 'info', 4000);
@@ -21518,6 +21524,6 @@ const renderExtraArenaApp = () => {
   renderExtraArenaApp();
 })();
 </script>
-<script src="index.compiled.js?v=eee7c9705147"></script>
+<script src="index.compiled.js?v=bc4d3a0e30f7"></script>
 </body>
 </html>

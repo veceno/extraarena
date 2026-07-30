@@ -42,11 +42,20 @@ class FakeExtraIDDB:
 
 
 class ShopAuditFakeDB:
-    def __init__(self, *, admin_ids=(), fail_profile=False, allow_max_level_particles=False, starter_pack_used=False):
+    def __init__(
+        self,
+        *,
+        admin_ids=(),
+        fail_profile=False,
+        allow_max_level_particles=False,
+        starter_pack_used=False,
+        owned_card=True,
+    ):
         self.admin_ids = {int(user_id) for user_id in admin_ids}
         self.fail_profile = fail_profile
         self.allow_max_level_particles = allow_max_level_particles
         self.starter_pack_used = bool(starter_pack_used)
+        self.owned_card = bool(owned_card)
         self.fetchrow_calls = []
         self.execute_calls = []
         self.settings_updates = []
@@ -117,6 +126,7 @@ class ShopAuditFakeDB:
                 "level": 10,
                 "current_particles": 500,
                 "simplified_levelup": False,
+                "owned": self.owned_card,
             }
         if "UPDATE users SET coins" in normalized:
             return {"coins": 9800}
@@ -328,6 +338,26 @@ async def test_particle_buy_rejects_max_level_cards_by_default_before_debit():
 
         assert response.status == 400
         assert body["error"] == "max_level_reached"
+        assert not any("UPDATE users SET coins" in query for query, _args in db.fetchrow_calls)
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_particle_buy_rejects_unowned_rotation_card_before_debit():
+    db = ShopAuditFakeDB(owned_card=False)
+    client, session_id = await _client(db)
+    try:
+        token = _auth_token(session_id, user_id=1001)
+        response = await client.post(
+            "/api/shop/particles/buy",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"card_id": 55},
+        )
+        body = await response.json()
+
+        assert response.status == 400
+        assert body["error"] == "card_not_owned"
         assert not any("UPDATE users SET coins" in query for query, _args in db.fetchrow_calls)
     finally:
         await client.close()

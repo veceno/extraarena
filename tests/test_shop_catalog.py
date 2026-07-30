@@ -3,14 +3,34 @@ from pathlib import Path
 from infrastructure.shop_config import (
     CASE_PACKS,
     GEM_PACKAGES,
+    PARTICLE_SHOP_RARITIES,
     SHOP_PRICES,
     build_shop_catalog,
+    calculate_particle_shop_offer,
     order_particles_for_shop,
 )
 
 
 INDEX = Path("webapp/index.html")
 SERVER = Path("web/server.py")
+
+
+def test_particle_shop_offer_depends_on_next_level_cost_not_rarity():
+    assert calculate_particle_shop_offer(5) == {"particles": 10, "coins": 40}
+    assert calculate_particle_shop_offer(80) == {"particles": 20, "coins": 80}
+    assert calculate_particle_shop_offer(640) == {"particles": 160, "coins": 640}
+    assert calculate_particle_shop_offer(1280) == {"particles": 320, "coins": 1280}
+    assert PARTICLE_SHOP_RARITIES == (
+        "common",
+        "rare",
+        "start",
+        "superrare",
+        "epic",
+        "legendary",
+        "mythic",
+        "divine",
+        "limited",
+    )
 
 
 def test_build_shop_catalog_uses_server_prices_for_case_and_coin_offers():
@@ -138,13 +158,15 @@ def test_order_particles_featured_softly_penalizes_unowned_cards():
     assert [card["id"] for card in ordered] == [1, 2, 3]
 
 
-def test_particles_daily_payload_marks_unowned_cards_for_shop_ordering():
+def test_particles_daily_rotation_uses_owned_upgradeable_cards():
     server = SERVER.read_text(encoding="utf-8")
     particles_block = server.split("async def particles_daily_handler", 1)[1].split(
         "async def particles_buy_handler",
         1,
     )[0]
 
+    assert "get_random_owned_upgradeable_cards_by_rarity" in particles_block
+    assert "get_random_cards_by_rarities" not in particles_block
     assert "uc.card_id IS NOT NULL AS owned" in particles_block
     assert '"owned": bool(row.get("owned"))' in particles_block
 
@@ -180,7 +202,7 @@ def test_shop_frontend_polishes_particles_copy_layout_and_debug_section():
     )[0]
 
     assert "Видно, кому именно покупается" not in shop_block
-    assert "Добирай частицы до следующего уровня" in shop_block
+    assert "Размер зависит от следующего уровня, а не редкости" in shop_block
     assert "Debug Section" not in shop_block
     assert "1 ключ (дебаг)" not in shop_block
     assert ".ea-shop-particle-card:not(.ea-shop-featured-particle) .ea-shop-particle-art" in styles

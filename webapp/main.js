@@ -6808,10 +6808,15 @@ function renderCaseRewards(rewards) {
     }));
   }
   (rewards.cards || []).forEach(card => {
+    const catchup = card.catchup || {};
+    const catchupParticles = Number(catchup.particles || 0);
+    const catchupDescription = catchupParticles > 0
+      ? `Бонус освоения: +${catchupParticles} частиц, запас до ${catchup.target_level} уровня`
+      : (card.is_new ? "Новая карта в коллекции" : "Карта получена");
     items.push(buildRewardItemHtml({
       icon: CASE_REWARD_ICONS.card,
       title: `${card.card_name || "Новая карта"}`,
-      description: card.is_new ? "Новая карта в коллекции" : "Карта получена",
+      description: catchupDescription,
       rarity: card.rarity,
     }));
   });
@@ -7085,81 +7090,6 @@ function sortCards(cards, sortBy) {
   return sorted;
 }
 
-// Рассчитать необходимые частицы для улучшения карты
-function calculateUpgradeParticles(rarity, level) {
-  // Базовые значения частиц для каждого перехода уровня (для Обычной карты)
-  const baseParticlesByLevel = {
-    1: 5,    // 1 → 2
-    2: 10,   // 2 → 3
-    3: 20,   // 3 → 4
-    4: 40,   // 4 → 5
-    5: 80,   // 5 → 6
-    6: 160,  // 6 → 7
-    7: 320,  // 7 → 8
-    8: 640,  // 8 → 9
-    9: 2500  // 9 → 10 (ценовой обрыв)
-  };
-  
-  // Множители частиц по редкостям
-  const rarityMultipliers = {
-    common: 1.0,
-    rare: 1.3,
-    start: 1.4,
-    superrare: 1.6,
-    epic: 2.0,
-    legendary: 2.5,
-    mythic: 4.0,
-    divine: 3.0,
-    limited: 3.5
-  };
-  
-  // Получаем базовое значение для текущего уровня
-  const baseParticles = baseParticlesByLevel[level] || 5;
-  
-  // Получаем множитель редкости
-  const rarityMult = rarityMultipliers[rarity] || 1.0;
-  
-  // Вычисляем финальное количество частиц (округление вверх)
-  return Math.ceil(baseParticles * rarityMult);
-}
-
-function calculateUpgradeCoins(rarity, level) {
-  // Базовые значения монет для каждого перехода уровня (для Обычной карты)
-  const baseCoinsByLevel = {
-    1: 50,      // 1 → 2
-    2: 150,     // 2 → 3
-    3: 400,     // 3 → 4
-    4: 900,     // 4 → 5
-    5: 2000,    // 5 → 6
-    6: 4500,    // 6 → 7
-    7: 8000,    // 7 → 8
-    8: 13000,   // 8 → 9
-    9: 40000    // 9 → 10 (ценовой обрыв)
-  };
-  
-  // Множители монет по редкостям
-  const rarityMultipliers = {
-    common: 1.0,
-    rare: 1.2,
-    start: 1.3,
-    superrare: 1.5,
-    epic: 2.0,
-    legendary: 3.5,
-    mythic: 4.0,
-    divine: 5.0,
-    limited: 6.0
-  };
-  
-  // Получаем базовое значение для текущего уровня
-  const baseCoins = baseCoinsByLevel[level] || 50;
-  
-  // Получаем множитель редкости
-  const rarityMult = rarityMultipliers[rarity] || 1.0;
-  
-  // Вычисляем финальное количество монет (округление вверх)
-  return Math.ceil(baseCoins * rarityMult);
-}
-
 function getCardMaxLevel(card) {
   return Number(card?.max_level) || (card?.simplified_levelup ? 2 : 10);
 }
@@ -7168,16 +7098,12 @@ function isCardMaxLevel(card, level = card?.level || 1) {
   return Number(level || 1) >= getCardMaxLevel(card);
 }
 
-function getCardUpgradeCostLevel(card, level = card?.level || 1) {
-  return card?.simplified_levelup ? 9 : Number(level || 1);
-}
-
 function getCardRequiredParticles(card, level = card?.level || 1) {
-  return calculateUpgradeParticles(card?.rarity, isCardMaxLevel(card, level) ? 9 : getCardUpgradeCostLevel(card, level));
+  return isCardMaxLevel(card, level) ? 0 : Number(card?.upgrade_particles_required || 0);
 }
 
 function getCardRequiredCoins(card, level = card?.level || 1) {
-  return isCardMaxLevel(card, level) ? 0 : calculateUpgradeCoins(card?.rarity, getCardUpgradeCostLevel(card, level));
+  return isCardMaxLevel(card, level) ? 0 : Number(card?.upgrade_coins_required || 0);
 }
 
 // Рассчитать мощность карты с учетом уровня
