@@ -19,8 +19,11 @@ from infrastructure.extraid_database import ExtraIDDatabase
 from infrastructure.support_database import SupportDatabase
 from infrastructure.support_json_database import SupportJsonDatabase
 from infrastructure.notifications import (
+    NOTIFICATION_QUIET_END_HOUR,
+    NOTIFICATION_QUIET_START_HOUR,
     build_webapp_url,
     format_telegram_notification_message,
+    is_discretionary_notification,
     notification_section,
 )
 from infrastructure.push_notifications import FcmPushSender, build_android_push_payload
@@ -42,8 +45,8 @@ db: Database | None = None
 web_runner: web.AppRunner | None = None
 web_site: web.BaseSite | None = None
 
-REMINDER_PUSH_QUIET_START_HOUR = 22
-REMINDER_PUSH_QUIET_END_HOUR = 9
+REMINDER_PUSH_QUIET_START_HOUR = NOTIFICATION_QUIET_START_HOUR
+REMINDER_PUSH_QUIET_END_HOUR = NOTIFICATION_QUIET_END_HOUR
 
 
 def _notification_utc_now() -> datetime:
@@ -81,7 +84,7 @@ def _is_quiet_android_reminder_push(
     event_type: str,
     now_utc: datetime | None = None,
 ) -> bool:
-    if category != "reminders" or event_type != "daily_reminder":
+    if not is_discretionary_notification(category):
         return False
 
     local_now = _device_local_datetime(device, now_utc=now_utc)
@@ -111,6 +114,45 @@ def _next_android_reminder_push_time(device: dict, *, now_utc: datetime | None =
             microsecond=0,
         )
     return next_local.astimezone(timezone.utc)
+
+
+async def _postpone_quiet_telegram_notification(
+    db: Database,
+    notif: dict,
+    *,
+    category: str,
+) -> bool:
+    if not is_discretionary_notification(category):
+        return False
+    if not hasattr(db, "get_notification_timezone"):
+        return False
+    try:
+        timezone_context = await db.get_notification_timezone(int(notif["user_id"]))
+    except Exception:
+        logger.debug(
+            "Не удалось определить локальное время для Telegram user_id=%s",
+            notif.get("user_id"),
+            exc_info=True,
+        )
+        return False
+    if not timezone_context:
+        return False
+    if not _is_quiet_android_reminder_push(
+        timezone_context,
+        category=category,
+        event_type=str(notif.get("event_type") or ""),
+    ):
+        return False
+    defer_until = _next_android_reminder_push_time(timezone_context)
+    if defer_until is None or not hasattr(db, "postpone_notification"):
+        return False
+    await db.postpone_notification(int(notif["id"]), defer_until)
+    logger.info(
+        "Telegram notification postponed until %s during local quiet hours for user_id=%s",
+        defer_until.isoformat(),
+        notif["user_id"],
+    )
+    return True
 
 
 async def main() -> None:
@@ -642,6 +684,22 @@ async def _deliver_notification(
     section = notification_section(category, payload)
     body = format_telegram_notification_message(event_type, payload)
     user_id = int(notif["user_id"])
+    if hasattr(db, "notification_cancellation_reason"):
+        try:
+            cancellation_reason = await db.notification_cancellation_reason(
+                {**notif, "payload": payload}
+            )
+        except Exception:
+            cancellation_reason = None
+            logger.warning(
+                "Не удалось перепроверить актуальность уведомления id=%s",
+                notif_id,
+                exc_info=True,
+            )
+        if cancellation_reason:
+            await db.cancel_notification(notif_id, cancellation_reason)
+            return
+
     mobile_only = bool(payload.get("mobile_only"))
     delivery_mode = "app_then_telegram"
     if hasattr(db, "get_notification_delivery_mode"):
@@ -746,6 +804,9 @@ async def _deliver_notification(
         )
         await db.mark_notification_failed(notif_id)
         await _update_returnclock_delivery_status(db, notif, payload, "failed")
+        return
+
+    if await _postpone_quiet_telegram_notification(db, notif, category=category):
         return
 
     try:
@@ -903,12 +964,12 @@ async def _send_android_pushes(
                 metadata={"defer_until": defer_until.isoformat()},
             )
             logger.info(
-                "Android reminder push postponed until %s during local quiet hours for user_id=%s",
+                "Android notification postponed until %s during local quiet hours for user_id=%s",
                 defer_until.isoformat(),
                 user_id,
             )
             return True, False, True
-        logger.info("Android reminder push skipped during local quiet hours for user_id=%s", user_id)
+        logger.info("Android notification skipped during local quiet hours for user_id=%s", user_id)
         await _record_returnclock_delivery_event(
             db,
             notif,

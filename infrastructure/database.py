@@ -41,11 +41,18 @@ from infrastructure.case_config import (
     validate_case_config,
 )
 from infrastructure.notifications import (
+    ACTIVITY_SUPPRESSED_NOTIFICATION_CATEGORIES,
+    DISCRETIONARY_NOTIFICATION_CATEGORIES,
+    DISCRETIONARY_NOTIFICATION_MAX_24H,
+    DISCRETIONARY_NOTIFICATION_MAX_7D,
+    NOTIFICATION_RECENT_ACTIVITY_COOLDOWN_MINUTES,
     NOTIFICATION_DEFAULTS,
     NOTIFICATION_SETTING_BY_CATEGORY,
-    classify_generator_event,
     choose_reminder_payload,
     format_notification_message,
+    is_activity_suppressed_notification,
+    is_discretionary_notification,
+    notification_priority,
 )
 
 
@@ -5630,6 +5637,20 @@ class Database:
             WHERE is_discretionary = TRUE AND status = 'pending'
             """
         )
+        await self.execute(
+            """
+            CREATE INDEX IF NOT EXISTS notification_outbox_user_sent_idx
+            ON notification_outbox(user_id, sent_at DESC)
+            WHERE status = 'sent'
+            """
+        )
+        await self.execute(
+            """
+            CREATE INDEX IF NOT EXISTS notification_outbox_user_pending_idx
+            ON notification_outbox(user_id, category, status)
+            WHERE status IN ('pending', 'sending')
+            """
+        )
         return changed
 
     async def _ensure_notification_schedules_table(self) -> bool:
@@ -5926,6 +5947,76 @@ class Database:
         if not await self.is_notification_enabled(user_id, category):
             return False
         payload = dict(payload or {})
+        if is_discretionary_notification(category):
+            categories = sorted(DISCRETIONARY_NOTIFICATION_CATEGORIES)
+            budget = await self.fetchrow(
+                """
+                SELECT
+                    COUNT(*) FILTER (
+                        WHERE status = 'sent'
+                          AND sent_at >= NOW() - INTERVAL '24 hours'
+                    ) AS sent_24h,
+                    COUNT(*) FILTER (
+                        WHERE status = 'sent'
+                          AND sent_at >= NOW() - INTERVAL '7 days'
+                    ) AS sent_7d,
+                    COALESCE(MAX(
+                        CASE category
+                            WHEN 'daily_rewards' THEN 400
+                            WHEN 'squad_weekly_tokens' THEN 375
+                            WHEN 'generator' THEN 300
+                            WHEN 'extra_arena_modifier' THEN 250
+                            WHEN 'squad_boost' THEN 225
+                            WHEN 'shop' THEN 200
+                            WHEN 'squad_new_member' THEN 150
+                            WHEN 'reminders' THEN 100
+                            ELSE 0
+                        END
+                    ) FILTER (WHERE status IN ('pending', 'sending')), 0) AS pending_priority
+                FROM notification_outbox
+                WHERE user_id = $1
+                  AND category = ANY($2::text[])
+                """,
+                user_id,
+                categories,
+            )
+            sent_24h = int((budget or {}).get("sent_24h") or 0)
+            sent_7d = int((budget or {}).get("sent_7d") or 0)
+            if sent_24h >= DISCRETIONARY_NOTIFICATION_MAX_24H:
+                return False
+            if sent_7d >= DISCRETIONARY_NOTIFICATION_MAX_7D:
+                return False
+
+            priority = notification_priority(category)
+            pending_priority = int((budget or {}).get("pending_priority") or 0)
+            if pending_priority >= priority:
+                return False
+            if pending_priority:
+                await self.execute(
+                    """
+                    UPDATE notification_outbox
+                    SET status = 'cancelled',
+                        cancelled_at = NOW(),
+                        cancellation_reason = 'superseded_by_higher_priority'
+                    WHERE user_id = $1
+                      AND category = ANY($2::text[])
+                      AND status = 'pending'
+                      AND CASE category
+                            WHEN 'daily_rewards' THEN 400
+                            WHEN 'squad_weekly_tokens' THEN 375
+                            WHEN 'generator' THEN 300
+                            WHEN 'extra_arena_modifier' THEN 250
+                            WHEN 'squad_boost' THEN 225
+                            WHEN 'shop' THEN 200
+                            WHEN 'squad_new_member' THEN 150
+                            WHEN 'reminders' THEN 100
+                            ELSE 0
+                          END < $3
+                    """,
+                    user_id,
+                    categories,
+                    priority,
+                )
         if dedupe_key is None:
             raw = json.dumps(payload, ensure_ascii=False, sort_keys=True)
             dedupe_key = f"{user_id}:{category}:{event_type}:{raw}"
@@ -6126,7 +6217,20 @@ class Database:
                 WHERE status = 'pending'
                   AND attempts < 5
                   AND not_before_at <= NOW()
-                ORDER BY not_before_at ASC, created_at ASC
+                ORDER BY
+                    CASE category
+                        WHEN 'daily_rewards' THEN 400
+                        WHEN 'squad_weekly_tokens' THEN 375
+                        WHEN 'generator' THEN 300
+                        WHEN 'extra_arena_modifier' THEN 250
+                        WHEN 'squad_boost' THEN 225
+                        WHEN 'shop' THEN 200
+                        WHEN 'squad_new_member' THEN 150
+                        WHEN 'reminders' THEN 100
+                        ELSE 1000
+                    END DESC,
+                    not_before_at ASC,
+                    created_at ASC
                 LIMIT $1
                 FOR UPDATE SKIP LOCKED
             )
@@ -6138,6 +6242,7 @@ class Database:
             WHERE n.id = picked.id
             RETURNING
                 n.id, n.user_id, n.category, n.event_type, n.payload, n.attempts,
+                n.created_at, n.not_before_at,
                 n.returnclock_decision_id, n.returnclock_delivery_id,
                 n.is_discretionary
             """,
@@ -6174,6 +6279,165 @@ class Database:
             notification_id,
             not_before_at,
         )
+
+    async def cancel_notification(self, notification_id: int, reason: str) -> None:
+        await self.execute(
+            """
+            UPDATE notification_outbox
+            SET status = 'cancelled',
+                cancelled_at = NOW(),
+                cancellation_reason = $2
+            WHERE id = $1
+            """,
+            notification_id,
+            reason,
+        )
+
+    async def notification_cancellation_reason(self, notif: dict[str, Any]) -> str | None:
+        """Revalidate a queued notification immediately before external delivery."""
+        user_id = int(notif["user_id"])
+        category = str(notif["category"])
+        payload = notif.get("payload") or {}
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except Exception:
+                payload = {}
+
+        if not await self.is_notification_enabled(user_id, category):
+            return "disabled_by_user"
+
+        if is_activity_suppressed_notification(category):
+            recent_activity = await self.fetchval(
+                """
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM user_sessions
+                    WHERE user_id = $1
+                      AND COALESCE(updated_at, ended_at, started_at)
+                          >= NOW() - ($2::int * INTERVAL '1 minute')
+                )
+                """,
+                user_id,
+                NOTIFICATION_RECENT_ACTIVITY_COOLDOWN_MINUTES,
+            )
+            if recent_activity:
+                return "recent_activity"
+
+        if is_discretionary_notification(category):
+            budget = await self.fetchrow(
+                """
+                SELECT
+                    COUNT(*) FILTER (
+                        WHERE sent_at >= NOW() - INTERVAL '24 hours'
+                    ) AS sent_24h,
+                    COUNT(*) FILTER (
+                        WHERE sent_at >= NOW() - INTERVAL '7 days'
+                    ) AS sent_7d
+                FROM notification_outbox
+                WHERE user_id = $1
+                  AND status = 'sent'
+                  AND category = ANY($2::text[])
+                """,
+                user_id,
+                sorted(DISCRETIONARY_NOTIFICATION_CATEGORIES),
+            )
+            if int((budget or {}).get("sent_24h") or 0) >= DISCRETIONARY_NOTIFICATION_MAX_24H:
+                return "frequency_cap_24h"
+            if int((budget or {}).get("sent_7d") or 0) >= DISCRETIONARY_NOTIFICATION_MAX_7D:
+                return "frequency_cap_7d"
+
+        if category == "generator":
+            row = await self.fetchrow(
+                """
+                SELECT notification_cycle
+                FROM generator_state
+                WHERE user_id = $1
+                """,
+                user_id,
+            )
+            expected_cycle = payload.get("generator_notification_cycle")
+            if row is None or expected_cycle is None:
+                return "generator_state_missing"
+            if int(row["notification_cycle"] or 0) != int(expected_cycle):
+                return "generator_cycle_resolved"
+        elif category == "daily_rewards":
+            row = await self.fetchrow(
+                """
+                SELECT daily_login_claimed, daily_login_available_at
+                FROM users
+                WHERE user_id = $1
+                """,
+                user_id,
+            )
+            if row is None or bool(row["daily_login_claimed"]):
+                return "daily_reward_resolved"
+            expected_available_at = str(payload.get("available_at") or "")
+            actual_available_at = row["daily_login_available_at"]
+            if expected_available_at and actual_available_at is not None:
+                if actual_available_at.isoformat() != expected_available_at:
+                    return "daily_reward_cycle_changed"
+        elif category == "game_invites":
+            invite_id = payload.get("invite_id")
+            if not invite_id:
+                return "invite_missing"
+            is_pending = await self.fetchval(
+                """
+                SELECT EXISTS (
+                    SELECT 1 FROM friend_invites
+                    WHERE id = $1 AND to_user_id = $2
+                      AND status = 'pending' AND expires_at > NOW()
+                )
+                """,
+                int(invite_id),
+                user_id,
+            )
+            if not is_pending:
+                return "invite_resolved"
+        elif category == "friend_requests":
+            request_id = payload.get("request_id")
+            if request_id:
+                is_pending = await self.fetchval(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1 FROM friend_requests
+                        WHERE id = $1 AND addressee_id = $2 AND status = 'pending'
+                    )
+                    """,
+                    int(request_id),
+                    user_id,
+                )
+                if not is_pending:
+                    return "friend_request_resolved"
+        elif category == "shop":
+            rotation_date = str(payload.get("rotation_date") or "")
+            if rotation_date and rotation_date != datetime.now(timezone.utc).date().isoformat():
+                return "shop_rotation_expired"
+        elif category == "reminders":
+            created_at = notif.get("created_at")
+            if isinstance(created_at, str):
+                created_at = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+            if isinstance(created_at, datetime):
+                if created_at.tzinfo is None:
+                    created_at = created_at.replace(tzinfo=timezone.utc)
+                if datetime.now(timezone.utc) - created_at > timedelta(hours=24):
+                    return "reminder_expired"
+        return None
+
+    async def get_notification_timezone(self, user_id: int) -> dict[str, Any] | None:
+        row = await self.fetchrow(
+            """
+            SELECT timezone, utc_offset_minutes
+            FROM push_devices
+            WHERE user_id = $1
+              AND enabled = TRUE
+              AND (timezone IS NOT NULL OR utc_offset_minutes IS NOT NULL)
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """,
+            user_id,
+        )
+        return dict(row) if row else None
 
     async def mark_notification_blocked(self, notification_id: int) -> None:
         await self.execute(
@@ -13865,6 +14129,8 @@ class Database:
                     accumulated_keys INTEGER NOT NULL DEFAULT 0,
                     last_tick_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     notified BOOLEAN NOT NULL DEFAULT FALSE,
+                    full_notified BOOLEAN NOT NULL DEFAULT FALSE,
+                    notification_cycle BIGINT NOT NULL DEFAULT 0,
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
                 """
@@ -13877,6 +14143,8 @@ class Database:
         changed |= await self._add_column_if_missing("generator_state", columns, "accumulated_keys INTEGER NOT NULL DEFAULT 0")
         changed |= await self._add_column_if_missing("generator_state", columns, "last_tick_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
         changed |= await self._add_column_if_missing("generator_state", columns, "notified BOOLEAN NOT NULL DEFAULT FALSE")
+        changed |= await self._add_column_if_missing("generator_state", columns, "full_notified BOOLEAN NOT NULL DEFAULT FALSE")
+        changed |= await self._add_column_if_missing("generator_state", columns, "notification_cycle BIGINT NOT NULL DEFAULT 0")
         changed |= await self._add_column_if_missing("generator_state", columns, "updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
 
         return changed
@@ -14745,6 +15013,31 @@ class Database:
                             "created_at": existing["created_at"].isoformat(),
                             "expires_at": existing["expires_at"].isoformat(),
                         }
+                    cooldown = await conn.fetchrow(
+                        """
+                        SELECT id,
+                               GREATEST(
+                                   1,
+                                   CEIL(EXTRACT(EPOCH FROM (
+                                       created_at + INTERVAL '30 minutes' - NOW()
+                                   )))::int
+                               ) AS retry_after_seconds
+                        FROM friend_invites
+                        WHERE LEAST(from_user_id, to_user_id) = LEAST($1::bigint, $2::bigint)
+                          AND GREATEST(from_user_id, to_user_id) = GREATEST($1::bigint, $2::bigint)
+                          AND created_at > NOW() - INTERVAL '30 minutes'
+                        ORDER BY created_at DESC, id DESC
+                        LIMIT 1
+                        """,
+                        from_user_id,
+                        to_user_id,
+                    )
+                    if cooldown:
+                        return {
+                            "success": False,
+                            "error": "invite_cooldown",
+                            "retry_after_seconds": int(cooldown["retry_after_seconds"] or 1),
+                        }
                     row = await conn.fetchrow(
                         """
                         INSERT INTO friend_invites (from_user_id, to_user_id, from_selected_deck_id)
@@ -14987,7 +15280,21 @@ class Database:
                 """,
                 status, to_selected_deck_id, invite_id,
             )
-            return bool(row)
+            updated = bool(row)
+            if updated:
+                await self.execute(
+                    """
+                    UPDATE notification_outbox
+                    SET status = 'cancelled',
+                        cancelled_at = NOW(),
+                        cancellation_reason = 'invite_resolved'
+                    WHERE category = 'game_invites'
+                      AND payload->>'invite_id' = $1
+                      AND status = 'pending'
+                    """,
+                    str(invite_id),
+                )
+            return updated
         if battle_id:
             row = await self.fetchrow(
                 """
@@ -14998,7 +15305,7 @@ class Database:
                 """,
                 status, battle_id, to_selected_deck_id, invite_id,
             )
-            return bool(row)
+            updated = bool(row)
         else:
             row = await self.fetchrow(
                 """
@@ -15009,7 +15316,21 @@ class Database:
                 """,
                 status, to_selected_deck_id, invite_id,
             )
-            return bool(row)
+            updated = bool(row)
+        if updated:
+            await self.execute(
+                """
+                UPDATE notification_outbox
+                SET status = 'cancelled',
+                    cancelled_at = NOW(),
+                    cancellation_reason = 'invite_resolved'
+                WHERE category = 'game_invites'
+                  AND payload->>'invite_id' = $1
+                  AND status = 'pending'
+                """,
+                str(invite_id),
+            )
+        return updated
 
     async def get_friend_invite_for_user(self, invite_id: int, user_id: int) -> Optional[dict[str, Any]]:
         if not self._pool:
@@ -15049,13 +15370,27 @@ class Database:
     async def expire_old_invites(self) -> int:
         if not self._pool:
             raise RuntimeError("База данных не подключена.")
-        result = await self.execute(
+        rows = await self.fetch(
             """
             UPDATE friend_invites SET status = 'expired'
             WHERE expires_at < NOW() AND status = 'pending'
+            RETURNING id
             """
         )
-        return result
+        if rows:
+            await self.execute(
+                """
+                UPDATE notification_outbox
+                SET status = 'cancelled',
+                    cancelled_at = NOW(),
+                    cancellation_reason = 'invite_expired'
+                WHERE category = 'game_invites'
+                  AND payload->>'invite_id' = ANY($1::text[])
+                  AND status = 'pending'
+                """,
+                [str(row["id"]) for row in rows],
+            )
+        return len(rows)
 
     # ========== Таблица friend_requests (постоянные заявки в друзья + список друзей) ==========
 
@@ -15183,6 +15518,19 @@ class Database:
             """,
             status, request_id,
         )
+        if row is not None:
+            await self.execute(
+                """
+                UPDATE notification_outbox
+                SET status = 'cancelled',
+                    cancelled_at = NOW(),
+                    cancellation_reason = 'friend_request_resolved'
+                WHERE category = 'friend_requests'
+                  AND payload->>'request_id' = $1
+                  AND status = 'pending'
+                """,
+                str(request_id),
+            )
         return row is not None
 
     async def get_incoming_friend_requests(self, user_id: int) -> list[dict[str, Any]]:
@@ -16039,7 +16387,10 @@ class Database:
                     UPDATE generator_state
                     SET accumulated_keys = 0,
                         last_tick_at = CASE WHEN $2 > 0 THEN last_tick_at + ($2::int * INTERVAL '1 second') ELSE last_tick_at END,
-                        notified = FALSE, updated_at = NOW()
+                        notified = FALSE,
+                        full_notified = FALSE,
+                        notification_cycle = notification_cycle + 1,
+                        updated_at = NOW()
                     WHERE user_id = $1
                     """,
                     user_id, ticks_used,
@@ -16050,6 +16401,18 @@ class Database:
                 )
                 await conn.execute(
                     "UPDATE notifications SET sent = FALSE, sent_at = NULL WHERE user_id = $1 AND notification_type = 'generator'",
+                    user_id,
+                )
+                await conn.execute(
+                    """
+                    UPDATE notification_outbox
+                    SET status = 'cancelled',
+                        cancelled_at = NOW(),
+                        cancellation_reason = 'generator_claimed'
+                    WHERE user_id = $1
+                      AND category = 'generator'
+                      AND status = 'pending'
+                    """,
                     user_id,
                 )
                 total_keys = await conn.fetchval(
@@ -16119,13 +16482,28 @@ class Database:
                     """
                     UPDATE generator_state
                     SET level = $2, accumulated_keys = 0,
-                        notified = FALSE, updated_at = NOW()
+                        notified = FALSE,
+                        full_notified = FALSE,
+                        notification_cycle = notification_cycle + 1,
+                        updated_at = NOW()
                     WHERE user_id = $1
                     """,
                     user_id, next_level,
                 )
                 await conn.execute(
                     "UPDATE notifications SET sent = FALSE, sent_at = NULL WHERE user_id = $1 AND notification_type = 'generator'",
+                    user_id,
+                )
+                await conn.execute(
+                    """
+                    UPDATE notification_outbox
+                    SET status = 'cancelled',
+                        cancelled_at = NOW(),
+                        cancellation_reason = 'generator_upgraded'
+                    WHERE user_id = $1
+                      AND category = 'generator'
+                      AND status = 'pending'
+                    """,
                     user_id,
                 )
 
@@ -16152,6 +16530,7 @@ class Database:
         rows = await self.fetch(
             """
             SELECT g.user_id, g.level, g.accumulated_keys, g.last_tick_at, g.notified,
+                   g.full_notified, g.notification_cycle,
                    u.extra_pass, u.extra_pass_expires_at, u.status
             FROM generator_state g
             INNER JOIN users u ON u.user_id = g.user_id
@@ -16163,31 +16542,49 @@ class Database:
 
         result = []
         for r in rows:
-            accumulated, new_keys, cap, interval_seconds = await self._compute_generator_accumulated(r)
-            stored = int(r["accumulated_keys"] or 0)
-            event_type = classify_generator_event(
-                stored_keys=stored,
-                new_keys=new_keys,
-                cap=cap,
-            )
-            if not event_type:
+            accumulated, _, cap, _ = await self._compute_generator_accumulated(r)
+            if accumulated <= 0:
                 continue
-            last_tick = r["last_tick_at"]
-            if isinstance(last_tick, str):
-                last_tick = datetime.fromisoformat(last_tick.replace("Z", "+00:00"))
-            tick_bucket = int((datetime.now(timezone.utc) - last_tick).total_seconds() // interval_seconds)
+
+            is_full = accumulated >= cap
+            if is_full:
+                if bool(r["full_notified"]):
+                    continue
+                event_type = "generator_full_on_new_key"
+                transition = "full"
+            else:
+                if bool(r["notified"]):
+                    continue
+                event_type = "generator_new_key"
+                transition = "ready"
+
+            cycle = int(r["notification_cycle"] or 0)
             payload = {
                 "keys": accumulated,
                 "cap": cap,
                 "level": int(r["level"] or 1),
                 "section": "generator",
+                "generator_notification_cycle": cycle,
             }
             enqueued = await self.enqueue_notification(
                 int(r["user_id"]),
                 category="generator",
                 event_type=event_type,
                 payload=payload,
-                dedupe_key=f"generator:{r['user_id']}:{event_type}:{tick_bucket}",
+                dedupe_key=f"generator:{r['user_id']}:{cycle}:{transition}",
+            )
+            await self.execute(
+                """
+                UPDATE generator_state
+                SET notified = TRUE,
+                    full_notified = CASE WHEN $2 THEN TRUE ELSE full_notified END,
+                    updated_at = NOW()
+                WHERE user_id = $1
+                  AND notification_cycle = $3
+                """,
+                int(r["user_id"]),
+                is_full,
+                cycle,
             )
             if enqueued:
                 result.append({"user_id": r["user_id"], "event_type": event_type, **payload})
@@ -21470,6 +21867,20 @@ class Database:
                 json.dumps(safe_metadata, ensure_ascii=False),
                 bool(resumed),
             )
+            if row is not None:
+                await self.execute(
+                    """
+                    UPDATE notification_outbox
+                    SET status = 'cancelled',
+                        cancelled_at = NOW(),
+                        cancellation_reason = 'user_returned'
+                    WHERE user_id = $1
+                      AND category = ANY($2::text[])
+                      AND status = 'pending'
+                    """,
+                    int(user_id),
+                    sorted(ACTIVITY_SUPPRESSED_NOTIFICATION_CATEGORIES),
+                )
             status = {
                 "ok": row is not None,
                 "created": bool(row and row.get("created")),

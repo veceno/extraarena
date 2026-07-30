@@ -9724,6 +9724,16 @@ def create_web_app(
                 },
                 status=409,
             )
+        if result.get("error") == "invite_cooldown":
+            return web.json_response(
+                {
+                    "success": False,
+                    "error": "invite_cooldown",
+                    "message": "Не стоит повторять вызов так быстро — попробуй чуть позже.",
+                    "retry_after_seconds": result.get("retry_after_seconds"),
+                },
+                status=429,
+            )
         if not result.get("success"):
             return web.json_response({"error": "invite_create_failed"}, status=500)
 
@@ -9743,7 +9753,7 @@ def create_web_app(
             )
 
         notification_enqueued = False
-        notification_outbox_used = hasattr(db, "enqueue_notification")
+        notification_outbox_used = hasattr(db, "enqueue_notification") and not target_online
         if notification_outbox_used:
             try:
                 notification_enqueued = await db.enqueue_notification(
@@ -9754,6 +9764,7 @@ def create_web_app(
                         "from_user_id": user_id,
                         "from_name": from_name,
                         "invite_id": invite_id,
+                        "expires_at": result.get("expires_at"),
                         "invite_action": "accept",
                         "section": "friends",
                     },

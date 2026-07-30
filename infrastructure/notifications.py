@@ -52,8 +52,58 @@ NOTIFICATION_DEFAULTS = {
     "notif_daily_rewards": True,
 }
 
+# These categories may be delayed or suppressed without losing a
+# player-to-player action or a security-critical event. They share one
+# frequency budget across Android and Telegram delivery.
+DISCRETIONARY_NOTIFICATION_CATEGORIES = frozenset({
+    "generator",
+    "shop",
+    "reminders",
+    "daily_rewards",
+    "extra_arena_modifier",
+    "squad_new_member",
+    "squad_boost",
+    "squad_weekly_tokens",
+})
+
+# External notifications represented by in-game state are redundant while the
+# player is already using the app. Unknown categories (for example a future
+# security alert) deliberately bypass this suppression.
+ACTIVITY_SUPPRESSED_NOTIFICATION_CATEGORIES = frozenset(
+    NOTIFICATION_SETTING_BY_CATEGORY
+)
+
+NOTIFICATION_PRIORITY_BY_CATEGORY = {
+    "daily_rewards": 400,
+    "squad_weekly_tokens": 375,
+    "generator": 300,
+    "extra_arena_modifier": 250,
+    "squad_boost": 225,
+    "shop": 200,
+    "squad_new_member": 150,
+    "reminders": 100,
+}
+
+DISCRETIONARY_NOTIFICATION_MAX_24H = 1
+DISCRETIONARY_NOTIFICATION_MAX_7D = 3
+NOTIFICATION_RECENT_ACTIVITY_COOLDOWN_MINUTES = 15
+NOTIFICATION_QUIET_START_HOUR = 22
+NOTIFICATION_QUIET_END_HOUR = 9
+
 REMINDER_DUSTY_WEIGHT = 1
 REMINDER_TITLES = ("⚔️ Вперед в бой", "⚔️ Задай им тряски!")
+
+
+def is_discretionary_notification(category: str) -> bool:
+    return str(category or "") in DISCRETIONARY_NOTIFICATION_CATEGORIES
+
+
+def is_activity_suppressed_notification(category: str) -> bool:
+    return str(category or "") in ACTIVITY_SUPPRESSED_NOTIFICATION_CATEGORIES
+
+
+def notification_priority(category: str) -> int:
+    return int(NOTIFICATION_PRIORITY_BY_CATEGORY.get(str(category or ""), 1000))
 
 
 def wins_required_for_case(extra_pass: str | None) -> int:

@@ -13,6 +13,9 @@ from infrastructure.notifications import (
     build_webapp_url,
     format_notification_message,
     format_telegram_notification_message,
+    is_activity_suppressed_notification,
+    is_discretionary_notification,
+    notification_priority,
     notification_section,
     next_league_trophies,
     wins_to_next_case,
@@ -61,6 +64,172 @@ def test_reminder_allows_squad_template_for_squad_member():
 
 def test_dusty_reminder_has_lower_weight():
     assert REMINDER_DUSTY_WEIGHT == 1
+
+
+def test_discretionary_budget_excludes_social_notifications_and_prioritizes_rewards():
+    assert is_discretionary_notification("daily_rewards") is True
+    assert is_discretionary_notification("generator") is True
+    assert is_discretionary_notification("game_invites") is False
+    assert is_discretionary_notification("friend_requests") is False
+    assert is_activity_suppressed_notification("game_invites") is True
+    assert is_activity_suppressed_notification("friend_requests") is True
+    assert notification_priority("daily_rewards") > notification_priority("generator")
+    assert notification_priority("generator") > notification_priority("shop")
+    assert notification_priority("shop") > notification_priority("reminders")
+
+
+@pytest.mark.asyncio
+async def test_generator_notifications_fire_only_on_ready_and_full_transitions():
+    class GeneratorDB(Database):
+        def __init__(self):
+            super().__init__(DatabaseSettings("localhost", 5432, "user", "pass", "db"))
+            self._pool = object()
+            self.row = {
+                "user_id": 42,
+                "level": 1,
+                "accumulated_keys": 0,
+                "last_tick_at": None,
+                "notified": False,
+                "full_notified": False,
+                "notification_cycle": 7,
+                "extra_pass": None,
+                "extra_pass_expires_at": None,
+                "status": "active",
+            }
+            self.accumulated = 1
+            self.enqueued = []
+
+        async def fetch(self, query, *args):
+            return [dict(self.row)]
+
+        async def _compute_generator_accumulated(self, row):
+            return self.accumulated, self.accumulated, 2, 3600
+
+        async def enqueue_notification(self, user_id, **kwargs):
+            self.enqueued.append((user_id, kwargs))
+            return True
+
+        async def execute(self, query, *args):
+            if "UPDATE generator_state" in query:
+                self.row["notified"] = True
+                if args[1]:
+                    self.row["full_notified"] = True
+
+    db = GeneratorDB()
+
+    assert [item["event_type"] for item in await db.check_generator_notifications()] == ["generator_new_key"]
+    assert await db.check_generator_notifications() == []
+
+    db.accumulated = 2
+    assert [item["event_type"] for item in await db.check_generator_notifications()] == ["generator_full_on_new_key"]
+    assert await db.check_generator_notifications() == []
+    assert [kwargs["dedupe_key"] for _, kwargs in db.enqueued] == [
+        "generator:42:7:ready",
+        "generator:42:7:full",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_discretionary_enqueue_honors_shared_24_hour_cap():
+    class BudgetDB(Database):
+        def __init__(self):
+            super().__init__(DatabaseSettings("localhost", 5432, "user", "pass", "db"))
+            self._pool = object()
+            self.inserted = False
+
+        async def is_notification_enabled(self, user_id, category):
+            return True
+
+        async def fetchrow(self, query, *args):
+            if "AS sent_24h" in query:
+                return {"sent_24h": 1, "sent_7d": 1, "pending_priority": 0}
+            self.inserted = True
+            return {"id": 1}
+
+    db = BudgetDB()
+    assert await db.enqueue_notification(
+        42,
+        category="generator",
+        event_type="generator_new_key",
+        payload={"keys": 1},
+    ) is False
+    assert db.inserted is False
+
+
+@pytest.mark.asyncio
+async def test_higher_priority_discretionary_notification_supersedes_pending_one():
+    class PriorityDB(Database):
+        def __init__(self):
+            super().__init__(DatabaseSettings("localhost", 5432, "user", "pass", "db"))
+            self._pool = object()
+            self.executed = []
+
+        async def is_notification_enabled(self, user_id, category):
+            return True
+
+        async def fetchrow(self, query, *args):
+            if "AS sent_24h" in query:
+                return {"sent_24h": 0, "sent_7d": 0, "pending_priority": 100}
+            return {
+                "id": 9,
+                "user_id": args[0],
+                "category": args[1],
+                "event_type": args[2],
+                "payload": args[3],
+                "dedupe_key": args[4],
+                "returnclock_decision_id": args[5],
+                "returnclock_delivery_id": args[6],
+                "is_discretionary": args[7],
+                "created": True,
+            }
+
+        async def execute(self, query, *args):
+            self.executed.append((query, args))
+
+        async def create_returnclock_decision(self, user_id, **kwargs):
+            return {"decision_id": kwargs["decision_id"]}
+
+        async def update_returnclock_decision(self, user_id, decision_id, **kwargs):
+            return {"decision_id": decision_id, **kwargs}
+
+    db = PriorityDB()
+    assert await db.enqueue_notification(
+        42,
+        category="daily_rewards",
+        event_type="daily_login_reward",
+        payload={"available_at": "2026-05-25T10:00:00+00:00"},
+    ) is True
+    assert any(
+        "superseded_by_higher_priority" in query and args[-1] == 400
+        for query, args in db.executed
+    )
+
+
+@pytest.mark.asyncio
+async def test_recent_activity_suppresses_discretionary_external_delivery():
+    class ActivityDB(Database):
+        def __init__(self):
+            super().__init__(DatabaseSettings("localhost", 5432, "user", "pass", "db"))
+            self._pool = object()
+
+        async def is_notification_enabled(self, user_id, category):
+            return True
+
+        async def fetchval(self, query, *args):
+            assert "FROM user_sessions" in query
+            return True
+
+    db = ActivityDB()
+    reason = await db.notification_cancellation_reason(
+        {
+            "id": 5,
+            "user_id": 42,
+            "category": "generator",
+            "event_type": "generator_new_key",
+            "payload": {"generator_notification_cycle": 3},
+        }
+    )
+    assert reason == "recent_activity"
 
 
 def test_social_notification_categories_have_settings_messages_and_sections():

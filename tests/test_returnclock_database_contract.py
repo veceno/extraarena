@@ -81,7 +81,11 @@ async def test_session_start_replay_is_immutable_and_reports_created_false():
             },
         }
 
+    async def fake_execute(query: str, *args):
+        calls.append((query, args))
+
     db.fetchrow = fake_fetchrow
+    db.execute = fake_execute
 
     first = await db.start_user_session(
         42,
@@ -131,8 +135,9 @@ async def test_session_start_replay_is_immutable_and_reports_created_false():
     assert calls[0][1][7:9] == ("decision-1", "delivery-1")
     # A retry may carry different client data, but INSERT-only replay cannot
     # rewrite the original assignment/lifecycle row.
-    assert calls[1][1][3] == 9
-    assert calls[1][1][4] == "UTC"
+    assert "UPDATE notification_outbox" in calls[1][0]
+    assert calls[2][1][3] == 9
+    assert calls[2][1][4] == "UTC"
 
 
 @pytest.mark.asyncio
@@ -647,6 +652,12 @@ async def test_regular_notifications_get_observational_assignment_envelopes():
         return {"decision_id": decision_id}
 
     async def insert_outbox(query: str, *args):
+        if "AS sent_24h" in query:
+            return {
+                "sent_24h": 0,
+                "sent_7d": 0,
+                "pending_priority": 0,
+            }
         calls["insert"] = (query, args)
         return {
             "id": 77,
@@ -695,6 +706,12 @@ async def test_notification_retry_repairs_decision_link_after_insert_committed()
         return True
 
     async def fetchrow(query: str, *args):
+        if "AS sent_24h" in query:
+            return {
+                "sent_24h": 0,
+                "sent_7d": 0,
+                "pending_priority": 0,
+            }
         row = {
             "id": 77,
             "user_id": args[0],

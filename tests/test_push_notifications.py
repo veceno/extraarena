@@ -589,6 +589,68 @@ async def test_app_reminder_push_is_postponed_to_morning_during_device_quiet_hou
     assert db.deferred == [(81, datetime(2026, 5, 26, 6, 0, tzinfo=timezone.utc))]
 
 
+def test_quiet_hours_cover_discretionary_notifications_but_not_social_actions():
+    from main import _is_quiet_android_reminder_push
+
+    device = {"timezone": "UTC", "utc_offset_minutes": 0}
+    now = datetime(2026, 5, 25, 23, 15, tzinfo=timezone.utc)
+
+    assert _is_quiet_android_reminder_push(
+        device,
+        category="generator",
+        event_type="generator_new_key",
+        now_utc=now,
+    ) is True
+    assert _is_quiet_android_reminder_push(
+        device,
+        category="game_invites",
+        event_type="friendly_battle_invite",
+        now_utc=now,
+    ) is False
+
+
+@pytest.mark.asyncio
+async def test_telegram_only_discretionary_notification_is_postponed_during_quiet_hours(monkeypatch):
+    import main
+    from main import _deliver_notification
+
+    monkeypatch.setattr(
+        main,
+        "_notification_utc_now",
+        lambda: datetime(2026, 5, 25, 23, 15, tzinfo=timezone.utc),
+    )
+
+    class FakeBot:
+        async def send_message(self, **kwargs):
+            raise AssertionError("Telegram notification must be postponed during quiet hours")
+
+    class FakeDb:
+        def __init__(self):
+            self.deferred = []
+
+        async def get_notification_delivery_mode(self, user_id):
+            return "telegram_only"
+
+        async def get_notification_timezone(self, user_id):
+            return {"timezone": "UTC", "utc_offset_minutes": 0}
+
+        async def postpone_notification(self, notification_id, not_before_at):
+            self.deferred.append((notification_id, not_before_at))
+
+    db = FakeDb()
+    notif = {
+        "id": 82,
+        "user_id": 42,
+        "category": "generator",
+        "event_type": "generator_new_key",
+        "payload": {"keys": 1},
+    }
+
+    await _deliver_notification(FakeBot(), db, "https://example.com/game", notif)
+
+    assert db.deferred == [(82, datetime(2026, 5, 26, 9, 0, tzinfo=timezone.utc))]
+
+
 @pytest.mark.asyncio
 async def test_android_broadcast_marks_permanent_token_errors():
     class FakeDb:
