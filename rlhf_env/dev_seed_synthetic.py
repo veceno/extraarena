@@ -109,6 +109,9 @@ async def seed() -> None:
                     email=email,
                     password_hash="dev_only_no_real_auth",
                     nickname=f"RLHFDev{digits}",
+                    identity_provider="synthetic_user",
+                    identity_subject=str(user_id),
+                    registration_origin="rlhf_dev",
                 )
                 break
             except Exception:

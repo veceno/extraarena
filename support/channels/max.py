@@ -10,7 +10,7 @@ from support.attachments import MAX_SUPPORT_ATTACHMENT_BYTES
 from support.constants import SupportChannel
 
 
-MAX_API_BASE = "https://platform-api.max.ru"
+MAX_API_BASE = "https://platform-api2.max.ru"
 
 
 def verify_max_webhook_secret(expected: str, received: str | None) -> bool:

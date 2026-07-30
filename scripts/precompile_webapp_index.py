@@ -24,7 +24,10 @@ OUT_JS = ROOT / "webapp" / "index.compiled.js"
 ESBUILD_PACKAGE = "esbuild@0.25.5"
 SOURCE_TYPE = "application/x-extraarena-jsx-source"
 SOURCE_ID = "extraarena-main-jsx-source"
-ROOT_RENDER_MARKER = "ReactDOM.createRoot(document.getElementById('root')).render(<App/>);"
+ROOT_RENDER_MARKERS = (
+    "ReactDOM.createRoot(document.getElementById('root')).render(<App/>);",
+    "ReactDOM.createRoot(root).render(<App/>);",
+)
 
 BABEL_SCRIPT_RE = re.compile(
     r"\n?<script\s+src=\"https://unpkg\.com/@babel/standalone@[^\"<>]+\"\s+crossorigin=\"anonymous\"></script>\n?",
@@ -60,9 +63,14 @@ def _find_source_script(html: str) -> SourceBlock:
     for match in SCRIPT_OPEN_RE.finditer(html):
         if not _script_attrs_match(match.group("attrs")):
             continue
-        marker_pos = html.find(ROOT_RENDER_MARKER, match.end())
-        if marker_pos == -1:
+        marker_positions = [
+            position
+            for marker in ROOT_RENDER_MARKERS
+            if (position := html.find(marker, match.end())) != -1
+        ]
+        if not marker_positions:
             continue
+        marker_pos = min(marker_positions)
         close_pos = html.find("</script>", marker_pos)
         if close_pos == -1:
             raise RuntimeError("Found main JSX source start but no closing </script> after React root render.")

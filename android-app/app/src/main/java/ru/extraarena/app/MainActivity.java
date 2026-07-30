@@ -2,9 +2,11 @@ package ru.extraarena.app;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.app.Dialog;
 import android.content.ActivityNotFoundException;
 import android.content.Context;
+import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
@@ -80,6 +82,7 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Random;
 import java.util.concurrent.ExecutorService;
@@ -104,6 +107,20 @@ public class MainActivity extends Activity {
     private static final String KEY_NOTIFICATION_PROMPT_LAST_SHOWN = "last_shown_at";
     private static final String HAPTICS_PREFS = "extraarena_haptics";
     private static final String KEY_HAPTICS_ENABLED = "enabled";
+    private static final String WEBAPP_CONTENT_SECURITY_POLICY =
+            "default-src 'self'; "
+                    + "script-src 'self' 'unsafe-inline' https://telegram.org https://unpkg.com https://cdn.socket.io; "
+                    + "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+                    + "font-src 'self' data: https://fonts.gstatic.com; "
+                    + "img-src 'self' data: blob: https:; "
+                    + "media-src 'self' data: blob: https:; "
+                    + "connect-src 'self' https: ws: wss:; "
+                    + "worker-src 'self' blob:; "
+                    + "frame-src 'self'; "
+                    + "object-src 'none'; "
+                    + "base-uri 'self'; "
+                    + "form-action 'self' https:; "
+                    + "frame-ancestors 'none'";
 
     private enum AuthStep {
         WELCOME,
@@ -180,6 +197,8 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        purgePendingLocalCredential();
+        AuthClient.flushPendingRevocations(this);
         configureWindowColors();
         NotificationChannels.ensure(this);
         loadTypefaces();
@@ -450,6 +469,8 @@ public class MainActivity extends Activity {
         settings.setTextZoom(100);
         settings.setAllowFileAccess(false);
         settings.setAllowContentAccess(false);
+        settings.setAllowFileAccessFromFileURLs(false);
+        settings.setAllowUniversalAccessFromFileURLs(false);
         settings.setSupportMultipleWindows(true);
         settings.setJavaScriptCanOpenWindowsAutomatically(false);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
@@ -461,6 +482,8 @@ public class MainActivity extends Activity {
         settings.setUserAgentString(settings.getUserAgentString() + " ExtraArenaApp/" + BuildConfig.VERSION_NAME);
 
         webView.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        // Installed before the first navigation so the bundled webapp can read the
+        // Keystore-backed token without ever placing it in a URL.
         webView.addJavascriptInterface(new AndroidBridge(), "ExtraArenaApp");
         webView.setWebChromeClient(new WebChromeClient() {
             @Override
@@ -570,7 +593,7 @@ public class MainActivity extends Activity {
                 errorView.setVisibility(View.GONE);
                 injectAppContext();
                 injectHapticsBridge();
-                captureAuthTokenFromLocalStorage();
+                captureAuthTokenFromWebSession();
                 maybeShowNotificationOptInPrompt();
                 String previousUrl = lastFinishedUrl;
                 lastFinishedUrl = url == null ? "" : url;
@@ -622,7 +645,7 @@ public class MainActivity extends Activity {
             return null;
         }
 
-        String host = uri.getHost() == null ? "" : uri.getHost().toLowerCase();
+        String host = uri.getHost() == null ? "" : uri.getHost().toLowerCase(Locale.ROOT);
         String path = uri.getPath() == null || uri.getPath().isEmpty() ? "/" : uri.getPath();
 
         if ("telegram.org".equals(host) && "/js/telegram-web-app.js".equals(path)) {
@@ -704,7 +727,19 @@ public class MainActivity extends Activity {
     }
 
     private WebResourceResponse servePackagedWebappAsset(String assetPath) {
+        if (assetPath != null && assetPath.toLowerCase(Locale.ROOT).endsWith(".html")) {
+            return servePackagedAsset(assetPath, webappDocumentHeaders());
+        }
         return servePackagedAsset(assetPath);
+    }
+
+    private Map<String, String> webappDocumentHeaders() {
+        Map<String, String> headers = new HashMap<>();
+        headers.put("Content-Security-Policy", WEBAPP_CONTENT_SECURITY_POLICY);
+        headers.put("X-Content-Type-Options", "nosniff");
+        headers.put("Referrer-Policy", "no-referrer");
+        headers.put("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+        return headers;
     }
 
     private WebResourceResponse servePackagedDesignAsset(String path) {
@@ -826,7 +861,7 @@ public class MainActivity extends Activity {
     }
 
     private String mimeTypeForAsset(String assetPath) {
-        String lower = assetPath.toLowerCase();
+        String lower = assetPath.toLowerCase(Locale.ROOT);
         if (lower.endsWith(".html")) return "text/html";
         if (lower.endsWith(".js")) return "application/javascript";
         if (lower.endsWith(".css")) return "text/css";
@@ -847,15 +882,17 @@ public class MainActivity extends Activity {
         if (url == null) {
             return false;
         }
-        String baseUrl = BaseUrlStore.getBaseUrl(this);
-        if (url.startsWith(baseUrl)) {
-            return false;
-        }
         if (url.startsWith("extraarena://")) {
             Uri uri = Uri.parse(url);
             String section = uri.getQueryParameter("section");
             webView.loadUrl(buildLaunchUrl(section));
             return true;
+        }
+        try {
+            if (isSelectedConnectionProfileUri(Uri.parse(url))) {
+                return false;
+            }
+        } catch (Exception ignored) {
         }
         openExternal(url);
         return true;
@@ -1317,7 +1354,6 @@ public class MainActivity extends Activity {
             String entrypoint
     ) {
         Uri.Builder builder = Uri.parse(BaseUrlStore.getBaseUrl(this)).buildUpon()
-                .appendQueryParameter("_auth", DeviceRegistrar.getAuthToken(this))
                 .appendQueryParameter("ea_platform", "android_app")
                 .appendQueryParameter("ea_shell", "android")
                 .appendQueryParameter("ea_telegram", "0")
@@ -1527,9 +1563,9 @@ public class MainActivity extends Activity {
         webView.evaluateJavascript(script, null);
     }
 
-    private void captureAuthTokenFromLocalStorage() {
+    private void captureAuthTokenFromWebSession() {
         webView.evaluateJavascript(
-                "(function(){try{var p=new URL(location.href).searchParams.get('_auth');return p||localStorage.getItem('extra_id_token')||'';}catch(e){return localStorage.getItem('extra_id_token')||'';}})()",
+                "(function(){try{return sessionStorage.getItem('extra_id_token')||'';}catch(e){return '';}})()",
                 value -> {
                     String token = stripJsString(value);
                     if (!token.isEmpty()) {
@@ -2270,10 +2306,10 @@ public class MainActivity extends Activity {
     }
 
     private String legalUrlForTarget(String target) {
-        if (target != null && target.toLowerCase().contains("политик")) {
+        if (target != null && target.toLowerCase(Locale.ROOT).contains("политик")) {
             return configuredLegalUrlOrDefault(BuildConfig.LEGAL_PRIVACY_URL, "/legal/privacy");
         }
-        if (target != null && target.toLowerCase().contains("возврат")) {
+        if (target != null && target.toLowerCase(Locale.ROOT).contains("возврат")) {
             return configuredLegalUrlOrDefault(BuildConfig.LEGAL_REFUND_URL, "/legal/refund");
         }
         return configuredLegalUrlOrDefault(BuildConfig.LEGAL_OFFER_URL, "/legal/offer");
@@ -2624,7 +2660,7 @@ public class MainActivity extends Activity {
             setTopbar("ExtraID", "Назад");
             authKicker.setText("Новый аккаунт");
             authTitle.setText("Придумай\nпароль");
-            authSubtitle.setText("На этот email будет создан ExtraID для входа без Telegram.");
+            authSubtitle.setText("На этот email создадим ExtraID и отправим ссылку для подтверждения.");
             updateLoginSteps(2);
             setStageHeight(0);
             setFieldVisible(authEmailField, true, false);
@@ -2686,7 +2722,7 @@ public class MainActivity extends Activity {
             setTopbar("Telegram", "Назад");
             authKicker.setText("Новый ExtraID");
             authTitle.setText("Создай\nпароль");
-            authSubtitle.setText("После создания аккаунта сразу запустим игру.");
+            authSubtitle.setText("Создадим ExtraID и отправим ссылку для подтверждения email.");
             updateLoginSteps(3);
             setStageHeight(0);
             setFieldVisible(authEmailField, true, false);
@@ -2744,7 +2780,7 @@ public class MainActivity extends Activity {
                 showAuthError("Проверь email");
                 return;
             }
-            stagedEmail = email.toLowerCase();
+            stagedEmail = email.toLowerCase(Locale.ROOT);
             updateAuthStep(authStep == AuthStep.LOGIN_EMAIL ? AuthStep.LOGIN_PASSWORD : AuthStep.REGISTER_PASSWORD);
             return;
         }
@@ -2762,7 +2798,7 @@ public class MainActivity extends Activity {
                 showAuthError("Проверь email");
                 return;
             }
-            stagedEmail = email.toLowerCase();
+            stagedEmail = email.toLowerCase(Locale.ROOT);
             updateAuthStep(AuthStep.TELEGRAM_PASSWORD);
             return;
         }
@@ -2876,6 +2912,10 @@ public class MainActivity extends Activity {
             showAuthError("Пароль должен быть не короче 8 символов");
             return;
         }
+        if (isPasswordTooLong(password)) {
+            showAuthError("Пароль должен занимать не больше 72 байт");
+            return;
+        }
         if (!ensureNetworkForAuth()) {
             return;
         }
@@ -2894,6 +2934,10 @@ public class MainActivity extends Activity {
         String password = authPassword.getText().toString();
         if (password.length() < 8) {
             showAuthError("Пароль должен быть не короче 8 символов");
+            return;
+        }
+        if (isPasswordTooLong(password)) {
+            showAuthError("Пароль должен занимать не больше 72 байт");
             return;
         }
         if (!ensureNetworkForAuth()) {
@@ -2915,6 +2959,15 @@ public class MainActivity extends Activity {
                 runOnUiThread(() -> {
                     setAuthLoading(false);
                     hideSoftKeyboardAndClearAuthFocus();
+                    if (result.emailVerificationRequired) {
+                        updateAuthStep(AuthStep.LOGIN_EMAIL);
+                        authEmail.setText(emailForAccount);
+                        showEmailVerificationPending(
+                                emailForAccount,
+                                result.emailSent
+                        );
+                        return;
+                    }
                     resetWebViewForNewAuthSession();
                     if (!persistNativeAuthToken(result.token)) {
                         return;
@@ -3664,9 +3717,7 @@ public class MainActivity extends Activity {
             TextView logout = createDialogButton("Выйти на этом устройстве", false);
             logout.setOnClickListener(v -> {
                 dialog.dismiss();
-                clearWebAuthState();
-                DeviceRegistrar.clearAuthToken(MainActivity.this);
-                showAuth();
+                logoutCurrentDevice();
             });
             panel.addView(logout, inputParams());
         }
@@ -3788,7 +3839,7 @@ public class MainActivity extends Activity {
 
         panel.addView(createDialogTitle(createMode ? "Создать ExtraID" : "Добавить ExtraID"));
         panel.addView(createDialogSubtitle(createMode
-                ? "Укажи почту и пароль. Аккаунт сохранится в клиенте и появится в переключателе."
+                ? "Укажи почту и пароль. После подтверждения email войди в ExtraID; текущая игра останется активна."
                 : "Войди в существующий ExtraID, чтобы быстро переключаться между учетками."));
 
         EditText email = createDialogInput("Email", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS);
@@ -3809,10 +3860,10 @@ public class MainActivity extends Activity {
         error.setVisibility(View.GONE);
         panel.addView(error, inputParams());
 
-        TextView submit = createDialogButton(createMode ? "Создать и войти" : "Войти", true);
+        TextView submit = createDialogButton(createMode ? "Создать ExtraID" : "Войти", true);
         EditText nicknameInput = nickname;
         submit.setOnClickListener(v -> {
-            String cleanEmail = email.getText().toString().trim().toLowerCase();
+            String cleanEmail = email.getText().toString().trim().toLowerCase(Locale.ROOT);
             String pass = password.getText().toString();
             String nick = nicknameInput == null ? "" : nicknameInput.getText().toString().trim();
             if (!isValidEmail(cleanEmail)) {
@@ -3823,12 +3874,23 @@ public class MainActivity extends Activity {
                 showDialogError(error, "Пароль должен быть не короче 8 символов.");
                 return;
             }
+            if (isPasswordTooLong(pass)) {
+                showDialogError(error, "Пароль должен занимать не больше 72 байт.");
+                return;
+            }
             submit.setEnabled(false);
             submit.setAlpha(0.65f);
             submit.setText("Подключаемся...");
-            AuthClient.Callback callback = nativeExtraIdCallback(dialog, cleanEmail, submit, createMode ? "Создать и войти" : "Войти", error);
+            AuthClient.Callback callback = nativeExtraIdCallback(dialog, cleanEmail, submit, createMode ? "Создать ExtraID" : "Войти", error);
             if (createMode) {
-                AuthClient.register(MainActivity.this, cleanEmail, pass, nick, callback);
+                AuthClient.register(
+                        MainActivity.this,
+                        cleanEmail,
+                        pass,
+                        nick,
+                        DeviceRegistrar.getAuthToken(MainActivity.this),
+                        callback
+                );
             } else {
                 AuthClient.login(MainActivity.this, cleanEmail, pass, callback);
             }
@@ -3877,6 +3939,11 @@ public class MainActivity extends Activity {
                     submit.setEnabled(true);
                     submit.setAlpha(1f);
                     submit.setText(submitText);
+                    if (result.emailVerificationRequired) {
+                        dialog.dismiss();
+                        showEmailVerificationPending(email, result.emailSent);
+                        return;
+                    }
                     if (!saveNativeAuthTokenForDialog(result.token, error)) {
                         return;
                     }
@@ -3938,6 +4005,128 @@ public class MainActivity extends Activity {
         }
         error.setText(message == null || message.trim().isEmpty() ? "Что-то пошло не так." : message);
         error.setVisibility(View.VISIBLE);
+    }
+
+    private boolean isPasswordTooLong(String password) {
+        return password != null && password.getBytes(StandardCharsets.UTF_8).length > 72;
+    }
+
+    private void showEmailVerificationPending(String email, boolean emailSent) {
+        String cleanEmail = email == null ? "" : email.trim();
+        String message;
+        if (emailSent) {
+            message = "Мы отправили ссылку на " + cleanEmail
+                    + ". Перейди по ней, затем войди в ExtraID. "
+                    + "Текущая игра и прогресс на этом устройстве сохранены.";
+        } else {
+            message = "Email " + cleanEmail
+                    + " ещё не подтверждён. Текущая игра и прогресс на этом устройстве сохранены. "
+                    + "Нажми «Отправить ещё раз», чтобы запросить новое письмо.";
+        }
+        AlertDialog.Builder builder = new AlertDialog.Builder(this)
+                .setTitle("Подтверди email")
+                .setMessage(message)
+                .setPositiveButton("Понятно", null);
+        if (!cleanEmail.isEmpty()) {
+            builder.setNegativeButton("Отправить ещё раз", (dialog, which) ->
+                    AuthClient.resendVerificationEmail(
+                            MainActivity.this,
+                            cleanEmail,
+                            new AuthClient.SimpleCallback() {
+                                @Override
+                                public void onSuccess() {
+                                    runOnUiThread(() -> Toast.makeText(
+                                            MainActivity.this,
+                                            "Если ExtraID ожидает подтверждения, письмо отправлено",
+                                            Toast.LENGTH_LONG
+                                    ).show());
+                                }
+
+                                @Override
+                                public void onError(String errorMessage) {
+                                    runOnUiThread(() -> Toast.makeText(
+                                            MainActivity.this,
+                                            errorMessage,
+                                            Toast.LENGTH_LONG
+                                    ).show());
+                                }
+                            }
+                    ));
+        }
+        if (!DeviceRegistrar.getAuthToken(this).isEmpty()) {
+            builder.setNeutralButton(
+                    "Исправить email",
+                    (dialog, which) -> showChangePendingEmailDialog(cleanEmail)
+            );
+        }
+        builder.show();
+    }
+
+    private void showChangePendingEmailDialog(String currentEmail) {
+        EditText input = createDialogInput(
+                "Новый email",
+                InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS
+        );
+        input.setText(currentEmail == null ? "" : currentEmail);
+        input.setSelectAllOnFocus(true);
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("Исправить email")
+                .setMessage("Новое письмо для подтверждения будет отправлено автоматически.")
+                .setView(input)
+                .setNegativeButton("Отмена", null)
+                .setPositiveButton("Сохранить", null)
+                .create();
+        dialog.setOnShowListener(ignored -> {
+            View save = dialog.getButton(DialogInterface.BUTTON_POSITIVE);
+            save.setOnClickListener(v -> {
+                String newEmail = input.getText().toString().trim().toLowerCase(Locale.ROOT);
+                if (!isValidEmail(newEmail)) {
+                    input.setError("Проверь email");
+                    return;
+                }
+                String activeToken = DeviceRegistrar.getAuthToken(MainActivity.this);
+                if (activeToken.isEmpty()) {
+                    input.setError("Текущая сессия недоступна. Войди снова");
+                    return;
+                }
+                input.setEnabled(false);
+                save.setEnabled(false);
+                AuthClient.changeUnverifiedEmail(
+                        MainActivity.this,
+                        activeToken,
+                        newEmail,
+                        new AuthClient.SimpleCallback() {
+                            @Override
+                            public void onSuccess() {
+                                runOnUiThread(() -> {
+                                    stagedEmail = newEmail;
+                                    if (authEmail != null) {
+                                        authEmail.setText(newEmail);
+                                    }
+                                    dialog.dismiss();
+                                    Toast.makeText(
+                                            MainActivity.this,
+                                            "Email изменён, новое письмо отправлено",
+                                            Toast.LENGTH_LONG
+                                    ).show();
+                                    showEmailVerificationPending(newEmail, true);
+                                });
+                            }
+
+                            @Override
+                            public void onError(String errorMessage) {
+                                runOnUiThread(() -> {
+                                    input.setEnabled(true);
+                                    save.setEnabled(true);
+                                    input.setError(errorMessage);
+                                });
+                            }
+                        }
+                );
+            });
+        });
+        dialog.show();
     }
 
     private void showBadConnectionSplash(int latencyMs) {
@@ -4179,7 +4368,7 @@ public class MainActivity extends Activity {
             }
         } catch (Exception ignored) {
         }
-        String normalized = style == null ? "light" : style.trim().toLowerCase();
+        String normalized = style == null ? "light" : style.trim().toLowerCase(Locale.ROOT);
         long[] pattern = null;
         int amplitude = 96;
         long duration = 14L;
@@ -4974,11 +5163,7 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public void clearAuthToken() {
-            runOnUiThread(() -> {
-                clearWebAuthState();
-                DeviceRegistrar.clearAuthToken(MainActivity.this);
-                showAuth();
-            });
+            runOnUiThread(MainActivity.this::logoutCurrentDevice);
         }
 
         @JavascriptInterface
@@ -5071,5 +5256,28 @@ public class MainActivity extends Activity {
             } catch (Exception ignored) {
             }
         }
+    }
+
+    private void logoutCurrentDevice() {
+        String activeToken = DeviceRegistrar.getAuthToken(this);
+        AuthClient.logoutBestEffort(this, activeToken);
+        ExtraIdAccountStore.removeAccountByToken(
+                this,
+                BaseUrlStore.getBaseUrl(this),
+                activeToken
+        );
+        clearWebAuthState();
+        DeviceRegistrar.clearAuthToken(this);
+        showAuth();
+    }
+
+    private void purgePendingLocalCredential() {
+        String baseUrl = BaseUrlStore.getBaseUrl(this);
+        String activeToken = DeviceRegistrar.getAuthToken(this);
+        if (!AuthClient.isRevocationPending(this, baseUrl, activeToken)) {
+            return;
+        }
+        ExtraIdAccountStore.removeAccountByToken(this, baseUrl, activeToken);
+        DeviceRegistrar.clearAuthToken(this);
     }
 }

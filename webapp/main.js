@@ -317,6 +317,16 @@ function looksLikeMainJwtBearer(value) {
     && /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(value.trim());
 }
 
+function isMainTelegramInitDataToken(value) {
+  if (!value || typeof value !== "string") return false;
+  try {
+    const params = new URLSearchParams(value);
+    return params.has("auth_date") && params.has("hash");
+  } catch (_) {
+    return false;
+  }
+}
+
 function isSameOriginMainApiPath(path) {
   try {
     const url = new URL(path, window.location.origin);
@@ -367,19 +377,15 @@ function buildMainArenaRedirectUrl(path, authData) {
   let targetUrl = String(path || "");
   targetUrl = appendMainArenaAudioPreferenceParams(targetUrl);
   if (typeof authData === "string" && authData) {
-    if (looksLikeMainJwtBearer(authData)) {
-      try { sessionStorage.setItem("arena_auth", authData); } catch (_) {}
-      try {
-        const clean = new URL(targetUrl, window.location.origin);
-        clean.searchParams.delete("_auth");
-        targetUrl = clean.pathname + clean.search + clean.hash;
-      } catch (_) {}
-      return targetUrl;
-    }
-    if (!/[?&]_auth=/.test(targetUrl)) {
-      const separator = targetUrl.includes("?") ? "&" : "?";
-      targetUrl += `${separator}_auth=${encodeURIComponent(authData)}`;
-    }
+    // Both JWT and Telegram initData are credentials. Pass either through
+    // sessionStorage so browser history, referrers and reverse-proxy logs never
+    // receive them.
+    try { sessionStorage.setItem("arena_auth", authData); } catch (_) {}
+    try {
+      const clean = new URL(targetUrl, window.location.origin);
+      clean.searchParams.delete("_auth");
+      targetUrl = clean.pathname + clean.search + clean.hash;
+    } catch (_) {}
     return targetUrl;
   }
   if (typeof authData === "number") {
@@ -394,7 +400,7 @@ function buildMainArenaRedirectUrl(path, authData) {
   window.__eaMainJwtQueryAuthHeaderBridgeInstalled = true;
   const nativeFetch = window.fetch.bind(window);
 
-  function liftMainJwtAuthFromJsonBody(nextInit, headers) {
+  function liftMainAuthFromJsonBody(nextInit, headers) {
     const body = nextInit.body;
     if (typeof body !== "string") return null;
     const contentType = headers.get("Content-Type") || headers.get("content-type") || "";
@@ -408,16 +414,16 @@ function buildMainArenaRedirectUrl(path, authData) {
     }
     if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
 
-    const bodyToken = looksLikeMainJwtBearer(payload._auth)
+    const bodyToken = (looksLikeMainJwtBearer(payload._auth) || isMainTelegramInitDataToken(payload._auth))
       ? payload._auth
-      : looksLikeMainJwtBearer(payload.auth)
+      : (looksLikeMainJwtBearer(payload.auth) || isMainTelegramInitDataToken(payload.auth))
         ? payload.auth
         : null;
     if (!bodyToken) return null;
 
     const sanitized = {...payload};
-    if (looksLikeMainJwtBearer(sanitized._auth)) delete sanitized._auth;
-    if (looksLikeMainJwtBearer(sanitized.auth)) delete sanitized.auth;
+    if (looksLikeMainJwtBearer(sanitized._auth) || isMainTelegramInitDataToken(sanitized._auth)) delete sanitized._auth;
+    if (looksLikeMainJwtBearer(sanitized.auth) || isMainTelegramInitDataToken(sanitized.auth)) delete sanitized.auth;
     nextInit.body = JSON.stringify(sanitized);
     return bodyToken;
   }
@@ -430,16 +436,20 @@ function buildMainArenaRedirectUrl(path, authData) {
       const token = url.searchParams.get("_auth");
       const nextInit = {...(init || {})};
       const headers = new Headers(nextInit.headers || (typeof input !== "string" ? input.headers : undefined) || {});
-      const bodyToken = liftMainJwtAuthFromJsonBody(nextInit, headers);
+      const bodyToken = liftMainAuthFromJsonBody(nextInit, headers);
       const fallbackAuth = !token && !bodyToken ? resolveUserId() : null;
-      const fallbackToken = looksLikeMainJwtBearer(fallbackAuth) ? fallbackAuth : null;
-      const bearerToken = looksLikeMainJwtBearer(token) ? token : (bodyToken || fallbackToken);
-      if (url.origin !== window.location.origin || !url.pathname.startsWith("/api/") || !bearerToken) {
+      const selectedToken = token || bodyToken || fallbackAuth;
+      const bearerToken = looksLikeMainJwtBearer(selectedToken) ? selectedToken : null;
+      const telegramToken = isMainTelegramInitDataToken(selectedToken) ? selectedToken : null;
+      if (url.origin !== window.location.origin || !url.pathname.startsWith("/api/") || (!bearerToken && !telegramToken)) {
         return nativeFetch(input, init);
       }
 
       if (token) url.searchParams.delete("_auth");
-      if (!headers.has("Authorization")) headers.set("Authorization", `Bearer ${bearerToken}`);
+      if (bearerToken && !headers.has("Authorization")) headers.set("Authorization", `Bearer ${bearerToken}`);
+      if (!bearerToken && telegramToken && !headers.has("X-Telegram-Init-Data")) {
+        headers.set("X-Telegram-Init-Data", telegramToken);
+      }
       nextInit.headers = headers;
       const nextUrl = url.pathname + url.search + url.hash;
       return nativeFetch(nextUrl, nextInit);

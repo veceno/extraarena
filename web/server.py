@@ -5,6 +5,7 @@ import base64
 import hashlib
 import html
 import hmac
+import ipaddress
 import json as _stdlib_json
 import logging
 import math
@@ -99,10 +100,12 @@ from web.extraid_handlers import (
     _make_jwt_session,
     _hash_jwt,
     _make_bot_auth_code,
+    _email_delivery_configured as _extraid_email_delivery_configured,
 )
 from web.mcp_routes import register_admin_mcp_routes
+from web.max_integration import register_max_routes
 from support.web import register_support_routes
-from infrastructure.extraid_database import ExtraIDDatabase, SYNTHETIC_USER_ID_MIN
+from infrastructure.extraid_database import ExtraIDDatabase
 
 WEBAPP_DIR = Path(__file__).resolve().parents[1] / "webapp"
 DESIGN_ASSETS_DIR = Path(__file__).resolve().parents[1] / "DesignAssets"
@@ -113,6 +116,7 @@ BATTLE_SHELL_STATIC_FILES = {
     "analytics-v2.js",
     "arena.js",
     "arena-styles.css",
+    "platform-bridge.js",
     "safe-area.js",
 }
 COMMUNITY_UPLOADS_DIR = Path(__file__).resolve().parents[1] / "uploads" / "community"
@@ -167,6 +171,32 @@ COMPRESSIBLE_CONTENT_TYPES = (
     "text/",
 )
 COMPRESSIBLE_STATIC_SUFFIXES = {".css", ".html", ".js", ".json", ".mjs", ".svg", ".txt", ".xml"}
+RLHF_TOKEN_AUDIENCE = "extraarena:rlhf"
+RLHF_TOKEN_SCOPE = "rlhf:decks"
+RLHF_TOKEN_TYPE = "rlhf_access"
+RLHF_TOKEN_TTL_SECONDS = 10 * 60
+RLHF_OTP_PURPOSE = "rlhf_login"
+RLHF_VERIFY_MAX_ATTEMPTS = 5
+RLHF_VERIFY_WINDOW_SECONDS = 5 * 60
+RLHF_IDENTIFIER_MAX_LENGTH = 128
+TRUSTED_LOCAL_PROXY_REMOTES = frozenset({"127.0.0.1", "::1", "localhost"})
+HTML_CONTENT_SECURITY_POLICY = (
+    "default-src 'self'; "
+    "script-src 'self' 'unsafe-inline' https://telegram.org https://st.max.ru https://unpkg.com https://cdn.socket.io; "
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+    "font-src 'self' data: https://fonts.gstatic.com; "
+    "img-src 'self' data: blob: https:; "
+    "media-src 'self' data: blob: https:; "
+    "connect-src 'self' https: ws: wss:; "
+    "worker-src 'self' blob:; "
+    "frame-src 'self'; "
+    "object-src 'none'; "
+    "base-uri 'self'; "
+    "form-action 'self' https:; "
+    "frame-ancestors 'self' https://web.telegram.org https://*.telegram.org "
+    "https://max.ru https://*.max.ru"
+)
+STRICT_TRANSPORT_SECURITY = "max-age=31536000"
 
 
 def _safe_internal_error_payload() -> dict[str, str]:
@@ -196,6 +226,129 @@ async def compression_middleware(request: web.Request, handler) -> web.StreamRes
         and any(content_type.startswith(prefix) for prefix in COMPRESSIBLE_CONTENT_TYPES)
     ):
         response.enable_compression()
+    return response
+
+
+def _is_html_response(request: web.Request, response: web.StreamResponse) -> bool:
+    content_type = str(response.headers.get("Content-Type") or "").lower()
+    path = str(request.path or "").lower()
+    return (
+        content_type.startswith("text/html")
+        or path in {"/", "/arena", "/battle", "/extrashop", "/extrashop/"}
+        or path.endswith(".html")
+        or path.startswith("/legal/")
+    )
+
+
+def _configured_https_origin() -> str | None:
+    raw_url = os.getenv("PUBLIC_BASE_URL")
+    if raw_url is None:
+        raw_url = os.getenv("WEBAPP_URL")
+    text = str(raw_url or "").strip()
+    if (
+        not text
+        or "\\" in text
+        or any(ord(character) < 32 or ord(character) == 127 for character in text)
+    ):
+        return None
+    try:
+        parts = urlsplit(text)
+        _ = parts.port
+    except ValueError:
+        return None
+    if (
+        parts.scheme.lower() != "https"
+        or not parts.hostname
+        or parts.username is not None
+        or parts.password is not None
+        or parts.path not in {"", "/"}
+        or parts.query
+        or parts.fragment
+    ):
+        return None
+    return urlunsplit(("https", parts.netloc, "", "", ""))
+
+
+def _trusted_forwarded_scheme(request: web.Request) -> str | None:
+    if bool(getattr(request, "secure", False)):
+        return "https"
+    if not _is_trusted_proxy_hop(str(request.remote or "").strip()):
+        return None
+
+    cf_visitor = str(request.headers.get("CF-Visitor") or "").strip()
+    if cf_visitor:
+        try:
+            visitor_data = _stdlib_json.loads(cf_visitor)
+        except (TypeError, ValueError):
+            visitor_data = None
+        if isinstance(visitor_data, dict):
+            scheme = str(visitor_data.get("scheme") or "").strip().lower()
+            if scheme in {"http", "https"}:
+                return scheme
+
+    scheme = str(request.headers.get("X-Forwarded-Proto") or "").strip().lower()
+    return scheme if scheme in {"http", "https"} else None
+
+
+@web.middleware
+async def enforce_https_middleware(
+    request: web.Request,
+    handler,
+) -> web.StreamResponse:
+    settings = get_settings()
+    if settings.environment == "production" and _trusted_forwarded_scheme(request) == "http":
+        https_origin = _configured_https_origin()
+        if not https_origin:
+            return web.json_response(
+                {"error": "https_redirect_not_configured"},
+                status=503,
+                headers=NO_STORE_CACHE_HEADERS,
+            )
+        raw_target = str(
+            getattr(request, "raw_path", "")
+            or getattr(request, "rel_url", "")
+            or "/"
+        )
+        if not raw_target.startswith("/"):
+            raw_target = "/"
+        return web.Response(
+            status=308,
+            headers={
+                "Location": f"{https_origin}{raw_target}",
+                **NO_STORE_CACHE_HEADERS,
+            },
+        )
+    return await handler(request)
+
+
+async def transport_security_response_prepare(
+    request: web.Request,
+    response: web.StreamResponse,
+) -> None:
+    if get_settings().environment == "production":
+        response.headers["Strict-Transport-Security"] = STRICT_TRANSPORT_SECURITY
+
+
+@web.middleware
+async def browser_security_headers_middleware(
+    request: web.Request,
+    handler,
+) -> web.StreamResponse:
+    response = await handler(request)
+    if response is None:
+        return response
+
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault(
+        "Permissions-Policy",
+        "camera=(), microphone=(), geolocation=()",
+    )
+    if _is_html_response(request, response):
+        response.headers.setdefault(
+            "Content-Security-Policy",
+            HTML_CONTENT_SECURITY_POLICY,
+        )
     return response
 
 
@@ -4414,6 +4567,7 @@ def _extract_user_id_from_init_data(data_dict: dict[str, str]) -> int | None:
 
 AUTH_MAX_AGE_SECONDS = 86400
 AUTH_CLOCK_SKEW_SECONDS = 300
+TELEGRAM_INIT_DATA_MAX_BYTES = 16 * 1024
 ADMIN_SESSION_COOKIE_NAME = "ea_admin_session"
 ADMIN_SESSION_MAX_AGE_SECONDS = 4 * 60 * 60
 COMMUNITY_ADMIN_API_PATHS = frozenset({
@@ -4449,6 +4603,83 @@ def _mask_email(email: str) -> str:
     if len(local) <= 1:
         return f"{local[0]}***@{domain}"
     return f"{local[0]}***@{domain}"
+
+
+def _canonical_ip_address(raw: str | None) -> str | None:
+    value = str(raw or "").strip()
+    if not value:
+        return None
+    if value.startswith("[") and value.endswith("]"):
+        value = value[1:-1]
+    try:
+        return str(ipaddress.ip_address(value))
+    except ValueError:
+        return None
+
+
+def _is_trusted_proxy_hop(value: str | None) -> bool:
+    canonical = _canonical_ip_address(value)
+    if not canonical:
+        return str(value or "").strip() in TRUSTED_LOCAL_PROXY_REMOTES
+
+    trusted_networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = [
+        ipaddress.ip_network("127.0.0.0/8"),
+        ipaddress.ip_network("::1/128"),
+    ]
+    for raw_cidr in os.getenv("TRUSTED_PROXY_CIDRS", "").split(","):
+        raw_cidr = raw_cidr.strip()
+        if not raw_cidr:
+            continue
+        try:
+            trusted_networks.append(ipaddress.ip_network(raw_cidr, strict=False))
+        except ValueError:
+            logging.getLogger(__name__).warning(
+                "Ignoring invalid TRUSTED_PROXY_CIDRS entry: %s",
+                raw_cidr,
+            )
+
+    address = ipaddress.ip_address(canonical)
+    return any(address in network for network in trusted_networks)
+
+
+def _trusted_client_ip(request: web.Request) -> str:
+    """Resolve proxy headers only for the local reverse-proxy hop.
+
+    In production cloudflared connects to aiohttp over loopback. Direct clients
+    must not be able to select a rate-limit bucket with X-Forwarded-For.
+    """
+    remote_raw = str(request.remote or "").strip()
+    remote_ip = _canonical_ip_address(remote_raw)
+    trusted_proxy = _is_trusted_proxy_hop(remote_raw)
+    if trusted_proxy:
+        cloudflare_ip = _canonical_ip_address(
+            str(request.headers.get("CF-Connecting-IP") or "").strip()
+        )
+        if cloudflare_ip:
+            return cloudflare_ip
+
+        # Walk from the immediate side of the chain towards the client. This
+        # ignores attacker-supplied leftmost values when an intermediate proxy
+        # appends to an existing X-Forwarded-For header.
+        forwarded_chain = [
+            candidate
+            for raw in str(request.headers.get("X-Forwarded-For") or "").split(",")
+            if (candidate := _canonical_ip_address(raw))
+        ]
+        for candidate in reversed(forwarded_chain):
+            if not _is_trusted_proxy_hop(candidate):
+                return candidate
+    return remote_ip or "unknown"
+
+
+def _rate_limit_subject(value: str) -> str:
+    secret = get_settings().jwt_secret.encode("utf-8")
+    normalized = str(value).strip().casefold().encode("utf-8")
+    return hmac.new(
+        secret,
+        b"extraarena-rate-limit:" + normalized,
+        hashlib.sha256,
+    ).hexdigest()
 
 
 def _nickname_valid(nick: str) -> bool:
@@ -4488,9 +4719,17 @@ async def _verify_jwt_token_async(token: str, db, settings) -> tuple[int, str] |
     try:
         payload = pyjwt.decode(
             token, settings.jwt_secret, algorithms=["HS256"],
-            options={"require": ["user_id", "session_id", "exp", "iat"]}
+            options={
+                "require": ["user_id", "session_id", "exp", "iat"],
+                "verify_aud": False,
+            },
         )
     except (pyjwt.ExpiredSignatureError, pyjwt.InvalidTokenError, pyjwt.DecodeError):
+        return None
+
+    # Game sessions intentionally have no audience/scope. A constrained token
+    # such as RLHF access must never become a bearer token for ordinary APIs.
+    if payload.get("aud") is not None or payload.get("scope") is not None or payload.get("typ") is not None:
         return None
 
     session_id = payload.get("session_id")
@@ -4506,6 +4745,72 @@ async def _verify_jwt_token_async(token: str, db, settings) -> tuple[int, str] |
     if not session:
         return None
     return (int(payload["user_id"]), session_id)
+
+
+def _make_rlhf_access_token(
+    user_id: int,
+    session_id: uuid.UUID,
+    settings,
+) -> tuple[str, datetime]:
+    now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(seconds=RLHF_TOKEN_TTL_SECONDS)
+    token = pyjwt.encode(
+        {
+            "typ": RLHF_TOKEN_TYPE,
+            "aud": RLHF_TOKEN_AUDIENCE,
+            "scope": RLHF_TOKEN_SCOPE,
+            "user_id": int(user_id),
+            "session_id": str(session_id),
+            "iat": int(now.timestamp()),
+            "exp": int(expires_at.timestamp()),
+        },
+        settings.jwt_secret,
+        algorithm="HS256",
+    )
+    return token, expires_at
+
+
+async def _verify_rlhf_access_token_async(token: str, db, settings) -> int | None:
+    try:
+        payload = pyjwt.decode(
+            token,
+            settings.jwt_secret,
+            algorithms=["HS256"],
+            audience=RLHF_TOKEN_AUDIENCE,
+            options={
+                "require": [
+                    "typ",
+                    "aud",
+                    "scope",
+                    "user_id",
+                    "session_id",
+                    "exp",
+                    "iat",
+                ],
+            },
+        )
+    except (pyjwt.ExpiredSignatureError, pyjwt.InvalidTokenError, pyjwt.DecodeError):
+        return None
+
+    if payload.get("typ") != RLHF_TOKEN_TYPE or payload.get("scope") != RLHF_TOKEN_SCOPE:
+        return None
+    try:
+        user_id = int(payload["user_id"])
+        session_id = uuid.UUID(str(payload["session_id"]))
+    except (ValueError, TypeError, KeyError):
+        return None
+
+    session = await db.verify_session(session_id, token)
+    if not session:
+        return None
+    try:
+        if int(session["user_id"]) != user_id:
+            return None
+    except (KeyError, TypeError, ValueError):
+        return None
+    if str(session.get("auth_method") or "") != "rlhf_scoped":
+        return None
+    return user_id
 
 
 def _make_admin_session_token(user_id: int) -> str:
@@ -4600,12 +4905,24 @@ def _request_auth_token(request: web.Request) -> str:
             return token
 
     if not _is_admin_surface_request(request):
+        telegram_init_data = str(
+            request.headers.get("X-Telegram-Init-Data") or ""
+        ).strip()
+        if telegram_init_data:
+            if len(telegram_init_data.encode("utf-8")) > TELEGRAM_INIT_DATA_MAX_BYTES:
+                raise web.HTTPUnauthorized(
+                    reason="invalid_auth",
+                    text='{"error":"invalid_auth"}',
+                    content_type="application/json",
+                )
+            return telegram_init_data
+
         auth_param = str(request.rel_url.query.get("_auth") or "").strip()
         if auth_param:
-            if _looks_like_jwt_bearer(auth_param) and get_settings().environment != "development":
+            if get_settings().environment != "development":
                 raise web.HTTPUnauthorized(
-                    reason="query_auth_jwt_not_allowed",
-                    text='{"error":"query_auth_jwt_not_allowed"}',
+                    reason="query_auth_not_allowed",
+                    text='{"error":"query_auth_not_allowed"}',
                     content_type="application/json",
                 )
             return auth_param
@@ -4643,7 +4960,7 @@ def _set_admin_session_cookie(request: web.Request, response: web.StreamResponse
         _make_admin_session_token(user_id),
         max_age=ADMIN_SESSION_MAX_AGE_SECONDS,
         httponly=True,
-        secure=bool(request.secure or str(request.headers.get("X-Forwarded-Proto", "")).lower() == "https"),
+        secure=_trusted_forwarded_scheme(request) == "https",
         samesite="Lax",
         path="/",
     )
@@ -6514,7 +6831,14 @@ def create_web_app(
     settings = get_settings()
     _configure_socketio_cors(settings)
 
-    app = web.Application(middlewares=[compression_middleware])
+    app = web.Application(
+        middlewares=[
+            enforce_https_middleware,
+            compression_middleware,
+            browser_security_headers_middleware,
+        ],
+    )
+    app.on_response_prepare.append(transport_security_response_prepare)
     app["db"] = db
     app["extraid_db"] = extraid_db
     app["bot_token"] = bot_token
@@ -6547,6 +6871,7 @@ def create_web_app(
     app["support_max_client"] = support_max_client
     app["cors_allowed_origins"] = tuple(settings.cors_allowed_origins)
     app["payment_webhook_diagnostics_enabled"] = bool(settings.payment_webhook_diagnostics_enabled)
+    app["extraid_email_configured"] = _extraid_email_delivery_configured()
     app["admin_ids"] = {ADMIN_ID}
     # Инициализируем игровые сервисы и прокладываем их в контекст приложения
     services = initialize_game_services(db, battle_engine=battle_engine)
@@ -6564,6 +6889,11 @@ def create_web_app(
         "PvP matchmaking and active battle state are process-local. Use one web process "
         "unless a shared queue/state backend is added."
     )
+    if settings.environment != "development" and not app["extraid_email_configured"]:
+        logging.getLogger(__name__).error(
+            "ExtraID email delivery is not configured; readiness will remain degraded "
+            "and new registrations cannot complete verification."
+        )
 
     # Инициализация ONNX-мозга Берсерка с профилями сложности
     global BERSERK_BRAIN, EXTRA_LR_AUX
@@ -6997,9 +7327,28 @@ def create_web_app(
             response.headers["Access-Control-Allow-Origin"] = origin
             response.headers["Vary"] = "Origin"
         response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-        response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+        response.headers["Access-Control-Allow-Headers"] = (
+            "Content-Type, Authorization, X-Telegram-Init-Data"
+        )
         return response
 
+    @web.middleware
+    async def sensitive_auth_no_store_middleware(request: web.Request, handler):
+        response = await handler(request)
+        if response is None:
+            return response
+        path = request.path or ""
+        if (
+            path.startswith("/api/extraid/")
+            or path.startswith("/api/telegram-transfer/")
+            or path.startswith("/api/auth/")
+            or path.startswith("/api/rlhf/")
+        ):
+            response.headers["Cache-Control"] = NO_STORE_CACHE_HEADERS["Cache-Control"]
+            response.headers["Pragma"] = "no-cache"
+        return response
+
+    app.middlewares.append(sensitive_auth_no_store_middleware)
     app.middlewares.append(api_json_error_middleware)
     app.middlewares.append(admin_auth_middleware)
     app.middlewares.append(runtime_gate_middleware)
@@ -7046,6 +7395,16 @@ def create_web_app(
                 "status": "ok" if bool(request.app.get("bot_token")) else "missing",
                 "configured": bool(request.app.get("bot_token")),
             },
+            "extraid_email": {
+                "name": "extraid_email",
+                "status": (
+                    "ok"
+                    if bool(request.app.get("extraid_email_configured"))
+                    else "not_configured"
+                ),
+                "configured": bool(request.app.get("extraid_email_configured")),
+                "required": settings.environment != "development",
+            },
             "payments": {
                 "name": "payments",
                 "status": "ok" if payment_primary_configured else "not_configured",
@@ -7055,7 +7414,17 @@ def create_web_app(
                 "providers": payment_service_configured,
             },
         }
-        required = ("database", "extraid_database", "bot", *(() if not payments_required else ("payments",)))
+        required = (
+            "database",
+            "extraid_database",
+            "bot",
+            *(
+                ("extraid_email",)
+                if settings.environment != "development"
+                else ()
+            ),
+            *(() if not payments_required else ("payments",)),
+        )
         ok = all(components[name]["status"] in {"ok", "unknown"} for name in required)
         return web.json_response(
             {
@@ -7205,6 +7574,27 @@ def create_web_app(
         last_name = None
 
         user_id = await require_user_id(request)
+        max_identity = None
+        try:
+            max_identity = await db.get_platform_identity_for_user(user_id, "max")
+        except Exception:
+            logging.getLogger(__name__).debug(
+                "profile_handler: MAX identity lookup failed",
+                exc_info=True,
+            )
+        if max_identity:
+            raw_max_profile = max_identity.get("profile") or {}
+            if isinstance(raw_max_profile, str):
+                try:
+                    raw_max_profile = _stdlib_json.loads(raw_max_profile)
+                except Exception:
+                    raw_max_profile = {}
+            if isinstance(raw_max_profile, dict):
+                photo_url = raw_max_profile.get("photo_url")
+                first_name = raw_max_profile.get("first_name")
+                first_name_from_data = first_name
+                username = raw_max_profile.get("username")
+                last_name = raw_max_profile.get("last_name")
 
         init_data = request.rel_url.query.get("_auth")
         if init_data and not init_data.isdigit():
@@ -7223,7 +7613,7 @@ def create_web_app(
                     except Exception:
                         pass
 
-        if user_id and not photo_url:
+        if user_id and not photo_url and not max_identity:
             try:
                 async with _create_telegram_api_session() as session:
                     url = f"https://api.telegram.org/bot{request.app['bot_token']}/getUserProfilePhotos"
@@ -7303,14 +7693,20 @@ def create_web_app(
         avg_level = await db.get_player_deck_avg_level(user_id)
         max_level = await db.get_player_deck_max_level(user_id)
         extraid_linked_telegram = False
+        extraid_linked_max = False
         if record.get("extra_account_id"):
             try:
                 extra = await request.app["extraid_db"].get_extra_account_by_user_id(user_id)
-                extraid_linked_telegram = bool(
-                    extra and extra.get("user_id") is not None and int(extra.get("user_id")) < 9000000000000
-                )
+                if extra:
+                    extraid_linked_telegram = await request.app[
+                        "extraid_db"
+                    ].account_has_identity_provider(extra["id"], "telegram")
+                    extraid_linked_max = await request.app[
+                        "extraid_db"
+                    ].account_has_identity_provider(extra["id"], "max")
             except Exception:
                 extraid_linked_telegram = False
+                extraid_linked_max = False
 
         extra_pass_fields = _extra_pass_profile_fields(dict(record))
 
@@ -7342,6 +7738,8 @@ def create_web_app(
             "nickname_changed": record.get("nickname_changed", False),
             "extra_account_id": str(record.get("extra_account_id")) if record.get("extra_account_id") else None,
             "extraid_linked_telegram": extraid_linked_telegram,
+            "extraid_linked_max": extraid_linked_max,
+            "auth_platform": "max" if max_identity else str(record.get("auth_source") or "telegram"),
             "settings": settings_data,
             "should_show_welcome": welcome_should_show,
             "avg_level": avg_level,
@@ -7921,7 +8319,7 @@ def create_web_app(
         """Резолвит TelegramID (чистые цифры == users.user_id) или ExtraID
         (extra_accounts.display_id, напр. '1234-ABC') в users.user_id."""
         raw = (raw or "").strip()
-        if not raw:
+        if not raw or len(raw) > RLHF_IDENTIFIER_MAX_LENGTH:
             return None
         if raw.isdigit():
             candidate = int(raw)
@@ -8001,6 +8399,13 @@ def create_web_app(
             logger.warning("RLHF TG HTTP fallback exception uid=%s", user_id, exc_info=True)
             return False
 
+    def _rlhf_code_sent_response() -> web.Response:
+        return web.json_response(
+            {"status": "code_sent"},
+            status=200,
+            headers=NO_STORE_CACHE_HEADERS,
+        )
+
     async def rlhf_request_code_handler(request: web.Request) -> web.Response:
         """POST /api/rlhf/request-code {identifier} → 6-значный код (TTL 5 мин).
 
@@ -8017,33 +8422,71 @@ def create_web_app(
         raw = str(data.get("identifier") or "").strip()
         if not raw:
             return web.json_response({"error": "identifier_required"}, status=400)
+        if len(raw) > RLHF_IDENTIFIER_MAX_LENGTH:
+            return _rlhf_code_sent_response()
         if extraid_db is None:
             return web.json_response({"error": "rlhf_unavailable"}, status=503)
 
+        client_ip_key = _rate_limit_subject(_trusted_client_ip(request))
+        identifier_key = _rate_limit_subject(raw.lower())
+        for rate_key, max_requests, window_seconds in (
+            (f"rlhf_code:ip:{client_ip_key}", 5, 300),
+            (f"rlhf_code:identifier:{identifier_key}", 1, 300),
+        ):
+            if not await extraid_db.check_rate_limit(
+                rate_key,
+                max_requests=max_requests,
+                window_seconds=window_seconds,
+            ):
+                return web.json_response(
+                    {"error": "rate_limited", "retry_after": window_seconds},
+                    status=429,
+                )
+
         user_id = await _rlhf_resolve_identifier(raw)
         if user_id is None:
-            # anti-enumeration: не раскрываем, существует ли идентификатор
-            return web.json_response({"status": "code_sent"}, status=200)
+            # Anti-enumeration: same success response as for an existing user.
+            return _rlhf_code_sent_response()
 
-        # abuse-гард: per-user 60s + per-IP 5/300s
         user_ok = await extraid_db.check_rate_limit(
-            f"rlhf_code:user:{user_id}", max_requests=1, window_seconds=60
+            f"rlhf_code:user:{user_id}", max_requests=1, window_seconds=300
         )
         if not user_ok:
-            return web.json_response({"error": "cooldown", "retry_after": 60}, status=429)
-        ip = (request.headers.get("X-Forwarded-For") or "").split(",")[0].strip() or request.remote
-        ip_ok = await extraid_db.check_rate_limit(
-            f"rlhf_code:ip:{ip}", max_requests=5, window_seconds=300
-        )
-        if not ip_ok:
-            return web.json_response({"error": "rate_limited"}, status=429)
+            return web.json_response(
+                {"error": "rate_limited", "retry_after": 300},
+                status=429,
+            )
 
-        has_extraid = (await extraid_db.get_extra_account_by_user_id(user_id)) is not None
-        telegram_linked = user_id < SYNTHETIC_USER_ID_MIN
+        extra_account = await extraid_db.get_extra_account_by_user_id(user_id)
+        has_extraid = extra_account is not None
+        if extra_account:
+            telegram_linked = await extraid_db.account_has_identity_provider(
+                extra_account["id"],
+                "telegram",
+            )
+        else:
+            auth_source = str(
+                await db.fetchval(
+                    "SELECT auth_source FROM users WHERE user_id = $1",
+                    user_id,
+                )
+                or ""
+            ).lower()
+            telegram_linked = auth_source.startswith("telegram")
 
-        await extraid_db.cleanup_old_bot_codes(user_id)
+        await extraid_db.cleanup_old_bot_codes(user_id, purpose=RLHF_OTP_PURPOSE)
         code = _make_bot_auth_code()
-        await extraid_db.create_bot_auth_code(code, user_id)
+        create_result = await extraid_db.create_bot_auth_code(
+            code,
+            user_id,
+            purpose=RLHF_OTP_PURPOSE,
+        )
+        if not create_result.get("created", True):
+            logger.info(
+                "RLHF request-code reused active cooldown uid=%s",
+                user_id,
+            )
+            return _rlhf_code_sent_response()
 
         mail_sent = False
         tg_sent = False
@@ -8073,10 +8516,8 @@ def create_web_app(
             "RLHF request-code uid=%s has_extraid=%s tg_linked=%s mail=%s tg=%s",
             user_id, has_extraid, telegram_linked, mail_sent, tg_sent,
         )
-        return web.json_response(
-            {"status": "code_sent", "hint": "mail" if has_extraid else "telegram"},
-            status=200,
-        )
+        # Never disclose which delivery channel or account type was resolved.
+        return _rlhf_code_sent_response()
 
     async def rlhf_verify_handler(request: web.Request) -> web.Response:
         """POST /api/rlhf/verify {identifier, code} → {token, user_id, decks, ...}."""
@@ -8087,44 +8528,101 @@ def create_web_app(
             return web.json_response({"error": "invalid_json"}, status=400)
         identifier = str(data.get("identifier") or "").strip()
         code = str(data.get("code") or "").strip()
-        if not identifier or len(code) != 6 or not code.isdigit():
+        if (
+            not identifier
+            or len(identifier) > RLHF_IDENTIFIER_MAX_LENGTH
+            or len(code) != 6
+            or not code.isdigit()
+        ):
             return web.json_response({"error": "invalid_input"}, status=400)
         if extraid_db is None:
             return web.json_response({"error": "rlhf_unavailable"}, status=503)
+
+        client_ip_key = _rate_limit_subject(_trusted_client_ip(request))
+        identifier_key = _rate_limit_subject(identifier.lower())
+        code_key = _rate_limit_subject(code)
+        for rate_key in (
+            f"rlhf_verify:ip:{client_ip_key}",
+            f"rlhf_verify:identifier:{identifier_key}",
+            f"rlhf_verify:code:{code_key}",
+        ):
+            if not await extraid_db.check_rate_limit(
+                rate_key,
+                max_requests=RLHF_VERIFY_MAX_ATTEMPTS,
+                window_seconds=RLHF_VERIFY_WINDOW_SECONDS,
+            ):
+                return web.json_response(
+                    {
+                        "error": "rate_limited",
+                        "retry_after": RLHF_VERIFY_WINDOW_SECONDS,
+                    },
+                    status=429,
+                )
 
         user_id = await _rlhf_resolve_identifier(identifier)
         if user_id is None:
             return web.json_response({"error": "invalid_code"}, status=400)
 
-        consumed = await extraid_db.consume_bot_auth_code(code)
-        if not consumed or int(consumed["user_id"]) != user_id:
-            return web.json_response({"error": "invalid_code"}, status=400)
+        user_rate_ok = await extraid_db.check_rate_limit(
+            f"rlhf_verify:user:{user_id}",
+            max_requests=RLHF_VERIFY_MAX_ATTEMPTS,
+            window_seconds=RLHF_VERIFY_WINDOW_SECONDS,
+        )
+        if not user_rate_ok:
+            return web.json_response(
+                {
+                    "error": "rate_limited",
+                    "retry_after": RLHF_VERIFY_WINDOW_SECONDS,
+                },
+                status=429,
+            )
 
         session_uuid = uuid.uuid4()
-        token, session_exp = _make_jwt_session(user_id, session_uuid, settings)
-        token_hash = _hash_jwt(token)
-        await extraid_db.create_auth_session(
-            user_id=user_id, auth_method="rlhf_login",
-            token_hash=token_hash, expires_at=session_exp, device_label="rlhf_web",
-            session_id=session_uuid,
+        token, session_exp = _make_rlhf_access_token(
+            user_id,
+            session_uuid,
+            settings,
         )
-        await extraid_db.mark_bot_code_used(code, session_uuid)
+        token_hash = _hash_jwt(token)
+        consumed = await extraid_db.consume_bot_auth_code_and_create_session(
+            code,
+            purpose=RLHF_OTP_PURPOSE,
+            user_id=user_id,
+            session_id=session_uuid,
+            auth_method="rlhf_scoped",
+            token_hash=token_hash,
+            expires_at=session_exp,
+            device_label="rlhf_web",
+        )
+        if not consumed:
+            return web.json_response({"error": "invalid_code"}, status=400)
 
         payload = await _rlhf_decks_payload(user_id)
         payload["token"] = token
         logger.info("RLHF verify ok uid=%s session=%s decks=%s", user_id, session_uuid, len(payload["decks"]))
-        return web.json_response(payload, status=200)
+        return web.json_response(
+            payload,
+            status=200,
+            headers=NO_STORE_CACHE_HEADERS,
+        )
 
     async def rlhf_decks_handler(request: web.Request) -> web.Response:
-        """GET /api/rlhf/decks (Bearer JWT) → колоды авторизованного пользователя."""
+        """GET /api/rlhf/decks accepts only the short-lived scoped RLHF token."""
         if extraid_db is None:
             return web.json_response({"error": "rlhf_unavailable"}, status=503)
-        try:
-            user_id = await require_user_id(request)
-        except web.HTTPUnauthorized:
+        authorization = str(request.headers.get("Authorization") or "").strip()
+        if not authorization.lower().startswith("bearer "):
+            return web.json_response({"error": "authentication_required"}, status=401)
+        token = authorization[7:].strip()
+        user_id = await _verify_rlhf_access_token_async(token, extraid_db, settings)
+        if user_id is None:
             return web.json_response({"error": "authentication_required"}, status=401)
         payload = await _rlhf_decks_payload(user_id)
-        return web.json_response(payload, status=200)
+        return web.json_response(
+            payload,
+            status=200,
+            headers=NO_STORE_CACHE_HEADERS,
+        )
 
     async def deck_preset_save_handler(request: web.Request) -> web.Response:
         """Обработчик сохранения пресета колоды (9 карт, герой внутри колоды)."""
@@ -13801,7 +14299,6 @@ def create_web_app(
 
     # === СТАТИКА: РАЗДАЕМ РЕСУРСЫ КАРТ (ДОЛЖНО БЫТЬ В НАЧАЛЕ) ===
     # Добавляем статическую раздачу ресурсов перед всеми остальными роутами
-    import os
     # Путь от web/server.py -> .. -> DesignAssets
     design_assets_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "DesignAssets"))
     if os.path.exists(design_assets_path):
@@ -23071,6 +23568,7 @@ def create_web_app(
     app.router.add_post("/api/payments/checkout/create", checkout_create_handler)
 
     # Register ExtraID handlers
+    register_max_routes(app)
     register_extraid_handlers(
         app,
         extraid_db,

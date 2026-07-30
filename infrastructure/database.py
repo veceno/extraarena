@@ -50,7 +50,7 @@ from infrastructure.notifications import (
 
 
 # Версию схемы повышаем при изменении структуры таблиц
-SCHEMA_VERSION = 50
+SCHEMA_VERSION = 52
 RLHF_V5_STORAGE_SCHEMA = "rlhf_v5_storage_v1"
 EXTRAARENA_V5_DATASET_EXPORT_SCHEMA = "extraarena_v5_dataset_export_v1"
 V5_PSEUDONYMIZED_RECORD_ID_SCHEME = "random_per_export_record_ids_v1"
@@ -1836,8 +1836,14 @@ class Database:
         row = await self.fetchrow("SELECT version, updated_at FROM schema_version WHERE id = 1")
         current_version = row["version"] if row else None
         self.schema_last_updated = row["updated_at"] if row else None
+        if current_version is not None and int(current_version) > SCHEMA_VERSION:
+            raise RuntimeError(
+                f"schema_newer_than_code:{int(current_version)}>{SCHEMA_VERSION}"
+            )
 
         users_changed = await self._ensure_users_table()
+        platform_identities_changed = await self._ensure_platform_identities_table()
+        account_bonus_claims_changed = await self._ensure_account_bonus_claims_table()
         profiles_changed = await self._ensure_profiles_table()
         news_changed = await self._ensure_news_table()
         settings_changed = await self._ensure_user_settings_table()
@@ -1906,6 +1912,8 @@ class Database:
         schema_changed = (
             (current_version != SCHEMA_VERSION)
             or users_changed
+            or platform_identities_changed
+            or account_bonus_claims_changed
             or profiles_changed
             or news_changed
             or settings_changed
@@ -2019,15 +2027,28 @@ class Database:
         username: Optional[str],
         first_name: Optional[str],
         last_name: Optional[str],
+        update_existing: bool = True,
     ) -> bool:
         """Гарантировать наличие записи пользователя и профиля. Возвращает True, если создана новая запись."""
         if not self._pool:
             raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
-        created = False
+        inserted = await self.fetchrow(
+            """
+            INSERT INTO users (user_id, username, first_name, last_name, league)
+            VALUES ($1, $2, $3, $4, 1)
+            ON CONFLICT (user_id) DO NOTHING
+            RETURNING user_id
+            """,
+            user_id,
+            username,
+            first_name,
+            last_name,
+        )
+        created = inserted is not None
 
-        exists = await self.fetchval("SELECT 1 FROM users WHERE user_id = $1", user_id)
-
-        if exists:
+        if not created:
+            if not update_existing:
+                return False
             await self.execute(
                 """
                 UPDATE users
@@ -2043,17 +2064,6 @@ class Database:
                 last_name,
             )
         else:
-            await self.execute(
-                """
-                INSERT INTO users (user_id, username, first_name, last_name, league)
-                VALUES ($1, $2, $3, $4, 1)
-                """,
-                user_id,
-                username,
-                first_name,
-                last_name,
-            )
-            created = True
             # Создаем 2 пресета по умолчанию для нового пользователя
             await self._ensure_user_has_default_presets(user_id)
 
@@ -2115,6 +2125,318 @@ class Database:
         )
 
         return created
+
+    async def get_platform_identity(
+        self,
+        provider: str,
+        subject: str,
+    ) -> dict[str, Any] | None:
+        provider = str(provider or "").strip().lower()
+        subject = str(subject or "").strip()
+        if not provider or not subject:
+            return None
+        row = await self.fetchrow(
+            """
+            SELECT provider, subject, user_id, profile, created_at, last_seen_at
+            FROM platform_identities
+            WHERE provider = $1 AND subject = $2
+            """,
+            provider,
+            subject,
+        )
+        return dict(row) if row else None
+
+    async def get_platform_identity_for_user(
+        self,
+        user_id: int,
+        provider: str,
+    ) -> dict[str, Any] | None:
+        row = await self.fetchrow(
+            """
+            SELECT provider, subject, user_id, profile, created_at, last_seen_at
+            FROM platform_identities
+            WHERE provider = $1 AND user_id = $2
+            """,
+            str(provider or "").strip().lower(),
+            int(user_id),
+        )
+        return dict(row) if row else None
+
+    async def resolve_or_create_platform_user(
+        self,
+        *,
+        provider: str,
+        subject: str,
+        username: str | None,
+        first_name: str | None,
+        last_name: str | None,
+        profile: dict[str, Any] | None = None,
+    ) -> tuple[int, bool]:
+        """Resolve one immutable platform identity to an internal game user.
+
+        External identifiers are namespaced and never reused as ``users.user_id``.
+        This prevents numeric collisions between Telegram, MAX and future clients.
+        """
+        provider = str(provider or "").strip().lower()
+        subject = str(subject or "").strip()
+        if provider not in {"max"}:
+            raise ValueError("unsupported_platform_provider")
+        if not subject or len(subject) > 128:
+            raise ValueError("invalid_platform_subject")
+
+        existing = await self.get_platform_identity(provider, subject)
+        if existing:
+            user_id = int(existing["user_id"])
+            await self.execute(
+                """
+                UPDATE platform_identities
+                SET profile = $3::jsonb,
+                    last_seen_at = NOW()
+                WHERE provider = $1 AND subject = $2
+                """,
+                provider,
+                subject,
+                json.dumps(profile or {}, ensure_ascii=False),
+            )
+            await self.ensure_user(
+                user_id=user_id,
+                username=username,
+                first_name=first_name,
+                last_name=last_name,
+            )
+            await self.execute(
+                "UPDATE users SET auth_source = $2 WHERE user_id = $1",
+                user_id,
+                provider,
+            )
+            return user_id, False
+
+        candidate_user_id = int(
+            await self.fetchval("SELECT nextval('platform_user_id_seq')")
+        )
+        created_user = await self.ensure_user(
+            user_id=candidate_user_id,
+            username=username,
+            first_name=first_name,
+            last_name=last_name,
+            update_existing=False,
+        )
+        if created_user is False:
+            raise RuntimeError("platform_user_id_collision")
+
+        try:
+            inserted = await self.fetchrow(
+                """
+                INSERT INTO platform_identities (
+                    provider, subject, user_id, profile
+                )
+                VALUES ($1, $2, $3, $4::jsonb)
+                ON CONFLICT (provider, subject) DO NOTHING
+                RETURNING user_id
+                """,
+                provider,
+                subject,
+                candidate_user_id,
+                json.dumps(profile or {}, ensure_ascii=False),
+            )
+            if inserted:
+                await self.execute(
+                    "UPDATE users SET auth_source = $2 WHERE user_id = $1",
+                    candidate_user_id,
+                    provider,
+                )
+                return candidate_user_id, True
+
+            winner = await self.get_platform_identity(provider, subject)
+            if not winner:
+                raise RuntimeError("platform_identity_conflict_without_winner")
+            await self.delete_user(candidate_user_id)
+            return int(winner["user_id"]), False
+        except Exception:
+            try:
+                await self.delete_user(candidate_user_id)
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "Failed to clean up unbound platform user %s",
+                    candidate_user_id,
+                )
+            raise
+
+    async def claim_extraid_registration_bonus(
+        self,
+        user_id: int,
+        *,
+        keys: int = 3,
+    ) -> bool:
+        """Atomically record and credit the one-time Telegram ExtraID bonus."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+        keys = max(0, min(int(keys), 100))
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                claim = await conn.fetchrow(
+                    """
+                    INSERT INTO account_bonus_claims (user_id, bonus_type, keys_granted)
+                    SELECT $1, 'extraid_registration', $2
+                    WHERE EXISTS (SELECT 1 FROM users WHERE user_id = $1)
+                    ON CONFLICT (user_id, bonus_type) DO NOTHING
+                    RETURNING user_id
+                    """,
+                    int(user_id),
+                    keys,
+                )
+                if not claim:
+                    return False
+                updated = await conn.fetchrow(
+                    """
+                    UPDATE users
+                    SET keys = COALESCE(keys, 0) + $1,
+                        updated_at = NOW()
+                    WHERE user_id = $2
+                    RETURNING user_id
+                    """,
+                    keys,
+                    int(user_id),
+                )
+                if not updated:
+                    raise RuntimeError("registration_bonus_user_missing")
+                return True
+
+    async def ensure_extra_account_link(
+        self,
+        *,
+        user_id: int,
+        extra_account_id,
+        auth_source: str | None = None,
+    ) -> str:
+        """Idempotently attach credentials to their existing primary game owner."""
+        try:
+            extra_account_id = (
+                extra_account_id
+                if isinstance(extra_account_id, uuid.UUID)
+                else uuid.UUID(str(extra_account_id))
+            )
+        except (TypeError, ValueError, AttributeError):
+            raise ValueError("invalid_extra_account_id")
+        try:
+            row = await self.fetchrow(
+                """
+                UPDATE users
+                SET extra_account_id = $1,
+                    auth_source = COALESCE($3, auth_source)
+                WHERE user_id = $2
+                  AND (
+                      extra_account_id IS NULL
+                      OR extra_account_id = $1
+                  )
+                RETURNING user_id
+                """,
+                extra_account_id,
+                int(user_id),
+                str(auth_source) if auth_source is not None else None,
+            )
+        except Exception as exc:
+            # A legacy cross-owner pointer can race this CAS through the
+            # partial unique index. Treat only that expected ownership
+            # collision as a reconciliation result; database failures remain
+            # visible to callers.
+            if _is_unique_violation(exc):
+                return "owner_conflict"
+            raise
+        return "linked" if row else "owner_conflict"
+
+    async def transfer_extra_account_link(
+        self,
+        *,
+        extra_account_id,
+        old_user_id: int,
+        new_user_id: int,
+    ) -> str:
+        """CAS both primary-DB link rows in one transaction."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+        try:
+            extra_account_id = (
+                extra_account_id
+                if isinstance(extra_account_id, uuid.UUID)
+                else uuid.UUID(str(extra_account_id))
+            )
+        except (TypeError, ValueError, AttributeError):
+            raise ValueError("invalid_extra_account_id")
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                target = await conn.fetchrow(
+                    """
+                    UPDATE users
+                    SET extra_account_id = $1, auth_source = 'telegram'
+                    WHERE user_id = $2 AND extra_account_id IS NULL
+                    RETURNING user_id
+                    """,
+                    extra_account_id,
+                    int(new_user_id),
+                )
+                if not target:
+                    return "target_already_linked"
+                source = await conn.fetchrow(
+                    """
+                    UPDATE users
+                    SET extra_account_id = NULL
+                    WHERE user_id = $1 AND extra_account_id = $2
+                    RETURNING user_id
+                    """,
+                    int(old_user_id),
+                    extra_account_id,
+                )
+                if not source:
+                    raise RuntimeError("source_extra_account_link_changed")
+                return "linked"
+
+    async def rollback_extra_account_link(
+        self,
+        *,
+        extra_account_id,
+        source_user_id: int,
+        telegram_user_id: int,
+    ) -> str:
+        """Atomically restore a pre-link primary-DB state without merging progress."""
+        if not self._pool:
+            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+        try:
+            extra_account_id = (
+                extra_account_id
+                if isinstance(extra_account_id, uuid.UUID)
+                else uuid.UUID(str(extra_account_id))
+            )
+        except (TypeError, ValueError, AttributeError):
+            raise ValueError("invalid_extra_account_id")
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                source = await conn.fetchrow(
+                    """
+                    UPDATE users
+                    SET extra_account_id = $1
+                    WHERE user_id = $2 AND extra_account_id IS NULL
+                    RETURNING user_id
+                    """,
+                    extra_account_id,
+                    int(source_user_id),
+                )
+                if not source:
+                    return "source_link_changed"
+                telegram = await conn.fetchrow(
+                    """
+                    UPDATE users
+                    SET extra_account_id = NULL,
+                        auth_source = 'telegram'
+                    WHERE user_id = $1 AND extra_account_id = $2
+                    RETURNING user_id
+                    """,
+                    int(telegram_user_id),
+                    extra_account_id,
+                )
+                if not telegram:
+                    raise RuntimeError("telegram_extra_account_link_changed")
+                return "rolled_back"
 
     async def _seed_balance_cards(self) -> None:
         """Execute the repeatable Wave 4 card balance seed during schema startup."""
@@ -2542,6 +2864,7 @@ class Database:
                 COALESCE(u.season, 0) as season,
                 u.extra_pass_expires_at,
                 u.extra_account_id,
+                u.auth_source,
                 COALESCE(p.img, '') as img,
                 COALESCE(p.title, 'Игрок') as title,
                 p.custom_nickname,
@@ -2964,65 +3287,231 @@ class Database:
         return {"success": True, "is_first_change": is_first_change}
 
     async def delete_user(self, user_id: int) -> bool:
-        """
-        Полностью удалить пользователя и все его данные из БД.
+        """Delete a user and owned data in one transaction.
 
-        Удаляет:
-        - Карты пользователя (user_cards)
-        - Колоды (deck_presets)
-        - Настройки (user_settings)
-        - Почту (user_mail)
-        - Сообщения в чате (global_chat)
-        - Посты в коммьюнити (community_posts)
-        - Лайки (post_likes)
-        - Профиль (profiles)
-        - Пользователя (users)
+        Returning ``False`` means the user did not exist. Any partial failure is
+        raised so callers cannot report a successful account deletion after a
+        transaction rollback.
         """
         if not self._pool:
             raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                exists = await conn.fetchval(
+                    "SELECT 1 FROM users WHERE user_id = $1 FOR UPDATE",
+                    int(user_id),
+                )
+                if not exists:
+                    return False
 
-        try:
-            # Проверяем существование пользователя
-            exists = await self.fetchval("SELECT 1 FROM users WHERE user_id = $1", user_id)
-            if not exists:
-                return False
+                async def table_exists(table: str) -> bool:
+                    return bool(
+                        await conn.fetchval(
+                            "SELECT to_regclass($1)",
+                            f"public.{_validate_schema_identifier(table)}",
+                        )
+                    )
 
-            # Удаляем карты пользователя
-            await self.execute("DELETE FROM user_cards WHERE user_id = $1", user_id)
+                async def delete_rows(table: str, predicate: str) -> None:
+                    if await table_exists(table):
+                        await conn.execute(
+                            f"DELETE FROM {_validate_schema_identifier(table)} WHERE {predicate}",
+                            int(user_id),
+                        )
 
-            # Удаляем колоды пользователя
-            await self.execute("DELETE FROM deck_presets WHERE user_id = $1", user_id)
+                # Community children must be removed before their posts/polls.
+                if await table_exists("community_posts"):
+                    if await table_exists("community_poll_votes") and await table_exists("community_polls"):
+                        await conn.execute(
+                            """
+                            DELETE FROM community_poll_votes
+                            WHERE poll_id IN (
+                                SELECT cp.id
+                                FROM community_polls cp
+                                JOIN community_posts p ON p.id = cp.post_id
+                                WHERE p.author_id = $1
+                            )
+                            """,
+                            int(user_id),
+                        )
+                    if await table_exists("community_polls"):
+                        await conn.execute(
+                            """
+                            DELETE FROM community_polls
+                            WHERE post_id IN (
+                                SELECT id FROM community_posts WHERE author_id = $1
+                            )
+                            """,
+                            int(user_id),
+                        )
+                    for child in ("post_likes", "community_votes"):
+                        if await table_exists(child):
+                            await conn.execute(
+                                f"""
+                                DELETE FROM {_validate_schema_identifier(child)}
+                                WHERE post_id IN (
+                                    SELECT id FROM community_posts WHERE author_id = $1
+                                )
+                                """,
+                                int(user_id),
+                            )
 
-            # Удаляем настройки пользователя
-            await self.execute("DELETE FROM user_settings WHERE user_id = $1", user_id)
+                # Preserve statutory payment ledgers. After the users/ExtraID rows
+                # are erased, their numeric user_id is a detached pseudonymous key.
+                if await table_exists("clans"):
+                    owned_clans = await conn.fetch(
+                        "SELECT id FROM clans WHERE owner_id = $1 FOR UPDATE",
+                        int(user_id),
+                    )
+                    for clan in owned_clans:
+                        replacement = None
+                        if await table_exists("clan_members"):
+                            replacement = await conn.fetchval(
+                                """
+                                SELECT user_id
+                                FROM clan_members
+                                WHERE clan_id = $1 AND user_id <> $2
+                                ORDER BY joined_at, user_id
+                                LIMIT 1
+                                """,
+                                clan["id"],
+                                int(user_id),
+                            )
+                        await conn.execute(
+                            "UPDATE clans SET owner_id = $1 WHERE id = $2",
+                            int(replacement or 0),
+                            clan["id"],
+                        )
+                        if replacement and await table_exists("clan_members"):
+                            await conn.execute(
+                                """
+                                UPDATE clan_members
+                                SET role = 'owner'
+                                WHERE clan_id = $1 AND user_id = $2
+                                """,
+                                clan["id"],
+                                int(replacement),
+                            )
 
-            # Удаляем почту пользователя
-            await self.execute("DELETE FROM user_mail WHERE user_id = $1", user_id)
+                if await table_exists("clan_activity"):
+                    await conn.execute(
+                        """
+                        UPDATE clan_activity
+                        SET target_user_id = NULL
+                        WHERE target_user_id = $1
+                        """,
+                        int(user_id),
+                    )
+                if await table_exists("clan_join_requests"):
+                    await conn.execute(
+                        """
+                        UPDATE clan_join_requests
+                        SET decided_by = NULL
+                        WHERE decided_by = $1
+                        """,
+                        int(user_id),
+                    )
 
-            # Удаляем сообщения в чате
-            await self.execute("DELETE FROM global_chat WHERE user_id = $1", user_id)
+                # Rows directly owned by or addressed to this account.
+                user_id_tables = (
+                    "account_bonus_claims",
+                    "battle_surrender_penalties",
+                    "claimed_rewards",
+                    "clan_activity",
+                    "clan_join_requests",
+                    "clan_members",
+                    "community_poll_votes",
+                    "community_submissions",
+                    "community_votes",
+                    "cooldowns",
+                    "daily_quests_progress",
+                    "deck_presets",
+                    "economy_events",
+                    "generator_state",
+                    "global_chat",
+                    "notification_outbox",
+                    "notification_schedules",
+                    "notifications",
+                    "onboarding_events",
+                    "post_likes",
+                    "profiles",
+                    "promocode_usage",
+                    "push_devices",
+                    "season_reset_results",
+                    "shop_gift_claims",
+                    "squad_cbrp_events",
+                    "squad_shop_purchases",
+                    "squad_trophy_snapshots",
+                    "user_cards",
+                    "user_cases",
+                    "user_cosmetics",
+                    "user_equipped_cosmetics",
+                    "user_mail",
+                    "user_onboarding",
+                    "user_roles",
+                    "user_sessions",
+                    "user_settings",
+                    "user_shop_set_claims",
+                )
+                for table in user_id_tables:
+                    await delete_rows(table, "user_id = $1")
 
-            # Удаляем лайки пользователя
-            await self.execute("DELETE FROM post_likes WHERE user_id = $1", user_id)
+                for table, predicate in (
+                    ("friend_invites", "from_user_id = $1 OR to_user_id = $1"),
+                    ("friend_requests", "requester_id = $1 OR addressee_id = $1"),
+                    (
+                        "battle_summary",
+                        "p1_user_id = $1 OR p2_user_id = $1 "
+                        "OR winner_user_id = $1 OR loser_user_id = $1",
+                    ),
+                    (
+                        "battle_results",
+                        "p1_id = $1 OR p2_id = $1 OR winner_id = $1 OR loser_id = $1",
+                    ),
+                    ("community_posts", "author_id = $1"),
+                    ("news", "author_id = $1"),
+                ):
+                    await delete_rows(table, predicate)
 
-            # Удаляем посты коммьюнити (и лайки к ним)
-            posts = await self.fetch("SELECT id FROM community_posts WHERE author_id = $1", user_id)
-            for post in posts:
-                await self.execute("DELETE FROM post_likes WHERE post_id = $1", post["id"])
-            await self.execute("DELETE FROM community_posts WHERE author_id = $1", user_id)
+                # Trace/audit records can remain useful after erasure, but may no
+                # longer carry a direct account identifier.
+                if await table_exists("battle_actions"):
+                    await conn.execute(
+                        "UPDATE battle_actions SET acting_user_id = NULL WHERE acting_user_id = $1",
+                        int(user_id),
+                    )
+                if await table_exists("battle_v5_traces"):
+                    await conn.execute(
+                        """
+                        UPDATE battle_v5_traces
+                        SET winner_user_id = CASE WHEN winner_user_id = $1 THEN NULL ELSE winner_user_id END,
+                            p1_user_id = CASE WHEN p1_user_id = $1 THEN NULL ELSE p1_user_id END,
+                            p2_user_id = CASE WHEN p2_user_id = $1 THEN NULL ELSE p2_user_id END
+                        WHERE winner_user_id = $1 OR p1_user_id = $1 OR p2_user_id = $1
+                        """,
+                        int(user_id),
+                    )
+                for table, column in (
+                    ("cards", "created_by"),
+                    ("items", "created_by"),
+                    ("promocodes", "created_by"),
+                    ("shop_sets", "created_by"),
+                ):
+                    if await table_exists(table):
+                        await conn.execute(
+                            f"UPDATE {_validate_schema_identifier(table)} "
+                            f"SET {_validate_schema_identifier(column)} = NULL "
+                            f"WHERE {_validate_schema_identifier(column)} = $1",
+                            int(user_id),
+                        )
 
-            # Удаляем профиль пользователя
-            await self.execute("DELETE FROM profiles WHERE user_id = $1", user_id)
-
-            # Удаляем пользователя (это должно быть последним, так как могут быть CASCADE ограничения)
-            await self.execute("DELETE FROM users WHERE user_id = $1", user_id)
-
-            return True
-        except Exception as e:
-            # Логируем ошибку для отладки
-            import logging
-            logging.getLogger(__name__).error(f"Ошибка при удалении пользователя {user_id}: {e}", exc_info=True)
-            return False
+                deleted = await conn.fetchrow(
+                    "DELETE FROM users WHERE user_id = $1 RETURNING user_id",
+                    int(user_id),
+                )
+                if not deleted:
+                    raise RuntimeError("delete_user_row_missing")
+                return True
 
     async def get_statistics(self) -> dict[str, int]:
         """Получить агрегированную статистику по игрокам."""
@@ -3214,6 +3703,32 @@ class Database:
         changed |= await self._add_column_if_missing(
             "users", columns, "extra_account_id UUID"
         )
+        duplicate_extra_account = await self.fetchrow(
+            """
+            SELECT extra_account_id, COUNT(*) AS row_count
+            FROM users
+            WHERE extra_account_id IS NOT NULL
+            GROUP BY extra_account_id
+            HAVING COUNT(*) > 1
+            LIMIT 1
+            """
+        )
+        if duplicate_extra_account:
+            raise RuntimeError(
+                "duplicate_primary_extra_account_link:"
+                f"{duplicate_extra_account['extra_account_id']}"
+            )
+        if not await self.fetchval(
+            "SELECT to_regclass('public.idx_users_extra_account_id_unique')"
+        ):
+            await self.execute(
+                """
+                CREATE UNIQUE INDEX idx_users_extra_account_id_unique
+                ON users(extra_account_id)
+                WHERE extra_account_id IS NOT NULL
+                """
+            )
+            changed = True
         changed |= await self._add_column_if_missing(
             "users", columns, "auth_source TEXT NOT NULL DEFAULT 'telegram'"
         )
@@ -3293,6 +3808,74 @@ class Database:
             """
         )
 
+        return changed
+
+    async def _ensure_platform_identities_table(self) -> bool:
+        changed = False
+        if not await self.fetchval(
+            "SELECT to_regclass('public.platform_user_id_seq')"
+        ):
+            # Keep generated IDs positive and exactly representable by JavaScript,
+            # while staying far away from Telegram and ExtraID synthetic ranges.
+            await self.execute(
+                """
+                CREATE SEQUENCE platform_user_id_seq
+                AS BIGINT
+                START WITH 8000000000000000
+                INCREMENT BY 1
+                MINVALUE 8000000000000000
+                MAXVALUE 9000000000000000
+                NO CYCLE
+                """
+            )
+            changed = True
+
+        if not await self.fetchval(
+            "SELECT to_regclass('public.platform_identities')"
+        ):
+            await self.execute(
+                """
+                CREATE TABLE platform_identities (
+                    provider     TEXT NOT NULL,
+                    subject      TEXT NOT NULL,
+                    user_id      BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                    profile      JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (provider, subject),
+                    UNIQUE (provider, user_id),
+                    CONSTRAINT platform_identities_provider_check
+                        CHECK (provider IN ('max')),
+                    CONSTRAINT platform_identities_subject_check
+                        CHECK (subject <> '' AND length(subject) <= 128)
+                )
+                """
+            )
+            changed = True
+
+        await self.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_platform_identities_user_id
+            ON platform_identities(user_id)
+            """
+        )
+        return changed
+
+    async def _ensure_account_bonus_claims_table(self) -> bool:
+        changed = False
+        if not await self.fetchval("SELECT to_regclass('public.account_bonus_claims')"):
+            await self.execute(
+                """
+                CREATE TABLE account_bonus_claims (
+                    user_id      BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                    bonus_type   TEXT NOT NULL,
+                    keys_granted INTEGER NOT NULL DEFAULT 0,
+                    claimed_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (user_id, bonus_type)
+                )
+                """
+            )
+            changed = True
         return changed
 
     async def _ensure_profiles_table(self) -> bool:

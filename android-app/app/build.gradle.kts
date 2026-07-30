@@ -56,13 +56,13 @@ val syncExtraArenaShellAssets by tasks.registering(Sync::class) {
 
 android {
     namespace = "ru.extraarena.app"
-    compileSdk = 34
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "ru.extraarena.app"
         minSdk = 26
-        targetSdk = 34
-        versionCode = 47
+        targetSdk = 35
+        versionCode = 48
         versionName = "0.5.1"
 
         buildConfigField("String", "DEFAULT_BASE_URL", "\"https://app.extraarena.space/\"")

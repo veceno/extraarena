@@ -5,11 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>ExtraArena</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script src="https://st.max.ru/js/max-web-app.js"></script>
+<script src="platform-bridge.js"></script>
 <script src="safe-area.js"></script>
 <script src="matchmaking-tips.config.js"></script>
-<script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js" crossorigin="anonymous"></script>
-<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js" crossorigin="anonymous"></script>
-<script src="https://unpkg.com/dompurify@3.2.6/dist/purify.min.js" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js" integrity="sha384-DGyLxAyjq0f9SPpVevD6IgztCFlnMF6oW/XQGmfe+IsZ8TqEiDrcHkMLKI6fiB/Z" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js" integrity="sha384-gTGxhz21lVGYNMcdJOyq01Edg0jhn/c22nsx0kyqP0TxaV5WVdsSH1fSDUf5YJj1" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/dompurify@3.2.6/dist/purify.min.js" integrity="sha384-JEyTNhjM6R1ElGoJns4U2Ln4ofPcqzSsynQkmEc/KGy6336qAZl70tDLufbkla+3" crossorigin="anonymous"></script>
 <link href="https://fonts.googleapis.com/css2?family=Exo+2:wght@400;600;700;900&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 <link href="/styles.css?v=shop-pack-ui-20260619" rel="stylesheet">
 
@@ -4066,9 +4068,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // display only — never used as server authority
 window._getUserId = function() {
-  const tg = window.Telegram?.WebApp;
   const urlId = new URLSearchParams(location.search).get('user_id');
-  return tg?.initDataUnsafe?.user?.id || (allowLocalDevUserIdAuth() && urlId ? parseInt(urlId) : null);
+  return window.ExtraArenaPlatform?.getUnsafeUser?.()?.id
+    || (allowLocalDevUserIdAuth() && urlId ? parseInt(urlId) : null);
 };
 
 async function checkActiveBattleOnStartup(auth) {
@@ -4098,16 +4100,12 @@ function buildArenaRedirectUrl(path, auth) {
   const targetPath = String(path || '');
   const isArenaUrl = targetPath.startsWith('/arena') || /\/arena(?:[?#]|$)/.test(targetUrl);
   if (isArenaUrl && resolvedAuth?.value) {
-    if (looksLikeJwtBearer(resolvedAuth.value)) {
-      try { sessionStorage.setItem('arena_auth', resolvedAuth.value); } catch (_) {}
-      try {
-        const clean = new URL(targetUrl, location.origin);
-        clean.searchParams.delete('_auth');
-        targetUrl = clean.pathname + clean.search + clean.hash;
-      } catch (_) {}
-    } else if (!/[?&]_auth=/.test(targetUrl)) {
-      targetUrl += (targetUrl.includes('?') ? '&' : '?') + '_auth=' + encodeURIComponent(resolvedAuth.value);
-    }
+    try { sessionStorage.setItem('arena_auth', resolvedAuth.value); } catch (_) {}
+    try {
+      const clean = new URL(targetUrl, location.origin);
+      clean.searchParams.delete('_auth');
+      targetUrl = clean.pathname + clean.search + clean.hash;
+    } catch (_) {}
   }
   return targetUrl;
 }
@@ -4304,8 +4302,62 @@ function getTelegramInitData() {
   return initData && initData.trim() ? initData : null;
 }
 
+function getMaxAuthToken() {
+  return window.ExtraArenaPlatform?.isMax?.()
+    ? window.ExtraArenaPlatform.getStoredAuthToken()
+    : null;
+}
+
 const EXTRA_ID_TOKEN_SESSION_KEY = 'extra_id_token';
 const EXTRA_URL_AUTH_SESSION_KEY = 'extra_url_auth_token';
+const TELEGRAM_AUTH_SESSION_MAX_AGE_SECONDS = 23 * 60 * 60;
+const TELEGRAM_AUTH_MAX_FUTURE_SKEW_SECONDS = 5 * 60;
+
+function isTelegramInitDataToken(token) {
+  if (!token || typeof token !== 'string') return false;
+  try {
+    const params = new URLSearchParams(token);
+    return params.has('auth_date') && params.has('hash');
+  } catch (_) {
+    return false;
+  }
+}
+
+function isStaleTelegramInitDataToken(token) {
+  if (!isTelegramInitDataToken(token)) return false;
+  try {
+    const authDate = Number(new URLSearchParams(token).get('auth_date'));
+    if (!Number.isFinite(authDate) || authDate <= 0) return true;
+    const ageSeconds = Math.floor(Date.now() / 1000) - authDate;
+    return ageSeconds > TELEGRAM_AUTH_SESSION_MAX_AGE_SECONDS
+      || ageSeconds < -TELEGRAM_AUTH_MAX_FUTURE_SKEW_SECONDS;
+  } catch (_) {
+    return true;
+  }
+}
+
+function takeExtraIDActionTokenFromLocation(name) {
+  try {
+    const current = new URL(location.href);
+    const hashParams = new URLSearchParams(String(current.hash || '').replace(/^#/, ''));
+    const token = hashParams.get(name);
+    if (!token) return null;
+    hashParams.delete(name);
+    current.hash = hashParams.toString() ? '#' + hashParams.toString() : '';
+    history.replaceState(null, '', current.pathname + current.search + current.hash);
+    return token;
+  } catch (_) {
+    return null;
+  }
+}
+
+function utf8ByteLength(value) {
+  try {
+    return new TextEncoder().encode(String(value || '')).length;
+  } catch (_) {
+    return unescape(encodeURIComponent(String(value || ''))).length;
+  }
+}
 
 function getStoredExtraToken() {
   try {
@@ -4322,9 +4374,21 @@ function hasStoredExtraToken() {
 
 function getUrlAuthToken() {
   const token = new URLSearchParams(location.search).get('_auth');
-  if (token && token.trim()) return token;
+  if (token && token.trim()) {
+    if (isStaleTelegramInitDataToken(token)) {
+      const clean = new URL(location.href);
+      clean.searchParams.delete('_auth');
+      history.replaceState(null, '', clean.pathname + clean.search + clean.hash);
+      return null;
+    }
+    return token;
+  }
   try {
     const sessionToken = sessionStorage.getItem(EXTRA_URL_AUTH_SESSION_KEY);
+    if (sessionToken && isStaleTelegramInitDataToken(sessionToken)) {
+      sessionStorage.removeItem(EXTRA_URL_AUTH_SESSION_KEY);
+      return null;
+    }
     return sessionToken && sessionToken.trim() ? sessionToken : null;
   } catch (_) {
     return null;
@@ -4350,16 +4414,29 @@ function isAndroidAppShell() {
   return params.get('ea_platform') === 'android_app' || !!getAndroidBridge();
 }
 
+function isTelegramGameClient() {
+  return !getAndroidBridge() && !!getTelegramInitData();
+}
+
+function isMaxGameClient() {
+  return !getAndroidBridge() && !!window.ExtraArenaPlatform?.isMax?.();
+}
+
+function isPlatformGameClient() {
+  return isTelegramGameClient() || isMaxGameClient();
+}
+
 function allowLocalDevUserIdAuth() {
   return ['localhost', '127.0.0.1', '::1'].includes(location.hostname);
 }
 
 function canLaunchArenaBattleHere() {
+  if (isMaxGameClient()) return true;
   return isAndroidAppShell() || !!getTelegramInitData() || allowLocalDevUserIdAuth();
 }
 
 function showBrowserArenaUnavailable() {
-  const message = 'Арена недоступна в обычном браузере. Откройте бой внутри Telegram или Android-клиента.';
+  const message = 'Арена недоступна в обычном браузере. Откройте бой внутри Telegram, MAX или Android-клиента.';
   if (typeof window.showGameAlert === 'function') window.showGameAlert(message, '⚠️');
   else if (typeof window.showToast === 'function') window.showToast(message, 'error', 3600);
   else alert(message);
@@ -4403,6 +4480,9 @@ function openExternalPaymentUrl(url) {
     } catch (_) {}
 
     try {
+      if (window.ExtraArenaPlatform?.isMax?.() && window.ExtraArenaPlatform.openLink(href)) {
+        return true;
+      }
       const tg = window.Telegram?.WebApp;
       if (tg) {
         if (/^https:\/\/t\.me\//i.test(href) && typeof tg.openTelegramLink === 'function') {
@@ -4441,6 +4521,12 @@ function openExternalPaymentUrl(url) {
       const bridge = getAndroidBridge();
       if (isAndroidAppShell() && bridge && typeof bridge.shareText === 'function') {
         bridge.shareText(cleanText, cleanUrl, cleanTitle);
+        return true;
+      }
+    } catch (_) {}
+
+    try {
+      if (await window.ExtraArenaPlatform?.share?.(cleanText, cleanUrl)) {
         return true;
       }
     } catch (_) {}
@@ -4569,14 +4655,23 @@ function rememberMobileExtraIdAccount(email, token, extraData, explicitUserId) {
 }
 
 function resolveExtraIDAuthData() {
-  return getTelegramInitData() || getUrlAuthToken() || getNativeAuthToken() || getStoredExtraToken() || resolveUserId();
+  return getTelegramInitData() || getMaxAuthToken() || getNativeAuthToken() || getUrlAuthToken() || getStoredExtraToken() || resolveUserId();
 }
 
 function resolveExtraIDRegistrationAuthData() {
-  return getTelegramInitData() || getUrlAuthToken() || getNativeAuthToken() || getStoredExtraToken() || null;
+  return getTelegramInitData() || getMaxAuthToken() || getNativeAuthToken() || getUrlAuthToken() || getStoredExtraToken() || null;
 }
 
 function persistAppAuthFromUrl() {
+  if (getTelegramInitData()) {
+    try { sessionStorage.removeItem(EXTRA_URL_AUTH_SESSION_KEY); } catch (_) {}
+    const clean = new URL(location.href);
+    if (clean.searchParams.has('_auth')) {
+      clean.searchParams.delete('_auth');
+      history.replaceState(null, '', clean.pathname + clean.search + clean.hash);
+    }
+    return;
+  }
   const token = getUrlAuthToken();
   if (!token) {
     const nativeToken = getNativeAuthToken();
@@ -4617,6 +4712,7 @@ function getUiAuthCandidates(explicitAuth) {
   const seen = new Set();
   const add = (type, value, source) => {
     if (!value || String(value).trim() === '') return;
+    if (type === 'auth' && isStaleTelegramInitDataToken(String(value))) return;
     const key = `${type}:${value}`;
     if (seen.has(key)) return;
     seen.add(key);
@@ -4625,16 +4721,30 @@ function getUiAuthCandidates(explicitAuth) {
 
   const urlId = new URLSearchParams(location.search).get('user_id');
   const allowUserIdFallback = allowLocalDevUserIdAuth();
+  const tg = window.Telegram?.WebApp;
 
+  // A MAX Mini App session is exchanged for one internal JWT before UI boot.
+  // Never fall through to an ExtraID token belonging to another account.
+  if (isMaxGameClient()) {
+    add('auth', getMaxAuthToken(), 'max');
+    return candidates;
+  }
+
+  // A Telegram Mini App session has exactly one identity. Never fall through
+  // to a URL/native/stored token that could belong to another account.
+  if (isTelegramGameClient()) {
+    add('auth', tg?.initData, 'telegram');
+    return candidates;
+  }
   if (explicitAuth !== undefined && explicitAuth !== null && String(explicitAuth).trim() !== '') {
     const explicitValue = String(explicitAuth);
     add(allowUserIdFallback && urlId && explicitValue === urlId ? 'user_id' : 'auth', explicitValue, 'explicit');
   }
 
-  const tg = window.Telegram?.WebApp;
-  add('auth', getUrlAuthToken(), 'url_auth');
   add('auth', getNativeAuthToken(), 'native_extra_id');
+  add('auth', getMaxAuthToken(), 'max');
   add('auth', tg?.initData, 'telegram');
+  add('auth', getUrlAuthToken(), 'url_auth');
   add('auth', getStoredExtraToken(), 'extra_id');
   if (allowUserIdFallback) {
     add('user_id', urlId, 'url');
@@ -4654,13 +4764,14 @@ function buildUiAuthUrl(path, explicitAuth) {
     ? explicitAuth
     : resolveUiAuth(explicitAuth);
   if (!auth) return path;
-  if (auth.type === 'auth' && looksLikeJwtBearer(auth.value) && isSameOriginApiPath(path)) {
+  // Never serialize JWT or Telegram initData into any URL. The fetch bridge
+  // adds it only for same-origin /api/ requests; other origins stay unauthenticated.
+  if (auth.type === 'auth') {
     return path;
   }
 
   const separator = path.includes('?') ? '&' : '?';
-  const key = auth.type === 'user_id' ? 'user_id' : '_auth';
-  return `${path}${separator}${key}=${encodeURIComponent(auth.value)}`;
+  return `${path}${separator}user_id=${encodeURIComponent(auth.value)}`;
 }
 
 function looksLikeJwtBearer(value) {
@@ -4682,7 +4793,7 @@ function installJwtQueryAuthHeaderBridge() {
   window.__eaJwtQueryAuthHeaderBridgeInstalled = true;
   const nativeFetch = window.fetch.bind(window);
 
-  function liftJwtAuthFromJsonBody(nextInit, headers) {
+  function liftAuthFromJsonBody(nextInit, headers) {
     const body = nextInit.body;
     if (typeof body !== 'string') return null;
     const contentType = headers.get('Content-Type') || headers.get('content-type') || '';
@@ -4696,16 +4807,16 @@ function installJwtQueryAuthHeaderBridge() {
     }
     if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
 
-    const bodyToken = looksLikeJwtBearer(payload._auth)
-      ? payload._auth
-      : looksLikeJwtBearer(payload.auth)
-        ? payload.auth
-        : null;
+    const bodyToken = (
+      looksLikeJwtBearer(payload._auth) || isTelegramInitDataToken(payload._auth)
+    ) ? payload._auth : (
+      looksLikeJwtBearer(payload.auth) || isTelegramInitDataToken(payload.auth)
+    ) ? payload.auth : null;
     if (!bodyToken) return null;
 
     const sanitized = {...payload};
-    if (looksLikeJwtBearer(sanitized._auth)) delete sanitized._auth;
-    if (looksLikeJwtBearer(sanitized.auth)) delete sanitized.auth;
+    if (looksLikeJwtBearer(sanitized._auth) || isTelegramInitDataToken(sanitized._auth)) delete sanitized._auth;
+    if (looksLikeJwtBearer(sanitized.auth) || isTelegramInitDataToken(sanitized.auth)) delete sanitized.auth;
     nextInit.body = JSON.stringify(sanitized);
     return bodyToken;
   }
@@ -4718,18 +4829,21 @@ function installJwtQueryAuthHeaderBridge() {
       const token = url.searchParams.get('_auth');
       const nextInit = {...(init || {})};
       const headers = new Headers(nextInit.headers || (typeof input !== 'string' ? input.headers : undefined) || {});
-      const bodyToken = liftJwtAuthFromJsonBody(nextInit, headers);
+      const bodyToken = liftAuthFromJsonBody(nextInit, headers);
       const fallbackAuth = !token && !bodyToken ? resolveUiAuth() : null;
-      const fallbackToken = fallbackAuth?.type === 'auth' && looksLikeJwtBearer(fallbackAuth.value)
-        ? fallbackAuth.value
-        : null;
-      const bearerToken = looksLikeJwtBearer(token) ? token : (bodyToken || fallbackToken);
-      if (url.origin !== window.location.origin || !url.pathname.startsWith('/api/') || !bearerToken) {
+      const fallbackToken = fallbackAuth?.type === 'auth' ? fallbackAuth.value : null;
+      const authToken = token || bodyToken || fallbackToken;
+      const bearerToken = looksLikeJwtBearer(authToken) ? authToken : null;
+      const telegramToken = isTelegramInitDataToken(authToken) ? authToken : null;
+      if (url.origin !== window.location.origin || !url.pathname.startsWith('/api/') || (!bearerToken && !telegramToken)) {
         return nativeFetch(input, init);
       }
 
       if (token) url.searchParams.delete('_auth');
-      if (!headers.has('Authorization')) headers.set('Authorization', `Bearer ${bearerToken}`);
+      if (bearerToken && !headers.has('Authorization')) headers.set('Authorization', `Bearer ${bearerToken}`);
+      if (!bearerToken && telegramToken && !headers.has('X-Telegram-Init-Data')) {
+        headers.set('X-Telegram-Init-Data', telegramToken);
+      }
       nextInit.headers = headers;
       const nextUrl = url.pathname + url.search + url.hash;
       return nativeFetch(nextUrl, nextInit);
@@ -4739,7 +4853,7 @@ function installJwtQueryAuthHeaderBridge() {
   };
 }
 
-// Telegram initData stays in _auth for launch and deep-link compatibility; JWT API calls are lifted into Authorization.
+// Sensitive auth never stays in API URLs: JWT uses Authorization; Telegram initData uses a dedicated header.
 installJwtQueryAuthHeaderBridge();
 
 async function openAdminPanel() {
@@ -5144,7 +5258,7 @@ window.loadMobileSquadsBootstrap = async function(options = {}) {
 };
 </script>
 
-<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=06a7128d2697">
+<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=eee7c9705147">
 // ═══════════════════════════════════════════
 // DESIGN TOKENS
 // ═══════════════════════════════════════════
@@ -9182,7 +9296,7 @@ const MenuSheet = ({onClose, onSettings, onMail, onSupport, onInfo, onNews, onFr
 // ═══════════════════════════════════════════
 // EXTRAID SHEET
 // ═══════════════════════════════════════════
-const ExtraIDSheet = ({onClose, view, onSetView, extraIDData, onExtraIDData, profile, onReloadProfile}) => {
+const ExtraIDSheet = ({onClose, view, onSetView, extraIDData, onExtraIDData, profile, onReloadProfile, initialActionToken, onActionTokenConsumed}) => {
   const [email,       setEmail]       = React.useState('');
   const [password,    setPassword]    = React.useState('');
   const [nickname,    setNickname]    = React.useState('');
@@ -9194,20 +9308,39 @@ const ExtraIDSheet = ({onClose, view, onSetView, extraIDData, onExtraIDData, pro
   const [copyMsg,     setCopyMsg]     = React.useState(false);
   const [focusedInput,setFocusedInput] = React.useState(null);
   const [showPass,    setShowPass]     = React.useState(false);
+  const [newPassword, setNewPassword] = React.useState('');
+  const [confirmPassword, setConfirmPassword] = React.useState('');
+  const [resetToken, setResetToken] = React.useState(initialActionToken || '');
+  const [actionStatus, setActionStatus] = React.useState('');
+  const [replacementEmail, setReplacementEmail] = React.useState('');
   const telegramAuth = getTelegramInitData();
-  const isTelegramFlow = !!telegramAuth;
+  const maxAuth = getMaxAuthToken();
+  const isTelegramFlow = isTelegramGameClient();
+  const isMaxFlow = isMaxGameClient();
+  const isPlatformFlow = isTelegramFlow || isMaxFlow;
+  const platformLabel = isMaxFlow ? 'MAX' : 'Telegram';
+  const isPlatformBound = isPlatformFlow || !!extraIDData?.linked_telegram || !!extraIDData?.linked_max;
   const hasLocalExtraSession = hasStoredExtraToken();
-  const openLink = (url) => { window.Telegram?.WebApp?.openTelegramLink?.(url) || window.open(url,'_blank'); };
+  const emailChangeOwnerToken = maxAuth || getNativeAuthToken() || getStoredExtraToken();
+  const canChangeUnverifiedEmail = !!telegramAuth || looksLikeJwtBearer(emailChangeOwnerToken);
+  const openLink = (url) => window.openExternalLink?.(url) || window.open(url,'_blank','noopener,noreferrer');
+  const openSupport = () => isMaxFlow
+    ? openLink('https://max.ru/se13279035_1_bot')
+    : openLink('https://t.me/extraarena_supbot');
 
   React.useEffect(() => {
     let alive = true;
-    if (!extraIDData && (profile?.extra_account_id || hasLocalExtraSession || isTelegramFlow)) {
+    if (!extraIDData && (profile?.extra_account_id || hasLocalExtraSession || isPlatformFlow)) {
       loadExtraIDProfile(resolveExtraIDAuthData()).then((data) => {
         if (alive && data) onExtraIDData(data);
       }).catch(() => {});
     }
     return () => { alive = false; };
   }, [profile?.extra_account_id, view]);
+
+  React.useEffect(() => {
+    if (initialActionToken) setResetToken(initialActionToken);
+  }, [initialActionToken]);
 
   const inputStyle = (name) => ({
     width:'100%', padding:'13px 14px', borderRadius:'12px',
@@ -9224,19 +9357,31 @@ const ExtraIDSheet = ({onClose, view, onSetView, extraIDData, onExtraIDData, pro
 
   const doRegister = async () => {
     if (!email || !password) { setErr('Заполните все поля'); return; }
+    if (utf8ByteLength(password) > 72) { setErr('Пароль не должен превышать 72 байта'); return; }
     setLoading(true);
     const authData = resolveExtraIDRegistrationAuthData();
-    const appClientPayload = isAndroidAppShell() ? {client:'android_app'} : {client:(isTelegramFlow ? 'telegram' : 'web')};
+    const appClientPayload = isAndroidAppShell()
+      ? {client:'android_app'}
+      : {client:(isMaxFlow ? 'max' : (isTelegramFlow ? 'telegram' : 'web'))};
     console.log('[ExtraID] doRegister start, authData type:', typeof authData, !!authData);
     try {
       const ctrl = new AbortController();
       const tid = setTimeout(() => ctrl.abort(), 15000);
       let r, d;
       try {
-        const registerUrl = authData
-          ? buildUiAuthUrl('/api/extraid/register', {type:'auth', value:authData, source:'explicit'})
-          : '/api/extraid/register';
-        r = await fetch(registerUrl, {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,password,nickname:nickname||undefined,...appClientPayload}), signal: ctrl.signal});
+        const registerHeaders = {'Content-Type':'application/json'};
+        const registerPayload = {email,password,nickname:nickname||undefined,...appClientPayload};
+        if (isTelegramFlow && authData) {
+          registerPayload.tg_init_data = authData;
+        } else if (looksLikeJwtBearer(authData)) {
+          registerHeaders.Authorization = 'Bearer ' + authData;
+        }
+        r = await fetch('/api/extraid/register', {
+          method:'POST',
+          headers:registerHeaders,
+          body:JSON.stringify(registerPayload),
+          signal:ctrl.signal
+        });
         clearTimeout(tid);
         d = await r.json();
         console.log('[ExtraID] register response:', r.status, d);
@@ -9248,14 +9393,29 @@ const ExtraIDSheet = ({onClose, view, onSetView, extraIDData, onExtraIDData, pro
         return;
       }
       if (d.ok) {
-        if (isTelegramFlow) {
+        if (isPlatformFlow) {
           clearExtraToken();
-          var ed = await loadExtraIDProfile(telegramAuth);
-          onExtraIDData(ed || {extra_id_bound:true,display_id:d.display_id,linked_telegram:true,email:email.replace(/^(.).*(@.*)$/,'$1***$2'),nickname:nickname||null});
+          var ed = await loadExtraIDProfile(telegramAuth || maxAuth);
+          onExtraIDData(ed || {
+            extra_id_bound:true,
+            display_id:d.display_id,
+            linked_telegram:isTelegramFlow,
+            linked_max:isMaxFlow,
+            email:email.replace(/^(.).*(@.*)$/,'$1***$2'),
+            nickname:nickname||null,
+            is_email_verified:false
+          });
           await onReloadProfile();
           onSetView('profile');
-          window.showToast?.('ExtraID создан и привязан к Telegram','success',3000);
+          window.showToast?.(`ExtraID создан и привязан к ${platformLabel}`,'success',3000);
           if(d.reg_bonus) window.showToast?.('Бонус: +3 ключа!','success',3000);
+          if(d.email_verification_required) {
+            window.showToast?.(d.email_sent ? 'Проверь почту и подтверди email' : 'Email пока не отправлен — повтори отправку в настройках','info',4500);
+          }
+        } else if (d.email_verification_required) {
+          setActionStatus(d.email_sent ? 'verification_sent' : 'verification_pending');
+          setError('');
+          onSetView('verify_email');
         } else {
           const lr = await fetch('/api/extraid/login', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,password})});
           const ld = await lr.json();
@@ -9278,7 +9438,7 @@ const ExtraIDSheet = ({onClose, view, onSetView, extraIDData, onExtraIDData, pro
             setErr('ExtraID уже подключен к этому профилю');
           }
         } else {
-          var m = d.error==='email_taken'?'Email уже занят':d.error==='nickname_taken'?'Никнейм занят':d.error==='password_too_short'?'Пароль от 8 символов':d.error==='invalid_auth'?'Сессия истекла. Перезапусти игру и попробуй снова':d.message||'Ошибка регистрации';
+          var m = d.error==='email_taken'?'Email уже занят':d.error==='nickname_taken'?'Никнейм занят':d.error==='password_too_short'?'Пароль от 8 символов':d.error==='game_session_required'?'Создать ExtraID можно из Telegram, MAX или приложения':d.error==='invalid_auth'?'Сессия истекла. Перезапусти игру и попробуй снова':d.message||'Ошибка регистрации';
           setErr(m);
         }
       }
@@ -9296,8 +9456,127 @@ const ExtraIDSheet = ({onClose, view, onSetView, extraIDData, onExtraIDData, pro
         saveExtraToken(d.token); var ed=await loadExtraIDProfile(d.token);
         rememberMobileExtraIdAccount(email, d.token, ed, d.user_id);
         onExtraIDData(ed); await onReloadProfile(); onSetView('profile'); if(d.reg_bonus) window.showToast?.('Бонус: +3 ключа!','success',3000);
+      } else if (d.error === 'email_not_verified') {
+        setActionStatus('verification_pending');
+        setError('');
+        onSetView('verify_email');
       } else { setErr(d.error==='invalid_credentials'?'Неверный email или пароль':d.message||'Ошибка входа'); }
     } catch(_) { setErr('Ошибка сети'); }
+    setLoading(false);
+  };
+
+  const doResendVerification = async () => {
+    if (!email) { setErr('Введите email'); return; }
+    setLoading(true);
+    setError('');
+    try {
+      await fetch('/api/extraid/email/resend', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({email})
+      });
+      setActionStatus('verification_sent');
+      window.showToast?.('Если аккаунт существует, письмо отправлено','success',3500);
+    } catch (_) {
+      setErr('Ошибка сети');
+    }
+    setLoading(false);
+  };
+
+  const doChangeUnverifiedEmail = async () => {
+    const normalizedEmail = replacementEmail.trim().toLowerCase();
+    if (!canChangeUnverifiedEmail) {
+      setErr('Для изменения email нужна текущая игровая сессия');
+      return;
+    }
+    if (!normalizedEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+      setErr('Введите корректный новый email');
+      return;
+    }
+    setLoading(true);
+    setError('');
+    try {
+      const changeHeaders = {'Content-Type':'application/json'};
+      if (telegramAuth) {
+        changeHeaders['X-Telegram-Init-Data'] = telegramAuth;
+      } else {
+        changeHeaders.Authorization = 'Bearer ' + emailChangeOwnerToken;
+      }
+      const response = await fetch('/api/extraid/email/change', {
+        method:'POST',
+        headers:changeHeaders,
+        body:JSON.stringify({email:normalizedEmail})
+      });
+      const result = await response.json();
+      if (!response.ok || !result.ok) {
+        const message = result.error === 'email_taken'
+          ? 'Этот email уже используется'
+          : result.error === 'email_change_not_allowed'
+            ? 'Email уже подтверждён или изменение недоступно'
+            : result.error === 'rate_limited'
+              ? 'Слишком много попыток. Попробуй позже'
+              : 'Не удалось изменить email';
+        setErr(message);
+        return;
+      }
+      setEmail(normalizedEmail);
+      setReplacementEmail('');
+      setActionStatus('verification_sent');
+      const refreshed = await loadExtraIDProfile(telegramAuth || emailChangeOwnerToken);
+      if (refreshed) onExtraIDData(refreshed);
+      window.showToast?.('Email изменён. Новое письмо отправлено','success',4000);
+    } catch (_) {
+      setErr('Ошибка сети');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const doRequestPasswordReset = async () => {
+    if (!email) { setErr('Введите email'); return; }
+    setLoading(true);
+    setError('');
+    try {
+      await fetch('/api/extraid/password-reset/request', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({email})
+      });
+      setActionStatus('reset_requested');
+      onSetView('reset_sent');
+    } catch (_) {
+      setErr('Ошибка сети');
+    }
+    setLoading(false);
+  };
+
+  const doConfirmPasswordReset = async () => {
+    if (!resetToken) { setErr('Ссылка восстановления недействительна'); return; }
+    if (newPassword.length < 8) { setErr('Пароль должен быть не короче 8 символов'); return; }
+    if (utf8ByteLength(newPassword) > 72) { setErr('Пароль не должен превышать 72 байта'); return; }
+    if (newPassword !== confirmPassword) { setErr('Пароли не совпадают'); return; }
+    setLoading(true);
+    setError('');
+    try {
+      const r = await fetch('/api/extraid/password-reset/confirm', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({token:resetToken,password:newPassword})
+      });
+      const d = await r.json();
+      if (!r.ok || !d.ok) {
+        setErr(d.error === 'invalid_or_expired_token' ? 'Ссылка истекла или уже использована' : d.message || 'Не удалось сменить пароль');
+      } else {
+        setResetToken('');
+        onActionTokenConsumed?.();
+        setNewPassword('');
+        setConfirmPassword('');
+        onSetView('login');
+        window.showToast?.('Пароль изменён. Войди заново','success',3500);
+      }
+    } catch (_) {
+      setErr('Ошибка сети');
+    }
     setLoading(false);
   };
 
@@ -9332,9 +9611,29 @@ const ExtraIDSheet = ({onClose, view, onSetView, extraIDData, onExtraIDData, pro
   };
 
   const doLogout = async () => {
+    if (isTelegramFlow) {
+      window.showToast?.('В Telegram выход из ExtraID недоступен','info',2500);
+      return;
+    }
+    if (isMaxFlow) {
+      window.showToast?.('В MAX выход из ExtraID недоступен','info',2500);
+      return;
+    }
     const token = getNativeAuthToken() || getStoredExtraToken();
     if (token) {
-      try { await fetch(buildUiAuthUrl('/api/auth/logout', {type:'auth', value:token, source:'explicit'}), {method:'POST'}); } catch(_) {}
+      let revoked = false;
+      try {
+        const response = await fetch(
+          buildUiAuthUrl('/api/auth/logout', {type:'auth', value:token, source:'explicit'}),
+          {method:'POST'}
+        );
+        // A 401 means the credential is already unusable and can be removed.
+        revoked = response.ok || response.status === 401;
+      } catch (_) {}
+      if (!revoked) {
+        setErr('Не удалось завершить серверную сессию. Проверь соединение и повтори выход.');
+        return;
+      }
     }
     clearExtraToken();
     onExtraIDData(null);
@@ -9352,9 +9651,13 @@ const ExtraIDSheet = ({onClose, view, onSetView, extraIDData, onExtraIDData, pro
         React.createElement('span', {style:{fontSize:'80px',opacity:.3}}, '\uD83D\uDEE1\uFE0F')
       ),
       React.createElement('h1', {key:'h1',style:{fontSize:'22px',fontWeight:'900',color:T.white,textAlign:'center',marginBottom:'4px',fontFamily:"'Exo 2',sans-serif"}}, 'Создай ExtraID'),
-      React.createElement('p', {key:'p',style:{fontSize:'15px',color:T.grey1,textAlign:'center',marginBottom:'16px',fontFamily:"'Inter',sans-serif"}}, isTelegramFlow ? 'Создайте аккаунт и привяжите его к текущему Telegram-профилю.' : 'Самый надёжный способ защитить свой прогресс!'),
+      React.createElement('p', {key:'p',style:{fontSize:'15px',color:T.grey1,textAlign:'center',marginBottom:'16px',fontFamily:"'Inter',sans-serif"}}, isPlatformFlow ? `Создайте аккаунт и привяжите его к текущему ${platformLabel}-профилю.` : 'Самый надёжный способ защитить свой прогресс!'),
       React.createElement('div', {key:'benefits',style:{background:'rgba(26,16,48,0.6)',backdropFilter:'blur(12px)',borderRadius:'16px',padding:'14px',marginBottom:'14px',border:`1px solid ${T.purple1}40`}},
-        [{icon:'\uD83C\uDFAE',label:'Открой будущий мобильный вход'},{icon:'\uD83D\uDEE1\uFE0F',label:'Сохрани прогресс вне Telegram'},{icon:'\uD83C\uDF96\uFE0F',label:'Получи бонус за регистрацию'}].map((b,i)=>[
+        [
+          {icon:'\uD83C\uDFAE',label:'Открой будущий мобильный вход'},
+          {icon:'\uD83D\uDEE1\uFE0F',label:'Сохрани прогресс вне Telegram'},
+          ...(isTelegramFlow ? [{icon:'\uD83C\uDF96\uFE0F',label:'Получи бонус за регистрацию'}] : (isMaxFlow ? [{icon:'\uD83C\uDF96\uFE0F',label:'Получи бонус за регистрацию'}] : []))
+        ].map((b,i)=>[
           i>0&&React.createElement('div',{key:'d'+i,style:{height:'1px',background:`linear-gradient(90deg,transparent,${T.purple1}40,transparent)`,margin:'10px 0'}}),
           React.createElement('div',{key:'b'+i,style:{display:'flex',alignItems:'center',gap:'12px'}},
             React.createElement('div',{style:{width:'36px',height:'36px',borderRadius:'10px',background:T.purple2,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,border:`1px solid ${T.purple1}30`}},React.createElement('span',null,b.icon)),
@@ -9362,15 +9665,15 @@ const ExtraIDSheet = ({onClose, view, onSetView, extraIDData, onExtraIDData, pro
           )
         ])
       ),
-      React.createElement('div', {key:'reward',style:{background:`linear-gradient(135deg,${T.purple2},#1a1238)`,borderRadius:'16px',padding:'14px',marginBottom:'16px',border:`1px solid ${T.orange}40`,display:'flex',alignItems:'center',gap:'12px'}},
+      isPlatformFlow ? React.createElement('div', {key:'reward',style:{background:`linear-gradient(135deg,${T.purple2},#1a1238)`,borderRadius:'16px',padding:'14px',marginBottom:'16px',border:`1px solid ${T.orange}40`,display:'flex',alignItems:'center',gap:'12px'}},
         React.createElement('div',{style:{width:'44px',height:'44px',borderRadius:'12px',background:'rgba(0,0,0,0.3)',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,border:`1px solid ${T.orange}40`}},React.createElement('span',{style:{fontSize:'24px'}},'\uD83C\uDF81')),
         React.createElement('div',{style:{flex:1}},
           React.createElement('div',{style:{fontSize:'10px',color:T.orangeLt,textTransform:'uppercase',letterSpacing:'1px',fontFamily:"'Inter',sans-serif"}},'БОНУС ЗА РЕГИСТРАЦИЮ'),
-          React.createElement('div',{style:{fontSize:'15px',fontWeight:'800',color:T.white,fontFamily:"'Exo 2',sans-serif"}},'3 Кейса')
+          React.createElement('div',{style:{fontSize:'15px',fontWeight:'800',color:T.white,fontFamily:"'Exo 2',sans-serif"}},'3 ключа')
         )
-      ),
-      React.createElement('button', {key:'cta',onClick:()=>onSetView('register'),style:{width:'100%',height:'48px',borderRadius:'12px',background:T.orange,border:'none',color:'#fff',fontSize:'16px',fontWeight:'800',cursor:'pointer',fontFamily:"'Exo 2',sans-serif",marginBottom:'8px'}}, isTelegramFlow ? 'Создать и привязать' : 'Продолжить'),
-      React.createElement('button', {key:'restore',onClick:()=>openLink('https://t.me/extraarena_supbot'),style:{width:'100%',padding:'10px',borderRadius:'12px',background:'transparent',border:'none',color:T.grey1,fontSize:'13px',cursor:'pointer',fontFamily:"'Inter',sans-serif"}}, 'Восстановить игровой прогресс'),
+      ) : null,
+      React.createElement('button', {key:'cta',onClick:()=>onSetView('register'),style:{width:'100%',height:'48px',borderRadius:'12px',background:T.orange,border:'none',color:'#fff',fontSize:'16px',fontWeight:'800',cursor:'pointer',fontFamily:"'Exo 2',sans-serif",marginBottom:'8px'}}, isPlatformFlow ? 'Создать и привязать' : 'Продолжить'),
+      React.createElement('button', {key:'restore',onClick:openSupport,style:{width:'100%',padding:'10px',borderRadius:'12px',background:'transparent',border:'none',color:T.grey1,fontSize:'13px',cursor:'pointer',fontFamily:"'Inter',sans-serif"}}, 'Восстановить игровой прогресс'),
     ];
   }
 
@@ -9381,7 +9684,7 @@ const ExtraIDSheet = ({onClose, view, onSetView, extraIDData, onExtraIDData, pro
         React.createElement('div',{style:{width:'48px',height:'48px',borderRadius:'50%',background:T.purple2,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,border:`2px solid ${T.purple1}`}},React.createElement('span',{style:{fontSize:'24px'}},'\uD83C\uDD94')),
         React.createElement('div',null,
           React.createElement('div',{style:{fontSize:'20px',fontWeight:'900',color:T.white,fontFamily:"'Exo 2',sans-serif"}},'Создать ExtraID'),
-          React.createElement('div',{style:{fontSize:'13px',color:T.grey3,marginTop:'2px',fontFamily:"'Inter',sans-serif"}},isTelegramFlow?'Будет привязан к текущему профилю':'Быстро. Бесплатно. Навсегда.')
+          React.createElement('div',{style:{fontSize:'13px',color:T.grey3,marginTop:'2px',fontFamily:"'Inter',sans-serif"}},isPlatformFlow?`Будет привязан к текущему ${platformLabel}-профилю`:'Быстро. Бесплатно. Навсегда.')
         )
       ),
       error?React.createElement('div',{key:'err',style:{padding:'10px 14px',background:T.red+'20',border:'1px solid '+T.red+'40',borderRadius:'10px',color:T.red,fontSize:'13px',marginBottom:'14px',fontFamily:"'Inter',sans-serif"}},error):null,
@@ -9405,32 +9708,33 @@ const ExtraIDSheet = ({onClose, view, onSetView, extraIDData, onExtraIDData, pro
         React.createElement('input',{value:nickname,onChange:(e)=>setNickname(e.target.value),placeholder:'3-20 символов a-z 0-9 _ -',maxLength:20,onFocus:()=>setFocusedInput('nick'),onBlur:()=>setFocusedInput(null),style:inputStyle('nick')})
       ),
       // Submit
-      React.createElement('button',{key:'btn',disabled:loading,onClick:doRegister,style:{width:'100%',height:'52px',borderRadius:'14px',background:loading?T.purple2:'linear-gradient(135deg,'+T.orange+','+T.purpleHL+')',border:'none',color:'#fff',fontSize:'16px',fontWeight:'900',cursor:loading?'not-allowed':'pointer',opacity:loading?.6:1,fontFamily:"'Exo 2',sans-serif",boxShadow:loading?'none':'0 4px 20px rgba(245,146,30,0.3)',transition:'all 0.15s'}}, loading?'Создание...':(isTelegramFlow?'Создать и привязать':'Создать аккаунт')),
+      React.createElement('button',{key:'btn',disabled:loading,onClick:doRegister,style:{width:'100%',height:'52px',borderRadius:'14px',background:loading?T.purple2:'linear-gradient(135deg,'+T.orange+','+T.purpleHL+')',border:'none',color:'#fff',fontSize:'16px',fontWeight:'900',cursor:loading?'not-allowed':'pointer',opacity:loading?.6:1,fontFamily:"'Exo 2',sans-serif",boxShadow:loading?'none':'0 4px 20px rgba(245,146,30,0.3)',transition:'all 0.15s'}}, loading?'Создание...':(isPlatformFlow?'Создать и привязать':'Создать аккаунт')),
       React.createElement('div',{key:'footer',style:{marginTop:'14px',textAlign:'center'}},
-          React.createElement('span',{style:{fontSize:'13px',color:T.grey3,fontFamily:"'Inter',sans-serif"}},isTelegramFlow?'Нужен вход в существующий ExtraID? ':'Уже есть аккаунт? '),
-        isTelegramFlow
-          ? React.createElement('button',{onClick:()=>openLink('https://t.me/extraarena_supbot'),style:{background:'none',border:'none',color:T.orangeLt,fontSize:'13px',fontWeight:'600',cursor:'pointer',fontFamily:"'Inter',sans-serif",padding:0}},'Поддержка')
+          React.createElement('span',{style:{fontSize:'13px',color:T.grey3,fontFamily:"'Inter',sans-serif"}},isPlatformFlow?'Нужен вход в существующий ExtraID? ':'Уже есть аккаунт? '),
+        isPlatformFlow
+          ? React.createElement('button',{onClick:openSupport,style:{background:'none',border:'none',color:T.orangeLt,fontSize:'13px',fontWeight:'600',cursor:'pointer',fontFamily:"'Inter',sans-serif",padding:0}},'Поддержка')
           : React.createElement('button',{onClick:()=>onSetView('login'),style:{background:'none',border:'none',color:T.orangeLt,fontSize:'13px',fontWeight:'600',cursor:'pointer',fontFamily:"'Inter',sans-serif",padding:0}},'Войти')
       ),
     ];
   }
 
-  if (view === 'login' && isTelegramFlow) {
+  if (view === 'login' && isPlatformFlow) {
     renderContent = [
       React.createElement('button', {key:'back',onClick:()=>back('onboarding'),style:{background:'none',border:'none',color:T.grey1,fontSize:'13px',cursor:'pointer',alignSelf:'flex-start',marginBottom:'16px',fontFamily:"'Inter',sans-serif",padding:0}}, '\u2190 Назад'),
       React.createElement('div', {key:'header',style:{display:'flex',alignItems:'center',gap:'14px',marginBottom:'16px'}},
         React.createElement('div',{style:{width:'48px',height:'48px',borderRadius:'50%',background:T.purple2,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,border:`2px solid ${T.purple1}`}},React.createElement('span',{style:{fontSize:'24px'}},'\uD83D\uDD10')),
         React.createElement('div',null,
           React.createElement('div',{style:{fontSize:'20px',fontWeight:'900',color:T.white,fontFamily:"'Exo 2',sans-serif"}},'Вход через поддержку'),
-          React.createElement('div',{style:{fontSize:'13px',color:T.grey3,marginTop:'2px',fontFamily:"'Inter',sans-serif"}},'Поможем привязать существующий ExtraID к Telegram')
+          React.createElement('div',{style:{fontSize:'13px',color:T.grey3,marginTop:'2px',fontFamily:"'Inter',sans-serif"}},`Поможем привязать существующий ExtraID к ${platformLabel}`)
         )
       ),
-      React.createElement('div',{key:'note',style:{background:T.bgCard,border:`1px solid ${T.purple1}`,borderRadius:'14px',padding:'14px',color:T.grey1,fontSize:'14px',fontFamily:"'Inter',sans-serif",lineHeight:1.45,marginBottom:'14px'}},'В Telegram текущий игровой профиль уже подтверждён. Если нужно подключить существующий ExtraID, напиши в поддержку.'),
+      React.createElement('div',{key:'note',style:{background:T.bgCard,border:`1px solid ${T.purple1}`,borderRadius:'14px',padding:'14px',color:T.grey1,fontSize:'14px',fontFamily:"'Inter',sans-serif",lineHeight:1.45,marginBottom:'14px'}},`В ${platformLabel} текущий игровой профиль уже подтверждён. Если нужно подключить существующий ExtraID, напиши в поддержку.`),
+      React.createElement('button',{key:'support',onClick:openSupport,style:{width:'100%',height:'44px',borderRadius:'12px',background:T.purple2,border:`1px solid ${T.purple3}`,color:T.white,fontSize:'14px',fontWeight:'700',cursor:'pointer',fontFamily:"'Exo 2',sans-serif",marginBottom:'8px'}},'Открыть поддержку'),
       React.createElement('button',{key:'create',onClick:()=>back('register'),style:{width:'100%',height:'48px',borderRadius:'12px',background:T.orange,border:'none',color:'#fff',fontSize:'15px',fontWeight:'800',cursor:'pointer',fontFamily:"'Exo 2',sans-serif"}},'Создать и привязать')
     ];
   }
 
-  if (view === 'login' && !isTelegramFlow) {
+  if (view === 'login' && !isPlatformFlow) {
     renderContent = [
       React.createElement('button', {key:'back',onClick:()=>back('onboarding'),style:{background:'none',border:'none',color:T.grey1,fontSize:'13px',cursor:'pointer',alignSelf:'flex-start',marginBottom:'16px',fontFamily:"'Inter',sans-serif",padding:0}}, '\u2190 Назад'),
       React.createElement('div', {key:'header',style:{display:'flex',alignItems:'center',gap:'14px',marginBottom:'20px'}},
@@ -9454,11 +9758,65 @@ const ExtraIDSheet = ({onClose, view, onSetView, extraIDData, onExtraIDData, pro
       ),
       // Submit
       React.createElement('button',{key:'btn',disabled:loading,onClick:doLogin,style:{width:'100%',height:'52px',borderRadius:'14px',background:loading?T.purple2:'linear-gradient(135deg,'+T.orange+','+T.purpleHL+')',border:'none',color:'#fff',fontSize:'16px',fontWeight:'900',cursor:loading?'not-allowed':'pointer',opacity:loading?.6:1,fontFamily:"'Exo 2',sans-serif",boxShadow:loading?'none':'0 4px 20px rgba(245,146,30,0.3)',transition:'all 0.15s'}}, loading?'Вход...':'Войти'),
+      React.createElement('button',{key:'forgot',onClick:()=>{setError('');onSetView('reset_request');},style:{width:'100%',padding:'11px',background:'none',border:'none',color:T.grey1,fontSize:'13px',cursor:'pointer',fontFamily:"'Inter',sans-serif"}},'Забыли пароль?'),
       // Footer link
-      React.createElement('div',{key:'footer',style:{marginTop:'14px',textAlign:'center'}},
+      React.createElement('div',{key:'footer',style:{marginTop:'4px',textAlign:'center'}},
         React.createElement('span',{style:{fontSize:'13px',color:T.grey3,fontFamily:"'Inter',sans-serif"}},'Нет аккаунта? '),
         React.createElement('button',{onClick:()=>onSetView('register'),style:{background:'none',border:'none',color:T.orangeLt,fontSize:'13px',fontWeight:'600',cursor:'pointer',fontFamily:"'Inter',sans-serif",padding:0}},'Создать ExtraID')
       ),
+    ];
+  }
+
+  if (view === 'verify_email') {
+    renderContent = [
+      React.createElement('button',{key:'back',onClick:()=>back(isPlatformFlow?'profile':'login'),style:{background:'none',border:'none',color:T.grey1,fontSize:'13px',cursor:'pointer',alignSelf:'flex-start',marginBottom:'16px',fontFamily:"'Inter',sans-serif",padding:0}},'\u2190 Назад'),
+      React.createElement('div',{key:'icon',style:{width:'64px',height:'64px',borderRadius:'20px',background:T.purple2,border:`1px solid ${T.purple1}`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'30px',margin:'4px auto 16px'}},'📧'),
+      React.createElement('h2',{key:'h',style:{fontSize:'21px',fontWeight:'900',color:T.white,textAlign:'center',fontFamily:"'Exo 2',sans-serif",marginBottom:'8px'}},'Подтверди email'),
+      React.createElement('p',{key:'p',style:{fontSize:'14px',color:T.grey1,textAlign:'center',fontFamily:"'Inter',sans-serif",lineHeight:1.5,marginBottom:'16px'}},
+        email ? `Мы отправили ссылку на ${email}. Она нужна для входа по паролю и восстановления аккаунта.` : 'Открой ссылку из письма, чтобы включить вход по паролю и восстановление аккаунта.'
+      ),
+      actionStatus==='verification_sent' ? React.createElement('div',{key:'sent',style:{padding:'10px 12px',background:'#064e3b55',border:'1px solid #10b98155',borderRadius:'10px',color:'#6ee7b7',fontSize:'12px',fontFamily:"'Inter',sans-serif",marginBottom:'12px',textAlign:'center'}},'Письмо отправлено. Проверь также папку «Спам».') : null,
+      error?React.createElement('div',{key:'err',style:{padding:'10px 14px',background:T.red+'20',border:'1px solid '+T.red+'40',borderRadius:'10px',color:T.red,fontSize:'13px',marginBottom:'12px',fontFamily:"'Inter',sans-serif"}},error):null,
+      !email ? React.createElement('input',{key:'email',type:'email',value:email,onChange:(e)=>setEmail(e.target.value),placeholder:'you@example.com',autoComplete:'email',style:{...inputStyle('email'),marginBottom:'12px'}}) : null,
+      React.createElement('button',{key:'resend',disabled:loading,onClick:doResendVerification,style:{width:'100%',height:'48px',borderRadius:'12px',background:T.orange,border:'none',color:'#fff',fontSize:'15px',fontWeight:'800',cursor:loading?'not-allowed':'pointer',opacity:loading?.6:1,fontFamily:"'Exo 2',sans-serif"}},loading?'Отправляем...':'Отправить письмо ещё раз'),
+      canChangeUnverifiedEmail ? React.createElement('div',{key:'changeEmail',style:{marginTop:'14px',padding:'12px',background:T.bgCard,border:`1px solid ${T.purple1}`,borderRadius:'12px'}},
+        React.createElement('div',{style:{fontSize:'12px',color:T.grey1,fontFamily:"'Inter',sans-serif",marginBottom:'8px'}},'Ошиблись в адресе? Пока email не подтверждён, его можно безопасно заменить из текущей игровой сессии.'),
+        React.createElement('input',{type:'email',value:replacementEmail,onChange:(event)=>setReplacementEmail(event.target.value),placeholder:'Новый email',autoComplete:'email',style:{...inputStyle('replacementEmail'),marginBottom:'9px'}}),
+        React.createElement('button',{disabled:loading,onClick:doChangeUnverifiedEmail,style:{width:'100%',height:'42px',borderRadius:'10px',background:T.purple2,border:`1px solid ${T.purple1}`,color:T.white,fontSize:'13px',fontWeight:'700',cursor:loading?'not-allowed':'pointer',opacity:loading?.6:1,fontFamily:"'Exo 2',sans-serif"}},'Изменить email и отправить письмо')
+      ) : null,
+      !isPlatformFlow ? React.createElement('button',{key:'login',onClick:()=>back('login'),style:{width:'100%',padding:'12px',background:'none',border:'none',color:T.grey1,fontSize:'13px',cursor:'pointer',fontFamily:"'Inter',sans-serif"}},'Вернуться ко входу') : null
+    ];
+  }
+
+  if (view === 'reset_request') {
+    renderContent = [
+      React.createElement('button',{key:'back',onClick:()=>back('login'),style:{background:'none',border:'none',color:T.grey1,fontSize:'13px',cursor:'pointer',alignSelf:'flex-start',marginBottom:'16px',fontFamily:"'Inter',sans-serif",padding:0}},'\u2190 Назад'),
+      React.createElement('h2',{key:'h',style:{fontSize:'21px',fontWeight:'900',color:T.white,fontFamily:"'Exo 2',sans-serif",marginBottom:'8px'}},'Восстановить пароль'),
+      React.createElement('p',{key:'p',style:{fontSize:'14px',color:T.grey1,fontFamily:"'Inter',sans-serif",lineHeight:1.5,marginBottom:'16px'}},'Укажи подтверждённый email. Если аккаунт существует, мы отправим одноразовую ссылку.'),
+      error?React.createElement('div',{key:'err',style:{padding:'10px 14px',background:T.red+'20',border:'1px solid '+T.red+'40',borderRadius:'10px',color:T.red,fontSize:'13px',marginBottom:'12px',fontFamily:"'Inter',sans-serif"}},error):null,
+      React.createElement('input',{key:'email',type:'email',value:email,onChange:(e)=>setEmail(e.target.value),placeholder:'you@example.com',autoComplete:'email',style:{...inputStyle('email'),marginBottom:'14px'}}),
+      React.createElement('button',{key:'send',disabled:loading,onClick:doRequestPasswordReset,style:{width:'100%',height:'48px',borderRadius:'12px',background:T.orange,border:'none',color:'#fff',fontSize:'15px',fontWeight:'800',cursor:loading?'not-allowed':'pointer',opacity:loading?.6:1,fontFamily:"'Exo 2',sans-serif"}},loading?'Отправляем...':'Получить ссылку')
+    ];
+  }
+
+  if (view === 'reset_sent') {
+    renderContent = [
+      React.createElement('div',{key:'icon',style:{fontSize:'48px',textAlign:'center',marginBottom:'14px'}},'✉️'),
+      React.createElement('h2',{key:'h',style:{fontSize:'21px',fontWeight:'900',color:T.white,textAlign:'center',fontFamily:"'Exo 2',sans-serif",marginBottom:'8px'}},'Проверь почту'),
+      React.createElement('p',{key:'p',style:{fontSize:'14px',color:T.grey1,textAlign:'center',fontFamily:"'Inter',sans-serif",lineHeight:1.5,marginBottom:'16px'}},'Если аккаунт с таким email существует и адрес подтверждён, ссылка для смены пароля уже отправлена.'),
+      React.createElement('button',{key:'again',onClick:()=>back('reset_request'),style:{width:'100%',height:'46px',borderRadius:'12px',background:T.purple2,border:`1px solid ${T.purple1}`,color:T.white,fontSize:'14px',fontWeight:'700',cursor:'pointer',fontFamily:"'Exo 2',sans-serif",marginBottom:'6px'}},'Отправить ещё раз'),
+      React.createElement('button',{key:'login',onClick:()=>back('login'),style:{width:'100%',padding:'11px',background:'none',border:'none',color:T.grey1,fontSize:'13px',cursor:'pointer',fontFamily:"'Inter',sans-serif"}},'Вернуться ко входу')
+    ];
+  }
+
+  if (view === 'reset_password') {
+    renderContent = [
+      React.createElement('h2',{key:'h',style:{fontSize:'21px',fontWeight:'900',color:T.white,fontFamily:"'Exo 2',sans-serif",marginBottom:'8px'}},'Новый пароль'),
+      React.createElement('p',{key:'p',style:{fontSize:'14px',color:T.grey1,fontFamily:"'Inter',sans-serif",lineHeight:1.5,marginBottom:'16px'}},'Придумай новый пароль длиной не менее 8 символов. После смены все старые сессии будут завершены.'),
+      error?React.createElement('div',{key:'err',style:{padding:'10px 14px',background:T.red+'20',border:'1px solid '+T.red+'40',borderRadius:'10px',color:T.red,fontSize:'13px',marginBottom:'12px',fontFamily:"'Inter',sans-serif"}},error):null,
+      React.createElement('input',{key:'password',type:'password',value:newPassword,onChange:(e)=>setNewPassword(e.target.value),placeholder:'Новый пароль',autoComplete:'new-password',style:{...inputStyle('newPassword'),marginBottom:'10px'}}),
+      React.createElement('input',{key:'confirm',type:'password',value:confirmPassword,onChange:(e)=>setConfirmPassword(e.target.value),placeholder:'Повтори пароль',autoComplete:'new-password',style:{...inputStyle('confirmPassword'),marginBottom:'14px'}}),
+      React.createElement('button',{key:'save',disabled:loading,onClick:doConfirmPasswordReset,style:{width:'100%',height:'48px',borderRadius:'12px',background:T.orange,border:'none',color:'#fff',fontSize:'15px',fontWeight:'800',cursor:loading?'not-allowed':'pointer',opacity:loading?.6:1,fontFamily:"'Exo 2',sans-serif"}},loading?'Сохраняем...':'Сменить пароль')
     ];
   }
 
@@ -9468,7 +9826,7 @@ const ExtraIDSheet = ({onClose, view, onSetView, extraIDData, onExtraIDData, pro
     var trophies = profile?.trophies || 0;
     var currentSourceLabel = isAndroidAppShell()
       ? 'Сейчас через приложение'
-      : (getTelegramInitData() ? 'Сейчас через Telegram' : (hasLocalExtraSession ? 'Сейчас через ExtraID' : 'Email-аккаунт'));
+      : (isMaxFlow ? 'Сейчас через MAX' : (getTelegramInitData() ? 'Сейчас через Telegram' : (hasLocalExtraSession ? 'Сейчас через ExtraID' : 'Email-аккаунт')));
     renderContent = [
       React.createElement('h2', {key:'h2',style:{fontSize:'20px',fontWeight:'900',color:T.white,marginBottom:'16px',fontFamily:"'Exo 2',sans-serif"}}, 'ExtraID'),
       // ExtraID card
@@ -9495,7 +9853,7 @@ const ExtraIDSheet = ({onClose, view, onSetView, extraIDData, onExtraIDData, pro
       // Actions
       React.createElement('button',{key:'play',onClick:onClose,style:{width:'100%',height:'44px',borderRadius:'12px',background:T.purple2,border:`1px solid ${T.purple3}`,color:T.white,fontSize:'14px',fontWeight:'700',cursor:'pointer',fontFamily:"'Exo 2',sans-serif",marginBottom:'8px'}},'Играть'),
       React.createElement('button',{key:'settings',onClick:()=>onSetView('settings'),style:{width:'100%',height:'44px',borderRadius:'12px',background:T.bgCard,border:`1px solid ${T.purple1}`,color:T.white,fontSize:'14px',fontWeight:'700',cursor:'pointer',fontFamily:"'Exo 2',sans-serif",marginBottom:'8px'}},'Настройки'),
-      hasLocalExtraSession ? React.createElement('button',{key:'logout',onClick:doLogout,style:{width:'100%',height:'44px',borderRadius:'12px',background:'transparent',border:`1px solid ${T.red}40`,color:T.red,fontSize:'13px',fontWeight:'600',cursor:'pointer',fontFamily:"'Inter',sans-serif"}},'Выйти') : React.createElement('div',{key:'tg-note',style:{padding:'8px 4px 0',color:T.grey3,fontSize:'11px',fontFamily:"'Inter',sans-serif",textAlign:'center'}},'В Telegram профиль остается подключенным автоматически'),
+      hasLocalExtraSession && !isPlatformFlow ? React.createElement('button',{key:'logout',onClick:doLogout,style:{width:'100%',height:'44px',borderRadius:'12px',background:'transparent',border:`1px solid ${T.red}40`,color:T.red,fontSize:'13px',fontWeight:'600',cursor:'pointer',fontFamily:"'Inter',sans-serif"}},'Выйти') : React.createElement('div',{key:'platform-note',style:{padding:'8px 4px 0',color:T.grey3,fontSize:'11px',fontFamily:"'Inter',sans-serif",textAlign:'center'}},isPlatformFlow?`В ${platformLabel} профиль остается подключенным автоматически`:'Платформенный профиль остается подключенным автоматически'),
     ];
   }
 
@@ -9508,8 +9866,10 @@ const ExtraIDSheet = ({onClose, view, onSetView, extraIDData, onExtraIDData, pro
         React.createElement('div',{style:{width:'36px',height:'36px',borderRadius:'10px',background:T.purple2,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}},React.createElement('span',null,'📧')),
         React.createElement('div',{style:{flex:1}},
           React.createElement('div',{style:{fontSize:'12px',color:T.grey3,fontFamily:"'Inter',sans-serif"}},'Email'),
-          React.createElement('div',{style:{fontSize:'14px',fontWeight:'600',color:T.white,fontFamily:"'Exo 2',sans-serif"}},extraIDData?.email||'—')
-        )
+          React.createElement('div',{style:{fontSize:'14px',fontWeight:'600',color:T.white,fontFamily:"'Exo 2',sans-serif"}},extraIDData?.email||'—'),
+          React.createElement('div',{style:{fontSize:'10px',marginTop:'2px',color:extraIDData?.is_email_verified?'#6ee7b7':T.orangeLt,fontFamily:"'Inter',sans-serif"}},extraIDData?.is_email_verified?'✓ Подтверждён':'Не подтверждён')
+        ),
+        !extraIDData?.is_email_verified ? React.createElement('button',{onClick:()=>{setError('');onSetView('verify_email');},style:{padding:'7px 10px',borderRadius:'8px',background:T.purple2,border:`1px solid ${T.purple3}`,color:T.white,fontSize:'11px',fontWeight:'600',cursor:'pointer',fontFamily:"'Inter',sans-serif",flexShrink:0}},'Подтвердить') : null
       ),
       // Nickname
       React.createElement('div', {key:'nick',style:{background:T.bgCard,border:`1px solid ${T.purple1}`,borderRadius:'14px',padding:'14px',marginBottom:'12px',display:'flex',alignItems:'center',gap:'12px'}},
@@ -9524,20 +9884,20 @@ const ExtraIDSheet = ({onClose, view, onSetView, extraIDData, onExtraIDData, pro
         React.createElement('input',{value:newNick,onChange:(e)=>setNewNick(e.target.value),placeholder:'Новый никнейм',style:{flex:1,padding:'10px 12px',borderRadius:'10px',background:T.bgCard,border:`1px solid ${T.purple1}`,color:T.white,fontSize:'13px',fontFamily:"'Inter',sans-serif",outline:'none',boxSizing:'border-box'}}),
         React.createElement('button',{onClick:doUpdateNick,style:{padding:'10px 16px',borderRadius:'10px',background:T.orange,border:'none',color:'#fff',fontSize:'13px',fontWeight:'700',cursor:'pointer',fontFamily:"'Exo 2',sans-serif",flexShrink:0}},'OK')
       ):null,
-      // Danger Zone
-      React.createElement('div', {key:'dangerTitle',style:{padding:'8px 0',marginTop:'8px'}},
+      // Danger Zone. Telegram/MAX identities are intentionally non-detachable.
+      !isPlatformBound ? React.createElement('div', {key:'dangerTitle',style:{padding:'8px 0',marginTop:'8px'}},
         React.createElement('div',{style:{fontSize:'13px',fontWeight:'700',color:T.red,fontFamily:"'Inter',sans-serif",display:'flex',alignItems:'center',gap:'6px'}},
           React.createElement('span',null,'⚠️'),
           'Опасная зона'
         )
-      ),
-      React.createElement('div', {key:'danger',style:{background:T.bgCard,border:`1px solid ${T.red}20`,borderRadius:'14px',overflow:'hidden',marginBottom:'12px'}},
+      ) : React.createElement('div',{key:'platformGuard',style:{padding:'12px 14px',marginTop:'8px',background:T.bgCard,border:`1px solid ${T.purple1}`,borderRadius:'12px',color:T.grey1,fontSize:'12px',lineHeight:1.4,fontFamily:"'Inter',sans-serif"}},isPlatformFlow?`В ${platformLabel} ExtraID навсегда закреплён за текущим игровым профилем: выход недоступен, удаление — только через поддержку.`:`Этот ExtraID закреплён за ${extraIDData?.linked_max?'MAX':'Telegram'}-профилем. Удаление возможно только через поддержку.`),
+      !isPlatformBound ? React.createElement('div', {key:'danger',style:{background:T.bgCard,border:`1px solid ${T.red}20`,borderRadius:'14px',overflow:'hidden',marginBottom:'12px'}},
         React.createElement('div',{style:{display:'flex',alignItems:'center',gap:'8px',padding:'12px 14px'}},
           React.createElement('input',{type:'password',value:delPass,onChange:(e)=>setDelPass(e.target.value),placeholder:'Введи пароль для удаления',style:{flex:1,padding:'10px 12px',borderRadius:'8px',background:'rgba(0,0,0,0.3)',border:`1px solid ${T.red}30`,color:T.white,fontSize:'13px',fontFamily:"'Inter',sans-serif",outline:'none',boxSizing:'border-box'}}),
           React.createElement('button',{onClick:doDelete,style:{padding:'10px 14px',borderRadius:'8px',background:T.red,border:'none',color:'#fff',fontSize:'12px',fontWeight:'700',cursor:'pointer',fontFamily:"'Inter',sans-serif",flexShrink:0}},'Удалить')
         ),
         React.createElement('div',{style:{padding:'0 14px 10px',fontSize:'10px',color:T.grey3,fontFamily:"'Inter',sans-serif"}},'Полное удаление аккаунта ExtraID')
-      ),
+      ) : null,
     ];
   }
 
@@ -12651,10 +13011,8 @@ const SquadsScreen = ({profile,onReloadProfile,onNoticeChange,onOpenAnnouncement
     {icon:'★', title:'Сезонный Boost', caption:'донатный статус', accent:'#bffcff'},
   ];
   const openLink = (url) => {
-    const webApp = window.Telegram?.WebApp;
-    if (typeof webApp?.openTelegramLink === 'function') webApp.openTelegramLink(url);
-    else if (typeof webApp?.openLink === 'function') webApp.openLink(url);
-    else window.open(url, '_blank', 'noopener');
+    if (window.openExternalLink?.(url)) return;
+    window.open(url, '_blank', 'noopener');
   };
 
   const loadMe = React.useCallback(async () => {
@@ -17315,7 +17673,7 @@ const AnalyticsController = (() => {
       const cleaned = value.trim();
       return cleaned ? cleaned.slice(0, maxLength) : null;
     };
-    const platform = cleanParam('ea_platform', 64);
+    const platform = cleanParam('ea_platform', 64) || (isMaxGameClient() ? 'max_webapp' : null);
     let timezone = null;
     try { timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || null; } catch(e) {}
     return {
@@ -17725,13 +18083,7 @@ const MenuTourOverlay = ({onboarding, onAdvance, onNavigate, busy=false}) => {
   }, [step?.target]);
 
   const openChatUrl = (url) => {
-    try {
-      if (typeof window.Telegram?.WebApp?.openTelegramLink === 'function') {
-        window.Telegram.WebApp.openTelegramLink(url);
-        return;
-      }
-    } catch (_) {}
-    try { window.open(url, '_blank'); } catch (_) {}
+    try { window.openExternalLink?.(url) || window.open(url, '_blank', 'noopener,noreferrer'); } catch (_) {}
   };
 
   if (isDonePrompt) {
@@ -18846,6 +19198,7 @@ const App = () => {
   const [showExtraID,    setShowExtraID]    = React.useState(false);
   const [extraIDView,    setExtraIDView]    = React.useState('onboarding');
   const [extraIDData,    setExtraIDData]    = React.useState(null);
+  const [extraIDActionToken, setExtraIDActionToken] = React.useState('');
   const [onboarding,     setOnboarding]     = React.useState(null);
   const [showNewbiePath, setShowNewbiePath] = React.useState(false);
   const [newbiePathClaiming, setNewbiePathClaiming] = React.useState({});
@@ -19611,10 +19964,59 @@ const App = () => {
     window.setLoadingProgress?.(10, 'Запускаем арену…');
     persistAppAuthFromUrl();
 
+    const emailVerificationToken = takeExtraIDActionTokenFromLocation('extraid_verify_token');
+    const passwordResetToken = takeExtraIDActionTokenFromLocation('extraid_reset_token');
+    const registrationCancelToken = takeExtraIDActionTokenFromLocation('extraid_cancel_token');
+    if (passwordResetToken) {
+      setExtraIDActionToken(passwordResetToken);
+      setExtraIDView('reset_password');
+      setShowExtraID(true);
+    } else if (registrationCancelToken) {
+      (async () => {
+        try {
+          const response = await fetch('/api/extraid/email/cancel', {
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({token:registrationCancelToken})
+          });
+          const result = await response.json();
+          if (!response.ok || !result.ok) throw new Error(result.error || 'cancellation_failed');
+          setExtraIDView('login');
+          setShowExtraID(true);
+          window.showToast?.('Неподтверждённая регистрация отменена','success',4000);
+        } catch (_) {
+          setExtraIDView('login');
+          setShowExtraID(true);
+          window.showToast?.('Ссылка отмены истекла или уже использована','error',4500);
+        }
+      })();
+    } else if (emailVerificationToken) {
+      (async () => {
+        try {
+          const response = await fetch('/api/extraid/email/verify', {
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({token:emailVerificationToken})
+          });
+          const result = await response.json();
+          if (!response.ok || !result.ok) throw new Error(result.error || 'verification_failed');
+          setExtraIDView(isPlatformGameClient() ? 'profile' : 'login');
+          setShowExtraID(true);
+          window.showToast?.('Email подтверждён','success',4000);
+          if (result.reg_bonus) {
+            setTimeout(() => window.showToast?.('Бонус ExtraID: +3 ключа','success',3500), 700);
+          }
+        } catch (_) {
+          setExtraIDView('verify_email');
+          setShowExtraID(true);
+          window.showToast?.('Ссылка подтверждения истекла или уже использована','error',4500);
+        }
+      })();
+    }
+
     const tg = window.Telegram?.WebApp;
-    if (tg) {
-      tg.ready();
-      tg.expand();
+    window.ExtraArenaPlatform?.ready?.();
+    if (tg && isTelegramGameClient()) {
       try { tg.setHeaderColor?.('#0f0a1a'); } catch(e){}
       try { tg.setBackgroundColor?.('#0f0a1a'); } catch(e){}
       try { tg.setBottomBarColor?.('#0f0a1a'); } catch(e){}
@@ -19697,6 +20099,8 @@ const App = () => {
           console.warn('[profile] Profile was not loaded on startup', {
             hasTelegram: !!window.Telegram?.WebApp,
             hasInitData: !!window.Telegram?.WebApp?.initData,
+            hasMax: !!window.ExtraArenaPlatform?.isMax?.(),
+            hasMaxSession: !!getMaxAuthToken(),
             hasExtraToken: hasStoredExtraToken(),
             userId: new URLSearchParams(location.search).get('user_id'),
           });
@@ -19949,7 +20353,7 @@ const App = () => {
       {showInvite   && incomingInvite && <IncomingInviteModal invite={incomingInvite} profile={profile} onClose={()=>{setShowInvite(false);setIncomingInvite(null);}} onStart={()=>setInBattle(true)}/>}
       {showFriends && <FriendsScreen onClose={()=>{setShowFriends(false);setTimeout(async()=>{try{const r=await fetch(_buildAuthUrl('/api/friends/requests'), {cache:'no-store'});const d=await r.json();setFrPendingCount((d.incoming||[]).length);}catch(e){}},300);}} profile={profile} runtimeStatus={runtimeStatus} onRequestsChanged={setFrPendingCount}/>}
       {showProfile && <ProfileScreen profile={profile} onClose={()=>setShowProfile(false)}/>}
-      {showExtraID && <ExtraIDSheet onClose={()=>setShowExtraID(false)} view={extraIDView} onSetView={setExtraIDView} extraIDData={extraIDData} onExtraIDData={setExtraIDData} profile={profile} onReloadProfile={async()=>{const p=await loadProfile(resolveExtraIDAuthData());if(p)setProfile(p);}} />}
+      {showExtraID && <ExtraIDSheet onClose={()=>setShowExtraID(false)} view={extraIDView} onSetView={setExtraIDView} extraIDData={extraIDData} onExtraIDData={setExtraIDData} profile={profile} initialActionToken={extraIDActionToken} onActionTokenConsumed={()=>setExtraIDActionToken('')} onReloadProfile={async()=>{const p=await loadProfile(resolveExtraIDAuthData());if(p)setProfile(p);}} />}
 
       {onboarding?.completed && newbiePathRemaining > 0 && !newbiePathOpen && (
         <button type="button" onClick={()=>{setShowNewbiePath(true);window.__analytics?.onboarding('newbie_path_opened', false, null, {source:'floating_button'});}} style={{position:'fixed',right:'calc(14px + var(--ea-safe-right))',bottom:'calc(78px + var(--ea-safe-bottom-soft))',zIndex:120,minHeight:42,borderRadius:12,border:'1px solid rgba(255,255,255,0.28)',background:`linear-gradient(160deg,#ffc870 0%,${T.orange} 42%,${T.orangeD} 100%)`,color:'#201005',padding:'0 13px',fontSize:12,fontWeight:1000,fontFamily:"'Exo 2',sans-serif",boxShadow:`0 12px 28px rgba(0,0,0,0.34), 0 0 18px ${T.orange}55, inset 0 1px 0 rgba(255,255,255,0.4)`,cursor:'pointer',display:'inline-flex',alignItems:'center',gap:7,animation:'onbClaimablePulse 2.4s ease-in-out infinite'}}>
@@ -21093,8 +21497,27 @@ const LeagueInfoSheet = ({onClose, onOpenGloryPath, profile}) => {
   );
 };
 
-ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+const renderExtraArenaApp = () => {
+  ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+};
+
+(async () => {
+  const root = document.getElementById('root');
+  try {
+    if (window.ExtraArenaPlatform?.isMax?.()) {
+      await window.ExtraArenaPlatform.ensureAuthSession();
+    }
+  } catch (error) {
+    console.error('[MAX] Unable to establish game session:', error);
+    if (root) {
+      root.innerHTML = '<div style="margin:auto;padding:24px;text-align:center;color:#fff;font-family:Inter,sans-serif"><h2 style="margin-bottom:10px">Не удалось войти через MAX</h2><p style="color:#b9b0ca">Закройте мини-приложение и откройте его снова из чат-бота.</p></div>';
+    }
+    window.finishLoading?.();
+    return;
+  }
+  renderExtraArenaApp();
+})();
 </script>
-<script src="index.compiled.js?v=06a7128d2697"></script>
+<script src="index.compiled.js?v=eee7c9705147"></script>
 </body>
 </html>

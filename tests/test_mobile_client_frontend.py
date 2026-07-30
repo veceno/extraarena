@@ -6,6 +6,8 @@ INDEX = Path("webapp/index.html")
 ARENA = Path("webapp/arena.js")
 SAFE_AREA = Path("webapp/safe-area.js")
 MAIN_ACTIVITY = Path("android-app/app/src/main/java/ru/extraarena/app/MainActivity.java")
+AUTH_CLIENT = Path("android-app/app/src/main/java/ru/extraarena/app/AuthClient.java")
+EXTRA_ID_ACCOUNT_STORE = Path("android-app/app/src/main/java/ru/extraarena/app/ExtraIdAccountStore.java")
 DEVICE_REGISTRAR = Path("android-app/app/src/main/java/ru/extraarena/app/DeviceRegistrar.java")
 MESSAGING_SERVICE = Path("android-app/app/src/main/java/ru/extraarena/app/ExtraArenaMessagingService.java")
 ANDROID_MANIFEST = Path("android-app/app/src/main/AndroidManifest.xml")
@@ -584,19 +586,47 @@ def test_android_webview_auth_prefers_native_session_after_apk_update():
 
     assert "function getNativeAuthToken()" in source
     assert "getAndroidBridge()?.getAuthToken?.()" in source
-    assert "getUrlAuthToken() || getNativeAuthToken() || getStoredExtraToken()" in source
+    assert "getNativeAuthToken() || getUrlAuthToken() || getStoredExtraToken()" in source
     assert "add('auth', getNativeAuthToken(), 'native_extra_id')" in source
     assert "clearExtraToken({native: auth.source === 'native_extra_id'})" in source
     assert "const token = getNativeAuthToken() || getStoredExtraToken()" in source
     assert "sessionStorage.getItem(EXTRA_ID_TOKEN_SESSION_KEY)" in source
     assert "public String getAuthToken()" in native
-    assert "new URL(location.href).searchParams.get('_auth')" in native
+    assert 'webView.addJavascriptInterface(new AndroidBridge(), "ExtraArenaApp")' in native
+
+
+def test_android_extraid_registration_reuses_active_identity_and_revokes_sessions():
+    native = MAIN_ACTIVITY.read_text(encoding="utf-8")
+    auth_client = AUTH_CLIENT.read_text(encoding="utf-8")
+    account_store = EXTRA_ID_ACCOUNT_STORE.read_text(encoding="utf-8")
+    launch_block = native.split("private String buildLaunchUrl(", 2)[2].split(
+        "private void probeAndLoadArena",
+        1,
+    )[0]
+    logout_block = native.split("private void logoutCurrentDevice()", 1)[1].split("\n    }\n}", 1)[0]
+    remove_block = account_store.split("static boolean removeAccount(", 1)[1].split(
+        "static void touchAccountByToken",
+        1,
+    )[0]
+
+    assert 'appendQueryParameter("ea_platform", "android_app")' in launch_block
+    assert 'appendQueryParameter("_auth"' not in launch_block
+    assert 'registerBody.put("client", "android_app")' in auth_client
+    assert '"/api/extraid/register"' in auth_client
+    assert "activeAuthToken" in auth_client
+    assert 'connection.setRequestProperty("Authorization", "Bearer " + cleanAuthToken)' in auth_client
+    assert '"/api/auth/logout"' in auth_client
+    assert "AuthClient.logoutBestEffort(context, account.token)" in remove_block
+    assert "AuthClient.logoutBestEffort(this, activeToken)" in logout_block
+    assert logout_block.index("AuthClient.logoutBestEffort(this, activeToken)") < logout_block.index(
+        "DeviceRegistrar.clearAuthToken(this)"
+    )
 
 
 def test_telegram_collection_auth_drops_stale_url_session_token():
     source = INDEX.read_text(encoding="utf-8")
     candidates_block = source.split("function getUiAuthCandidates", 1)[1].split(
-        "return candidates;",
+        "function resolveUserId",
         1,
     )[0]
 
@@ -606,6 +636,8 @@ def test_telegram_collection_auth_drops_stale_url_session_token():
     assert "if (isStaleTelegramInitDataToken(token))" in source
     assert "if (sessionToken && isStaleTelegramInitDataToken(sessionToken))" in source
     assert "clean.searchParams.delete('_auth')" in source
+    assert "if (isTelegramGameClient())" in candidates_block
+    assert "return candidates;" in candidates_block
     assert candidates_block.index("add('auth', getNativeAuthToken(), 'native_extra_id')") < candidates_block.index(
         "add('auth', getUrlAuthToken(), 'url_auth')"
     )
@@ -614,7 +646,65 @@ def test_telegram_collection_auth_drops_stale_url_session_token():
     )
 
 
-def test_webapp_moves_jwt_auth_query_params_to_authorization_header():
+def test_arena_prefers_current_telegram_identity_and_purges_cached_launch_auth():
+    arena = ARENA.read_text(encoding="utf-8")
+    init_block = arena.split("document.addEventListener('DOMContentLoaded'", 1)[1].split(
+        "console.log('[ARENA] Match ID:'",
+        1,
+    )[0]
+
+    assert "function isStaleArenaTelegramInitDataToken(token)" in arena
+    assert "TELEGRAM_AUTH_SESSION_MAX_AGE_SECONDS = 23 * 60 * 60" in arena
+    assert "if (hasTelegramInitData)" in init_block
+    assert "authToken = telegramAuth" in init_block
+    assert "sessionStorage.removeItem('arena_auth')" in init_block
+    assert "clean.searchParams.delete('_auth')" in init_block
+    assert "if (!authToken && !hasTelegramInitData)" in init_block
+    assert init_block.index("authToken = telegramAuth") < init_block.index(
+        "sessionStorage.getItem('arena_auth')"
+    )
+
+
+def test_versioned_third_party_scripts_use_sri_but_mutable_telegram_does_not():
+    index = INDEX.read_text(encoding="utf-8")
+    arena_html = Path("webapp/arena.html").read_text(encoding="utf-8")
+
+    def script_tag(markup: str, src: str) -> str:
+        match = re.search(
+            rf'<script\b[^>]*\bsrc="{re.escape(src)}"[^>]*></script>',
+            markup,
+        )
+        assert match is not None, f"missing third-party script: {src}"
+        return match.group(0)
+
+    # Telegram serves this unversioned URL as a mutable asset. Pinning its
+    # current bytes would make every future upstream update fail closed in the
+    # browser, so keep it covered by CSP but deliberately omit SRI.
+    for markup in (index, arena_html):
+        telegram = script_tag(
+            markup,
+            "https://telegram.org/js/telegram-web-app.js",
+        )
+        assert "integrity=" not in telegram
+
+    for src in (
+        "https://unpkg.com/react@18.3.1/umd/react.production.min.js",
+        "https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js",
+        "https://unpkg.com/dompurify@3.2.6/dist/purify.min.js",
+    ):
+        versioned = script_tag(index, src)
+        assert 'integrity="sha384-' in versioned
+        assert 'crossorigin="anonymous"' in versioned
+
+    socket_io = script_tag(
+        arena_html,
+        "https://cdn.socket.io/4.5.4/socket.io.min.js",
+    )
+    assert 'integrity="sha384-' in socket_io
+    assert 'crossorigin="anonymous"' in socket_io
+
+
+def test_webapp_moves_sensitive_auth_query_params_to_dedicated_headers():
     source = Path("webapp/index.html").read_text(encoding="utf-8")
     arena = ARENA.read_text(encoding="utf-8")
     native = MAIN_ACTIVITY.read_text(encoding="utf-8")
@@ -623,11 +713,20 @@ def test_webapp_moves_jwt_auth_query_params_to_authorization_header():
     assert "Authorization" in source
     assert "looksLikeJwtBearer" in source
     assert "url.origin !== window.location.origin" in source
-    assert "Telegram initData stays in _auth" in source
+    assert "headers.set('X-Telegram-Init-Data', telegramToken)" in source
+    assert "Sensitive auth never stays in API URLs" in source
+    build_url_block = source.split("function buildUiAuthUrl(path, explicitAuth)", 1)[1].split(
+        "function looksLikeJwtBearer",
+        1,
+    )[0]
+    assert "if (auth.type === 'auth')" in build_url_block
+    assert "auth.type === 'auth' ? '_auth'" not in build_url_block
     assert "function installArenaJwtQueryAuthHeaderBridge()" in arena
     assert "looksLikeArenaJwtBearer" in arena
-    assert "Telegram initData stays in _auth" in arena
-    assert "localStorage.getItem('extra_id_token')||''" in native
+    assert "headers.set('X-Telegram-Init-Data', telegramToken)" in arena
+    assert "Sensitive auth never stays in API URLs" in arena
+    assert "localStorage.getItem('extra_id_token')||''" not in native
+    assert "public String getAuthToken()" in native
     assert "eaJsonCache:" in native
 
 

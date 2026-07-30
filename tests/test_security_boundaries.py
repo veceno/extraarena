@@ -2,9 +2,11 @@ import json
 import time
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 import jwt
 import pytest
+from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from infrastructure import card_assets
@@ -14,6 +16,24 @@ from web import server as web_server
 
 
 STRONG_TEST_JWT_SECRET = "test-security-jwt-secret-that-is-long-enough-2026"
+
+
+def test_telegram_channel_auth_checks_the_verified_user_id(monkeypatch):
+    request = SimpleNamespace(app={"bot_token": "bot-token"})
+    verified = {"auth_date": str(int(time.time()))}
+    monkeypatch.setattr(web_server, "_request_auth_token", lambda _request: "signed-init-data")
+    monkeypatch.setattr(web_server, "_verify_init_data", lambda _token, _secret: verified)
+    monkeypatch.setattr(web_server, "_validate_auth_date", lambda _data: True)
+    monkeypatch.setattr(web_server, "_extract_user_id_from_init_data", lambda _data: 1001)
+
+    assert web_server._telegram_init_data_for_request(
+        request,
+        expected_user_id=1001,
+    ) == verified
+    assert web_server._telegram_init_data_for_request(
+        request,
+        expected_user_id=1002,
+    ) is None
 
 
 @pytest.fixture(autouse=True)
@@ -544,6 +564,219 @@ def test_development_allows_default_jwt_secret(monkeypatch):
     assert settings.jwt_secret == "dev_secret_change_in_production!"
 
 
+@pytest.mark.asyncio
+async def test_production_redirects_trusted_proxy_http_to_configured_https_origin(monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://app.extraarena.space")
+    get_settings.cache_clear()
+    client, _session_id = await _client(db=SecurityFakeDB())
+    try:
+        response = await client.get(
+            "/health?probe=extraid",
+            headers={
+                "CF-Visitor": '{"scheme":"http"}',
+                "Host": "attacker.example",
+                "X-Forwarded-Host": "also-attacker.example",
+            },
+            allow_redirects=False,
+        )
+
+        assert response.status == 308
+        assert response.headers["Location"] == (
+            "https://app.extraarena.space/health?probe=extraid"
+        )
+        assert response.headers["Cache-Control"] == "no-store, no-cache, must-revalidate"
+        assert response.headers["Strict-Transport-Security"] == "max-age=31536000"
+    finally:
+        await client.close()
+        get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_production_post_redirect_is_308_and_does_not_call_handler(monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://app.extraarena.space")
+    get_settings.cache_clear()
+    request = SimpleNamespace(
+        secure=False,
+        remote="127.0.0.1",
+        headers={"X-Forwarded-Proto": "http"},
+        raw_path="/api/extraid/login?return=%2Farena",
+        rel_url="/api/extraid/login?return=/arena",
+    )
+    handler_calls = 0
+
+    async def handler(_request):
+        nonlocal handler_calls
+        handler_calls += 1
+        return web.Response(text="should not run")
+
+    response = await web_server.enforce_https_middleware(request, handler)
+
+    assert response.status == 308
+    assert response.headers["Location"] == (
+        "https://app.extraarena.space/api/extraid/login?return=%2Farena"
+    )
+    assert handler_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_production_ignores_spoofed_forwarded_scheme_from_untrusted_client(monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://app.extraarena.space")
+    get_settings.cache_clear()
+    request = SimpleNamespace(
+        remote="203.0.113.9",
+        headers={
+            "CF-Visitor": '{"scheme":"http"}',
+            "X-Forwarded-Proto": "http",
+        },
+        rel_url="/health",
+    )
+    handler_calls = 0
+
+    async def handler(_request):
+        nonlocal handler_calls
+        handler_calls += 1
+        return web.Response(text="ok")
+
+    response = await web_server.enforce_https_middleware(request, handler)
+
+    assert response.status == 200
+    assert handler_calls == 1
+
+
+@pytest.mark.parametrize(
+    "invalid_origin",
+    [
+        "",
+        "http://app.extraarena.space",
+        "https://user@app.extraarena.space",
+        "https://app.extraarena.space/path",
+        "https://app.extraarena.space?query=1",
+        "https://app.extraarena.space#fragment",
+        "https://app.extraarena.space\\@attacker.example",
+        "https://app.extraarena.space:bad-port",
+    ],
+)
+def test_https_redirect_origin_is_strict_and_does_not_fallback(monkeypatch, invalid_origin):
+    monkeypatch.setenv("PUBLIC_BASE_URL", invalid_origin)
+    monkeypatch.setenv("WEBAPP_URL", "https://fallback.example")
+
+    assert web_server._configured_https_origin() is None
+
+
+@pytest.mark.asyncio
+async def test_production_http_fails_closed_without_valid_redirect_origin(monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("PUBLIC_BASE_URL", "http://app.extraarena.space")
+    get_settings.cache_clear()
+    request = SimpleNamespace(
+        secure=False,
+        remote="127.0.0.1",
+        headers={"CF-Visitor": '{"scheme":"http"}'},
+        raw_path="/health",
+        rel_url="/health",
+    )
+
+    response = await web_server.enforce_https_middleware(
+        request,
+        lambda _request: pytest.fail("handler must not run"),
+    )
+
+    assert response.status == 503
+    assert "Location" not in response.headers
+    assert response.headers["Cache-Control"] == "no-store, no-cache, must-revalidate"
+
+
+@pytest.mark.parametrize(
+    ("headers", "secure", "expected"),
+    [
+        ({"X-Forwarded-Proto": "http,https"}, False, None),
+        ({"X-Forwarded-Proto": "https, http"}, False, None),
+        ({"X-Forwarded-Proto": "httpx"}, False, None),
+        ({"CF-Visitor": "[]", "X-Forwarded-Proto": "https, http"}, False, None),
+        (
+            {
+                "CF-Visitor": '{"scheme":"https"}',
+                "X-Forwarded-Proto": "http",
+            },
+            False,
+            "https",
+        ),
+        (
+            {
+                "CF-Visitor": '{"scheme":"http"}',
+                "X-Forwarded-Proto": "https",
+            },
+            False,
+            "http",
+        ),
+        ({"CF-Visitor": '{"scheme":"http"}'}, True, "https"),
+        ({}, False, None),
+    ],
+)
+def test_trusted_forwarded_scheme_is_unambiguous(headers, secure, expected):
+    request = SimpleNamespace(
+        secure=secure,
+        remote="127.0.0.1",
+        headers=headers,
+    )
+
+    assert web_server._trusted_forwarded_scheme(request) == expected
+
+
+@pytest.mark.asyncio
+async def test_production_https_response_includes_hsts(monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    get_settings.cache_clear()
+    client, _session_id = await _client(db=SecurityFakeDB())
+    try:
+        response = await client.get(
+            "/health",
+            headers={"CF-Visitor": '{"scheme":"https"}'},
+        )
+
+        assert response.status == 200
+        assert response.headers["Strict-Transport-Security"] == "max-age=31536000"
+    finally:
+        await client.close()
+        get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_production_hsts_is_present_on_unknown_route(monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    get_settings.cache_clear()
+    client, _session_id = await _client(db=SecurityFakeDB())
+    try:
+        response = await client.get(
+            "/route-that-does-not-exist",
+            headers={"CF-Visitor": '{"scheme":"https"}'},
+        )
+
+        assert response.status == 404
+        assert response.headers["Strict-Transport-Security"] == "max-age=31536000"
+    finally:
+        await client.close()
+        get_settings.cache_clear()
+
+
+def test_admin_session_cookie_does_not_trust_direct_forwarded_proto(monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    get_settings.cache_clear()
+    request = SimpleNamespace(
+        secure=False,
+        remote="203.0.113.9",
+        headers={"X-Forwarded-Proto": "https"},
+    )
+    response = web.Response()
+
+    web_server._set_admin_session_cookie(request, response, web_server.ADMIN_ID)
+
+    assert response.cookies[web_server.ADMIN_SESSION_COOKIE_NAME]["secure"] is False
+
+
 def test_admin_session_cookie_uses_admin_session_secret(monkeypatch):
     admin_secret = "test-admin-session-cookie-secret-that-is-long-enough-2026"
     monkeypatch.setenv("ENVIRONMENT", "production")
@@ -790,7 +1023,7 @@ async def test_card_image_preview_variant_falls_back_to_original(monkeypatch, tm
 
 
 @pytest.mark.asyncio
-async def test_production_rejects_jwt_query_auth_but_accepts_authorization_header(monkeypatch):
+async def test_production_rejects_all_query_auth_but_accepts_authorization_header(monkeypatch):
     monkeypatch.setenv("ENVIRONMENT", "production")
     monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "https://game.example")
     get_settings.cache_clear()
@@ -803,7 +1036,14 @@ async def test_production_rejects_jwt_query_auth_but_accepts_authorization_heade
         query_body = await query_response.json()
 
         assert query_response.status == 401
-        assert query_body["error"] == "query_auth_jwt_not_allowed"
+        assert query_body["error"] == "query_auth_not_allowed"
+
+        telegram_query_response = await client.get(
+            "/api/profile?_auth=auth_date%3D1%26hash%3Dsecret"
+        )
+        telegram_query_body = await telegram_query_response.json()
+        assert telegram_query_response.status == 401
+        assert telegram_query_body["error"] == "query_auth_not_allowed"
 
         header_response = await client.get(
             "/api/profile",
@@ -997,7 +1237,7 @@ async def test_community_ideas_admin_delete_rejects_query_jwt(monkeypatch):
         body = await response.json()
 
         assert response.status == 401
-        assert body["error"] == "query_auth_jwt_not_allowed"
+        assert body["error"] == "query_auth_not_allowed"
     finally:
         await client.close()
         get_settings.cache_clear()

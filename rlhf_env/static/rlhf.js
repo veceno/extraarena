@@ -246,10 +246,7 @@ els.sendCodeBtn.addEventListener("click", async () => {
     if (!r.ok) {
       rlhfSetMsg("Не удалось отправить код: " + (j.error || `HTTP ${r.status}`), true);
     } else {
-      const hint = j.hint === "mail"
-        ? "Код отправлен во внутриигровую почту («Меню» → «Почта»)."
-        : "Код отправлен в Telegram-бота.";
-      rlhfSetMsg(hint + " Действует 5 минут.");
+      rlhfSetMsg("Если аккаунт найден, код отправлен в привязанный канал или внутриигровую почту. Действует 5 минут.");
     }
   } catch (e) {
     rlhfSetMsg("Сеть/прод недоступен: " + e.message, true);

@@ -47,6 +47,24 @@ let onboardingMenuTourLeaving = false;
 let arenaLaunchBlocked = false;
 let arenaAnalytics = null;
 
+const TELEGRAM_AUTH_SESSION_MAX_AGE_SECONDS = 23 * 60 * 60;
+const TELEGRAM_AUTH_MAX_FUTURE_SKEW_SECONDS = 5 * 60;
+
+function isStaleArenaTelegramInitDataToken(token) {
+  if (!token || typeof token !== 'string') return false;
+  try {
+    const params = new URLSearchParams(token);
+    if (!params.has('auth_date') || !params.has('hash')) return false;
+    const authDate = Number(params.get('auth_date'));
+    if (!Number.isFinite(authDate) || authDate <= 0) return true;
+    const ageSeconds = Math.floor(Date.now() / 1000) - authDate;
+    return ageSeconds > TELEGRAM_AUTH_SESSION_MAX_AGE_SECONDS
+      || ageSeconds < -TELEGRAM_AUTH_MAX_FUTURE_SKEW_SECONDS;
+  } catch (_) {
+    return true;
+  }
+}
+
 // Для drag & drop
 let selectedCard = null;
 let selectedAttacker = null;
@@ -2280,9 +2298,9 @@ function isValidAttackTarget(targetId, isHero) {
 
 function buildArenaAuthUrl(path) {
   if (!authToken) return path;
-  if (looksLikeArenaJwtBearer(authToken) && isSameOriginArenaApiPath(path)) return path;
-  const separator = path.includes('?') ? '&' : '?';
-  return path + separator + '_auth=' + encodeURIComponent(authToken);
+  // The fetch bridge authenticates only same-origin /api/ requests. Never put
+  // JWT or Telegram initData into a URL, including cross-origin URLs.
+  return path;
 }
 
 function startArenaAnalytics() {
@@ -2311,6 +2329,16 @@ function looksLikeArenaJwtBearer(value) {
     && /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(value.trim());
 }
 
+function isArenaTelegramInitDataToken(value) {
+  if (!value || typeof value !== 'string') return false;
+  try {
+    const params = new URLSearchParams(value);
+    return params.has('auth_date') && params.has('hash');
+  } catch (_) {
+    return false;
+  }
+}
+
 function isSameOriginArenaApiPath(path) {
   try {
     const url = new URL(path, window.location.origin);
@@ -2325,7 +2353,7 @@ function installArenaJwtQueryAuthHeaderBridge() {
   window.__eaArenaJwtQueryAuthHeaderBridgeInstalled = true;
   const nativeFetch = window.fetch.bind(window);
 
-  function liftArenaJwtAuthFromJsonBody(nextInit, headers) {
+  function liftArenaAuthFromJsonBody(nextInit, headers) {
     const body = nextInit.body;
     if (typeof body !== 'string') return null;
     const contentType = headers.get('Content-Type') || headers.get('content-type') || '';
@@ -2339,16 +2367,16 @@ function installArenaJwtQueryAuthHeaderBridge() {
     }
     if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
 
-    const bodyToken = looksLikeArenaJwtBearer(payload._auth)
-      ? payload._auth
-      : looksLikeArenaJwtBearer(payload.auth)
-        ? payload.auth
-        : null;
+    const bodyToken = (
+      looksLikeArenaJwtBearer(payload._auth) || isArenaTelegramInitDataToken(payload._auth)
+    ) ? payload._auth : (
+      looksLikeArenaJwtBearer(payload.auth) || isArenaTelegramInitDataToken(payload.auth)
+    ) ? payload.auth : null;
     if (!bodyToken) return null;
 
     const sanitized = {...payload};
-    if (looksLikeArenaJwtBearer(sanitized._auth)) delete sanitized._auth;
-    if (looksLikeArenaJwtBearer(sanitized.auth)) delete sanitized.auth;
+    if (looksLikeArenaJwtBearer(sanitized._auth) || isArenaTelegramInitDataToken(sanitized._auth)) delete sanitized._auth;
+    if (looksLikeArenaJwtBearer(sanitized.auth) || isArenaTelegramInitDataToken(sanitized.auth)) delete sanitized.auth;
     nextInit.body = JSON.stringify(sanitized);
     return bodyToken;
   }
@@ -2361,15 +2389,19 @@ function installArenaJwtQueryAuthHeaderBridge() {
       const token = url.searchParams.get('_auth');
       const nextInit = {...(init || {})};
       const headers = new Headers(nextInit.headers || (typeof input !== 'string' ? input.headers : undefined) || {});
-      const bodyToken = liftArenaJwtAuthFromJsonBody(nextInit, headers);
-      const fallbackToken = !token && !bodyToken && looksLikeArenaJwtBearer(authToken) ? authToken : null;
-      const bearerToken = looksLikeArenaJwtBearer(token) ? token : (bodyToken || fallbackToken);
-      if (url.origin !== window.location.origin || !url.pathname.startsWith('/api/') || !bearerToken) {
+      const bodyToken = liftArenaAuthFromJsonBody(nextInit, headers);
+      const selectedToken = token || bodyToken || authToken;
+      const bearerToken = looksLikeArenaJwtBearer(selectedToken) ? selectedToken : null;
+      const telegramToken = isArenaTelegramInitDataToken(selectedToken) ? selectedToken : null;
+      if (url.origin !== window.location.origin || !url.pathname.startsWith('/api/') || (!bearerToken && !telegramToken)) {
         return nativeFetch(input, init);
       }
 
       if (token) url.searchParams.delete('_auth');
-      if (!headers.has('Authorization')) headers.set('Authorization', `Bearer ${bearerToken}`);
+      if (bearerToken && !headers.has('Authorization')) headers.set('Authorization', `Bearer ${bearerToken}`);
+      if (!bearerToken && telegramToken && !headers.has('X-Telegram-Init-Data')) {
+        headers.set('X-Telegram-Init-Data', telegramToken);
+      }
       nextInit.headers = headers;
       const nextUrl = url.pathname + url.search + url.hash;
       return nativeFetch(nextUrl, nextInit);
@@ -2379,7 +2411,7 @@ function installArenaJwtQueryAuthHeaderBridge() {
   };
 }
 
-// Telegram initData stays in _auth for launch and deep-link compatibility; JWT API calls are lifted into Authorization.
+// Sensitive auth never stays in API URLs: JWT uses Authorization; Telegram initData uses a dedicated header.
 installArenaJwtQueryAuthHeaderBridge();
 
 function arenaFetchWithTimeout(url, options = {}, timeoutMs = 6500) {
@@ -3130,7 +3162,7 @@ function buildOnboardingMenuTourUrl() {
   if (authToken && looksLikeArenaJwtBearer(authToken)) {
     try { sessionStorage.setItem('extra_id_token', authToken); } catch (_) {}
   } else if (authToken) {
-    url += '&_auth=' + encodeURIComponent(authToken);
+    try { sessionStorage.setItem('extra_url_auth_token', authToken); } catch (_) {}
   }
   url += '&music=' + (window._musicEnabled ? '1' : '0') + '&sfx=' + (window._sfxEnabled ? '1' : '0');
   return url;
@@ -3172,6 +3204,12 @@ async function shareArenaResult(text, url, title) {
   try {
     if (isArenaAndroidShell() && window.ExtraArenaApp && typeof window.ExtraArenaApp.shareText === 'function') {
       window.ExtraArenaApp.shareText(cleanText, cleanUrl, cleanTitle);
+      return true;
+    }
+  } catch (_) {}
+
+  try {
+    if (await window.ExtraArenaPlatform?.share?.(cleanText, cleanUrl)) {
       return true;
     }
   } catch (_) {}
@@ -3379,9 +3417,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   console.log('[ARENA] Страница арены загружена');
 
   const tg = window.Telegram?.WebApp;
-  if (tg) {
-    try { tg.ready(); } catch (e) {}
-    try { tg.expand(); } catch (e) {}
+  const platform = window.ExtraArenaPlatform;
+  platform?.ready?.();
+  if (tg && platform?.isTelegram?.()) {
     try { tg.setHeaderColor?.('#0f0a1a'); } catch (e) {}
     try { tg.setBackgroundColor?.('#0f0a1a'); } catch (e) {}
     try { tg.setBottomBarColor?.('#0f0a1a'); } catch (e) {}
@@ -3394,14 +3432,47 @@ document.addEventListener('DOMContentLoaded', async () => {
   const _auth = urlParams.get('_auth');
   onboardingModeHint = urlParams.get('onboarding') === '1' || String(matchId || '').startsWith('tutorial-');
 
-  if (_auth) {
+  let maxAuth = null;
+  if (platform?.isMax?.()) {
+    try {
+      maxAuth = await platform.ensureAuthSession();
+    } catch (error) {
+      console.warn('[ARENA] Не удалось создать MAX-сессию:', error);
+    }
+  }
+  const hasTelegramInitData = !!(tg?.initData && String(tg.initData).trim());
+  const telegramAuth = hasTelegramInitData && !isStaleArenaTelegramInitDataToken(tg.initData)
+    ? String(tg.initData)
+    : null;
+  if (maxAuth) {
+    authToken = String(maxAuth);
+    try { sessionStorage.setItem('arena_auth', authToken); } catch (_) {}
+  } else if (hasTelegramInitData) {
+    authToken = telegramAuth;
+    try { sessionStorage.removeItem('arena_auth'); } catch (_) {}
+  } else if (_auth && !isStaleArenaTelegramInitDataToken(_auth)) {
+    authToken = _auth;
     try { sessionStorage.setItem('arena_auth', _auth); } catch (_) {}
+  }
+  if (_auth) {
     const clean = new URL(location.href);
     clean.searchParams.delete('_auth');
     history.replaceState(null, '', clean.pathname + clean.search + clean.hash);
   }
-  try { authToken = sessionStorage.getItem('arena_auth'); } catch (_) { authToken = null; }
-  if (!authToken && tg?.initData) authToken = tg.initData;
+  if (!authToken && !hasTelegramInitData) {
+    if (!platform?.isMax?.()) {
+      try {
+        const sessionToken = sessionStorage.getItem('arena_auth');
+        if (sessionToken && isStaleArenaTelegramInitDataToken(sessionToken)) {
+          sessionStorage.removeItem('arena_auth');
+        } else {
+          authToken = sessionToken;
+        }
+      } catch (_) {
+        authToken = null;
+      }
+    }
+  }
 
   console.log('[ARENA] Match ID:', matchId);
 
@@ -3418,7 +3489,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     console.warn('[ARENA] Арена открыта вне поддерживаемого клиента');
     showArenaLaunchError(
       'Браузер не поддерживается',
-      'Играть в арену можно только внутри Telegram или Android-клиента. Закройте эту вкладку и откройте бой из приложения.'
+      'Играть в арену можно только внутри Telegram или Android-клиента, а также внутри MAX. Закройте эту вкладку и откройте бой из приложения.'
     );
     return;
   }
@@ -3427,7 +3498,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     console.warn('[ARENA] Отсутствует _auth токен');
     showArenaLaunchError(
       'Сессия истекла',
-      'Не удалось подтвердить вход в арену. Перезапустите игру из Telegram и откройте бой ещё раз.'
+      'Не удалось подтвердить вход в арену. Перезапустите игру из Telegram, MAX или Android-приложения и откройте бой ещё раз.'
     );
     return;
   }
@@ -3476,6 +3547,7 @@ function isArenaTelegramRuntime(tg) {
 function isUnsupportedExternalArenaBrowser(urlParams, tg) {
   if (isArenaAndroidShell()) return false;
   if (urlParams?.get('ea_platform') === 'android_app') return false;
+  if (window.ExtraArenaPlatform?.isMax?.()) return false;
   if (isArenaTelegramRuntime(tg)) return false;
   return true;
 }
@@ -3507,12 +3579,8 @@ function showArenaLaunchError(title, message) {
   }
   if (closeBtn && !closeBtn.__arenaLaunchCloseHandler) {
     closeBtn.__arenaLaunchCloseHandler = () => {
-      const tg = window.Telegram?.WebApp;
       try {
-        if (tg?.close) {
-          tg.close();
-          return;
-        }
+        if (window.ExtraArenaPlatform?.close?.()) return;
       } catch (_) {}
       goBack();
     };

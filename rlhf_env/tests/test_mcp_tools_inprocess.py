@@ -48,6 +48,17 @@ def _run(coro):
     return asyncio.run(coro)
 
 
+def test_dispatch_uses_standard_mcp_text_content(server):
+    """Claude Code rejects the legacy non-standard ``type: json`` block."""
+    srv, _hub, _tmp = server
+    response = _run(srv.dispatch("tools/call", {"name": "list_models", "arguments": {}}))
+    item = response["content"][0]
+    assert item["type"] == "text"
+    assert "data" not in item
+    assert json.loads(item["text"]) == response["structuredContent"]
+    assert "models" in response["structuredContent"]
+
+
 def test_start_series_rl_autoplays_with_agent(server):
     srv, hub, tmp = server
     r = _run(srv._tool("start_series", {"spec": {

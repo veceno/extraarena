@@ -7,6 +7,7 @@ import org.json.JSONObject;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 final class ExtraIdAccountStore {
     private static final String KEY_ACCOUNTS = "extraid_accounts";
@@ -23,7 +24,7 @@ final class ExtraIdAccountStore {
         final long lastUsedAt;
 
         ExtraIdAccount(String email, String token, String displayId, long userId, String baseUrl, long lastUsedAt) {
-            this.email = email == null ? "" : email.trim().toLowerCase();
+            this.email = email == null ? "" : email.trim().toLowerCase(Locale.ROOT);
             this.token = token == null ? "" : token;
             this.displayId = displayId == null ? "" : displayId.trim();
             this.userId = userId;
@@ -36,7 +37,9 @@ final class ExtraIdAccountStore {
         String normalizedBaseUrl = BaseUrlStore.normalize(baseUrl);
         ArrayList<ExtraIdAccount> result = new ArrayList<>();
         for (ExtraIdAccount account : parseAccounts(SecurePrefs.getString(context, KEY_ACCOUNTS, ""))) {
-            if (account.baseUrl.equals(normalizedBaseUrl) && !account.token.isEmpty()) {
+            if (account.baseUrl.equals(normalizedBaseUrl)
+                    && !account.token.isEmpty()
+                    && !AuthClient.isRevocationPending(context, account.baseUrl, account.token)) {
                 result.add(account);
             }
         }
@@ -67,7 +70,7 @@ final class ExtraIdAccountStore {
         if (token == null || token.isEmpty()) {
             return;
         }
-        String cleanEmail = email == null ? "" : email.trim().toLowerCase();
+        String cleanEmail = email == null ? "" : email.trim().toLowerCase(Locale.ROOT);
         if (cleanEmail.isEmpty()) {
             return;
         }
@@ -117,7 +120,7 @@ final class ExtraIdAccountStore {
 
     static boolean activateAccount(Context context, String baseUrl, String email) {
         String normalizedBaseUrl = BaseUrlStore.normalize(baseUrl);
-        String cleanEmail = email == null ? "" : email.trim().toLowerCase();
+        String cleanEmail = email == null ? "" : email.trim().toLowerCase(Locale.ROOT);
         if (cleanEmail.isEmpty()) {
             return false;
         }
@@ -143,13 +146,15 @@ final class ExtraIdAccountStore {
         if (selected == null) {
             return false;
         }
-        persistAccounts(context, accounts);
+        if (!persistAccounts(context, accounts)) {
+            return false;
+        }
         return DeviceRegistrar.saveAuthToken(context, selected.token);
     }
 
     static boolean removeAccount(Context context, String baseUrl, String email, String activeToken) {
         String normalizedBaseUrl = BaseUrlStore.normalize(baseUrl);
-        String cleanEmail = email == null ? "" : email.trim().toLowerCase();
+        String cleanEmail = email == null ? "" : email.trim().toLowerCase(Locale.ROOT);
         String active = activeToken == null ? "" : activeToken;
         if (cleanEmail.isEmpty()) {
             return false;
@@ -162,6 +167,7 @@ final class ExtraIdAccountStore {
             ExtraIdAccount account = accounts.get(i);
             if (account.baseUrl.equals(normalizedBaseUrl) && account.email.equals(cleanEmail)) {
                 removedActive = removedActive || (!active.isEmpty() && active.equals(account.token));
+                AuthClient.logoutBestEffort(context, account.token);
                 accounts.remove(i);
                 removed = true;
             }
@@ -169,11 +175,32 @@ final class ExtraIdAccountStore {
         if (!removed) {
             return false;
         }
-        persistAccounts(context, accounts);
+        if (!persistAccounts(context, accounts)) {
+            return false;
+        }
         if (removedActive) {
             DeviceRegistrar.clearAuthToken(context);
         }
         return true;
+    }
+
+    static boolean removeAccountByToken(Context context, String baseUrl, String token) {
+        String normalizedBaseUrl = BaseUrlStore.normalize(baseUrl);
+        String cleanToken = token == null ? "" : token.trim();
+        if (cleanToken.isEmpty()) {
+            return false;
+        }
+
+        ArrayList<ExtraIdAccount> accounts = parseAccounts(SecurePrefs.getString(context, KEY_ACCOUNTS, ""));
+        boolean removed = false;
+        for (int i = accounts.size() - 1; i >= 0; i--) {
+            ExtraIdAccount account = accounts.get(i);
+            if (account.baseUrl.equals(normalizedBaseUrl) && account.token.equals(cleanToken)) {
+                accounts.remove(i);
+                removed = true;
+            }
+        }
+        return removed && persistAccounts(context, accounts);
     }
 
     static void touchAccountByToken(Context context, String baseUrl, String token) {
@@ -233,7 +260,7 @@ final class ExtraIdAccountStore {
         return accounts;
     }
 
-    private static void persistAccounts(Context context, List<ExtraIdAccount> accounts) {
+    private static boolean persistAccounts(Context context, List<ExtraIdAccount> accounts) {
         JSONArray array = new JSONArray();
         for (ExtraIdAccount account : accounts) {
             try {
@@ -248,6 +275,6 @@ final class ExtraIdAccountStore {
             } catch (Exception ignored) {
             }
         }
-        SecurePrefs.putString(context, KEY_ACCOUNTS, array.toString());
+        return SecurePrefs.putString(context, KEY_ACCOUNTS, array.toString());
     }
 }

@@ -3,7 +3,7 @@ import subprocess
 from pathlib import Path
 
 
-def test_arena_lifts_jwt_query_auth_for_same_origin_api_fetches_only():
+def test_arena_lifts_sensitive_auth_into_same_origin_api_headers_only():
     source = Path("webapp/arena.js").read_text(encoding="utf-8")
 
     assert "function installArenaJwtQueryAuthHeaderBridge()" in source
@@ -12,8 +12,14 @@ def test_arena_lifts_jwt_query_auth_for_same_origin_api_fetches_only():
     assert "!url.pathname.startsWith('/api/')" in source
     assert "url.searchParams.delete('_auth')" in source
     assert "headers.set('Authorization', `Bearer ${bearerToken}`)" in source
-    assert "liftArenaJwtAuthFromJsonBody" in source
-    assert "Telegram initData stays in _auth" in source
+    assert "liftArenaAuthFromJsonBody" in source
+    assert "headers.set('X-Telegram-Init-Data', telegramToken)" in source
+    assert "Sensitive auth never stays in API URLs" in source
+    build_url_block = source.split("function buildArenaAuthUrl(path)", 1)[1].split(
+        "function looksLikeArenaJwtBearer",
+        1,
+    )[0]
+    assert "'_auth='" not in build_url_block
 
 
 def test_arena_missing_launch_params_show_empty_state_without_alert():
@@ -1217,6 +1223,67 @@ def test_settings_and_extraid_guard_unhandled_frontend_paths():
     assert "tg?.openTelegramLink" not in extraid_block
 
 
+def test_extraid_logout_is_blocked_in_telegram_but_kept_for_other_clients():
+    source = Path("webapp/index.html").read_text(encoding="utf-8")
+    telegram_detector = source.split("function isTelegramGameClient()", 1)[1].split(
+        "function allowLocalDevUserIdAuth",
+        1,
+    )[0]
+    extraid_block = source.split("const ExtraIDSheet = ({onClose, view", 1)[1].split(
+        "// ═══════════════════════════════════════════\n// AI SECTION",
+        1,
+    )[0]
+    logout_block = extraid_block.split("const doLogout = async () => {", 1)[1].split(
+        "var renderContent = null",
+        1,
+    )[0]
+
+    assert "return !getAndroidBridge() && !!getTelegramInitData();" in telegram_detector
+    assert "const isTelegramFlow = isTelegramGameClient();" in extraid_block
+    assert "if (isTelegramFlow)" in logout_block
+    assert "В Telegram выход из ExtraID недоступен" in logout_block
+    assert "revoked = response.ok || response.status === 401;" in logout_block
+    assert "Не удалось завершить серверную сессию" in logout_block
+    assert "hasLocalExtraSession && !isPlatformFlow ? React.createElement('button',{key:'logout'" in extraid_block
+    assert "if (isMaxFlow)" in logout_block
+    assert "В MAX выход из ExtraID недоступен" in logout_block
+
+
+def test_extraid_email_verification_and_password_recovery_frontend_contract():
+    source = Path("webapp/index.html").read_text(encoding="utf-8")
+    extraid_block = source.split("const ExtraIDSheet = ({onClose, view", 1)[1].split(
+        "// ═══════════════════════════════════════════\n// INFO SHEET",
+        1,
+    )[0]
+
+    assert "function takeExtraIDActionTokenFromLocation(name)" in source
+    assert "extraid_verify_token" in source
+    assert "extraid_reset_token" in source
+    assert "extraid_cancel_token" in source
+    assert "current.searchParams.get(name)" not in source
+    assert "hashParams.delete(name)" in source
+    assert "utf8ByteLength(password) > 72" in extraid_block
+    assert "registerPayload.tg_init_data = authData" in extraid_block
+    assert "fetch('/api/extraid/register'" in extraid_block
+    assert "buildUiAuthUrl('/api/extraid/register'" not in extraid_block
+    assert "d.error === 'email_not_verified'" in extraid_block
+    assert "/api/extraid/email/resend" in extraid_block
+    assert "/api/extraid/email/change" in extraid_block
+    assert "changeHeaders['X-Telegram-Init-Data'] = telegramAuth" in extraid_block
+    assert "changeHeaders.Authorization = 'Bearer ' + emailChangeOwnerToken" in extraid_block
+    assert "Изменить email и отправить письмо" in extraid_block
+    assert "/api/extraid/password-reset/request" in extraid_block
+    assert "/api/extraid/password-reset/confirm" in extraid_block
+    assert "/api/extraid/email/cancel" in source
+    assert "view === 'verify_email'" in extraid_block
+    assert "view === 'reset_password'" in extraid_block
+    assert "extraIDData?.is_email_verified" in extraid_block
+    assert "...(isTelegramFlow ? [{icon:" in extraid_block
+    assert "isPlatformFlow ? React.createElement('div', {key:'reward'" in extraid_block
+    assert "const isPlatformBound = isPlatformFlow || !!extraIDData?.linked_telegram || !!extraIDData?.linked_max;" in extraid_block
+    assert "!isPlatformBound ? React.createElement('div', {key:'dangerTitle'" in extraid_block
+
+
 def test_friendly_invite_client_uses_generic_decline_for_hidden_bot_ids():
     source = Path("webapp/index.html").read_text(encoding="utf-8")
     assert "friendly_invites_bot_not_supported" not in source
@@ -1238,6 +1305,20 @@ def test_api_unhandled_exceptions_are_rendered_as_json_for_clients():
     assert '"internal_server_error"' in middleware_block
     assert "web.json_response" in middleware_block
     assert "app.middlewares.append(api_json_error_middleware)" in middleware_order
+
+
+def test_sensitive_auth_responses_are_not_cacheable_and_telegram_auth_uses_header():
+    source = Path("web/server.py").read_text(encoding="utf-8")
+
+    assert 'request.headers.get("X-Telegram-Init-Data")' in source
+    assert "TELEGRAM_INIT_DATA_MAX_BYTES = 16 * 1024" in source
+    assert "Content-Type, Authorization, X-Telegram-Init-Data" in source
+    assert "async def sensitive_auth_no_store_middleware" in source
+    assert 'path.startswith("/api/extraid/")' in source
+    assert 'path.startswith("/api/telegram-transfer/")' in source
+    assert 'path.startswith("/api/auth/")' in source
+    assert 'path.startswith("/api/rlhf/")' in source
+    assert 'response.headers["Pragma"] = "no-cache"' in source
 
 
 def test_friendly_invite_failed_status_stops_accept_loop():

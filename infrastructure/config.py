@@ -387,6 +387,9 @@ class Settings:
     bot_token: str
     webapp_url: str
     extra_shop_url: str
+    max_bot_token: str = ""
+    max_bot_webhook_secret: str = ""
+    max_bot_username: str = ""
     environment: str = "development"
     database: DatabaseSettings | None = None
     extraid_database: DatabaseSettings | None = None
@@ -619,6 +622,9 @@ def get_settings() -> Settings:
         raise RuntimeError("BOT_TOKEN env var is required (not set in .env or environment)")
     webapp_url = os.getenv("WEBAPP_URL", DEFAULT_WEBAPP_URL)
     extra_shop_url = os.getenv("EXTRA_SHOP_URL", DEFAULT_EXTRA_SHOP_URL)
+    max_bot_token = os.getenv("MAX_BOT_TOKEN", "").strip()
+    max_bot_webhook_secret = os.getenv("MAX_BOT_WEBHOOK_SECRET", "").strip()
+    max_bot_username = os.getenv("MAX_BOT_USERNAME", "").strip().lstrip("@")
     web_host = os.getenv("WEBAPP_HOST", "127.0.0.1").strip()
     jwt_secret = os.getenv("JWT_SECRET", DEFAULT_JWT_SECRET).strip()
     admin_session_secret = os.getenv("ADMIN_SESSION_SECRET", DEFAULT_ADMIN_SESSION_SECRET).strip()
@@ -722,6 +728,15 @@ def get_settings() -> Settings:
             raise RuntimeError(
                 "SUPPORT_MAX_WEBHOOK_SECRET must be a strong secret when SUPPORT_MAX_BOT_TOKEN is configured outside development."
             )
+    if max_bot_token and environment != "development":
+        if len(max_bot_token) < MIN_PRODUCTION_SUPPORT_BOT_TOKEN_LENGTH:
+            raise RuntimeError(
+                "MAX_BOT_TOKEN must be a strong production token outside development."
+            )
+        if len(max_bot_webhook_secret) < MIN_PRODUCTION_SUPPORT_WEBHOOK_SECRET_LENGTH:
+            raise RuntimeError(
+                "MAX_BOT_WEBHOOK_SECRET must be a strong secret when MAX_BOT_TOKEN is configured outside development."
+            )
     if mcp_enabled:
         if mcp_endpoint_path == mcp_session_path:
             raise RuntimeError("MCP_ENDPOINT_PATH and MCP_SESSION_PATH must be different.")
@@ -781,6 +796,9 @@ def get_settings() -> Settings:
         bot_token=bot_token,
         webapp_url=webapp_url,
         extra_shop_url=extra_shop_url,
+        max_bot_token=max_bot_token,
+        max_bot_webhook_secret=max_bot_webhook_secret,
+        max_bot_username=max_bot_username,
         environment=environment,
         database=db_settings,
         extraid_database=extraid_db_settings,

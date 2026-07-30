@@ -111,25 +111,29 @@ def test_web_auth_keeps_jwt_out_of_query_and_local_storage():
     assert 'localStorage.removeItem("extra_id_token")' in main
     assert "installMainJwtQueryAuthHeaderBridge" in main
     assert "buildMainArenaRedirectUrl" in main
-    assert "auth.type === 'auth' && looksLikeJwtBearer(auth.value) && isSameOriginApiPath(path)" in index
-    assert "function liftJwtAuthFromJsonBody(nextInit, headers)" in index
-    assert "const bodyToken = liftJwtAuthFromJsonBody(nextInit, headers);" in index
-    assert "if (looksLikeJwtBearer(sanitized._auth)) delete sanitized._auth;" in index
-    assert "if (looksLikeJwtBearer(sanitized.auth)) delete sanitized.auth;" in index
+    assert "if (auth.type === 'auth') {\n    return path;" in index
+    assert "function liftAuthFromJsonBody(nextInit, headers)" in index
+    assert "const bodyToken = liftAuthFromJsonBody(nextInit, headers);" in index
+    assert "looksLikeJwtBearer(sanitized._auth) || isTelegramInitDataToken(sanitized._auth)" in index
+    assert "looksLikeJwtBearer(sanitized.auth) || isTelegramInitDataToken(sanitized.auth)" in index
     assert "headers.set('Authorization', `Bearer ${bearerToken}`)" in index
+    assert "headers.set('X-Telegram-Init-Data', telegramToken)" in index
     assert "storageKey(url)" in index and "searchParams.delete('_auth')" in index
     assert "buildArenaRedirectUrl('/arena?id='" in index
     assert "authParam = data.authData" not in index
 
-    assert "looksLikeArenaJwtBearer(authToken) && isSameOriginArenaApiPath(path)" in arena
-    assert "function liftArenaJwtAuthFromJsonBody(nextInit, headers)" in arena
-    assert "const bodyToken = liftArenaJwtAuthFromJsonBody(nextInit, headers);" in arena
+    assert "function buildArenaAuthUrl(path)" in arena
+    assert "function liftArenaAuthFromJsonBody(nextInit, headers)" in arena
+    assert "const bodyToken = liftArenaAuthFromJsonBody(nextInit, headers);" in arena
     assert "headers.set('Authorization', `Bearer ${bearerToken}`)" in arena
+    assert "headers.set('X-Telegram-Init-Data', telegramToken)" in arena
     assert "sessionStorage.setItem('extra_id_token', authToken)" in arena
 
-    assert "function liftMainJwtAuthFromJsonBody(nextInit, headers)" in main
-    assert "const bodyToken = liftMainJwtAuthFromJsonBody(nextInit, headers);" in main
+    assert "function liftMainAuthFromJsonBody(nextInit, headers)" in main
+    assert "const bodyToken = liftMainAuthFromJsonBody(nextInit, headers);" in main
     assert "headers.set(\"Authorization\", `Bearer ${bearerToken}`)" in main
+    assert "headers.set(\"X-Telegram-Init-Data\", telegramToken)" in main
+    assert 'sessionStorage.setItem("arena_auth", authData)' in main
 
 
 def test_main_webapp_uses_precompiled_bundle_instead_of_runtime_babel():

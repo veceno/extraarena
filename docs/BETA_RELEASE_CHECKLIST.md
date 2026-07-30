@@ -11,6 +11,8 @@ Use this checklist before promoting a beta build. Do not treat a checked box as 
 - [ ] Database settings are set for the beta PostgreSQL instance: `DATABASE_URL` or `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`; plus `EXTRAID_DATABASE_URL` or `EXTRAID_DB_HOST`, `EXTRAID_DB_PORT`, `EXTRAID_DB_USER`, `EXTRAID_DB_PASSWORD`, `EXTRAID_DB_NAME` if ExtraID uses the split DB.
 - [ ] Payment secrets are set only for the intended beta mode: `ROBOKASSA_MERCHANT_LOGIN`, `ROBOKASSA_PASSWORD1`, `ROBOKASSA_PASSWORD2`, `ROBOKASSA_HASH_ALGO`, `ROBOKASSA_TEST_MODE`, `ROBOKASSA_RESULT_URL`, `ROBOKASSA_SUCCESS_URL`, `ROBOKASSA_FAIL_URL`; optional YooKassa fallback `YOOKASSA_SHOP_ID`, `YOOKASSA_SECRET_KEY`, `YOOKASSA_TEST_MODE`; `RUSTORE_PUBLIC_TOKEN`, `RUSTORE_CONSOLE_APP_ID`, `RUSTORE_KEY_ID`, `RUSTORE_PRIVATE_KEY` or `RUSTORE_PRIVATE_KEY_FILE`, `RUSTORE_SANDBOX`; `STARS_RATE_RUB`, `STARS_MARKUP`, `STARS_TEST_MODE`; and `PAYMENT_PRIMARY_PROVIDER`, `PAYMENT_FALLBACK_PROVIDER`, `PAYMENT_PROVIDER_ORDER`.
 - [ ] Telegram `BOT_TOKEN` is set for the beta bot and not shared with unrelated environments.
+- [ ] ExtraID transactional email is configured: `BREVO_API_KEY`, a verified `EMAIL_FROM_ADDRESS`, optional `EMAIL_FROM_NAME`, and `PUBLIC_BASE_URL` (or `WEBAPP_URL`) point to the public game origin. Verify the sender domain in Brevo and publish the SPF/DKIM records it provides before opening registration.
+- [ ] `TRUSTED_PROXY_CIDRS` contains only the immediate cloudflared/reverse-proxy peer or exact Docker network observed by aiohttp. Never use `0.0.0.0/0` or broad private ranges: client-IP rate limits trust forwarding headers only from this list.
 - [ ] If UGC/community submissions, squad announcements, or image uploads are enabled, `POLZA_AI_KEY` is set and moderation requests are observable in logs. If `POLZA_AI_KEY` is missing, hide/disable UGC entry points rather than adding a broad moderation fallback.
 - [ ] CORS allowed origins are explicit: `CORS_ALLOWED_ORIGINS` or `WEBAPP_ALLOWED_ORIGINS` contains only beta web origins, shop origins, and approved local smoke origins.
 
@@ -26,6 +28,7 @@ Use this checklist before promoting a beta build. Do not treat a checked box as 
 - [ ] Rollback plan is written before deploy: previous image/build id, config snapshot, migration compatibility note, and the person authorized to trigger rollback.
 - [ ] Staging smoke passes on the release candidate using beta-like config before production beta deploy.
 - [ ] Post-deploy smoke passes on the beta host after deploy; attach timestamp, operator, and any known anomalies.
+- [ ] `/ready` reports `extraid_email.status=ok` in every non-development environment. Missing email delivery is a release blocker because new ExtraID registrations cannot become usable.
 
 ## Schema, Seed, And Verification Commands
 
@@ -68,6 +71,11 @@ python -m compileall main.py run_web.py infrastructure web core ai battle_engine
 
 ## Local Smoke Steps
 
+- [ ] ExtraID identity migration: run the duplicate-identity/email preflight before traffic switch, review every quarantined legacy duplicate, and verify no active account is missing its immutable provider binding.
+- [ ] ExtraID Telegram: create and bind one ExtraID, confirm logout/delete controls are unavailable in Telegram, reopen the Mini App, and verify a second ExtraID cannot be created for the same Telegram identity.
+- [ ] ExtraID email: create a pending account, resend, correct a mistyped address from its owning Telegram/Android session, confirm once, verify the registration bonus is credited once, and verify old/stale links cannot confirm a replacement address.
+- [ ] ExtraID recovery: request a password reset, use it once, verify all prior sessions are revoked, and confirm repeated/expired tokens return the same safe failure.
+- [ ] ExtraID expiry/cancel: cancel one unwanted verification and expire one pending registration in staging; verify email/nickname are released while pre-existing Telegram/Android game progress remains intact.
 - [ ] Staging smoke: repeat login, deck, battle, payment test-mode, rating, and admin-boundary checks on staging before promoting the build.
 - [ ] Login: open the WebApp with a valid Telegram init flow or approved local auth path; verify user profile loads and session survives refresh.
 - [ ] Deck: create or edit a deck, save it, refresh, and confirm the saved deck is selected for battle.

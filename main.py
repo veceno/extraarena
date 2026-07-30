@@ -12,6 +12,7 @@ from aiohttp import web
 
 from bot import create_bot
 from bot.constants import ADMIN_ID
+from bot.max_client import MaxGameBotClient
 from infrastructure.config import get_settings
 from infrastructure.database import Database, SCHEMA_VERSION
 from infrastructure.extraid_database import ExtraIDDatabase
@@ -342,7 +343,20 @@ async def main() -> None:
     # Запускаем фоновые задачи для новой очереди уведомлений
     background_tasks.append(asyncio.create_task(_generator_notifications_task(db)))
     background_tasks.append(asyncio.create_task(_scheduled_notifications_task(db)))
-    background_tasks.append(asyncio.create_task(_notification_outbox_task(bot, db, settings.webapp_url, push_sender=push_sender)))
+    max_game_bot = (
+        MaxGameBotClient(settings.max_bot_token)
+        if settings.max_bot_token
+        else None
+    )
+    background_tasks.append(asyncio.create_task(
+        _notification_outbox_task(
+            bot,
+            db,
+            settings.webapp_url,
+            push_sender=push_sender,
+            max_bot=max_game_bot,
+        )
+    ))
     if support_telegram_bot is not None and support_telegram_dp is not None:
         background_tasks.append(asyncio.create_task(_support_bot_polling_task(support_telegram_bot, support_telegram_dp)))
     if support_delivery_dispatcher is not None:
@@ -480,6 +494,7 @@ async def _notification_outbox_task(
     webapp_url: str,
     *,
     push_sender: FcmPushSender | None = None,
+    max_bot: MaxGameBotClient | None = None,
 ) -> None:
     """Единый dispatcher личных уведомлений из notification_outbox."""
     if not db:
@@ -490,7 +505,14 @@ async def _notification_outbox_task(
             await asyncio.sleep(5)
             notifications = await db.fetch_pending_notifications(limit=50)
             for notif in notifications:
-                await _deliver_notification(bot, db, webapp_url, notif, push_sender=push_sender)
+                await _deliver_notification(
+                    bot,
+                    db,
+                    webapp_url,
+                    notif,
+                    push_sender=push_sender,
+                    max_bot=max_bot,
+                )
         except Exception as e:
             logger.error("Ошибка dispatcher уведомлений: %s", e, exc_info=True)
             await asyncio.sleep(10)
@@ -590,6 +612,7 @@ async def _deliver_notification(
     notif: dict,
     *,
     push_sender: FcmPushSender | None = None,
+    max_bot: MaxGameBotClient | None = None,
 ) -> None:
     from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 
@@ -662,6 +685,66 @@ async def _deliver_notification(
             channel="android",
             metadata={"reason": "app_only_without_successful_push"},
         )
+        await _update_returnclock_delivery_status(db, notif, payload, "failed")
+        return
+
+    max_identity = None
+    if max_bot is not None and hasattr(db, "get_platform_identity_for_user"):
+        try:
+            max_identity = await db.get_platform_identity_for_user(user_id, "max")
+        except Exception:
+            logger.debug(
+                "Не удалось получить MAX identity user_id=%s",
+                user_id,
+                exc_info=True,
+            )
+    if max_identity:
+        try:
+            result = await max_bot.send_message(
+                str(max_identity["subject"]),
+                body,
+                open_app=True,
+                text_format="html",
+            )
+        except Exception as exc:
+            logger.debug(
+                "Не удалось отправить MAX-уведомление %s: %s",
+                notif_id,
+                exc,
+            )
+            result = {
+                "ok": False,
+                "status": None,
+                "error_class": type(exc).__name__,
+            }
+        if result.get("ok"):
+            await _record_returnclock_delivery_event(
+                db,
+                notif,
+                payload,
+                event_type="provider_accepted",
+                channel="max",
+                provider_message_id=(
+                    (result.get("data") or {}).get("body", {}).get("mid")
+                    if isinstance(result.get("data"), dict)
+                    else None
+                ),
+            )
+            await db.mark_notification_sent(notif_id)
+            await _update_returnclock_delivery_status(db, notif, payload, "sent")
+            return
+        await _record_returnclock_delivery_event(
+            db,
+            notif,
+            payload,
+            event_type="provider_failed",
+            channel="max",
+            metadata={
+                "status": result.get("status"),
+                "error_class": result.get("error_class"),
+            },
+        )
+        await db.mark_notification_failed(notif_id)
         await _update_returnclock_delivery_status(db, notif, payload, "failed")
         return
 
