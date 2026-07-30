@@ -1570,11 +1570,14 @@ class Database:
             else:
                 await conn.execute(
                     """INSERT INTO daily_quests_progress (user_id, quest_id, reset_date, progress)
-                       VALUES ($1, $2, $3, LEAST($4, $5))
+                       VALUES ($1, $2, $3, LEAST($4::int, $5::int))
                        ON CONFLICT (user_id, quest_id, reset_date)
-                       DO UPDATE SET progress = LEAST(daily_quests_progress.progress + $4, $5),
+                       DO UPDATE SET progress = LEAST(
+                                         daily_quests_progress.progress + $4::int,
+                                         $5::int
+                                     ),
                                      updated_at = NOW()
-                       WHERE daily_quests_progress.progress < $5""",
+                       WHERE daily_quests_progress.progress < $5::int""",
                     user_id, quest_id, today, delta, target)
 
     async def get_daily_quests_status(self, user_id: int) -> dict[str, Any]:

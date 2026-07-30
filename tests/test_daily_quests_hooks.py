@@ -67,3 +67,13 @@ def test_case_open_progress_is_bound_to_durable_case_transactions():
     # user_case flow: case deletion/rewards and open_case_1 share one transaction.
     assert "_apply_daily_quest_ops_on_conn(" in case_system
     assert '[("open_case_1", 1, False)]' in case_system
+
+
+def test_daily_quest_progress_upsert_casts_integer_parameters():
+    database = open("infrastructure/database.py", encoding="utf-8").read()
+    block = database.split("async def _apply_daily_quest_ops_on_conn", 1)[1].split(
+        "async def get_daily_quests_status", 1
+    )[0]
+    assert "LEAST($4::int, $5::int)" in block
+    assert "daily_quests_progress.progress + $4::int" in block
+    assert "daily_quests_progress.progress < $5::int" in block

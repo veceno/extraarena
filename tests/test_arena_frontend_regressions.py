@@ -845,7 +845,7 @@ def test_friend_list_payload_marks_runtime_online_friends():
     assert "\"online_ttl_seconds\": ONLINE_USER_TTL_SECONDS" in handler_block
 
 
-def test_training_uses_four_release_models():
+def test_training_uses_four_release_profiles_with_player_facing_labels():
     source = Path("webapp/index.html").read_text(encoding="utf-8")
     server = Path("web/server.py").read_text(encoding="utf-8")
     from infrastructure.config import BOT_DIFFICULTY_PROFILES
@@ -862,10 +862,15 @@ def test_training_uses_four_release_models():
     assert "tier_hard_4500" in difficulty_block
     assert "TrainV2" not in difficulty_block
     assert "extra-lr" not in difficulty_block
-    assert "V4 Micro" in difficulty_block
-    assert "V5 Lite" in difficulty_block
-    assert "V5 Ultra" in difficulty_block
+    assert "V4" not in difficulty_block
+    assert "V5" not in difficulty_block
+    assert "модель" not in difficulty_block.lower()
+    for label in ("Легко", "Нормально", "Сложно", "Очень сложно"):
+        assert f"label:'{label}'" in difficulty_block
     assert difficulty_block.count("{id:") == 4
+    assert 'aria-label="Тренировка"' in source
+    assert "<strong>Тренировка</strong>" in source
+    assert ">С другом</button>" in source
     assert "React.useState('tier_lite_0000')" in source
     assert "BOT_DIFFICULTY_ALIASES.get" in handler_block
     assert "BOT_DIFFICULTY_PROFILES" in handler_block
@@ -1786,13 +1791,15 @@ def test_quests_sheet_replaces_daily_login_with_drift_free_countdown():
     assert "pin.sec - (Date.now() - pin.at) / 1000" in block
     assert "status.reset_seconds - tick" not in block
     assert "reset_seconds - genTick" not in block
-    # Fresher mockup (2026-07-16): per-quest status chips ("В процессе"/"Готово"/"Забрано")
-    # removed — the action buttons (Забрать / Ждёт / ✓ Забрано) already encode state.
+    # Per-quest action buttons encode state directly.
     assert "{t:'В процессе'" not in block
     assert "const badge = " not in block
     assert "'Забрать'" in block
     assert ">Ждёт<" in block
-    assert "✓ Забрано" in block
+    assert "✓ Получено" in block
+    assert "✓ Забрано" not in block
+    assert "/DesignAssets/MainMenu/Generator/Key.png" in block
+    assert "/DesignAssets/Cases/Case.png" not in block
     # Claim posts to the new endpoint.
     assert "/api/daily-quests/claim" in block
 

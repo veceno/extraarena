@@ -81,13 +81,14 @@ def test_model_aliases_target_the_first_tier_of_each_band():
     assert BOT_DIFFICULTY_ALIASES["v5-ultra"] == "tier_hard_4500"
 
 
-def test_training_ui_exposes_four_models_and_defaults_to_v4_micro():
+def test_training_ui_exposes_four_player_facing_difficulties_and_defaults_to_easy():
     source = Path("webapp/index.html").read_text(encoding="utf-8")
     difficulty_block = source.split("const DIFFICULTIES = [", 1)[1].split("];", 1)[0]
 
     assert difficulty_block.count("{id:") == 4
-    assert "label:'V4 Micro'" in difficulty_block
-    assert "label:'V5 Lite'" in difficulty_block
-    assert "label:'V5'" in difficulty_block
-    assert "label:'V5 Ultra'" in difficulty_block
+    for label in ("Легко", "Нормально", "Сложно", "Очень сложно"):
+        assert f"label:'{label}'" in difficulty_block
+    assert "V4" not in difficulty_block
+    assert "V5" not in difficulty_block
+    assert "модель" not in difficulty_block.lower()
     assert "React.useState('tier_lite_0000')" in source

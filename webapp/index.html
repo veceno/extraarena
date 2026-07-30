@@ -5352,7 +5352,7 @@ window.loadMobileSquadsBootstrap = async function(options = {}) {
 };
 </script>
 
-<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=a5e7b072b57c">
+<script id="extraarena-main-jsx-source" type="application/x-extraarena-jsx-source" data-compiled-src="index.compiled.js?v=fb03186f41aa">
 // ═══════════════════════════════════════════
 // DESIGN TOKENS
 // ═══════════════════════════════════════════
@@ -8908,10 +8908,10 @@ const caseRewardSfxId = (rewards) => {
 // BATTLE PICK SHEET (спасательный круг)
 // ═══════════════════════════════════════════
 const DIFFICULTIES = [
-  {id:'tier_lite_0000',      label:'V4 Micro', desc:'Базовая модель для новичков', color:'#4ade80'},
-  {id:'tier_easy_plus_0300', label:'V5 Lite',  desc:'Облегчённая V5 для уверенной тренировки', color:'#a3e635'},
-  {id:'tier_medium_1200',    label:'V5',       desc:'Полная модель V5 с открытой информацией', color:T.orange},
-  {id:'tier_hard_4500',      label:'V5 Ultra', desc:'V5 с Assembler и CardOptimum', color:'#f87171'},
+  {id:'tier_lite_0000',      label:'Легко',        desc:'Спокойный соперник для знакомства с колодой', color:'#4ade80'},
+  {id:'tier_easy_plus_0300', label:'Нормально',    desc:'Сбалансированный бой для регулярной тренировки', color:'#a3e635'},
+  {id:'tier_medium_1200',    label:'Сложно',       desc:'Сильный соперник для проверки тактики', color:T.orange},
+  {id:'tier_hard_4500',      label:'Очень сложно', desc:'Максимальный вызов для опытных игроков', color:'#f87171'},
 ];
 
 const BattlePickSheet = ({onClose, profile, runtimeStatus}) => {
@@ -9135,15 +9135,15 @@ const BattlePickSheet = ({onClose, profile, runtimeStatus}) => {
 
   return (
     <div className="mm-redesign">
-      <section className="mode-sheet open" onClick={onClose} aria-label="Дружеские игры и тренировки">
+      <section className="mode-sheet open" onClick={onClose} aria-label="Тренировка">
         <div className="mode-sheet-panel" role="dialog" aria-modal="true" aria-labelledby="practiceTitle" onClick={e=>e.stopPropagation()}>
           <header className="sheet-topbar">
             <button className="sheet-close" type="button" onClick={onClose} aria-label="Назад">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M15 5l-7 7 7 7" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/></svg>
             </button>
             <div className="sheet-title" id="practiceTitle">
-              <strong>Играть без рейтинга</strong>
-              <span>friendly · training</span>
+              <strong>Тренировка</strong>
+              <span>Бои без рейтинга</span>
             </div>
             <button className="sheet-close" type="button" onClick={onClose} aria-label="Закрыть">
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"/></svg>
@@ -9153,7 +9153,7 @@ const BattlePickSheet = ({onClose, profile, runtimeStatus}) => {
           <div className="practice-tabs" role="tablist" aria-label="Тип игры">
             <button className={'practice-tab' + (tab==='friend'?' active':'')} type="button"
               onClick={()=>(friendlyDisabled?showTempUnavailable():setTab('friend'))}
-              style={friendlyDisabled?{opacity:0.55}:undefined}>Дружеская игра</button>
+              style={friendlyDisabled?{opacity:0.55}:undefined}>С другом</button>
             <button className={'practice-tab' + (tab==='bot'?' active':'')} type="button"
               onClick={()=>(trainingDisabled?showTempUnavailable():setTab('bot'))}
               style={trainingDisabled?{opacity:0.55}:undefined}>Тренировка</button>
@@ -11434,7 +11434,7 @@ const QuestsSheet = ({onClose, status, onClaimed}) => {
 
   const rewardIconFor = (type, size=20) => {
     if (type === 'coins') return <IconCoin size={size}/>;
-    if (type === 'case') return <img src="/DesignAssets/Cases/Case.png" alt="" style={{width:size,height:size,objectFit:'contain',filter:'drop-shadow(0 0 6px rgba(244,179,63,0.35))'}}/>;
+    if (type === 'case') return <img src="/DesignAssets/MainMenu/Generator/Key.png" alt="" style={{width:size,height:size,objectFit:'contain',filter:'drop-shadow(0 0 6px rgba(244,179,63,0.35))'}}/>;
     return null;
   };
 
@@ -11506,7 +11506,7 @@ const QuestsSheet = ({onClose, status, onClaimed}) => {
                       <span>{q.reward_amount}</span>
                     </div>
                     {q.claimed ? (
-                      <button type="button" disabled style={{minHeight:34,padding:'0 14px',border:0,borderRadius:9,background:'rgba(74,222,128,0.12)',color:'#4ade80',fontSize:12,fontWeight:800,cursor:'default'}}>✓ Забрано</button>
+                      <button type="button" disabled style={{minHeight:34,padding:'0 14px',border:0,borderRadius:9,background:'rgba(74,222,128,0.12)',color:'#4ade80',fontSize:12,fontWeight:800,cursor:'default'}}>✓ Получено</button>
                     ) : q.claimable ? (
                       <button type="button" onClick={()=>doClaim(q.id)} disabled={!!busy[q.id]} style={{minHeight:34,padding:'0 14px',border:0,borderRadius:9,background:'linear-gradient(180deg,#ffd46e,#f4a529)',color:'#2f1800',fontSize:12,fontWeight:900,boxShadow:'0 4px 0 #8f4f12,0 8px 18px rgba(244,179,63,0.28)',cursor:busy[q.id]?'wait':'pointer',fontFamily:"'Exo 2',sans-serif"}}>{busy[q.id]?'...':'Забрать'}</button>
                     ) : (
@@ -21650,6 +21650,6 @@ const renderExtraArenaApp = () => {
   renderExtraArenaApp();
 })();
 </script>
-<script src="index.compiled.js?v=a5e7b072b57c"></script>
+<script src="index.compiled.js?v=fb03186f41aa"></script>
 </body>
 </html>
