@@ -3001,6 +3001,143 @@ body.arena-page::after {
   .turn-indicator-plaque    { padding: 8px 18px; }
 }
 
+/* Telegram iOS may ignore a BotFather Fullscreen launch and keep the Mini App
+   in Fullsize. Compact only that fallback state; Android and successful iOS
+   fullscreen sessions keep the existing arena proportions. */
+@media (max-width: 480px) and (max-height: 720px) {
+  html.ea-telegram-ios-fullsize .arena-zone-top {
+    padding: 3px 5px 1px;
+    gap: 2px;
+    flex: 0 0 auto;
+  }
+  html.ea-telegram-ios-fullsize .opponent-panel-root {
+    padding: 0 5px;
+  }
+  html.ea-telegram-ios-fullsize .opponent-cards-inline {
+    min-width: 38px;
+    gap: 3px;
+    padding: 3px 5px;
+  }
+  html.ea-telegram-ios-fullsize .opponent-cards-inline .cards-icon-white {
+    width: 16px;
+    height: 16px;
+  }
+  html.ea-telegram-ios-fullsize .opponent-cards-inline .cards-count-inline {
+    font-size: 16px;
+  }
+  html.ea-telegram-ios-fullsize .opponent-hp-block,
+  html.ea-telegram-ios-fullsize .player-hp-block {
+    min-height: 34px;
+    padding: 3px 5px;
+    gap: 4px;
+  }
+  html.ea-telegram-ios-fullsize .hp-value-large,
+  html.ea-telegram-ios-fullsize .opponent-hp-block .hp-value-large {
+    font-size: 26px;
+  }
+  html.ea-telegram-ios-fullsize .hp-max-text,
+  html.ea-telegram-ios-fullsize .opponent-hp-block .hp-max-text {
+    font-size: 13px;
+  }
+  html.ea-telegram-ios-fullsize .hp-heart-icon-white,
+  html.ea-telegram-ios-fullsize .opponent-hp-block .hp-heart-icon-white {
+    width: 22px;
+    height: 22px;
+  }
+  html.ea-telegram-ios-fullsize .opponent-name-block,
+  html.ea-telegram-ios-fullsize .player-name-block {
+    min-height: 26px;
+    gap: 5px;
+    padding: 2px 6px;
+  }
+  html.ea-telegram-ios-fullsize .opponent-avatar,
+  html.ea-telegram-ios-fullsize .player-avatar {
+    width: 22px;
+    height: 22px;
+    min-width: 22px;
+  }
+  html.ea-telegram-ios-fullsize .arena-opponent-board,
+  html.ea-telegram-ios-fullsize .arena-player-board {
+    padding: 3px 5px;
+    gap: 3px;
+  }
+  html.ea-telegram-ios-fullsize .arena-zone-center {
+    flex: 0 0 auto;
+    max-height: none;
+    padding: 0 5px;
+  }
+  html.ea-telegram-ios-fullsize .board-slot {
+    width: 56px;
+    min-width: 50px;
+    height: 78px;
+  }
+  html.ea-telegram-ios-fullsize .arena-zone-bottom {
+    min-height: 0;
+    padding: 0 5px 4px;
+    gap: 2px;
+    overflow: hidden;
+  }
+  html.ea-telegram-ios-fullsize .turn-indicator-container {
+    gap: 5px;
+    margin: 1px auto;
+    padding: 0 5px;
+  }
+  html.ea-telegram-ios-fullsize .turn-indicator-plaque,
+  html.ea-telegram-ios-fullsize .turn-indicator-plaque.opponent-turn {
+    padding: 4px 10px;
+  }
+  html.ea-telegram-ios-fullsize .turn-text,
+  html.ea-telegram-ios-fullsize .turn-indicator-plaque.opponent-turn .turn-text {
+    font-size: 15px;
+  }
+  html.ea-telegram-ios-fullsize .battle-log-btn,
+  html.ea-telegram-ios-fullsize .turn-timer-display {
+    min-height: 30px;
+    padding: 3px 7px;
+  }
+  html.ea-telegram-ios-fullsize .timer-icon,
+  html.ea-telegram-ios-fullsize .timer-value {
+    font-size: 16px;
+  }
+  html.ea-telegram-ios-fullsize .arena-player-hand {
+    min-height: 90px;
+    max-height: 94px;
+    gap: 3px;
+    padding: 3px 4px 5px;
+  }
+  html.ea-telegram-ios-fullsize .hand-card {
+    width: 66px;
+    height: 90px;
+    margin: 0 1px;
+  }
+  html.ea-telegram-ios-fullsize .player-panel-root {
+    grid-template-columns: minmax(0, 2fr) minmax(72px, 0.8fr);
+    gap: 5px;
+    padding: 0 4px;
+  }
+  html.ea-telegram-ios-fullsize .player-data-stack {
+    gap: 3px;
+  }
+  html.ea-telegram-ios-fullsize .player-mana-block {
+    height: 28px;
+    gap: 5px;
+    padding: 0 6px;
+  }
+  html.ea-telegram-ios-fullsize .mana-counter-text {
+    font-size: 18px;
+  }
+  html.ea-telegram-ios-fullsize .mana-counter-max {
+    font-size: 11px;
+  }
+  html.ea-telegram-ios-fullsize .mana-progressbar {
+    height: 12px;
+  }
+  html.ea-telegram-ios-fullsize .end-turn-icon-ref {
+    width: 54px;
+    height: 54px;
+  }
+}
+
 @media (max-height: 650px) and (min-width: 600px) {
   .arena-zone-top    { padding: 6px 8px 2px; gap: 4px; }
   .arena-zone-bottom { padding: 0px 8px 6px; gap: 4px; }

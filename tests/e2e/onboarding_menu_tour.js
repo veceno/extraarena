@@ -24,7 +24,7 @@ DOM / JS-state assertions only — NO visual_input (not a vision model).
 Run from the worktree root:
     node tests/e2e/onboarding_menu_tour.js
 */
-const { chromium } = require('playwright');
+const playwright = require('playwright');
 const fs = require('fs');
 const http = require('http');
 const path = require('path');
@@ -32,6 +32,12 @@ const path = require('path');
 const ROOT = path.resolve(__dirname, '..', '..');
 const FIXTURES_PATH = path.join(__dirname, 'onboarding_menu_tour_fixtures.json');
 const PORT = 8098;
+const BROWSER_NAME = process.env.EA_E2E_BROWSER || 'chromium';
+const VIEWPORT_WIDTH = Number(process.env.EA_E2E_VIEWPORT_WIDTH || 412);
+const VIEWPORT_HEIGHT = Number(process.env.EA_E2E_VIEWPORT_HEIGHT || 900);
+const TELEGRAM_PLATFORM = process.env.EA_E2E_TELEGRAM_PLATFORM || '';
+const TELEGRAM_VIEWPORT_HEIGHT = Number(process.env.EA_E2E_TG_VIEWPORT_HEIGHT || VIEWPORT_HEIGHT);
+const IS_IOS_FULLSIZE = TELEGRAM_PLATFORM === 'ios';
 
 const json = (payload, status = 200) => ({
   status,
@@ -182,9 +188,11 @@ function startServer(fixtures) {
 (async () => {
   const fixtures = JSON.parse(fs.readFileSync(FIXTURES_PATH, 'utf-8'));
   const { server, getState } = await startServer(fixtures);
-  const browser = await chromium.launch();
+  const browserType = playwright[BROWSER_NAME];
+  if (!browserType) throw new Error(`Unknown Playwright browser: ${BROWSER_NAME}`);
+  const browser = await browserType.launch();
   const context = await browser.newContext({
-    viewport: { width: 412, height: 900 },
+    viewport: { width: VIEWPORT_WIDTH, height: VIEWPORT_HEIGHT },
     deviceScaleFactor: 2,
   });
   const page = await context.newPage();
@@ -196,10 +204,50 @@ function startServer(fixtures) {
 
   // Capture chat CTA: override window.open (no Telegram WebApp in plain browser)
   // so the "Вступить в чат" button records the URL instead of opening a popup.
-  await context.addInitScript(() => {
+  await context.addInitScript(({ telegramPlatform, telegramViewportHeight }) => {
     window.__chatOpened = null;
     window.open = (url) => { window.__chatOpened = url; return null; };
+
+    if (telegramPlatform) {
+      const handlers = {};
+      window.__requestFullscreenCount = 0;
+      window.Telegram = {
+        WebApp: {
+          platform: telegramPlatform,
+          version: '9.6',
+          initData: 'dev',
+          initDataUnsafe: { user: { id: 999990901 } },
+          viewportHeight: telegramViewportHeight,
+          viewportStableHeight: telegramViewportHeight,
+          isFullscreen: false,
+          safeAreaInset: { top: 0, right: 0, bottom: 34, left: 0 },
+          contentSafeAreaInset: { top: 52, right: 0, bottom: 34, left: 0 },
+          ready() {},
+          expand() {},
+          setHeaderColor() {},
+          setBackgroundColor() {},
+          setBottomBarColor() {},
+          isVersionAtLeast() { return true; },
+          requestFullscreen() { window.__requestFullscreenCount += 1; },
+          openTelegramLink(url) { window.__chatOpened = url; },
+          onEvent(name, callback) {
+            handlers[name] = handlers[name] || [];
+            handlers[name].push(callback);
+          },
+          offEvent(name, callback) {
+            handlers[name] = (handlers[name] || []).filter((item) => item !== callback);
+          },
+        },
+      };
+    }
+  }, {
+    telegramPlatform: TELEGRAM_PLATFORM,
+    telegramViewportHeight: TELEGRAM_VIEWPORT_HEIGHT,
   });
+
+  if (TELEGRAM_PLATFORM) {
+    await page.route('https://telegram.org/js/telegram-web-app.js', (route) => route.abort());
+  }
 
   let passed = 0;
   const assert = (cond, msg) => {
@@ -212,6 +260,15 @@ function startServer(fixtures) {
   const overlayText = async () => page.locator('[data-onboarding-menu-tour]').innerText();
   const overlayButton = async () => page.locator('[data-onboarding-menu-tour] button[type="button"]').first();
   const hasSpotlight = async () => (await page.locator('[data-onboarding-spotlight]').count()) > 0;
+  const assertInsideViewport = async (locator, label) => {
+    const box = await locator.boundingBox();
+    const viewport = page.viewportSize();
+    assert(!!box, `${label}: bounding box exists`);
+    assert(
+      box.y >= -1 && box.y + box.height <= viewport.height + 1,
+      `${label}: visible inside ${viewport.height}px viewport`,
+    );
+  };
 
   try {
     console.log('\n▶ Loading SPA with mocked menu_tour onboarding (reward first)…');
@@ -221,6 +278,18 @@ function startServer(fixtures) {
     await page.waitForSelector('#loading-screen.loading-done', { timeout: 15000 });
     // Wait for the reward cinematic overlay to render.
     await page.waitForSelector('[data-onboarding-menu-tour]', { timeout: 10000 });
+
+    if (IS_IOS_FULLSIZE) {
+      const viewportMetrics = await page.evaluate(() => ({
+        cssHeight: Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--ea-viewport-height')),
+        visualHeight: window.visualViewport?.height || window.innerHeight,
+        fullscreenRequests: window.__requestFullscreenCount,
+      }));
+      assert(viewportMetrics.cssHeight <= viewportMetrics.visualHeight + 1,
+        'iOS main shell height is clamped to the visible WKWebView viewport');
+      assert(viewportMetrics.fullscreenRequests === 1,
+        'iOS main app requests Telegram fullscreen exactly once');
+    }
 
     const EXPECT = [
       { id: 'reward', cinematic: true, text: '9 стартовых карт', button: 'Давай дальше', deck: true },
@@ -247,13 +316,20 @@ function startServer(fixtures) {
 
       const btnText = (await overlayButton()).innerText ? await (await overlayButton()).innerText() : '';
       assert(btnText.includes(exp.button), `${exp.id}: CTA button "${exp.button}" (got "${btnText}")`);
+      if (IS_IOS_FULLSIZE) {
+        await assertInsideViewport(await overlayButton(), `${exp.id}: CTA`);
+      }
 
       if (exp.cinematic) {
         assert(!(await hasSpotlight()), `${exp.id}: cinematic step has NO spotlight`);
       } else {
         assert(await hasSpotlight(), `${exp.id}: spotlight step renders [data-onboarding-spotlight]`);
-        const targetCount = await page.locator(`[data-onboarding-target="${exp.target}"]`).count();
-        assert(targetCount > 0, `${exp.id}: spotlight target [data-onboarding-target="${exp.target}"] exists in DOM`);
+        const target = page.locator(`[data-onboarding-target="${exp.target}"]`);
+        const targetCount = await target.count();
+        assert(targetCount === 1, `${exp.id}: one spotlight target [data-onboarding-target="${exp.target}"] exists in DOM`);
+        if (IS_IOS_FULLSIZE) {
+          await assertInsideViewport(target, `${exp.id}: spotlight target`);
+        }
       }
 
       if (exp.deck) {

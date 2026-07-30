@@ -3423,6 +3423,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     try { tg.setHeaderColor?.('#0f0a1a'); } catch (e) {}
     try { tg.setBackgroundColor?.('#0f0a1a'); } catch (e) {}
     try { tg.setBottomBarColor?.('#0f0a1a'); } catch (e) {}
+    window.ExtraArenaSafeArea?.requestFullscreenForIos?.();
     window.ExtraArenaSafeArea?.sync?.();
   }
   

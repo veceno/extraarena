@@ -463,6 +463,7 @@ function buildMainArenaRedirectUrl(path, authData) {
 if (tg) {
   tg.ready();
   tg.expand();
+  window.ExtraArenaSafeArea?.requestFullscreenForIos?.();
   
   // Ждем события готовности WebApp
   tg.onEvent('viewportChanged', () => {

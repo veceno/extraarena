@@ -4,6 +4,7 @@
   const KEYBOARD_DELTA_PX = 120;
   const VIEWPORT_RECOVERY_DELAY_MS = 260;
   const RESYNC_DELAYS_MS = [0, 80, 180, 360, 720];
+  const FULLSCREEN_MIN_VERSION = '8.0';
   const insetFallbacks = {
     safe: {
       out: '--ea-tg-safe-',
@@ -18,6 +19,7 @@
   };
   let boundTelegram = null;
   let lastStableViewportHeight = 0;
+  let fullscreenRequestAttempted = false;
   let recoveryTimer = 0;
   let resyncTimers = [];
 
@@ -32,6 +34,8 @@
   };
 
   const hasInset = (insets) => sides.some((side) => toNumber(insets && insets[side]) > 0);
+
+  const isTelegramIos = (tg) => String(tg && tg.platform || '').toLowerCase() === 'ios';
 
   const readCssInset = (name) => {
     try {
@@ -90,6 +94,20 @@
     return 0;
   };
 
+  const resolveTelegramViewportHeight = (tg, currentHeight) => {
+    const telegramHeight = Number(tg && (tg.viewportStableHeight || tg.viewportHeight));
+    const hasTelegramHeight = Number.isFinite(telegramHeight) && telegramHeight > 0;
+    const hasCurrentHeight = Number.isFinite(currentHeight) && currentHeight > 0;
+
+    if (!hasTelegramHeight) return hasCurrentHeight ? currentHeight : 0;
+    if (!isTelegramIos(tg) || !hasCurrentHeight) return telegramHeight;
+
+    // Telegram iOS can remain in Fullsize even when BotFather requests
+    // Fullscreen. Never let a stale/optimistic Telegram height extend the
+    // fixed app shell beyond WKWebView's actually visible viewport.
+    return Math.min(telegramHeight, currentHeight);
+  };
+
   const isKeyboardLikelyOpen = () => {
     const visualHeight = Number(window.visualViewport && window.visualViewport.height);
     const innerHeight = Number(window.innerHeight);
@@ -100,6 +118,9 @@
       return true;
     }
     if (hasFocusedTextInput && Number.isFinite(screenHeight) && Number.isFinite(innerHeight) && screenHeight - innerHeight > KEYBOARD_DELTA_PX) {
+      return true;
+    }
+    if (hasFocusedTextInput && Number.isFinite(visualHeight) && lastStableViewportHeight - visualHeight > KEYBOARD_DELTA_PX) {
       return true;
     }
     return false;
@@ -120,9 +141,25 @@
     resyncTimers = RESYNC_DELAYS_MS.map((delay) => window.setTimeout(syncSafeArea, delay));
   };
 
+  const applyStableViewportHeight = (tg, height) => {
+    if (!Number.isFinite(height) || height <= 0) return false;
+    lastStableViewportHeight = isTelegramIos(tg)
+      ? height
+      : Math.max(lastStableViewportHeight, height);
+    setViewportHeight(lastStableViewportHeight);
+    return true;
+  };
+
+  const syncTelegramModeClasses = (tg) => {
+    const telegramIos = isTelegramIos(tg);
+    root.classList.toggle('ea-telegram-ios', telegramIos);
+    root.classList.toggle('ea-telegram-ios-fullsize', telegramIos && !tg.isFullscreen);
+  };
+
   const syncSafeArea = () => {
     const tg = window.Telegram && window.Telegram.WebApp;
     const currentHeight = usableViewportHeight();
+    syncTelegramModeClasses(tg);
 
     if (tg) {
       applyInsets(insetFallbacks.safe, tg.safeAreaInset);
@@ -138,12 +175,8 @@
     }
 
     if (tg) {
-      const stableHeight = Number(tg.viewportStableHeight || tg.viewportHeight);
-      if (Number.isFinite(stableHeight) && stableHeight > 0) {
-        lastStableViewportHeight = Math.max(lastStableViewportHeight, stableHeight);
-        setViewportHeight(stableHeight);
-        return;
-      }
+      const stableHeight = resolveTelegramViewportHeight(tg, currentHeight);
+      if (applyStableViewportHeight(tg, stableHeight)) return;
     }
 
     if (!currentHeight) {
@@ -154,12 +187,37 @@
     setViewportHeight(currentHeight);
   };
 
+  const requestFullscreenForIos = () => {
+    const tg = window.Telegram && window.Telegram.WebApp;
+    if (!isTelegramIos(tg) || tg.isFullscreen || fullscreenRequestAttempted) return false;
+    if (typeof tg.requestFullscreen !== 'function') return false;
+    if (typeof tg.isVersionAtLeast === 'function') {
+      try {
+        if (!tg.isVersionAtLeast(FULLSCREEN_MIN_VERSION)) return false;
+      } catch (error) {
+        return false;
+      }
+    }
+
+    fullscreenRequestAttempted = true;
+    try {
+      tg.requestFullscreen();
+      scheduleResync();
+      return true;
+    } catch (error) {
+      fullscreenRequestAttempted = false;
+      console.warn('[safe-area] iOS fullscreen request failed:', error);
+      scheduleResync();
+      return false;
+    }
+  };
+
   const bindTelegramEvents = () => {
     const tg = window.Telegram && window.Telegram.WebApp;
     if (!tg || typeof tg.onEvent !== 'function' || boundTelegram === tg) return;
     boundTelegram = tg;
 
-    ['viewportChanged', 'safeAreaChanged', 'contentSafeAreaChanged', 'fullscreenChanged'].forEach((eventName) => {
+    ['viewportChanged', 'safeAreaChanged', 'contentSafeAreaChanged', 'fullscreenChanged', 'fullscreenFailed'].forEach((eventName) => {
       try {
         tg.onEvent(eventName, scheduleResync);
       } catch (error) {
@@ -171,6 +229,8 @@
   window.ExtraArenaSafeArea = {
     sync: syncSafeArea,
     syncSoon: scheduleResync,
+    requestFullscreenForIos,
+    isTelegramIos: () => isTelegramIos(window.Telegram && window.Telegram.WebApp),
     getInsets: () => ({
       safe: { ...insetFallbacks.safe.values },
       content: { ...insetFallbacks.content.values },

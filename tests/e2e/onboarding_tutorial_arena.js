@@ -20,7 +20,7 @@ Run from the worktree root:
     node tests/e2e/onboarding_tutorial_arena.js
 Prereq: python3 tests/e2e/_dump_onboarding_fixtures.py  (regenerates fixtures)
 */
-const { chromium } = require('playwright');
+const playwright = require('playwright');
 const fs = require('fs');
 const http = require('http');
 const path = require('path');
@@ -28,6 +28,12 @@ const path = require('path');
 const ROOT = path.resolve(__dirname, '..', '..');
 const FIXTURES_PATH = path.join(__dirname, 'onboarding_fixtures.json');
 const PORT = 8097;
+const BROWSER_NAME = process.env.EA_E2E_BROWSER || 'chromium';
+const VIEWPORT_WIDTH = Number(process.env.EA_E2E_VIEWPORT_WIDTH || 412);
+const VIEWPORT_HEIGHT = Number(process.env.EA_E2E_VIEWPORT_HEIGHT || 900);
+const TELEGRAM_PLATFORM = process.env.EA_E2E_TELEGRAM_PLATFORM || '';
+const TELEGRAM_VIEWPORT_HEIGHT = Number(process.env.EA_E2E_TG_VIEWPORT_HEIGHT || VIEWPORT_HEIGHT);
+const IS_IOS_FULLSIZE = TELEGRAM_PLATFORM === 'ios';
 
 const json = (payload, status = 200) => ({
   status,
@@ -88,9 +94,11 @@ function startStaticServer() {
   };
 
   const server = await startStaticServer();
-  const browser = await chromium.launch();
+  const browserType = playwright[BROWSER_NAME];
+  if (!browserType) throw new Error(`Unknown Playwright browser: ${BROWSER_NAME}`);
+  const browser = await browserType.launch();
   const context = await browser.newContext({
-    viewport: { width: 412, height: 900 },
+    viewport: { width: VIEWPORT_WIDTH, height: VIEWPORT_HEIGHT },
     deviceScaleFactor: 2,
   });
   const page = await context.newPage();
@@ -101,7 +109,7 @@ function startStaticServer() {
 
   // Stub window.io BEFORE any page script runs (socket.io CDN is blocked below,
   // so `io` would be undefined and initSocketIO() would throw).
-  await page.addInitScript(() => {
+  await page.addInitScript(({ telegramPlatform, telegramViewportHeight, uid }) => {
     window.io = function fakeIo() {
       // `socket.io` is the Manager on the real socket.io client (arena calls
       // socket.io.on('reconnect_failed', …)); expose a stub so initSocketIO
@@ -118,6 +126,43 @@ function startStaticServer() {
         close: () => {},
       };
     };
+
+    if (telegramPlatform) {
+      const handlers = {};
+      window.__requestFullscreenCount = 0;
+      window.__telegramEventHandlers = handlers;
+      window.Telegram = {
+        WebApp: {
+          platform: telegramPlatform,
+          version: '9.6',
+          initData: 'dev',
+          initDataUnsafe: { user: { id: uid } },
+          viewportHeight: telegramViewportHeight,
+          viewportStableHeight: telegramViewportHeight,
+          isFullscreen: false,
+          safeAreaInset: { top: 0, right: 0, bottom: 34, left: 0 },
+          contentSafeAreaInset: { top: 52, right: 0, bottom: 34, left: 0 },
+          ready() {},
+          expand() {},
+          setHeaderColor() {},
+          setBackgroundColor() {},
+          setBottomBarColor() {},
+          isVersionAtLeast() { return true; },
+          requestFullscreen() { window.__requestFullscreenCount += 1; },
+          onEvent(name, callback) {
+            handlers[name] = handlers[name] || [];
+            handlers[name].push(callback);
+          },
+          offEvent(name, callback) {
+            handlers[name] = (handlers[name] || []).filter((item) => item !== callback);
+          },
+        },
+      };
+    }
+  }, {
+    telegramPlatform: TELEGRAM_PLATFORM,
+    telegramViewportHeight: TELEGRAM_VIEWPORT_HEIGHT,
+    uid: UID,
   });
 
   // Block the CDN scripts (offline) so they don't hang or redefine our stub.
@@ -159,7 +204,8 @@ function startStaticServer() {
     route.fulfill({ status: 200, contentType: 'text/html', body: '<html><body>menu tour</body></html>' }));
 
   try {
-    const arenaUrl = `http://127.0.0.1:${PORT}/webapp/arena.html?id=${MATCH_ID}&onboarding=1&_auth=dev&ea_platform=android_app`;
+    const platformQuery = IS_IOS_FULLSIZE ? '' : '&ea_platform=android_app';
+    const arenaUrl = `http://127.0.0.1:${PORT}/webapp/arena.html?id=${MATCH_ID}&onboarding=1&_auth=dev${platformQuery}`;
     await page.goto(arenaUrl, { waitUntil: 'domcontentloaded' });
 
     // Helper: wait until the onboarding bubble contains the steady-state step
@@ -176,6 +222,15 @@ function startStaticServer() {
     const bubbleText = () => page.locator('.arena-onboarding-bubble').first().textContent();
     const stepLabel = () => page.locator('.arena-onboarding-step').first().textContent();
     const currentState = () => page.evaluate(() => currentState);
+    const assertInsideViewport = async (selector, label) => {
+      const box = await page.locator(selector).first().boundingBox();
+      const viewport = page.viewportSize();
+      assert(!!box, `${label}: bounding box exists`);
+      assert(
+        box.y >= -1 && box.y + box.height <= viewport.height + 1,
+        `${label}: visible inside ${viewport.height}px viewport`,
+      );
+    };
 
     // ---- step 0 (goal) --------------------------------------------------------
     await waitForStepMessage(0);
@@ -187,6 +242,18 @@ function startStaticServer() {
       assert(JSON.stringify(st.player.hand.map((c) => c.card_id)) === JSON.stringify([37, 39]),
         'step0 hand [Слайм, Альфонс]');
       assert(st.opponent.hero.hp === 8 && st.opponent.hero.max_hp === 8, 'step0 opponent hero 8/8');
+    }
+    if (IS_IOS_FULLSIZE) {
+      const viewportMetrics = await page.evaluate(() => ({
+        cssHeight: Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--ea-viewport-height')),
+        visualHeight: window.visualViewport?.height || window.innerHeight,
+        fullscreenRequests: window.__requestFullscreenCount,
+      }));
+      assert(viewportMetrics.cssHeight <= viewportMetrics.visualHeight + 1,
+        'iOS CSS shell height is clamped to the visible WKWebView viewport');
+      assert(viewportMetrics.fullscreenRequests === 1,
+        'iOS requests Telegram fullscreen exactly once');
+      await assertInsideViewport('.arena-onboarding-action', 'step0 onboarding action');
     }
 
     // step0 → 1: click "Понятно" (goal → play_attacker).
@@ -214,6 +281,9 @@ function startStaticServer() {
     }
 
     // step2 → 3: end turn (p2 plays Стив → threat beat).
+    if (IS_IOS_FULLSIZE) {
+      await assertInsideViewport('#end-turn-button', 'step2 end-turn button');
+    }
     await page.evaluate(async () => { await sendOnboardingTutorialAction({ type: 'end_turn' }); });
     await waitForStepMessage(3);
     console.log('step 3 — threat');
@@ -354,6 +424,9 @@ function startStaticServer() {
       'step10 victory text = scenario victory message');
     assert((await page.locator('.arena-onboarding-victory-action').first().textContent()).trim() === 'В меню',
       'step10 "В меню" button present');
+    if (IS_IOS_FULLSIZE) {
+      await assertInsideViewport('.arena-onboarding-victory-action', 'step10 menu action');
+    }
     assert(oppHeroHpAt(10) === 0, 'step10 opponent hero HP 0 (real lethal)');
     {
       const st = await currentState();

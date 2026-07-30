@@ -750,13 +750,33 @@ def test_android_webview_recovers_viewport_after_keyboard_closes():
     assert "focused.clearFocus()" in native
 
 
-def test_safe_area_ignores_telegram_viewport_while_keyboard_or_transition_is_unstable():
+def test_safe_area_keeps_android_keyboard_recovery_but_clamps_ios_to_visible_viewport():
     safe_area = SAFE_AREA.read_text(encoding="utf-8")
 
     keyboard_guard = safe_area.index("if (isKeyboardLikelyOpen())")
-    telegram_height = safe_area.index("const stableHeight = Number(tg.viewportStableHeight || tg.viewportHeight)")
+    telegram_height = safe_area.index("const stableHeight = resolveTelegramViewportHeight(tg, currentHeight)")
     assert keyboard_guard < telegram_height
-    assert "lastStableViewportHeight = Math.max(lastStableViewportHeight, stableHeight);" in safe_area
+    assert "return Math.min(telegramHeight, currentHeight);" in safe_area
+    assert "lastStableViewportHeight = isTelegramIos(tg)" in safe_area
+    assert ": Math.max(lastStableViewportHeight, height);" in safe_area
+    assert "root.classList.toggle('ea-telegram-ios-fullsize', telegramIos && !tg.isFullscreen);" in safe_area
+
+
+def test_telegram_ios_requests_fullscreen_without_changing_android_launch_behavior():
+    safe_area = SAFE_AREA.read_text(encoding="utf-8")
+    source = INDEX.read_text(encoding="utf-8")
+    arena = ARENA.read_text(encoding="utf-8")
+
+    assert "String(tg && tg.platform || '').toLowerCase() === 'ios'" in safe_area
+    assert "if (!isTelegramIos(tg) || tg.isFullscreen || fullscreenRequestAttempted) return false;" in safe_area
+    assert "tg.requestFullscreen();" in safe_area
+    assert "'fullscreenFailed'" in safe_area
+    assert "window.ExtraArenaSafeArea?.requestFullscreenForIos?.();" in source
+    assert "window.ExtraArenaSafeArea?.requestFullscreenForIos?.();" in arena
+
+    arena_styles = Path("webapp/arena-styles.css").read_text(encoding="utf-8")
+    assert "html.ea-telegram-ios-fullsize .arena-zone-bottom" in arena_styles
+    assert "html.ea-telegram-ios-fullsize .end-turn-icon-ref" in arena_styles
 
 
 def test_profile_display_name_uses_telegram_fetched_name_before_generic_fallback():
@@ -1307,7 +1327,12 @@ def test_mobile_inventory_and_deck_mutations_invalidate_dependent_caches():
     assert "window.eaInvalidateJson?.('/api/deck/presets')" in source
     assert "invalidateInventoryCaches();" in claim_block
     assert claim_block.index("invalidateInventoryCaches();") < claim_block.index("setResult(d);", claim_block.index("invalidateInventoryCaches();"))
-    assert "const handleCardUpgraded = React.useCallback(() => { invalidateInventoryCaches(); loadCards(); }" in source
+    upgraded_block = source.split(
+        "const handleCardUpgraded = React.useCallback(() => {",
+        1,
+    )[1].split("}, [loadCards, onReloadProfile]);", 1)[0]
+    assert "invalidateInventoryCaches();" in upgraded_block
+    assert "loadCards();" in upgraded_block
     assert "invalidateDeckCaches();\n      await onReload();" in source
     assert "onDone={()=>{invalidateInventoryCaches();setShowCaseOpen(false);window.reloadFreshProfile()" in source
 
@@ -1370,7 +1395,8 @@ def test_squad_beta_polish_ui_copy_and_removed_shop_upgrades_are_present():
     assert "title: 'Глава'" in source
     assert "short: 'Владелец сквада'" in source
     assert ">Удерживай</HoldSquadButton>" in source
-    assert "aria-hidden=\"true\" style={{position:'absolute',inset:0,background:`center/cover url(${m.profile_background_url})`}}" in source
+    assert "src={m.profile_background_url || ratingDefaultBackground}" in source
+    assert "e.currentTarget.src=ratingDefaultBackground" in source
     assert ".filter(([key]) => !['boost','customization'].includes(key))" in source
     assert "['boost','Boost'],['shop','Магазин']" in source
     assert "if(tab === 'shop') loadShop();" in source

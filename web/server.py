@@ -8038,6 +8038,14 @@ def create_web_app(
             logging.getLogger(__name__).error("equip_cosmetic error user=%s: %s", user_id, e)
             return web.json_response({"error": "internal_error"}, status=500)
 
+    async def cosmetic_detail_handler(request: web.Request) -> web.Response:
+        """GET /api/cosmetics/{identity} — активный предмет по id или slug."""
+        identity = request.match_info.get("identity", "")
+        item = await db.get_cosmetic_item(identity)
+        if not item or not bool(item.get("is_active", False)):
+            return web.json_response({"error": "cosmetic_not_found"}, status=404)
+        return web.json_response({"item": _cosmetic_response_payload(item)})
+
     async def promocode_use_handler(request: web.Request) -> web.Response:
         """Обработчик использования промокода."""
         user_id = await require_user_id(request)
@@ -14516,6 +14524,7 @@ def create_web_app(
     app.router.add_post("/api/change-nickname", change_nickname_handler)
     app.router.add_get("/api/cosmetics/owned",  cosmetics_owned_handler)
     app.router.add_post("/api/cosmetics/equip", cosmetics_equip_handler)
+    app.router.add_get("/api/cosmetics/{identity}", cosmetic_detail_handler)
     app.router.add_post("/api/promocode/use", promocode_use_handler)
     app.router.add_post("/api/admin/session", admin_session_handler)
     register_admin_mcp_routes(app, require_user_id=require_user_id, is_admin_user=_is_admin_user)
@@ -18767,7 +18776,7 @@ def create_web_app(
         filepath = SQUAD_UPLOADS_DIR / filename
         if not filepath.exists() or not filepath.is_file():
             raise web.HTTPNotFound()
-        return web.FileResponse(filepath, headers={"Cache-Control": "public, max-age=86400"})
+        return web.FileResponse(filepath, headers={"Cache-Control": "public, max-age=2592000"})
 
     app.router.add_get("/api/squads/config", squads_config_handler)
     app.router.add_get("/api/squads/me", squads_me_handler)
